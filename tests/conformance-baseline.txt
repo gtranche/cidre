@@ -1,0 +1,33 @@
+# Campagne vkd3d-proton, reference etablie apres le correctif 0037.
+# 574 fonctions, 24 169 186 tests, 2305 echecs.
+# Comptage : lignes contenant 'Test failed', attribuees a la fonction en cours.
+# Les 'Todo succeeded' (65547) ne sont pas des echecs et ne comptent pas.
+# Format : <fonction> <echecs>. Seules les fonctions en echec sont listees.
+test_depth_stencil_sampling 1
+test_query_pipeline_statistics 6
+test_quad_tessellation_dxbc 6
+test_quad_tessellation_dxil 6
+test_quad_tessellation_wrong_pso_topology_dxbc 6
+test_quad_tessellation_wrong_pso_topology_dxil 6
+test_quad_tessellation_wrong_input_count_dxbc 6
+test_quad_tessellation_wrong_input_count_dxil 6
+test_line_tessellation_dxbc 50
+test_line_tessellation_dxil 50
+test_suballocate_small_textures_size 1650
+test_undefined_structured_raw_read_typed_dxbc 112
+test_undefined_structured_raw_read_typed_dxil 112
+test_undefined_typed_read_structured_raw_dxbc 48
+test_undefined_typed_read_structured_raw_dxil 48
+test_virtual_queries 5
+test_shader_waveop_maximal_convergence 16
+test_fence_wait_robustness_shared 3
+test_line_rasterization 4
+test_depth_bias_formats 6
+test_shader_io_mismatch 2
+test_large_texel_buffer_view 42
+test_gs_topology_mismatch_dxbc 3
+test_gs_topology_mismatch_dxil 3
+test_placed_msaa_alignment_workaround 1
+test_primitive_id_read_tess_geom 1
+test_structured_buffer_addressing_wrap 94
+test_query_heap_cpu_resolve_timestamp 12

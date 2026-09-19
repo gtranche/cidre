@@ -6800,3 +6800,43 @@ La bissectabilite de la serie est donc etablie, cette fois avec de quoi le prouv
 Une campagne verte ne vaut que si l'on montre qu'elle a travaille. Les deux temoins qui
 manquaient au § 92 — cibles reconstruites et empreinte du binaire — auraient fait tomber le
 faux resultat immediatement. Ils coutaient deux lignes de script.
+
+---
+
+## 98. Conformite apres 0037 : aucune regression (2026-09-19)
+
+### Resultat
+
+Campagne complete de la suite vkd3d-proton a travers la pile, pilote incluant
+`VK_KHR_external_memory_fd` :
+
+```
+574 fonctions demarrees, 574 terminees
+24 169 186 tests executes
+2305 echecs, 28 fonctions en echec
+```
+
+**Identique a la reference du § 76** : 2 305 echecs, 28 fonctions. La fonction dominante,
+`test_suballocate_small_textures_size` a 1 650, correspond bien a la ligne « taille minimale
+imposee par Metal » de ce tableau. Le correctif 0037 n'introduit donc aucune regression, ce qui
+etait attendu — une seule de ses 147 lignes ajoutees s'execute sur le chemin commun — mais
+attendu n'est pas mesure.
+
+### Un piege de comptage
+
+Premier depouillement faux : en comptant toutes les lignes prefixees par un nom de fonction,
+j'obtenais **68 523** « echecs » sur 211 fonctions. Le gros du volume venait de
+`test_open_heap_from_address`, 65 536 lignes, qui sont en realite des `Todo succeeded` — des
+tests marques a corriger et qui passent. La suite les compte separement (65 547 au total) et ce
+ne sont pas des echecs.
+
+Le bon motif est la chaine `Test failed`, qui apparait exactement 2 305 fois, soit le compte
+que la suite annonce elle-meme. Verifier le depouillement contre le total de l'outil evite de
+publier un chiffre trente fois trop grand.
+
+### Une reference archivee
+
+`tests/conformance-baseline.txt` : le decompte fonction par fonction, desormais dans le depot.
+Les campagnes precedentes vivaient dans le repertoire temporaire de la session, qui a ete purge
+— c'est pour cela qu'il a fallu recomparer au chiffre global plutot qu'a un detail. Les
+prochaines campagnes pourront se differencier directement contre ce fichier.
