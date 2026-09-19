@@ -22,6 +22,3 @@ third_party/
 cube.bmp
 vkd3d-proton.cache
 vkd3d-proton.cache.write
-
-# Journal de bord : regle permanente du projet, non commite
-NOTES.md
