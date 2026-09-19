@@ -6600,3 +6600,55 @@ sur l'EDID, pas un defaut graphique. **A confirmer avant d'y croire.**
 La pile fait tourner un moteur commercial reel en D3D11, et sert aussi du D3D9. Ce qui bloque
 est le harnais du banc, pas le rendu. Superposition ne donnera donc pas de score sans
 diagnostiquer la division par zero.
+
+### La cause, tracee jusqu'a notre pilote
+
+La « division par zero » du premier essai et une violation d'acces du second sont deux visages
+du meme chemin instable. Le second est exploitable, car `WINEDEBUG=+seh` donne le contexte
+complet :
+
+```
+dispatch_exception code=c0000005 (EXCEPTION_ACCESS_VIOLATION) addr=00000001400238C2
+  info[0]=0000000000000001        (ecriture)
+  info[1]=8146001A000000AE        (adresse visee)
+  rax=8146001a00000003
+```
+
+Ecriture a travers une valeur de donnees prise pour un pointeur, a `launcher.exe+0x228C2`.
+
+Fausse piste ecartee : DXVK signale juste avant une interface inconnue, `0ec870a6-5d7e-4c22-
+8cfc-5baae07616ed`, identifiee dans les entetes mingw comme **`IID_ID3D12CommandQueue`**. Mais
+`D3D11DXGIDevice::QueryInterface` est conforme au contrat COM — `*ppvObject = nullptr` avant
+`E_NOINTERFACE` (`d3d11_device.cpp:3334`). Ce n'est donc pas un pointeur de sortie non
+initialise, contrairement au defaut corrige par le correctif 0007.
+
+Le vrai signal est **cinq lignes avant la faute** :
+
+```
+err:   Failed to create shared resource: VK_KHR_EXTERNAL_MEMORY_WIN32 not supported
+warn:  D3D11: Failed to write shared resource info for a texture
+```
+
+La chaine, maillon par maillon :
+
+1. **KosmicKrisp annonce `KHR_external_memory` mais pas `KHR_external_memory_fd`** — mesure :
+   zero occurrence dans `kk_physical_device.c`. Il expose `KHR_external_semaphore_fd` et
+   `KHR_external_fence_fd`, mais pas l'equivalent pour la memoire.
+2. winevulkan ne peut donc pas synthetiser `VK_KHR_external_memory_win32` cote PE.
+3. DXVK refuse la ressource partagee (`dxvk_image.cpp:406`).
+4. DXVK se contente ensuite d'**avertir et de continuer** (`d3d11_texture.cpp:745`) : la
+   texture existe, sans descripteur partage.
+5. Le lanceur ecrit a travers un pointeur invalide et tombe.
+
+L'etape 5 est une inference : l'adjacence et l'echec sont mesures, la logique interne du
+lanceur ne l'est pas.
+
+### Ce que cela coute de reparer
+
+Il faudrait implementer `VK_KHR_external_memory_fd` dans KosmicKrisp. Le partage natif de
+Metal passe par IOSurface, `MTLSharedTextureHandle` et des ports Mach — pas par des
+descripteurs de fichier. L'abstraction ne se transpose donc pas directement, et ce n'est pas
+un petit chantier.
+
+C'est neanmoins un resultat net : d'une adresse de plantage dans un binaire tiers jusqu'a une
+extension manquante dans notre propre pilote.
