@@ -1,0 +1,88 @@
+Generated-by: LLM
+
+diff -urN --exclude=.git s4/src/kosmickrisp/vulkan/kk_buffer_view.c s5/src/kosmickrisp/vulkan/kk_buffer_view.c
+--- a/src/kosmickrisp/vulkan/kk_buffer_view.c	2026-09-19 17:57:49
++++ b/src/kosmickrisp/vulkan/kk_buffer_view.c	2026-09-19 17:57:55
+@@ -66,7 +66,16 @@
+    enum pipe_format p_format = vk_format_to_pipe_format(view->vk.format);
+    const struct kk_va_format *supported_format = kk_get_va_format(p_format);
+ 
+-   /* If we reached here, we support reading at least */
++   /* kk_get_va_format() returns NULL for anything missing from the texel
++    * buffer table, so this cannot assume the format is usable. Fail the call
++    * instead of dereferencing NULL. */
++   if (supported_format == NULL) {
++      vk_buffer_view_destroy(&dev->vk, pAllocator, &view->vk);
++      return vk_errorf(dev, VK_ERROR_FORMAT_NOT_SUPPORTED,
++                       "VkFormat %u is not supported for texel buffers",
++                       view->vk.format);
++   }
++
+    enum mtl_texture_usage usage = MTL_TEXTURE_USAGE_SHADER_READ;
+    if (supported_format->texel_buffer.write)
+       usage |= MTL_TEXTURE_USAGE_SHADER_WRITE;
+@@ -121,6 +130,17 @@
+ 
+    layout.width_px += view->texel_offset;
+    layout.linear_stride_B += offset_bias_B;
++
++   /* Past this Metal aborts the process from its own validation rather than
++    * returning nil, so refuse the view here. Note the prefix added above
++    * counts towards the limit. */
++   if (layout.width_px > KK_MAX_TEXEL_BUFFER_ELEMENTS) {
++      vk_buffer_view_destroy(&dev->vk, pAllocator, &view->vk);
++      return vk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY,
++                       "texel buffer view of %u texels exceeds the %u texel "
++                       "maximum", layout.width_px,
++                       (unsigned)KK_MAX_TEXEL_BUFFER_ELEMENTS);
++   }
+ 
+    view->mtl_texel_buffer_handle = mtl_new_texture_with_descriptor_linear(
+       buffer->metal.handle, &layout, aligned_offset);
+diff -urN --exclude=.git s4/src/kosmickrisp/vulkan/kk_image.c s5/src/kosmickrisp/vulkan/kk_image.c
+--- a/src/kosmickrisp/vulkan/kk_image.c	2026-09-19 17:57:49
++++ b/src/kosmickrisp/vulkan/kk_image.c	2026-09-19 17:57:55
+@@ -613,6 +613,15 @@
+       return wsi_common_create_swapchain_image(&pdev->wsi_device, pCreateInfo,
+                                                pImage);
+ 
++   /* Metal validates arrayLength itself and aborts the process rather than
++    * returning nil, so catch an over-long array here. The limit reported in
++    * maxImageArrayLayers is the same one Metal enforces. */
++   if (pCreateInfo->arrayLayers > KK_MAX_IMAGE_ARRAY_LAYERS)
++      return vk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY,
++                       "image of %u array layers exceeds the %u layer maximum",
++                       pCreateInfo->arrayLayers,
++                       (unsigned)KK_MAX_IMAGE_ARRAY_LAYERS);
++
+    image = vk_zalloc2(&dev->vk.alloc, pAllocator, sizeof(*image), 8,
+                       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+    if (!image)
+diff -urN --exclude=.git s4/src/kosmickrisp/vulkan/kk_physical_device.c s5/src/kosmickrisp/vulkan/kk_physical_device.c
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c	2026-09-19 17:57:49
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c	2026-09-19 17:57:55
+@@ -563,8 +563,8 @@
+       .maxImageDimension2D = kk_image_max_dimension(pdev, VK_IMAGE_TYPE_2D),
+       .maxImageDimension3D = kk_image_max_dimension(pdev, VK_IMAGE_TYPE_3D),
+       .maxImageDimensionCube = kk_image_max_dimension(pdev, VK_IMAGE_TYPE_2D),
+-      .maxImageArrayLayers = 2048,
+-      .maxTexelBufferElements = 16384 * 16384,
++      .maxImageArrayLayers = KK_MAX_IMAGE_ARRAY_LAYERS,
++      .maxTexelBufferElements = KK_MAX_TEXEL_BUFFER_ELEMENTS,
+       .maxUniformBufferRange = 65536,
+       .maxStorageBufferRange = UINT32_MAX,
+       .maxPushConstantsSize = KK_MAX_PUSH_SIZE,
+diff -urN --exclude=.git s4/src/kosmickrisp/vulkan/kk_private.h s5/src/kosmickrisp/vulkan/kk_private.h
+--- a/src/kosmickrisp/vulkan/kk_private.h	2026-09-19 17:57:49
++++ b/src/kosmickrisp/vulkan/kk_private.h	2026-09-19 17:57:55
+@@ -22,6 +22,10 @@
+ #define KK_MAX_SAMPLES                   8
+ #define KK_MIN_SSBO_ALIGNMENT            16
+ #define KK_MIN_TEXEL_BUFFER_ALIGNMENT    16
++/* Metal caps a texture array at this many layers. */
++#define KK_MAX_IMAGE_ARRAY_LAYERS        2048
++/* Metal caps a texture buffer at this many texels. */
++#define KK_MAX_TEXEL_BUFFER_ELEMENTS     (16384 * 16384)
+ #define KK_MIN_UBO_ALIGNMENT             64
+ #define KK_MAX_VIEWPORTS                 16
+ #define KK_MAX_DESCRIPTOR_SIZE           64

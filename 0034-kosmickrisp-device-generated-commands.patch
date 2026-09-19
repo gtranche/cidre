@@ -1,0 +1,708 @@
+Generated-by: LLM
+
+diff -urN --exclude=.git s27/src/kosmickrisp/libkk/kk_draws.cl s28/src/kosmickrisp/libkk/kk_draws.cl
+--- a/src/kosmickrisp/libkk/kk_draws.cl	2026-09-19 18:00:48
++++ b/src/kosmickrisp/libkk/kk_draws.cl	2026-09-19 18:00:56
+@@ -90,3 +90,37 @@
+                         restart_index, restart_enabled, flatshade_first, true,
+                         mode, scratch);
+ }
++
++KERNEL(32)
++libkk_dgc_patch_root(global uint32_t *out_roots, constant uint32_t *base_root,
++                     constant uint32_t *stream, constant uint32_t *tokens,
++                     uint64_t out_base_va, uint32_t root_dwords,
++                     uint32_t stream_stride_dw, uint32_t token_count,
++                     uint32_t push_base_dw)
++{
++   uint seq = cl_global_id.x;
++   global uint32_t *dst = out_roots + seq * root_dwords;
++
++   for (uint i = 0; i < root_dwords; ++i)
++      dst[i] = base_root[i];
++
++   constant uint32_t *src = stream + seq * stream_stride_dw;
++
++   for (uint t = 0; t < token_count; ++t) {
++      uint src_dw = tokens[t * 4u + 0u];
++      uint dst_dw = push_base_dw + tokens[t * 4u + 1u];
++      uint size_dw = tokens[t * 4u + 2u];
++      bool seq_index = tokens[t * 4u + 3u] != 0u;
++
++      if (seq_index) {
++         dst[dst_dw] = seq;
++      } else {
++         for (uint j = 0; j < size_dw; ++j)
++            dst[dst_dw + j] = src[src_dw + j];
++      }
++   }
++
++   uint64_t va = out_base_va + (uint64_t)(seq * root_dwords) * 4ul;
++   dst[0] = (uint32_t)va;
++   dst[1] = (uint32_t)(va >> 32ul);
++}
+diff -urN --exclude=.git s27/src/kosmickrisp/vulkan/kk_cmd_buffer.h s28/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h	2026-09-19 18:00:48
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h	2026-09-19 18:00:56
+@@ -176,6 +176,9 @@
+    bool is_cull_front_and_back;
+    bool need_to_start_render_pass;
+ 
++   uint64_t root_override;
++
++
+    enum kk_dirty dirty;
+    uint32_t pipeline_sample_count;
+ 
+diff -urN --exclude=.git s27/src/kosmickrisp/vulkan/kk_cmd_dispatch.c s28/src/kosmickrisp/vulkan/kk_cmd_dispatch.c
+--- a/src/kosmickrisp/vulkan/kk_cmd_dispatch.c	2026-09-19 18:00:48
++++ b/src/kosmickrisp/vulkan/kk_cmd_dispatch.c	2026-09-19 18:00:56
+@@ -8,6 +8,7 @@
+ 
+ #include "kk_buffer.h"
+ #include "kk_cmd_buffer.h"
++#include "kk_indirect_commands.h"
+ #include "kk_descriptor_set_layout.h"
+ #include "kk_device.h"
+ #include "kk_entrypoints.h"
+@@ -147,5 +148,71 @@
+       kk_flush_compute_state(cmd);
+       mtl_dispatch_threadgroups_with_indirect_buffer(
+          encoder, pInfo->addressRange.address, local_size);
++   }
++}
++
++void
++kk_dgc_dispatch(struct kk_cmd_buffer *cmd,
++                const struct kk_indirect_commands_layout *layout,
++                const VkGeneratedCommandsInfoEXT *info)
++{
++   uint64_t roots = kk_dgc_build_roots(cmd, layout, info,
++                                       VK_PIPELINE_BIND_POINT_COMPUTE);
++   if (layout->push_token_count != 0u && !roots)
++      return;
++
++   uint64_t args = info->indirectAddress + layout->action_offset;
++   uint32_t stride = layout->indirect_stride;
++
++   if (info->sequenceCountAddress) {
++      struct kk_ptr patched = kk_pool_alloc(
++         cmd, info->maxSequenceCount * sizeof(VkDispatchIndirectCommand), 4u);
++      if (unlikely(!patched.gpu))
++         return;
++
++      libkk_predicate_indirect_gt_draw_id(
++         cmd, kk_grid_1d(info->maxSequenceCount), false, patched.gpu, args,
++         info->sequenceCountAddress, 3u, stride / sizeof(uint32_t));
++
++      args = patched.gpu;
++      stride = sizeof(VkDispatchIndirectCommand);
++   }
++
++   if (cmd->state.cond_render.enabled) {
++      struct kk_ptr patched = kk_pool_alloc(
++         cmd, info->maxSequenceCount * sizeof(VkDispatchIndirectCommand), 4u);
++      if (unlikely(!patched.gpu))
++         return;
++
++      uint64_t cond = cmd->state.cond_render.address;
++      struct kk_grid grid = kk_grid_1d(info->maxSequenceCount);
++      if (cmd->state.cond_render.inverted) {
++         libkk_predicate_indirect_eq_zero(cmd, grid, false, patched.gpu, args,
++                                          cond, 3u,
++                                          stride / sizeof(uint32_t));
++      } else {
++         libkk_predicate_indirect_neq_zero(cmd, grid, false, patched.gpu, args,
++                                           cond, 3u,
++                                           stride / sizeof(uint32_t));
++      }
++
++      args = patched.gpu;
++      stride = sizeof(VkDispatchIndirectCommand);
++   }
++
++   struct kk_shader *cs = cmd->state.shaders[MESA_SHADER_COMPUTE];
++   struct mtl_size local_size = cs->info.cs.local_size;
++   mtl_compute_encoder *encoder = cs_get_compute(cmd);
++
++   kk_flush_compute_state(cmd);
++
++   for (uint32_t i = 0; i < info->maxSequenceCount; i++) {
++      if (roots) {
++         kk_cmd_bind_root_to_argument_table(
++            cmd, roots + (uint64_t)i * sizeof(struct kk_root_descriptor_table));
++      }
++
++      mtl_dispatch_threadgroups_with_indirect_buffer(
++         encoder, args + (uint64_t)i * stride, local_size);
+    }
+ }
+diff -urN --exclude=.git s27/src/kosmickrisp/vulkan/kk_cmd_draw.c s28/src/kosmickrisp/vulkan/kk_cmd_draw.c
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c	2026-09-19 18:00:48
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c	2026-09-19 18:00:56
+@@ -11,6 +11,7 @@
+ 
+ #include "kk_buffer.h"
+ #include "kk_cmd_buffer.h"
++#include "kk_indirect_commands.h"
+ #include "kk_format.h"
+ #include "kk_image_view.h"
+ #include "kk_physical_device.h"
+@@ -1132,6 +1133,11 @@
+    uint32_t draw_count;
+    uint64_t predicate_addr[2];
+ 
++   uint64_t per_sequence_root_addr;
++   uint32_t per_sequence_root_stride;
++   const struct kk_indirect_commands_layout *dgc_layout;
++   const VkGeneratedCommandsInfoEXT *dgc_info;
++
+    union {
+       struct {
+          uint64_t addr;
+@@ -1143,7 +1149,7 @@
+       VkDrawIndexedIndirectCommand indexed_draws[1];
+    };
+ };
+-static_assert(sizeof(struct kk_draw_command) == 88u, "Packed struct");
++static_assert(sizeof(struct kk_draw_command) == 120u, "Packed struct");
+ 
+ struct kk_draw_data {
+    /* For non-indirect, 0 is vertex/index count, 1 instance count and 2 first
+@@ -1609,7 +1615,9 @@
+    if (desc->root_dirty)
+       kk_upload_descriptor_root(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS);
+ 
+-   if (desc->root.addr) {
++   if (gfx->root_override) {
++      kk_cmd_bind_root_to_argument_table(cmd, gfx->root_override);
++   } else if (desc->root.addr) {
+       kk_cmd_bind_root_to_argument_table(cmd, desc->root.addr);
+    }
+ 
+@@ -1867,6 +1875,7 @@
+ {
+    mtl_render_encoder *enc = cs_get_render(cmd);
+ 
++
+    if (kk_grid_is_indirect(data.grid)) {
+       if (data.index.el_size_B) {
+          struct kk_addr_range index_range =
+@@ -2677,6 +2686,15 @@
+ 
+    kk_flush_gfx_state(cmd);
+ 
++   if (data->dgc_layout) {
++      data->per_sequence_root_addr = kk_dgc_build_roots(
++         cmd, data->dgc_layout, data->dgc_info,
++         VK_PIPELINE_BIND_POINT_GRAPHICS);
++      if (data->dgc_layout->push_token_count != 0u &&
++          !data->per_sequence_root_addr)
++         return;
++   }
++
+    data->restart = dyn->ia.primitive_restart_enable;
+    data->restart_index = dyn->ia.primitive_restart_index;
+    data->flatshade_first =
+@@ -2696,6 +2714,13 @@
+    for (uint32_t i = 0; i < data->draw_count; i++) {
+       struct kk_draw_data draw_data = build_draw_data(cmd, data, i);
+ 
++      if (data->per_sequence_root_addr) {
++         cmd->state.gfx.root_override =
++            data->per_sequence_root_addr +
++            (uint64_t)i * data->per_sequence_root_stride;
++         kk_cmd_bind_root_to_argument_table(cmd, cmd->state.gfx.root_override);
++      }
++
+       if (data->upload_mask)
+          kk_upload_per_draw_data(cmd, data->upload_mask, i, &draw_data);
+ 
+@@ -2709,8 +2734,13 @@
+       if (cmd->state.gfx.need_to_start_render_pass)
+          kk_flush_gfx_state(cmd);
+ 
++      if (data->per_sequence_root_addr)
++         kk_cmd_bind_root_to_argument_table(cmd, cmd->state.gfx.root_override);
++
+       kk_dispatch_draw(cmd, draw_data);
+    }
++
++   cmd->state.gfx.root_override = 0u;
+ }
+ 
+ VKAPI_ATTR void VKAPI_CALL
+@@ -3063,6 +3093,80 @@
+       .predicate_addr[1] = cmd->state.cond_render.address,
+       .indirect_command.addr = pInfo->addressRange.address,
+       .indirect_command.stride = pInfo->addressRange.stride,
++   };
++
++   kk_draw(cmd, &data);
++}
++
++VKAPI_ATTR void VKAPI_CALL
++kk_CmdPreprocessGeneratedCommandsEXT(
++   VkCommandBuffer commandBuffer,
++   const VkGeneratedCommandsInfoEXT *pGeneratedCommandsInfo,
++   VkCommandBuffer stateCommandBuffer)
++{
++}
++
++VKAPI_ATTR void VKAPI_CALL
++kk_CmdExecuteGeneratedCommandsEXT(
++   VkCommandBuffer commandBuffer, VkBool32 isPreprocessed,
++   const VkGeneratedCommandsInfoEXT *pGeneratedCommandsInfo)
++{
++   VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
++   VK_FROM_HANDLE(kk_indirect_commands_layout, layout,
++                  pGeneratedCommandsInfo->indirectCommandsLayout);
++
++   if (pGeneratedCommandsInfo->maxSequenceCount == 0u)
++      return;
++
++   if (layout->action == KK_DGC_ACTION_DISPATCH) {
++      kk_dgc_dispatch(cmd, layout, pGeneratedCommandsInfo);
++      return;
++   }
++
++   const struct vk_dynamic_graphics_state *dyn =
++      &cmd->vk.dynamic_graphics_state;
++   bool indexed = layout->action == KK_DGC_ACTION_DRAW_INDEXED;
++
++   enum kk_predicate_op predicate_op[2] = {0};
++   uint64_t predicate_addr[2] = {0};
++   uint32_t count_predicates = 0u;
++
++   if (pGeneratedCommandsInfo->sequenceCountAddress) {
++      predicate_op[count_predicates] = KK_PREDICATE_GT_DRAW_ID;
++      predicate_addr[count_predicates] =
++         pGeneratedCommandsInfo->sequenceCountAddress;
++      count_predicates++;
++   }
++
++   if (cmd->state.cond_render.enabled) {
++      predicate_op[count_predicates] = cmd->state.cond_render.inverted
++                                          ? KK_PREDICATE_EQ_ZERO
++                                          : KK_PREDICATE_NEQ_ZERO;
++      predicate_addr[count_predicates] = cmd->state.cond_render.address;
++      count_predicates++;
++   }
++
++   struct kk_draw_command data = {
++      .prim = vk_topology_to_mesa(dyn->ia.primitive_topology),
++      .upload_mask = build_per_draw_upload_mask(cmd),
++      .index_buffer = indexed ? cmd->state.gfx.index.gpu
++                              : (struct kk_addr_range){0},
++      .index_buffer_el_size_B =
++         indexed ? cmd->state.gfx.index.bytes_per_index : 0u,
++      .indirect = true,
++      .indexed = indexed,
++      .predicate_count = count_predicates,
++      .predicate_op[0] = predicate_op[0],
++      .predicate_op[1] = predicate_op[1],
++      .predicate_addr[0] = predicate_addr[0],
++      .predicate_addr[1] = predicate_addr[1],
++      .draw_count = pGeneratedCommandsInfo->maxSequenceCount,
++      .per_sequence_root_stride = sizeof(struct kk_root_descriptor_table),
++      .dgc_layout = layout,
++      .dgc_info = pGeneratedCommandsInfo,
++      .indirect_command.addr =
++         pGeneratedCommandsInfo->indirectAddress + layout->action_offset,
++      .indirect_command.stride = layout->indirect_stride,
+    };
+ 
+    kk_draw(cmd, &data);
+diff -urN --exclude=.git s27/src/kosmickrisp/vulkan/kk_indirect_commands.c s28/src/kosmickrisp/vulkan/kk_indirect_commands.c
+--- a/src/kosmickrisp/vulkan/kk_indirect_commands.c	1970-01-01 01:00:00
++++ b/src/kosmickrisp/vulkan/kk_indirect_commands.c	2026-09-19 18:00:56
+@@ -0,0 +1,256 @@
++/*
++ * Copyright 2026 Guillaume Tranchepain
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "kk_indirect_commands.h"
++
++#include "kk_cmd_buffer.h"
++#include "kk_device.h"
++#include "kk_entrypoints.h"
++
++#include <string.h>
++#include "kk_physical_device.h"
++
++#include "kosmickrisp/libkk/libkk.h"
++
++static VkResult
++kk_dgc_layout_add_push(struct kk_indirect_commands_layout *layout,
++                       const VkIndirectCommandsLayoutTokenEXT *token,
++                       bool sequence_index)
++{
++   if (layout->push_token_count >= KK_MAX_DGC_PUSH_TOKENS)
++      return VK_ERROR_FEATURE_NOT_PRESENT;
++
++   const VkIndirectCommandsPushConstantTokenEXT *pc = token->data.pPushConstant;
++   if (pc == NULL)
++      return VK_ERROR_FEATURE_NOT_PRESENT;
++
++   if (pc->updateRange.offset + pc->updateRange.size > KK_MAX_PUSH_SIZE)
++      return VK_ERROR_FEATURE_NOT_PRESENT;
++
++   struct kk_dgc_push_token *dst =
++      &layout->push_tokens[layout->push_token_count++];
++
++   dst->stream_offset = token->offset;
++   dst->push_offset = pc->updateRange.offset;
++   dst->size = pc->updateRange.size;
++   dst->sequence_index = sequence_index;
++
++   return VK_SUCCESS;
++}
++
++static VkResult
++kk_dgc_layout_set_action(struct kk_indirect_commands_layout *layout,
++                         enum kk_dgc_action action, uint32_t offset)
++{
++   if (layout->action != KK_DGC_ACTION_NONE)
++      return VK_ERROR_FEATURE_NOT_PRESENT;
++
++   layout->action = action;
++   layout->action_offset = offset;
++
++   return VK_SUCCESS;
++}
++
++static VkResult
++kk_dgc_layout_parse(struct kk_indirect_commands_layout *layout,
++                    const VkIndirectCommandsLayoutCreateInfoEXT *info)
++{
++   for (uint32_t i = 0; i < info->tokenCount; i++) {
++      const VkIndirectCommandsLayoutTokenEXT *token = &info->pTokens[i];
++      VkResult result;
++
++      switch (token->type) {
++      case VK_INDIRECT_COMMANDS_TOKEN_TYPE_PUSH_CONSTANT_EXT:
++      case VK_INDIRECT_COMMANDS_TOKEN_TYPE_PUSH_DATA_EXT:
++         result = kk_dgc_layout_add_push(layout, token, false);
++         break;
++
++      case VK_INDIRECT_COMMANDS_TOKEN_TYPE_SEQUENCE_INDEX_EXT:
++      case VK_INDIRECT_COMMANDS_TOKEN_TYPE_PUSH_DATA_SEQUENCE_INDEX_EXT:
++         result = kk_dgc_layout_add_push(layout, token, true);
++         break;
++
++      case VK_INDIRECT_COMMANDS_TOKEN_TYPE_DRAW_EXT:
++         result = kk_dgc_layout_set_action(layout, KK_DGC_ACTION_DRAW,
++                                           token->offset);
++         break;
++
++      case VK_INDIRECT_COMMANDS_TOKEN_TYPE_DRAW_INDEXED_EXT:
++         result = kk_dgc_layout_set_action(layout, KK_DGC_ACTION_DRAW_INDEXED,
++                                           token->offset);
++         break;
++
++      case VK_INDIRECT_COMMANDS_TOKEN_TYPE_DISPATCH_EXT:
++         result = kk_dgc_layout_set_action(layout, KK_DGC_ACTION_DISPATCH,
++                                           token->offset);
++         break;
++
++      default:
++         result = VK_ERROR_FEATURE_NOT_PRESENT;
++         break;
++      }
++
++      if (result != VK_SUCCESS)
++         return result;
++   }
++
++   if (layout->action == KK_DGC_ACTION_NONE)
++      return VK_ERROR_FEATURE_NOT_PRESENT;
++
++   return VK_SUCCESS;
++}
++
++VKAPI_ATTR VkResult VKAPI_CALL
++kk_CreateIndirectCommandsLayoutEXT(
++   VkDevice device, const VkIndirectCommandsLayoutCreateInfoEXT *pCreateInfo,
++   const VkAllocationCallbacks *pAllocator,
++   VkIndirectCommandsLayoutEXT *pIndirectCommandsLayout)
++{
++   VK_FROM_HANDLE(kk_device, dev, device);
++   struct kk_indirect_commands_layout *layout;
++
++   layout = vk_object_zalloc(&dev->vk, pAllocator, sizeof(*layout),
++                             VK_OBJECT_TYPE_INDIRECT_COMMANDS_LAYOUT_EXT);
++   if (!layout)
++      return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
++
++   layout->flags = pCreateInfo->flags;
++   layout->shader_stages = pCreateInfo->shaderStages;
++   layout->indirect_stride = pCreateInfo->indirectStride;
++
++   VkResult result = kk_dgc_layout_parse(layout, pCreateInfo);
++   if (result != VK_SUCCESS) {
++      vk_object_free(&dev->vk, pAllocator, layout);
++      return vk_error(dev, result);
++   }
++
++   *pIndirectCommandsLayout = kk_indirect_commands_layout_to_handle(layout);
++
++   return VK_SUCCESS;
++}
++
++VKAPI_ATTR void VKAPI_CALL
++kk_DestroyIndirectCommandsLayoutEXT(
++   VkDevice device, VkIndirectCommandsLayoutEXT indirectCommandsLayout,
++   const VkAllocationCallbacks *pAllocator)
++{
++   VK_FROM_HANDLE(kk_device, dev, device);
++   VK_FROM_HANDLE(kk_indirect_commands_layout, layout, indirectCommandsLayout);
++
++   if (!layout)
++      return;
++
++   vk_object_free(&dev->vk, pAllocator, layout);
++}
++
++VKAPI_ATTR void VKAPI_CALL
++kk_GetGeneratedCommandsMemoryRequirementsEXT(
++   VkDevice device, const VkGeneratedCommandsMemoryRequirementsInfoEXT *pInfo,
++   VkMemoryRequirements2 *pMemoryRequirements)
++{
++   VK_FROM_HANDLE(kk_device, dev, device);
++   VK_FROM_HANDLE(kk_indirect_commands_layout, layout,
++                  pInfo->indirectCommandsLayout);
++   struct kk_physical_device *pdev = kk_device_physical(dev);
++
++   uint64_t size = 0u;
++   if (layout->push_token_count != 0u) {
++      size = (uint64_t)pInfo->maxSequenceCount *
++             sizeof(struct kk_root_descriptor_table);
++   }
++
++   pMemoryRequirements->memoryRequirements = (VkMemoryRequirements){
++      .size = size,
++      .alignment = 256u,
++      .memoryTypeBits = BITFIELD_MASK(pdev->mem_type_count),
++   };
++}
++
++VKAPI_ATTR VkResult VKAPI_CALL
++kk_CreateIndirectExecutionSetEXT(
++   VkDevice device, const VkIndirectExecutionSetCreateInfoEXT *pCreateInfo,
++   const VkAllocationCallbacks *pAllocator,
++   VkIndirectExecutionSetEXT *pIndirectExecutionSet)
++{
++   VK_FROM_HANDLE(kk_device, dev, device);
++
++   return vk_error(dev, VK_ERROR_FEATURE_NOT_PRESENT);
++}
++
++VKAPI_ATTR void VKAPI_CALL
++kk_DestroyIndirectExecutionSetEXT(
++   VkDevice device, VkIndirectExecutionSetEXT indirectExecutionSet,
++   const VkAllocationCallbacks *pAllocator)
++{
++}
++
++VKAPI_ATTR void VKAPI_CALL
++kk_UpdateIndirectExecutionSetPipelineEXT(
++   VkDevice device, VkIndirectExecutionSetEXT indirectExecutionSet,
++   uint32_t executionSetWriteCount,
++   const VkWriteIndirectExecutionSetPipelineEXT *pExecutionSetWrites)
++{
++}
++
++VKAPI_ATTR void VKAPI_CALL
++kk_UpdateIndirectExecutionSetShaderEXT(
++   VkDevice device, VkIndirectExecutionSetEXT indirectExecutionSet,
++   uint32_t executionSetWriteCount,
++   const VkWriteIndirectExecutionSetShaderEXT *pExecutionSetWrites)
++{
++}
++
++uint64_t
++kk_dgc_build_roots(struct kk_cmd_buffer *cmd,
++                   const struct kk_indirect_commands_layout *layout,
++                   const VkGeneratedCommandsInfoEXT *info,
++                   VkPipelineBindPoint bind_point)
++{
++   if (layout->push_token_count == 0u)
++      return 0u;
++
++   struct kk_descriptor_state *desc =
++      kk_get_descriptors_state(cmd, bind_point);
++
++   if (desc->push_dirty)
++      kk_cmd_buffer_flush_push_descriptors(cmd, desc);
++
++   uint64_t base_root = kk_upload_descriptor_root(cmd, bind_point);
++   if (unlikely(!base_root))
++      return 0u;
++
++   uint32_t token_data[KK_MAX_DGC_PUSH_TOKENS * 4u];
++   for (uint32_t i = 0; i < layout->push_token_count; i++) {
++      const struct kk_dgc_push_token *t = &layout->push_tokens[i];
++      token_data[i * 4u + 0u] = t->stream_offset / 4u;
++      token_data[i * 4u + 1u] = t->push_offset / 4u;
++      token_data[i * 4u + 2u] = t->size / 4u;
++      token_data[i * 4u + 3u] = t->sequence_index ? 1u : 0u;
++   }
++
++   struct kk_ptr tokens = kk_pool_upload(
++      cmd, token_data, layout->push_token_count * 4u * sizeof(uint32_t), 4u);
++   if (unlikely(!tokens.gpu))
++      return 0u;
++
++   uint64_t out_va = info->preprocessAddress;
++
++   libkk_dgc_patch_root_struct(
++      cmd, kk_grid_1d(info->maxSequenceCount), true,
++      ((struct libkk_dgc_patch_root_args){
++         .out_roots = out_va,
++         .base_root = base_root,
++         .stream = info->indirectAddress,
++         .tokens = tokens.gpu,
++         .out_base_va = out_va,
++         .root_dwords = sizeof(struct kk_root_descriptor_table) / 4u,
++         .stream_stride_dw = layout->indirect_stride / 4u,
++         .token_count = layout->push_token_count,
++         .push_base_dw = offsetof(struct kk_root_descriptor_table, push) / 4u,
++      }));
++
++   return out_va;
++}
++
+diff -urN --exclude=.git s27/src/kosmickrisp/vulkan/kk_indirect_commands.h s28/src/kosmickrisp/vulkan/kk_indirect_commands.h
+--- a/src/kosmickrisp/vulkan/kk_indirect_commands.h	1970-01-01 01:00:00
++++ b/src/kosmickrisp/vulkan/kk_indirect_commands.h	2026-09-19 18:00:56
+@@ -0,0 +1,66 @@
++/*
++ * Copyright 2026 Guillaume Tranchepain
++ * SPDX-License-Identifier: MIT
++ */
++
++#ifndef KK_INDIRECT_COMMANDS_H
++#define KK_INDIRECT_COMMANDS_H 1
++
++#include "kk_private.h"
++
++#include "vk_object.h"
++
++#define KK_MAX_DGC_PUSH_TOKENS 8
++
++enum kk_dgc_action {
++   KK_DGC_ACTION_NONE = 0,
++   KK_DGC_ACTION_DRAW,
++   KK_DGC_ACTION_DRAW_INDEXED,
++   KK_DGC_ACTION_DISPATCH,
++};
++
++struct kk_dgc_push_token {
++   uint32_t stream_offset;
++   uint32_t push_offset;
++   uint32_t size;
++   bool sequence_index;
++};
++
++struct kk_indirect_commands_layout {
++   struct vk_object_base base;
++
++   VkIndirectCommandsLayoutUsageFlagsEXT flags;
++   VkShaderStageFlags shader_stages;
++   uint32_t indirect_stride;
++
++   enum kk_dgc_action action;
++   uint32_t action_offset;
++
++   uint32_t push_token_count;
++   struct kk_dgc_push_token push_tokens[KK_MAX_DGC_PUSH_TOKENS];
++};
++
++VK_DEFINE_NONDISP_HANDLE_CASTS(kk_indirect_commands_layout, base,
++                               VkIndirectCommandsLayoutEXT,
++                               VK_OBJECT_TYPE_INDIRECT_COMMANDS_LAYOUT_EXT)
++
++struct kk_indirect_execution_set {
++   struct vk_object_base base;
++};
++
++VK_DEFINE_NONDISP_HANDLE_CASTS(kk_indirect_execution_set, base,
++                               VkIndirectExecutionSetEXT,
++                               VK_OBJECT_TYPE_INDIRECT_EXECUTION_SET_EXT)
++
++struct kk_cmd_buffer;
++
++uint64_t kk_dgc_build_roots(struct kk_cmd_buffer *cmd,
++                            const struct kk_indirect_commands_layout *layout,
++                            const VkGeneratedCommandsInfoEXT *info,
++                            VkPipelineBindPoint bind_point);
++
++void kk_dgc_dispatch(struct kk_cmd_buffer *cmd,
++                     const struct kk_indirect_commands_layout *layout,
++                     const VkGeneratedCommandsInfoEXT *info);
++
++#endif /* KK_INDIRECT_COMMANDS_H */
+diff -urN --exclude=.git s27/src/kosmickrisp/vulkan/kk_physical_device.c s28/src/kosmickrisp/vulkan/kk_physical_device.c
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c	2026-09-19 18:00:48
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c	2026-09-19 18:00:56
+@@ -11,6 +11,7 @@
+ 
+ #include "kk_debug.h"
+ #include "kk_entrypoints.h"
++#include "kk_indirect_commands.h"
+ #include "kk_image.h"
+ #include "kk_instance.h"
+ #include "kk_nir_lower_vbo.h"
+@@ -183,6 +184,7 @@
+       .EXT_debug_marker = true,
+       .EXT_depth_clip_control = true,
+       .EXT_depth_clip_enable = true,
++      .EXT_device_generated_commands = true,
+       .EXT_dynamic_rendering_unused_attachments = true,
+       .EXT_extended_dynamic_state3 = true,
+       .EXT_external_memory_metal = true,
+@@ -498,6 +500,10 @@
+       .memoryMapRangePlaced = false,
+       .memoryUnmapReserve = true,
+ 
++      /* VK_EXT_device_generated_commands */
++      .deviceGeneratedCommands = true,
++      .dynamicGeneratedPipelineLayout = false,
++
+       /* VK_EXT_multi_draw */
+       .multiDraw = true,
+ 
+@@ -854,6 +860,21 @@
+ 
+       /* VK_EXT_map_memory_placed */
+       .minPlacedMemoryMapAlignment = os_page_size,
++
++      /* VK_EXT_device_generated_commands */
++      .maxIndirectPipelineCount = 0u,
++      .maxIndirectShaderObjectCount = 0u,
++      .maxIndirectSequenceCount = 1u << 20u,
++      .maxIndirectCommandsTokenCount = KK_MAX_DGC_PUSH_TOKENS + 1u,
++      .maxIndirectCommandsTokenOffset = 2047u,
++      .maxIndirectCommandsIndirectStride = 2048u,
++      .supportedIndirectCommandsInputModes = 0u,
++      .supportedIndirectCommandsShaderStages =
++         VK_SHADER_STAGE_ALL_GRAPHICS | VK_SHADER_STAGE_COMPUTE_BIT,
++      .supportedIndirectCommandsShaderStagesPipelineBinding = 0u,
++      .supportedIndirectCommandsShaderStagesShaderBinding = 0u,
++      .deviceGeneratedCommandsTransformFeedback = false,
++      .deviceGeneratedCommandsMultiDrawIndirectCount = false,
+ 
+       /* VK_EXT_multi_draw */
+       .maxMultiDrawCount = UINT32_MAX,
+diff -urN --exclude=.git s27/src/kosmickrisp/vulkan/meson.build s28/src/kosmickrisp/vulkan/meson.build
+--- a/src/kosmickrisp/vulkan/meson.build	2026-09-19 18:00:48
++++ b/src/kosmickrisp/vulkan/meson.build	2026-09-19 18:00:56
+@@ -84,6 +84,7 @@
+   'kk_image_layout.c',
+   'kk_image_view.h',
+   'kk_image_view.c',
++  'kk_indirect_commands.c',
+   'kk_image.h',
+   'kk_image.c',
+   'kk_instance.h',

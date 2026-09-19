@@ -1,0 +1,77 @@
+Generated-by: LLM
+
+diff -urN --exclude=.git s23/src/kosmickrisp/compiler/msl_nir_lower_common.c s24/src/kosmickrisp/compiler/msl_nir_lower_common.c
+--- a/src/kosmickrisp/compiler/msl_nir_lower_common.c	2026-09-19 18:00:15
++++ b/src/kosmickrisp/compiler/msl_nir_lower_common.c	2026-09-19 18:00:23
+@@ -64,54 +64,23 @@
+    enum pipe_format format =
+       render_target_formats[io.location - FRAG_RESULT_DATA0];
+    nir_alu_type type = nir_intrinsic_src_type(intrin);
+-   if (util_format_is_float(format) || util_format_is_unorm(format)) {
+-      if (type & nir_type_uint) {
+-         b->cursor = nir_before_instr(&intrin->instr);
+-         nir_def *value =
+-            nir_u2fN(b, intrin->src[0].ssa, nir_src_bit_size(intrin->src[0]));
+-         nir_src_rewrite(&intrin->src[0], value);
+-         type ^= (nir_type_float | nir_type_uint);
+-         nir_intrinsic_set_src_type(intrin, type);
+-         return true;
+-      } else if (type & nir_type_int) {
+-         b->cursor = nir_before_instr(&intrin->instr);
+-         nir_def *value =
+-            nir_u2fN(b, intrin->src[0].ssa, nir_src_bit_size(intrin->src[0]));
+-         nir_src_rewrite(&intrin->src[0], value);
+-         type ^= (nir_type_float | nir_type_int);
+-         nir_intrinsic_set_src_type(intrin, type);
+-         return true;
+-      }
+-   } else if (util_format_is_pure_sint(format)) {
+-      if (type & nir_type_uint) {
+-         type ^= (nir_type_uint | nir_type_int);
+-         nir_intrinsic_set_src_type(intrin, type);
+-         return true;
+-      } else if (type & nir_type_float) {
+-         b->cursor = nir_before_instr(&intrin->instr);
+-         nir_def *value =
+-            nir_f2uN(b, intrin->src[0].ssa, nir_src_bit_size(intrin->src[0]));
+-         nir_src_rewrite(&intrin->src[0], value);
+-         type ^= (nir_type_float | nir_type_int);
+-         nir_intrinsic_set_src_type(intrin, type);
+-         return true;
+-      }
+-   } else if (util_format_is_pure_uint(format)) {
+-      if (type & nir_type_int) {
+-         type ^= (nir_type_int | nir_type_uint);
+-         nir_intrinsic_set_src_type(intrin, type);
+-         return true;
+-      } else if (type & nir_type_float) {
+-         b->cursor = nir_before_instr(&intrin->instr);
+-         nir_def *value =
+-            nir_f2uN(b, intrin->src[0].ssa, nir_src_bit_size(intrin->src[0]));
+-         nir_src_rewrite(&intrin->src[0], value);
+-         type ^= (nir_type_float | nir_type_uint);
+-         nir_intrinsic_set_src_type(intrin, type);
+-         return true;
+-      }
+-   }
+-   return false;
++   nir_alu_type want;
++   if (util_format_is_float(format) || util_format_is_unorm(format) ||
++       util_format_is_snorm(format))
++      want = nir_type_float;
++   else if (util_format_is_pure_sint(format))
++      want = nir_type_int;
++   else if (util_format_is_pure_uint(format))
++      want = nir_type_uint;
++   else
++      return false;
++
++   if (nir_alu_type_get_base_type(type) == want)
++      return false;
++
++   nir_intrinsic_set_src_type(
++      intrin, want | nir_alu_type_get_type_size(type));
++   return true;
+ }
+ 
+ bool

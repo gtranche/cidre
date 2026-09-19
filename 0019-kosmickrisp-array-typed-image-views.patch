@@ -1,0 +1,233 @@
+Generated-by: LLM
+
+diff -urN --exclude=.git s13/src/kosmickrisp/vulkan/kk_descriptor_set.c s14/src/kosmickrisp/vulkan/kk_descriptor_set.c
+--- a/src/kosmickrisp/vulkan/kk_descriptor_set.c	2026-09-19 17:58:49
++++ b/src/kosmickrisp/vulkan/kk_descriptor_set.c	2026-09-19 17:58:58
+@@ -71,10 +71,14 @@
+             assert(view->planes[plane].sampled_gpu_resource_id);
+             desc[plane].image_gpu_resource_id =
+                view->planes[plane].input_gpu_resource_id;
++            desc[plane].array_image_gpu_resource_id =
++               view->planes[plane].input_gpu_resource_id;
+          } else {
+             assert(view->planes[plane].sampled_gpu_resource_id);
+             desc[plane].image_gpu_resource_id =
+                view->planes[plane].sampled_gpu_resource_id;
++            desc[plane].array_image_gpu_resource_id =
++               view->planes[plane].sampled_array_gpu_resource_id;
+          }
+ 
+          float min_lod = MAX2(view->vk.min_lod - view->vk.base_mip_level, 0.0);
+@@ -167,6 +171,8 @@
+ 
+       assert(view->planes[plane].storage_gpu_resource_id);
+       desc.image_gpu_resource_id = view->planes[plane].storage_gpu_resource_id;
++      desc.array_image_gpu_resource_id =
++         view->planes[plane].storage_array_gpu_resource_id;
+    }
+ 
+    assert(sizeof(desc) <= dst_size);
+diff -urN --exclude=.git s13/src/kosmickrisp/vulkan/kk_descriptor_types.h s14/src/kosmickrisp/vulkan/kk_descriptor_types.h
+--- a/src/kosmickrisp/vulkan/kk_descriptor_types.h	2026-09-19 17:58:49
++++ b/src/kosmickrisp/vulkan/kk_descriptor_types.h	2026-09-19 17:58:58
+@@ -28,7 +28,8 @@
+ 
+    uint16_t pad_to_64_bits;
+    uint32_t border[4];
+-   uint64_t pad_to_power_2[3];
++   uint64_t array_image_gpu_resource_id;
++   uint64_t pad_to_power_2[2];
+ };
+ 
+ static_assert(sizeof(struct kk_sampled_image_descriptor) == 64,
+@@ -36,9 +37,10 @@
+ 
+ struct kk_storage_image_descriptor {
+    uint64_t image_gpu_resource_id;
++   uint64_t array_image_gpu_resource_id;
+ };
+ 
+-static_assert(sizeof(struct kk_storage_image_descriptor) == 8,
++static_assert(sizeof(struct kk_storage_image_descriptor) == 16,
+               "kk_storage_image_descriptor has no holes");
+ 
+ /* Metal wants a texture buffer to start on a 16 byte boundary whatever the
+diff -urN --exclude=.git s13/src/kosmickrisp/vulkan/kk_image_view.c s14/src/kosmickrisp/vulkan/kk_image_view.c
+--- a/src/kosmickrisp/vulkan/kk_image_view.c	2026-09-19 17:58:49
++++ b/src/kosmickrisp/vulkan/kk_image_view.c	2026-09-19 17:58:58
+@@ -40,6 +40,22 @@
+ }
+ 
+ static enum VkImageViewType
++array_counterpart_view_type(enum VkImageViewType type)
++{
++   if (type == VK_IMAGE_VIEW_TYPE_2D)
++      return VK_IMAGE_VIEW_TYPE_2D_ARRAY;
++   return type;
++}
++
++static enum VkImageViewType
++non_array_counterpart_view_type(enum VkImageViewType type)
++{
++   if (type == VK_IMAGE_VIEW_TYPE_2D_ARRAY)
++      return VK_IMAGE_VIEW_TYPE_2D;
++   return type;
++}
++
++static enum VkImageViewType
+ remove_1d_view_types(enum VkImageViewType type)
+ {
+    if (type == VK_IMAGE_VIEW_TYPE_1D)
+@@ -180,11 +196,38 @@
+ 
+       if (view->vk.usage &
+           (VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT)) {
++         enum VkImageViewType declared_type = view_layout.view_type;
++         enum VkImageViewType flat_type =
++            non_array_counterpart_view_type(declared_type);
++         enum VkImageViewType array_type =
++            array_counterpart_view_type(declared_type);
++
++         uint32_t declared_array_len = view_layout.array_len;
++
++         view_layout.view_type = flat_type;
++         if (flat_type != declared_type)
++            view_layout.array_len = 1u;
+          view->planes[view_plane].mtl_handle_sampled =
+             mtl_new_texture_view_with(mtl_handle, &view_layout);
+          view->planes[view_plane].sampled_gpu_resource_id =
+             mtl_texture_get_gpu_resource_id(
+                view->planes[view_plane].mtl_handle_sampled);
++
++         if (array_type != flat_type) {
++            view_layout.view_type = array_type;
++            view_layout.array_len = declared_array_len;
++            view->planes[view_plane].mtl_handle_sampled_array =
++               mtl_new_texture_view_with(mtl_handle, &view_layout);
++            view->planes[view_plane].sampled_array_gpu_resource_id =
++               mtl_texture_get_gpu_resource_id(
++                  view->planes[view_plane].mtl_handle_sampled_array);
++         } else {
++            view->planes[view_plane].sampled_array_gpu_resource_id =
++               view->planes[view_plane].sampled_gpu_resource_id;
++         }
++
++         view_layout.view_type = declared_type;
++         view_layout.array_len = declared_array_len;
+       }
+ 
+       if (view->vk.usage & VK_IMAGE_USAGE_STORAGE_BIT) {
+@@ -193,11 +236,38 @@
+              view->vk.view_type == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY)
+             view_layout.view_type = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+ 
++         enum VkImageViewType declared_type = view_layout.view_type;
++         enum VkImageViewType flat_type =
++            non_array_counterpart_view_type(declared_type);
++         enum VkImageViewType array_type =
++            array_counterpart_view_type(declared_type);
++
++         uint32_t declared_array_len = view_layout.array_len;
++
++         view_layout.view_type = flat_type;
++         if (flat_type != declared_type)
++            view_layout.array_len = 1u;
+          view->planes[view_plane].mtl_handle_storage =
+             mtl_new_texture_view_with(mtl_handle, &view_layout);
+          view->planes[view_plane].storage_gpu_resource_id =
+             mtl_texture_get_gpu_resource_id(
+                view->planes[view_plane].mtl_handle_storage);
++
++         if (array_type != flat_type) {
++            view_layout.view_type = array_type;
++            view_layout.array_len = declared_array_len;
++            view->planes[view_plane].mtl_handle_storage_array =
++               mtl_new_texture_view_with(mtl_handle, &view_layout);
++            view->planes[view_plane].storage_array_gpu_resource_id =
++               mtl_texture_get_gpu_resource_id(
++                  view->planes[view_plane].mtl_handle_storage_array);
++         } else {
++            view->planes[view_plane].storage_array_gpu_resource_id =
++               view->planes[view_plane].storage_gpu_resource_id;
++         }
++
++         view_layout.view_type = declared_type;
++         view_layout.array_len = declared_array_len;
+       }
+ 
+       if (view->vk.usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+@@ -244,9 +314,13 @@
+    for (uint8_t plane = 0; plane < view->plane_count; plane++) {
+       if (view->planes[plane].mtl_handle_sampled)
+          mtl_release(view->planes[plane].mtl_handle_sampled);
++      if (view->planes[plane].mtl_handle_sampled_array)
++         mtl_release(view->planes[plane].mtl_handle_sampled_array);
+ 
+       if (view->planes[plane].mtl_handle_storage)
+          mtl_release(view->planes[plane].mtl_handle_storage);
++      if (view->planes[plane].mtl_handle_storage_array)
++         mtl_release(view->planes[plane].mtl_handle_storage_array);
+ 
+       if (view->planes[plane].mtl_handle_input)
+          mtl_release(view->planes[plane].mtl_handle_input);
+@@ -305,6 +379,9 @@
+    for (uint8_t i = 0; i < iview->plane_count; i++) {
+       if (iview->planes[i].mtl_handle_sampled)
+          mtl_resource_set_label(iview->planes[i].mtl_handle_sampled, label);
++      if (iview->planes[i].mtl_handle_sampled_array)
++         mtl_resource_set_label(iview->planes[i].mtl_handle_sampled_array,
++                                label);
+       if (iview->planes[i].mtl_handle_storage)
+          mtl_resource_set_label(iview->planes[i].mtl_handle_storage, label);
+       if (iview->planes[i].mtl_handle_subres)
+diff -urN --exclude=.git s13/src/kosmickrisp/vulkan/kk_image_view.h s14/src/kosmickrisp/vulkan/kk_image_view.h
+--- a/src/kosmickrisp/vulkan/kk_image_view.h	2026-09-19 17:58:49
++++ b/src/kosmickrisp/vulkan/kk_image_view.h	2026-09-19 17:58:58
+@@ -28,6 +28,8 @@
+       enum pipe_format format;
+ 
+       mtl_texture *mtl_handle_sampled;
++      mtl_texture *mtl_handle_sampled_array;
++      mtl_texture *mtl_handle_storage_array;
+       mtl_texture
+          *mtl_handle_storage; // TODO_KOSMICKRISP We can probably get rid of
+                               // this once we lower 2D cubes and 3D to 2D array?
+@@ -45,7 +47,9 @@
+       mtl_texture *mtl_handle_subres;
+ 
+       uint64_t sampled_gpu_resource_id;
++      uint64_t sampled_array_gpu_resource_id;
+       uint64_t storage_gpu_resource_id;
++      uint64_t storage_array_gpu_resource_id;
+       uint64_t input_gpu_resource_id;
+    } planes[3];
+ };
+diff -urN --exclude=.git s13/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c s14/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c	2026-09-19 17:58:49
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c	2026-09-19 17:58:58
+@@ -369,7 +369,11 @@
+ 
+    /* Reads and queries use the texture descriptor; writes and atomics PBE. */
+    unsigned offs =
+-      offsetof(struct kk_storage_image_descriptor, image_gpu_resource_id);
++      nir_intrinsic_has_image_array(intr) && nir_intrinsic_image_array(intr) &&
++            nir_intrinsic_image_dim(intr) != GLSL_SAMPLER_DIM_BUF
++         ? offsetof(struct kk_storage_image_descriptor,
++                    array_image_gpu_resource_id)
++         : offsetof(struct kk_storage_image_descriptor, image_gpu_resource_id);
+ 
+    nir_def *resource_addr = load_resource_addr(b, 1, 64, deref, offs, ctx);
+ 
+@@ -638,7 +642,11 @@
+ 
+    {
+       unsigned offs =
+-         offsetof(struct kk_sampled_image_descriptor, image_gpu_resource_id);
++         tex->is_array && tex->sampler_dim != GLSL_SAMPLER_DIM_BUF
++            ? offsetof(struct kk_sampled_image_descriptor,
++                       array_image_gpu_resource_id)
++            : offsetof(struct kk_sampled_image_descriptor,
++                       image_gpu_resource_id);
+ 
+       nir_def *resource_addr = load_resource_addr(
+          b, 1, 64, nir_src_as_deref(nir_src_for_ssa(texture)),

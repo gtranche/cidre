@@ -1,0 +1,20 @@
+Generated-by: LLM
+
+diff -urN --exclude=.git base/src/kosmickrisp/bridge/meson.build s1/src/kosmickrisp/bridge/meson.build
+--- a/src/kosmickrisp/bridge/meson.build	2026-09-19 17:57:27
++++ b/src/kosmickrisp/bridge/meson.build	2026-09-19 17:57:30
+@@ -54,7 +54,7 @@
+ if host_machine.system() == 'darwin'
+   mtl_bridge_dependencies += dependency(
+     'appleframeworks',
+-    modules : ['Foundation']
++    modules : ['Foundation', 'Metal', 'QuartzCore']
+   )
+ endif
+ 
+@@ -70,4 +70,5 @@
+ 
+ idep_mtl_bridge = declare_dependency(
+   link_with : libmtl_bridge,
++  dependencies : mtl_bridge_dependencies,
+ )

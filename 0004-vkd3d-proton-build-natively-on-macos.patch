@@ -1,0 +1,400 @@
+diff --git a/include/private/vkd3d_native_sync_handle.h b/include/private/vkd3d_native_sync_handle.h
+index 1e5eb62..6c6b685 100644
+--- a/include/private/vkd3d_native_sync_handle.h
++++ b/include/private/vkd3d_native_sync_handle.h
+@@ -28,6 +28,54 @@ enum vkd3d_native_sync_handle_type
+ 
+ #ifdef _WIN32
+ typedef struct { HANDLE handle; enum vkd3d_native_sync_handle_type type; } vkd3d_native_sync_handle;
++#elif defined(__APPLE__)
++/* macOS has no eventfd(). The two shapes this header needs, a counting semaphore
++ * (EFD_SEMAPHORE) and an auto-reset event, are both a counter guarded by a mutex
++ * and a condition variable, so build that directly instead of emulating a file
++ * descriptor. The opaque HANDLE is the object's address. */
++#include <errno.h>
++#include <pthread.h>
++#include <stdlib.h>
++#include <sys/time.h>
++
++struct vkd3d_darwin_sync_object
++{
++    pthread_mutex_t lock;
++    pthread_cond_t cond;
++    uint64_t count;
++    bool is_semaphore;
++};
++
++typedef struct { struct vkd3d_darwin_sync_object *obj; enum vkd3d_native_sync_handle_type type; } vkd3d_native_sync_handle;
++
++static inline bool vkd3d_darwin_sync_wait(struct vkd3d_darwin_sync_object *obj,
++        const struct timespec *deadline)
++{
++    bool signalled = true;
++
++    pthread_mutex_lock(&obj->lock);
++
++    while (obj->count == 0)
++    {
++        int rc = deadline ? pthread_cond_timedwait(&obj->cond, &obj->lock, deadline)
++                          : pthread_cond_wait(&obj->cond, &obj->lock);
++        if (rc == ETIMEDOUT)
++        {
++            signalled = false;
++            break;
++        }
++    }
++
++    if (signalled)
++    {
++        /* A semaphore hands out one count at a time; an auto-reset event is
++         * consumed whole. */
++        obj->count = obj->is_semaphore ? obj->count - 1u : 0u;
++    }
++
++    pthread_mutex_unlock(&obj->lock);
++    return signalled;
++}
+ #else
+ #include <sys/eventfd.h>
+ #include <sys/poll.h>
+@@ -39,6 +87,8 @@ static inline bool vkd3d_native_sync_handle_eq(vkd3d_native_sync_handle a, vkd3d
+ {
+ #ifdef _WIN32
+     return a.handle == b.handle;
++#elif defined(__APPLE__)
++    return a.obj == b.obj;
+ #else
+     return a.fd == b.fd;
+ #endif
+@@ -51,6 +101,9 @@ static inline vkd3d_native_sync_handle vkd3d_native_sync_handle_wrap(HANDLE os_h
+ #ifdef _WIN32
+     handle.handle = os_handle;
+     handle.type = os_handle ? type : VKD3D_NATIVE_SYNC_HANDLE_TYPE_NONE;
++#elif defined(__APPLE__)
++    handle.obj = (struct vkd3d_darwin_sync_object *)os_handle;
++    handle.type = handle.obj ? type : VKD3D_NATIVE_SYNC_HANDLE_TYPE_NONE;
+ #else
+     handle.fd = (int)(intptr_t)os_handle;
+     /* Treats FD 0 as invalid. FD 0 is technically valid since it's STDIN by default.
+@@ -88,6 +141,20 @@ static inline int vkd3d_native_sync_handle_release(vkd3d_native_sync_handle hand
+     }
+     else
+         return -1;
++#elif defined(__APPLE__)
++    if (handle.type != VKD3D_NATIVE_SYNC_HANDLE_TYPE_NONE)
++    {
++        pthread_mutex_lock(&handle.obj->lock);
++        if (handle.obj->is_semaphore)
++            handle.obj->count += count;
++        else
++            handle.obj->count = 1u;  /* auto-reset event: signalled or not */
++        pthread_cond_broadcast(&handle.obj->cond);
++        pthread_mutex_unlock(&handle.obj->lock);
++        return 0;
++    }
++    else
++        return -1;
+ #else
+     if (handle.type != VKD3D_NATIVE_SYNC_HANDLE_TYPE_NONE)
+     {
+@@ -116,6 +183,8 @@ static inline bool vkd3d_native_sync_handle_acquire(vkd3d_native_sync_handle han
+     {
+ #ifdef _WIN32
+         return WaitForSingleObject(handle.handle, INFINITE) == WAIT_OBJECT_0;
++#elif defined(__APPLE__)
++        return vkd3d_darwin_sync_wait(handle.obj, NULL);
+ #else
+         uint64_t dummy;
+         return (size_t) read(handle.fd, &dummy, sizeof(dummy)) == sizeof(dummy);
+@@ -132,6 +201,21 @@ static inline bool vkd3d_native_sync_handle_acquire_timeout(vkd3d_native_sync_ha
+     {
+ #ifdef _WIN32
+         return WaitForSingleObject(handle.handle, mills) == WAIT_OBJECT_0;
++#elif defined(__APPLE__)
++        struct timespec deadline;
++        struct timeval now;
++
++        /* pthread_cond_timedwait() is absolute, against CLOCK_REALTIME here. */
++        gettimeofday(&now, NULL);
++        deadline.tv_sec = now.tv_sec + (time_t)(mills / 1000u);
++        deadline.tv_nsec = now.tv_usec * 1000 + (long)(mills % 1000u) * 1000000;
++        if (deadline.tv_nsec >= 1000000000)
++        {
++            deadline.tv_sec += 1;
++            deadline.tv_nsec -= 1000000000;
++        }
++
++        return vkd3d_darwin_sync_wait(handle.obj, &deadline);
+ #else
+         struct pollfd pfd;
+         uint64_t dummy;
+@@ -174,6 +258,17 @@ static inline HRESULT vkd3d_native_sync_handle_create(UINT initial,
+         if (!(handle->handle = CreateEventA(NULL, FALSE, FALSE, NULL)))
+             hr = HRESULT_FROM_WIN32(GetLastError());
+     }
++#elif defined(__APPLE__)
++    handle->obj = calloc(1, sizeof(*handle->obj));
++    if (handle->obj)
++    {
++        pthread_mutex_init(&handle->obj->lock, NULL);
++        pthread_cond_init(&handle->obj->cond, NULL);
++        handle->obj->count = initial;
++        handle->obj->is_semaphore = type == VKD3D_NATIVE_SYNC_HANDLE_TYPE_SEMAPHORE;
++    }
++    else
++        hr = E_OUTOFMEMORY;
+ #else
+     flags = EFD_CLOEXEC;
+     if (type == VKD3D_NATIVE_SYNC_HANDLE_TYPE_SEMAPHORE)
+@@ -191,6 +286,10 @@ static inline void vkd3d_native_sync_handle_destroy(vkd3d_native_sync_handle han
+     {
+ #ifdef _WIN32
+         CloseHandle(handle.handle);
++#elif defined(__APPLE__)
++        pthread_cond_destroy(&handle.obj->cond);
++        pthread_mutex_destroy(&handle.obj->lock);
++        free(handle.obj);
+ #else
+         close(handle.fd);
+ #endif
+diff --git a/include/private/vkd3d_threads.h b/include/private/vkd3d_threads.h
+index 98ea074..98b28f5 100644
+--- a/include/private/vkd3d_threads.h
++++ b/include/private/vkd3d_threads.h
+@@ -304,7 +304,12 @@ static inline void pthread_once(pthread_once_t *once, void (*func)(void))
+ 
+ static inline void vkd3d_set_thread_name(const char *name)
+ {
++#ifdef __APPLE__
++    /* macOS names the calling thread only. */
++    pthread_setname_np(name);
++#else
+     pthread_setname_np(pthread_self(), name);
++#endif
+ }
+ 
+ typedef struct rwlock
+@@ -353,7 +358,11 @@ static inline int condvar_reltime_init(condvar_reltime_t *cond)
+     int rc;
+ 
+     pthread_condattr_init(&attr);
++    /* macOS has no pthread_condattr_setclock(); its condition variables always
++     * time out against CLOCK_REALTIME, which the wait below matches. */
++#ifndef __APPLE__
+     pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
++#endif
+     rc = pthread_cond_init(&cond->cond, &attr);
+     pthread_condattr_destroy(&attr);
+ 
+@@ -375,7 +384,11 @@ static inline int condvar_reltime_wait_timeout_seconds(condvar_reltime_t *cond,
+     struct timespec ts;
+     int rc;
+ 
++#ifdef __APPLE__
++    clock_gettime(CLOCK_REALTIME, &ts);
++#else
+     clock_gettime(CLOCK_MONOTONIC, &ts);
++#endif
+     ts.tv_sec += seconds;
+ 
+     /* This is absolute time. */
+diff --git a/include/vkd3d_sonames.h b/include/vkd3d_sonames.h
+index fd32ba4..9bc76e2 100644
+--- a/include/vkd3d_sonames.h
++++ b/include/vkd3d_sonames.h
+@@ -32,7 +32,7 @@
+ #define SONAME_D3D12CORE "libvkd3d-proton-d3d12core.so"
+ #elif defined(__APPLE__)
+ #define SONAME_LIBVULKAN "libvulkan.1.dylib"
+-#define SONAME_D3D12CORE "vkd3d-proton-d3d12core.dylib"
++#define SONAME_D3D12CORE "libvkd3d-proton-d3d12core.dylib"
+ #else
+ #error "Unrecognized platform."
+ #endif
+diff --git a/include/vkd3d_windows.h b/include/vkd3d_windows.h
+index 0907068..4229528 100644
+--- a/include/vkd3d_windows.h
++++ b/include/vkd3d_windows.h
+@@ -92,8 +92,14 @@ typedef void *HANDLE;
+ typedef const CHAR* LPCSTR;
+ typedef const WCHAR* LPCWSTR;
+ 
+-#define _fseeki64(a, b, c) fseeko64(a, b, c)
+-#define _ftelli64(a) ftello64(a)
++#ifdef __APPLE__
++/* Darwin off_t is already 64-bit; there are no *64 variants. */
++# define _fseeki64(a, b, c) fseeko(a, b, c)
++# define _ftelli64(a) ftello(a)
++#else
++# define _fseeki64(a, b, c) fseeko64(a, b, c)
++# define _ftelli64(a) ftello64(a)
++#endif
+ 
+ /* GUID */
+ # ifdef __WIDL__
+diff --git a/libs/vkd3d-common/file_utils.c b/libs/vkd3d-common/file_utils.c
+index 2eb31fd..cac9a93 100644
+--- a/libs/vkd3d-common/file_utils.c
++++ b/libs/vkd3d-common/file_utils.c
+@@ -64,9 +64,14 @@ bool vkd3d_file_rename_no_replace(const char *from_path, const char *to_path)
+     if (!MoveFileA(from_path, to_path))
+         code = GetLastError();
+     return code == ERROR_SUCCESS;
++#else
++#ifdef __APPLE__
++    /* Darwin spells the no-clobber rename renamex_np()/RENAME_EXCL. */
++    return renamex_np(from_path, to_path, RENAME_EXCL) == 0;
+ #else
+     return renameat2(AT_FDCWD, from_path, AT_FDCWD, to_path, RENAME_NOREPLACE) == 0;
+ #endif
++#endif
+ }
+ 
+ bool vkd3d_file_delete(const char *path)
+diff --git a/libs/vkd3d-common/platform.c b/libs/vkd3d-common/platform.c
+index d000e88..20c9e91 100644
+--- a/libs/vkd3d-common/platform.c
++++ b/libs/vkd3d-common/platform.c
+@@ -39,7 +39,8 @@ static bool vkd3d_parse_linux_release(const char *release, uint32_t *major, uint
+         return false;
+ }
+ 
+-#if defined(__linux__)
++/* macOS provides dlopen/dlsym/uname just like Linux does. */
++#if defined(__linux__) || defined(__APPLE__)
+ 
+ # include <dlfcn.h>
+ # include <errno.h>
+@@ -69,7 +70,8 @@ bool vkd3d_get_program_name(char program_name[VKD3D_PATH_MAX])
+ {
+     char *name, *p, *real_path = NULL;
+ 
+-#ifdef __ANDROID__
++#if defined(__ANDROID__) || defined(__APPLE__)
++    /* No program_invocation_name outside glibc. */
+     name = getprogname();
+ #else
+     if ((name = strrchr(program_invocation_name, '/')))
+diff --git a/libs/vkd3d/queue_timeline.c b/libs/vkd3d/queue_timeline.c
+index 90aebf3..3b50b3a 100644
+--- a/libs/vkd3d/queue_timeline.c
++++ b/libs/vkd3d/queue_timeline.c
+@@ -153,6 +153,9 @@ vkd3d_queue_timeline_trace_register_event_signal(struct vkd3d_queue_timeline_tra
+ #ifdef _WIN32
+     snprintf(state->desc, sizeof(state->desc), "event: %p, fence: %p, value %"PRIu64,
+             handle.handle, (void*)fence, value);
++#elif defined(__APPLE__)
++    snprintf(state->desc, sizeof(state->desc), "event: %p, fence: %p, value %"PRIu64,
++            (void*)handle.obj, (void*)fence, value);
+ #else
+     snprintf(state->desc, sizeof(state->desc), "event: %d, fence: %p, value %"PRIu64,
+             handle.fd, (void*)fence, value);
+diff --git a/libs/vkd3d/swapchain.c b/libs/vkd3d/swapchain.c
+index 7140f6c..1767341 100644
+--- a/libs/vkd3d/swapchain.c
++++ b/libs/vkd3d/swapchain.c
+@@ -735,6 +735,12 @@ static HANDLE STDMETHODCALLTYPE dxgi_vk_swap_chain_GetFrameLatencyEvent(IDXGIVkS
+         ERR("Failed to duplicate waitable handle.\n");
+         return NULL;
+     }
++#elif defined(__APPLE__)
++    /* The Darwin sync object has no duplicate operation and handing out the
++     * same pointer would let the caller free an object the swapchain still
++     * owns. The frame latency waitable is unused headless. */
++    FIXME("Frame latency waitable object is not supported on macOS.\n");
++    duplicated_handle = NULL;
+ #else
+     /* Ensure that we don't return fd 0 which would confuse the caller. */
+     fd = dup(swapchain->frame_latency_event.fd);
+diff --git a/meson.build b/meson.build
+index 2f7dbcc..d7c07c3 100644
+--- a/meson.build
++++ b/meson.build
+@@ -89,7 +89,12 @@ glsl_generator = generator(glsl_compiler,
+ 
+ threads_dep = dependency('threads')
+ 
+-if vkd3d_platform == 'linux' or vkd3d_platform == 'android'
++if vkd3d_platform == 'darwin'
++  # dlopen lives in libSystem on macOS, there is no separate libdl. Keep the
++  # name defined so the per-library meson files need no change.
++  lib_dl           = declare_dependency()
++  vkd3d_extra_libs = [ threads_dep ]
++elif vkd3d_platform == 'linux' or vkd3d_platform == 'android'
+   lib_dl           = vkd3d_compiler.find_library('dl')
+   vkd3d_extra_libs = [ lib_dl, threads_dep ]
+ elif vkd3d_platform == 'windows'
+diff --git a/tests/d3d12_crosstest.h b/tests/d3d12_crosstest.h
+index 6d921a3..afd158e 100644
+--- a/tests/d3d12_crosstest.h
++++ b/tests/d3d12_crosstest.h
+@@ -53,7 +53,13 @@
+ #include <dlfcn.h>
+ #include <unistd.h>
+ #include <sys/poll.h>
+-#include <sys/eventfd.h>
++#ifdef __APPLE__
++/* macOS has no eventfd(); the harness events use the same counter and
++ * condition variable object the driver uses (vkd3d_native_sync_handle.h). */
++# include "vkd3d_native_sync_handle.h"
++#else
++# include <sys/eventfd.h>
++#endif
+ #endif
+ 
+ #include "d3d12_test_utils.h"
+@@ -106,6 +112,46 @@ static inline void destroy_event(HANDLE event)
+ #define WAIT_TIMEOUT 1
+ #define WAIT_TIMEOUT 1
+ 
++#ifdef __APPLE__
++static inline HANDLE create_event(void)
++{
++    vkd3d_native_sync_handle handle;
++
++    if (FAILED(vkd3d_native_sync_handle_create(0, VKD3D_NATIVE_SYNC_HANDLE_TYPE_EVENT,
++                                               &handle)))
++        return NULL;
++
++    return (HANDLE)handle.obj;
++}
++
++static inline unsigned int wait_event(HANDLE event, unsigned int milliseconds)
++{
++    vkd3d_native_sync_handle handle =
++        vkd3d_native_sync_handle_wrap(event, VKD3D_NATIVE_SYNC_HANDLE_TYPE_EVENT);
++    bool signalled;
++
++    if (milliseconds == INFINITE)
++        signalled = vkd3d_native_sync_handle_acquire(handle);
++    else
++        signalled = vkd3d_native_sync_handle_acquire_timeout(handle, milliseconds);
++
++    return signalled ? WAIT_OBJECT_0 : WAIT_TIMEOUT;
++}
++
++static inline void signal_event(HANDLE event)
++{
++    vkd3d_native_sync_handle handle =
++        vkd3d_native_sync_handle_wrap(event, VKD3D_NATIVE_SYNC_HANDLE_TYPE_EVENT);
++    vkd3d_native_sync_handle_release(handle, 1);
++}
++
++static inline void destroy_event(HANDLE event)
++{
++    vkd3d_native_sync_handle handle =
++        vkd3d_native_sync_handle_wrap(event, VKD3D_NATIVE_SYNC_HANDLE_TYPE_EVENT);
++    vkd3d_native_sync_handle_destroy(handle);
++}
++#else
+ static inline HANDLE create_event(void)
+ {
+     HANDLE handle;
+@@ -166,6 +212,7 @@ static inline void destroy_event(HANDLE event)
+ {
+     close((int)(intptr_t)event);
+ }
++#endif /* __APPLE__ */
+ #endif
+ 
+ #if defined(_WIN32)

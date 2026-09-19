@@ -1,0 +1,150 @@
+Generated-by: LLM
+
+diff -urN --exclude=.git s14/src/kosmickrisp/vulkan/kk_bo.c s15/src/kosmickrisp/vulkan/kk_bo.c
+--- a/src/kosmickrisp/vulkan/kk_bo.c	2026-09-19 17:58:58
++++ b/src/kosmickrisp/vulkan/kk_bo.c	2026-09-19 17:59:07
+@@ -22,6 +22,14 @@
+ kk_alloc_bo(struct kk_device *dev, struct vk_object_base *log_obj,
+             uint64_t size_B, uint64_t align_B, struct kk_bo **bo_out)
+ {
++   return kk_alloc_bo_va_aligned(dev, log_obj, size_B, align_B, 0u, bo_out);
++}
++
++VkResult
++kk_alloc_bo_va_aligned(struct kk_device *dev, struct vk_object_base *log_obj,
++                       uint64_t size_B, uint64_t align_B, uint64_t va_align_B,
++                       struct kk_bo **bo_out)
++{
+    VkResult result = VK_SUCCESS;
+ 
+    // TODO_KOSMICKRISP: Probably requires handling the buffer maximum 256MB
+@@ -39,8 +47,13 @@
+ #endif
+ 
+    size_B = align64(size_B, minimum_alignment);
++
++   uint64_t heap_size_B = size_B;
++   if (va_align_B > minimum_alignment)
++      heap_size_B += va_align_B;
++
+    mtl_heap *handle =
+-      mtl_new_heap(dev->mtl_handle, size_B, KK_MTL_RESOURCE_OPTIONS);
++      mtl_new_heap(dev->mtl_handle, heap_size_B, KK_MTL_RESOURCE_OPTIONS);
+    if (handle == NULL) {
+       result = vk_errorf(log_obj, VK_ERROR_OUT_OF_DEVICE_MEMORY, "%m");
+       goto fail_heap;
+@@ -52,6 +65,23 @@
+       goto fail_map;
+    }
+ 
++   uint64_t heap_offset_B = 0u;
++   if (heap_size_B != size_B) {
++      uint64_t misalign = mtl_buffer_get_gpu_address(map) & (va_align_B - 1u);
++      uint64_t offset_B = misalign ? va_align_B - misalign : 0u;
++
++      if (offset_B && offset_B % minimum_alignment == 0u &&
++          offset_B + size_B <= heap_size_B) {
++         mtl_release(map);
++         map = mtl_new_buffer_with_length(handle, size_B, offset_B);
++         if (map == NULL) {
++            result = vk_errorf(log_obj, VK_ERROR_OUT_OF_DEVICE_MEMORY, "%m");
++            goto fail_map;
++         }
++         heap_offset_B = offset_B;
++      }
++   }
++
+    struct kk_bo *bo = CALLOC_STRUCT(kk_bo);
+ 
+    if (bo == NULL) {
+@@ -60,6 +90,7 @@
+    }
+ 
+    bo->mtl_handle = handle;
++   bo->heap_offset_B = heap_offset_B;
+    bo->size_B = size_B;
+    bo->map = map;
+    bo->gpu = mtl_buffer_get_gpu_address(map);
+diff -urN --exclude=.git s14/src/kosmickrisp/vulkan/kk_bo.h s15/src/kosmickrisp/vulkan/kk_bo.h
+--- a/src/kosmickrisp/vulkan/kk_bo.h	2026-09-19 17:58:58
++++ b/src/kosmickrisp/vulkan/kk_bo.h	2026-09-19 17:59:07
+@@ -22,6 +22,7 @@
+    mtl_buffer *map;
+    uint64_t size_B;
+    uint64_t gpu; // GPU address
++   uint64_t heap_offset_B;
+    void *cpu;    // CPU address
+ };
+ 
+@@ -36,6 +37,11 @@
+ 
+ VkResult kk_alloc_bo(struct kk_device *dev, struct vk_object_base *log_obj,
+                      uint64_t size_B, uint64_t align_B, struct kk_bo **bo_out);
++
++VkResult kk_alloc_bo_va_aligned(struct kk_device *dev,
++                                struct vk_object_base *log_obj, uint64_t size_B,
++                                uint64_t align_B, uint64_t va_align_B,
++                                struct kk_bo **bo_out);
+ 
+ void kk_destroy_bo(struct kk_device *dev, struct kk_bo *bo);
+ 
+diff -urN --exclude=.git s14/src/kosmickrisp/vulkan/kk_buffer.c s15/src/kosmickrisp/vulkan/kk_buffer.c
+--- a/src/kosmickrisp/vulkan/kk_buffer.c	2026-09-19 17:58:58
++++ b/src/kosmickrisp/vulkan/kk_buffer.c	2026-09-19 17:59:07
+@@ -157,7 +157,8 @@
+ 
+    if (mem->bo->mtl_handle) {
+       buffer->metal.handle = mtl_new_buffer_with_length(
+-         mem->bo->mtl_handle, buffer->vk.size, info->memoryOffset);
++         mem->bo->mtl_handle, buffer->vk.size,
++         info->memoryOffset + mem->bo->heap_offset_B);
+       buffer->metal.offset = 0u;
+    } else {
+       /* If the memory is not heap backed, for example if we imported a host
+diff -urN --exclude=.git s14/src/kosmickrisp/vulkan/kk_device_memory.c s15/src/kosmickrisp/vulkan/kk_device_memory.c
+--- a/src/kosmickrisp/vulkan/kk_device_memory.c	2026-09-19 17:58:58
++++ b/src/kosmickrisp/vulkan/kk_device_memory.c	2026-09-19 17:59:07
+@@ -99,6 +99,7 @@
+ 
+    // TODO_KOSMICKRISP Do the actual memory allocation with alignment requirements
+    uint32_t alignment = (1ULL << 12);
++#define KK_MEMORY_VA_ALIGNMENT_B (64ull * 1024ull)
+ 
+    const uint64_t aligned_size =
+       align64(pAllocateInfo->allocationSize, alignment);
+@@ -141,8 +142,9 @@
+       mem->bo->gpu = mtl_buffer_get_gpu_address(mem->bo->map);
+       mem->bo->cpu = mtl_get_contents(mem->bo->map);
+    } else {
+-      result =
+-         kk_alloc_bo(dev, &dev->vk.base, aligned_size, alignment, &mem->bo);
++      result = kk_alloc_bo_va_aligned(dev, &dev->vk.base, aligned_size,
++                                      alignment, KK_MEMORY_VA_ALIGNMENT_B,
++                                      &mem->bo);
+       if (result != VK_SUCCESS)
+          goto fail_alloc;
+    }
+diff -urN --exclude=.git s14/src/kosmickrisp/vulkan/kk_image.c s15/src/kosmickrisp/vulkan/kk_image.c
+--- a/src/kosmickrisp/vulkan/kk_image.c	2026-09-19 17:58:58
++++ b/src/kosmickrisp/vulkan/kk_image.c	2026-09-19 17:59:07
+@@ -847,8 +847,9 @@
+       return mtl_new_texture_with_descriptor_linear(plane->mem->bo->map, layout,
+                                                     mem_offset_B);
+ 
+-   return mtl_new_texture_with_descriptor(plane->mem->bo->mtl_handle, layout,
+-                                          mem_offset_B);
++   return mtl_new_texture_with_descriptor(
++      plane->mem->bo->mtl_handle, layout,
++      mem_offset_B + plane->mem->bo->heap_offset_B);
+ }
+ 
+ static VkResult
+@@ -883,7 +884,7 @@
+       array_layout.layers = array_layout.layers * array_layout.depth_px;
+       array_layout.depth_px = 1u;
+       plane->mtl_handle_array = mtl_new_texture_with_descriptor(
+-         mem->bo->mtl_handle, &array_layout, *offset_B);
++         mem->bo->mtl_handle, &array_layout, *offset_B + mem->bo->heap_offset_B);
+       if (image->vk.base.object_name)
+          mtl_resource_set_label(plane->mtl_handle_array,
+                                 image->vk.base.object_name);

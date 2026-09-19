@@ -1,0 +1,270 @@
+Generated-by: LLM
+
+diff -urN --exclude=.git s18/src/kosmickrisp/bridge/mtl_compiler.h s19/src/kosmickrisp/bridge/mtl_compiler.h
+--- a/src/kosmickrisp/bridge/mtl_compiler.h	2026-09-19 17:59:34
++++ b/src/kosmickrisp/bridge/mtl_compiler.h	2026-09-19 17:59:43
+@@ -47,6 +47,20 @@
+    mtl_render_pipeline_descriptor *descriptor,
+    enum mtl_primitive_topology_class topology_class);
+ 
++struct mtl_blend_state {
++   bool enable;
++   enum mtl_blend_factor src_rgb;
++   enum mtl_blend_factor dst_rgb;
++   enum mtl_blend_operation rgb_op;
++   enum mtl_blend_factor src_alpha;
++   enum mtl_blend_factor dst_alpha;
++   enum mtl_blend_operation alpha_op;
++};
++
++void mtl_render_pipeline_descriptor_set_color_attachment_blend(
++   mtl_render_pipeline_descriptor *descriptor, uint8_t index,
++   const struct mtl_blend_state *blend);
++
+ void mtl_render_pipeline_descriptor_set_color_attachment_write_mask(
+    mtl_render_pipeline_descriptor *descriptor, uint8_t index, uint32_t mask);
+ 
+diff -urN --exclude=.git s18/src/kosmickrisp/bridge/mtl_compiler.m s19/src/kosmickrisp/bridge/mtl_compiler.m
+--- a/src/kosmickrisp/bridge/mtl_compiler.m	2026-09-19 17:59:34
++++ b/src/kosmickrisp/bridge/mtl_compiler.m	2026-09-19 17:59:43
+@@ -154,6 +154,24 @@
+ }
+ 
+ void
++mtl_render_pipeline_descriptor_set_color_attachment_blend(mtl_render_pipeline_descriptor *descriptor,
++                                                          uint8_t index,
++                                                          const struct mtl_blend_state *blend)
++{
++   @autoreleasepool {
++      MTL4RenderPipelineDescriptor *desc = (MTL4RenderPipelineDescriptor *)descriptor;
++      MTL4RenderPipelineColorAttachmentDescriptor *att = desc.colorAttachments[index];
++      att.blendingState = blend->enable ? MTL4BlendStateEnabled : MTL4BlendStateDisabled;
++      att.sourceRGBBlendFactor = (MTLBlendFactor)blend->src_rgb;
++      att.destinationRGBBlendFactor = (MTLBlendFactor)blend->dst_rgb;
++      att.rgbBlendOperation = (MTLBlendOperation)blend->rgb_op;
++      att.sourceAlphaBlendFactor = (MTLBlendFactor)blend->src_alpha;
++      att.destinationAlphaBlendFactor = (MTLBlendFactor)blend->dst_alpha;
++      att.alphaBlendOperation = (MTLBlendOperation)blend->alpha_op;
++   }
++}
++
++void
+ mtl_render_pipeline_descriptor_set_color_attachment_write_mask(mtl_render_pipeline_descriptor *descriptor,
+                                                                uint8_t index,
+                                                                uint32_t mask)
+diff -urN --exclude=.git s18/src/kosmickrisp/bridge/mtl_types.h s19/src/kosmickrisp/bridge/mtl_types.h
+--- a/src/kosmickrisp/bridge/mtl_types.h	2026-09-19 17:59:34
++++ b/src/kosmickrisp/bridge/mtl_types.h	2026-09-19 17:59:43
+@@ -229,6 +229,32 @@
+    MTL_WINDING_COUNTER_CLOCKWISE = 1,
+ };
+ 
++enum mtl_blend_factor {
++   MTL_BLEND_FACTOR_ZERO = 0,
++   MTL_BLEND_FACTOR_ONE = 1,
++   MTL_BLEND_FACTOR_SRC_COLOR = 2,
++   MTL_BLEND_FACTOR_ONE_MINUS_SRC_COLOR = 3,
++   MTL_BLEND_FACTOR_SRC_ALPHA = 4,
++   MTL_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA = 5,
++   MTL_BLEND_FACTOR_DST_COLOR = 6,
++   MTL_BLEND_FACTOR_ONE_MINUS_DST_COLOR = 7,
++   MTL_BLEND_FACTOR_DST_ALPHA = 8,
++   MTL_BLEND_FACTOR_ONE_MINUS_DST_ALPHA = 9,
++   MTL_BLEND_FACTOR_SRC_ALPHA_SATURATED = 10,
++   MTL_BLEND_FACTOR_BLEND_COLOR = 11,
++   MTL_BLEND_FACTOR_ONE_MINUS_BLEND_COLOR = 12,
++   MTL_BLEND_FACTOR_BLEND_ALPHA = 13,
++   MTL_BLEND_FACTOR_ONE_MINUS_BLEND_ALPHA = 14,
++};
++
++enum mtl_blend_operation {
++   MTL_BLEND_OPERATION_ADD = 0,
++   MTL_BLEND_OPERATION_SUBTRACT = 1,
++   MTL_BLEND_OPERATION_REVERSE_SUBTRACT = 2,
++   MTL_BLEND_OPERATION_MIN = 3,
++   MTL_BLEND_OPERATION_MAX = 4,
++};
++
+ enum mtl_triangle_fill_mode {
+    MTL_TRIANGLE_FILL_MODE_FILL = 0,
+    MTL_TRIANGLE_FILL_MODE_LINES = 1,
+diff -urN --exclude=.git s18/src/kosmickrisp/vulkan/kk_shader.c s19/src/kosmickrisp/vulkan/kk_shader.c
+--- a/src/kosmickrisp/vulkan/kk_shader.c	2026-09-19 17:59:34
++++ b/src/kosmickrisp/vulkan/kk_shader.c	2026-09-19 17:59:43
+@@ -413,6 +413,104 @@
+    return (state->cal) ? state->cal->color_map[i] : i;
+ }
+ 
++static bool
++kk_blend_factor_to_mtl(VkBlendFactor factor, enum mtl_blend_factor *out)
++{
++   switch (factor) {
++   case VK_BLEND_FACTOR_ZERO: *out = MTL_BLEND_FACTOR_ZERO; return true;
++   case VK_BLEND_FACTOR_ONE: *out = MTL_BLEND_FACTOR_ONE; return true;
++   case VK_BLEND_FACTOR_SRC_COLOR: *out = MTL_BLEND_FACTOR_SRC_COLOR; return true;
++   case VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR:
++      *out = MTL_BLEND_FACTOR_ONE_MINUS_SRC_COLOR; return true;
++   case VK_BLEND_FACTOR_DST_COLOR: *out = MTL_BLEND_FACTOR_DST_COLOR; return true;
++   case VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR:
++      *out = MTL_BLEND_FACTOR_ONE_MINUS_DST_COLOR; return true;
++   case VK_BLEND_FACTOR_SRC_ALPHA: *out = MTL_BLEND_FACTOR_SRC_ALPHA; return true;
++   case VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA:
++      *out = MTL_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA; return true;
++   case VK_BLEND_FACTOR_DST_ALPHA: *out = MTL_BLEND_FACTOR_DST_ALPHA; return true;
++   case VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA:
++      *out = MTL_BLEND_FACTOR_ONE_MINUS_DST_ALPHA; return true;
++   case VK_BLEND_FACTOR_SRC_ALPHA_SATURATE:
++      *out = MTL_BLEND_FACTOR_SRC_ALPHA_SATURATED; return true;
++   default:
++      return false;
++   }
++}
++
++static bool
++kk_blend_op_to_mtl(VkBlendOp op, enum mtl_blend_operation *out)
++{
++   switch (op) {
++   case VK_BLEND_OP_ADD: *out = MTL_BLEND_OPERATION_ADD; return true;
++   case VK_BLEND_OP_SUBTRACT: *out = MTL_BLEND_OPERATION_SUBTRACT; return true;
++   case VK_BLEND_OP_REVERSE_SUBTRACT:
++      *out = MTL_BLEND_OPERATION_REVERSE_SUBTRACT; return true;
++   case VK_BLEND_OP_MIN: *out = MTL_BLEND_OPERATION_MIN; return true;
++   case VK_BLEND_OP_MAX: *out = MTL_BLEND_OPERATION_MAX; return true;
++   default:
++      return false;
++   }
++}
++
++static bool
++kk_blend_factor_uses_alpha(VkBlendFactor factor)
++{
++   switch (factor) {
++   case VK_BLEND_FACTOR_SRC_ALPHA:
++   case VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA:
++   case VK_BLEND_FACTOR_DST_ALPHA:
++   case VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA:
++   case VK_BLEND_FACTOR_SRC_ALPHA_SATURATE:
++      return true;
++   default:
++      return false;
++   }
++}
++
++static bool
++kk_native_blend_rt(const struct vk_graphics_pipeline_state *state, uint32_t i,
++                   struct mtl_blend_state *blend, uint8_t *write_mask)
++{
++   if (state->cb == NULL || state->cb->logic_op_enable)
++      return false;
++
++   const struct vk_color_blend_attachment_state *att = &state->cb->attachments[i];
++
++   if (!att->blend_enable || att->write_mask != BITFIELD_MASK(4))
++      return false;
++
++   if (att->color_blend_op >= VK_BLEND_OP_ZERO_EXT ||
++       att->alpha_blend_op >= VK_BLEND_OP_ZERO_EXT)
++      return false;
++
++   enum pipe_format format =
++      vk_format_to_pipe_format(state->rp->color_attachment_formats[i]);
++   bool uses_alpha =
++      kk_blend_factor_uses_alpha(att->src_color_blend_factor) ||
++      kk_blend_factor_uses_alpha(att->dst_color_blend_factor) ||
++      kk_blend_factor_uses_alpha(att->src_alpha_blend_factor) ||
++      kk_blend_factor_uses_alpha(att->dst_alpha_blend_factor);
++
++   if (uses_alpha &&
++       (format == PIPE_FORMAT_NONE || !util_format_has_alpha(format)))
++      return false;
++
++   struct mtl_blend_state out = {.enable = true};
++
++   if (!kk_blend_factor_to_mtl(att->src_color_blend_factor, &out.src_rgb) ||
++       !kk_blend_factor_to_mtl(att->dst_color_blend_factor, &out.dst_rgb) ||
++       !kk_blend_factor_to_mtl(att->src_alpha_blend_factor, &out.src_alpha) ||
++       !kk_blend_factor_to_mtl(att->dst_alpha_blend_factor, &out.dst_alpha) ||
++       !kk_blend_op_to_mtl(att->color_blend_op, &out.rgb_op) ||
++       !kk_blend_op_to_mtl(att->alpha_blend_op, &out.alpha_op))
++      return false;
++
++   *blend = out;
++   *write_mask = BITFIELD_MASK(4);
++   return true;
++}
++
+ static void
+ kk_lower_fs_blend(nir_shader *nir,
+                   const struct vk_graphics_pipeline_state *state)
+@@ -442,6 +540,17 @@
+          vk_format_to_pipe_format(state->rp->color_attachment_formats[i]);
+       rt->colormask = att->write_mask;
+ 
++      struct mtl_blend_state native;
++      uint8_t native_mask;
++      if (kk_native_blend_rt(state, i, &native, &native_mask)) {
++         rt->colormask = BITFIELD_MASK(4);
++         rt->rgb.src_factor = rt->alpha.src_factor = PIPE_BLENDFACTOR_ONE;
++         rt->rgb.dst_factor = rt->alpha.dst_factor = PIPE_BLENDFACTOR_ZERO;
++         rt->rgb.func = rt->alpha.func = PIPE_BLEND_ADD;
++         rt->advanced_blend = false;
++         continue;
++      }
++
+       if (!att->blend_enable) {
+          rt->rgb.src_factor = rt->alpha.src_factor = PIPE_BLENDFACTOR_ONE;
+          rt->rgb.dst_factor = rt->alpha.dst_factor = PIPE_BLENDFACTOR_ZERO;
+@@ -1563,6 +1672,32 @@
+       info->vs.color_attachment_count = rp->color_attachment_count;
+       info->vs.fs_outputs_read_mask =
+          shader_count > 1u ? shaders[1]->info.fs.outputs_read_mask : 0u;
++
++      for (uint8_t i = 0u; i < MAX_DRAW_BUFFERS; ++i) {
++         info->vs.blend[i] = (struct mtl_blend_state){
++            .enable = false,
++            .src_rgb = MTL_BLEND_FACTOR_ONE,
++            .dst_rgb = MTL_BLEND_FACTOR_ZERO,
++            .rgb_op = MTL_BLEND_OPERATION_ADD,
++            .src_alpha = MTL_BLEND_FACTOR_ONE,
++            .dst_alpha = MTL_BLEND_FACTOR_ZERO,
++            .alpha_op = MTL_BLEND_OPERATION_ADD,
++         };
++         info->vs.blend_write_mask[i] = BITFIELD_MASK(4);
++      }
++
++      for (uint32_t i = 0u; i < rp->color_attachment_count; ++i) {
++         uint8_t logical_index = kk_get_logical_color_att_index(state, i);
++         if (logical_index == MESA_VK_ATTACHMENT_UNUSED)
++            continue;
++
++         struct mtl_blend_state native;
++         uint8_t native_mask;
++         if (kk_native_blend_rt(state, i, &native, &native_mask)) {
++            info->vs.blend[logical_index] = native;
++            info->vs.blend_write_mask[logical_index] = native_mask;
++         }
++      }
+       for (uint8_t i = 0u; i < MAX_DRAW_BUFFERS; ++i) {
+          info->vs.rt_formats[i] = MTL_PIXEL_FORMAT_INVALID;
+       }
+diff -urN --exclude=.git s18/src/kosmickrisp/vulkan/kk_shader.h s19/src/kosmickrisp/vulkan/kk_shader.h
+--- a/src/kosmickrisp/vulkan/kk_shader.h	2026-09-19 17:59:34
++++ b/src/kosmickrisp/vulkan/kk_shader.h	2026-09-19 17:59:43
+@@ -16,6 +16,7 @@
+ #include "util/hash_table.h"
+ #include "util/simple_mtx.h"
+ 
++#include "kosmickrisp/bridge/mtl_compiler.h"
+ #include "kosmickrisp/bridge/mtl_format.h"
+ 
+ #include "poly/nir/poly_nir.h"
+@@ -110,6 +111,9 @@
+          } stencil_front, stencil_back;
+          uint8_t color_attachment_count;
+          uint32_t fs_outputs_read_mask;
++
++         struct mtl_blend_state blend[MAX_DRAW_BUFFERS];
++         uint8_t blend_write_mask[MAX_DRAW_BUFFERS];
+ 
+          /* VK_EXT_transform_feedback: byte stride of each capture buffer, 0
+           * when unused. Lets the draw path work out how far a draw advances

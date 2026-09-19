@@ -1,0 +1,211 @@
+Generated-by: LLM
+
+diff -urN --exclude=.git s5/src/kosmickrisp/vulkan/kk_cmd_buffer.c s6/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c	2026-09-19 17:57:55
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c	2026-09-19 17:58:01
+@@ -67,6 +67,7 @@
+ 
+    cs_end(cmd);
+    mtl_end_command_buffer(cmd->metal.cmd_buf);
++
+    kk_cmd_pool_return_allocator(kk_cmd_buffer_pool(cmd), cmd->metal.allocator);
+    cmd->metal.allocator = NULL;
+ }
+@@ -94,6 +95,7 @@
+ 
+    kk_cmd_release_resources(dev, cmd);
+    util_dynarray_fini(&cmd->large_bos);
++   util_dynarray_fini(&cmd->metal.sealed_cmd_bufs);
+    util_dynarray_fini(&cmd->post_render_writes);
+    util_dynarray_fini(&cmd->ts_resolves);
+    util_dynarray_fini(&cmd->ts_stage_map);
+@@ -129,6 +131,7 @@
+    cmd->ts_resolves = UTIL_DYNARRAY_INIT;
+    cmd->ts_stage_map = UTIL_DYNARRAY_INIT;
+    cmd->post_render_writes = UTIL_DYNARRAY_INIT;
++   cmd->metal.sealed_cmd_bufs = UTIL_DYNARRAY_INIT;
+ 
+    {
+       mtl_argument_table_descriptor *desc = mtl_new_argument_table_descriptor();
+@@ -163,6 +166,15 @@
+ 
+    /* Ensure closed command buffer so we can start it again */
+    end_recording(cmd);
++
++   /* Recording is over and whatever used these has been submitted, so the
++    * split-off command buffers can go back to the pool. */
++   util_dynarray_foreach(&cmd->metal.sealed_cmd_bufs, mtl_command_buffer *,
++                         cmd_buf)
++      kk_cmd_pool_return_cmd_buf(kk_cmd_buffer_pool(cmd), *cmd_buf);
++   util_dynarray_clear(&cmd->metal.sealed_cmd_bufs);
++   cmd->metal.encoders_in_cmd_buf = 0u;
++
+    kk_cmd_release_resources(dev, cmd);
+ 
+    cmd->uploader.bo = NULL;
+@@ -224,6 +236,7 @@
+          goto fail_allocator;
+    }
+    mtl_begin_command_buffer(cmd->metal.cmd_buf, cmd->metal.allocator);
++   cmd->metal.encoders_in_cmd_buf = 0u;
+ 
+    return VK_SUCCESS;
+ 
+@@ -257,6 +270,50 @@
+       mtl_encoder_push_debug_group(encoder, label->pLabelName);
+ }
+ 
++/*
++ * A Metal command buffer holds a bounded number of encoders; past it the
++ * commit is rejected outright and the Vulkan device is lost. A single Vulkan
++ * command buffer can easily ask for more -- vkd3d-proton turns one D3D12
++ * command list into one of ours, and 65536 resolves is a real workload -- so
++ * close the current Metal command buffer and open another whenever the budget
++ * runs out. They are committed together, in order, so nothing else changes.
++ *
++ * Only called with no encoder open, which is the only point where the split
++ * is free: Metal command buffers on one queue run in submission order, so
++ * work either side of the seam stays correctly ordered.
++ */
++static void
++kk_cmd_buffer_split_if_full(struct kk_cmd_buffer *cmd)
++{
++   struct kk_cmd_pool *pool = kk_cmd_buffer_pool(cmd);
++
++   assert(cmd->metal.render == NULL && cmd->metal.compute == NULL);
++
++   if (cmd->metal.encoders_in_cmd_buf < KK_MAX_ENCODERS_PER_COMMAND_BUFFER)
++      return;
++
++   mtl_command_buffer *next = kk_cmd_pool_get_cmd_buf(pool);
++
++   /* Without a spare, keep filling the current one: overshooting the budget
++    * may still work, whereas dropping commands certainly would not. */
++   if (next == NULL)
++      return;
++
++   mtl_end_command_buffer(cmd->metal.cmd_buf);
++   util_dynarray_append(&cmd->metal.sealed_cmd_bufs, cmd->metal.cmd_buf);
++
++   /* The budget is per command buffer, not per allocator -- measured: one
++    * allocator happily backs 131072 encoders spread over eight command
++    * buffers, while 38000 in a single one is refused -- so the recording
++    * keeps the allocator it started with. */
++   cmd->metal.cmd_buf = next;
++   mtl_begin_command_buffer(cmd->metal.cmd_buf, cmd->metal.allocator);
++   cmd->metal.encoders_in_cmd_buf = 0u;
++
++   if (cmd->vk.base.object_name)
++      mtl_command_buffer_set_label(cmd->metal.cmd_buf, cmd->vk.base.object_name);
++}
++
+ void
+ cs_start_render(struct kk_cmd_buffer *cmd)
+ {
+@@ -267,6 +324,9 @@
+    /* Ensure no other active encoder, aka compute */
+    cs_end(cmd);
+ 
++   kk_cmd_buffer_split_if_full(cmd);
++   cmd->metal.encoders_in_cmd_buf++;
++
+    cmd->metal.render = mtl_new_render_command_encoder_with_descriptor(
+       cmd->metal.cmd_buf, state->render_pass_descriptor);
+ 
+@@ -322,6 +382,10 @@
+    }
+ 
+    if (cmd->metal.compute == NULL) {
++      /* Counted but not split on: a compute encoder can be opened from inside
++       * cs_end() to flush post-render writes, where splitting would cut the
++       * recording in an awkward place. */
++      cmd->metal.encoders_in_cmd_buf++;
+       cmd->metal.compute = mtl_new_compute_command_encoder(cmd->metal.cmd_buf);
+       mtl_compute_set_argument_table(cmd->metal.compute, cmd->argument_table);
+       kk_encoder_update_debug(cmd, cmd->metal.compute);
+diff -urN --exclude=.git s5/src/kosmickrisp/vulkan/kk_cmd_buffer.h s6/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h	2026-09-19 17:57:55
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h	2026-09-19 17:58:01
+@@ -279,6 +279,15 @@
+       mtl_command_buffer *cmd_buf;
+       mtl_render_encoder *render;
+       mtl_compute_encoder *compute;
++
++      /* Metal command buffers already closed for this recording, in the order
++       * they must execute. A recording that would overrun a single command
++       * buffer's encoder budget is spread over several; see
++       * KK_MAX_ENCODERS_PER_COMMAND_BUFFER. Empty in the common case.
++       */
++      struct util_dynarray sealed_cmd_bufs;
++      /* Encoders opened on cmd_buf since it was begun. */
++      uint32_t encoders_in_cmd_buf;
+    } metal;
+    /* Pending timestamp resolves (struct kk_ts_resolve), flushed at cs_end. */
+    struct util_dynarray ts_resolves;
+diff -urN --exclude=.git s5/src/kosmickrisp/vulkan/kk_private.h s6/src/kosmickrisp/vulkan/kk_private.h
+--- a/src/kosmickrisp/vulkan/kk_private.h	2026-09-19 17:57:55
++++ b/src/kosmickrisp/vulkan/kk_private.h	2026-09-19 17:58:01
+@@ -22,6 +22,13 @@
+ #define KK_MAX_SAMPLES                   8
+ #define KK_MIN_SSBO_ALIGNMENT            16
+ #define KK_MIN_TEXEL_BUFFER_ALIGNMENT    16
++/* A Metal command buffer -- really the allocator backing it -- only holds so
++ * many encoders before the commit is rejected. Measured on an M1 Max with a
++ * fresh allocator: 36000 encoders commit, 38000 do not. Allocators are
++ * recycled here without ever being reset, so their remaining room is unknown;
++ * split well clear of the measured ceiling.
++ */
++#define KK_MAX_ENCODERS_PER_COMMAND_BUFFER 8192
+ /* Metal caps a texture array at this many layers. */
+ #define KK_MAX_IMAGE_ARRAY_LAYERS        2048
+ /* Metal caps a texture buffer at this many texels. */
+diff -urN --exclude=.git s5/src/kosmickrisp/vulkan/kk_queue.c s6/src/kosmickrisp/vulkan/kk_queue.c
+--- a/src/kosmickrisp/vulkan/kk_queue.c	2026-09-19 17:57:55
++++ b/src/kosmickrisp/vulkan/kk_queue.c	2026-09-19 17:58:01
+@@ -98,8 +98,44 @@
+    mtl_commit_options *options = mtl_new_commit_options();
+    mtl_commit_options_add_feedback_handler(options, callback, user_data);
+ 
+-   mtl_command_queue_commit(queue->mtl_handle, &cmd->metal.cmd_buf, 1u,
+-                            options);
++   /* A long recording is split across several Metal command buffers (see
++    * kk_cmd_buffer_split_if_full()); commit them in recording order, the
++    * still-open one last. Metal runs them in that order on the queue. */
++   uint32_t sealed_count = util_dynarray_num_elements(
++      &cmd->metal.sealed_cmd_bufs, mtl_command_buffer *);
++
++   if (sealed_count == 0u) {
++      mtl_command_queue_commit(queue->mtl_handle, &cmd->metal.cmd_buf, 1u,
++                               options);
++   } else {
++      struct kk_device *dev = kk_queue_device(queue);
++      uint32_t count = sealed_count + 1u;
++      mtl_command_buffer **buffers =
++         vk_alloc(&dev->vk.alloc, count * sizeof(*buffers), 8,
++                  VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
++
++      if (buffers) {
++         memcpy(buffers, cmd->metal.sealed_cmd_bufs.data,
++                sealed_count * sizeof(*buffers));
++         buffers[sealed_count] = cmd->metal.cmd_buf;
++
++         mtl_command_queue_commit(queue->mtl_handle, buffers, count, options);
++         vk_free(&dev->vk.alloc, buffers);
++      } else {
++         /* Without the array the pieces can still go one after another; the
++          * queue keeps them in order. Only the last one carries the feedback
++          * handler, which is the one the caller waits on. */
++         util_dynarray_foreach(&cmd->metal.sealed_cmd_bufs,
++                               mtl_command_buffer *, cmd_buf) {
++            mtl_commit_options *bare = mtl_new_commit_options();
++            mtl_command_queue_commit(queue->mtl_handle, cmd_buf, 1u, bare);
++            mtl_release(bare);
++         }
++         mtl_command_queue_commit(queue->mtl_handle, &cmd->metal.cmd_buf, 1u,
++                                  options);
++      }
++   }
++
+    mtl_release(options);
+ }
+ 

@@ -1,0 +1,40 @@
+Generated-by: LLM
+
+diff --git a/configure b/configure
+index fe7464a..cbad2f1 100755
+--- a/configure
++++ b/configure
+@@ -9196,7 +9196,12 @@ case $host_os in
+     SYSTEMCONFIGURATION_LIBS="-framework SystemConfiguration"
+ 
+ 
+-    WINELOADER_LDFLAGS="-Wl,-segalign,0x1000,-pagezero_size,0x1000,-sectcreate,__TEXT,__info_plist,loader/wine_info.plist"
++    case $HOST_ARCH in
++    aarch64)
++      WINELOADER_LDFLAGS="-Wl,-sectcreate,__TEXT,__info_plist,loader/wine_info.plist" ;;
++    *)
++      WINELOADER_LDFLAGS="-Wl,-segalign,0x1000,-pagezero_size,0x1000,-sectcreate,__TEXT,__info_plist,loader/wine_info.plist" ;;
++  esac
+ 
+     case $HOST_ARCH in
+       i386) wine_use_preloader=yes ;;
+diff --git a/configure.ac b/configure.ac
+index b999e35..75e903b 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -630,7 +630,14 @@ case $host_os in
+     AC_SUBST(SECURITY_LIBS,"-framework Security -framework CoreFoundation")
+     AC_SUBST(SYSTEMCONFIGURATION_LIBS,"-framework SystemConfiguration")
+ 
+-    WINELOADER_LDFLAGS="-Wl,-segalign,0x1000,-pagezero_size,0x1000,-sectcreate,__TEXT,__info_plist,loader/wine_info.plist"
++    dnl arm64 macOS refuses a main executable whose __PAGEZERO has been shrunk:
++dnl the kernel kills the process before dyld runs.  Keep the default there.
++    case $HOST_ARCH in
++      aarch64)
++        WINELOADER_LDFLAGS="-Wl,-sectcreate,__TEXT,__info_plist,loader/wine_info.plist" ;;
++      *)
++        WINELOADER_LDFLAGS="-Wl,-segalign,0x1000,-pagezero_size,0x1000,-sectcreate,__TEXT,__info_plist,loader/wine_info.plist" ;;
++    esac
+ 
+     case $HOST_ARCH in
+       i386) wine_use_preloader=yes ;;

@@ -1,0 +1,132 @@
+Generated-by: LLM
+
+diff -urN --exclude=.git s25/src/kosmickrisp/compiler/msl_nir_lower_common.c s26/src/kosmickrisp/compiler/msl_nir_lower_common.c
+--- a/src/kosmickrisp/compiler/msl_nir_lower_common.c	2026-09-19 18:00:32
++++ b/src/kosmickrisp/compiler/msl_nir_lower_common.c	2026-09-19 18:00:40
+@@ -1036,3 +1036,104 @@
+    return nir_shader_instructions_pass(nir, kk_lower_robustness2_array_layer,
+                                        nir_metadata_control_flow, NULL);
+ }
++
++struct msl_hoist_deriv_state {
++   nir_block *target;
++   bool ok;
++};
++
++static bool
++msl_deriv_src_dominates(nir_src *src, void *data)
++{
++   struct msl_hoist_deriv_state *state = data;
++
++   if (!nir_block_dominates(nir_def_block(src->ssa), state->target))
++      state->ok = false;
++
++   return state->ok;
++}
++
++static bool
++msl_intrinsic_is_derivative(const nir_intrinsic_instr *intr)
++{
++   switch (intr->intrinsic) {
++   case nir_intrinsic_ddx:
++   case nir_intrinsic_ddx_fine:
++   case nir_intrinsic_ddx_coarse:
++   case nir_intrinsic_ddy:
++   case nir_intrinsic_ddy_fine:
++   case nir_intrinsic_ddy_coarse:
++      return true;
++   default:
++      return false;
++   }
++}
++
++static nir_block *
++msl_uniform_ancestor_block(nir_block *block)
++{
++   while (block->divergent) {
++      nir_cf_node *parent = block->cf_node.parent;
++      if (parent == NULL || parent->type == nir_cf_node_function)
++         return NULL;
++
++      nir_cf_node *prev = nir_cf_node_prev(parent);
++      if (prev == NULL || prev->type != nir_cf_node_block)
++         return NULL;
++
++      block = nir_cf_node_as_block(prev);
++   }
++
++   return block;
++}
++
++bool
++msl_nir_hoist_derivatives(nir_shader *nir)
++{
++   if (nir->info.stage != MESA_SHADER_FRAGMENT || nir->info.fs.uses_discard)
++      return false;
++
++   bool progress = false;
++
++   nir_foreach_function_impl(impl, nir) {
++      nir_metadata_require(impl,
++                           nir_metadata_control_flow | nir_metadata_dominance);
++      nir_metadata_require(impl, nir_metadata_divergence);
++
++      bool local_progress = false;
++
++      nir_foreach_block(block, impl) {
++         if (!block->divergent)
++            continue;
++
++         nir_block *target = msl_uniform_ancestor_block(block);
++         if (target == NULL)
++            continue;
++
++         nir_foreach_instr_safe(instr, block) {
++            if (instr->type != nir_instr_type_intrinsic)
++               continue;
++
++            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
++            if (!msl_intrinsic_is_derivative(intr))
++               continue;
++
++            struct msl_hoist_deriv_state state = {
++               .target = target,
++               .ok = true,
++            };
++            nir_foreach_src(instr, msl_deriv_src_dominates, &state);
++            if (!state.ok)
++               continue;
++
++            nir_instr_remove(instr);
++            nir_instr_insert(nir_after_block_before_jump(target), instr);
++            local_progress = true;
++         }
++      }
++
++      progress |= nir_progress(local_progress, impl, nir_metadata_control_flow);
++   }
++
++   return progress;
++}
+diff -urN --exclude=.git s25/src/kosmickrisp/compiler/nir_to_msl.c s26/src/kosmickrisp/compiler/nir_to_msl.c
+--- a/src/kosmickrisp/compiler/nir_to_msl.c	2026-09-19 18:00:31
++++ b/src/kosmickrisp/compiler/nir_to_msl.c	2026-09-19 18:00:40
+@@ -2327,6 +2327,7 @@
+     * (undef,undef,undef,undef). After nir_opt_remove_phis this gets optimized
+     * to a single store for x, and nir_opt_shrink_stores will correctly reduce
+     * the store. */
++   NIR_PASS(_, nir, msl_nir_hoist_derivatives);
+    NIR_PASS(_, nir, nir_opt_shrink_stores, false);
+    NIR_PASS(_, nir, nir_lower_load_const_to_scalar);
+    NIR_PASS(_, nir, msl_nir_lower_algebraic_late);
+diff -urN --exclude=.git s25/src/kosmickrisp/compiler/nir_to_msl.h s26/src/kosmickrisp/compiler/nir_to_msl.h
+--- a/src/kosmickrisp/compiler/nir_to_msl.h	2026-09-19 18:00:32
++++ b/src/kosmickrisp/compiler/nir_to_msl.h	2026-09-19 18:00:40
+@@ -91,6 +91,7 @@
+ bool msl_nir_vs_io_types(nir_shader *nir);
+ bool msl_nir_fake_guard_for_discards(struct nir_shader *nir);
+ bool msl_nir_lower_sample_shading(nir_shader *nir);
++bool msl_nir_hoist_derivatives(nir_shader *nir);
+ void msl_nir_lower_clip_cull_distance(nir_shader *nir,
+                                       unsigned num_cull_distances);
+ bool msl_nir_lower_instance_id(nir_shader *nir);

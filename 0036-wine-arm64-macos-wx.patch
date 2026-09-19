@@ -1,0 +1,114 @@
+Generated-by: LLM
+
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -122,6 +122,7 @@
+ #define VPROT_GUARD      0x10
+ #define VPROT_COMMITTED  0x20
+ #define VPROT_WRITEWATCH 0x40
++#define VPROT_WXFLIP     0x80  /* page is exec+write and currently mapped executable */
+ /* per-mapping protection flags */
+ #define VPROT_ARM64EC          0x0100  /* view may contain ARM64EC code */
+ #define VPROT_SYSTEM           0x0200  /* system view (underlying mmap not under our control) */
+@@ -1150,7 +1151,16 @@
+         if (vprot & VPROT_WRITECOPY) prot |= PROT_WRITE | PROT_READ;
+         if (vprot & VPROT_EXEC) prot |= PROT_EXEC | PROT_READ;
+         if (vprot & VPROT_WRITEWATCH) prot &= ~PROT_WRITE;
++    }
++#if defined(__aarch64__) && defined(__APPLE__)
++    /* macOS on arm64 refuses write and exec on the same page; map one of the two
++     * and switch to the other one when a fault says it is needed. */
++    if ((prot & PROT_WRITE) && (prot & PROT_EXEC))
++    {
++        if (vprot & VPROT_WXFLIP) prot &= ~PROT_WRITE;
++        else prot &= ~PROT_EXEC;
+     }
++#endif
+     if (!prot) prot = PROT_NONE;
+     return prot;
+ }
+@@ -4048,6 +4058,24 @@
+     {
+         WARN( "treating read fault in a readable page as a write fault, addr %p\n", addr );
+         err = EXCEPTION_WRITE_FAULT;
++    }
++#endif
++
++#if defined(__aarch64__) && defined(__APPLE__)
++    if ((vprot & VPROT_COMMITTED) && is_vprot_exec_write( vprot ))
++    {
++        BYTE set = 0, clear = 0;
++
++        if (err == EXCEPTION_EXECUTE_FAULT) set = VPROT_WXFLIP;
++        else if ((err & EXCEPTION_WRITE_FAULT) && (vprot & VPROT_WXFLIP)) clear = VPROT_WXFLIP;
++        if (set || clear)
++        {
++            set_page_vprot_bits( page, page_size, set, clear );
++            mprotect_range( page, page_size, 0, 0 );
++            mutex_unlock( &virtual_mutex );
++            rec->ExceptionCode = STATUS_SUCCESS;
++            return STATUS_SUCCESS;
++        }
+     }
+ #endif
+ 
+--- a/dlls/ntdll/unix/signal_arm64.c
++++ b/dlls/ntdll/unix/signal_arm64.c
+@@ -123,6 +123,21 @@
+ }
+ 
+ #endif /* linux */
++
++/* fault type as reported in the exception record, from the syndrome register */
++static ULONG_PTR get_fault_type( ucontext_t *context )
++{
++    DWORD64 esr = get_fault_esr( context );
++
++    switch ((esr >> 26) & 0x3f)
++    {
++    case 0x20:
++    case 0x21:
++        return EXCEPTION_EXECUTE_FAULT;
++    default:
++        return (esr & 0x40) != 0;
++    }
++}
+ 
+ /* stack layout when calling KiUserExceptionDispatcher */
+ struct exc_stack_layout
+@@ -1081,7 +1096,11 @@
+     ucontext_t *context = sigcontext;
+ 
+     rec.NumberParameters = 2;
++#ifdef __APPLE__
++    rec.ExceptionInformation[0] = get_fault_type( context );
++#else
+     rec.ExceptionInformation[0] = (get_fault_esr( context ) & 0x40) != 0;
++#endif
+     rec.ExceptionInformation[1] = (ULONG_PTR)siginfo->si_addr;
+     if (!virtual_handle_fault( &rec, (void *)SP_sig(context) )) return;
+     if (handle_syscall_fault( context, &rec )) return;
+@@ -1125,7 +1144,23 @@
+ static void bus_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+ {
+     EXCEPTION_RECORD rec = { EXCEPTION_DATATYPE_MISALIGNMENT };
++#ifdef __APPLE__
++    ucontext_t *context = sigcontext;
++    DWORD64 esr = get_fault_esr( context );
++    DWORD64 dfsc = esr & 0x3f;
+ 
++    /* macOS reports translation and permission faults as SIGBUS */
++    if (dfsc >= 0x04 && dfsc <= 0x0f)
++    {
++        rec.ExceptionCode = EXCEPTION_ACCESS_VIOLATION;
++        rec.NumberParameters = 2;
++        rec.ExceptionInformation[0] = get_fault_type( context );
++        rec.ExceptionInformation[1] = (ULONG_PTR)siginfo->si_addr;
++        if (!virtual_handle_fault( &rec, (void *)SP_sig(context) )) return;
++        if (handle_syscall_fault( context, &rec )) return;
++    }
++#endif
++
+     setup_exception( sigcontext, &rec );
+ }
+ 

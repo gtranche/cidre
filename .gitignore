@@ -1,0 +1,27 @@
+# Arbres amont : ils ont leur propre git, et etape1 les reconstruit
+# depuis les commits enregistres dans tests/etape1_appliquer_correctifs.sh
+src/
+
+# Tout ce qui se reconstruit
+build/
+prefix/
+prefix-x64/
+wine/
+toolchain/
+
+# Dependances telechargees
+third_party/
+
+# Scories
+*.o
+*.dylib
+*.exe
+.DS_Store
+
+# Sorties d'execution et caches
+cube.bmp
+vkd3d-proton.cache
+vkd3d-proton.cache.write
+
+# Journal de bord : regle permanente du projet, non commite
+NOTES.md

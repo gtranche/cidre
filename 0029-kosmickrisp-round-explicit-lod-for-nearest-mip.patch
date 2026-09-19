@@ -1,0 +1,98 @@
+Generated-by: LLM
+
+diff -urN --exclude=.git s22/src/kosmickrisp/vulkan/kk_descriptor_set.c s23/src/kosmickrisp/vulkan/kk_descriptor_set.c
+--- a/src/kosmickrisp/vulkan/kk_descriptor_set.c	2026-09-19 18:00:08
++++ b/src/kosmickrisp/vulkan/kk_descriptor_set.c	2026-09-19 18:00:15
+@@ -134,6 +134,9 @@
+          desc[plane].sampler_lod_min_fp16 = sampler->lod_min_fp16;
+          desc[plane].sampler_lod_max_fp16 = sampler->lod_max_fp16;
+          desc[plane].clamp_0_sampler_index_or_negative = -1;
++         desc[plane].sampler_flags = sampler->mip_nearest
++                                        ? KK_SAMPLER_FLAG_MIP_NEAREST
++                                        : 0u;
+       }
+ 
+       if (sampler->has_border) {
+diff -urN --exclude=.git s22/src/kosmickrisp/vulkan/kk_descriptor_types.h s23/src/kosmickrisp/vulkan/kk_descriptor_types.h
+--- a/src/kosmickrisp/vulkan/kk_descriptor_types.h	2026-09-19 18:00:08
++++ b/src/kosmickrisp/vulkan/kk_descriptor_types.h	2026-09-19 18:00:15
+@@ -29,7 +29,9 @@
+    uint16_t image_swizzle;
+    uint32_t border[4];
+    uint64_t array_image_gpu_resource_id;
+-   uint64_t pad_to_power_2[2];
++   uint32_t sampler_flags;
++   uint32_t pad_flags;
++   uint64_t pad_to_power_2[1];
+ };
+ 
+ static_assert(sizeof(struct kk_sampled_image_descriptor) == 64,
+diff -urN --exclude=.git s22/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c s23/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c	2026-09-19 18:00:08
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c	2026-09-19 18:00:15
+@@ -666,6 +666,30 @@
+       }
+    }
+ 
++   if (tex->op == nir_texop_txl && sampler != NULL) {
++      int lod_idx = nir_tex_instr_src_index(tex, nir_tex_src_lod);
++
++      if (lod_idx >= 0 &&
++          nir_alu_type_get_base_type(nir_tex_instr_src_type(tex, lod_idx)) ==
++             nir_type_float) {
++         unsigned offs =
++            offsetof(struct kk_sampled_image_descriptor, sampler_flags);
++
++         nir_def *flags = load_resource_deref_desc(
++            b, 1, 32, nir_src_as_deref(nir_src_for_ssa(sampler)),
++            plane_offset_B + offs, ctx);
++         nir_def *nearest = nir_ine_imm(
++            b, nir_iand_imm(b, flags, KK_SAMPLER_FLAG_MIP_NEAREST), 0);
++
++         nir_def *lod = tex->src[lod_idx].src.ssa;
++         nir_def *rounded = nir_ffloor(
++            b, nir_fadd_imm(b, lod, 0.5));
++
++         nir_src_rewrite(&tex->src[lod_idx].src,
++                         nir_bcsel(b, nearest, rounded, lod));
++      }
++   }
++
+    {
+       unsigned offs =
+          tex->is_array && tex->sampler_dim != GLSL_SAMPLER_DIM_BUF
+diff -urN --exclude=.git s22/src/kosmickrisp/vulkan/kk_private.h s23/src/kosmickrisp/vulkan/kk_private.h
+--- a/src/kosmickrisp/vulkan/kk_private.h	2026-09-19 18:00:08
++++ b/src/kosmickrisp/vulkan/kk_private.h	2026-09-19 18:00:15
+@@ -21,6 +21,7 @@
+ #define KK_MAX_RTS                       8
+ #define KK_MAX_SAMPLES                   8
+ #define KK_MIN_SSBO_ALIGNMENT            4
++#define KK_SAMPLER_FLAG_MIP_NEAREST      (1u << 0)
+ #define KK_MIN_TEXEL_BUFFER_ALIGNMENT    16
+ /* A Metal command buffer -- really the allocator backing it -- only holds so
+  * many encoders before the commit is rejected. Measured on an M1 Max with a
+diff -urN --exclude=.git s22/src/kosmickrisp/vulkan/kk_sampler.c s23/src/kosmickrisp/vulkan/kk_sampler.c
+--- a/src/kosmickrisp/vulkan/kk_sampler.c	2026-09-19 18:00:08
++++ b/src/kosmickrisp/vulkan/kk_sampler.c	2026-09-19 18:00:15
+@@ -218,6 +218,9 @@
+       sampler->has_border = true;
+    }
+ 
++   sampler->mip_nearest =
++      pCreateInfo->mipmapMode == VK_SAMPLER_MIPMAP_MODE_NEAREST;
++
+    /* LOD data passed in the descriptor set */
+    sampler->lod_bias_fp16 = _mesa_float_to_half(pCreateInfo->mipLodBias);
+    sampler->lod_min_fp16 = _mesa_float_to_half(pCreateInfo->minLod);
+diff -urN --exclude=.git s22/src/kosmickrisp/vulkan/kk_sampler.h s23/src/kosmickrisp/vulkan/kk_sampler.h
+--- a/src/kosmickrisp/vulkan/kk_sampler.h	2026-09-19 18:00:08
++++ b/src/kosmickrisp/vulkan/kk_sampler.h	2026-09-19 18:00:15
+@@ -23,6 +23,7 @@
+    struct vk_sampler vk;
+    VkClearColorValue custom_border;
+    bool has_border;
++   bool mip_nearest;
+ 
+    uint8_t plane_count;
+    uint16_t lod_bias_fp16;

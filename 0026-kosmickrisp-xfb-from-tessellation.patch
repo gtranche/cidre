@@ -1,0 +1,62 @@
+Generated-by: LLM
+
+diff -urN --exclude=.git s20/src/kosmickrisp/vulkan/kk_shader.c s21/src/kosmickrisp/vulkan/kk_shader.c
+--- a/src/kosmickrisp/vulkan/kk_shader.c	2026-09-19 17:59:52
++++ b/src/kosmickrisp/vulkan/kk_shader.c	2026-09-19 18:00:00
+@@ -854,13 +854,16 @@
+     * kk_nir_lower_descriptors.c.
+     */
+    if ((nir->info.stage == MESA_SHADER_VERTEX ||
++        nir->info.stage == MESA_SHADER_TESS_EVAL ||
+         nir->info.stage == MESA_SHADER_GEOMETRY) &&
+        nir->xfb_info) {
+       /* Fold constant IO offsets so the XFB info can be attached. */
+       NIR_PASS(_, nir, nir_opt_constant_folding);
+       NIR_PASS(_, nir, nir_io_add_intrinsic_xfb_info);
+ 
+-      if (nir->info.stage == MESA_SHADER_VERTEX && !emulated_stage)
++      if ((nir->info.stage == MESA_SHADER_VERTEX ||
++           nir->info.stage == MESA_SHADER_TESS_EVAL) &&
++          !emulated_stage)
+          NIR_PASS(_, nir, kk_nir_lower_xfb);
+    }
+ 
+@@ -1055,6 +1058,12 @@
+                                 nir->info.next_stage != MESA_SHADER_GEOMETRY;
+       for (unsigned i = 0; i < MAX_XFB_BUFFERS; ++i)
+          shader->info.vs.xfb_stride[i] = nir->info.xfb_stride[i];
++   } else if (nir->info.stage == MESA_SHADER_TESS_EVAL) {
++      shader->info.tess.has_xfb =
++         nir->info.has_transform_feedback_varyings &&
++         nir->info.next_stage != MESA_SHADER_GEOMETRY;
++      for (unsigned i = 0; i < MAX_XFB_BUFFERS; ++i)
++         shader->info.tess.xfb_stride[i] = nir->info.xfb_stride[i];
+    } else if (nir->info.stage == MESA_SHADER_FRAGMENT) {
+       /* Some meta shaders like vk-meta-resolve will have depth_layout as NONE
+        * which is not a valid Metal layout */
+@@ -1755,6 +1764,12 @@
+ 
+       if (s->info.stage == MESA_SHADER_TESS_CTRL)
+          info->vs.tess_local_thread_size = s->info.tess.tcs_output_patch_size;
++
++      if (s->info.stage == MESA_SHADER_TESS_EVAL && s->info.tess.has_xfb) {
++         info->vs.has_xfb = true;
++         memcpy(info->vs.xfb_stride, s->info.tess.xfb_stride,
++                sizeof(info->vs.xfb_stride));
++      }
+ 
+       /* A geometry shader brings more than one program along. Carry them and
+        * their layout over too, since the pipeline is built from the vertex
+diff -urN --exclude=.git s20/src/kosmickrisp/vulkan/kk_shader.h s21/src/kosmickrisp/vulkan/kk_shader.h
+--- a/src/kosmickrisp/vulkan/kk_shader.h	2026-09-19 17:59:52
++++ b/src/kosmickrisp/vulkan/kk_shader.h	2026-09-19 18:00:00
+@@ -137,6 +137,9 @@
+          uint8_t tcs_nr_patch_outputs;
+ 
+          struct kk_tess_info info;
++
++         uint8_t xfb_stride[MAX_XFB_BUFFERS];
++         bool has_xfb;
+       } tess;
+ 
+       struct {

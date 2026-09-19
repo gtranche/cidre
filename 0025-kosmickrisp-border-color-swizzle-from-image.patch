@@ -1,0 +1,134 @@
+Generated-by: LLM
+
+diff -urN --exclude=.git s19/src/kosmickrisp/vulkan/kk_descriptor_set.c s20/src/kosmickrisp/vulkan/kk_descriptor_set.c
+--- a/src/kosmickrisp/vulkan/kk_descriptor_set.c	2026-09-19 17:59:43
++++ b/src/kosmickrisp/vulkan/kk_descriptor_set.c	2026-09-19 17:59:52
+@@ -53,6 +53,30 @@
+    memcpy(dst, desc_data, desc_size);
+ }
+ 
++static uint16_t
++kk_encode_view_swizzle(VkComponentMapping swizzle)
++{
++   const VkComponentSwizzle comps[4] = {swizzle.r, swizzle.g, swizzle.b,
++                                        swizzle.a};
++   uint16_t encoded = 0u;
++
++   for (uint32_t i = 0u; i < 4u; ++i) {
++      uint32_t value;
++      switch (comps[i]) {
++      case VK_COMPONENT_SWIZZLE_R: value = 0u; break;
++      case VK_COMPONENT_SWIZZLE_G: value = 1u; break;
++      case VK_COMPONENT_SWIZZLE_B: value = 2u; break;
++      case VK_COMPONENT_SWIZZLE_A: value = 3u; break;
++      case VK_COMPONENT_SWIZZLE_ZERO: value = 4u; break;
++      case VK_COMPONENT_SWIZZLE_ONE: value = 5u; break;
++      default: value = i; break;
++      }
++      encoded |= value << (3u * i);
++   }
++
++   return encoded;
++}
++
+ static void
+ get_sampled_image_view_desc(VkDescriptorType descriptor_type,
+                             const VkDescriptorImageInfo *const info, void *dst,
+@@ -80,6 +104,8 @@
+             desc[plane].array_image_gpu_resource_id =
+                view->planes[plane].sampled_array_gpu_resource_id;
+          }
++
++         desc[plane].image_swizzle = kk_encode_view_swizzle(view->vk.swizzle);
+ 
+          float min_lod = MAX2(view->vk.min_lod - view->vk.base_mip_level, 0.0);
+          desc[plane].image_min_lod_fp16 = _mesa_float_to_half(min_lod);
+diff -urN --exclude=.git s19/src/kosmickrisp/vulkan/kk_descriptor_types.h s20/src/kosmickrisp/vulkan/kk_descriptor_types.h
+--- a/src/kosmickrisp/vulkan/kk_descriptor_types.h	2026-09-19 17:59:43
++++ b/src/kosmickrisp/vulkan/kk_descriptor_types.h	2026-09-19 17:59:52
+@@ -26,7 +26,7 @@
+    uint16_t image_min_lod_fp16;
+    uint16_t image_min_lod_uint16;
+ 
+-   uint16_t pad_to_64_bits;
++   uint16_t image_swizzle;
+    uint32_t border[4];
+    uint64_t array_image_gpu_resource_id;
+    uint64_t pad_to_power_2[2];
+diff -urN --exclude=.git s19/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c s20/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c	2026-09-19 17:59:43
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c	2026-09-19 17:59:52
+@@ -620,7 +620,33 @@
+       nir_alu_type T = nir_alu_type_get_base_type(tex->dest_type);
+       border = nir_convert_to_bit_size(b, border, T, tex->def.bit_size);
+ 
+-      nir_def_replace(&tex->def, border);
++      unsigned swz_offs =
++         offsetof(struct kk_sampled_image_descriptor, image_swizzle);
++      nir_def *swizzle = load_resource_deref_desc(
++         b, 1, 16, nir_src_as_deref(nir_src_for_ssa(texture)),
++         plane_offset_B + swz_offs, ctx);
++      swizzle = nir_u2u32(b, swizzle);
++
++      nir_def *sources[6];
++      for (unsigned i = 0u; i < 4u; ++i)
++         sources[i] = nir_channel(b, border, i);
++      sources[4] = nir_imm_intN_t(b, 0, border->bit_size);
++      sources[5] = T == nir_type_float
++                      ? nir_imm_floatN_t(b, 1.0, border->bit_size)
++                      : nir_imm_intN_t(b, 1, border->bit_size);
++
++      nir_def *swizzled[4];
++      for (unsigned i = 0u; i < 4u; ++i) {
++         nir_def *index =
++            nir_iand_imm(b, nir_ushr_imm(b, swizzle, 3u * i), 7u);
++
++         swizzled[i] = sources[0];
++         for (unsigned k = 1u; k < 6u; ++k)
++            swizzled[i] =
++               nir_bcsel(b, nir_ieq_imm(b, index, k), sources[k], swizzled[i]);
++      }
++
++      nir_def_replace(&tex->def, nir_vec(b, swizzled, 4));
+       return true;
+    }
+ 
+diff -urN --exclude=.git s19/src/kosmickrisp/vulkan/kk_physical_device.c s20/src/kosmickrisp/vulkan/kk_physical_device.c
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c	2026-09-19 17:59:43
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c	2026-09-19 17:59:52
+@@ -450,7 +450,7 @@
+ 
+       /* VK_EXT_border_color_swizzle */
+       .borderColorSwizzle = supported_extensions->EXT_border_color_swizzle,
+-      .borderColorSwizzleFromImage = false,
++      .borderColorSwizzleFromImage = true,
+ 
+       /* VK_EXT_conditional_rendering */
+       .conditionalRendering = true,
+diff -urN --exclude=.git s19/src/kosmickrisp/vulkan/kk_sampler.c s20/src/kosmickrisp/vulkan/kk_sampler.c
+--- a/src/kosmickrisp/vulkan/kk_sampler.c	2026-09-19 17:59:43
++++ b/src/kosmickrisp/vulkan/kk_sampler.c	2026-09-19 17:59:52
+@@ -211,22 +211,8 @@
+ 
+       sampler->plane_count = 2;
+ 
+-      /* We also need to record the border.
+-       *
+-       * If there is a border color component mapping, we need to swizzle with
+-       * it. Otherwise, we can assume there's nothing to do.
+-       */
++      /* We also need to record the border. */
+       VkClearColorValue bc = sampler->vk.border_color_value;
+-
+-      const VkSamplerBorderColorComponentMappingCreateInfoEXT *swiz_info =
+-         vk_find_struct_const(
+-            pCreateInfo->pNext,
+-            SAMPLER_BORDER_COLOR_COMPONENT_MAPPING_CREATE_INFO_EXT);
+-
+-      if (swiz_info) {
+-         const bool is_int = vk_border_color_is_int(pCreateInfo->borderColor);
+-         bc = vk_swizzle_color_value(bc, swiz_info->components, is_int);
+-      }
+ 
+       sampler->custom_border = bc;
+       sampler->has_border = true;

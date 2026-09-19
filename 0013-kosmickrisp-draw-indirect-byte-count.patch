@@ -1,0 +1,92 @@
+Generated-by: LLM
+
+diff -urN --exclude=.git s9/src/kosmickrisp/libkk/kk_xfb.cl s10/src/kosmickrisp/libkk/kk_xfb.cl
+--- a/src/kosmickrisp/libkk/kk_xfb.cl	2026-09-19 17:58:17
++++ b/src/kosmickrisp/libkk/kk_xfb.cl	2026-09-19 17:58:24
+@@ -28,3 +28,21 @@
+    dst[0] = (uint64_t)counters[1] + cpu_written;
+    dst[1] = (uint64_t)counters[0] + cpu_generated;
+ }
++
++KERNEL(1)
++libkk_xfb_draw_indirect_byte_count(global uint32_t *out,
++                                   constant uint32_t *counter,
++                                   uint32_t counter_offset,
++                                   uint32_t vertex_stride,
++                                   uint32_t instance_count,
++                                   uint32_t first_instance)
++{
++   uint32_t bytes = *counter;
++
++   bytes = bytes > counter_offset ? (bytes - counter_offset) : 0u;
++
++   out[0] = vertex_stride ? (bytes / vertex_stride) : 0u;
++   out[1] = instance_count;
++   out[2] = 0u;
++   out[3] = first_instance;
++}
+diff -urN --exclude=.git s9/src/kosmickrisp/vulkan/kk_cmd_draw.c s10/src/kosmickrisp/vulkan/kk_cmd_draw.c
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c	2026-09-19 17:58:17
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c	2026-09-19 17:58:24
+@@ -2869,6 +2869,49 @@
+ }
+ 
+ VKAPI_ATTR void VKAPI_CALL
++kk_CmdDrawIndirectByteCountEXT(VkCommandBuffer commandBuffer,
++                               uint32_t instanceCount, uint32_t firstInstance,
++                               VkBuffer counterBuffer,
++                               VkDeviceSize counterBufferOffset,
++                               uint32_t counterOffset, uint32_t vertexStride)
++{
++   if (instanceCount == 0u)
++      return;
++
++   VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
++   VK_FROM_HANDLE(kk_buffer, counter, counterBuffer);
++
++   const struct vk_dynamic_graphics_state *dyn =
++      &cmd->vk.dynamic_graphics_state;
++
++   struct kk_ptr indirect =
++      kk_pool_alloc(cmd, sizeof(VkDrawIndirectCommand), 4u);
++   if (unlikely(!indirect.gpu))
++      return;
++
++   libkk_xfb_draw_indirect_byte_count(
++      cmd, kk_grid_1d(1u), true, indirect.gpu,
++      vk_buffer_address(&counter->vk, counterBufferOffset), counterOffset,
++      vertexStride, instanceCount, firstInstance);
++
++   struct kk_draw_command data = {
++      .prim = vk_topology_to_mesa(dyn->ia.primitive_topology),
++      .upload_mask = build_per_draw_upload_mask(cmd),
++      .indirect = true,
++      .predicate_count = cmd->state.cond_render.enabled ? 1u : 0u,
++      .predicate_op[0] = cmd->state.cond_render.inverted
++                            ? KK_PREDICATE_EQ_ZERO
++                            : KK_PREDICATE_NEQ_ZERO,
++      .draw_count = 1,
++      .predicate_addr[0] = cmd->state.cond_render.address,
++      .indirect_command.addr = indirect.gpu,
++      .indirect_command.stride = sizeof(VkDrawIndirectCommand),
++   };
++
++   kk_draw(cmd, &data);
++}
++
++VKAPI_ATTR void VKAPI_CALL
+ kk_CmdDrawIndirect2KHR(VkCommandBuffer commandBuffer,
+                        const VkDrawIndirect2InfoKHR *pInfo)
+ {
+diff -urN --exclude=.git s9/src/kosmickrisp/vulkan/kk_physical_device.c s10/src/kosmickrisp/vulkan/kk_physical_device.c
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c	2026-09-19 17:58:17
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c	2026-09-19 17:58:24
+@@ -898,7 +898,7 @@
+       .transformFeedbackQueries = true,
+       .transformFeedbackStreamsLinesTriangles = false,
+       .transformFeedbackRasterizationStreamSelect = false,
+-      .transformFeedbackDraw = false,
++      .transformFeedbackDraw = true,
+ 
+       /* VK_KHR_vertex_attribute_divisor */
+       .maxVertexAttribDivisor = UINT32_MAX,

@@ -1,0 +1,61 @@
+diff --git a/tests/d3d12_clip_cull_distance.c b/tests/d3d12_clip_cull_distance.c
+index 1dbba7f..862d609 100644
+--- a/tests/d3d12_clip_cull_distance.c
++++ b/tests/d3d12_clip_cull_distance.c
+@@ -746,6 +746,11 @@ static void test_clip_distance(bool use_dxil)
+             &IID_ID3D12PipelineState, (void **)&pso);
+     ok(hr == S_OK, "Failed to create pipeline state, hr %#x.\n", (int)hr);
+ 
++    /* Skip just the geometry shader section; the clip distance cases below
++     * use pipelines of their own and are still worth running. */
++    if (!pso)
++        goto skip_gs;
++
+     check_clip_distance(&context, pso, vbv, vb[1], vs_cb, gs_cb);
+ 
+     cb_data.use_constant = true;
+@@ -773,6 +778,7 @@ static void test_clip_distance(bool use_dxil)
+     transition_resource_state(command_list, context.render_target,
+             D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
+ 
++skip_gs:
+     /* multiple clip distances */
+     pso_desc.VS = vs_multiple;
+     memset(&pso_desc.GS, 0, sizeof(pso_desc.GS));
+diff --git a/tests/d3d12_geometry_shader.c b/tests/d3d12_geometry_shader.c
+index 05ea3d6..a24c5f7 100644
+--- a/tests/d3d12_geometry_shader.c
++++ b/tests/d3d12_geometry_shader.c
+@@ -433,6 +433,20 @@ static void test_geometry_shader(bool use_dxil)
+             &IID_ID3D12PipelineState, (void **)&pso);
+     ok(hr == S_OK, "Failed to create graphics pipeline state, hr %#x.\n", (int)hr);
+ 
++    /* Nothing below survives a pipeline that was never created: the draws bind
++     * it and the teardown releases it. The failures are already recorded, so
++     * stop here rather than take the whole run down. */
++    if (!pso_5_0 || !pso)
++    {
++        if (pso)
++            ID3D12PipelineState_Release(pso);
++        if (pso_5_0)
++            ID3D12PipelineState_Release(pso_5_0);
++        ID3D12Resource_Release(texture);
++        destroy_test_context(&context);
++        return;
++    }
++
+     vb = create_upload_buffer(context.device, sizeof(vertex), vertex);
+     vbv.BufferLocation = ID3D12Resource_GetGPUVirtualAddress(vb);
+     vbv.StrideInBytes = sizeof(*vertex);
+@@ -1042,6 +1056,11 @@ static void test_layered_rendering(bool use_dxil)
+                 &IID_ID3D12PipelineState, (void **)&pipeline_state);
+         ok(hr == S_OK, "Failed to create graphics pipeline state, hr %#x.\n", (int)hr);
+ 
++        /* A pipeline that was never created cannot be bound or released;
++         * the failure is already recorded. */
++        if (!pipeline_state)
++            continue;
++
+         ID3D12GraphicsCommandList_ClearRenderTargetView(command_list, context.rtv, white, 0, NULL);
+ 
+         ID3D12GraphicsCommandList_OMSetRenderTargets(command_list, 1, &context.rtv, false, NULL);

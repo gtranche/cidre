@@ -1,0 +1,784 @@
+Generated-by: LLM
+
+diff -urN --exclude=.git s2/src/compiler/nir/nir_intrinsics.py s3/src/compiler/nir/nir_intrinsics.py
+--- a/src/compiler/nir/nir_intrinsics.py	2026-09-19 17:57:40
++++ b/src/compiler/nir/nir_intrinsics.py	2026-09-19 17:57:46
+@@ -3326,6 +3326,9 @@
+ image("fence_kk")
+ # Store clip distance to vertex output.
+ store("clip_distance_kk", [], [BASE])
++# Byte capacity still available in transform feedback buffer BASE. Zero when
++# capture is inactive, which is what disables the captures entirely.
++load("xfb_size_kk", [], [BASE], [CAN_ELIMINATE, CAN_REORDER])
+ # System value indicating whether to emulate depth clamp.
+ system_value("is_depth_clamp_emulated_kk", 1, bit_sizes=[1])
+ # System value indicating whether to emulate the viewport Z transform.
+diff -urN --exclude=.git s2/src/kosmickrisp/vulkan/kk_cmd_buffer.h s3/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h	2026-09-19 17:57:38
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h	2026-09-19 17:57:44
+@@ -19,6 +19,8 @@
+ 
+ #include "kosmickrisp/libkk/kk_query.h"
+ 
++#include "compiler/shader_info.h"  /* MAX_XFB_BUFFERS */
++
+ #include "util/u_dynarray.h"
+ 
+ #include "vk_command_buffer.h"
+@@ -43,6 +45,19 @@
+          float viewport_z_range[KK_MAX_VIEWPORTS * 2];
+          bool emulate_depth_clamp;
+          bool emulate_viewport_z;
++
++         /* VK_EXT_transform_feedback. nir_lower_xfb_to_stores() captures at
++          *   xfb_address[buf] + (instance_id * xfb_num_vertices + raw_vertex_id)
++          *                      * stride + offset
++          * xfb_address already includes everything earlier draws in this
++          * capture wrote, so each draw appends rather than overwrites.
++          */
++         uint64_t xfb_address[MAX_XFB_BUFFERS];
++         /* Bytes still writable in each buffer. Zero while capture is
++          * inactive, which is how the shader's captures get switched off. */
++         uint32_t xfb_size[MAX_XFB_BUFFERS];
++         uint32_t xfb_num_vertices;
++         uint32_t xfb_first_vertex;
+       } draw;
+       struct {
+          uint32_t base_group[3];
+@@ -159,6 +174,41 @@
+        */
+       uint16_t index;
+    } occlusion;
++
++   /* VK_EXT_transform_feedback capture state */
++   struct {
++      /* Buffers bound by vkCmdBindTransformFeedbackBuffersEXT. */
++      struct {
++         uint64_t addr;
++         uint64_t size;
++      } buffers[MAX_XFB_BUFFERS];
++
++      /* Bytes already captured into each buffer since the current
++       * vkCmdBeginTransformFeedbackEXT, tracked on the CPU: with the
++       * vertex-indexed capture scheme the write offsets of a draw are known
++       * before it runs.
++       */
++      uint64_t written[MAX_XFB_BUFFERS];
++
++      /* Counter buffers handed to vkCmdEndTransformFeedbackEXT, so the byte
++       * counts can be written back when capture stops.
++       */
++      uint64_t counter_addr[MAX_XFB_BUFFERS];
++      uint32_t counter_count;
++
++      bool active;
++
++      /* Active VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT query. Addresses
++       * rather than the pool, to keep the query pool out of this header.
++       */
++      struct {
++         uint64_t report_addr;
++         uint64_t available_addr;
++         uint64_t generated;
++         uint64_t written;
++         bool active;
++      } query;
++   } xfb;
+ 
+    /* Index buffer */
+    struct {
+diff -urN --exclude=.git s2/src/kosmickrisp/vulkan/kk_cmd_draw.c s3/src/kosmickrisp/vulkan/kk_cmd_draw.c
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c	2026-09-19 17:57:38
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c	2026-09-19 17:57:44
+@@ -2054,10 +2054,267 @@
+    return draw;
+ }
+ 
++/*
++ * VK_EXT_transform_feedback.
++ *
++ * Capture happens inside the drawing vertex function (see
++ * kk_nir_lower_xfb.c), which indexes each buffer by
++ *
++ *    (instance_id * num_vertices + raw_vertex_id) * stride + offset
++ *
++ * Those write offsets only depend on the draw's own parameters, so a direct
++ * draw's capture extent is known here, before it runs: the CPU can hand the
++ * shader an already-advanced base address and the room left in each buffer,
++ * and no GPU-side counter is needed.
++ *
++ * That reasoning does not hold once the vertex index stops being the
++ * sequential position within the draw, so indexed, indirect and multi-draws
++ * do not capture; kk_xfb_draw_captures() spells out why. Rather than write
++ * wrong data, they are given a remaining capacity of zero, which the shader's
++ * bounds check turns into no writes at all.
++ */
++static bool
++kk_xfb_draw_captures(const struct kk_cmd_buffer *cmd,
++                     const struct kk_draw_command *data)
++{
++   const struct kk_shader *vs = cmd->state.shaders[MESA_SHADER_VERTEX];
++
++   if (vs == NULL || !vs->info.vs.has_xfb)
++      return false;
++
++   if (!cmd->state.gfx.xfb.active)
++      return false;
++
++   /* An indirect draw's vertex count is only known on the GPU. */
++   if (data->indirect)
++      return false;
++
++   /* For an indexed draw the vertex ID is the index value, not the position
++    * in the draw, so it cannot address the capture buffer.
++    */
++   if (data->indexed)
++      return false;
++
++   /* A multi-draw would need each draw to start where the previous one
++    * stopped, which is one base address per draw.
++    */
++   if (data->draw_count != 1)
++      return false;
++
++   return true;
++}
++
++static uint64_t
++kk_prims_for_vertices(enum mesa_prim prim, uint64_t vertices)
++{
++   switch (prim) {
++   case MESA_PRIM_POINTS:
++      return vertices;
++   case MESA_PRIM_LINES:
++      return vertices / 2u;
++   case MESA_PRIM_LINE_STRIP:
++      return vertices >= 2u ? vertices - 1u : 0u;
++   case MESA_PRIM_TRIANGLES:
++      return vertices / 3u;
++   case MESA_PRIM_TRIANGLE_STRIP:
++   case MESA_PRIM_TRIANGLE_FAN:
++      return vertices >= 3u ? vertices - 2u : 0u;
++   default:
++      return 0u;
++   }
++}
++
++/* Vertex count of a direct draw, indexed or not. */
++static uint32_t
++kk_draw_vertex_count(const struct kk_draw_command *data)
++{
++   if (data->indirect || data->draw_count != 1)
++      return 0u;
++
++   return data->indexed ? data->indexed_draws[0].indexCount
++                        : data->draws[0].vertexCount;
++}
++
++static uint32_t
++kk_draw_instance_count(const struct kk_draw_command *data)
++{
++   if (data->indirect || data->draw_count != 1)
++      return 0u;
++
++   return data->indexed ? data->indexed_draws[0].instanceCount
++                        : data->draws[0].instanceCount;
++}
++
+ static void
++kk_flush_xfb_state(struct kk_cmd_buffer *cmd, const struct kk_draw_command *data)
++{
++   struct kk_graphics_state *gfx = &cmd->state.gfx;
++   struct kk_descriptor_state *desc = &gfx->descriptors;
++   const struct kk_shader *vs = cmd->state.shaders[MESA_SHADER_VERTEX];
++
++   /* Only shaders that capture read any of this. */
++   if (vs == NULL || !vs->info.vs.has_xfb)
++      return;
++
++   desc->root_dirty = true;
++
++   uint64_t prims = kk_prims_for_vertices(data->prim,
++                                          kk_draw_vertex_count(data)) *
++                    kk_draw_instance_count(data);
++
++   if (!kk_xfb_draw_captures(cmd, data)) {
++      memset(desc->root.draw.xfb_size, 0, sizeof(desc->root.draw.xfb_size));
++
++      /* The stream still produces primitives, they are just not captured. */
++      if (gfx->xfb.query.active)
++         gfx->xfb.query.generated += prims;
++
++      return;
++   }
++
++   const VkDrawIndirectCommand *draw = &data->draws[0];
++
++   /* Vertices that still fit in every buffer this shader captures into. */
++   uint64_t vertices_that_fit = UINT64_MAX;
++
++   for (unsigned i = 0; i < MAX_XFB_BUFFERS; ++i) {
++      /* info.vs.xfb_stride is in words, like nir_shader_info. */
++      uint64_t stride = (uint64_t)vs->info.vs.xfb_stride[i] * 4u;
++      uint64_t size = gfx->xfb.buffers[i].size;
++      uint64_t used = gfx->xfb.written[i];
++
++      if (stride == 0u)
++         continue;
++
++      if (used >= size) {
++         desc->root.draw.xfb_address[i] = 0u;
++         desc->root.draw.xfb_size[i] = 0u;
++         vertices_that_fit = 0u;
++         continue;
++      }
++
++      desc->root.draw.xfb_address[i] = gfx->xfb.buffers[i].addr + used;
++      desc->root.draw.xfb_size[i] = MIN2(size - used, UINT32_MAX);
++
++      vertices_that_fit = MIN2(vertices_that_fit, (size - used) / stride);
++
++      gfx->xfb.written[i] =
++         used + (uint64_t)draw->vertexCount * draw->instanceCount * stride;
++   }
++
++   desc->root.draw.xfb_num_vertices = draw->vertexCount;
++   desc->root.draw.xfb_first_vertex = draw->firstVertex;
++
++   if (gfx->xfb.query.active) {
++      gfx->xfb.query.generated += prims;
++
++      /* The shader drops whatever runs past the end of a buffer, so only the
++       * primitives whose vertices all fit count as written. */
++      uint64_t captured_vertices =
++         MIN2((uint64_t)draw->vertexCount * draw->instanceCount,
++              vertices_that_fit);
++
++      gfx->xfb.query.written +=
++         MIN2(prims, kk_prims_for_vertices(data->prim, captured_vertices));
++   }
++}
++
++VKAPI_ATTR void VKAPI_CALL
++kk_CmdBindTransformFeedbackBuffersEXT(VkCommandBuffer commandBuffer,
++                                      uint32_t firstBinding,
++                                      uint32_t bindingCount,
++                                      const VkBuffer *pBuffers,
++                                      const VkDeviceSize *pOffsets,
++                                      const VkDeviceSize *pSizes)
++{
++   VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
++   struct kk_graphics_state *gfx = &cmd->state.gfx;
++
++   for (uint32_t i = 0u; i < bindingCount; ++i) {
++      uint32_t index = firstBinding + i;
++      assert(index < MAX_XFB_BUFFERS);
++
++      VK_FROM_HANDLE(kk_buffer, buffer, pBuffers[i]);
++      struct kk_addr_range range = kk_buffer_addr_range(
++         buffer, pOffsets[i], pSizes ? pSizes[i] : VK_WHOLE_SIZE);
++
++      gfx->xfb.buffers[index].addr = range.addr;
++      gfx->xfb.buffers[index].size = range.range;
++   }
++}
++
++VKAPI_ATTR void VKAPI_CALL
++kk_CmdBeginTransformFeedbackEXT(VkCommandBuffer commandBuffer,
++                                uint32_t firstCounterBuffer,
++                                uint32_t counterBufferCount,
++                                const VkBuffer *pCounterBuffers,
++                                const VkDeviceSize *pCounterBufferOffsets)
++{
++   VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
++   struct kk_graphics_state *gfx = &cmd->state.gfx;
++
++   /* Resuming would mean starting from byte counts that live in GPU memory,
++    * but the capture offsets are computed on the CPU. Capture restarts at the
++    * beginning of each buffer instead.
++    */
++   if (counterBufferCount > 0u && pCounterBuffers != NULL)
++      fprintf(stderr,
++              "KosmicKrisp: vkCmdBeginTransformFeedbackEXT counter buffers "
++              "are not supported, capture restarts at offset 0\n");
++
++   memset(gfx->xfb.written, 0, sizeof(gfx->xfb.written));
++   gfx->xfb.active = true;
++   gfx->descriptors.root_dirty = true;
++}
++
++VKAPI_ATTR void VKAPI_CALL
++kk_CmdEndTransformFeedbackEXT(VkCommandBuffer commandBuffer,
++                              uint32_t firstCounterBuffer,
++                              uint32_t counterBufferCount,
++                              const VkBuffer *pCounterBuffers,
++                              const VkDeviceSize *pCounterBufferOffsets)
++{
++   VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
++   struct kk_graphics_state *gfx = &cmd->state.gfx;
++
++   /* Hand back how many bytes each buffer received. The value is known here,
++    * but it is copied on the GPU timeline so it lands after the draws that
++    * produced it rather than at record time.
++    */
++   for (uint32_t i = 0u; i < counterBufferCount; ++i) {
++      if (pCounterBuffers[i] == VK_NULL_HANDLE)
++         continue;
++
++      uint32_t index = firstCounterBuffer + i;
++      assert(index < MAX_XFB_BUFFERS);
++
++      VK_FROM_HANDLE(kk_buffer, counter, pCounterBuffers[i]);
++      uint32_t written = MIN2(gfx->xfb.written[index], UINT32_MAX);
++
++      struct kk_ptr src = kk_pool_upload(cmd, &written, sizeof(written), 4u);
++      if (src.buffer == NULL)
++         continue;
++
++      uint64_t offset =
++         pCounterBufferOffsets != NULL ? pCounterBufferOffsets[i] : 0u;
++
++      mtl_copy_from_buffer_to_buffer(cs_get_compute(cmd), src.buffer,
++                                     src.offset, counter->metal.handle,
++                                     kk_buffer_mtl_offset(counter, offset),
++                                     sizeof(written));
++   }
++
++   gfx->xfb.active = false;
++   gfx->descriptors.root_dirty = true;
++}
++
++static void
+ kk_draw(struct kk_cmd_buffer *cmd, struct kk_draw_command *data)
+ {
+    struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
++
++   /* Must run before the root table is uploaded. */
++   kk_flush_xfb_state(cmd, data);
+ 
+    kk_flush_gfx_state(cmd);
+ 
+diff -urN --exclude=.git s2/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c s3/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c	2026-09-19 17:57:38
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c	2026-09-19 17:57:44
+@@ -418,6 +418,50 @@
+    case nir_intrinsic_load_clip_z_coeff:
+       return lower_sysval_to_root_table(b, intrin, draw.clip_z_coeff);
+ 
++   /* VK_EXT_transform_feedback. nir_lower_xfb_to_stores() leaves these for
++    * the driver; we feed them from the root table, which the draw path fills
++    * in before every capturing draw.
++    */
++   case nir_intrinsic_load_num_vertices:
++      return lower_sysval_to_root_table(b, intrin, draw.xfb_num_vertices);
++
++   case nir_intrinsic_load_raw_vertex_offset:
++      return lower_sysval_to_root_table(b, intrin, draw.xfb_first_vertex);
++
++   case nir_intrinsic_load_xfb_size_kk: {
++      unsigned buffer = nir_intrinsic_base(intrin);
++      assert(buffer < MAX_XFB_BUFFERS);
++      unsigned offset = kk_root_descriptor_offset(draw.xfb_size) +
++                        buffer * sizeof(uint32_t);
++      b->cursor = nir_instr_remove(&intrin->instr);
++      nir_def_rewrite_uses(&intrin->def,
++                           load_root(b, 1, 32, nir_imm_int(b, offset), 4));
++      return true;
++   }
++
++   case nir_intrinsic_load_xfb_address: {
++      unsigned buffer = nir_intrinsic_base(intrin);
++      assert(buffer < MAX_XFB_BUFFERS);
++      unsigned offset = kk_root_descriptor_offset(draw.xfb_address) +
++                        buffer * sizeof(uint64_t);
++      b->cursor = nir_instr_remove(&intrin->instr);
++      nir_def_rewrite_uses(&intrin->def,
++                           load_root(b, 1, 64, nir_imm_int(b, offset), 8));
++      return true;
++   }
++
++   /* Metal's [[vertex_id]] counts from the draw's first vertex, so undo that
++    * to get the zero-based index the capture offsets are computed from.
++    */
++   case nir_intrinsic_load_raw_vertex_id: {
++      unsigned offset = kk_root_descriptor_offset(draw.xfb_first_vertex);
++      b->cursor = nir_instr_remove(&intrin->instr);
++      nir_def *first = load_root(b, 1, 32, nir_imm_int(b, offset), 4);
++      nir_def_rewrite_uses(&intrin->def,
++                           nir_isub(b, nir_load_vertex_id(b), first));
++      return true;
++   }
++
+    case nir_intrinsic_load_is_depth_clamp_emulated_kk: {
+       unsigned offset = kk_root_descriptor_offset(draw.emulate_depth_clamp);
+       b->cursor = nir_instr_remove(&intrin->instr);
+diff -urN --exclude=.git s2/src/kosmickrisp/vulkan/kk_nir_lower_xfb.c s3/src/kosmickrisp/vulkan/kk_nir_lower_xfb.c
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_xfb.c	1970-01-01 01:00:00
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_xfb.c	2026-09-19 17:57:44
+@@ -0,0 +1,114 @@
++/*
++ * Copyright 2026 The Mesa contributors
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "kk_shader.h"
++
++#include "nir.h"
++#include "nir_builder.h"
++
++/*
++ * Software transform feedback for Metal.
++ *
++ * Metal has no transform feedback, but a Metal vertex function may write to
++ * device buffers, so the capture rides along with the draw that produces the
++ * vertices: store_output intrinsics carrying io_xfb info (attached by
++ * nir_io_add_intrinsic_xfb_info) gain a matching store_global at
++ *
++ *    xfb_address(buffer) + (instance_id * num_vertices + raw_vertex_id)
++ *                          * stride + offset
++ *
++ * which is nir_lower_xfb_to_stores()'s scheme. We do not use that pass because
++ * every capture here has to be bounds checked: Vulkan discards writes past the
++ * end of a bound buffer, and the driver reports a remaining capacity of zero
++ * while capture is inactive, which is what stops a pipeline with transform
++ * feedback varyings from writing outside
++ * vkCmdBeginTransformFeedbackEXT/vkCmdEndTransformFeedbackEXT.
++ *
++ * The outputs themselves are left alone: the same draw rasterizes as usual.
++ */
++
++static void
++lower_xfb_output(nir_builder *b, nir_intrinsic_instr *intr,
++                 unsigned start_component, unsigned num_components,
++                 unsigned buffer, unsigned offset_words)
++{
++   assert(buffer < MAX_XFB_BUFFERS);
++
++   /* Transform feedback info is in words, Metal addresses are in bytes. */
++   uint16_t stride = b->shader->info.xfb_stride[buffer] * 4;
++   assert(stride != 0);
++   uint16_t offset = offset_words * 4;
++
++   nir_def *index = nir_iadd(
++      b, nir_imul(b, nir_load_instance_id(b), nir_load_num_vertices(b)),
++      nir_load_raw_vertex_id(b));
++
++   BITSET_SET(b->shader->info.system_values_read,
++              SYSTEM_VALUE_VERTEX_ID_ZERO_BASE);
++   BITSET_SET(b->shader->info.system_values_read, SYSTEM_VALUE_INSTANCE_ID);
++
++   nir_def *byte_offset =
++      nir_iadd_imm(b, nir_imul_imm(b, index, stride), offset);
++
++   nir_def *src = intr->src[0].ssa;
++   nir_component_mask_t mask = nir_component_mask(num_components);
++   mask = (mask << start_component) >> nir_intrinsic_component(intr);
++   nir_def *value = nir_channels(b, src, mask);
++
++   /* Discard anything that would land outside the bound range. */
++   nir_def *end = nir_iadd_imm(b, byte_offset, num_components * 4);
++   nir_def *size = nir_load_xfb_size_kk(b, 1, 32, .base = buffer);
++
++   nir_push_if(b, nir_uge(b, size, end));
++   {
++      nir_def *buf = nir_load_xfb_address(b, 64, .base = buffer);
++      nir_def *addr = nir_iadd(b, buf, nir_u2u64(b, byte_offset));
++      nir_store_global(b, value, addr);
++   }
++   nir_pop_if(b, NULL);
++}
++
++static bool
++lower_xfb(nir_builder *b, nir_intrinsic_instr *intr, void *data)
++{
++   /* Capture programs consume the zero-based hardware vertex ID. */
++   if (intr->intrinsic == nir_intrinsic_load_vertex_id) {
++      b->cursor = nir_instr_remove(&intr->instr);
++
++      nir_def *repl = nir_iadd(b, nir_load_raw_vertex_id(b),
++                               nir_load_raw_vertex_offset(b));
++
++      nir_def_rewrite_uses(&intr->def, repl);
++      return true;
++   }
++
++   if (intr->intrinsic != nir_intrinsic_store_output)
++      return false;
++
++   bool progress = false;
++
++   b->cursor = nir_before_instr(&intr->instr);
++
++   nir_io_xfb xfb = nir_intrinsic_io_xfb(intr);
++   for (unsigned i = 0; i < 4; ++i) {
++      if (!xfb.out[i].num_components)
++         continue;
++
++      lower_xfb_output(b, intr, i, xfb.out[i].num_components,
++                       xfb.out[i].buffer, xfb.out[i].offset);
++      progress = true;
++   }
++
++   /* Keep the store_output: this draw still rasterizes. */
++   return progress;
++}
++
++bool
++kk_nir_lower_xfb(nir_shader *nir)
++{
++   assert(nir->info.stage == MESA_SHADER_VERTEX);
++
++   return nir_shader_intrinsics_pass(nir, lower_xfb, nir_metadata_none, NULL);
++}
+diff -urN --exclude=.git s2/src/kosmickrisp/vulkan/kk_physical_device.c s3/src/kosmickrisp/vulkan/kk_physical_device.c
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c	2026-09-19 17:57:38
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c	2026-09-19 17:57:44
+@@ -204,6 +204,7 @@
+ #ifdef KK_USE_WSI_PLATFORM
+       .EXT_swapchain_maintenance1 = true,
+ #endif
++      .EXT_transform_feedback = true,
+       .EXT_vertex_attribute_robustness = true,
+ 
+       .GOOGLE_decorate_string = true,
+@@ -465,6 +466,11 @@
+       /* VK_EXT_dynamic_rendering_unused_attachments */
+       .dynamicRenderingUnusedAttachments = true,
+ 
++      /* VK_EXT_transform_feedback */
++      .transformFeedback = true,
++      /* Needs geometry shaders, which KosmicKrisp does not have. */
++      .geometryStreams = false,
++
+       /* VK_EXT_extended_dynamic_state3 */
+       .extendedDynamicState3DepthClampEnable = true,
+       .extendedDynamicState3DepthClipEnable = true,
+@@ -877,17 +883,20 @@
+       /* VK_EXT_shader_object */
+       .shaderBinaryVersion = 0,
+ 
+-      /* VK_EXT_transform_feedback */
+-      .maxTransformFeedbackStreams = 4,
+-      .maxTransformFeedbackBuffers = 4,
++      /* VK_EXT_transform_feedback. These were already filled in before the
++       * extension was exposed; several were optimistic. Only stream 0 exists
++       * without geometry shaders, and vkCmdDrawIndirectByteCountEXT needs a
++       * GPU-side byte counter that the CPU-tracked capture does not keep. */
++      .maxTransformFeedbackStreams = 1,
++      .maxTransformFeedbackBuffers = MAX_XFB_BUFFERS,
+       .maxTransformFeedbackBufferSize = UINT32_MAX,
+       .maxTransformFeedbackStreamDataSize = 2048,
+       .maxTransformFeedbackBufferDataSize = 512,
+       .maxTransformFeedbackBufferDataStride = 2048,
+       .transformFeedbackQueries = true,
+       .transformFeedbackStreamsLinesTriangles = false,
+-      .transformFeedbackRasterizationStreamSelect = true,
+-      .transformFeedbackDraw = true,
++      .transformFeedbackRasterizationStreamSelect = false,
++      .transformFeedbackDraw = false,
+ 
+       /* VK_KHR_vertex_attribute_divisor */
+       .maxVertexAttribDivisor = UINT32_MAX,
+diff -urN --exclude=.git s2/src/kosmickrisp/vulkan/kk_query_pool.c s3/src/kosmickrisp/vulkan/kk_query_pool.c
+--- a/src/kosmickrisp/vulkan/kk_query_pool.c	2026-09-19 17:57:38
++++ b/src/kosmickrisp/vulkan/kk_query_pool.c	2026-09-19 17:57:44
+@@ -38,6 +38,9 @@
+    case VK_QUERY_TYPE_OCCLUSION:
+    case VK_QUERY_TYPE_TIMESTAMP:
+       return 1;
++   case VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT:
++      /* primitivesWritten and primitivesGenerated. */
++      return 2;
+    default:
+       UNREACHABLE("Unsupported query type");
+    }
+@@ -64,6 +67,12 @@
+ }
+ 
+ static inline bool
++kk_pool_is_xfb(struct kk_query_pool *pool)
++{
++   return pool->vk.query_type == VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT;
++}
++
++static inline bool
+ kk_pool_is_ts(struct kk_query_pool *pool)
+ {
+    return pool->vk.query_type == VK_QUERY_TYPE_TIMESTAMP;
+@@ -195,6 +204,13 @@
+          /* We increment as we go so we can clean up properly if we run out */
+          remap_index[pool->oq.queries++] = index;
+       }
++   } else if (kk_pool_is_xfb(pool)) {
++      /* kk_query_report_addr() scales the remapped index by one report, so
++       * space the identity mapping out by the reports each query owns. */
++      uint16_t *remap_index = kk_pool_index_ptr(pool);
++
++      for (unsigned i = 0; i < pool->vk.query_count; ++i)
++         remap_index[i] = i * reports_per_query;
+    } else if (kk_pool_is_ts(pool)) {
+       /* Timestamps are sampled into a Metal counter heap (one entry per query)
+        * and resolved into `bo` after the GPU writes them. */
+@@ -412,6 +428,76 @@
+       };
+       util_dynarray_append(&cmd->ts_resolves, resolve);
+    }
++}
++
++/*
++ * VK_EXT_transform_feedback queries.
++ *
++ * The counts come from the CPU: capture offsets are worked out at record time
++ * (see kk_flush_xfb_state()), so how many primitives a draw emits and how many
++ * of them fit is known before it runs. The results are still handed over on
++ * the GPU timeline, so they land after the draws they describe rather than at
++ * record time.
++ */
++VKAPI_ATTR void VKAPI_CALL
++kk_CmdBeginQueryIndexedEXT(VkCommandBuffer commandBuffer, VkQueryPool queryPool,
++                           uint32_t query, VkQueryControlFlags flags,
++                           uint32_t index)
++{
++   VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
++   VK_FROM_HANDLE(kk_query_pool, pool, queryPool);
++
++   if (!kk_pool_is_xfb(pool)) {
++      assert(index == 0 && "only transform feedback queries are indexed");
++      kk_CmdBeginQuery(commandBuffer, queryPool, query, flags);
++      return;
++   }
++
++   /* maxTransformFeedbackStreams is 1: stream 0 is the only one. */
++   assert(index == 0);
++
++   struct kk_device *dev = kk_cmd_buffer_device(cmd);
++   struct kk_graphics_state *gfx = &cmd->state.gfx;
++
++   gfx->xfb.query.report_addr = kk_query_report_addr(dev, pool, query);
++   gfx->xfb.query.available_addr = kk_query_available_addr(pool, query);
++   gfx->xfb.query.generated = 0u;
++   gfx->xfb.query.written = 0u;
++   gfx->xfb.query.active = true;
++}
++
++VKAPI_ATTR void VKAPI_CALL
++kk_CmdEndQueryIndexedEXT(VkCommandBuffer commandBuffer, VkQueryPool queryPool,
++                         uint32_t query, uint32_t index)
++{
++   VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
++   VK_FROM_HANDLE(kk_query_pool, pool, queryPool);
++
++   if (!kk_pool_is_xfb(pool)) {
++      assert(index == 0 && "only transform feedback queries are indexed");
++      kk_CmdEndQuery(commandBuffer, queryPool, query);
++      return;
++   }
++
++   struct kk_graphics_state *gfx = &cmd->state.gfx;
++
++   if (!gfx->xfb.query.active)
++      return;
++
++   /* Reports are 64-bit and kk_cmd_write() moves 32 bits, so write each half.
++    * primitivesWritten comes first, then primitivesGenerated. */
++   uint64_t addr = gfx->xfb.query.report_addr;
++   uint32_t written = (uint32_t)MIN2(gfx->xfb.query.written, UINT32_MAX);
++   uint32_t generated = (uint32_t)MIN2(gfx->xfb.query.generated, UINT32_MAX);
++
++   kk_cmd_write(cmd, (struct libkk_imm_write){addr, written});
++   kk_cmd_write(cmd, (struct libkk_imm_write){addr + 4u, 0u});
++   kk_cmd_write(cmd, (struct libkk_imm_write){addr + 8u, generated});
++   kk_cmd_write(cmd, (struct libkk_imm_write){addr + 12u, 0u});
++   kk_cmd_write(cmd,
++                (struct libkk_imm_write){gfx->xfb.query.available_addr, true});
++
++   gfx->xfb.query.active = false;
+ }
+ 
+ VKAPI_ATTR void VKAPI_CALL
+diff -urN --exclude=.git s2/src/kosmickrisp/vulkan/kk_shader.c s3/src/kosmickrisp/vulkan/kk_shader.c
+--- a/src/kosmickrisp/vulkan/kk_shader.c	2026-09-19 17:57:38
++++ b/src/kosmickrisp/vulkan/kk_shader.c	2026-09-19 17:57:44
+@@ -740,6 +740,20 @@
+             nir_lower_io_lower_64bit_to_32 |
+                nir_lower_io_use_interpolated_input_intrinsics);
+ 
++   /* VK_EXT_transform_feedback. Metal has no transform feedback, but a Metal
++    * vertex function may write to device buffers, so capture straight from
++    * the vertex stage: keep_outputs leaves rasterization untouched and the
++    * same draw both draws and captures. The address system values this leaves
++    * behind are lowered against the root table in
++    * kk_nir_lower_descriptors.c.
++    */
++   if (nir->info.stage == MESA_SHADER_VERTEX && nir->xfb_info) {
++      /* Fold constant IO offsets so the XFB info can be attached. */
++      NIR_PASS(_, nir, nir_opt_constant_folding);
++      NIR_PASS(_, nir, nir_io_add_intrinsic_xfb_info);
++      NIR_PASS(_, nir, kk_nir_lower_xfb);
++   }
++
+    NIR_PASS(_, nir, nir_lower_vars_to_explicit_types, nir_var_mem_shared,
+             shared_var_info);
+ 
+@@ -899,6 +913,12 @@
+       nir_shader_intrinsics_pass(nir, gather_vs_inputs, nir_metadata_all,
+                                  &shader->info.vs.attribs_read);
+       shader->info.vs.outputs_written = nir->info.outputs_written;
++
++      /* Capture strides survive kk_lower_nir(), which already turned the XFB
++       * outputs into global stores. */
++      shader->info.vs.has_xfb = nir->info.has_transform_feedback_varyings;
++      for (unsigned i = 0; i < MAX_XFB_BUFFERS; ++i)
++         shader->info.vs.xfb_stride[i] = nir->info.xfb_stride[i];
+    } else if (nir->info.stage == MESA_SHADER_FRAGMENT) {
+       /* Some meta shaders like vk-meta-resolve will have depth_layout as NONE
+        * which is not a valid Metal layout */
+diff -urN --exclude=.git s2/src/kosmickrisp/vulkan/kk_shader.h s3/src/kosmickrisp/vulkan/kk_shader.h
+--- a/src/kosmickrisp/vulkan/kk_shader.h	2026-09-19 17:57:38
++++ b/src/kosmickrisp/vulkan/kk_shader.h	2026-09-19 17:57:44
+@@ -11,6 +11,8 @@
+ #include "kk_device_memory.h"
+ #include "kk_private.h"
+ 
++#include "compiler/shader_info.h"  /* MAX_XFB_BUFFERS */
++
+ #include "kosmickrisp/bridge/mtl_format.h"
+ 
+ #include "vk_pipeline_cache.h"
+@@ -82,6 +84,14 @@
+             uint8_t write_mask;
+          } stencil_front, stencil_back;
+          uint8_t color_attachment_count;
++
++         /* VK_EXT_transform_feedback: byte stride of each capture buffer, 0
++          * when unused. Lets the draw path work out how far a draw advances
++          * each buffer without re-inspecting the shader.
++          */
++         uint8_t xfb_stride[MAX_XFB_BUFFERS];
++         bool has_xfb;
++
+          bool has_ms;
+          bool has_alpha_to_coverage_enabled;
+          bool has_alpha_to_one_enabled;
+@@ -165,6 +175,10 @@
+ bool kk_nir_add_device_barrier_workaround(nir_shader *nir);
+ 
+ bool kk_nir_lower_poly(struct nir_shader *nir);
++
++/* VK_EXT_transform_feedback: capture vertex outputs into the bound buffers,
++ * bounds checked, from the same draw that rasterizes them. */
++bool kk_nir_lower_xfb(struct nir_shader *nir);
+ bool kk_nir_lower_null_images(nir_shader *nir);
+ 
+ bool kk_nir_lower_textures(nir_shader *nir);
+diff -urN --exclude=.git s2/src/kosmickrisp/vulkan/meson.build s3/src/kosmickrisp/vulkan/meson.build
+--- a/src/kosmickrisp/vulkan/meson.build	2026-09-19 17:57:38
++++ b/src/kosmickrisp/vulkan/meson.build	2026-09-19 17:57:44
+@@ -96,6 +96,7 @@
+   'kk_nir_lower_textures.c',
+   'kk_nir_lower_vbo.h',
+   'kk_nir_lower_vbo.c',
++  'kk_nir_lower_xfb.c',
+   'kk_physical_device.h',
+   'kk_physical_device.c',
+   'kk_query_pool.h',

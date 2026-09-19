@@ -1,0 +1,14 @@
+Generated-by: LLM
+
+diff -urN --exclude=.git s17/src/kosmickrisp/vulkan/kk_private.h s18/src/kosmickrisp/vulkan/kk_private.h
+--- a/src/kosmickrisp/vulkan/kk_private.h	2026-09-19 17:59:25
++++ b/src/kosmickrisp/vulkan/kk_private.h	2026-09-19 17:59:34
+@@ -20,7 +20,7 @@
+ #define KK_MAX_DYNAMIC_BUFFERS           64
+ #define KK_MAX_RTS                       8
+ #define KK_MAX_SAMPLES                   8
+-#define KK_MIN_SSBO_ALIGNMENT            16
++#define KK_MIN_SSBO_ALIGNMENT            4
+ #define KK_MIN_TEXEL_BUFFER_ALIGNMENT    16
+ /* A Metal command buffer -- really the allocator backing it -- only holds so
+  * many encoders before the commit is rejected. Measured on an M1 Max with a

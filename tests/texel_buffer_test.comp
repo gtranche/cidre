@@ -1,0 +1,12 @@
+#version 450
+layout(local_size_x = 8) in;
+
+layout(set = 0, binding = 0) uniform utextureBuffer uniformTexels;
+layout(set = 0, binding = 1, r32ui) uniform readonly uimageBuffer storageTexels;
+layout(set = 0, binding = 2) buffer Out { uint data[]; } outBuf;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    outBuf.data[i]     = texelFetch(uniformTexels, int(i)).x;
+    outBuf.data[i + 8] = imageLoad(storageTexels, int(i)).x;
+}

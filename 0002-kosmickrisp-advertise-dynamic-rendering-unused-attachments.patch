@@ -1,0 +1,23 @@
+Generated-by: LLM
+
+diff -urN --exclude=.git s1/src/kosmickrisp/vulkan/kk_physical_device.c s2/src/kosmickrisp/vulkan/kk_physical_device.c
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c	2026-09-19 17:57:30
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c	2026-09-19 17:57:38
+@@ -178,6 +178,7 @@
+       .EXT_debug_marker = true,
+       .EXT_depth_clip_control = true,
+       .EXT_depth_clip_enable = true,
++      .EXT_dynamic_rendering_unused_attachments = true,
+       .EXT_extended_dynamic_state3 = true,
+       .EXT_external_memory_metal = true,
+       .EXT_external_memory_host = true,
+@@ -460,6 +461,9 @@
+ 
+       /* VK_EXT_depth_clip_enable */
+       .depthClipEnable = true,
++
++      /* VK_EXT_dynamic_rendering_unused_attachments */
++      .dynamicRenderingUnusedAttachments = true,
+ 
+       /* VK_EXT_extended_dynamic_state3 */
+       .extendedDynamicState3DepthClampEnable = true,

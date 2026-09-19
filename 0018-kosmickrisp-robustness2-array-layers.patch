@@ -1,0 +1,109 @@
+Generated-by: LLM
+
+diff -urN --exclude=.git s12/src/kosmickrisp/compiler/msl_nir_lower_common.c s13/src/kosmickrisp/compiler/msl_nir_lower_common.c
+--- a/src/kosmickrisp/compiler/msl_nir_lower_common.c	2026-09-19 17:58:40
++++ b/src/kosmickrisp/compiler/msl_nir_lower_common.c	2026-09-19 17:58:49
+@@ -205,6 +205,60 @@
+    return true;
+ }
+ 
++static bool
++kk_lower_robustness2_array_layer(nir_builder *b, nir_instr *instr,
++                                 UNUSED void *data)
++{
++   if (instr->type != nir_instr_type_tex)
++      return false;
++
++   nir_tex_instr *tex = nir_instr_as_tex(instr);
++   if (!tex->is_array || tex->sampler_dim == GLSL_SAMPLER_DIM_BUF)
++      return false;
++
++   switch (tex->op) {
++   case nir_texop_tex:
++   case nir_texop_txb:
++   case nir_texop_txl:
++   case nir_texop_txd:
++   case nir_texop_txf:
++   case nir_texop_txf_ms:
++   case nir_texop_tg4:
++      break;
++   default:
++      return false;
++   }
++
++   int coord_index = nir_tex_instr_src_index(tex, nir_tex_src_coord);
++   if (coord_index < 0)
++      return false;
++
++   nir_def *coord = tex->src[coord_index].src.ssa;
++   if (tex->coord_components < 2)
++      return false;
++
++   b->cursor = nir_before_instr(instr);
++   nir_def *size = nir_build_texture_query(b, tex, nir_texop_txs, 3,
++                                           nir_type_uint32, false, false);
++   nir_def *layers = nir_channel(b, size, size->num_components - 1);
++
++   nir_def *layer = nir_channel(b, coord, tex->coord_components - 1);
++   if (tex->op == nir_texop_txf || tex->op == nir_texop_txf_ms)
++      layer = nir_i2i32(b, layer);
++   else
++      layer = nir_f2i32(b, nir_fround_even(b, layer));
++
++   nir_def *in_range = nir_iand(b, nir_ige_imm(b, layer, 0),
++                                nir_ilt(b, layer, nir_u2u32(b, layers)));
++
++   b->cursor = nir_after_instr(instr);
++   nir_def *zero = nir_imm_zero(b, tex->def.num_components, tex->def.bit_size);
++   nir_def *res = nir_bcsel(b, in_range, &tex->def, zero);
++
++   nir_def_rewrite_uses_after(&tex->def, res);
++   return true;
++}
++
+ bool
+ msl_lower_robustness2_images(nir_shader *nir)
+ {
+@@ -946,4 +1000,11 @@
+    nir_instr_remove(&depth_store->instr);
+ 
+    return nir_progress(true, b->impl, nir_metadata_none);
++}
++
++bool
++msl_lower_robustness2_array_layers(nir_shader *nir)
++{
++   return nir_shader_instructions_pass(nir, kk_lower_robustness2_array_layer,
++                                       nir_metadata_control_flow, NULL);
+ }
+diff -urN --exclude=.git s12/src/kosmickrisp/compiler/nir_to_msl.h s13/src/kosmickrisp/compiler/nir_to_msl.h
+--- a/src/kosmickrisp/compiler/nir_to_msl.h	2026-09-19 17:58:40
++++ b/src/kosmickrisp/compiler/nir_to_msl.h	2026-09-19 17:58:49
+@@ -79,6 +79,8 @@
+ 
+ bool msl_lower_robustness2_images(nir_shader *s);
+ 
++bool msl_lower_robustness2_array_layers(nir_shader *s);
++
+ bool msl_lower_static_sample_mask(nir_shader *nir, uint32_t sample_mask);
+ bool msl_disable_triangle_merge(nir_shader *nir);
+ bool msl_ensure_depth_write(nir_shader *nir);
+diff -urN --exclude=.git s12/src/kosmickrisp/vulkan/kk_shader.c s13/src/kosmickrisp/vulkan/kk_shader.c
+--- a/src/kosmickrisp/vulkan/kk_shader.c	2026-09-19 17:58:40
++++ b/src/kosmickrisp/vulkan/kk_shader.c	2026-09-19 17:58:49
+@@ -816,9 +816,12 @@
+    /* KK_WORKAROUND_16 - must be called after kk_nir_lower_descriptors(), which
+     * lowers all image intrinsics to be bindless */
+    if (rs->images ==
+-          VK_PIPELINE_ROBUSTNESS_IMAGE_BEHAVIOR_ROBUST_IMAGE_ACCESS_2 &&
+-       !(pdev->settings.disabled_workarounds & BITFIELD64_BIT(16)))
+-      NIR_PASS(_, nir, msl_lower_robustness2_images);
++       VK_PIPELINE_ROBUSTNESS_IMAGE_BEHAVIOR_ROBUST_IMAGE_ACCESS_2) {
++      NIR_PASS(_, nir, msl_lower_robustness2_array_layers);
++
++      if (!(pdev->settings.disabled_workarounds & BITFIELD64_BIT(16)))
++         NIR_PASS(_, nir, msl_lower_robustness2_images);
++   }
+ 
+    /* KK_WORKAROUND_18 */
+    if (!(pdev->settings.disabled_workarounds & BITFIELD64_BIT(18)))

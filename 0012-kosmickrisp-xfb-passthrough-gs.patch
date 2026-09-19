@@ -1,0 +1,336 @@
+Generated-by: LLM
+
+diff -urN --exclude=.git s8/src/kosmickrisp/vulkan/kk_cmd_draw.c s9/src/kosmickrisp/vulkan/kk_cmd_draw.c
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c	2026-09-19 17:58:12
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c	2026-09-19 17:58:17
+@@ -1123,6 +1123,7 @@
+       uint32_t el_size_B;
+    } index;
+    uint32_t vertex_offset;
++   enum mesa_prim prim;
+    enum mtl_primitive_type primitive_type;
+ };
+ 
+@@ -1216,10 +1217,9 @@
+    struct kk_graphics_state *gfx = &cmd->state.gfx;
+    struct kk_shader *vs = cmd->state.shaders[MESA_SHADER_VERTEX];
+    const struct poly_gs_info *gsi = &vs->info.gs;
+-   struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
+ 
+    const uint32_t wg_size[3] = {KK_GS_WORKGROUP_SIZE, 1u, 1u};
+-   enum mesa_prim mode = vk_topology_to_mesa(dyn->ia.primitive_topology);
++   enum mesa_prim mode = data->prim;
+ 
+    struct poly_geometry_params params;
+    poly_geometry_params_init(&params, mode, wg_size);
+@@ -1266,6 +1266,8 @@
+       gfx->gs.index_size_B = sizeof(*indices);
+    }
+ 
++   params.count_buffer_stride = gsi->count_words * sizeof(uint32_t);
++
+    /* An indirect draw only knows its counts on the GPU: poly's setup kernel
+     * fills the rest of this in, including the index buffer of a dynamically
+     * indexed shape, which it takes from the device heap. */
+@@ -1273,6 +1275,15 @@
+       if (gsi->shape == POLY_GS_SHAPE_DYNAMIC_INDEXED)
+          gfx->gs.index_size_B = 4u;
+ 
++      if (gsi->count_words && !gsi->prefix_sum) {
++         struct kk_ptr counts =
++            kk_pool_alloc(cmd, params.count_buffer_stride, 4u);
++         params.count_buffer = counts.gpu;
++
++         if (counts.cpu != NULL)
++            memset(counts.cpu, 0, params.count_buffer_stride);
++      }
++
+       return kk_pool_upload(cmd, &params, sizeof(params), 8).gpu;
+    }
+ 
+@@ -1282,8 +1293,6 @@
+    if (gsi->count_words) {
+       uint32_t slots = gsi->prefix_sum ? MAX2(params.input_primitives, 1u) : 1u;
+ 
+-      params.count_buffer_stride = gsi->count_words * sizeof(uint32_t);
+-
+       struct kk_ptr counts =
+          kk_pool_alloc(cmd, slots * params.count_buffer_stride, 4u);
+       params.count_buffer = counts.gpu;
+@@ -1752,6 +1761,13 @@
+    }
+ }
+ 
++static bool
++kk_draw_has_gs(const struct kk_cmd_buffer *cmd)
++{
++   const struct kk_shader *vs = cmd->state.shaders[MESA_SHADER_VERTEX];
++   return vs != NULL && vs->info.has_gs;
++}
++
+ static uint32_t
+ build_per_draw_upload_mask(struct kk_cmd_buffer *cmd)
+ {
+@@ -1769,7 +1785,7 @@
+    }
+ 
+    /* So does geometry: the emulation programs read their parameters from it. */
+-   if (cmd->state.shaders[MESA_SHADER_GEOMETRY]) {
++   if (kk_draw_has_gs(cmd)) {
+       mask |= BITFIELD_BIT(MESA_SHADER_GEOMETRY);
+    }
+ 
+@@ -1982,6 +1998,9 @@
+    if (data->prim == MESA_PRIM_TRIANGLE_FAN)
+       return true;
+ 
++   if (kk_draw_has_gs(cmd) && data->restart && data->indexed)
++      return true;
++
+    /* Check for remaining unroll conditions */
+    return requires_unroll_index_promotion(data) ||
+           requires_unroll_robustness(cmd, data) ||
+@@ -2094,7 +2113,7 @@
+    struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
+    const bool indirect = kk_grid_is_indirect(draw.grid);
+ 
+-   enum mesa_prim mode = vk_topology_to_mesa(dyn->ia.primitive_topology);
++   enum mesa_prim mode = draw.prim;
+    struct kk_grid grid_vs, grid_gs;
+ 
+    if (indirect) {
+@@ -2119,7 +2138,7 @@
+                ? draw.index.gpu.range / draw.index.el_size_B
+                : 0u,
+          .prim = mode,
+-         .is_prefix_summing = 0,
++         .is_prefix_summing = gsi->prefix_sum,
+          .max_indices = gsi->max_indices,
+          .shape = gsi->shape,
+       };
+@@ -2307,6 +2326,7 @@
+    struct kk_draw_data draw = {
+       .index.gpu = data->index_buffer,
+       .index.el_size_B = data->index_buffer_el_size_B,
++      .prim = data->prim,
+       .primitive_type = tess ? 0u : mesa_prim_to_mtl_primitive_type(data->prim),
+    };
+ 
+@@ -2636,7 +2656,7 @@
+       return;
+ 
+    bool tess = cmd->state.shaders[MESA_SHADER_TESS_EVAL];
+-   bool geom = cmd->state.shaders[MESA_SHADER_GEOMETRY];
++   bool geom = kk_draw_has_gs(cmd);
+ 
+    /* Unroll geometry. Skip draw if we fail. */
+    if (requires_unroll(cmd, data) && !kk_unroll_geometry(cmd, data))
+diff -urN --exclude=.git s8/src/kosmickrisp/vulkan/kk_shader.c s9/src/kosmickrisp/vulkan/kk_shader.c
+--- a/src/kosmickrisp/vulkan/kk_shader.c	2026-09-19 17:58:12
++++ b/src/kosmickrisp/vulkan/kk_shader.c	2026-09-19 17:58:17
+@@ -751,7 +751,7 @@
+       NIR_PASS(_, nir, nir_opt_constant_folding);
+       NIR_PASS(_, nir, nir_io_add_intrinsic_xfb_info);
+ 
+-      if (nir->info.stage == MESA_SHADER_VERTEX)
++      if (nir->info.stage == MESA_SHADER_VERTEX && !emulated_stage)
+          NIR_PASS(_, nir, kk_nir_lower_xfb);
+    }
+ 
+@@ -921,7 +921,8 @@
+ 
+       /* Capture strides survive kk_lower_nir(), which already turned the XFB
+        * outputs into global stores. */
+-      shader->info.vs.has_xfb = nir->info.has_transform_feedback_varyings;
++      shader->info.vs.has_xfb = nir->info.has_transform_feedback_varyings &&
++                                nir->info.next_stage != MESA_SHADER_GEOMETRY;
+       for (unsigned i = 0; i < MAX_XFB_BUFFERS; ++i)
+          shader->info.vs.xfb_stride[i] = nir->info.xfb_stride[i];
+    } else if (nir->info.stage == MESA_SHADER_FRAGMENT) {
+@@ -1822,6 +1823,82 @@
+    return result;
+ }
+ 
++struct kk_passthrough_io {
++   nir_alu_type types[NUM_TOTAL_VARYING_SLOTS];
++   uint8_t components[NUM_TOTAL_VARYING_SLOTS];
++};
++
++static bool
++kk_gather_vs_output_io(nir_builder *b, nir_intrinsic_instr *intr, void *data)
++{
++   if (intr->intrinsic != nir_intrinsic_store_output)
++      return false;
++
++   struct kk_passthrough_io *io = data;
++   nir_io_semantics sem = nir_intrinsic_io_semantics(intr);
++   unsigned slot = sem.location + nir_src_as_uint(intr->src[1]);
++   unsigned end = nir_intrinsic_component(intr) +
++                  util_last_bit(nir_intrinsic_write_mask(intr));
++
++   if (slot >= NUM_TOTAL_VARYING_SLOTS)
++      return false;
++
++   io->components[slot] = MAX2(io->components[slot], end);
++   io->types[slot] = nir_intrinsic_src_type(intr);
++   return false;
++}
++
++static nir_shader *
++kk_build_passthrough_gs(struct kk_device *dev, nir_shader *vs,
++                        const struct vk_graphics_pipeline_state *state)
++{
++   struct kk_physical_device *pdev = kk_device_physical(dev);
++   uint16_t output_count = vs->xfb_info ? vs->xfb_info->output_count : 0u;
++
++   struct kk_passthrough_io io = {0};
++   nir_shader_intrinsics_pass(vs, kk_gather_vs_output_io, nir_metadata_all,
++                              &io);
++
++   size_t key_size = poly_passthrough_gs_key_size(output_count);
++   struct poly_passthrough_gs_key *key = calloc(1u, key_size);
++   if (key == NULL)
++      return NULL;
++
++   key->prim =
++      u_decomposed_prim(vk_topology_to_mesa(state->ia->primitive_topology));
++   key->outputs = vs->info.outputs_written;
++   key->clip_distance_array_size = vs->info.clip_distance_array_size;
++   key->cull_distance_array_size = vs->info.cull_distance_array_size;
++
++   for (unsigned i = 0u; i < NUM_TOTAL_VARYING_SLOTS; ++i) {
++      key->output_components[i] = io.components[i] ? io.components[i] : 4u;
++      key->output_types[i] =
++         io.types[i] != nir_type_invalid ? io.types[i] : nir_type_uint32;
++   }
++
++   memcpy(key->xfb_stride, vs->info.xfb_stride, sizeof(key->xfb_stride));
++   if (output_count) {
++      memcpy(&key->xfb_info, vs->xfb_info, nir_xfb_info_size(output_count));
++   }
++
++   const nir_shader_compiler_options *options = kk_get_nir_options(
++      (struct vk_physical_device *)&pdev->vk, MESA_SHADER_GEOMETRY, &rs_none);
++
++   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_GEOMETRY, options,
++                                                  "kk passthrough gs");
++   poly_nir_passthrough_gs(&b, key);
++   free(key);
++
++   nir_shader *gs = b.shader;
++   gs->info.io_lowered = true;
++   gs->info.next_stage = MESA_SHADER_FRAGMENT;
++
++   msl_preprocess_nir_workarounds(gs, pdev->settings.disabled_workarounds);
++   kk_preprocess_nir(&pdev->vk, gs, NULL);
++
++   return gs;
++}
++
+ static VkResult
+ kk_compile_shaders(struct vk_device *device, uint32_t shader_count,
+                    struct vk_shader_compile_info *infos,
+@@ -1838,12 +1915,19 @@
+ 
+    /* Vulkan doesn't enforce a fragment shader to build pipelines. We may need
+     * to create one. */
+-   nir_shader *nir_shaders[shader_count + 1u];
+-   struct kk_shader *shaders[shader_count + 1u];
++   nir_shader *nir_shaders[shader_count + 2u];
++   struct kk_shader *shaders[shader_count + 2u];
++   bool synthesized[shader_count + 2u];
++   uint32_t app_slot[shader_count];
+ 
++   memset(synthesized, 0, sizeof(synthesized));
++   for (uint32_t i = 0u; i < shader_count; ++i)
++      app_slot[i] = i;
++
+    /* Determine if the pipeline contains tessellation or geometry stages; both
+     * push earlier stages into compute. */
+    bool tess = false, geom = false;
++   nir_shader *capturing_vs = NULL;
+    for (uint32_t i = 0u; i < shader_count; ++i) {
+       const struct vk_shader_compile_info *info = &infos[i];
+       if (info->nir->info.stage == MESA_SHADER_TESS_CTRL ||
+@@ -1851,8 +1935,20 @@
+          tess = true;
+       if (info->nir->info.stage == MESA_SHADER_GEOMETRY)
+          geom = true;
++      if (info->nir->info.stage == MESA_SHADER_VERTEX &&
++          info->nir->xfb_info != NULL &&
++          info->nir->xfb_info->output_count > 0u)
++         capturing_vs = info->nir;
+    }
+ 
++   bool passthrough_gs = capturing_vs != NULL && !geom && !tess &&
++                         state != NULL && state->ia != NULL;
++
++   if (passthrough_gs) {
++      capturing_vs->info.next_stage = MESA_SHADER_GEOMETRY;
++      geom = true;
++   }
++
+    /* Lower shaders, notably lowering IO. This is a prerequisite for intershader
+     * optimization. */
+    const struct vk_pipeline_robustness_state *vertex_robustness = &rs_none;
+@@ -1884,6 +1980,7 @@
+    if (state && infos[shader_count - 1u].stage != MESA_SHADER_FRAGMENT) {
+       nir_shaders[shader_count] =
+          get_empty_nir(dev, MESA_SHADER_FRAGMENT, state, features);
++      synthesized[shader_count] = true;
+       total_shaders += 1u;
+    }
+ 
+@@ -1895,6 +1992,24 @@
+    nir_opt_varyings_bulk(nir_shaders, total_shaders, true, UINT32_MAX,
+                          UINT32_MAX, nir_opts, NULL);
+ 
++   if (passthrough_gs) {
++      nir_shader *gs = kk_build_passthrough_gs(dev, capturing_vs, state);
++      if (gs == NULL)
++         return VK_ERROR_OUT_OF_HOST_MEMORY;
++
++      for (uint32_t i = total_shaders; i > 1u; --i) {
++         nir_shaders[i] = nir_shaders[i - 1u];
++         synthesized[i] = synthesized[i - 1u];
++      }
++
++      nir_shaders[1] = gs;
++      synthesized[1] = true;
++      total_shaders += 1u;
++
++      for (uint32_t i = 1u; i < shader_count; ++i)
++         app_slot[i] += 1u;
++   }
++
+    uint8_t fs_input_comps[NUM_TOTAL_VARYING_SLOTS] = {0};
+    if (nir_shaders[total_shaders - 1u]->info.stage == MESA_SHADER_FRAGMENT) {
+       nir_shader_intrinsics_pass(nir_shaders[total_shaders - 1u],
+@@ -1941,20 +2056,22 @@
+       gather_graphics_pipeline_create_info(state, shaders, total_shaders);
+       result = kk_compile_graphics_pipeline(dev, shaders[0]);
+ 
+-      /* Free generated fragment shader */
+-      if (shader_count != total_shaders)
+-         kk_shader_destroy(&dev->vk, shaders[shader_count], pAllocator);
++      for (uint32_t i = 0u; i < total_shaders; ++i) {
++         if (synthesized[i])
++            kk_shader_destroy(&dev->vk, shaders[i], pAllocator);
++      }
+    }
+ 
+    if (result != VK_SUCCESS) {
+       for (uint32_t i = 0; i < shader_count; i++) {
+-         kk_shader_destroy(&dev->vk, shaders[i], pAllocator);
++         kk_shader_destroy(&dev->vk, shaders[app_slot[i]], pAllocator);
+       }
+ 
+       /* Memset the output array */
+       memset(shaders_out, 0, shader_count * sizeof(*shaders_out));
+    } else {
+-      memcpy(shaders_out, shaders, shader_count * sizeof(*shaders_out));
++      for (uint32_t i = 0; i < shader_count; i++)
++         shaders_out[i] = &shaders[app_slot[i]]->vk;
+    }
+ 
+    return result;

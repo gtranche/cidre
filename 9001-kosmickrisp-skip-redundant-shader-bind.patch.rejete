@@ -1,0 +1,27 @@
+Generated-by: LLM
+
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -2468,8 +2468,11 @@
+                             const mesa_shader_stage stage,
+                             struct kk_shader *shader)
+ {
++   bool unchanged = cmd->state.shaders[stage] == shader;
++
+    cmd->state.shaders[stage] = shader;
+-   cmd->state.dirty_shaders |= BITFIELD_BIT(stage);
++   if (!unchanged)
++      cmd->state.dirty_shaders |= BITFIELD_BIT(stage);
+ 
+    /* Relevant pipeline data is only stored in vertex shaders */
+    if (stage != MESA_SHADER_VERTEX)
+@@ -2488,7 +2491,8 @@
+    } else
+       cmd->state.gfx.depth_stencil_state = shader->pipeline.gfx.ds_handle;
+    cmd->state.gfx.is_depth_stencil_dynamic = requires_dynamic_depth_stencil;
+-   cmd->state.gfx.dirty |= KK_DIRTY_VB;
++   if (!unchanged)
++      cmd->state.gfx.dirty |= KK_DIRTY_VB;
+ 
+    cmd->state.gfx.pipeline_sample_count = shader->info.vs.sample_count;
+ }

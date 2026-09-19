@@ -1,0 +1,40 @@
+1041a1042,1080
+>    } else if (stage == MESA_SHADER_GEOMETRY) {
+>       /* SONDE DE FAISABILITE : poly decoupe le GS en quatre programmes.
+>        * On verifie seulement que le backend MSL sait les traduire. */
+>       nir_shader *gs_count = NULL, *gs_rast = NULL, *pre_gs = NULL;
+>       struct poly_gs_info gs_info = {0};
+> 
+>       NIR_PASS(_, nir, poly_nir_lower_gs, &gs_count, &gs_rast, &pre_gs,
+>                &gs_info);
+> 
+>       fprintf(stderr, "[KKGS] poly_nir_lower_gs : main=%p count=%p rast=%p "
+>               "pre_gs=%p | count_words=%u prefix_sum=%d shape=%d "
+>               "max_indices=%u multistream=%d\n",
+>               (void *)nir, (void *)gs_count, (void *)gs_rast, (void *)pre_gs,
+>               gs_info.count_words, (int)gs_info.prefix_sum, (int)gs_info.shape,
+>               gs_info.max_indices, (int)gs_info.multistream);
+> 
+>       /* Le GS principal doit devenir un compute, comme le VS sur le chemin
+>        * tessellation. */
+>       if (nir->info.stage == MESA_SHADER_GEOMETRY) {
+>          nir->info.stage = MESA_SHADER_COMPUTE;
+>          memset(&nir->info.cs, 0, sizeof(nir->info.cs));
+>       }
+> 
+>       struct { const char *name; nir_shader *s; } probe[] = {
+>          {"main", nir}, {"count", gs_count}, {"rast", gs_rast},
+>          {"pre_gs", pre_gs},
+>       };
+>       for (unsigned i = 0; i < ARRAY_SIZE(probe); ++i) {
+>          if (!probe[i].s) {
+>             fprintf(stderr, "[KKGS]   %-6s : absent\n", probe[i].name);
+>             continue;
+>          }
+>          struct nir_to_msl_options opts = {0};
+>          char *msl = nir_to_msl(probe[i].s, &opts);
+>          fprintf(stderr, "[KKGS]   %-6s : stage=%-8s MSL %s (%zu octets)\n",
+>                  probe[i].name,
+>                  _mesa_shader_stage_to_string(probe[i].s->info.stage),
+>                  msl ? "GENERE" : "ECHEC", msl ? strlen(msl) : 0u);
+>       }

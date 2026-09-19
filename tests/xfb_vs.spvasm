@@ -1,0 +1,54 @@
+               OpCapability Shader
+               OpCapability TransformFeedback
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Vertex %main "main" %_ %gl_VertexIndex %outVal
+               OpExecutionMode %main Xfb
+               OpMemberDecorate %gl_PerVertex 0 BuiltIn Position
+               OpDecorate %gl_PerVertex Block
+               OpDecorate %gl_VertexIndex BuiltIn VertexIndex
+               OpDecorate %outVal Location 0
+               OpDecorate %outVal XfbBuffer 0
+               OpDecorate %outVal XfbStride 16
+               OpDecorate %outVal Offset 0
+       %void = OpTypeVoid
+          %3 = OpTypeFunction %void
+      %float = OpTypeFloat 32
+    %v4float = OpTypeVector %float 4
+%gl_PerVertex = OpTypeStruct %v4float
+%_ptr_Output_gl_PerVertex = OpTypePointer Output %gl_PerVertex
+          %_ = OpVariable %_ptr_Output_gl_PerVertex Output
+        %int = OpTypeInt 32 1
+      %int_0 = OpConstant %int 0
+      %int_1 = OpConstant %int 1
+      %int_2 = OpConstant %int 2
+%_ptr_Input_int = OpTypePointer Input %int
+%gl_VertexIndex = OpVariable %_ptr_Input_int Input
+    %float_0 = OpConstant %float 0
+    %float_1 = OpConstant %float 1
+    %float_2 = OpConstant %float 2
+    %float_3 = OpConstant %float 3
+    %float_4 = OpConstant %float 4
+%_ptr_Output_v4float = OpTypePointer Output %v4float
+     %outVal = OpVariable %_ptr_Output_v4float Output
+       %main = OpFunction %void None %3
+          %5 = OpLabel
+        %idx = OpLoad %int %gl_VertexIndex
+         %sh = OpShiftLeftLogical %int %idx %int_1
+       %andx = OpBitwiseAnd %int %sh %int_2
+         %fx = OpConvertSToF %float %andx
+         %x1 = OpFMul %float %fx %float_2
+          %x = OpFSub %float %x1 %float_1
+       %andy = OpBitwiseAnd %int %idx %int_2
+         %fy = OpConvertSToF %float %andy
+         %y1 = OpFMul %float %fy %float_2
+          %y = OpFSub %float %y1 %float_1
+        %pos = OpCompositeConstruct %v4float %x %y %float_0 %float_1
+         %19 = OpAccessChain %_ptr_Output_v4float %_ %int_0
+               OpStore %19 %pos
+       %fidx = OpConvertSToF %float %idx
+      %fidx2 = OpFMul %float %fidx %float_2
+        %cap = OpCompositeConstruct %v4float %fidx %fidx2 %float_3 %float_4
+               OpStore %outVal %cap
+               OpReturn
+               OpFunctionEnd

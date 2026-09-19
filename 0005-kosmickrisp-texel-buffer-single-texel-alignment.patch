@@ -1,0 +1,190 @@
+Generated-by: LLM
+
+diff -urN --exclude=.git s3/src/kosmickrisp/vulkan/kk_buffer_view.c s4/src/kosmickrisp/vulkan/kk_buffer_view.c
+--- a/src/kosmickrisp/vulkan/kk_buffer_view.c	2026-09-19 17:57:44
++++ b/src/kosmickrisp/vulkan/kk_buffer_view.c	2026-09-19 17:57:49
+@@ -99,9 +99,31 @@
+    };
+    struct kk_buffer *buffer =
+       container_of(view->vk.buffer, struct kk_buffer, vk);
++
++   /* Metal only takes a 16 byte aligned offset for a texture buffer, whatever
++    * the format, but Vulkan lets the view start at any texel. Start the
++    * texture at the boundary below and remember how many texels that added in
++    * front; kk_nir_lower_descriptors.c adds them back to every coordinate.
++    */
++   uint64_t mtl_offset = kk_buffer_mtl_offset(buffer, view->vk.offset);
++   uint64_t aligned_offset =
++      mtl_offset & ~(uint64_t)(KK_MIN_TEXEL_BUFFER_ALIGNMENT - 1u);
++   uint32_t offset_bias_B = mtl_offset - aligned_offset;
++   uint32_t texel_size_B = util_format_get_blocksize(p_format);
++
++   /* The offset is a multiple of the texel size (that is what
++    * *TexelBufferOffsetSingleTexelAlignment promises the application), and so
++    * is the 16 byte boundary for any format we expose, so the bias lands on a
++    * whole number of texels.
++    */
++   assert(texel_size_B != 0u && offset_bias_B % texel_size_B == 0u);
++   view->texel_offset = offset_bias_B / texel_size_B;
++
++   layout.width_px += view->texel_offset;
++   layout.linear_stride_B += offset_bias_B;
++
+    view->mtl_texel_buffer_handle = mtl_new_texture_with_descriptor_linear(
+-      buffer->metal.handle, &layout,
+-      kk_buffer_mtl_offset(buffer, view->vk.offset));
++      buffer->metal.handle, &layout, aligned_offset);
+    if (!view->mtl_texel_buffer_handle) {
+       vk_buffer_view_destroy(&dev->vk, pAllocator, &view->vk);
+       return vk_error(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+diff -urN --exclude=.git s3/src/kosmickrisp/vulkan/kk_buffer_view.h s4/src/kosmickrisp/vulkan/kk_buffer_view.h
+--- a/src/kosmickrisp/vulkan/kk_buffer_view.h	2026-09-19 17:57:44
++++ b/src/kosmickrisp/vulkan/kk_buffer_view.h	2026-09-19 17:57:49
+@@ -23,6 +23,12 @@
+    struct vk_buffer_view vk;
+    mtl_texture *mtl_texel_buffer_handle;
+    uint64_t texel_buffer_gpu_id;
++
++   /* Texels between the start of the Metal texture and this view's first
++    * element. Non-zero when the requested offset was not 16 byte aligned.
++    * See struct kk_texel_buffer_descriptor.
++    */
++   uint32_t texel_offset;
+ };
+ 
+ VK_DEFINE_NONDISP_HANDLE_CASTS(kk_buffer_view, vk.base, VkBufferView,
+diff -urN --exclude=.git s3/src/kosmickrisp/vulkan/kk_descriptor_set.c s4/src/kosmickrisp/vulkan/kk_descriptor_set.c
+--- a/src/kosmickrisp/vulkan/kk_descriptor_set.c	2026-09-19 17:57:44
++++ b/src/kosmickrisp/vulkan/kk_descriptor_set.c	2026-09-19 17:57:49
+@@ -229,7 +229,7 @@
+                        const VkBufferView bufferView, uint32_t binding,
+                        uint32_t elem)
+ {
+-   struct kk_storage_image_descriptor desc = {};
++   struct kk_texel_buffer_descriptor desc = {};
+    if (bufferView != VK_NULL_HANDLE) {
+       VK_FROM_HANDLE(kk_buffer_view, view, bufferView);
+ 
+@@ -237,6 +237,7 @@
+       assert(view->texel_buffer_gpu_id);
+ 
+       desc.image_gpu_resource_id = view->texel_buffer_gpu_id;
++      desc.texel_offset = view->texel_offset;
+    }
+    write_desc(set, binding, elem, &desc, sizeof(desc));
+ }
+diff -urN --exclude=.git s3/src/kosmickrisp/vulkan/kk_descriptor_set_layout.c s4/src/kosmickrisp/vulkan/kk_descriptor_set_layout.c
+--- a/src/kosmickrisp/vulkan/kk_descriptor_set_layout.c	2026-09-19 17:57:44
++++ b/src/kosmickrisp/vulkan/kk_descriptor_set_layout.c	2026-09-19 17:57:49
+@@ -44,6 +44,10 @@
+ 
+    case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+    case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
++      /* Carries the texel bias on top of the resource id. */
++      *stride = *alignment = sizeof(struct kk_texel_buffer_descriptor);
++      break;
++
+    case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+       *stride = *alignment = sizeof(struct kk_storage_image_descriptor);
+       break;
+diff -urN --exclude=.git s3/src/kosmickrisp/vulkan/kk_descriptor_types.h s4/src/kosmickrisp/vulkan/kk_descriptor_types.h
+--- a/src/kosmickrisp/vulkan/kk_descriptor_types.h	2026-09-19 17:57:44
++++ b/src/kosmickrisp/vulkan/kk_descriptor_types.h	2026-09-19 17:57:49
+@@ -41,6 +41,26 @@
+ static_assert(sizeof(struct kk_storage_image_descriptor) == 8,
+               "kk_storage_image_descriptor has no holes");
+ 
++/* Metal wants a texture buffer to start on a 16 byte boundary whatever the
++ * format (measured: minimumTextureBufferAlignmentForPixelFormat: returns 16
++ * for every format), while Vulkan lets a VkBufferView start at any texel once
++ * uniform/storageTexelBufferOffsetSingleTexelAlignment is advertised. The view
++ * is therefore created at the 16 byte boundary below the requested offset and
++ * carries the number of texels that were skipped; the shader adds it back to
++ * every coordinate.
++ *
++ * image_gpu_resource_id must stay first: the texture and image paths both read
++ * a resource id at offset 0 without caring which descriptor they got.
++ */
++struct kk_texel_buffer_descriptor {
++   uint64_t image_gpu_resource_id;
++   uint32_t texel_offset;
++   uint32_t pad;
++};
++
++static_assert(sizeof(struct kk_texel_buffer_descriptor) == 16,
++              "kk_texel_buffer_descriptor has no holes");
++
+ /* This has to match nir_address_format_64bit_bounded_global */
+ struct kk_buffer_address {
+    uint64_t base_addr;
+diff -urN --exclude=.git s3/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c s4/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c	2026-09-19 17:57:44
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c	2026-09-19 17:57:49
+@@ -385,6 +385,24 @@
+       type = nir_type_uint32;
+    }
+ 
++   /* A texel buffer view may start mid-way through the 16 byte granule Metal
++    * insists on, so shift the coordinate past the texels the view skipped.
++    * See struct kk_texel_buffer_descriptor.
++    */
++   if (nir_intrinsic_image_dim(intr) == GLSL_SAMPLER_DIM_BUF) {
++      nir_def *texel_offset = load_resource_deref_desc(
++         b, 1, 32, deref,
++         offsetof(struct kk_texel_buffer_descriptor, texel_offset), ctx);
++      nir_def *coord = intr->src[1].ssa;
++
++      nir_src_rewrite(&intr->src[1],
++                      nir_vector_insert_imm(
++                         b, coord,
++                         nir_iadd(b, nir_channel(b, coord, 0),
++                                  nir_u2uN(b, texel_offset, coord->bit_size)),
++                         0));
++   }
++
+    nir_variable *var = nir_deref_instr_get_variable(deref);
+    nir_def *handle = nir_load_texture_handle_kk(
+       b, 1, 64, resource_addr, .dest_type = type,
+@@ -589,6 +607,22 @@
+ 
+       nir_def_replace(&tex->def, border);
+       return true;
++   }
++
++   /* Same shift for the sampled side. */
++   if (tex->sampler_dim == GLSL_SAMPLER_DIM_BUF) {
++      int coord_idx = nir_tex_instr_src_index(tex, nir_tex_src_coord);
++
++      if (coord_idx >= 0) {
++         nir_def *texel_offset = load_resource_deref_desc(
++            b, 1, 32, nir_src_as_deref(nir_src_for_ssa(texture)),
++            offsetof(struct kk_texel_buffer_descriptor, texel_offset), ctx);
++         nir_def *coord = tex->src[coord_idx].src.ssa;
++
++         nir_src_rewrite(&tex->src[coord_idx].src,
++                         nir_iadd(b, coord,
++                                  nir_u2uN(b, texel_offset, coord->bit_size)));
++      }
+    }
+ 
+    {
+diff -urN --exclude=.git s3/src/kosmickrisp/vulkan/kk_physical_device.c s4/src/kosmickrisp/vulkan/kk_physical_device.c
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c	2026-09-19 17:57:44
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c	2026-09-19 17:57:49
+@@ -770,10 +770,14 @@
+       .integerDotProduct4x8BitPackedUnsignedAccelerated = false,
+       .integerDotProduct4x8BitPackedSignedAccelerated = false,
+       .integerDotProduct4x8BitPackedMixedSignednessAccelerated = false,
++      /* Metal wants 16 bytes whatever the format, but a view whose offset is
++       * only texel aligned is emulated: the texture starts at the boundary
++       * below and the shader shifts the coordinate. See
++       * struct kk_texel_buffer_descriptor. */
+       .storageTexelBufferOffsetAlignmentBytes = KK_MIN_TEXEL_BUFFER_ALIGNMENT,
+-      .storageTexelBufferOffsetSingleTexelAlignment = false,
++      .storageTexelBufferOffsetSingleTexelAlignment = true,
+       .uniformTexelBufferOffsetAlignmentBytes = KK_MIN_TEXEL_BUFFER_ALIGNMENT,
+-      .uniformTexelBufferOffsetSingleTexelAlignment = false,
++      .uniformTexelBufferOffsetSingleTexelAlignment = true,
+       .maxBufferSize = pdev->info.max_buffer_size,
+ 
+       /* VK_KHR_push_descriptor */

@@ -1,0 +1,36 @@
+diff --git a/libs/vkd3d/device.c b/libs/vkd3d/device.c
+index 92576fa..1581198 100644
+--- a/libs/vkd3d/device.c
++++ b/libs/vkd3d/device.c
+@@ -4025,6 +4025,11 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CreateGraphicsPipelineState(d3d12_
+     TRACE("iface %p, desc %p, riid %s, pipeline_state %p.\n",
+             iface, desc, debugstr_guid(riid), pipeline_state);
+ 
++    /* Direct3D 12 clears the out parameter when creation fails; applications
++     * and tests routinely pass an uninitialised pointer and only look at it,
++     * not at the HRESULT. Leaving it untouched hands them a stray pointer. */
++    *pipeline_state = NULL;
++
+     if (FAILED(hr = vkd3d_pipeline_state_desc_from_d3d12_graphics_desc(&pipeline_desc, desc)))
+         return hr;
+ 
+@@ -4047,6 +4052,9 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CreateComputePipelineState(d3d12_d
+     TRACE("iface %p, desc %p, riid %s, pipeline_state %p.\n",
+             iface, desc, debugstr_guid(riid), pipeline_state);
+ 
++    /* Cleared on failure as well, see CreateGraphicsPipelineState(). */
++    *pipeline_state = NULL;
++
+     if (FAILED(hr = vkd3d_pipeline_state_desc_from_d3d12_compute_desc(&pipeline_desc, desc)))
+         return hr;
+ 
+@@ -7444,6 +7452,9 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CreatePipelineState(d3d12_device_i
+     TRACE("iface %p, desc %p, riid %s, pipeline_state %p.\n",
+             iface, desc, debugstr_guid(riid), pipeline_state);
+ 
++    /* Cleared on failure as well, see CreateGraphicsPipelineState(). */
++    *pipeline_state = NULL;
++
+     if (FAILED(hr = vkd3d_pipeline_state_desc_from_d3d12_stream_desc(&pipeline_desc, desc, &pipeline_type)))
+         return hr;
+ 

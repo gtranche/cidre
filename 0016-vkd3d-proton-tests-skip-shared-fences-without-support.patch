@@ -1,0 +1,48 @@
+diff --git a/tests/d3d12_sync.c b/tests/d3d12_sync.c
+index 04bd5bf..af90005 100644
+--- a/tests/d3d12_sync.c
++++ b/tests/d3d12_sync.c
+@@ -1266,6 +1266,43 @@ void test_fence_wait_robustness_inner(bool shared_handles)
+                 NULL, GENERIC_ALL, NULL, &shared_drain);
+         ok(SUCCEEDED(hr), "Failed to create shared handle, hr #%x.\n", (int)hr);
+ 
++        /* Wine implements neither CreateSharedHandle nor OpenSharedHandle for
++         * fences. Everything below re-opens the fences from those handles, so
++         * without them the rest of the test runs on dangling pointers and takes
++         * the whole suite down. */
++        if (!shared_signal || !shared_wait || !shared_drain)
++        {
++            skip("Shared fence handles are not supported.\n");
++            if (shared_signal)
++                CloseHandle(shared_signal);
++            if (shared_wait)
++                CloseHandle(shared_wait);
++            if (shared_drain)
++                CloseHandle(shared_drain);
++            ID3D12Fence_Release(signal_fence);
++            ID3D12Fence_Release(wait_fence);
++            ID3D12Fence_Release(drain_fence);
++            destroy_test_context(&context);
++            return;
++        }
++
++        hr = ID3D12Device_OpenSharedHandle(context.device, shared_signal,
++                &IID_ID3D12Fence, (void**)&signal_fence_dup);
++        if (FAILED(hr))
++        {
++            skip("OpenSharedHandle not supported, hr #%x.\n", (int)hr);
++            CloseHandle(shared_signal);
++            CloseHandle(shared_wait);
++            CloseHandle(shared_drain);
++            ID3D12Fence_Release(signal_fence);
++            ID3D12Fence_Release(wait_fence);
++            ID3D12Fence_Release(drain_fence);
++            destroy_test_context(&context);
++            return;
++        }
++        ID3D12Fence_Release(signal_fence_dup);
++        signal_fence_dup = NULL;
++
+         ID3D12Fence_Release(signal_fence);
+         ID3D12Fence_Release(wait_fence);
+         ID3D12Fence_Release(drain_fence);

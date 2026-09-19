@@ -1,0 +1,14 @@
+--- a/libs/vkd3d-common/platform.c
++++ b/libs/vkd3d-common/platform.c
+@@ -126,6 +126,11 @@
+ # include <pathcch.h>
+ # include <psapi.h>
+ 
++/* Older mingw-w64 headers predate this flag; zero is its documented value. */
++#ifndef PATHCCH_NONE
++#define PATHCCH_NONE 0x00000000
++#endif
++
+ #ifdef _MSC_VER
+ /* This struct is exposed on MinGW, but not MSVC.
+  * It's not really a public API ... */

@@ -1,0 +1,32 @@
+Generated-by: LLM
+
+diff -urN --exclude=.git s15/src/kosmickrisp/vulkan/kk_physical_device.c s16/src/kosmickrisp/vulkan/kk_physical_device.c
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c	2026-09-19 17:59:07
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c	2026-09-19 17:59:16
+@@ -30,6 +30,8 @@
+ #include "vk_drm_syncobj.h"
+ #include "vk_shader_module.h"
+ 
++#define KK_MAX_SAMPLER_ALLOCATIONS 65536u
++
+ static uint32_t
+ kk_get_vk_version()
+ {
+@@ -573,7 +575,7 @@
+       .maxStorageBufferRange = UINT32_MAX,
+       .maxPushConstantsSize = KK_MAX_PUSH_SIZE,
+       .maxMemoryAllocationCount = 4096,
+-      .maxSamplerAllocationCount = 4000,
++      .maxSamplerAllocationCount = KK_MAX_SAMPLER_ALLOCATIONS,
+       .bufferImageGranularity = 16,
+       .sparseAddressSpaceSize = KK_SPARSE_ADDR_SPACE_SIZE,
+       .maxBoundDescriptorSets = KK_MAX_SETS,
+@@ -796,7 +798,7 @@
+       .advancedBlendAllOperations = true,
+ 
+       /* VK_EXT_custom_border_color */
+-      .maxCustomBorderColorSamplers = 4000,
++      .maxCustomBorderColorSamplers = KK_MAX_SAMPLER_ALLOCATIONS,
+ 
+       /* VK_EXT_extended_dynamic_state3 */
+       .dynamicPrimitiveTopologyUnrestricted = false,

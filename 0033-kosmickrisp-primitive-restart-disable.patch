@@ -1,0 +1,92 @@
+Generated-by: LLM
+
+diff -urN --exclude=.git s26/src/kosmickrisp/libkk/kk_draws.cl s27/src/kosmickrisp/libkk/kk_draws.cl
+--- a/src/kosmickrisp/libkk/kk_draws.cl	2026-09-19 18:00:40
++++ b/src/kosmickrisp/libkk/kk_draws.cl	2026-09-19 18:00:48
+@@ -76,8 +76,9 @@
+    uint64_t index_buffer, global struct poly_heap *heap,
+    constant uint32_t *in_draw, global uint32_t *out_draw,
+    uint32_t in_draw_stride_el, uint32_t restart_index,
+-   uint32_t index_buffer_size_el, uint32_t in_el_size_B,
+-   uint32_t out_el_size_B, uint32_t flatshade_first, uint32_t mode)
++   uint32_t restart_enabled, uint32_t index_buffer_size_el,
++   uint32_t in_el_size_B, uint32_t out_el_size_B, uint32_t flatshade_first,
++   uint32_t mode)
+ {
+    uint gid = cl_group_id.x;
+    in_draw += gid * in_draw_stride_el;
+@@ -86,5 +87,6 @@
+    POLY_DECL_UNROLL_RESTART_SCRATCH(scratch, 1024);
+    poly_unroll_geometry(out_draw, heap, in_draw, index_buffer,
+                         index_buffer_size_el, in_el_size_B, out_el_size_B,
+-                        restart_index, flatshade_first, true, mode, scratch);
++                        restart_index, restart_enabled, flatshade_first, true,
++                        mode, scratch);
+ }
+diff -urN --exclude=.git s26/src/kosmickrisp/vulkan/kk_cmd_draw.c s27/src/kosmickrisp/vulkan/kk_cmd_draw.c
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c	2026-09-19 18:00:40
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c	2026-09-19 18:00:48
+@@ -1750,8 +1750,8 @@
+       .in_draw = data->indirect_command.addr,
+       .out_draw = out_draws.gpu,
+       .in_draw_stride_el = data->indirect_command.stride / sizeof(uint32_t),
+-      /* Handle primitive restart disable by forcing index to UINT32_MAX */
+-      .restart_index = !data->restart ? UINT32_MAX : data->restart_index,
++      .restart_index = data->restart_index,
++      .restart_enabled = data->restart,
+       .index_buffer_size_el =
+          data->indexed ? data->index_buffer.range / data->index_buffer_el_size_B
+                        : 0u,
+@@ -1908,18 +1908,11 @@
+    if (data->index_buffer_el_size_B == sizeof(uint8_t))
+       return true;
+ 
+-   /* For primitive types that support primitive restart, if restart is disabled
+-    * and the index size is less than uint32_t, we need to make sure to perform
+-    * unrolling as it automatically promotes the type to uint32_t, preventing
+-    * valid indices from being treated as restarts. For uint32_t indices with
+-    * restart disabled, we realistically will never have enough vertices for the
+-    * restart index to be valid anyway. */
+    switch (data->prim) {
+    case MESA_PRIM_LINE_STRIP:
+    case MESA_PRIM_TRIANGLE_STRIP:
+    case MESA_PRIM_TRIANGLE_FAN:
+-      return (!data->restart &&
+-              data->index_buffer_el_size_B < sizeof(uint32_t));
++      return !data->restart;
+    default:
+       return false;
+    }
+diff -urN --exclude=.git s26/src/poly/cl/restart.h s27/src/poly/cl/restart.h
+--- a/src/poly/cl/restart.h	2026-09-19 18:00:43
++++ b/src/poly/cl/restart.h	2026-09-19 18:00:51
+@@ -172,6 +172,7 @@
+                      uint32_t in_index_size_B,
+                      uint32_t out_index_size_B,
+                      uint32_t restart_index,
++                     uint32_t restart_enabled,
+                      uint32_t flatshade_first,
+                      uint32_t emulate_flatshade_last,
+                      enum mesa_prim mode,
+@@ -210,8 +211,9 @@
+       for (;;) {
+          uint idx = next_restart + tid;
+          bool restart =
+-            idx >= count || poly_load_index(in_ptr, in_range_el, idx,
+-                                            in_index_size_B) == restart_index;
++            idx >= count || (restart_enabled &&
++                             poly_load_index(in_ptr, in_range_el, idx,
++                                             in_index_size_B) == restart_index);
+ 
+          uint next_offs = poly_work_group_first_true(restart, scratch);
+ 
+@@ -262,7 +264,8 @@
+ {
+    poly_unroll_geometry(out_draw, heap, in_draw, index_buffer,
+                         index_buffer_range_el, index_size_B, index_size_B,
+-                        restart_index, flatshade_first, false, mode, scratch);
++                        restart_index, true, flatshade_first, false, mode,
++                        scratch);
+ }
+ 
+ static inline uint32_t

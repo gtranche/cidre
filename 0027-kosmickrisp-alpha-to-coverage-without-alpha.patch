@@ -1,0 +1,102 @@
+Generated-by: LLM
+
+diff -urN --exclude=.git s21/src/kosmickrisp/compiler/msl_nir_lower_common.c s22/src/kosmickrisp/compiler/msl_nir_lower_common.c
+--- a/src/kosmickrisp/compiler/msl_nir_lower_common.c	2026-09-19 18:00:00
++++ b/src/kosmickrisp/compiler/msl_nir_lower_common.c	2026-09-19 18:00:08
+@@ -348,6 +348,65 @@
+    return true;
+ }
+ 
++bool
++msl_lower_alpha_to_coverage(nir_shader *nir, uint32_t sample_count)
++{
++   assert(nir->info.stage == MESA_SHADER_FRAGMENT);
++
++   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
++   nir_intrinsic_instr *store = NULL;
++
++   nir_foreach_block(block, impl) {
++      nir_foreach_instr(instr, block) {
++         if (instr->type != nir_instr_type_intrinsic)
++            continue;
++
++         nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
++         if (intr->intrinsic != nir_intrinsic_store_output)
++            continue;
++
++         unsigned location = nir_intrinsic_io_semantics(intr).location;
++         if (location != FRAG_RESULT_DATA0 && location != FRAG_RESULT_COLOR)
++            continue;
++
++         unsigned first = nir_intrinsic_component(intr);
++         unsigned count = intr->src[0].ssa->num_components;
++         if (first + count <= 3u)
++            continue;
++
++         store = intr;
++         break;
++      }
++      if (store)
++         break;
++   }
++
++   if (store == NULL)
++      return false;
++
++   nir_builder b = nir_builder_at(nir_after_instr(&store->instr));
++
++   nir_def *alpha =
++      nir_channel(&b, store->src[0].ssa, 3u - nir_intrinsic_component(store));
++   nir_def *scaled = nir_fmul_imm(&b, nir_fsat(&b, alpha), sample_count);
++   nir_def *covered = nir_f2u32(&b, nir_fround_even(&b, scaled));
++   nir_def *mask = nir_iadd_imm(&b, nir_ishl(&b, nir_imm_int(&b, 1u), covered),
++                                -1);
++
++   struct nir_io_semantics io_semantics = {
++      .location = FRAG_RESULT_SAMPLE_MASK,
++      .num_slots = 1u,
++   };
++   nir_store_output(&b, mask, nir_imm_int(&b, 0u), .base = 0u, .range = 1u,
++                    .write_mask = 0x1, .component = 0u,
++                    .src_type = nir_type_uint32,
++                    .io_semantics = io_semantics);
++
++   nir->info.outputs_written |= BITFIELD64_BIT(FRAG_RESULT_SAMPLE_MASK);
++
++   return nir_progress(true, impl, nir_metadata_none);
++}
++
+ static bool
+ is_color_output(const nir_intrinsic_instr *intr)
+ {
+diff -urN --exclude=.git s21/src/kosmickrisp/compiler/nir_to_msl.h s22/src/kosmickrisp/compiler/nir_to_msl.h
+--- a/src/kosmickrisp/compiler/nir_to_msl.h	2026-09-19 18:00:00
++++ b/src/kosmickrisp/compiler/nir_to_msl.h	2026-09-19 18:00:08
+@@ -82,6 +82,7 @@
+ bool msl_lower_robustness2_array_layers(nir_shader *s);
+ 
+ bool msl_lower_static_sample_mask(nir_shader *nir, uint32_t sample_mask);
++bool msl_lower_alpha_to_coverage(nir_shader *nir, uint32_t sample_count);
+ bool msl_disable_triangle_merge(nir_shader *nir);
+ bool msl_ensure_depth_write(nir_shader *nir);
+ bool msl_ensure_vertex_position_output(nir_shader *nir);
+diff -urN --exclude=.git s21/src/kosmickrisp/vulkan/kk_shader.c s22/src/kosmickrisp/vulkan/kk_shader.c
+--- a/src/kosmickrisp/vulkan/kk_shader.c	2026-09-19 18:00:00
++++ b/src/kosmickrisp/vulkan/kk_shader.c	2026-09-19 18:00:08
+@@ -612,6 +612,16 @@
+    if (nir->info.fs.uses_sample_shading)
+       NIR_PASS(_, nir, msl_nir_lower_sample_shading);
+ 
++   if (state->ms && state->ms->alpha_to_coverage_enable &&
++       !(nir->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_SAMPLE_MASK))) {
++      enum pipe_format rt0 =
++         vk_format_to_pipe_format(state->rp->color_attachment_formats[0]);
++
++      if (rt0 != PIPE_FORMAT_NONE && !util_format_has_alpha(rt0))
++         NIR_PASS(_, nir, msl_lower_alpha_to_coverage,
++                  state->ms->rasterization_samples);
++   }
++
+    if (state->cb)
+       kk_lower_fs_blend(nir, state);
+ 

@@ -1,0 +1,169 @@
+Generated-by: LLM
+
+diff --git a/include/winternl.h b/include/winternl.h
+index 0bae9fb..80524ef 100644
+--- a/include/winternl.h
++++ b/include/winternl.h
+@@ -21,6 +21,13 @@
+ #ifndef __WINE_WINTERNL_H
+ #define __WINE_WINTERNL_H
+ 
++
++#if defined(__aarch64__) && defined(__APPLE__)
++#define WINE_USER_SHARED_DATA_ADDR 0x7ffe00000000ull
++#else
++#define WINE_USER_SHARED_DATA_ADDR 0x7ffe0000ull
++#endif
++
+ #include <ntdef.h>
+ #include <windef.h>
+ 
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 0c0a12c..3344688 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -177,9 +177,18 @@ static void *host_addr_space_limit;  /* top of the host virtual address space */
+ static struct file_view *arm64ec_view;
+ 
+ ULONG_PTR user_space_wow_limit = 0;
+-struct _KUSER_SHARED_DATA *user_shared_data = (void *)0x7ffe0000;
++struct _KUSER_SHARED_DATA *user_shared_data = (void *)(ULONG_PTR)WINE_USER_SHARED_DATA_ADDR;
+ 
+ /* TEB allocation blocks */
++static ULONG_PTR teb_block_zero_bits(void)
++{
++#if defined(__aarch64__) && defined(__APPLE__)
++    return 0;
++#else
++    return is_win64 ? limit_2g - 1 : 0;
++#endif
++}
++
+ static void *teb_block;
+ static void **next_free_teb;
+ static int teb_block_pos;
+@@ -2823,7 +2832,7 @@ static NTSTATUS map_image_into_view( struct file_view *view, const WCHAR *filena
+         {
+             WARN_(module)( "%s section %.8s too large (%x+%lx/%lx)\n",
+                            debugstr_w(filename), sec->Name, (int)sec->VirtualAddress, map_size, total_size );
+-            return status;
++                        return status;
+         }
+ 
+         if ((sec->Characteristics & IMAGE_SCN_MEM_SHARED) &&
+@@ -3715,7 +3724,7 @@ TEB *virtual_alloc_first_teb(void)
+         exit(1);
+     }
+ 
+-    NtAllocateVirtualMemory( NtCurrentProcess(), &teb_block, is_win64 ? limit_2g - 1 : 0, &total,
++    NtAllocateVirtualMemory( NtCurrentProcess(), &teb_block, teb_block_zero_bits(), &total,
+                              MEM_RESERVE | MEM_TOP_DOWN, PAGE_READWRITE );
+     teb_block_pos = 30;
+     ptr = (char *)teb_block + 30 * block_size;
+@@ -3753,8 +3762,9 @@ NTSTATUS virtual_alloc_teb( TEB **ret_teb )
+         {
+             SIZE_T total = 32 * block_size;
+ 
+-            if ((status = NtAllocateVirtualMemory( NtCurrentProcess(), &ptr, user_space_wow_limit,
+-                                                   &total, MEM_RESERVE, PAGE_READWRITE )))
++            if ((status = NtAllocateVirtualMemory( NtCurrentProcess(), &ptr,
++                                                   teb_block_zero_bits(), &total,
++                                                   MEM_RESERVE, PAGE_READWRITE )))
+             {
+                 server_leave_uninterrupted_section( &virtual_mutex, &sigset );
+                 return status;
+diff --git a/dlls/ntdll/thread.c b/dlls/ntdll/thread.c
+index 2e1c3ce..d9046f2 100644
+--- a/dlls/ntdll/thread.c
++++ b/dlls/ntdll/thread.c
+@@ -36,7 +36,7 @@ WINE_DECLARE_DEBUG_CHANNEL(relay);
+ WINE_DECLARE_DEBUG_CHANNEL(pid);
+ WINE_DECLARE_DEBUG_CHANNEL(timestamp);
+ 
+-struct _KUSER_SHARED_DATA *user_shared_data = (void *)0x7ffe0000;
++struct _KUSER_SHARED_DATA *user_shared_data = (void *)(ULONG_PTR)WINE_USER_SHARED_DATA_ADDR;
+ 
+ struct debug_info
+ {
+diff --git a/dlls/kernel32/sync.c b/dlls/kernel32/sync.c
+index 44fd010..6ca6a3c 100644
+--- a/dlls/kernel32/sync.c
++++ b/dlls/kernel32/sync.c
+@@ -41,7 +41,7 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(sync);
+ 
+-static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x7ffe0000;
++static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)(ULONG_PTR)WINE_USER_SHARED_DATA_ADDR;
+ 
+ 
+ static void get_create_object_attributes( OBJECT_ATTRIBUTES *attr, UNICODE_STRING *nameW,
+diff --git a/dlls/kernel32/process.c b/dlls/kernel32/process.c
+index 2a4ddc6..fe24ddc 100644
+--- a/dlls/kernel32/process.c
++++ b/dlls/kernel32/process.c
+@@ -40,7 +40,7 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(process);
+ 
+-static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x7ffe0000;
++static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)(ULONG_PTR)WINE_USER_SHARED_DATA_ADDR;
+ 
+ typedef struct
+ {
+diff --git a/dlls/kernelbase/sync.c b/dlls/kernelbase/sync.c
+index f03a6c3..0634c53 100644
+--- a/dlls/kernelbase/sync.c
++++ b/dlls/kernelbase/sync.c
+@@ -40,7 +40,7 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(sync);
+ 
+-static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x7ffe0000;
++static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)(ULONG_PTR)WINE_USER_SHARED_DATA_ADDR;
+ 
+ /* check if current version is NT or Win95 */
+ static inline BOOL is_version_nt(void)
+diff --git a/dlls/ntoskrnl.exe/instr.c b/dlls/ntoskrnl.exe/instr.c
+index abdd934..754abef 100644
+--- a/dlls/ntoskrnl.exe/instr.c
++++ b/dlls/ntoskrnl.exe/instr.c
+@@ -496,7 +496,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(int);
+ #define SIB_BASE( sib, rex )    (((sib) & 7) | (((rex) & REX_B) ? 8 : 0))
+ 
+ /* keep in sync with dlls/ntdll/thread.c:thread_init */
+-static const BYTE *wine_user_shared_data = (BYTE *)0x7ffe0000;
++static const BYTE *wine_user_shared_data = (BYTE *)(ULONG_PTR)WINE_USER_SHARED_DATA_ADDR;
+ static const BYTE *user_shared_data      = (BYTE *)0xfffff78000000000;
+ 
+ static inline DWORD64 *get_int_reg( CONTEXT *context, int index )
+diff --git a/tools/winegcc/winegcc.c b/tools/winegcc/winegcc.c
+index 5b60c57..a2b2a1f 100644
+--- a/tools/winegcc/winegcc.c
++++ b/tools/winegcc/winegcc.c
+@@ -91,6 +91,7 @@
+ #include <assert.h>
+ #include <stdio.h>
+ #include <stdlib.h>
++#include <unistd.h>
+ #include <stdarg.h>
+ #include <string.h>
+ #include <errno.h>
+@@ -443,6 +444,17 @@ static struct strarray get_link_args( struct options *opts, const char *output_n
+             strarray_add( &link_args, strmake( "-Wl,-Xlink=-filealign:%s",
+                                               opts->file_align ? opts->file_align : "0x1000" ));
+ 
++        {
++            unsigned int host_page = sysconf( _SC_PAGESIZE );
++
++            if (host_page > 0x1000)
++            {
++                const char *arg = strmake( "-Wl,--section-alignment,0x%x", host_page );
++
++                strarray_add( &link_args, arg );
++            }
++        }
++
+         strarray_addall( &link_args, flags );
+         return link_args;
+ 
