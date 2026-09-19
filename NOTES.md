@@ -7037,3 +7037,27 @@ graphique.
 Le `winevulkan` modifie est **installe**. Il expose une extension de plus, ce qui peut changer
 le comportement de vkd3d-proton. **La campagne D3D12 doit etre rejouee avant de lui faire
 confiance** — la reference est 2 305 echecs, archivee dans `tests/conformance-baseline.txt`.
+
+---
+
+## 102. Le correctif 0038 ne regresse rien (2026-09-19)
+
+Campagne D3D12 rejouee avec le `winevulkan` modifie installe :
+
+```
+574 fonctions demarrees, 574 terminees
+24 152 455 tests executes
+2305 echecs, 28 fonctions en echec
+```
+
+Et cette fois la comparaison ne s'arrete pas au total. Diff **fonction par fonction** contre
+`tests/conformance-baseline.txt` : **aucun ecart**, ni en plus ni en moins, sur les 28 fonctions
+en echec. C'est exactement ce pour quoi la reference avait ete archivee au § 98 — un total
+identique peut cacher deux ecarts qui se compensent ; ce n'est pas le cas ici.
+
+Le nombre de tests executes varie legerement d'une campagne a l'autre (24 169 186 puis
+24 152 455) : certaines fonctions ajustent leur volume selon l'etat. Le compte d'echecs, lui,
+ne bouge pas.
+
+La dette du § 101 est donc soldee : exposer `VK_KHR_external_memory_win32` par-dessus Metal ne
+change rien au chemin D3D12. Le correctif 0038 peut rester installe.
