@@ -20,7 +20,7 @@ if [ -z "${WINEPREFIX:-}" ]; then
 fi
 export WINEPREFIX
 export WINEDEBUG=${WINEDEBUG:--all}
-export WINEDLLOVERRIDES="d3d12,d3d12core,dxgi=n"
+export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:-d3d12,d3d12core,dxgi,d3d11,d3d10core,d3d9=n}"
 export VK_DRIVER_FILES=$R/prefix-x64/share/vulkan/icd.d/kosmickrisp_mesa_icd.x86_64.json
 export DYLD_LIBRARY_PATH=$R/wine/vklib:$R/prefix-x64/lib
 export MESA_KK_EXPERIMENTAL=custom_border,image_view_min_lod

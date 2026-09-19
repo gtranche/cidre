@@ -6441,3 +6441,66 @@ reconfiguration, et meson attrapait alors le `python3` de miniconda, dépourvu d
 
 État final revérifié après l'opération : arbre identique au s28, cumulatif conforme, pilote
 arm64 réinstallé, et les 90 images Godot toujours identiques octet pour octet.
+
+---
+
+## 93. DXVK tient sur KosmicKrisp : D3D9/10/11 s'ouvrent (2026-09-19)
+
+### Ce qui n'allait pas
+
+DXVK v2.7.1 était **construit depuis longtemps mais a peine branche**. Inventaire du prefixe :
+
+| DLL | prefixe | build DXVK | ce qui tournait |
+|---|---|---|---|
+| `dxgi` | 16 194 818 | 16 194 818 | DXVK |
+| `d3d11` | 4 258 334 | 19 172 471 | **wined3d** |
+| `d3d9` | 1 904 795 | 17 763 238 | **wined3d** |
+
+Seul `dxgi` venait de DXVK. Tout ce qui n'etait pas D3D12 passait donc par `wined3d`, donc par
+l'OpenGL 4.1 deprecie de macOS — sans rapport avec notre pile. Et `etape2_pile_wine.sh` ne
+surchargeait que `d3d12,d3d12core,dxgi`.
+
+Correction : `d3d11.dll`, `d3d10core.dll` et `d3d9.dll` de DXVK installes (anciens conserves
+dans `/tmp/claude-501/dll-wine-origine`), surcharges etendues a
+`d3d12,d3d12core,dxgi,d3d11,d3d10core,d3d9=n`, et rendues surchargeables par l'environnement
+pour pouvoir faire l'A/B.
+
+### Premiere sonde : le peripherique et l'execution
+
+`tests/probe_d3d11.c` : creation du peripherique, effacement d'une cible avec une couleur
+connue, copie vers une texture de lecture, relecture du pixel. Pas seulement une creation de
+peripherique — la preuve que le GPU a execute la commande.
+
+```
+DXVK: v2.7.1
+Found device: Apple M1 Max (KosmicKrisp 26.2.99)
+D3D11InternalCreateDevice: Maximum supported feature level: D3D_FEATURE_LEVEL_11_1
+peripherique cree, niveau de fonctionnalite 11_0
+adaptateur : Apple M1 Max  (25559 Mo dedies)
+pixel relu : R=64 V=128 B=191 A=255  (attendu 64 128 191 255)
+```
+
+Un seul avertissement : *External memory features not supported*.
+
+### Seconde sonde : le chemin des shaders
+
+`tests/probe_d3d11_draw.c` : HLSL compile **a l'execution** par le `d3dcompiler_47` de Wine,
+DXBC traduit en SPIR-V par DXVK, triangle rasterise, deux pixels relus.
+
+```
+HLSL compile : VS 1080 octets, PS 636 octets
+centre : R=80 V=90 B=85   coin : R=0 V=0 B=0
+```
+
+Le centre porte une couleur interpolee entre les trois sommets, le coin est noir. La chaine
+`HLSL -> DXBC -> DXVK -> SPIR-V -> KosmicKrisp -> Metal` fonctionne de bout en bout.
+
+### Portee
+
+Le projet visait D3D12. Il se trouve que **D3D9, D3D10 et D3D11 marchent aussi**, sur la meme
+pile Vulkan/Metal, sans une ligne de code supplementaire — seulement trois DLL a mettre au bon
+endroit. C'est de loin le plus gros gain fonctionnel de la journee : la grande majorite des
+jeux Windows sont D3D11, pas D3D12.
+
+Restriction connue : niveau de fonctionnalite 11_0 retenu alors que 11_1 est annonce supporte,
+et la memoire externe manque. Ni l'un ni l'autre n'a ete creuse.
