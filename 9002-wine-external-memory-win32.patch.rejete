@@ -1,0 +1,492 @@
+Generated-by: LLM
+
+# Tentative abandonnee : exposer VK_KHR_external_memory_win32 depuis winevulkan.
+# Voir NOTES.md paragraphe 99. La plomberie fonctionne, mais aucune des deux
+# routes n'aboutit : OPAQUE_FD ne couvre pas le tuilage optimal, et le
+# generateur de Wine ecarte structurellement la plateforme metal.
+
+diff --git a/dlls/winevulkan/loader_thunks.c b/dlls/winevulkan/loader_thunks.c
+index dd997b5..24cc940 100644
+--- a/dlls/winevulkan/loader_thunks.c
++++ b/dlls/winevulkan/loader_thunks.c
+@@ -5025,6 +5025,31 @@ VkResult WINAPI vkGetMemoryHostPointerPropertiesEXT(VkDevice device, VkExternalM
+     return params.result;
+ }
+ 
++VkResult WINAPI vkGetMemoryWin32HandleKHR(VkDevice device, const VkMemoryGetWin32HandleInfoKHR *pGetWin32HandleInfo, HANDLE *pHandle)
++{
++    struct vkGetMemoryWin32HandleKHR_params params;
++    NTSTATUS status;
++    params.device = device;
++    params.pGetWin32HandleInfo = pGetWin32HandleInfo;
++    params.pHandle = pHandle;
++    status = UNIX_CALL(vkGetMemoryWin32HandleKHR, &params);
++    assert(!status && "vkGetMemoryWin32HandleKHR");
++    return params.result;
++}
++
++VkResult WINAPI vkGetMemoryWin32HandlePropertiesKHR(VkDevice device, VkExternalMemoryHandleTypeFlagBits handleType, HANDLE handle, VkMemoryWin32HandlePropertiesKHR *pMemoryWin32HandleProperties)
++{
++    struct vkGetMemoryWin32HandlePropertiesKHR_params params;
++    NTSTATUS status;
++    params.device = device;
++    params.handleType = handleType;
++    params.handle = handle;
++    params.pMemoryWin32HandleProperties = pMemoryWin32HandleProperties;
++    status = UNIX_CALL(vkGetMemoryWin32HandlePropertiesKHR, &params);
++    assert(!status && "vkGetMemoryWin32HandlePropertiesKHR");
++    return params.result;
++}
++
+ void WINAPI vkGetMicromapBuildSizesEXT(VkDevice device, VkAccelerationStructureBuildTypeKHR buildType, const VkMicromapBuildInfoEXT *pBuildInfo, VkMicromapBuildSizesInfoEXT *pSizeInfo)
+ {
+     struct vkGetMicromapBuildSizesEXT_params params;
+@@ -7200,6 +7225,8 @@ static const struct vulkan_func vk_device_dispatch_table[] =
+     {"vkGetImageViewOpaqueCaptureDescriptorDataEXT", vkGetImageViewOpaqueCaptureDescriptorDataEXT},
+     {"vkGetLatencyTimingsNV", vkGetLatencyTimingsNV},
+     {"vkGetMemoryHostPointerPropertiesEXT", vkGetMemoryHostPointerPropertiesEXT},
++    {"vkGetMemoryWin32HandleKHR", vkGetMemoryWin32HandleKHR},
++    {"vkGetMemoryWin32HandlePropertiesKHR", vkGetMemoryWin32HandlePropertiesKHR},
+     {"vkGetMicromapBuildSizesEXT", vkGetMicromapBuildSizesEXT},
+     {"vkGetPerformanceParameterINTEL", vkGetPerformanceParameterINTEL},
+     {"vkGetPipelineBinaryDataKHR", vkGetPipelineBinaryDataKHR},
+diff --git a/dlls/winevulkan/loader_thunks.h b/dlls/winevulkan/loader_thunks.h
+index a82b17d..39fbcc0 100644
+--- a/dlls/winevulkan/loader_thunks.h
++++ b/dlls/winevulkan/loader_thunks.h
+@@ -506,6 +506,8 @@ enum unix_call
+     unix_vkGetImageViewOpaqueCaptureDescriptorDataEXT,
+     unix_vkGetLatencyTimingsNV,
+     unix_vkGetMemoryHostPointerPropertiesEXT,
++    unix_vkGetMemoryWin32HandleKHR,
++    unix_vkGetMemoryWin32HandlePropertiesKHR,
+     unix_vkGetMicromapBuildSizesEXT,
+     unix_vkGetPerformanceParameterINTEL,
+     unix_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT,
+@@ -4366,6 +4368,23 @@ struct vkGetMemoryHostPointerPropertiesEXT_params
+     VkResult result;
+ };
+ 
++struct vkGetMemoryWin32HandleKHR_params
++{
++    VkDevice device;
++    const VkMemoryGetWin32HandleInfoKHR *pGetWin32HandleInfo;
++    HANDLE *pHandle;
++    VkResult result;
++};
++
++struct vkGetMemoryWin32HandlePropertiesKHR_params
++{
++    VkDevice device;
++    VkExternalMemoryHandleTypeFlagBits handleType;
++    HANDLE handle;
++    VkMemoryWin32HandlePropertiesKHR *pMemoryWin32HandleProperties;
++    VkResult result;
++};
++
+ struct vkGetMicromapBuildSizesEXT_params
+ {
+     VkDevice device;
+diff --git a/dlls/winevulkan/make_vulkan b/dlls/winevulkan/make_vulkan
+index 72a8d54..99f48e9 100755
+--- a/dlls/winevulkan/make_vulkan
++++ b/dlls/winevulkan/make_vulkan
+@@ -129,7 +129,6 @@ UNSUPPORTED_EXTENSIONS = [
+ # but not expose to applications (useful for test commits)
+ UNEXPOSED_EXTENSIONS = {
+     "VK_EXT_map_memory_placed",
+-    "VK_KHR_external_memory_win32",
+ }
+ 
+ # The Vulkan loader provides entry-points for core functionality and important
+@@ -253,6 +252,8 @@ MANUAL_UNIX_THUNKS = {
+     "vkGetPhysicalDeviceExternalFencePropertiesKHR",
+     "vkGetPhysicalDeviceExternalSemaphoreProperties",
+     "vkGetPhysicalDeviceExternalSemaphorePropertiesKHR",
++    "vkGetMemoryWin32HandleKHR",
++    "vkGetMemoryWin32HandlePropertiesKHR",
+     "vkGetPhysicalDeviceImageFormatProperties2",
+     "vkGetPhysicalDeviceImageFormatProperties2KHR",
+     "vkMapMemory",
+diff --git a/dlls/winevulkan/vulkan.c b/dlls/winevulkan/vulkan.c
+index 61b3a42..b769295 100644
+--- a/dlls/winevulkan/vulkan.c
++++ b/dlls/winevulkan/vulkan.c
+@@ -382,6 +382,8 @@ static VkResult wine_vk_physical_device_init(struct wine_phys_dev *object, VkPhy
+         }
+         if (!strcmp(host_properties[i].extensionName, "VK_EXT_external_memory_host"))
+             have_external_memory_host = TRUE;
++        else if (!strcmp(host_properties[i].extensionName, "VK_EXT_external_memory_metal"))
++            object->external_memory_metal = TRUE;
+         else if (!strcmp(host_properties[i].extensionName, "VK_EXT_map_memory_placed"))
+             have_memory_placed = TRUE;
+         else if (!strcmp(host_properties[i].extensionName, "VK_KHR_map_memory2"))
+@@ -390,6 +392,9 @@ static VkResult wine_vk_physical_device_init(struct wine_phys_dev *object, VkPhy
+ 
+     TRACE("Host supported extensions %u, Wine supported extensions %u\n", num_host_properties, num_properties);
+ 
++    if (object->external_memory_metal)
++        num_properties++;
++
+     if (!(object->extensions = calloc(num_properties, sizeof(*object->extensions))))
+     {
+         ERR("Failed to allocate memory for device extensions!\n");
+@@ -404,6 +409,13 @@ static VkResult wine_vk_physical_device_init(struct wine_phys_dev *object, VkPhy
+             j++;
+         }
+     }
++
++    if (object->external_memory_metal)
++    {
++        strcpy(object->extensions[j].extensionName, "VK_KHR_external_memory_win32");
++        object->extensions[j].specVersion = 1;
++        j++;
++    }
+     object->extension_count = num_properties;
+ 
+     if (zero_bits && have_memory_placed && have_map_memory2)
+@@ -545,8 +557,9 @@ static VkResult wine_vk_device_convert_create_info(VkPhysicalDevice client_physi
+         struct conversion_context *ctx, const VkDeviceCreateInfo *src, VkDeviceCreateInfo *dst)
+ {
+     struct wine_phys_dev *phys_dev = wine_phys_dev_from_handle(client_physical_device);
+-    const char *extra_extensions[2], * const*extensions = src->ppEnabledExtensionNames;
++    const char *extra_extensions[4], * const*extensions = src->ppEnabledExtensionNames;
+     unsigned int i, extra_count = 0, extensions_count = src->enabledExtensionCount;
++    BOOL want_external_memory_win32 = FALSE;
+ 
+     *dst = *src;
+ 
+@@ -564,6 +577,33 @@ static VkResult wine_vk_device_convert_create_info(VkPhysicalDevice client_physi
+             WARN("Extension %s is not supported.\n", debugstr_a(extension_name));
+             return VK_ERROR_EXTENSION_NOT_PRESENT;
+         }
++        if (!strcmp(extension_name, "VK_KHR_external_memory_win32"))
++            want_external_memory_win32 = TRUE;
++    }
++
++    if (want_external_memory_win32)
++    {
++        const char **filtered;
++        unsigned int k;
++
++        if (!phys_dev->external_memory_metal)
++            return VK_ERROR_EXTENSION_NOT_PRESENT;
++
++        filtered = conversion_context_alloc(ctx, extensions_count * sizeof(*filtered));
++        for (i = 0, k = 0; i < extensions_count; i++)
++        {
++            if (strcmp(extensions[i], "VK_KHR_external_memory_win32"))
++                filtered[k++] = extensions[i];
++        }
++        extensions = filtered;
++        extensions_count = k;
++        dst->ppEnabledExtensionNames = filtered;
++        dst->enabledExtensionCount = k;
++
++        if (!find_extension(extensions, extensions_count, "VK_KHR_external_memory"))
++            extra_extensions[extra_count++] = "VK_KHR_external_memory";
++        if (!find_extension(extensions, extensions_count, "VK_EXT_external_memory_metal"))
++            extra_extensions[extra_count++] = "VK_EXT_external_memory_metal";
+     }
+ 
+     if (phys_dev->map_placed_align)
+@@ -1371,24 +1411,72 @@ void wine_vkGetPhysicalDeviceExternalBufferPropertiesKHR(VkPhysicalDevice client
+     memset(&properties->externalMemoryProperties, 0, sizeof(properties->externalMemoryProperties));
+ }
+ 
++
++#define WINE_VK_METAL_HEAP VK_EXTERNAL_MEMORY_HANDLE_TYPE_MTLHEAP_BIT_EXT
++
++static VkExternalMemoryHandleTypeFlags win32_to_metal_handle_types(VkExternalMemoryHandleTypeFlags types)
++{
++    if (types & VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT)
++    {
++        types &= ~(VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT |
++                   VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_KMT_BIT);
++        types |= WINE_VK_METAL_HEAP;
++    }
++    return types;
++}
++
++static VkExternalMemoryHandleTypeFlags metal_to_win32_handle_types(VkExternalMemoryHandleTypeFlags types)
++{
++    if (types & WINE_VK_METAL_HEAP)
++    {
++        types &= ~WINE_VK_METAL_HEAP;
++        types |= VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
++    }
++    return types;
++}
++
+ VkResult wine_vkGetPhysicalDeviceImageFormatProperties2(VkPhysicalDevice client_physical_device,
+                                                         const VkPhysicalDeviceImageFormatInfo2 *format_info,
+                                                         VkImageFormatProperties2 *properties)
+ {
+     struct vulkan_physical_device *physical_device = vulkan_physical_device_from_handle(client_physical_device);
++    struct wine_phys_dev *phys_dev = CONTAINING_RECORD(physical_device, struct wine_phys_dev, obj);
+     struct vulkan_instance *instance = physical_device->instance;
++    VkPhysicalDeviceExternalImageFormatInfo *external_info;
+     VkExternalImageFormatProperties *external_image_properties;
++    VkExternalMemoryHandleTypeFlagBits saved = 0;
+     VkResult res;
+ 
++    external_info = find_next_struct((void *)format_info,
++                                     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO);
++    if (external_info && phys_dev->external_memory_metal &&
++        external_info->handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT)
++    {
++        saved = external_info->handleType;
++        external_info->handleType = WINE_VK_METAL_HEAP;
++    }
++
+     res = instance->p_vkGetPhysicalDeviceImageFormatProperties2(physical_device->host.physical_device, format_info, properties);
+ 
++    if (saved)
++        external_info->handleType = saved;
++
+     if ((external_image_properties = find_next_struct(properties,
+                                                       VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES)))
+     {
+         VkExternalMemoryProperties *p = &external_image_properties->externalMemoryProperties;
+-        p->externalMemoryFeatures = 0;
+-        p->exportFromImportedHandleTypes = 0;
+-        p->compatibleHandleTypes = 0;
++
++        if (saved)
++        {
++            p->exportFromImportedHandleTypes = metal_to_win32_handle_types(p->exportFromImportedHandleTypes);
++            p->compatibleHandleTypes = metal_to_win32_handle_types(p->compatibleHandleTypes);
++        }
++        else
++        {
++            p->externalMemoryFeatures = 0;
++            p->exportFromImportedHandleTypes = 0;
++            p->compatibleHandleTypes = 0;
++        }
+     }
+ 
+     return res;
+@@ -1938,6 +2026,10 @@ VkResult wine_vkCreateImage(VkDevice client_device, const VkImageCreateInfo *cre
+     VkExternalMemoryImageCreateInfo external_memory_info;
+     VkImageCreateInfo info = *create_info;
+ 
++    VkExternalMemoryImageCreateInfo *app_external;
++    VkExternalMemoryHandleTypeFlags saved = 0;
++    VkResult res;
++
+     if (physical_device->external_memory_align &&
+         !find_next_struct(info.pNext, VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO))
+     {
+@@ -1947,7 +2039,21 @@ VkResult wine_vkCreateImage(VkDevice client_device, const VkImageCreateInfo *cre
+         info.pNext = &external_memory_info;
+     }
+ 
+-    return device->p_vkCreateImage(device->host.device, &info, NULL, image);
++    app_external = find_next_struct((void *)info.pNext,
++                                    VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO);
++    if (app_external && physical_device->external_memory_metal &&
++        (app_external->handleTypes & VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT))
++    {
++        saved = app_external->handleTypes;
++        app_external->handleTypes = win32_to_metal_handle_types(saved);
++    }
++
++    res = device->p_vkCreateImage(device->host.device, &info, NULL, image);
++
++    if (saved)
++        app_external->handleTypes = saved;
++
++    return res;
+ }
+ 
+ VkResult wine_vkCreateDebugUtilsMessengerEXT(VkInstance client_instance,
+diff --git a/dlls/winevulkan/vulkan_private.h b/dlls/winevulkan/vulkan_private.h
+index 59b9009..5ef37c7 100644
+--- a/dlls/winevulkan/vulkan_private.h
++++ b/dlls/winevulkan/vulkan_private.h
+@@ -80,6 +80,7 @@ struct wine_phys_dev
+ 
+     uint32_t external_memory_align;
+     uint32_t map_placed_align;
++    BOOL external_memory_metal;
+ };
+ 
+ struct wine_debug_report_callback;
+@@ -123,6 +124,7 @@ struct wine_device_memory
+     VULKAN_OBJECT_HEADER( VkDeviceMemory, device_memory );
+     VkDeviceSize size;
+     void *vm_map;
++    void *metal_handle;
+ };
+ 
+ static inline struct wine_device_memory *wine_device_memory_from_handle(VkDeviceMemory handle)
+diff --git a/dlls/winevulkan/vulkan_thunks.c b/dlls/winevulkan/vulkan_thunks.c
+index 98b0abd..9e83a03 100644
+--- a/dlls/winevulkan/vulkan_thunks.c
++++ b/dlls/winevulkan/vulkan_thunks.c
+@@ -6448,6 +6448,21 @@ typedef struct VkMemoryHostPointerPropertiesEXT32
+     uint32_t memoryTypeBits;
+ } VkMemoryHostPointerPropertiesEXT32;
+ 
++typedef struct VkMemoryGetWin32HandleInfoKHR32
++{
++    VkStructureType sType;
++    PTR32 pNext;
++    VkDeviceMemory DECLSPEC_ALIGN(8) memory;
++    VkExternalMemoryHandleTypeFlagBits handleType;
++} VkMemoryGetWin32HandleInfoKHR32;
++
++typedef struct VkMemoryWin32HandlePropertiesKHR32
++{
++    VkStructureType sType;
++    PTR32 pNext;
++    uint32_t memoryTypeBits;
++} VkMemoryWin32HandlePropertiesKHR32;
++
+ typedef struct VkMicromapBuildSizesInfoEXT32
+ {
+     VkStructureType sType;
+@@ -26062,6 +26077,35 @@ static inline void convert_VkMemoryHostPointerPropertiesEXT_host_to_win32(const
+     out->memoryTypeBits = in->memoryTypeBits;
+ }
+ 
++static inline void convert_VkMemoryGetWin32HandleInfoKHR_win32_to_unwrapped_host(const VkMemoryGetWin32HandleInfoKHR32 *in, VkMemoryGetWin32HandleInfoKHR *out)
++{
++    if (!in) return;
++
++    out->sType = in->sType;
++    out->pNext = NULL;
++    out->memory = in->memory;
++    out->handleType = in->handleType;
++    if (in->pNext)
++        FIXME("Unexpected pNext\n");
++}
++
++static inline void convert_VkMemoryWin32HandlePropertiesKHR_win32_to_host(const VkMemoryWin32HandlePropertiesKHR32 *in, VkMemoryWin32HandlePropertiesKHR *out)
++{
++    if (!in) return;
++
++    out->sType = in->sType;
++    out->pNext = NULL;
++    if (in->pNext)
++        FIXME("Unexpected pNext\n");
++}
++
++static inline void convert_VkMemoryWin32HandlePropertiesKHR_host_to_win32(const VkMemoryWin32HandlePropertiesKHR *in, VkMemoryWin32HandlePropertiesKHR32 *out)
++{
++    if (!in) return;
++
++    out->memoryTypeBits = in->memoryTypeBits;
++}
++
+ static inline void convert_VkMicromapBuildSizesInfoEXT_win32_to_host(const VkMicromapBuildSizesInfoEXT32 *in, VkMicromapBuildSizesInfoEXT *out)
+ {
+     if (!in) return;
+@@ -50184,6 +50228,68 @@ static NTSTATUS thunk32_vkGetMemoryHostPointerPropertiesEXT(void *args)
+     return STATUS_SUCCESS;
+ }
+ 
++#ifdef _WIN64
++static NTSTATUS thunk64_vkGetMemoryWin32HandleKHR(void *args)
++{
++    struct vkGetMemoryWin32HandleKHR_params *params = args;
++
++    TRACE("%p, %p, %p\n", params->device, params->pGetWin32HandleInfo, params->pHandle);
++
++    params->result = wine_vkGetMemoryWin32HandleKHR(params->device, params->pGetWin32HandleInfo, params->pHandle);
++    return STATUS_SUCCESS;
++}
++#endif /* _WIN64 */
++
++static NTSTATUS thunk32_vkGetMemoryWin32HandleKHR(void *args)
++{
++    struct
++    {
++        PTR32 device;
++        PTR32 pGetWin32HandleInfo;
++        PTR32 pHandle;
++        VkResult result;
++    } *params = args;
++    VkMemoryGetWin32HandleInfoKHR pGetWin32HandleInfo_host;
++
++    TRACE("%#x, %#x, %#x\n", params->device, params->pGetWin32HandleInfo, params->pHandle);
++
++    convert_VkMemoryGetWin32HandleInfoKHR_win32_to_unwrapped_host((const VkMemoryGetWin32HandleInfoKHR32 *)UlongToPtr(params->pGetWin32HandleInfo), &pGetWin32HandleInfo_host);
++    params->result = wine_vkGetMemoryWin32HandleKHR((VkDevice)UlongToPtr(params->device), &pGetWin32HandleInfo_host, (HANDLE *)UlongToPtr(params->pHandle));
++    return STATUS_SUCCESS;
++}
++
++#ifdef _WIN64
++static NTSTATUS thunk64_vkGetMemoryWin32HandlePropertiesKHR(void *args)
++{
++    struct vkGetMemoryWin32HandlePropertiesKHR_params *params = args;
++
++    TRACE("%p, %#x, %p, %p\n", params->device, params->handleType, params->handle, params->pMemoryWin32HandleProperties);
++
++    params->result = wine_vkGetMemoryWin32HandlePropertiesKHR(params->device, params->handleType, params->handle, params->pMemoryWin32HandleProperties);
++    return STATUS_SUCCESS;
++}
++#endif /* _WIN64 */
++
++static NTSTATUS thunk32_vkGetMemoryWin32HandlePropertiesKHR(void *args)
++{
++    struct
++    {
++        PTR32 device;
++        VkExternalMemoryHandleTypeFlagBits handleType;
++        HANDLE handle;
++        PTR32 pMemoryWin32HandleProperties;
++        VkResult result;
++    } *params = args;
++    VkMemoryWin32HandlePropertiesKHR pMemoryWin32HandleProperties_host;
++
++    TRACE("%#x, %#x, %p, %#x\n", params->device, params->handleType, params->handle, params->pMemoryWin32HandleProperties);
++
++    convert_VkMemoryWin32HandlePropertiesKHR_win32_to_host((VkMemoryWin32HandlePropertiesKHR32 *)UlongToPtr(params->pMemoryWin32HandleProperties), &pMemoryWin32HandleProperties_host);
++    params->result = wine_vkGetMemoryWin32HandlePropertiesKHR((VkDevice)UlongToPtr(params->device), params->handleType, params->handle, &pMemoryWin32HandleProperties_host);
++    convert_VkMemoryWin32HandlePropertiesKHR_host_to_win32(&pMemoryWin32HandleProperties_host, (VkMemoryWin32HandlePropertiesKHR32 *)UlongToPtr(params->pMemoryWin32HandleProperties));
++    return STATUS_SUCCESS;
++}
++
+ #ifdef _WIN64
+ static NTSTATUS thunk64_vkGetMicromapBuildSizesEXT(void *args)
+ {
+@@ -54986,6 +55092,7 @@ static const char * const vk_device_extensions[] =
+     "VK_KHR_dynamic_rendering_local_read",
+     "VK_KHR_external_fence",
+     "VK_KHR_external_memory",
++    "VK_KHR_external_memory_win32",
+     "VK_KHR_external_semaphore",
+     "VK_KHR_format_feature_flags2",
+     "VK_KHR_fragment_shader_barycentric",
+@@ -55706,6 +55813,8 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
+     thunk64_vkGetImageViewOpaqueCaptureDescriptorDataEXT,
+     thunk64_vkGetLatencyTimingsNV,
+     thunk64_vkGetMemoryHostPointerPropertiesEXT,
++    thunk64_vkGetMemoryWin32HandleKHR,
++    thunk64_vkGetMemoryWin32HandlePropertiesKHR,
+     thunk64_vkGetMicromapBuildSizesEXT,
+     thunk64_vkGetPerformanceParameterINTEL,
+     thunk64_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT,
+@@ -56348,6 +56457,8 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
+     thunk32_vkGetImageViewOpaqueCaptureDescriptorDataEXT,
+     thunk32_vkGetLatencyTimingsNV,
+     thunk32_vkGetMemoryHostPointerPropertiesEXT,
++    thunk32_vkGetMemoryWin32HandleKHR,
++    thunk32_vkGetMemoryWin32HandlePropertiesKHR,
+     thunk32_vkGetMicromapBuildSizesEXT,
+     thunk32_vkGetPerformanceParameterINTEL,
+     thunk32_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT,
+diff --git a/dlls/winevulkan/vulkan_thunks.h b/dlls/winevulkan/vulkan_thunks.h
+index 1941b71..b83bbc2 100644
+--- a/dlls/winevulkan/vulkan_thunks.h
++++ b/dlls/winevulkan/vulkan_thunks.h
+@@ -50,6 +50,8 @@ VkResult wine_vkGetCalibratedTimestampsEXT(VkDevice device, uint32_t timestampCo
+ VkResult wine_vkGetCalibratedTimestampsKHR(VkDevice device, uint32_t timestampCount, const VkCalibratedTimestampInfoKHR *pTimestampInfos, uint64_t *pTimestamps, uint64_t *pMaxDeviation);
+ void wine_vkGetDeviceQueue(VkDevice device, uint32_t queueFamilyIndex, uint32_t queueIndex, VkQueue *pQueue);
+ void wine_vkGetDeviceQueue2(VkDevice device, const VkDeviceQueueInfo2 *pQueueInfo, VkQueue *pQueue);
++VkResult wine_vkGetMemoryWin32HandleKHR(VkDevice device, const VkMemoryGetWin32HandleInfoKHR *pGetWin32HandleInfo, HANDLE *pHandle);
++VkResult wine_vkGetMemoryWin32HandlePropertiesKHR(VkDevice device, VkExternalMemoryHandleTypeFlagBits handleType, HANDLE handle, VkMemoryWin32HandlePropertiesKHR *pMemoryWin32HandleProperties);
+ VkResult wine_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT(VkPhysicalDevice physicalDevice, uint32_t *pTimeDomainCount, VkTimeDomainKHR *pTimeDomains);
+ VkResult wine_vkGetPhysicalDeviceCalibrateableTimeDomainsKHR(VkPhysicalDevice physicalDevice, uint32_t *pTimeDomainCount, VkTimeDomainKHR *pTimeDomains);
+ void wine_vkGetPhysicalDeviceExternalBufferProperties(VkPhysicalDevice physicalDevice, const VkPhysicalDeviceExternalBufferInfo *pExternalBufferInfo, VkExternalBufferProperties *pExternalBufferProperties);

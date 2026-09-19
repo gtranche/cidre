@@ -6840,3 +6840,72 @@ publier un chiffre trente fois trop grand.
 Les campagnes precedentes vivaient dans le repertoire temporaire de la session, qui a ete purge
 — c'est pour cela qu'il a fallu recomparer au chiffre global plutot qu'a un detail. Les
 prochaines campagnes pourront se differencier directement contre ce fichier.
+
+---
+
+## 99. Cote Wine de la memoire externe : les deux routes sont fermees (2026-09-19)
+
+### La route par descripteur est un cul-de-sac prouve
+
+Avant d'engager le chantier, lecture de DXVK. `d3d11_texture.cpp:168` ne retombe en tuilage
+lineaire que pour des formats non supportes — le commentaire le dit : *« Some image formats
+(i.e. the R32G32B32 ones) are only supported with linear tiling »*. Et `CheckImageSupport`
+(ligne 507) ne renseigne **pas** `formatQuery.handleType` : le partage n'entre pas dans le
+choix du tuilage. Une texture partagee sera donc toujours en **tuilage optimal**.
+
+Or notre chemin `KHR_external_memory_fd` du § 96 adosse la memoire a une projection hote, ce
+qui ne permet pas de heap Metal, donc pas de tuilage optimal. Faire le travail Wine aurait
+deplace l'erreur de `VK_KHR_EXTERNAL_MEMORY_WIN32 not supported` vers `Image cannot be shared`.
+Meme echec, autre message.
+
+### La route MTLHEAP est fermee par le generateur de Wine
+
+`VK_EXT_external_memory_metal` convient pourtant : `kk_image.c` l'accepte **sans restriction de
+tuilage**, puisque le heap est le support normal de toute notre memoire. C'etait la bonne cible.
+
+Mais `dlls/winevulkan/make_vulkan`, ligne 3537 :
+
+```python
+platform = ext.attrib.get("platform")
+if platform and platform != "win32":
+    LOGGER.debug("Skipping extensions {0} for platform {1}".format(ext_name, platform))
+```
+
+Wine ecarte **toute extension dont la plateforme n'est pas win32**, des l'analyse du XML.
+`VK_EXT_external_memory_metal` porte `platform="metal"` : elle est invisible pour Wine avant
+d'atteindre la moindre liste. Verifie : zero occurrence dans le generateur, aucun thunk
+`vkGetMemoryMetalHandleEXT`. L'utiliser demanderait d'apprendre la plateforme Metal a Wine —
+types `MTLDevice_id` et consorts dans ses en-tetes et ses thunks. Ce n'est plus de la
+plomberie, c'est une modification de fond du generateur et du systeme de types de Wine.
+
+### Ce qui a quand meme ete etabli
+
+Le registre Khronos 1.4.303 est desormais dans `toolchain/dl/vkxml`, et **le generateur de Wine
+reproduit ses fichiers octet pour octet** — verifie avant toute modification, ce qui rend
+utilisable toute regeneration future.
+
+La plomberie elle-meme fonctionne : sortir l'extension de `UNEXPOSED_EXTENSIONS` et declarer
+`vkGetMemoryWin32HandleKHR` dans `MANUAL_UNIX_THUNKS` produit un diff genere petit et propre
+(111 lignes dans `vulkan_thunks.c`). L'annonce de l'extension, le remplacement a la creation du
+peripherique et la traduction des types de descripteur sont ecrits et conserves dans
+`9002-wine-external-memory-win32.patch.rejete`, 492 lignes. Ils s'appliqueraient tels quels a
+n'importe quel type de descripteur que Wine sait deja decrire.
+
+Au passage : `wine_vkGetPhysicalDeviceImageFormatProperties2` **met aujourd'hui a zero** toutes
+les proprietes de memoire externe. Wine ne se contente pas de ne pas exposer l'extension, il
+efface activement ce que le pilote hote rapporte.
+
+### Etat
+
+Arbre Wine remis au propre et verifie : `git archive HEAD` plus les trois correctifs ARM64
+reproduit l'arbre, zero difference. Attention, `include/wine/vulkan.h` est lui aussi genere par
+`make_vulkan` et vit **hors** de `dlls/winevulkan` : un `git checkout` du seul repertoire le
+laisse modifie.
+
+### Conclusion
+
+Le partage de textures entre D3D11 et notre pile demande soit d'apprendre la plateforme Metal a
+Wine, soit de savoir adosser des images en tuilage optimal a de la memoire exportable en
+descripteur — ce que Metal ne permet pas, un heap ne pouvant pas etre construit sur de la
+memoire hote. Les deux sont hors de portee d'un correctif raisonnable. C'est un resultat
+negatif, mais mesure et argumente.
