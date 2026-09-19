@@ -79,7 +79,7 @@ diff -urN --exclude=.git s16/src/kosmickrisp/vulkan/kk_cmd_draw.c s17/src/kosmic
     }
 diff -urN --exclude=.git s16/src/kosmickrisp/vulkan/kk_shader.c s17/src/kosmickrisp/vulkan/kk_shader.c
 --- a/src/kosmickrisp/vulkan/kk_shader.c	2026-09-19 17:59:16
-+++ b/src/kosmickrisp/vulkan/kk_shader.c	2026-09-19 17:59:25
++++ b/src/kosmickrisp/vulkan/kk_shader.c	2026-09-19 22:12:17
 @@ -857,6 +857,24 @@
        pipe->gfx.pre_render_count = 0u;
  
@@ -124,7 +124,7 @@ diff -urN --exclude=.git s16/src/kosmickrisp/vulkan/kk_shader.c s17/src/kosmickr
        for (uint8_t i = 0u; i < MAX_DRAW_BUFFERS; ++i) {
           info->vs.rt_formats[i] = MTL_PIXEL_FORMAT_INVALID;
        }
-@@ -1661,6 +1684,108 @@
+@@ -1661,6 +1684,103 @@
        vk_primitive_topology_to_mtl_primitive_topology_class(topology);
  }
  
@@ -167,14 +167,9 @@ diff -urN --exclude=.git s16/src/kosmickrisp/vulkan/kk_shader.c s17/src/kosmickr
 +      mtl_render_pipeline_descriptor_set_color_attachment_format(
 +         pipeline_descriptor, i, key->formats[i]);
 +
-+      mtl_render_pipeline_descriptor_set_color_attachment_blend(
-+         pipeline_descriptor, i, &vs->info.vs.blend[i]);
-+
-+      uint32_t write_mask = (key->write_disable_mask & BITFIELD_BIT(i))
-+                               ? 0u
-+                               : vs->info.vs.blend_write_mask[i];
-+      mtl_render_pipeline_descriptor_set_color_attachment_write_mask(
-+         pipeline_descriptor, i, write_mask);
++      if (key->write_disable_mask & BITFIELD_BIT(i))
++         mtl_render_pipeline_descriptor_set_color_attachment_write_mask(
++            pipeline_descriptor, i, 0u);
 +   }
 +
 +   if (vs->info.vs.view_mask) {
@@ -233,7 +228,7 @@ diff -urN --exclude=.git s16/src/kosmickrisp/vulkan/kk_shader.c s17/src/kosmickr
  static VkResult
  kk_compile_graphics_pipeline(struct kk_device *device, struct kk_shader *vs)
  {
-@@ -1771,57 +1896,40 @@
+@@ -1771,57 +1891,40 @@
        mtl_new_library_function_descriptor(fragment_library,
                                            fs_data->entrypoint_name);
  

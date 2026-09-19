@@ -6742,4 +6742,61 @@ apparu aujourd'hui, un en-tete NIR genere restant perime apres une permutation.
 
 **Le resultat du § 92 est donc a reprendre**, en forcant la regeneration a chaque etape
 (`touch` des sources, ou `--debug=explain` pour verifier). Tant que ce n'est pas refait, la
-bissectabilite de la serie n'est pas etablie.
+bissectabilite de la serie n'est pas etablie. **[Fait au § 97 : la campagne refaite a trouve
+deux vrais echecs, corriges depuis.]**
+
+---
+
+## 97. Campagne de construction reprise : le « 28 sur 28 » etait faux (2026-09-19)
+
+### La methode corrigee
+
+La campagne du § 92 permutait l'arbre par `rsync -a`, qui repose les dates des instantanes.
+Ninja compare des dates : des recompilations ont donc ete sautees, et des etapes ont ete
+declarees vertes sans rien avoir reconstruit.
+
+Reprise avec `rsync -rlpgoD -c --no-times` : comparaison par **somme de controle**, et les
+fichiers reellement transferes reçoivent la date du jour, ce qui force ninja a les recompiler.
+Deux temoins ajoutes a chaque etape : le nombre de cibles reconstruites, et l'empreinte de la
+bibliotheque produite.
+
+Les temoins parlent d'eux-memes : 4 cibles pour un correctif qui ne touche qu'une limite, 350
+quand les intrinseques NIR changent, et **le binaire differe a chaque etape** — jamais
+d'« INCHANGE ».
+
+### Deux vrais echecs, et c'etait ma faute
+
+Etapes 17 et 18 (`0022` et `0023`) :
+
+```
+error: call to undeclared function 'mtl_render_pipeline_descriptor_set_color_attachment_blend'
+error: no member named 'blend' in 'struct kk_shader_info::(unnamed ...)'
+```
+
+En resolvant le conflit de `0022` au § 92, j'avais insere le bloc des variantes de pipeline
+**depuis l'arbre final**. Ce bloc contenait deja les appels de melange et le champ
+`info->vs.blend`, qui n'arrivent qu'avec `0024`. La serie etait donc juste a l'arrivee mais
+fausse en chemin : `0022` ne compilait qu'apres `0024`.
+
+Correction : dans les instantanes 17 et 18, le bloc reprend la forme d'origine de `0022` —
+format de l'attachement, puis masque d'ecriture seulement lorsqu'il est desactive — et `0024`
+apporte ensuite le melange et le masque calcule. Correctifs `0022`, `0023` et `0024`
+regeneres depuis les instantanes corriges.
+
+### Verification
+
+- Application stricte des 28 correctifs sur arbre vierge : **28 ok, 0 echec**, arbre reproduit
+  a l'identique.
+- Campagne de construction relancee **en entier**, pas seulement sur les trois etapes touchees :
+  **28 sur 28, zero echec, zero binaire inchange**.
+- Cumulatif regenere (5 436 lignes, il inclut desormais `0037`), verifie : zero difference.
+- Pilotes arm64 et x86_64 reconstruits et reinstalles ; sonde `probe_external_fd` concluante ;
+  les 90 images Godot du § 87 **identiques octet pour octet**.
+
+La bissectabilite de la serie est donc etablie, cette fois avec de quoi le prouver.
+
+### Ce que cet episode apprend
+
+Une campagne verte ne vaut que si l'on montre qu'elle a travaille. Les deux temoins qui
+manquaient au § 92 — cibles reconstruites et empreinte du binaire — auraient fait tomber le
+faux resultat immediatement. Ils coutaient deux lignes de script.

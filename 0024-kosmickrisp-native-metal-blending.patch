@@ -89,7 +89,7 @@ diff -urN --exclude=.git s18/src/kosmickrisp/bridge/mtl_types.h s19/src/kosmickr
     MTL_TRIANGLE_FILL_MODE_FILL = 0,
     MTL_TRIANGLE_FILL_MODE_LINES = 1,
 diff -urN --exclude=.git s18/src/kosmickrisp/vulkan/kk_shader.c s19/src/kosmickrisp/vulkan/kk_shader.c
---- a/src/kosmickrisp/vulkan/kk_shader.c	2026-09-19 17:59:34
+--- a/src/kosmickrisp/vulkan/kk_shader.c	2026-09-19 22:12:17
 +++ b/src/kosmickrisp/vulkan/kk_shader.c	2026-09-19 17:59:43
 @@ -413,6 +413,104 @@
     return (state->cal) ? state->cal->color_map[i] : i;
@@ -214,12 +214,12 @@ diff -urN --exclude=.git s18/src/kosmickrisp/vulkan/kk_shader.c s19/src/kosmickr
        if (!att->blend_enable) {
           rt->rgb.src_factor = rt->alpha.src_factor = PIPE_BLENDFACTOR_ONE;
           rt->rgb.dst_factor = rt->alpha.dst_factor = PIPE_BLENDFACTOR_ZERO;
-@@ -1563,6 +1672,32 @@
+@@ -1563,7 +1672,33 @@
        info->vs.color_attachment_count = rp->color_attachment_count;
        info->vs.fs_outputs_read_mask =
           shader_count > 1u ? shaders[1]->info.fs.outputs_read_mask : 0u;
 +
-+      for (uint8_t i = 0u; i < MAX_DRAW_BUFFERS; ++i) {
+       for (uint8_t i = 0u; i < MAX_DRAW_BUFFERS; ++i) {
 +         info->vs.blend[i] = (struct mtl_blend_state){
 +            .enable = false,
 +            .src_rgb = MTL_BLEND_FACTOR_ONE,
@@ -244,9 +244,28 @@ diff -urN --exclude=.git s18/src/kosmickrisp/vulkan/kk_shader.c s19/src/kosmickr
 +            info->vs.blend_write_mask[logical_index] = native_mask;
 +         }
 +      }
-       for (uint8_t i = 0u; i < MAX_DRAW_BUFFERS; ++i) {
++      for (uint8_t i = 0u; i < MAX_DRAW_BUFFERS; ++i) {
           info->vs.rt_formats[i] = MTL_PIXEL_FORMAT_INVALID;
        }
+       for (uint8_t i = 0u; i < state->rp->color_attachment_count; ++i) {
+@@ -1723,9 +1858,14 @@
+       mtl_render_pipeline_descriptor_set_color_attachment_format(
+          pipeline_descriptor, i, key->formats[i]);
+ 
+-      if (key->write_disable_mask & BITFIELD_BIT(i))
+-         mtl_render_pipeline_descriptor_set_color_attachment_write_mask(
+-            pipeline_descriptor, i, 0u);
++      mtl_render_pipeline_descriptor_set_color_attachment_blend(
++         pipeline_descriptor, i, &vs->info.vs.blend[i]);
++
++      uint32_t write_mask = (key->write_disable_mask & BITFIELD_BIT(i))
++                               ? 0u
++                               : vs->info.vs.blend_write_mask[i];
++      mtl_render_pipeline_descriptor_set_color_attachment_write_mask(
++         pipeline_descriptor, i, write_mask);
+    }
+ 
+    if (vs->info.vs.view_mask) {
 diff -urN --exclude=.git s18/src/kosmickrisp/vulkan/kk_shader.h s19/src/kosmickrisp/vulkan/kk_shader.h
 --- a/src/kosmickrisp/vulkan/kk_shader.h	2026-09-19 17:59:34
 +++ b/src/kosmickrisp/vulkan/kk_shader.h	2026-09-19 17:59:43

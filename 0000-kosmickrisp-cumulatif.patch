@@ -1,8 +1,8 @@
 Generated-by: LLM
 
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/compiler/nir/nir_intrinsics.py /Users/gtranche/Dev/proton-ouvert/src/mesa/src/compiler/nir/nir_intrinsics.py
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/compiler/nir/nir_intrinsics.py /Users/gtranche/Dev/proton-ouvert/src/mesa/src/compiler/nir/nir_intrinsics.py
 --- a/src/compiler/nir/nir_intrinsics.py	2026-09-16 20:46:47
-+++ b/src/compiler/nir/nir_intrinsics.py	2026-09-17 14:04:31
++++ b/src/compiler/nir/nir_intrinsics.py	2026-09-19 22:14:44
 @@ -3326,6 +3326,10 @@
  image("fence_kk")
  # Store clip distance to vertex output.
@@ -14,9 +14,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/compiler/nir/nir_in
  # System value indicating whether to emulate depth clamp.
  system_value("is_depth_clamp_emulated_kk", 1, bit_sizes=[1])
  # System value indicating whether to emulate the viewport Z transform.
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/bridge/meson.build /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/bridge/meson.build
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/bridge/meson.build /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/bridge/meson.build
 --- a/src/kosmickrisp/bridge/meson.build	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/bridge/meson.build	2026-09-16 22:31:48
++++ b/src/kosmickrisp/bridge/meson.build	2026-09-19 21:52:41
 @@ -54,7 +54,7 @@
  if host_machine.system() == 'darwin'
    mtl_bridge_dependencies += dependency(
@@ -32,9 +32,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/bridge/
    link_with : libmtl_bridge,
 +  dependencies : mtl_bridge_dependencies,
  )
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/bridge/mtl_compiler.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/bridge/mtl_compiler.h
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/bridge/mtl_compiler.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/bridge/mtl_compiler.h
 --- a/src/kosmickrisp/bridge/mtl_compiler.h	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/bridge/mtl_compiler.h	2026-09-17 20:20:58
++++ b/src/kosmickrisp/bridge/mtl_compiler.h	2026-09-19 22:16:06
 @@ -47,6 +47,23 @@
     mtl_render_pipeline_descriptor *descriptor,
     enum mtl_primitive_topology_class topology_class);
@@ -59,9 +59,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/bridge/
  void mtl_render_pipeline_descriptor_set_color_attachment_format(
     mtl_render_pipeline_descriptor *descriptor, uint8_t index,
     enum mtl_pixel_format format);
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/bridge/mtl_compiler.m /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/bridge/mtl_compiler.m
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/bridge/mtl_compiler.m /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/bridge/mtl_compiler.m
 --- a/src/kosmickrisp/bridge/mtl_compiler.m	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/bridge/mtl_compiler.m	2026-09-17 20:20:58
++++ b/src/kosmickrisp/bridge/mtl_compiler.m	2026-09-19 22:16:06
 @@ -154,6 +154,35 @@
  }
  
@@ -98,9 +98,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/bridge/
  mtl_render_pipeline_descriptor_set_raster_sample_count(mtl_render_pipeline_descriptor *descriptor,
                                                         uint32_t sample_count)
  {
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/bridge/mtl_encoder.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/bridge/mtl_encoder.h
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/bridge/mtl_encoder.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/bridge/mtl_encoder.h
 --- a/src/kosmickrisp/bridge/mtl_encoder.h	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/bridge/mtl_encoder.h	2026-09-17 17:28:05
++++ b/src/kosmickrisp/bridge/mtl_encoder.h	2026-09-19 22:15:24
 @@ -96,6 +96,9 @@
  
  void mtl_set_cull_mode(mtl_render_encoder *encoder, enum mtl_cull_mode mode);
@@ -111,9 +111,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/bridge/
  void mtl_set_visibility_result_mode(mtl_render_encoder *encoder,
                                      enum mtl_visibility_result_mode mode,
                                      size_t offset);
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/bridge/mtl_encoder.m /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/bridge/mtl_encoder.m
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/bridge/mtl_encoder.m /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/bridge/mtl_encoder.m
 --- a/src/kosmickrisp/bridge/mtl_encoder.m	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/bridge/mtl_encoder.m	2026-09-17 17:28:05
++++ b/src/kosmickrisp/bridge/mtl_encoder.m	2026-09-19 22:15:24
 @@ -352,6 +352,16 @@
  }
  
@@ -131,9 +131,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/bridge/
  mtl_set_visibility_result_mode(mtl_render_encoder *encoder,
                                 enum mtl_visibility_result_mode mode,
                                 size_t offset)
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/bridge/mtl_types.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/bridge/mtl_types.h
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/bridge/mtl_types.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/bridge/mtl_types.h
 --- a/src/kosmickrisp/bridge/mtl_types.h	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/bridge/mtl_types.h	2026-09-17 20:20:58
++++ b/src/kosmickrisp/bridge/mtl_types.h	2026-09-19 22:16:06
 @@ -229,6 +229,37 @@
     MTL_WINDING_COUNTER_CLOCKWISE = 1,
  };
@@ -172,9 +172,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/bridge/
  enum mtl_cull_mode {
     MTL_CULL_MODE_NONE = 0,
     MTL_CULL_MODE_FRONT = 1,
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/compiler/msl_nir_lower_common.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/compiler/msl_nir_lower_common.c
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/compiler/msl_nir_lower_common.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/compiler/msl_nir_lower_common.c
 --- a/src/kosmickrisp/compiler/msl_nir_lower_common.c	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/compiler/msl_nir_lower_common.c	2026-09-18 08:57:07
++++ b/src/kosmickrisp/compiler/msl_nir_lower_common.c	2026-09-19 22:16:50
 @@ -64,54 +64,23 @@
     enum pipe_format format =
        render_target_formats[io.location - FRAG_RESULT_DATA0];
@@ -487,9 +487,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/compile
 +
 +   return progress;
  }
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/compiler/nir_to_msl.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/compiler/nir_to_msl.c
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/compiler/nir_to_msl.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/compiler/nir_to_msl.c
 --- a/src/kosmickrisp/compiler/nir_to_msl.c	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/compiler/nir_to_msl.c	2026-09-18 09:10:10
++++ b/src/kosmickrisp/compiler/nir_to_msl.c	2026-09-19 22:16:50
 @@ -2327,6 +2327,7 @@
      * (undef,undef,undef,undef). After nir_opt_remove_phis this gets optimized
      * to a single store for x, and nir_opt_shrink_stores will correctly reduce
@@ -498,9 +498,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/compile
     NIR_PASS(_, nir, nir_opt_shrink_stores, false);
     NIR_PASS(_, nir, nir_lower_load_const_to_scalar);
     NIR_PASS(_, nir, msl_nir_lower_algebraic_late);
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/compiler/nir_to_msl.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/compiler/nir_to_msl.h
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/compiler/nir_to_msl.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/compiler/nir_to_msl.h
 --- a/src/kosmickrisp/compiler/nir_to_msl.h	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/compiler/nir_to_msl.h	2026-09-18 08:56:35
++++ b/src/kosmickrisp/compiler/nir_to_msl.h	2026-09-19 22:16:50
 @@ -79,7 +79,10 @@
  
  bool msl_lower_robustness2_images(nir_shader *s);
@@ -520,9 +520,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/compile
  void msl_nir_lower_clip_cull_distance(nir_shader *nir,
                                        unsigned num_cull_distances);
  bool msl_nir_lower_instance_id(nir_shader *nir);
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/libkk/kk_draws.cl /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/libkk/kk_draws.cl
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/libkk/kk_draws.cl /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/libkk/kk_draws.cl
 --- a/src/kosmickrisp/libkk/kk_draws.cl	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/libkk/kk_draws.cl	2026-09-18 14:29:16
++++ b/src/kosmickrisp/libkk/kk_draws.cl	2026-09-19 22:17:05
 @@ -76,8 +76,9 @@
     uint64_t index_buffer, global struct poly_heap *heap,
     constant uint32_t *in_draw, global uint32_t *out_draw,
@@ -577,9 +577,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/libkk/k
 +   dst[0] = (uint32_t)va;
 +   dst[1] = (uint32_t)(va >> 32ul);
  }
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/libkk/kk_geometry.cl /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/libkk/kk_geometry.cl
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/libkk/kk_geometry.cl /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/libkk/kk_geometry.cl
 --- a/src/kosmickrisp/libkk/kk_geometry.cl	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/libkk/kk_geometry.cl	2026-09-17 13:09:22
++++ b/src/kosmickrisp/libkk/kk_geometry.cl	2026-09-19 22:14:37
 @@ -42,3 +42,34 @@
     desc[3] = 0;                  /* index_bias */
     desc[4] = 0;                  /* start_instance */
@@ -615,9 +615,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/libkk/k
 +   grids[4] = p->grid[1];
 +   grids[5] = 1;
 +}
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/libkk/kk_xfb.cl /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/libkk/kk_xfb.cl
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/libkk/kk_xfb.cl /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/libkk/kk_xfb.cl
 --- a/src/kosmickrisp/libkk/kk_xfb.cl	1970-01-01 01:00:00
-+++ b/src/kosmickrisp/libkk/kk_xfb.cl	2026-09-17 15:10:33
++++ b/src/kosmickrisp/libkk/kk_xfb.cl	2026-09-19 22:15:11
 @@ -0,0 +1,48 @@
 +/*
 + * Copyright 2026 The Mesa contributors
@@ -667,9 +667,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/libkk/k
 +   out[2] = 0u;
 +   out[3] = first_instance;
 +}
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/libkk/meson.build /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/libkk/meson.build
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/libkk/meson.build /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/libkk/meson.build
 --- a/src/kosmickrisp/libkk/meson.build	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/libkk/meson.build	2026-09-17 14:05:40
++++ b/src/kosmickrisp/libkk/meson.build	2026-09-19 22:14:44
 @@ -7,6 +7,7 @@
    'kk_geometry.cl',
    'kk_query.cl',
@@ -678,9 +678,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/libkk/m
    'kk_tessellator.cl',
  )
  
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/kk_bo.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_bo.c
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_bo.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_bo.c
 --- a/src/kosmickrisp/vulkan/kk_bo.c	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/vulkan/kk_bo.c	2026-09-17 18:54:37
++++ b/src/kosmickrisp/vulkan/kk_bo.c	2026-09-19 22:15:44
 @@ -22,6 +22,14 @@
  kk_alloc_bo(struct kk_device *dev, struct vk_object_base *log_obj,
              uint64_t size_B, uint64_t align_B, struct kk_bo **bo_out)
@@ -743,9 +743,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
     bo->size_B = size_B;
     bo->map = map;
     bo->gpu = mtl_buffer_get_gpu_address(map);
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/kk_bo.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_bo.h
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_bo.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_bo.h
 --- a/src/kosmickrisp/vulkan/kk_bo.h	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/vulkan/kk_bo.h	2026-09-17 18:54:37
++++ b/src/kosmickrisp/vulkan/kk_bo.h	2026-09-19 22:15:44
 @@ -22,6 +22,7 @@
     mtl_buffer *map;
     uint64_t size_B;
@@ -766,10 +766,21 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
  
  void kk_destroy_bo(struct kk_device *dev, struct kk_bo *bo);
  
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/kk_buffer.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_buffer.c
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_buffer.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_buffer.c
 --- a/src/kosmickrisp/vulkan/kk_buffer.c	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/vulkan/kk_buffer.c	2026-09-17 18:54:37
-@@ -157,7 +157,8 @@
++++ b/src/kosmickrisp/vulkan/kk_buffer.c	2026-09-19 22:18:00
+@@ -133,6 +133,10 @@
+    case VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_MAPPED_FOREIGN_MEMORY_BIT_EXT:
+       pExternalBufferProperties->externalMemoryProperties = kk_host_mem_props;
+       return;
++   case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT:
++      pExternalBufferProperties->externalMemoryProperties =
++         kk_opaque_fd_mem_props;
++      return;
+    default:
+       goto unsupported;
+    }
+@@ -157,7 +161,8 @@
  
     if (mem->bo->mtl_handle) {
        buffer->metal.handle = mtl_new_buffer_with_length(
@@ -779,9 +790,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
        buffer->metal.offset = 0u;
     } else {
        /* If the memory is not heap backed, for example if we imported a host
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/kk_buffer_view.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_buffer_view.c
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_buffer_view.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_buffer_view.c
 --- a/src/kosmickrisp/vulkan/kk_buffer_view.c	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/vulkan/kk_buffer_view.c	2026-09-19 17:54:18
++++ b/src/kosmickrisp/vulkan/kk_buffer_view.c	2026-09-19 22:14:25
 @@ -66,7 +66,16 @@
     enum pipe_format p_format = vk_format_to_pipe_format(view->vk.format);
     const struct kk_va_format *supported_format = kk_get_va_format(p_format);
@@ -845,9 +856,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
     if (!view->mtl_texel_buffer_handle) {
        vk_buffer_view_destroy(&dev->vk, pAllocator, &view->vk);
        return vk_error(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY);
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/kk_buffer_view.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_buffer_view.h
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_buffer_view.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_buffer_view.h
 --- a/src/kosmickrisp/vulkan/kk_buffer_view.h	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/vulkan/kk_buffer_view.h	2026-09-17 09:30:33
++++ b/src/kosmickrisp/vulkan/kk_buffer_view.h	2026-09-19 22:14:19
 @@ -23,6 +23,12 @@
     struct vk_buffer_view vk;
     mtl_texture *mtl_texel_buffer_handle;
@@ -861,9 +872,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
  };
  
  VK_DEFINE_NONDISP_HANDLE_CASTS(kk_buffer_view, vk.base, VkBufferView,
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/kk_cmd_buffer.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_cmd_buffer.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_cmd_buffer.c
 --- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c	2026-09-18 22:10:01
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c	2026-09-19 22:14:31
 @@ -67,6 +67,7 @@
  
     cs_end(cmd);
@@ -984,9 +995,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
        cmd->metal.compute = mtl_new_compute_command_encoder(cmd->metal.cmd_buf);
        mtl_compute_set_argument_table(cmd->metal.compute, cmd->argument_table);
        kk_encoder_update_debug(cmd, cmd->metal.compute);
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/kk_cmd_buffer.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_cmd_buffer.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_cmd_buffer.h
 --- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h	2026-09-18 14:29:16
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h	2026-09-19 22:17:05
 @@ -8,6 +8,8 @@
  #ifndef KK_CMD_BUFFER_H
  #define KK_CMD_BUFFER_H 1
@@ -1142,9 +1153,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
     } metal;
     /* Pending timestamp resolves (struct kk_ts_resolve), flushed at cs_end. */
     struct util_dynarray ts_resolves;
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/kk_cmd_copy.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_cmd_copy.c
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_cmd_copy.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_cmd_copy.c
 --- a/src/kosmickrisp/vulkan/kk_cmd_copy.c	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/vulkan/kk_cmd_copy.c	2026-09-18 00:07:37
++++ b/src/kosmickrisp/vulkan/kk_cmd_copy.c	2026-09-19 22:16:45
 @@ -264,13 +264,23 @@
  
  static bool
@@ -1188,9 +1199,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
              buffer_offset =
                 copy_through_buffer(cmd, src, src_index, dst, dst_index,
                                     buf.buffer, buffer_offset, region);
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/kk_cmd_dispatch.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_cmd_dispatch.c
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_cmd_dispatch.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_cmd_dispatch.c
 --- a/src/kosmickrisp/vulkan/kk_cmd_dispatch.c	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/vulkan/kk_cmd_dispatch.c	2026-09-18 16:28:12
++++ b/src/kosmickrisp/vulkan/kk_cmd_dispatch.c	2026-09-19 22:17:05
 @@ -8,6 +8,7 @@
  
  #include "kk_buffer.h"
@@ -1271,9 +1282,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
 +         encoder, args + (uint64_t)i * stride, local_size);
     }
  }
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/kk_cmd_draw.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_cmd_draw.c
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_cmd_draw.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_cmd_draw.c
 --- a/src/kosmickrisp/vulkan/kk_cmd_draw.c	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c	2026-09-19 17:54:18
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c	2026-09-19 22:17:05
 @@ -11,6 +11,7 @@
  
  #include "kk_buffer.h"
@@ -2253,9 +2264,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
     };
  
     kk_draw(cmd, &data);
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/kk_descriptor_set.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_descriptor_set.c
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_descriptor_set.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_descriptor_set.c
 --- a/src/kosmickrisp/vulkan/kk_descriptor_set.c	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/vulkan/kk_descriptor_set.c	2026-09-18 00:07:37
++++ b/src/kosmickrisp/vulkan/kk_descriptor_set.c	2026-09-19 22:16:32
 @@ -53,6 +53,30 @@
     memcpy(dst, desc_data, desc_size);
  }
@@ -2342,9 +2353,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
     }
     write_desc(set, binding, elem, &desc, sizeof(desc));
  }
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/kk_descriptor_set_layout.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_descriptor_set_layout.c
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_descriptor_set_layout.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_descriptor_set_layout.c
 --- a/src/kosmickrisp/vulkan/kk_descriptor_set_layout.c	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/vulkan/kk_descriptor_set_layout.c	2026-09-17 09:30:33
++++ b/src/kosmickrisp/vulkan/kk_descriptor_set_layout.c	2026-09-19 22:14:19
 @@ -44,6 +44,10 @@
  
     case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
@@ -2356,9 +2367,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
     case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
        *stride = *alignment = sizeof(struct kk_storage_image_descriptor);
        break;
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/kk_descriptor_types.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_descriptor_types.h
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_descriptor_types.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_descriptor_types.h
 --- a/src/kosmickrisp/vulkan/kk_descriptor_types.h	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/vulkan/kk_descriptor_types.h	2026-09-18 00:07:37
++++ b/src/kosmickrisp/vulkan/kk_descriptor_types.h	2026-09-19 22:16:32
 @@ -26,9 +26,12 @@
     uint16_t image_min_lod_fp16;
     uint16_t image_min_lod_uint16;
@@ -2407,10 +2418,112 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
  
  /* This has to match nir_address_format_64bit_bounded_global */
  struct kk_buffer_address {
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/kk_device_memory.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_device_memory.c
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_device_memory.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_device_memory.c
 --- a/src/kosmickrisp/vulkan/kk_device_memory.c	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/vulkan/kk_device_memory.c	2026-09-17 18:54:37
-@@ -99,6 +99,7 @@
++++ b/src/kosmickrisp/vulkan/kk_device_memory.c	2026-09-19 22:18:00
+@@ -18,8 +18,11 @@
+ #include "util/u_atomic.h"
+ #include "util/u_memory.h"
+ 
++#include <fcntl.h>
+ #include <inttypes.h>
+ #include <sys/mman.h>
++#include <sys/stat.h>
++#include <unistd.h>
+ 
+ /* Supports mtlheap only */
+ const VkExternalMemoryProperties kk_mtlheap_mem_props = {
+@@ -38,6 +41,82 @@
+       VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_MAPPED_FOREIGN_MEMORY_BIT_EXT,
+ };
+ 
++const VkExternalMemoryProperties kk_opaque_fd_mem_props = {
++   .externalMemoryFeatures = VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT |
++                             VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT,
++   .exportFromImportedHandleTypes =
++      VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
++   .compatibleHandleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
++};
++
++static int
++kk_shm_create(uint64_t size_B)
++{
++   static uint32_t serial;
++   char name[64];
++   int fd = -1;
++
++   for (unsigned i = 0u; i < 64u && fd < 0; ++i) {
++      snprintf(name, sizeof(name), "/kk-%d-%u", (int)getpid(),
++               p_atomic_inc_return(&serial));
++      fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
++   }
++
++   if (fd < 0)
++      return -1;
++
++   shm_unlink(name);
++
++   if (ftruncate(fd, (off_t)size_B) != 0) {
++      close(fd);
++      return -1;
++   }
++
++   return fd;
++}
++
++VKAPI_ATTR VkResult VKAPI_CALL
++kk_GetMemoryFdKHR(VkDevice device, const VkMemoryGetFdInfoKHR *pGetFdInfo,
++                  int *pFd)
++{
++   VK_FROM_HANDLE(kk_device, dev, device);
++   VK_FROM_HANDLE(kk_device_memory, mem, pGetFdInfo->memory);
++
++   if (pGetFdInfo->handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT)
++      return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
++
++   if (mem->fd < 0)
++      return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
++
++   int fd = dup(mem->fd);
++   if (fd < 0)
++      return vk_errorf(dev, VK_ERROR_TOO_MANY_OBJECTS, "%m");
++
++   *pFd = fd;
++
++   return VK_SUCCESS;
++}
++
++VKAPI_ATTR VkResult VKAPI_CALL
++kk_GetMemoryFdPropertiesKHR(
++   VkDevice device, VkExternalMemoryHandleTypeFlagBits handleType, int fd,
++   VkMemoryFdPropertiesKHR *pMemoryFdProperties)
++{
++   VK_FROM_HANDLE(kk_device, dev, device);
++   struct kk_physical_device *pdev = kk_device_physical(dev);
++
++   if (handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT)
++      return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
++
++   struct stat st;
++   if (fstat(fd, &st) != 0)
++      return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
++
++   pMemoryFdProperties->memoryTypeBits = BITFIELD_MASK(pdev->mem_type_count);
++
++   return VK_SUCCESS;
++}
++
+ #ifdef VK_USE_PLATFORM_METAL_EXT
+ VKAPI_ATTR VkResult VKAPI_CALL
+ kk_GetMemoryMetalHandlePropertiesEXT(
+@@ -96,9 +175,14 @@
+       pAllocateInfo->pNext, IMPORT_MEMORY_METAL_HANDLE_INFO_EXT);
+    const VkImportMemoryHostPointerInfoEXT *host_info = vk_find_struct_const(
+       pAllocateInfo->pNext, IMPORT_MEMORY_HOST_POINTER_INFO_EXT);
++   const VkImportMemoryFdInfoKHR *fd_info =
++      vk_find_struct_const(pAllocateInfo->pNext, IMPORT_MEMORY_FD_INFO_KHR);
++   const VkExportMemoryAllocateInfo *export_info =
++      vk_find_struct_const(pAllocateInfo->pNext, EXPORT_MEMORY_ALLOCATE_INFO);
  
     // TODO_KOSMICKRISP Do the actual memory allocation with alignment requirements
     uint32_t alignment = (1ULL << 12);
@@ -2418,7 +2531,64 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
  
     const uint64_t aligned_size =
        align64(pAllocateInfo->allocationSize, alignment);
-@@ -141,8 +142,9 @@
+@@ -108,10 +192,17 @@
+    if (!mem)
+       return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
+ 
++   mem->fd = -1;
++
+    bool import_metal = metal_info && metal_info->handleType;
+    bool import_host = host_info && host_info->handleType;
++   bool import_fd = fd_info && fd_info->handleType ==
++                                  VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
++   bool export_fd =
++      export_info && (export_info->handleTypes &
++                      VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT);
+ 
+-   if (import_metal || import_host) {
++   if (import_metal || import_host || import_fd || export_fd) {
+       mem->bo = CALLOC_STRUCT(kk_bo);
+       if (!mem->bo) {
+          result = vk_errorf(&dev->vk.base, VK_ERROR_OUT_OF_DEVICE_MEMORY, "%m");
+@@ -136,13 +227,47 @@
+             dev->mtl_handle, host_info->pHostPointer, mem->vk.size);
+          mem->bo->size_B = mtl_buffer_get_length(mem->bo->map);
+          kk_device_add_buffer_to_residency_set(dev, mem->bo->map);
++      } else {
++         const uint64_t page_B = (uint64_t)getpagesize();
++         const uint64_t shm_size_B = align64(mem->vk.size, page_B);
++         int fd = import_fd ? fd_info->fd : kk_shm_create(shm_size_B);
++
++         if (fd < 0) {
++            result = vk_errorf(&dev->vk.base, VK_ERROR_OUT_OF_DEVICE_MEMORY,
++                               "%m");
++            goto fail_alloc;
++         }
++
++         void *addr = mmap(NULL, shm_size_B, PROT_READ | PROT_WRITE, MAP_SHARED,
++                           fd, 0);
++         if (addr == MAP_FAILED) {
++            close(fd);
++            result = vk_errorf(&dev->vk.base, VK_ERROR_INVALID_EXTERNAL_HANDLE,
++                               "%m");
++            goto fail_alloc;
++         }
++
++         mem->fd = fd;
++         mem->shm_base = addr;
++         mem->shm_size_B = shm_size_B;
++
++         mem->bo->map =
++            mtl_new_buffer_with_bytes_no_copy(dev->mtl_handle, addr, shm_size_B);
++         if (!mem->bo->map) {
++            result = vk_errorf(&dev->vk.base, VK_ERROR_OUT_OF_DEVICE_MEMORY,
++                               "%m");
++            goto fail_alloc;
++         }
++         mem->bo->size_B = mtl_buffer_get_length(mem->bo->map);
++         kk_device_add_buffer_to_residency_set(dev, mem->bo->map);
+       }
+ 
        mem->bo->gpu = mtl_buffer_get_gpu_address(mem->bo->map);
        mem->bo->cpu = mtl_get_contents(mem->bo->map);
     } else {
@@ -2430,10 +2600,59 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
        if (result != VK_SUCCESS)
           goto fail_alloc;
     }
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/kk_image.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_image.c
+@@ -171,6 +296,12 @@
+       kk_bo_unmap(dev, mem->bo, mem->map, false);
+ 
+    kk_destroy_bo(dev, mem->bo);
++
++   if (mem->shm_base)
++      munmap(mem->shm_base, mem->shm_size_B);
++
++   if (mem->fd >= 0)
++      close(mem->fd);
+ 
+    vk_device_memory_destroy(&dev->vk, pAllocator, &mem->vk);
+ }
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_device_memory.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_device_memory.h
+--- a/src/kosmickrisp/vulkan/kk_device_memory.h	2026-09-16 20:46:47
++++ b/src/kosmickrisp/vulkan/kk_device_memory.h	2026-09-19 22:18:00
+@@ -20,6 +20,9 @@
+    struct vk_device_memory vk;
+    struct kk_bo *bo;
+    void *map;
++   int fd;
++   void *shm_base;
++   uint64_t shm_size_B;
+ };
+ 
+ VK_DEFINE_NONDISP_HANDLE_CASTS(kk_device_memory, vk.base, VkDeviceMemory,
+@@ -27,6 +30,7 @@
+ 
+ extern const VkExternalMemoryProperties kk_mtlheap_mem_props;
+ extern const VkExternalMemoryProperties kk_host_mem_props;
++extern const VkExternalMemoryProperties kk_opaque_fd_mem_props;
+ 
+ void kk_device_memory_set_label(struct kk_device_memory *dev_mem,
+                                 const char *label);
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_image.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_image.c
 --- a/src/kosmickrisp/vulkan/kk_image.c	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/vulkan/kk_image.c	2026-09-17 18:54:37
-@@ -613,6 +613,15 @@
++++ b/src/kosmickrisp/vulkan/kk_image.c	2026-09-19 22:18:00
+@@ -408,6 +408,14 @@
+          ext_mem_props = &kk_host_mem_props;
+          break;
+       }
++      case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT: {
++         if (pImageFormatInfo->tiling != VK_IMAGE_TILING_LINEAR) {
++            return vk_errorf(pdev, VK_ERROR_FORMAT_NOT_SUPPORTED,
++                             "opaque fd import image must be linear");
++         }
++         ext_mem_props = &kk_opaque_fd_mem_props;
++         break;
++      }
+       default:
+          /* From the Vulkan 1.3.256 spec:
+           *
+@@ -613,6 +621,15 @@
        return wsi_common_create_swapchain_image(&pdev->wsi_device, pCreateInfo,
                                                 pImage);
  
@@ -2449,7 +2668,7 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
     image = vk_zalloc2(&dev->vk.alloc, pAllocator, sizeof(*image), 8,
                        VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
     if (!image)
-@@ -838,8 +847,9 @@
+@@ -838,8 +855,9 @@
        return mtl_new_texture_with_descriptor_linear(plane->mem->bo->map, layout,
                                                      mem_offset_B);
  
@@ -2461,7 +2680,7 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
  }
  
  static VkResult
-@@ -874,7 +884,7 @@
+@@ -874,7 +892,7 @@
        array_layout.layers = array_layout.layers * array_layout.depth_px;
        array_layout.depth_px = 1u;
        plane->mtl_handle_array = mtl_new_texture_with_descriptor(
@@ -2470,9 +2689,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
        if (image->vk.base.object_name)
           mtl_resource_set_label(plane->mtl_handle_array,
                                  image->vk.base.object_name);
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/kk_image_view.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_image_view.c
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_image_view.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_image_view.c
 --- a/src/kosmickrisp/vulkan/kk_image_view.c	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/vulkan/kk_image_view.c	2026-09-17 18:37:13
++++ b/src/kosmickrisp/vulkan/kk_image_view.c	2026-09-19 22:15:38
 @@ -40,6 +40,22 @@
  }
  
@@ -2598,9 +2817,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
        if (iview->planes[i].mtl_handle_storage)
           mtl_resource_set_label(iview->planes[i].mtl_handle_storage, label);
        if (iview->planes[i].mtl_handle_subres)
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/kk_image_view.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_image_view.h
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_image_view.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_image_view.h
 --- a/src/kosmickrisp/vulkan/kk_image_view.h	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/vulkan/kk_image_view.h	2026-09-17 18:37:13
++++ b/src/kosmickrisp/vulkan/kk_image_view.h	2026-09-19 22:15:38
 @@ -28,6 +28,8 @@
        enum pipe_format format;
  
@@ -2620,9 +2839,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
        uint64_t input_gpu_resource_id;
     } planes[3];
  };
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/kk_indirect_commands.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_indirect_commands.c
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_indirect_commands.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_indirect_commands.c
 --- a/src/kosmickrisp/vulkan/kk_indirect_commands.c	1970-01-01 01:00:00
-+++ b/src/kosmickrisp/vulkan/kk_indirect_commands.c	2026-09-18 22:07:09
++++ b/src/kosmickrisp/vulkan/kk_indirect_commands.c	2026-09-19 22:17:05
 @@ -0,0 +1,256 @@
 +/*
 + * Copyright 2026 Guillaume Tranchepain
@@ -2880,9 +3099,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
 +   return out_va;
 +}
 +
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/kk_indirect_commands.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_indirect_commands.h
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_indirect_commands.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_indirect_commands.h
 --- a/src/kosmickrisp/vulkan/kk_indirect_commands.h	1970-01-01 01:00:00
-+++ b/src/kosmickrisp/vulkan/kk_indirect_commands.h	2026-09-18 11:14:45
++++ b/src/kosmickrisp/vulkan/kk_indirect_commands.h	2026-09-19 22:17:05
 @@ -0,0 +1,66 @@
 +/*
 + * Copyright 2026 Guillaume Tranchepain
@@ -2950,9 +3169,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
 +                     const VkGeneratedCommandsInfoEXT *info);
 +
 +#endif /* KK_INDIRECT_COMMANDS_H */
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
 --- a/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c	2026-09-18 15:32:52
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c	2026-09-19 22:16:32
 @@ -369,7 +369,11 @@
  
     /* Reads and queries use the texture descriptor; writes and atomics PBE. */
@@ -3167,9 +3386,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
     case nir_intrinsic_load_first_vertex:
        /* Lower only compute shaders */
        if (*(bool *)data) {
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/kk_nir_lower_xfb.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_nir_lower_xfb.c
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_nir_lower_xfb.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_nir_lower_xfb.c
 --- a/src/kosmickrisp/vulkan/kk_nir_lower_xfb.c	1970-01-01 01:00:00
-+++ b/src/kosmickrisp/vulkan/kk_nir_lower_xfb.c	2026-09-17 14:04:43
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_xfb.c	2026-09-19 22:14:44
 @@ -0,0 +1,116 @@
 +/*
 + * Copyright 2026 The Mesa contributors
@@ -3287,9 +3506,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
 +
 +   return nir_shader_intrinsics_pass(nir, lower_xfb, nir_metadata_none, NULL);
 +}
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/kk_physical_device.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_physical_device.c
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_physical_device.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_physical_device.c
 --- a/src/kosmickrisp/vulkan/kk_physical_device.c	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/vulkan/kk_physical_device.c	2026-09-18 22:32:09
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c	2026-09-19 22:18:00
 @@ -5,10 +5,13 @@
   * SPDX-License-Identifier: MIT
   */
@@ -3313,7 +3532,15 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
  static uint32_t
  kk_get_vk_version()
  {
-@@ -127,6 +132,7 @@
+@@ -53,6 +58,7 @@
+       .KHR_device_group = true,
+       .KHR_external_fence = true,
+       .KHR_external_memory = true,
++      .KHR_external_memory_fd = true,
+       .KHR_external_semaphore = true,
+       .KHR_get_memory_requirements2 = true,
+       .KHR_maintenance1 = true,
+@@ -127,6 +133,7 @@
        .KHR_maintenance5 = true,
        .KHR_maintenance6 = true,
        .KHR_map_memory2 = true,
@@ -3321,7 +3548,7 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
        .KHR_push_descriptor = true,
        .KHR_shader_expect_assume = true,
        .KHR_shader_float_controls2 = true,
-@@ -178,6 +184,8 @@
+@@ -178,6 +185,8 @@
        .EXT_debug_marker = true,
        .EXT_depth_clip_control = true,
        .EXT_depth_clip_enable = true,
@@ -3330,7 +3557,7 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
        .EXT_extended_dynamic_state3 = true,
        .EXT_external_memory_metal = true,
        .EXT_external_memory_host = true,
-@@ -203,6 +211,7 @@
+@@ -203,6 +212,7 @@
  #ifdef KK_USE_WSI_PLATFORM
        .EXT_swapchain_maintenance1 = true,
  #endif
@@ -3338,7 +3565,7 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
        .EXT_vertex_attribute_robustness = true,
  
        .GOOGLE_decorate_string = true,
-@@ -253,9 +262,11 @@
+@@ -253,9 +263,11 @@
        .shaderStorageImageArrayDynamicIndexing = true,
        .shaderStorageImageExtendedFormats = true,
        .shaderStorageImageReadWithoutFormat = true,
@@ -3350,7 +3577,7 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
        .tessellationShader = true,
        .textureCompressionASTC_LDR = true,
        .textureCompressionBC = true,
-@@ -441,7 +452,7 @@
+@@ -441,7 +453,7 @@
  
        /* VK_EXT_border_color_swizzle */
        .borderColorSwizzle = supported_extensions->EXT_border_color_swizzle,
@@ -3359,7 +3586,7 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
  
        /* VK_EXT_conditional_rendering */
        .conditionalRendering = true,
-@@ -461,6 +472,13 @@
+@@ -461,6 +473,13 @@
        /* VK_EXT_depth_clip_enable */
        .depthClipEnable = true,
  
@@ -3373,7 +3600,7 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
        /* VK_EXT_extended_dynamic_state3 */
        .extendedDynamicState3DepthClampEnable = true,
        .extendedDynamicState3DepthClipEnable = true,
-@@ -482,6 +500,10 @@
+@@ -482,6 +501,10 @@
        .memoryMapRangePlaced = false,
        .memoryUnmapReserve = true,
  
@@ -3384,7 +3611,7 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
        /* VK_EXT_multi_draw */
        .multiDraw = true,
  
-@@ -553,13 +575,13 @@
+@@ -553,13 +576,13 @@
        .maxImageDimension2D = kk_image_max_dimension(pdev, VK_IMAGE_TYPE_2D),
        .maxImageDimension3D = kk_image_max_dimension(pdev, VK_IMAGE_TYPE_3D),
        .maxImageDimensionCube = kk_image_max_dimension(pdev, VK_IMAGE_TYPE_2D),
@@ -3401,7 +3628,7 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
        .bufferImageGranularity = 16,
        .sparseAddressSpaceSize = KK_SPARSE_ADDR_SPACE_SIZE,
        .maxBoundDescriptorSets = KK_MAX_SETS,
-@@ -760,10 +782,14 @@
+@@ -760,10 +783,14 @@
        .integerDotProduct4x8BitPackedUnsignedAccelerated = false,
        .integerDotProduct4x8BitPackedSignedAccelerated = false,
        .integerDotProduct4x8BitPackedMixedSignednessAccelerated = false,
@@ -3418,7 +3645,7 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
        .maxBufferSize = pdev->info.max_buffer_size,
  
        /* VK_KHR_push_descriptor */
-@@ -778,7 +804,7 @@
+@@ -778,7 +805,7 @@
        .advancedBlendAllOperations = true,
  
        /* VK_EXT_custom_border_color */
@@ -3427,7 +3654,7 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
  
        /* VK_EXT_extended_dynamic_state3 */
        .dynamicPrimitiveTopologyUnrestricted = false,
-@@ -835,6 +861,21 @@
+@@ -835,6 +862,21 @@
        /* VK_EXT_map_memory_placed */
        .minPlacedMemoryMapAlignment = os_page_size,
  
@@ -3449,7 +3676,7 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
        /* VK_EXT_multi_draw */
        .maxMultiDrawCount = UINT32_MAX,
  
-@@ -873,16 +914,15 @@
+@@ -873,16 +915,15 @@
        /* VK_EXT_shader_object */
        .shaderBinaryVersion = 0,
  
@@ -3469,9 +3696,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
        .transformFeedbackDraw = true,
  
        /* VK_KHR_vertex_attribute_divisor */
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/kk_private.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_private.h
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_private.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_private.h
 --- a/src/kosmickrisp/vulkan/kk_private.h	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/vulkan/kk_private.h	2026-09-18 00:07:37
++++ b/src/kosmickrisp/vulkan/kk_private.h	2026-09-19 22:16:32
 @@ -20,8 +20,23 @@
  #define KK_MAX_DYNAMIC_BUFFERS           64
  #define KK_MAX_RTS                       8
@@ -3497,9 +3724,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
  #define KK_MIN_UBO_ALIGNMENT             64
  #define KK_MAX_VIEWPORTS                 16
  #define KK_MAX_DESCRIPTOR_SIZE           64
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/kk_query_pool.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_query_pool.c
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_query_pool.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_query_pool.c
 --- a/src/kosmickrisp/vulkan/kk_query_pool.c	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/vulkan/kk_query_pool.c	2026-09-17 16:41:37
++++ b/src/kosmickrisp/vulkan/kk_query_pool.c	2026-09-19 22:15:18
 @@ -38,6 +38,9 @@
     case VK_QUERY_TYPE_OCCLUSION:
     case VK_QUERY_TYPE_TIMESTAMP:
@@ -3757,9 +3984,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
  }
  
  VKAPI_ATTR void VKAPI_CALL
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/kk_query_pool.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_query_pool.h
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_query_pool.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_query_pool.h
 --- a/src/kosmickrisp/vulkan/kk_query_pool.h	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/vulkan/kk_query_pool.h	2026-09-17 16:41:05
++++ b/src/kosmickrisp/vulkan/kk_query_pool.h	2026-09-19 22:15:18
 @@ -13,10 +13,12 @@
  #include "vulkan/runtime/vk_query_pool.h"
  
@@ -3777,9 +4004,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
  };
  
  struct kk_oq_state {
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/kk_queue.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_queue.c
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_queue.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_queue.c
 --- a/src/kosmickrisp/vulkan/kk_queue.c	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/vulkan/kk_queue.c	2026-09-17 11:50:57
++++ b/src/kosmickrisp/vulkan/kk_queue.c	2026-09-19 22:14:31
 @@ -98,8 +98,44 @@
     mtl_commit_options *options = mtl_new_commit_options();
     mtl_commit_options_add_feedback_handler(options, callback, user_data);
@@ -3827,9 +4054,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
     mtl_release(options);
  }
  
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/kk_sampler.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_sampler.c
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_sampler.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_sampler.c
 --- a/src/kosmickrisp/vulkan/kk_sampler.c	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/vulkan/kk_sampler.c	2026-09-18 00:07:37
++++ b/src/kosmickrisp/vulkan/kk_sampler.c	2026-09-19 22:16:32
 @@ -211,26 +211,15 @@
  
        sampler->plane_count = 2;
@@ -3861,9 +4088,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
  
     /* LOD data passed in the descriptor set */
     sampler->lod_bias_fp16 = _mesa_float_to_half(pCreateInfo->mipLodBias);
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/kk_sampler.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_sampler.h
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_sampler.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_sampler.h
 --- a/src/kosmickrisp/vulkan/kk_sampler.h	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/vulkan/kk_sampler.h	2026-09-18 00:07:37
++++ b/src/kosmickrisp/vulkan/kk_sampler.h	2026-09-19 22:16:32
 @@ -23,6 +23,7 @@
     struct vk_sampler vk;
     VkClearColorValue custom_border;
@@ -3872,9 +4099,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
  
     uint8_t plane_count;
     uint16_t lod_bias_fp16;
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/kk_shader.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_shader.c
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_shader.c /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_shader.c
 --- a/src/kosmickrisp/vulkan/kk_shader.c	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/vulkan/kk_shader.c	2026-09-19 17:31:55
++++ b/src/kosmickrisp/vulkan/kk_shader.c	2026-09-19 22:16:24
 @@ -386,12 +386,9 @@
  
  /* Lowering for the stage which ends up as the vertex stage on hardware */
@@ -5006,9 +5233,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
     }
  
     return result;
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/kk_shader.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_shader.h
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/kk_shader.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/kk_shader.h
 --- a/src/kosmickrisp/vulkan/kk_shader.h	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/vulkan/kk_shader.h	2026-09-17 20:55:23
++++ b/src/kosmickrisp/vulkan/kk_shader.h	2026-09-19 22:16:19
 @@ -11,8 +11,16 @@
  #include "kk_device_memory.h"
  #include "kk_private.h"
@@ -5155,9 +5382,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
  bool kk_nir_lower_null_images(nir_shader *nir);
  
  bool kk_nir_lower_textures(nir_shader *nir);
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/meson.build /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/meson.build
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/kosmickrisp/vulkan/meson.build /Users/gtranche/Dev/proton-ouvert/src/mesa/src/kosmickrisp/vulkan/meson.build
 --- a/src/kosmickrisp/vulkan/meson.build	2026-09-16 20:46:47
-+++ b/src/kosmickrisp/vulkan/meson.build	2026-09-18 10:50:09
++++ b/src/kosmickrisp/vulkan/meson.build	2026-09-19 22:17:05
 @@ -84,6 +84,7 @@
    'kk_image_layout.c',
    'kk_image_view.h',
@@ -5174,9 +5401,9 @@ diff --color -urN --exclude=.git --exclude=__pycache__ c/src/kosmickrisp/vulkan/
    'kk_physical_device.h',
    'kk_physical_device.c',
    'kk_query_pool.h',
-diff --color -urN --exclude=.git --exclude=__pycache__ c/src/poly/cl/restart.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/poly/cl/restart.h
+diff -urN --exclude=.git --exclude=__pycache__ c3/src/poly/cl/restart.h /Users/gtranche/Dev/proton-ouvert/src/mesa/src/poly/cl/restart.h
 --- a/src/poly/cl/restart.h	2026-09-16 20:46:47
-+++ b/src/poly/cl/restart.h	2026-09-18 09:40:29
++++ b/src/poly/cl/restart.h	2026-09-19 22:16:58
 @@ -172,6 +172,7 @@
                       uint32_t in_index_size_B,
                       uint32_t out_index_size_B,
