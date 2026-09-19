@@ -6504,3 +6504,35 @@ jeux Windows sont D3D11, pas D3D12.
 
 Restriction connue : niveau de fonctionnalite 11_0 retenu alors que 11_1 est annonce supporte,
 et la memoire externe manque. Ni l'un ni l'autre n'a ete creuse.
+
+---
+
+## 94. Le 32 bits est hors d'atteinte, definitivement (2026-09-19)
+
+Unigine Heaven 4.0 telecharge depuis la source officielle (`assets.unigine.com`, 248 Mo,
+sha256 `497865a0...`). Installeur Inno Setup 6.0, **PE32 x86**. `7z` ne sait pas ouvrir de
+l'Inno Setup 6 ; `innoextract` 1.9 a donc ete compile dans `toolchain/` — pas de `brew install`,
+la regle du projet interdit d'installer en dur dans le systeme. Deux corrections ont ete
+necessaires : `-DCMAKE_POLICY_VERSION_MINIMUM=3.5` ne se propage pas aux scripts invoques en
+`cmake -P`, il a fallu relever `cmake_minimum_required` dans `cmake/VersionScript.cmake` et
+dans `CMakeLists.txt`.
+
+Contenu de l'installeur, une fois listable : **13 binaires `_x86`, zero `_x64`**. Heaven 4.0
+(2013) est 32 bits uniquement.
+
+Or :
+
+```
+$ arch -arch i386 /usr/bin/true
+arch: Unknown architecture: i386
+```
+
+macOS n'execute plus de x86 32 bits depuis Catalina, et Rosetta 2 ne traduit que le x86_64.
+Aucune configuration de Wine n'y change quoi que ce soit : WoW64 demanderait au processeur
+d'executer du code i386, ce que la machine ne sait pas faire.
+
+**Consequence pour le projet** : toute application Windows 32 bits est hors d'atteinte, de
+facon permanente et pour une raison qui ne tient ni a Wine, ni a vkd3d-proton, ni a
+KosmicKrisp. Cela exclut une part notable du catalogue ancien. Seul le 64 bits est jouable.
+
+`innoextract` reste acquis dans `toolchain/bin` : il servira pour tout installeur Inno Setup.
