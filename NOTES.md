@@ -6909,3 +6909,62 @@ Wine, soit de savoir adosser des images en tuilage optimal a de la memoire expor
 descripteur — ce que Metal ne permet pas, un heap ne pouvant pas etre construit sur de la
 memoire hote. Les deux sont hors de portee d'un correctif raisonnable. C'est un resultat
 negatif, mais mesure et argumente.
+
+---
+
+## 100. Conformite D3D11 : la suite de Wine s'arrete a 12 %, sur les ressources partagees (2026-09-19)
+
+### Pourquoi cette mesure
+
+Le D3D12 a un chiffre — 2 305 echecs sur 574 fonctions, une reference archivee. Le D3D11 ne
+reposait que sur deux sondes ecrites pour l'occasion (§ 93). Or Wine embarque ses propres
+suites : **36 793 lignes de tests d3d11**, desactivees dans notre build.
+
+### Construction
+
+Reconfiguration de `build/wine` sans `--disable-tests`. Deux pieges retrouves, tous deux
+documentes dans `tests/etape2_construire_pile.sh` mais que j'avais omis :
+
+- `bison` doit venir de `/usr/local/opt/bison/bin` — celui du systeme est trop ancien ;
+- `CC="clang -arch x86_64"` est indispensable, sinon l'outil `makedep` se construit pour
+  l'hote et recoit a la fois les en-tetes `libkern/arm` et `libkern/i386`, d'ou une
+  redefinition de `_OSSwapInt64`.
+
+Verifie apres coup : `SONAME_LIBVULKAN` pointe toujours sur notre loader. Seul le binaire de
+test a ete construit, Wine n'a pas ete reinstalle.
+
+### Resultat
+
+La suite demarre, identifie l'adaptateur (`Adapter: L"Apple M1 Max", 106b:0064`) et s'arrete
+avec le code 5 apres avoir atteint la **ligne source 4305 sur 36 793, soit environ 12 %**.
+
+Deux executions, meme point d'arret **exactement** : la ligne 4305 dans les deux cas. Ce n'est
+donc pas un aleas. Les dernieres lignes sont sans ambiguite :
+
+```
+d3d11.c:3269: Test failed: Test 1: Got unexpected device pointer ..., expected NULL.
+err:   Failed to create shared resource: VK_KHR_EXTERNAL_MEMORY_WIN32 not supported
+d3d11.c:3237: Test marked todo: Test 2: Texture should not implement ID3D10Texture2D.
+err:   Failed to create shared resource: VK_KHR_EXTERNAL_MEMORY_WIN32 not supported
+```
+
+Avec, un peu avant, `D3D11DXGIKeyedMutex::AcquireSync: Not supported` — les mutex a cle, qui
+sont l'autre face du partage de ressources.
+
+Sur la portion executee : 32 echecs au premier passage, 23 au second, 15 et 10 `todo`. L'ecart
+entre les deux vient de tests dependant de l'ordre ou de l'etat ; le point d'arret, lui, ne
+bouge pas.
+
+### Ce que cela etablit
+
+Le meme mur que Superposition (§ 95), que le § 99 a montre infranchissable : **le partage de
+ressources est le blocage unique du chemin D3D11 sur cette pile**. Ce n'etait donc pas une
+particularite du lanceur Qt d'Unigine, c'est structurel, et la suite de conformite de Wine le
+confirme independamment.
+
+Tant que ce point n'est pas leve, aucun chiffre de conformite D3D11 complet n'est atteignable :
+la suite meurt avant d'avoir teste 88 % de son contenu.
+
+**Lien d'inference a garder honnete** : l'arret suit immediatement l'echec de ressource
+partagee, de facon reproductible, mais le binaire ne dit pas pourquoi il s'arrete — aucun
+message d'exception. La correlation est solide, la causalite reste deduite.
