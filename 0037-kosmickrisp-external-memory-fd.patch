@@ -1,0 +1,242 @@
+Generated-by: LLM
+
+--- a/src/kosmickrisp/vulkan/kk_device_memory.h
++++ b/src/kosmickrisp/vulkan/kk_device_memory.h
+@@ -20,6 +20,9 @@
+    struct vk_device_memory vk;
+    struct kk_bo *bo;
+    void *map;
++   int fd;
++   void *shm_base;
++   uint64_t shm_size_B;
+ };
+ 
+ VK_DEFINE_NONDISP_HANDLE_CASTS(kk_device_memory, vk.base, VkDeviceMemory,
+@@ -27,6 +30,7 @@
+ 
+ extern const VkExternalMemoryProperties kk_mtlheap_mem_props;
+ extern const VkExternalMemoryProperties kk_host_mem_props;
++extern const VkExternalMemoryProperties kk_opaque_fd_mem_props;
+ 
+ void kk_device_memory_set_label(struct kk_device_memory *dev_mem,
+                                 const char *label);
+--- a/src/kosmickrisp/vulkan/kk_device_memory.c
++++ b/src/kosmickrisp/vulkan/kk_device_memory.c
+@@ -18,8 +18,11 @@
+ #include "util/u_atomic.h"
+ #include "util/u_memory.h"
+ 
++#include <fcntl.h>
+ #include <inttypes.h>
+ #include <sys/mman.h>
++#include <sys/stat.h>
++#include <unistd.h>
+ 
+ /* Supports mtlheap only */
+ const VkExternalMemoryProperties kk_mtlheap_mem_props = {
+@@ -38,6 +41,82 @@
+       VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_MAPPED_FOREIGN_MEMORY_BIT_EXT,
+ };
+ 
++const VkExternalMemoryProperties kk_opaque_fd_mem_props = {
++   .externalMemoryFeatures = VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT |
++                             VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT,
++   .exportFromImportedHandleTypes =
++      VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
++   .compatibleHandleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
++};
++
++static int
++kk_shm_create(uint64_t size_B)
++{
++   static uint32_t serial;
++   char name[64];
++   int fd = -1;
++
++   for (unsigned i = 0u; i < 64u && fd < 0; ++i) {
++      snprintf(name, sizeof(name), "/kk-%d-%u", (int)getpid(),
++               p_atomic_inc_return(&serial));
++      fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
++   }
++
++   if (fd < 0)
++      return -1;
++
++   shm_unlink(name);
++
++   if (ftruncate(fd, (off_t)size_B) != 0) {
++      close(fd);
++      return -1;
++   }
++
++   return fd;
++}
++
++VKAPI_ATTR VkResult VKAPI_CALL
++kk_GetMemoryFdKHR(VkDevice device, const VkMemoryGetFdInfoKHR *pGetFdInfo,
++                  int *pFd)
++{
++   VK_FROM_HANDLE(kk_device, dev, device);
++   VK_FROM_HANDLE(kk_device_memory, mem, pGetFdInfo->memory);
++
++   if (pGetFdInfo->handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT)
++      return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
++
++   if (mem->fd < 0)
++      return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
++
++   int fd = dup(mem->fd);
++   if (fd < 0)
++      return vk_errorf(dev, VK_ERROR_TOO_MANY_OBJECTS, "%m");
++
++   *pFd = fd;
++
++   return VK_SUCCESS;
++}
++
++VKAPI_ATTR VkResult VKAPI_CALL
++kk_GetMemoryFdPropertiesKHR(
++   VkDevice device, VkExternalMemoryHandleTypeFlagBits handleType, int fd,
++   VkMemoryFdPropertiesKHR *pMemoryFdProperties)
++{
++   VK_FROM_HANDLE(kk_device, dev, device);
++   struct kk_physical_device *pdev = kk_device_physical(dev);
++
++   if (handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT)
++      return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
++
++   struct stat st;
++   if (fstat(fd, &st) != 0)
++      return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
++
++   pMemoryFdProperties->memoryTypeBits = BITFIELD_MASK(pdev->mem_type_count);
++
++   return VK_SUCCESS;
++}
++
+ #ifdef VK_USE_PLATFORM_METAL_EXT
+ VKAPI_ATTR VkResult VKAPI_CALL
+ kk_GetMemoryMetalHandlePropertiesEXT(
+@@ -96,6 +175,10 @@
+       pAllocateInfo->pNext, IMPORT_MEMORY_METAL_HANDLE_INFO_EXT);
+    const VkImportMemoryHostPointerInfoEXT *host_info = vk_find_struct_const(
+       pAllocateInfo->pNext, IMPORT_MEMORY_HOST_POINTER_INFO_EXT);
++   const VkImportMemoryFdInfoKHR *fd_info =
++      vk_find_struct_const(pAllocateInfo->pNext, IMPORT_MEMORY_FD_INFO_KHR);
++   const VkExportMemoryAllocateInfo *export_info =
++      vk_find_struct_const(pAllocateInfo->pNext, EXPORT_MEMORY_ALLOCATE_INFO);
+ 
+    // TODO_KOSMICKRISP Do the actual memory allocation with alignment requirements
+    uint32_t alignment = (1ULL << 12);
+@@ -109,10 +192,17 @@
+    if (!mem)
+       return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
+ 
++   mem->fd = -1;
++
+    bool import_metal = metal_info && metal_info->handleType;
+    bool import_host = host_info && host_info->handleType;
++   bool import_fd = fd_info && fd_info->handleType ==
++                                  VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
++   bool export_fd =
++      export_info && (export_info->handleTypes &
++                      VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT);
+ 
+-   if (import_metal || import_host) {
++   if (import_metal || import_host || import_fd || export_fd) {
+       mem->bo = CALLOC_STRUCT(kk_bo);
+       if (!mem->bo) {
+          result = vk_errorf(&dev->vk.base, VK_ERROR_OUT_OF_DEVICE_MEMORY, "%m");
+@@ -137,6 +227,39 @@
+             dev->mtl_handle, host_info->pHostPointer, mem->vk.size);
+          mem->bo->size_B = mtl_buffer_get_length(mem->bo->map);
+          kk_device_add_buffer_to_residency_set(dev, mem->bo->map);
++      } else {
++         const uint64_t page_B = (uint64_t)getpagesize();
++         const uint64_t shm_size_B = align64(mem->vk.size, page_B);
++         int fd = import_fd ? fd_info->fd : kk_shm_create(shm_size_B);
++
++         if (fd < 0) {
++            result = vk_errorf(&dev->vk.base, VK_ERROR_OUT_OF_DEVICE_MEMORY,
++                               "%m");
++            goto fail_alloc;
++         }
++
++         void *addr = mmap(NULL, shm_size_B, PROT_READ | PROT_WRITE, MAP_SHARED,
++                           fd, 0);
++         if (addr == MAP_FAILED) {
++            close(fd);
++            result = vk_errorf(&dev->vk.base, VK_ERROR_INVALID_EXTERNAL_HANDLE,
++                               "%m");
++            goto fail_alloc;
++         }
++
++         mem->fd = fd;
++         mem->shm_base = addr;
++         mem->shm_size_B = shm_size_B;
++
++         mem->bo->map =
++            mtl_new_buffer_with_bytes_no_copy(dev->mtl_handle, addr, shm_size_B);
++         if (!mem->bo->map) {
++            result = vk_errorf(&dev->vk.base, VK_ERROR_OUT_OF_DEVICE_MEMORY,
++                               "%m");
++            goto fail_alloc;
++         }
++         mem->bo->size_B = mtl_buffer_get_length(mem->bo->map);
++         kk_device_add_buffer_to_residency_set(dev, mem->bo->map);
+       }
+ 
+       mem->bo->gpu = mtl_buffer_get_gpu_address(mem->bo->map);
+@@ -174,6 +297,12 @@
+ 
+    kk_destroy_bo(dev, mem->bo);
+ 
++   if (mem->shm_base)
++      munmap(mem->shm_base, mem->shm_size_B);
++
++   if (mem->fd >= 0)
++      close(mem->fd);
++
+    vk_device_memory_destroy(&dev->vk, pAllocator, &mem->vk);
+ }
+ 
+--- a/src/kosmickrisp/vulkan/kk_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_buffer.c
+@@ -133,6 +133,10 @@
+    case VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_MAPPED_FOREIGN_MEMORY_BIT_EXT:
+       pExternalBufferProperties->externalMemoryProperties = kk_host_mem_props;
+       return;
++   case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT:
++      pExternalBufferProperties->externalMemoryProperties =
++         kk_opaque_fd_mem_props;
++      return;
+    default:
+       goto unsupported;
+    }
+--- a/src/kosmickrisp/vulkan/kk_image.c
++++ b/src/kosmickrisp/vulkan/kk_image.c
+@@ -406,6 +406,14 @@
+                              "host memory import image must be linear");
+          }
+          ext_mem_props = &kk_host_mem_props;
++         break;
++      }
++      case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT: {
++         if (pImageFormatInfo->tiling != VK_IMAGE_TILING_LINEAR) {
++            return vk_errorf(pdev, VK_ERROR_FORMAT_NOT_SUPPORTED,
++                             "opaque fd import image must be linear");
++         }
++         ext_mem_props = &kk_opaque_fd_mem_props;
+          break;
+       }
+       default:
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -58,6 +58,7 @@
+       .KHR_device_group = true,
+       .KHR_external_fence = true,
+       .KHR_external_memory = true,
++      .KHR_external_memory_fd = true,
+       .KHR_external_semaphore = true,
+       .KHR_get_memory_requirements2 = true,
+       .KHR_maintenance1 = true,

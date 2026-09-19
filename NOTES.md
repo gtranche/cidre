@@ -6635,6 +6635,8 @@ La chaine, maillon par maillon :
    zero occurrence dans `kk_physical_device.c`. Il expose `KHR_external_semaphore_fd` et
    `KHR_external_fence_fd`, mais pas l'equivalent pour la memoire.
 2. winevulkan ne peut donc pas synthetiser `VK_KHR_external_memory_win32` cote PE.
+   **[Corrige au § 96 : cette etape est fausse. Wine n'expose jamais cette extension, quelle
+   que soit la capacite du pilote hote.]**
 3. DXVK refuse la ressource partagee (`dxvk_image.cpp:406`).
 4. DXVK se contente ensuite d'**avertir et de continuer** (`d3d11_texture.cpp:745`) : la
    texture existe, sans descripteur partage.
@@ -6652,3 +6654,92 @@ un petit chantier.
 
 C'est neanmoins un resultat net : d'une adresse de plantage dans un binaire tiers jusqu'a une
 extension manquante dans notre propre pilote.
+
+---
+
+## 96. `VK_KHR_external_memory_fd` implemente — et ma chaine causale du § 95 etait fausse (2026-09-19)
+
+### Ce qui est implemente
+
+`0037-kosmickrisp-external-memory-fd.patch`, 242 lignes, cinq fichiers, aller-retour verifie.
+
+La memoire de KosmicKrisp est normalement adossee a un `MTLHeap`, qui ne s'exporte pas en
+descripteur. Le chemin existant de `VK_EXT_external_memory_host` montrait la voie : un
+`MTLBuffer` peut etre construit **par-dessus une projection hote** via
+`mtl_new_buffer_with_bytes_no_copy`. L'implementation adosse donc la memoire exportable a un
+objet de memoire partagee POSIX :
+
+- allocation avec `VkExportMemoryAllocateInfo` : `shm_open` + `shm_unlink` + `ftruncate`, puis
+  `mmap` et `MTLBuffer` par-dessus, aligne sur la **vraie** taille de page (16 Ko ici, pas 4) ;
+- `vkGetMemoryFdKHR` : `dup()` du descripteur conserve ;
+- `VkImportMemoryFdInfoKHR` : `mmap` du descripteur recu, dont l'implementation prend la
+  propriete, puis meme enveloppe `MTLBuffer` ;
+- `vkGetMemoryFdPropertiesKHR` : validation par `fstat` — `lseek` echoue sur un objet de
+  memoire partagee, premier essai rate ;
+- liberation : `munmap` puis `close` ;
+- proprietes annoncees pour les tampons, et pour les images **en tuilage lineaire seulement**,
+  meme restriction que le chemin pointeur hote, faute de heap.
+
+### Verification
+
+`tests/probe_external_fd.c` :
+
+```
+VK_KHR_external_memory_fd annonce : oui
+tampon : exportable=1 importable=1
+descripteur exporte : fd=8
+types memoire compatibles : 0x1
+projections : 0x105d5c000 et 0x105d6c000
+ecrit par m1, relu par m2 : "partage-verifie-0123456789"
+ecrit par m2, relu par m1 : 0xAB
+```
+
+Deux projections **distinctes** qui designent la meme memoire, verifie dans les deux sens.
+
+### Et pourtant Superposition ne bouge pas : ma chaine du § 95 etait fausse
+
+Apres installation du pilote x86_64, le lanceur produit exactement la meme erreur :
+`Failed to create shared resource: VK_KHR_EXTERNAL_MEMORY_WIN32 not supported`, et DXVK
+rapporte `khrExternalMemoryWin32 : 0`.
+
+La raison est dans Wine, pas dans le pilote. `dlls/winevulkan/make_vulkan`, ligne 132 :
+
+```python
+UNEXPOSED_EXTENSIONS = {
+    "VK_EXT_map_memory_placed",
+    "VK_KHR_external_memory_win32",
+}
+```
+
+**Wine genere les en-tetes de cette extension mais ne l'expose jamais aux applications.** Aucune
+capacite du pilote hote n'y change quoi que ce soit. L'etape 2 de ma chaine du § 95 — « winevulkan
+ne peut donc pas synthetiser l'extension » — laissait entendre que le pilote etait le maillon
+manquant. C'est faux : le maillon manquant est une decision de Wine, en amont de nous.
+
+La traduction poignee win32 <-> descripteur existe dans le Wine **patche par Proton**, pas dans
+le Wine amont que nous utilisons.
+
+### Ce qu'il faudrait reellement pour Superposition
+
+1. `VK_KHR_external_memory_fd` cote pilote — **fait**.
+2. Cote Wine : sortir l'extension de `UNEXPOSED_EXTENSIONS` **et** implementer la traduction
+   poignee/descripteur, comme le fait Proton. Non fait.
+3. Et meme alors : DXVK partage des **textures**, or notre chemin ne couvre que les tampons et
+   les images lineaires, faute de pouvoir adosser un heap a un descripteur. Le partage natif de
+   textures sur Metal passe par IOSurface et des ports Mach. **Ce troisieme point resterait
+   bloquant.**
+
+Le correctif garde sa valeur propre — c'est une capacite Vulkan reelle que le pilote n'avait
+pas, verifiee de bout en bout — mais il ne debloque pas Superposition, et je l'avais laisse
+esperer a tort.
+
+### Dette de verification a solder
+
+Le § 92 affirme « 28 etapes, 28 constructions reussies ». Cette campagne permutait l'arbre par
+`rsync -a`, qui **repose les dates des instantanes**, anterieures aux sorties de construction.
+Ninja compare des dates : certaines recompilations ont donc pu etre sautees. Le symptome est
+apparu aujourd'hui, un en-tete NIR genere restant perime apres une permutation.
+
+**Le resultat du § 92 est donc a reprendre**, en forcant la regeneration a chaque etape
+(`touch` des sources, ou `--debug=explain` pour verifier). Tant que ce n'est pas refait, la
+bissectabilite de la serie n'est pas etablie.
