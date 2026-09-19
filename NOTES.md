@@ -6536,3 +6536,67 @@ facon permanente et pour une raison qui ne tient ni a Wine, ni a vkd3d-proton, n
 KosmicKrisp. Cela exclut une part notable du catalogue ancien. Seul le 64 bits est jouable.
 
 `innoextract` reste acquis dans `toolchain/bin` : il servira pour tout installeur Inno Setup.
+
+---
+
+## 95. Superposition : le moteur tourne, le lanceur casse (2026-09-19)
+
+Unigine Superposition 1.1, source officielle `assets.unigine.com`, 1,2 Go, sha256
+`de5dbf4f...`. Installeur PE32 comme Heaven, mais **le contenu est en 64 bits** : quatre
+binaires, tous `PE32+ x86-64`. Extrait avec l'`innoextract` du § 94, 2,7 Go.
+
+### Ce qui marche
+
+`bin/superposition.exe -data_path ../ -video_app direct3d11 -video_mode -1 -video_width 1280
+-video_height 720 -video_fullscreen 0` fait **demarrer entierement le moteur Unigine 2.80** :
+
+```
+---- Render ----
+Renderer: Apple 25559MB
+Direct3D11 desc: Apple M1 Max
+Maximum texture size:    16384
+Maximum texture units:   16
+Maximum texture renders: 8
+---- Physics ----     Physics: Multi-threaded
+---- PathFind ----    PathFind: Multi-threaded
+---- Interpreter ---- Version: 2.80
+```
+
+Materiaux charges, physique, pathfinding, interpreteur de script, mode fenetre 1280x720 pose.
+Un moteur commercial complet s'initialise sur la pile, en D3D11.
+
+Premier essai refuse avec `Benchmark failed (incorrect settings)` en renvoyant `1600 900` :
+sans `-video_mode -1`, les options de taille sont ignorees au profit de `null_config.cfg`, et
+1600x900 n'est pas une resolution admise par le banc. Ce n'etait pas la pile.
+
+Le lanceur exerce en plus le chemin **D3D9** de DXVK (interface Qt) :
+`D3D9: Detected nonclassical vendor ID: 0x106b` — DXVK masque le GPU Apple et annonce un AMD.
+
+### Ce qui casse
+
+Le banc n'est pas pilotable depuis le moteur : `superposition.exe` seul s'arrete au menu
+integre (11 minutes a 37 % de CPU, memoire stable a 206 Mo, aucune scene chargee).
+`superposition_cli.exe` est un bouchon qui sort immediatement sans rien produire, quels que
+soient les arguments. `Superposition.exe` n'est qu'un relais qui repond `Failed to run
+launcher`.
+
+Reste `bin/launcher.exe`, le vrai pilote Qt. Il demarre, initialise D3D9 — puis boucle :
+
+```
+wine: Unhandled division by zero at address 000000014000C299
+```
+
+**773 occurrences** en cinq minutes, une par thread cree. L'adresse est dans l'image du
+lanceur lui-meme (base 0x140000000).
+
+**Hypothese, non verifiee** : le journal porte juste avant
+`readMonitorEdidFromKey: Failed to get EDID reg key size` et `DXGI: Failed to parse display
+metadata + colorimetry info, using blank`. Un calcul du lanceur a partir de metadonnees
+d'affichage revenues vides diviserait par zero. Si c'est cela, le defaut est un trou de Wine
+sur l'EDID, pas un defaut graphique. **A confirmer avant d'y croire.**
+
+### Ce que ca etablit quand meme
+
+La pile fait tourner un moteur commercial reel en D3D11, et sert aussi du D3D9. Ce qui bloque
+est le harnais du banc, pas le rendu. Superposition ne donnera donc pas de score sans
+diagnostiquer la division par zero.
