@@ -6968,3 +6968,72 @@ la suite meurt avant d'avoir teste 88 % de son contenu.
 **Lien d'inference a garder honnete** : l'arret suit immediatement l'echec de ressource
 partagee, de facon reproductible, mais le binaire ne dit pas pourquoi il s'arrete — aucun
 message d'exception. La correlation est solide, la causalite reste deduite.
+
+---
+
+## 101. MTLHEAP : l'extension passe, le verrou suivant est chez Proton (2026-09-19)
+
+### Correction du § 99
+
+J'y concluais que la route MTLHEAP etait fermee parce que le generateur de Wine ecarte la
+plateforme Metal. **C'etait trop absolu** : rien n'oblige a passer par le generateur. Trois
+faits verifies :
+
+- les structures sont triviales et leurs `sType` connus — 1000602000 a 1000602002, et
+  `VK_EXTERNAL_MEMORY_HANDLE_TYPE_MTLHEAP_BIT_EXT` vaut `0x00040000` ;
+- les deux points d'entree hote se resolvent par `vk_funcs->p_vkGetDeviceProcAddr`, sans table
+  generee ;
+- le chemin `extra_extensions` de la creation de peripherique **n'est pas valide** : y ajouter
+  la chaine `"VK_EXT_external_memory_metal"` la transmet telle quelle au pilote hote.
+
+Trouve au passage : l'extension n'est **pas du tout** dans le registre 1.4.303 de Wine, zero
+occurrence. Ce n'etait donc pas seulement le filtre de plateforme.
+
+### Ce qui est implemente
+
+`0038-wine-external-memory-win32-over-metal.patch`, 660 lignes, aller-retour verifie.
+
+- `make_vulkan` : extension sortie de `UNEXPOSED_EXTENSIONS`, les deux points d'entree win32
+  declares dans `MANUAL_UNIX_THUNKS` ; fichiers regeneres.
+- `vulkan.c` : detection de `VK_EXT_external_memory_metal` cote hote, annonce de
+  `VK_KHR_external_memory_win32` aux applications, substitution a la creation du peripherique,
+  traduction des types de descripteur dans `GetPhysicalDeviceImageFormatProperties2`,
+  `CreateImage` et `AllocateMemory`, structures Metal declarees localement, resolution
+  dynamique des deux fonctions hote, et implementation de `vkGetMemoryWin32HandleKHR` et
+  `vkGetMemoryWin32HandlePropertiesKHR`.
+
+### Mesure
+
+Avant : `khrExternalMemoryWin32 : 0`, et `Failed to create shared resource:
+VK_KHR_EXTERNAL_MEMORY_WIN32 not supported` a chaque tentative.
+
+Apres : **`khrExternalMemoryWin32 : 1`**, et **zero** occurrence du message. DXVK voit
+l'extension et l'active. Les echecs de la suite d3d11 passent de 23 a **69** : les tests vont
+plus loin dans les chemins de partage avant de tomber.
+
+### Le verrou suivant, et il n'est pas de notre ressort
+
+La suite s'arrete toujours a la ligne source 4305. `src/util/util_shared_res.cpp` de DXVK :
+
+```c
+bool setSharedMetadata(HANDLE handle, void *buf, uint32_t bufSize) {
+  return ::DeviceIoControl(handle, IOCTL_SHARED_GPU_RESOURCE_SET_METADATA, ...);
+}
+```
+
+DXVK attache les metadonnees de la texture partagee a un **vrai objet noyau Windows**, via des
+`IOCTL_SHARED_GPU_RESOURCE_*`. C'est une interface de pilote **propre a Proton**, absente du
+Wine amont. Notre `vkGetMemoryWin32HandleKHR` rend un pointeur `MTLHeap` deguise en `HANDLE` :
+`DeviceIoControl` dessus echoue, d'ou `D3D11: Failed to write shared resource info`.
+
+Et `VK_KHR_win32_keyed_mutex` reste a 0, d'ou `D3D11DXGIKeyedMutex::AcquireSync: Not supported`.
+
+La chaine complete demanderait donc, en plus : un pseudo-pilote Wine servant ces IOCTL et une
+table associant `HANDLE` a `MTLHeap`. C'est du ressort de Proton, pas d'un correctif de pilote
+graphique.
+
+### Dette ouverte
+
+Le `winevulkan` modifie est **installe**. Il expose une extension de plus, ce qui peut changer
+le comportement de vkd3d-proton. **La campagne D3D12 doit etre rejouee avant de lui faire
+confiance** — la reference est 2 305 echecs, archivee dans `tests/conformance-baseline.txt`.
