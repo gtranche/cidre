@@ -199,37 +199,12 @@ index efbfb91..cebeccd 100644
     } state;
  
     struct kk_uploader uploader;
-diff --git a/src/kosmickrisp/vulkan/kk_debug.c b/src/kosmickrisp/vulkan/kk_debug.c
-index 1805d66..7d552a4 100644
---- a/src/kosmickrisp/vulkan/kk_debug.c
-+++ b/src/kosmickrisp/vulkan/kk_debug.c
-@@ -23,6 +23,7 @@ const struct debug_named_value experimental_flags[] = {
-    {"custom_border", KK_EXPERIMENTAL_CUSTOM_BORDER},
-    {"image_view_min_lod", KK_EXPERIMENTAL_IMAGE_VIEW_MIN_LOD},
-    {"m5_optimize_e5b9g9r9", KK_EXPERIMENTAL_M5_OPTIMIZE_E5B9G9R9},
-+   {"descriptor_buffer", KK_EXPERIMENTAL_DESCRIPTOR_BUFFER},
-    {NULL, 0},
- };
- 
-diff --git a/src/kosmickrisp/vulkan/kk_debug.h b/src/kosmickrisp/vulkan/kk_debug.h
-index f454804..0945e0f 100644
---- a/src/kosmickrisp/vulkan/kk_debug.h
-+++ b/src/kosmickrisp/vulkan/kk_debug.h
-@@ -26,6 +26,8 @@ enum kk_experimental {
-    /* Using allowGPUOptimizedContents on M5 for this format causes
-     * vkCmdCopyImage() tests in CTS to fail, but it is otherwise usable */
-    KK_EXPERIMENTAL_M5_OPTIMIZE_E5B9G9R9 = 1ull << 2,
-+
-+   KK_EXPERIMENTAL_DESCRIPTOR_BUFFER = 1ull << 3,
- };
- 
- extern enum kk_experimental kk_mesa_experimental_flags;
 diff --git a/src/kosmickrisp/vulkan/kk_descriptor_buffer.c b/src/kosmickrisp/vulkan/kk_descriptor_buffer.c
 new file mode 100644
-index 0000000..69e4b75
+index 0000000..ebe4252
 --- /dev/null
 +++ b/src/kosmickrisp/vulkan/kk_descriptor_buffer.c
-@@ -0,0 +1,416 @@
+@@ -0,0 +1,444 @@
 +/*
 + * Copyright 2026
 + * SPDX-License-Identifier: MIT
@@ -275,6 +250,7 @@ index 0000000..69e4b75
 +   mtl_texture *handle;
 +   uint64_t gpu_resource_id;
 +   uint32_t texel_size_B;
++   uint32_t components;
 +};
 +
 +static uint32_t
@@ -451,7 +427,27 @@ index 0000000..69e4b75
 +   if (bo == NULL || bo->map == NULL || offset_B != 0u)
 +      return NULL;
 +
-+   enum pipe_format p_format = vk_format_to_pipe_format(key->format);
++   uint32_t components = 1u;
++   VkFormat vk_format = key->format;
++
++   switch (vk_format) {
++   case VK_FORMAT_R32G32B32_UINT:
++      vk_format = VK_FORMAT_R32_UINT;
++      components = 3u;
++      break;
++   case VK_FORMAT_R32G32B32_SINT:
++      vk_format = VK_FORMAT_R32_SINT;
++      components = 3u;
++      break;
++   case VK_FORMAT_R32G32B32_SFLOAT:
++      vk_format = VK_FORMAT_R32_SFLOAT;
++      components = 3u;
++      break;
++   default:
++      break;
++   }
++
++   enum pipe_format p_format = vk_format_to_pipe_format(vk_format);
 +   const struct kk_va_format *supported = kk_get_va_format(p_format);
 +
 +   if (supported == NULL)
@@ -468,7 +464,7 @@ index 0000000..69e4b75
 +   enum mtl_texture_usage usage = MTL_TEXTURE_USAGE_SHADER_READ;
 +   if (supported->texel_buffer.write)
 +      usage |= MTL_TEXTURE_USAGE_SHADER_WRITE;
-+   if (key->format == VK_FORMAT_R32_UINT || key->format == VK_FORMAT_R32_SINT)
++   if (vk_format == VK_FORMAT_R32_UINT || vk_format == VK_FORMAT_R32_SINT)
 +      usage |= MTL_TEXTURE_USAGE_SHADER_ATOMIC;
 +
 +   struct kk_image_layout layout = {
@@ -510,6 +506,7 @@ index 0000000..69e4b75
 +   entry->handle = handle;
 +   entry->gpu_resource_id = mtl_texture_get_gpu_resource_id(handle);
 +   entry->texel_size_B = texel_size_B;
++   entry->components = components;
 +
 +   return entry;
 +}
@@ -547,9 +544,15 @@ index 0000000..69e4b75
 +         }
 +
 +         if (entry != NULL && offset_B % entry->texel_size_B == 0u) {
++            uint64_t element_B = entry->texel_size_B * entry->components;
++            uint64_t count = info->range / element_B;
++
 +            desc.image_gpu_resource_id = entry->gpu_resource_id;
 +            desc.texel_offset = offset_B / entry->texel_size_B;
-+            desc.texel_count = info->range / entry->texel_size_B;
++            desc.texel_count =
++               MIN2(count, KK_TEXEL_COUNT_MASK) |
++               ((entry->components == 3u ? KK_TEXEL_MUL_THREE : KK_TEXEL_MUL_ONE)
++                << KK_TEXEL_MUL_SHIFT);
 +         }
 +
 +         simple_mtx_unlock(&cache->mutex);
@@ -843,10 +846,18 @@ index 9440f83..c66108f 100644
     struct kk_descriptor_set_binding_layout binding[0];
  };
 diff --git a/src/kosmickrisp/vulkan/kk_descriptor_types.h b/src/kosmickrisp/vulkan/kk_descriptor_types.h
-index 20f02c1..e1a0b71 100644
+index 20f02c1..1288ac9 100644
 --- a/src/kosmickrisp/vulkan/kk_descriptor_types.h
 +++ b/src/kosmickrisp/vulkan/kk_descriptor_types.h
-@@ -59,7 +59,7 @@ static_assert(sizeof(struct kk_storage_image_descriptor) == 16,
+@@ -56,10 +56,15 @@ static_assert(sizeof(struct kk_storage_image_descriptor) == 16,
+  * image_gpu_resource_id must stay first: the texture and image paths both read
+  * a resource id at offset 0 without caring which descriptor they got.
+  */
++#define KK_TEXEL_COUNT_MASK  0x3fffffffu
++#define KK_TEXEL_MUL_SHIFT    30u
++#define KK_TEXEL_MUL_ONE      0u
++#define KK_TEXEL_MUL_THREE    1u
++
  struct kk_texel_buffer_descriptor {
     uint64_t image_gpu_resource_id;
     uint32_t texel_offset;
@@ -930,10 +941,41 @@ index a541269..b1b92c0 100644
        result = kk_alloc_bo_va_aligned(dev, &dev->vk.base, aligned_size,
                                        alignment, KK_MEMORY_VA_ALIGNMENT_B,
 diff --git a/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c b/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
-index 3fb1eac..643ef0b 100644
+index 3fb1eac..030df2d 100644
 --- a/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
 +++ b/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
-@@ -393,12 +393,32 @@ lower_image_intrin(nir_builder *b, nir_intrinsic_instr *intr,
+@@ -9,6 +9,7 @@
+ #include "kk_cmd_buffer.h"
+ #include "kk_descriptor_set.h"
+ #include "kk_descriptor_set_layout.h"
++#include "kk_descriptor_types.h"
+ #include "kk_shader.h"
+ 
+ #include "kosmickrisp/compiler/nir_to_msl.h"
+@@ -360,6 +361,22 @@ load_resource_deref_desc(nir_builder *b, unsigned num_components,
+                           offset_B, ctx);
+ }
+ 
++static nir_def *
++kk_texel_oob_value(nir_builder *b, unsigned comps, unsigned bits,
++                   nir_alu_type type)
++{
++   nir_def *chan[4];
++   nir_def *zero = nir_imm_intN_t(b, 0, bits);
++   nir_def *one = nir_alu_type_get_base_type(type) == nir_type_float
++                     ? nir_imm_floatN_t(b, 1.0, bits)
++                     : nir_imm_intN_t(b, 1, bits);
++
++   for (unsigned i = 0u; i < comps; ++i)
++      chan[i] = (i == 3u) ? one : zero;
++
++   return nir_vec(b, chan, comps);
++}
++
+ static bool
+ lower_image_intrin(nir_builder *b, nir_intrinsic_instr *intr,
+                    const struct lower_descriptors_ctx *ctx)
+@@ -393,20 +410,54 @@ lower_image_intrin(nir_builder *b, nir_intrinsic_instr *intr,
      * insists on, so shift the coordinate past the texels the view skipped.
      * See struct kk_texel_buffer_descriptor.
      */
@@ -948,10 +990,16 @@ index 3fb1eac..643ef0b 100644
 +   nir_def *texel_count = NULL;
 +   nir_def *oob = NULL;
 +
++   nir_def *mul3 = NULL;
++
 +   if (buf_dim) {
-+      texel_count = load_resource_deref_desc(
++      nir_def *packed = load_resource_deref_desc(
 +         b, 1, 32, deref,
 +         offsetof(struct kk_texel_buffer_descriptor, texel_count), ctx);
++
++      texel_count = nir_iand_imm(b, packed, KK_TEXEL_COUNT_MASK);
++      mul3 = nir_ieq_imm(b, nir_ushr_imm(b, packed, KK_TEXEL_MUL_SHIFT),
++                         KK_TEXEL_MUL_THREE);
 +   }
 +
 +   if (addresses_texel) {
@@ -959,15 +1007,20 @@ index 3fb1eac..643ef0b 100644
           b, 1, 32, deref,
           offsetof(struct kk_texel_buffer_descriptor, texel_offset), ctx);
        nir_def *coord = intr->src[1].ssa;
- 
-+      oob = nir_iand(b, nir_ine_imm(b, texel_count, 0),
-+                     nir_uge(b, nir_u2u32(b, nir_channel(b, coord, 0)),
-+                             texel_count));
++      nir_def *elem = nir_u2u32(b, nir_channel(b, coord, 0));
 +
++      oob = nir_iand(b, nir_ine_imm(b, texel_count, 0),
++                     nir_uge(b, elem, texel_count));
++
++      nir_def *scaled = nir_bcsel(b, mul3, nir_imul_imm(b, elem, 3u), elem);
+ 
        nir_src_rewrite(&intr->src[1],
                        nir_vector_insert_imm(
                           b, coord,
-@@ -407,6 +427,12 @@ lower_image_intrin(nir_builder *b, nir_intrinsic_instr *intr,
+-                         nir_iadd(b, nir_channel(b, coord, 0),
+-                                  nir_u2uN(b, texel_offset, coord->bit_size)),
++                         nir_u2uN(b, nir_iadd(b, scaled, texel_offset),
++                                  coord->bit_size),
                           0));
     }
  
@@ -980,7 +1033,7 @@ index 3fb1eac..643ef0b 100644
     nir_variable *var = nir_deref_instr_get_variable(deref);
     nir_def *handle = nir_load_texture_handle_kk(
        b, 1, 64, resource_addr, .dest_type = type,
-@@ -415,8 +441,66 @@ lower_image_intrin(nir_builder *b, nir_intrinsic_instr *intr,
+@@ -415,8 +466,69 @@ lower_image_intrin(nir_builder *b, nir_intrinsic_instr *intr,
        .access = nir_intrinsic_access(intr) | var->data.access,
        .flags = msl_convert_access_flag(var->data.access));
  
@@ -1024,9 +1077,12 @@ index 3fb1eac..643ef0b 100644
 +      b->cursor = nir_after_instr(&intr->instr);
 +
 +      nir_def *value = &intr->def;
-+      nir_def *zero = nir_imm_zero(b, value->num_components, value->bit_size);
++      nir_def *fallback = kk_texel_oob_value(
++         b, value->num_components, value->bit_size,
++         nir_intrinsic_has_dest_type(intr) ? nir_intrinsic_dest_type(intr)
++                                           : nir_type_uint32);
 +
-+      nir_def_rewrite_uses_after(value, nir_bcsel(b, oob, zero, value));
++      nir_def_rewrite_uses_after(value, nir_bcsel(b, oob, fallback, value));
 +   }
 +
 +   if (size_bias != NULL) {
@@ -1047,33 +1103,50 @@ index 3fb1eac..643ef0b 100644
     return true;
  }
  
-@@ -651,21 +735,55 @@ lower_tex(nir_builder *b, nir_tex_instr *tex,
+@@ -651,21 +763,56 @@ lower_tex(nir_builder *b, nir_tex_instr *tex,
     }
  
     /* Same shift for the sampled side. */
 +   nir_def *buf_oob = NULL;
 +   nir_def *buf_count = NULL;
++   nir_def *buf_mul3 = NULL;
++   nir_def *buf_base = NULL;
++   int buf_coord_idx = -1;
 +
     if (tex->sampler_dim == GLSL_SAMPLER_DIM_BUF) {
-       int coord_idx = nir_tex_instr_src_index(tex, nir_tex_src_coord);
- 
-+      buf_count = load_resource_deref_desc(
+-      int coord_idx = nir_tex_instr_src_index(tex, nir_tex_src_coord);
++      nir_def *packed = load_resource_deref_desc(
 +         b, 1, 32, nir_src_as_deref(nir_src_for_ssa(texture)),
 +         offsetof(struct kk_texel_buffer_descriptor, texel_count), ctx);
 +
-       if (coord_idx >= 0) {
++      buf_count = nir_iand_imm(b, packed, KK_TEXEL_COUNT_MASK);
++      buf_mul3 = nir_ieq_imm(b, nir_ushr_imm(b, packed, KK_TEXEL_MUL_SHIFT),
++                             KK_TEXEL_MUL_THREE);
++
++      buf_coord_idx = nir_tex_instr_src_index(tex, nir_tex_src_coord);
+ 
+-      if (coord_idx >= 0) {
++      if (buf_coord_idx >= 0) {
           nir_def *texel_offset = load_resource_deref_desc(
              b, 1, 32, nir_src_as_deref(nir_src_for_ssa(texture)),
              offsetof(struct kk_texel_buffer_descriptor, texel_offset), ctx);
-          nir_def *coord = tex->src[coord_idx].src.ssa;
- 
-+         buf_oob = nir_iand(b, nir_ine_imm(b, buf_count, 0),
-+                            nir_uge(b, nir_u2u32(b, nir_channel(b, coord, 0)),
-+                                    buf_count));
+-         nir_def *coord = tex->src[coord_idx].src.ssa;
++         nir_def *coord = tex->src[buf_coord_idx].src.ssa;
++         nir_def *elem = nir_u2u32(b, nir_channel(b, coord, 0));
 +
-          nir_src_rewrite(&tex->src[coord_idx].src,
-                          nir_iadd(b, coord,
-                                   nir_u2uN(b, texel_offset, coord->bit_size)));
++         buf_oob = nir_iand(b, nir_ine_imm(b, buf_count, 0),
++                            nir_uge(b, elem, buf_count));
++
++         nir_def *scaled =
++            nir_bcsel(b, buf_mul3, nir_imul_imm(b, elem, 3u), elem);
++
++         buf_base = nir_iadd(b, scaled, texel_offset);
+ 
+-         nir_src_rewrite(&tex->src[coord_idx].src,
+-                         nir_iadd(b, coord,
+-                                  nir_u2uN(b, texel_offset, coord->bit_size)));
++         nir_src_rewrite(&tex->src[buf_coord_idx].src,
++                         nir_u2uN(b, buf_base, coord->bit_size));
        }
     }
  
@@ -1090,21 +1163,91 @@ index 3fb1eac..643ef0b 100644
 +      b->cursor = nir_before_instr(&tex->instr);
 +   }
 +
+    if (tex->op == nir_texop_txl && sampler != NULL) {
+       int lod_idx = nir_tex_instr_src_index(tex, nir_tex_src_lod);
+ 
+@@ -750,6 +897,79 @@ lower_tex(nir_builder *b, nir_tex_instr *tex,
+       nir_tex_instr_add_src(tex, nir_tex_src_max_lod_kk, lod_max);
+    }
+ 
 +   if (buf_oob != NULL && tex->op != nir_texop_txs) {
 +      b->cursor = nir_after_instr(&tex->instr);
 +
 +      nir_def *value = &tex->def;
-+      nir_def *zero = nir_imm_zero(b, value->num_components, value->bit_size);
++      nir_def *result = value;
 +
-+      nir_def_rewrite_uses_after(value, nir_bcsel(b, buf_oob, zero, value));
-+      b->cursor = nir_before_instr(&tex->instr);
++      if (buf_coord_idx >= 0 && value->num_components >= 3) {
++         nir_def *comps[4];
++         nir_def *parts[3] = {value, NULL, NULL};
++
++         unsigned coord_bits = tex->src[buf_coord_idx].src.ssa->bit_size;
++
++         for (unsigned i = 1u; i < 3u; ++i) {
++            nir_tex_instr *extra = nir_tex_instr_create(b->shader, tex->num_srcs);
++
++            extra->op = tex->op;
++            extra->sampler_dim = tex->sampler_dim;
++            extra->is_array = tex->is_array;
++            extra->is_shadow = tex->is_shadow;
++            extra->is_new_style_shadow = tex->is_new_style_shadow;
++            extra->dest_type = tex->dest_type;
++            extra->texture_index = tex->texture_index;
++            extra->sampler_index = tex->sampler_index;
++            extra->coord_components = tex->coord_components;
++            extra->texture_non_uniform = tex->texture_non_uniform;
++            extra->sampler_non_uniform = tex->sampler_non_uniform;
++            extra->array_is_lowered_cube = tex->array_is_lowered_cube;
++            extra->is_sparse = tex->is_sparse;
++            extra->backend_flags = tex->backend_flags;
++            extra->component = tex->component;
++            memcpy(extra->tg4_offsets, tex->tg4_offsets,
++                   sizeof(tex->tg4_offsets));
++
++            for (unsigned k = 0u; k < tex->num_srcs; ++k) {
++               extra->src[k].src_type = tex->src[k].src_type;
++
++               if (k == (unsigned)buf_coord_idx) {
++                  extra->src[k].src =
++                     nir_src_for_ssa(nir_u2uN(b, nir_iadd_imm(b, buf_base, i),
++                                              coord_bits));
++               } else {
++                  extra->src[k].src = nir_src_for_ssa(tex->src[k].src.ssa);
++               }
++            }
++
++            nir_def_init(&extra->instr, &extra->def, tex->def.num_components,
++                         tex->def.bit_size);
++            nir_builder_instr_insert(b, &extra->instr);
++            parts[i] = &extra->def;
++         }
++
++         for (unsigned i = 0u; i < 3u; ++i)
++            comps[i] = nir_channel(b, parts[i], 0);
++
++         comps[3] =
++            value->num_components >= 4
++               ? (nir_alu_type_get_base_type(tex->dest_type) == nir_type_float
++                     ? nir_imm_floatN_t(b, 1.0, value->bit_size)
++                     : nir_imm_intN_t(b, 1, value->bit_size))
++               : NULL;
++
++         nir_def *wide =
++            nir_vec(b, comps, MIN2(value->num_components, 4u));
++
++         result = nir_bcsel(b, buf_mul3, wide, value);
++      }
++
++      nir_def *fallback = kk_texel_oob_value(b, value->num_components,
++                                            value->bit_size, tex->dest_type);
++
++      nir_def_rewrite_uses_after(value, nir_bcsel(b, buf_oob, fallback, result));
 +   }
 +
-    if (tex->op == nir_texop_txl && sampler != NULL) {
-       int lod_idx = nir_tex_instr_src_index(tex, nir_tex_src_lod);
+    return true;
+ }
  
 diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
-index c65c9d3..215265e 100644
+index c65c9d3..12c5954 100644
 --- a/src/kosmickrisp/vulkan/kk_physical_device.c
 +++ b/src/kosmickrisp/vulkan/kk_physical_device.c
 @@ -7,6 +7,7 @@
@@ -1119,7 +1262,7 @@ index c65c9d3..215265e 100644
        .KHR_uniform_buffer_standard_layout = true,
        .KHR_vulkan_memory_model = true, /* Required in Vulkan 1.3 */
        .EXT_buffer_device_address = true,
-+      .EXT_descriptor_buffer = KK_EXPERIMENTAL(DESCRIPTOR_BUFFER),
++      .EXT_descriptor_buffer = true,
        .EXT_descriptor_indexing = true,
        .EXT_host_query_reset = true,
        .EXT_sampler_filter_minmax = pdev->info.gpu_apple_family >= 10,

@@ -8135,3 +8135,70 @@ Emuler les formats 96 bits : creer la texture en `R32`, porter un facteur 3 dans
 reconstruire chaque acces en trois lectures ou ecritures consecutives. Cela supprimerait les
 +114 et rendrait les -290 attendus, soit environ **1 920 echecs**. C'est un chantier de
 lowering NIR a part entiere, non entrepris.
+
+---
+
+## 117. L'emulation des formats 96 bits rend l'extension gagnante : 2 210 -> 2 026 (2026-09-21)
+
+Le § 116 laissait `VK_EXT_descriptor_buffer` eteinte : elle coutait +18 echecs, tous dus a
+l'absence de format 96 bits dans Metal. C'est corrige.
+
+### Pourquoi il fallait emuler, et pas contourner
+
+`vkd3d_structured_srv_to_texel_buffer_dxgi_format` est une **fonction pure de la foulee** : elle
+rend `R32G32B32_UINT` des que la foulee est multiple de 12, sans jamais consulter le pilote. Rien
+a annoncer ou a taire de notre cote ne l'en detournerait.
+
+En revanche `vkd3d_structured_uav_to_texel_buffer_dxgi_format` rend toujours `R32_UINT`, et D3D12
+n'autorise pas l'ecriture typee en `R32G32B32`. **Seules les lectures sont a emuler**, ce qui
+divise le travail par deux.
+
+### Le mecanisme
+
+Le pilote cree la texture en `R32` la ou on lui demande `R32G32B32`, et porte un multiplicateur
+dans le descripteur. `texel_count` plafonne a 2^28, donc ses deux bits de poids fort sont libres :
+0 pour x1, 1 pour x3. Aucune place perdue.
+
+Le shader decode le multiplicateur, calcule `base = coord * mul + texel_offset`, et quand `mul`
+vaut 3 reconstruit la lecture a partir de **trois recuperations R32 consecutives**, assemblees en
+`(x, y, z, 1)`.
+
+### Trois defauts en chemin
+
+1. **`nir_instr_clone` sur une instruction de texture fait planter la compilation.** Les deux
+   recuperations supplementaires sont construites explicitement par `nir_tex_instr_create`.
+2. **`coord_components` n'est pas renseigne par `nir_tex_instr_create`.** Sans lui, le backend
+   Metal produit un shader invalide : le pipeline echoue, tout se lit a zero, et le test passe de
+   334 a **794** echecs. Il faut aussi recopier `texture_non_uniform`, `backend_flags` et leurs
+   voisins.
+3. **L'alpha des lectures hors bornes vaut 1, pas 0.** Vulkan rend `(0, 0, 0, 1)` pour un format
+   sans alpha. Les 152 derniers echecs etaient exactement cette composante, et rien d'autre.
+
+### Resultat
+
+| | echecs |
+|---|---|
+| reference, sans l'extension | 2 210 |
+| avec l'extension, derriere le drapeau | **2 026** |
+| avec l'extension, active par defaut | **2 026** |
+
+**-184, aucune regression.** 24,3 millions d'assertions, 574 fonctions, et **quatre ecarts en
+tout**, tous en amelioration :
+
+| fonction | avant | apres |
+|---|---|---|
+| `test_undefined_typed_read_structured_raw` (x2) | 96 | **0** |
+| `test_undefined_structured_raw_read_typed` (x2) | 224 | **136** |
+
+Les deux campagnes — drapeau puis defaut — donnent le meme chiffre a l'unite pres. Le drapeau
+experimental du § 116 est retire : l'extension est annoncee inconditionnellement.
+
+### Ce qui reste
+
+Les 136 de `test_undefined_structured_raw_read_typed` sont du comportement indetermine : vkd3d y
+emule des semantiques NVIDIA que nous ne reproduisons pas entierement. On est passe de 224 a 136
+dessus sans chercher a aller plus loin — c'est du territoire non specifie.
+
+Reste aussi un trou connu et sans consequence aujourd'hui : une UAV typee en `R32G32B32` lirait
+faux, puisque seul le chemin echantillonne assemble les trois recuperations. D3D12 interdit ce cas
+et vkd3d ne le produit jamais.

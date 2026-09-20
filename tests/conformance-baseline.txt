@@ -1,17 +1,16 @@
-# Campagne vkd3d-proton, reference etablie apres les correctifs 0037 et 0044.
-# 574 fonctions, 24 237 852 tests, 2210 echecs.
+# Campagne vkd3d-proton, reference etablie apres les correctifs 0044 et 0045.
+# 574 fonctions, 24 284 591 tests, 2026 echecs.
 # Invocation : tests/etape2_pile_wine.sh wine/bin/d3d12.exe (chemin PE complet).
+# VK_EXT_descriptor_buffer est active : deux campagnes successives donnent 2026.
 # Comptage : lignes contenant 'Test failed', attribuees a la fonction en cours.
 # Les 'Todo succeeded' (65588) ne sont pas des echecs et ne comptent pas.
 # Format : <fonction> <echecs>. Seules les fonctions en echec sont listees.
 
 test_suballocate_small_textures_size 1650
-test_undefined_structured_raw_read_typed_dxbc 112
-test_undefined_structured_raw_read_typed_dxil 112
+test_undefined_structured_raw_read_typed_dxbc 68
+test_undefined_structured_raw_read_typed_dxil 68
 test_line_tessellation_dxbc 50
 test_line_tessellation_dxil 50
-test_undefined_typed_read_structured_raw_dxbc 48
-test_undefined_typed_read_structured_raw_dxil 48
 test_large_texel_buffer_view 42
 test_shader_waveop_maximal_convergence 16
 test_query_heap_cpu_resolve_timestamp 12
@@ -34,5 +33,5 @@ test_primitive_id_read_tess_geom 1
 
 # Notes :
 # test_suballocate_small_textures_size : contrainte materielle, voir NOTES.md § 114.
-# test_undefined_*_read_* : comportement indetermine, voir NOTES.md § 115 ;
-#   la cause est l'absence de VK_EXT_descriptor_buffer dans KosmicKrisp.
+# test_undefined_structured_raw_read_typed : comportement indetermine ; vkd3d y emule
+#   des semantiques NVIDIA. 224 avant VK_EXT_descriptor_buffer, voir NOTES.md § 117.
