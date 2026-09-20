@@ -8259,3 +8259,74 @@ cette scene. Son benefice immediat et demontre reste la conformite : **-184 eche
 Corollaire pour la suite : tant que la soumission des tirages borne le temps d'image, aucune
 optimisation du cote descripteurs ne se verra. C'est la traversee elle-meme qu'il faudrait
 attaquer, et le § sur Godot montrait que notre pile n'en represente que 21 %.
+
+---
+
+## 119. Unigine 2.80 rend Superposition sur la pile complete (2026-09-21)
+
+Le § 99 concluait que Superposition etait hors d'atteinte : trois obstacles, dont un juge
+« bloquant ». **Ce diagnostic etait perime et je ne l'avais pas reteste.** Deux des trois points
+sont exactement ce que les correctifs 0038 et 0039 ont traite depuis.
+
+### Le resultat
+
+```
+Direct3D11 desc: Apple M1 Max
+Loading "unigine_render.mat" 62 materials 44339625 shaders
+Presenter: swapchain 1280x720, 3 images, B8G8R8A8_UNORM
+Loading "superposition/superposition.world" 1180ms
+```
+
+**La scene s'affiche**, confirmee a l'ecran. 151 % de CPU, plusieurs fils, et **aucune erreur de
+rendu** dans tout le journal : seulement deux avertissements sur l'EDID du moniteur et une
+interface DXGI inconnue, sans rapport avec l'image.
+
+Chaine complete : `PE Windows -> Wine -> DXVK -> winevulkan -> KosmicKrisp -> Metal`.
+
+### La fausse piste, et ce qui l'a evitee
+
+Premier lancement : fenetre noire. J'allais chercher un defaut de presentation.
+
+`DXVK_HUD=fps` a tranche en un coup d'oeil : **les FPS defilaient**. Le HUD est dessine par DXVK
+lui-meme, independamment du rendu de l'application — s'il apparait, la chaine de presentation
+fonctionne et le probleme est ailleurs.
+
+Il etait dans la ligne de commande. La premiere ligne du journal disait
+`Loading "bin/null_config.cfg"` : le moteur demarrait **sans aucun monde**. Il rendait
+fidelement le neant qu'on lui donnait. Ajouter
+`-console_command "world_load superposition/superposition"` a suffi.
+
+**Lecon** : avant de soupconner la pile, verifier ce qu'on lui a demande. Et garder un temoin
+qui ne depend pas du code suspect — ici le HUD.
+
+### Ce que ca change pour la suite du projet
+
+Je repondais jusqu'ici aux « on enchaine avec quoi ? » par le plus gros bloc d'echecs de
+conformite restant. C'etait un objectif de substitution. Les 240 echecs D3D12 encore ouverts
+mesurent l'ecart a la specification, pas la capacite a faire tourner un jeu : la refonte du
+chemin de capture XFB (§ 120 ci-dessous) en est l'exemple — un chantier lourd pour une
+fonctionnalite que les moteurs modernes n'utilisent pas.
+
+**Le travail utile est de lancer de vraies applications et de corriger ce qu'elles cassent.**
+
+### Diagnostic laisse ouvert : la capture XFB depuis une tessellation
+
+Avant ce lancement, j'avais caracterise `test_line_tessellation` (100 echecs) et les variantes
+quad (24) : une cause unique, ~124 des 240 echecs ouverts.
+
+`test_stream_output`, la capture depuis un vertex shader, passe a zero echec. Mais toute capture
+**depuis une tessellation** ne rend que les sommets du premier patch — 2 sur 18, verifie que ce
+ne sont pas des zeros chanceux. Les compteurs `SO_STATISTICS` rendent zero parce que
+`kk_prims_for_vertices` ne connait pas `MESA_PRIM_PATCHES`.
+
+La cause est dans le commentaire d'en-tete de `kk_nir_lower_xfb.c` : la capture est adressee par
+`xfb_address + (instance_id * num_vertices + raw_vertex_id) * stride`, un schema **indexe par
+sommet** dont les decalages se calculent sur le CPU. Le code refuse d'ailleurs explicitement les
+tirages indirects et indexes. Or la tessellation emulee produit exactement cela : le garde-fou
+s'applique au tirage de patchs d'origine, direct et non indexe, qui passe — mais le tirage reel
+qui suit viole les deux conditions.
+
+Corriger demanderait de remplacer l'adressage par sommet par une allocation a compteur atomique
+cote GPU, et de refaire les compteurs de requete. La machinerie de compteurs existe (§ 0011)
+mais n'est pas branchee sur ce chemin. **Chantier laisse ouvert, delibere** : il ne sert pas
+l'objectif du projet.
