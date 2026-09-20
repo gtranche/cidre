@@ -7296,3 +7296,60 @@ s'executent toujours pas.
 
 Instrumentation de `ntdll` retiree, `ntdll.dll` et `ntdll.so` d'origine reconstruits et
 reinstalles, pile verifiee au banc.
+
+---
+
+## 106. Pourquoi la suite s'arrete a 4305 : un contournement Battlefield (2026-09-20)
+
+### La reponse
+
+L'arret est dans `test_create_rendertarget_view` (definie ligne 4112). Le test fait, ligne
+4302 et suivantes :
+
+```c
+hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)buffer, &rtv_desc, &rtview);
+ok(hr == S_OK, ...);
+refcount = get_refcount(device);
+ok(refcount >= expected_refcount, ...);          /* ligne 4305, echoue */
+tmp = NULL;
+ID3D11RenderTargetView_GetDevice(rtview, &tmp);  /* rtview est NUL */
+```
+
+Et DXVK, `d3d11_device.cpp:566` :
+
+```cpp
+if (resourceDesc.Dim == D3D11_RESOURCE_DIMENSION_BUFFER) {
+  Logger::warn("D3D11: Cannot create render target view for a buffer");
+  return S_OK; // It is required to run Battlefield 3 and Battlefield 4.
+}
+```
+
+DXVK rend **`S_OK` sans produire de vue**, contournement delibere pour Battlefield 3 et 4. Or
+`CreateRenderTargetView` a appele `InitReturnPtr(ppRTView)` (ligne 520), donc `*ppRTView` vaut
+**NULL**. Le test, ecrit pour Windows ou cet appel reussit vraiment, ne verifie rien et appelle
+une methode sur NULL : lecture de la vtable a l'adresse zero, puis appel a zero. C'est
+exactement le `rip=0` du § 105.
+
+### Ce que cela signifie
+
+C'est la meme classe de defaut que notre correctif 0007 pour vkd3d-proton — un parametre de
+sortie laisse dans un etat que l'appelant n'anticipe pas — mais ici le choix est **assume** par
+DXVK pour faire tourner deux jeux. La collision est entre ce contournement et une suite de
+conformite non defensive ; elle se produirait a l'identique sous Proton. **Elle n'a rien a voir
+avec notre pile.**
+
+Consequence pratique : tant que DXVK garde ce contournement, la suite d3d11 de Wine ne peut pas
+depasser ce point, et les 148 fonctions suivantes resteront intestees. Un chiffre de conformite
+D3D11 complet demanderait soit de patcher DXVK pour rendre `E_INVALIDARG`, au risque de casser
+Battlefield, soit de rendre le test defensif — ce qui releve de Wine.
+
+### Deux fausses pistes ecartees
+
+**L'assertion IOSurface.** Une campagne a montre `_iosConnectInitalize() unable to open
+IOSurface kernel service` avec « 1020 existing clients » — mais au **demarrage**, pas a 4305,
+et seulement dans cette execution. C'est un effet de bord de la journee : mes essais repetes
+ont sature le service IOSurface du systeme. Sans rapport avec l'arret.
+
+**Le canal `seh`.** Activer `+seh` sur la campagne complete produit **9 Go** de journal et
+ralentit tout au point de fausser la mesure. A n'utiliser que cible sur un plantage connu, ce
+qui etait le cas au § 105 mais plus ici.
