@@ -7901,3 +7901,126 @@ et quantifie d'Apple Silicon, pas un defaut a corriger.
 Reste donc, cote D3D12, 655 echecs sur 2 305 qui meritent encore un examen — au premier rang
 `test_undefined_structured_raw_read_typed` (224) et `test_structured_buffer_addressing_wrap`
 (94).
+
+---
+
+## 115. Les deux tests d'adressage de tampons structures : 90 % etait un artefact de mesure (2026-09-20)
+
+Deux fonctions, deux causes entierement differentes. La premiere se corrige, la seconde non.
+
+### `test_structured_buffer_addressing_wrap` : la suite ne savait pas sur quoi elle tournait
+
+94 echecs. Le test choisit ses attentes selon le pilote :
+
+```c
+broken_byte_addressing = is_nvidia_windows_device(...) || is_intel_windows_device(...) ||
+    (is_vkd3d_proton_device(...) && !is_adreno_device(...));
+```
+
+Or `d3d12_crosstest.h` place **toutes** les fonctions d'identification derriere :
+
+```c
+#if defined(_WIN32) && !defined(VKD3D_FORCE_UTILS_WRAPPER)
+```
+
+Notre binaire de test est un PE Windows, donc `is_vkd3d_proton_device`, `is_nvidia_device`,
+`is_vk_device_extension_supported` et leurs voisines **rendent toutes `false`**. Le test
+appliquait donc le comportement « conforme a la specification », que vkd3d-proton
+n'implemente deliberement pas : il herite du bug d'adressage en octets de NVIDIA et Intel par
+compatibilite, et le dit dans son propre commentaire.
+
+Verification avant correctif : le binaire **natif** de la meme suite, lui lie a libvkd3d,
+donne **4 echecs** la ou le PE en donne 94.
+
+### Le correctif
+
+`0044-vkd3d-proton-tests-identify-device-from-pe-build.patch` sort les fonctions
+d'identification des deux branches et les partage. Elles ne reposent que sur deux choses
+disponibles cote PE :
+
+- `QueryInterface` vers `ID3D12DXVKInteropDevice` et `ID3D12DeviceExt`, dont les declarations
+  sont deja incluses sans condition ;
+- `init_vulkan_loader()`, qui possede **deja** un chemin `_WIN32` faisant
+  `LoadLibraryA(SONAME_LIBVULKAN)` — soit `vulkan-1.dll`, que Wine fournit.
+
+Sur un vrai pilote Windows le `QueryInterface` echoue et tout rend `false` comme avant. Les
+fonctions `is_*_windows_device`, qui lisent le descripteur d'adaptateur, restent propres a
+chaque branche.
+
+### Mesure
+
+Campagne complete, meme chemin PE, seule l'identification change :
+
+| | reference | apres 0044 |
+|---|---|---|
+| echecs | 2 305 | **2 210** |
+| fonctions en echec | 28 | 26 |
+
+| fonction | avant | apres |
+|---|---|---|
+| `test_structured_buffer_addressing_wrap` | 94 | **4** |
+| `test_line_rasterization` | 4 | **0** |
+| `test_placed_msaa_alignment_workaround` | 1 | **0** |
+
+**Aucune autre fonction ne bouge d'un seul echec.** Le binaire PE donne desormais exactement
+les memes chiffres que le binaire natif sur les tests concernes. Trois executions successives
+des trois fonctions donnent 4, 0, 0 a l'identique.
+
+Il restait donc 95 echecs qui ne disaient rien de notre pile — seulement que la suite etait
+aveugle.
+
+### Les 4 qui restent
+
+Index `buffer_index` 10 et 22, c'est-a-dire les foulees de 3 et 6 mots, avec un index choisi
+pour que l'adresse en octets deborde precisement (`UINT32_MAX / 12`, `UINT32_MAX / 24`). Nous
+verifions la robustesse **par composante** ; l'adresse de la composante 0 deborde, celles des
+composantes 1 et 2 repassent a zero par bouclage et relisent le debut du tampon. Le test
+attend une seule verification pour l'element entier, parce que dxil-spirv vectorise `uvec3[]`.
+Territoire indetermine sur des index choisis pour deborder : 4 assertions sur 24 millions.
+
+### `test_undefined_structured_raw_read_typed` : 224, et l'identification n'y change rien
+
+Ce test lit un tampon **structure** a travers un descripteur **type**. C'est indetermine, et
+il encode trois comportements de reference selon le fabricant.
+
+Mesure : nos 224 sorties correspondent **au bit pres, toutes les 224**, au comportement que le
+test nomme `is_nv_heap` et decrit ainsi — *« SSBO is expressed as a R32_UINT texel buffer when
+read as one »*. Il ne l'accepte que d'un peripherique NVIDIA ou NVK exposant
+`VK_EXT_descriptor_heap`.
+
+La chaine causale, etablie de bout en bout :
+
+1. KosmicKrisp n'expose ni `VK_EXT_descriptor_buffer` ni `VK_EXT_descriptor_heap` (mesure :
+   150 extensions, ces deux-la absentes) ;
+2. vkd3d active donc `VKD3D_TYPED_OFFSET_BUFFER`, dont la seule condition est
+   `!d3d12_device_uses_descriptor_buffers(device)` (`state.c:7854`) ;
+3. sur ce chemin, `vkd3d_buffer_view_get_aligned_view` reechelonne les tampons structures en
+   mots de 32 bits (`resource.c:6295`) :
+
+```c
+first_element = (first_element * structured_stride) / sizeof(uint32_t);
+num_elements  = (num_elements * structured_stride) / sizeof(uint32_t);
+structured_stride = sizeof(uint32_t);
+```
+
+4. l'emulation du comportement « NV natif » que vkd3d cherche a reproduire — choisir le plus
+   grand format de tampon de texels qui divise la foulee — n'existe que sur le chemin des
+   tampons de descripteurs.
+
+**Ce n'est donc pas un defaut de KosmicKrisp mais une extension optionnelle absente.** Tout
+pilote Vulkan sans `VK_EXT_descriptor_buffer` se comporte pareil a travers vkd3d. La meme
+cause explique vraisemblablement les 96 de `test_undefined_typed_read_structured_raw`.
+
+Implementer `VK_EXT_descriptor_buffer` dans KosmicKrisp reglerait ces 320 echecs — et ce
+serait surtout un gain de performance, puisque cela supprime les mises a jour d'ensembles de
+descripteurs. Gros chantier, a considerer pour lui-meme, pas pour la conformite.
+
+### Une lecon de methode
+
+La campagne **native** que j'ai lancee pour comparer donne 18 861 echecs contre 2 210. L'ecart
+n'a rien a voir avec l'identification : `tests/etape2_pile_wine.sh` exporte
+`MESA_KK_EXPERIMENTAL=custom_border,image_view_min_lod`, que mon invocation native omettait.
+A elles seules, `test_custom_border_color_limits`, sa variante compute et
+`test_custom_border_color_srgb` pesent 16 640 echecs, plus 10 pour `test_view_min_lod` : 16 650
+sur 16 651 d'ecart. **Deux configurations ne se comparent que si l'environnement est
+identique** — le binaire natif reste utile comme temoin, jamais comme reference.

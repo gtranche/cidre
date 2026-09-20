@@ -1,0 +1,453 @@
+Generated-by: LLM
+
+diff --git a/tests/d3d12_crosstest.h b/tests/d3d12_crosstest.h
+index afd158e..ea14c1d 100644
+--- a/tests/d3d12_crosstest.h
++++ b/tests/d3d12_crosstest.h
+@@ -454,218 +454,10 @@ static inline bool init_vulkan_loader(void)
+     return pfn_vkGetInstanceProcAddr != NULL;
+ }
+ 
+-#if defined(_WIN32) && !defined(VKD3D_FORCE_UTILS_WRAPPER)
+-static IUnknown *create_warp_adapter(IDXGIFactory4 *factory)
+-{
+-    IUnknown *adapter;
+-    HRESULT hr;
+-
+-    adapter = NULL;
+-    hr = IDXGIFactory4_EnumWarpAdapter(factory, &IID_IUnknown, (void **)&adapter);
+-    if (FAILED(hr))
+-        trace("Failed to get WARP adapter, hr %#x.\n", (int)hr);
+-    return adapter;
+-}
+-
+-static IUnknown *create_adapter(void)
+-{
+-    IUnknown *adapter = NULL;
+-    IDXGIFactory4 *factory;
+-    HRESULT hr;
+-
+-    hr = CreateDXGIFactory1(&IID_IDXGIFactory4, (void **)&factory);
+-    ok(hr == S_OK, "Failed to create IDXGIFactory4, hr %#x.\n", (int)hr);
+-
+-    if (use_warp_device && (adapter = create_warp_adapter(factory)))
+-    {
+-        IDXGIFactory4_Release(factory);
+-        return adapter;
+-    }
+-
+-    hr = IDXGIFactory4_EnumAdapters(factory, use_adapter_idx, (IDXGIAdapter **)&adapter);
+-    IDXGIFactory4_Release(factory);
+-    if (FAILED(hr))
+-        trace("Failed to get adapter, hr %#x.\n", (int)hr);
+-    return adapter;
+-}
+-
+-static ID3D12Device *create_device(void)
+-{
+-    IUnknown *adapter = NULL;
+-    ID3D12Device *device;
+-    HRESULT hr;
+-
+-    if ((use_warp_device || use_adapter_idx) && !(adapter = create_adapter()))
+-    {
+-        trace("Failed to create adapter.\n");
+-        return NULL;
+-    }
+-
+-    /* Enable support for 6_3+, we need this for some tests. */
+-    if (pfn_D3D12EnableExperimentalFeatures)
+-        pfn_D3D12EnableExperimentalFeatures(1, &D3D12ExperimentalShaderModels, NULL, NULL);
+-
+-    hr = pfn_D3D12CreateDevice(adapter, vkd3d_device_feature_level, &IID_ID3D12Device, (void **)&device);
+-    if (adapter)
+-        IUnknown_Release(adapter);
+-
+-    return SUCCEEDED(hr) ? device : NULL;
+-}
+-
+-static inline void init_adapter_info(void)
+-{
+-    char name[MEMBER_SIZE(DXGI_ADAPTER_DESC, Description)];
+-    IDXGIAdapter *dxgi_adapter;
+-    DXGI_ADAPTER_DESC desc;
+-    IUnknown *adapter;
+-    unsigned int i;
+-    HRESULT hr;
+-
+-    if (!(adapter = create_adapter()))
+-        return;
+-
+-    hr = IUnknown_QueryInterface(adapter, &IID_IDXGIAdapter, (void **)&dxgi_adapter);
+-    ok(hr == S_OK, "Failed to query IDXGIAdapter, hr %#x.\n", (int)hr);
+-    IUnknown_Release(adapter);
+-
+-    hr = IDXGIAdapter_GetDesc(dxgi_adapter, &desc);
+-    ok(hr == S_OK, "Failed to get adapter desc, hr %#x.\n", (int)hr);
+-
+-    /* FIXME: Use debugstr_w(). */
+-    for (i = 0; i < ARRAY_SIZE(desc.Description) && isprint(desc.Description[i]); ++i)
+-        name[i] = desc.Description[i];
+-    name[min(i, ARRAY_SIZE(name) - 1)] = '\0';
+-
+-    trace("Adapter: %s, %04x:%04x.\n", name, desc.VendorId, desc.DeviceId);
+-
+-    if (desc.VendorId == 0x1414 && desc.DeviceId == 0x008c)
+-    {
+-        trace("Using WARP device.\n");
+-        use_warp_device = true;
+-    }
+-
+-    IDXGIAdapter_Release(dxgi_adapter);
+-}
+-
+-static inline bool get_adapter_desc(ID3D12Device *device, DXGI_ADAPTER_DESC *desc)
+-{
+-    IDXGIFactory4 *factory;
+-    IDXGIAdapter *adapter;
+-    HRESULT hr;
+-    LUID luid;
+-
+-    memset(desc, 0, sizeof(*desc));
+-
+-    if (!vkd3d_test_platform_is_windows())
+-        return false;
+-
+-    luid = ID3D12Device_GetAdapterLuid(device);
+-
+-    hr = CreateDXGIFactory1(&IID_IDXGIFactory4, (void **)&factory);
+-    ok(hr == S_OK, "Failed to create IDXGIFactory4, hr %#x.\n", (int)hr);
+-
+-    hr = IDXGIFactory4_EnumAdapterByLuid(factory, luid, &IID_IDXGIAdapter, (void **)&adapter);
+-    if (SUCCEEDED(hr))
+-    {
+-        hr = IDXGIAdapter_GetDesc(adapter, desc);
+-        ok(hr == S_OK, "Failed to get adapter desc, hr %#x.\n", (int)hr);
+-        IDXGIAdapter_Release(adapter);
+-    }
+-
+-    IDXGIFactory4_Release(factory);
+-    return SUCCEEDED(hr);
+-}
+-
+-static inline bool is_amd_windows_device(ID3D12Device *device)
+-{
+-    DXGI_ADAPTER_DESC desc;
+-
+-    return get_adapter_desc(device, &desc) && desc.VendorId == 0x1002;
+-}
+-
+-static inline bool is_intel_windows_device(ID3D12Device *device)
+-{
+-    DXGI_ADAPTER_DESC desc;
+-
+-    return get_adapter_desc(device, &desc) && desc.VendorId == 0x8086;
+-}
+-
+-static inline bool is_nvidia_windows_device(ID3D12Device *device)
+-{
+-    DXGI_ADAPTER_DESC desc;
+-
+-    return get_adapter_desc(device, &desc) && desc.VendorId == 0x10de;
+-}
+-
+-static inline bool is_mesa_device(ID3D12Device *device)
+-{
+-    return false;
+-}
+-
+-static inline bool is_mesa_intel_device(ID3D12Device *device)
+-{
+-    return false;
+-}
+-
+-static inline bool is_nvidia_device(ID3D12Device *device)
+-{
+-    return false;
+-}
+-
+-static inline bool is_nvk_device(ID3D12Device *device)
+-{
+-    return false;
+-}
+-
+-static inline bool is_radv_device(ID3D12Device *device)
+-{
+-    return false;
+-}
+-
+-static inline bool is_amd_vulkan_device(ID3D12Device *device)
+-{
+-    return false;
+-}
+-
+-static inline bool is_adreno_device(ID3D12Device *device)
+-{
+-    return false;
+-}
+-
+-static inline bool is_integrated_vulkan_device(ID3D12Device *device)
+-{
+-    return false;
+-}
+-
+-static inline bool is_vk_device_extension_supported(ID3D12Device *device, const char *ext)
+-{
+-    return false;
+-}
+-
+-static inline bool is_vkd3d_proton_device(ID3D12Device *device)
+-{
+-    return false;
+-}
+-
+-static inline bool get_driver_vk_features(ID3D12Device *device, void *pnext)
+-{
+-    return false;
+-}
+-
+-static inline bool get_vulkan_device_properties2(ID3D12Device *device, VkPhysicalDeviceProperties2 *props2)
+-{
+-    return false;
+-}
+-#else
+-
+-static ID3D12Device *create_device(void)
+-{
+-    ID3D12Device *device;
+-    HRESULT hr;
+-    hr = D3D12CreateDevice(NULL, vkd3d_device_feature_level, &IID_ID3D12Device, (void **)&device);
+-    return SUCCEEDED(hr) ? device : NULL;
+-}
+-
++/* Identification du peripherique : ces fonctions ne reposent que sur
++ * QueryInterface et sur le chargeur Vulkan, toutes deux disponibles quand
++ * le binaire PE tourne sur vkd3d-proton. Elles rendent false sur un vrai
++ * pilote Windows, ou l'interface d'interoperabilite n'existe pas. */
+ static inline bool get_driver_vk_features(ID3D12Device *device, void *pnext)
+ {
+     PFN_vkGetPhysicalDeviceFeatures2 pfn_vkGetPhysicalDeviceFeatures2;
+@@ -784,34 +576,6 @@ static inline bool is_vkd3d_proton_device(ID3D12Device *device)
+     return true;
+ }
+ 
+-static inline void init_adapter_info(void)
+-{
+-    VkPhysicalDeviceDriverPropertiesKHR driver_properties;
+-    ID3D12Device *device;
+-
+-    if ((device = create_device()))
+-    {
+-        if (get_driver_properties(device, &driver_properties))
+-            trace("Driver name: %s, driver info: %s.\n", driver_properties.driverName, driver_properties.driverInfo);
+-        ID3D12Device_Release(device);
+-    }
+-}
+-
+-static inline bool is_amd_windows_device(ID3D12Device *device)
+-{
+-    return false;
+-}
+-
+-static inline bool is_intel_windows_device(ID3D12Device *device)
+-{
+-    return false;
+-}
+-
+-static inline bool is_nvidia_windows_device(ID3D12Device *device)
+-{
+-    return false;
+-}
+-
+ static inline bool is_mesa_device(ID3D12Device *device)
+ {
+     VkPhysicalDeviceDriverPropertiesKHR properties;
+@@ -880,6 +644,188 @@ static inline bool is_integrated_vulkan_device(ID3D12Device *device)
+     return get_vulkan_device_properties2(device, &props2) &&
+             props2.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+ }
++
++#if defined(_WIN32) && !defined(VKD3D_FORCE_UTILS_WRAPPER)
++static IUnknown *create_warp_adapter(IDXGIFactory4 *factory)
++{
++    IUnknown *adapter;
++    HRESULT hr;
++
++    adapter = NULL;
++    hr = IDXGIFactory4_EnumWarpAdapter(factory, &IID_IUnknown, (void **)&adapter);
++    if (FAILED(hr))
++        trace("Failed to get WARP adapter, hr %#x.\n", (int)hr);
++    return adapter;
++}
++
++static IUnknown *create_adapter(void)
++{
++    IUnknown *adapter = NULL;
++    IDXGIFactory4 *factory;
++    HRESULT hr;
++
++    hr = CreateDXGIFactory1(&IID_IDXGIFactory4, (void **)&factory);
++    ok(hr == S_OK, "Failed to create IDXGIFactory4, hr %#x.\n", (int)hr);
++
++    if (use_warp_device && (adapter = create_warp_adapter(factory)))
++    {
++        IDXGIFactory4_Release(factory);
++        return adapter;
++    }
++
++    hr = IDXGIFactory4_EnumAdapters(factory, use_adapter_idx, (IDXGIAdapter **)&adapter);
++    IDXGIFactory4_Release(factory);
++    if (FAILED(hr))
++        trace("Failed to get adapter, hr %#x.\n", (int)hr);
++    return adapter;
++}
++
++static ID3D12Device *create_device(void)
++{
++    IUnknown *adapter = NULL;
++    ID3D12Device *device;
++    HRESULT hr;
++
++    if ((use_warp_device || use_adapter_idx) && !(adapter = create_adapter()))
++    {
++        trace("Failed to create adapter.\n");
++        return NULL;
++    }
++
++    /* Enable support for 6_3+, we need this for some tests. */
++    if (pfn_D3D12EnableExperimentalFeatures)
++        pfn_D3D12EnableExperimentalFeatures(1, &D3D12ExperimentalShaderModels, NULL, NULL);
++
++    hr = pfn_D3D12CreateDevice(adapter, vkd3d_device_feature_level, &IID_ID3D12Device, (void **)&device);
++    if (adapter)
++        IUnknown_Release(adapter);
++
++    return SUCCEEDED(hr) ? device : NULL;
++}
++
++static inline void init_adapter_info(void)
++{
++    char name[MEMBER_SIZE(DXGI_ADAPTER_DESC, Description)];
++    IDXGIAdapter *dxgi_adapter;
++    DXGI_ADAPTER_DESC desc;
++    IUnknown *adapter;
++    unsigned int i;
++    HRESULT hr;
++
++    if (!(adapter = create_adapter()))
++        return;
++
++    hr = IUnknown_QueryInterface(adapter, &IID_IDXGIAdapter, (void **)&dxgi_adapter);
++    ok(hr == S_OK, "Failed to query IDXGIAdapter, hr %#x.\n", (int)hr);
++    IUnknown_Release(adapter);
++
++    hr = IDXGIAdapter_GetDesc(dxgi_adapter, &desc);
++    ok(hr == S_OK, "Failed to get adapter desc, hr %#x.\n", (int)hr);
++
++    /* FIXME: Use debugstr_w(). */
++    for (i = 0; i < ARRAY_SIZE(desc.Description) && isprint(desc.Description[i]); ++i)
++        name[i] = desc.Description[i];
++    name[min(i, ARRAY_SIZE(name) - 1)] = '\0';
++
++    trace("Adapter: %s, %04x:%04x.\n", name, desc.VendorId, desc.DeviceId);
++
++    if (desc.VendorId == 0x1414 && desc.DeviceId == 0x008c)
++    {
++        trace("Using WARP device.\n");
++        use_warp_device = true;
++    }
++
++    IDXGIAdapter_Release(dxgi_adapter);
++}
++
++static inline bool get_adapter_desc(ID3D12Device *device, DXGI_ADAPTER_DESC *desc)
++{
++    IDXGIFactory4 *factory;
++    IDXGIAdapter *adapter;
++    HRESULT hr;
++    LUID luid;
++
++    memset(desc, 0, sizeof(*desc));
++
++    if (!vkd3d_test_platform_is_windows())
++        return false;
++
++    luid = ID3D12Device_GetAdapterLuid(device);
++
++    hr = CreateDXGIFactory1(&IID_IDXGIFactory4, (void **)&factory);
++    ok(hr == S_OK, "Failed to create IDXGIFactory4, hr %#x.\n", (int)hr);
++
++    hr = IDXGIFactory4_EnumAdapterByLuid(factory, luid, &IID_IDXGIAdapter, (void **)&adapter);
++    if (SUCCEEDED(hr))
++    {
++        hr = IDXGIAdapter_GetDesc(adapter, desc);
++        ok(hr == S_OK, "Failed to get adapter desc, hr %#x.\n", (int)hr);
++        IDXGIAdapter_Release(adapter);
++    }
++
++    IDXGIFactory4_Release(factory);
++    return SUCCEEDED(hr);
++}
++
++static inline bool is_amd_windows_device(ID3D12Device *device)
++{
++    DXGI_ADAPTER_DESC desc;
++
++    return get_adapter_desc(device, &desc) && desc.VendorId == 0x1002;
++}
++
++static inline bool is_intel_windows_device(ID3D12Device *device)
++{
++    DXGI_ADAPTER_DESC desc;
++
++    return get_adapter_desc(device, &desc) && desc.VendorId == 0x8086;
++}
++
++static inline bool is_nvidia_windows_device(ID3D12Device *device)
++{
++    DXGI_ADAPTER_DESC desc;
++
++    return get_adapter_desc(device, &desc) && desc.VendorId == 0x10de;
++}
++
++#else
++
++static ID3D12Device *create_device(void)
++{
++    ID3D12Device *device;
++    HRESULT hr;
++    hr = D3D12CreateDevice(NULL, vkd3d_device_feature_level, &IID_ID3D12Device, (void **)&device);
++    return SUCCEEDED(hr) ? device : NULL;
++}
++
++static inline void init_adapter_info(void)
++{
++    VkPhysicalDeviceDriverPropertiesKHR driver_properties;
++    ID3D12Device *device;
++
++    if ((device = create_device()))
++    {
++        if (get_driver_properties(device, &driver_properties))
++            trace("Driver name: %s, driver info: %s.\n", driver_properties.driverName, driver_properties.driverInfo);
++        ID3D12Device_Release(device);
++    }
++}
++
++static inline bool is_amd_windows_device(ID3D12Device *device)
++{
++    return false;
++}
++
++static inline bool is_intel_windows_device(ID3D12Device *device)
++{
++    return false;
++}
++
++static inline bool is_nvidia_windows_device(ID3D12Device *device)
++{
++    return false;
++}
++
+ #endif
+ 
+ static inline void parse_args(int argc, char **argv)

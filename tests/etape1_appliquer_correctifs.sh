@@ -4,7 +4,7 @@
 #   mesa          -> KosmicKrisp : 29 correctifs (0001..0037, hors vkd3d et wine)
 #   wine          -> ARM64/macOS, memoire externe, suites de tests
 #                    (0028, 0035, 0036, 0038, 0040, 0041)
-#   vkd3d-proton  -> 5 correctifs (0004, 0007, 0008, 0014, 0016)
+#   vkd3d-proton  -> 6 correctifs (0004, 0007, 0008, 0014, 0016, 0044)
 #   dxvk          -> 3 correctifs (0039, 0042, 0043)
 #
 # Usage :
@@ -69,7 +69,7 @@ appliquer mesa $(serie_mesa)
 appliquer wine "$R"/0028-*.patch "$R"/0035-*.patch "$R"/0036-*.patch \
                "$R"/0038-*.patch "$R"/0040-*.patch "$R"/0041-*.patch
 appliquer vkd3d-proton "$R"/0004-*.patch "$R"/0007-*.patch "$R"/0008-*.patch \
-                       "$R"/0014-*.patch "$R"/0016-*.patch
+                       "$R"/0014-*.patch "$R"/0016-*.patch "$R"/0044-*.patch
 appliquer dxvk "$R"/0039-*.patch "$R"/0042-*.patch "$R"/0043-*.patch
 
 echo
