@@ -7554,6 +7554,7 @@ des drapeaux de capacite annonces differemment de ce que la suite attend.
 
 Restent les **480 ecarts de couleur** de `test_compressed_format_compatibility`, qui eux
 designent directement le pipeline : ce sont les seuls a valoir une investigation graphique.
+**[Corrige au § 111 : ils ne designent pas le pipeline, c'est une validation absente de DXVK.]**
 
 ### La reference
 
@@ -7567,3 +7568,55 @@ Les deux references du projet, cote a cote :
 |---|---|---|---|
 | vkd3d-proton (D3D12) | 28 | 2 305 | complet, 574 fonctions |
 | Wine (D3D11) | 49 | 4 272 | 95,5 %, 159 fonctions sur 164 |
+
+---
+
+## 111. Les 480 ecarts de couleur : une validation absente de DXVK (2026-09-20)
+
+### Ce que le test verifie
+
+`test_compressed_format_compatibility` copie entre deux textures de familles de formats
+differentes, puis relit la destination. D3D11 exige que `CopyResource` et
+`CopySubresourceRegion` **ne fassent rien** entre familles incompatibles : la destination doit
+rester telle quelle.
+
+Les 484 echecs sont tous de la meme forme, sur **240 paires de formats distinctes** :
+
+```
+Feature level 0xa000: 0x1 -> 0x49: Got unexpected colour 0xff0000ff at 20, expected 0x00000000.
+```
+
+**480 sur 484 attendent `0x00000000`**, c'est-a-dire la donnee initiale intacte. Nous rendons
+la donnee source : la copie a eu lieu alors qu'elle aurait du etre ignoree.
+
+### La cause
+
+`src/dxvk/src/d3d11/d3d11_context.cpp`. `CopyResource` ne verifie que la dimension, `ArraySize`
+et `MipLevels` (lignes 352-362), puis appelle `CopyImage`. Et `CopyImage`, ligne 4206 :
+
+```cpp
+// Image formats must be size-compatible
+if (dstFormatInfo->elementSize != srcFormatInfo->elementSize)
+  return;
+```
+
+**Seule la taille d'element est verifiee, jamais la famille.** Or `0x1` est
+`R32G32B32A32_TYPELESS`, 16 octets par texel, et `0x49` est `BC2_TYPELESS`, 16 octets par bloc.
+Meme taille, familles incompatibles : DXVK copie, D3D11 l'interdit.
+
+### Correction du § 110
+
+J'y ecrivais que ces 480 ecarts « designent directement le pipeline » et « valent une
+investigation graphique ». **C'est faux.** Le rendu n'est pas en cause : il s'agit d'une
+validation d'API absente, entierement dans DXVK, qui se comporterait a l'identique sous Proton
+sur Linux. Aucune piece de notre portage n'y participe.
+
+### Consequence
+
+Le depouillement du § 110 tient toujours, mais sa lecture change : sur les 4 272 echecs D3D11,
+**aucune famille n'incrimine notre pile graphique**. Les trois blocs dominants — acces aux
+ressources, drapeaux de format, compatibilite de formats compressés — relevent tous de
+validations que DXVK accorde plus largement que la specification.
+
+Ajouter la verification de famille dans DXVK serait un changement de comportement susceptible
+de casser des jeux qui s'appuient sur sa permissivite. C'est une decision amont, pas la notre.
