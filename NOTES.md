@@ -8024,3 +8024,114 @@ A elles seules, `test_custom_border_color_limits`, sa variante compute et
 `test_custom_border_color_srgb` pesent 16 640 echecs, plus 10 pour `test_view_min_lod` : 16 650
 sur 16 651 d'ecart. **Deux configurations ne se comparent que si l'environnement est
 identique** — le binaire natif reste utile comme temoin, jamais comme reference.
+
+---
+
+## 116. VK_EXT_descriptor_buffer dans KosmicKrisp : l'extension marche, un format manquant la rend perdante (2026-09-21)
+
+### Le terrain etait favorable
+
+Deux conditions qu'on pouvait craindre sont deja remplies dans KosmicKrisp :
+
+- **les descripteurs sont deja des structures plates** ecrites dans un tampon, et
+  `kk_descriptor_set_layout` calcule deja decalage et foulee par liaison — d'ou
+  `kk_GetDescriptorSetLayoutSizeEXT` et `...BindingOffsetEXT` deja presents, herites de NVK ;
+- **la residence Metal est globale au peripherique** : chaque tas entre dans un
+  `MTLResidencySet` attache a la file. L'obstacle habituel des tampons de descripteurs sur
+  Metal — le pilote ne sait pas quelles ressources un descripteur ecrit par l'application
+  designe — n'existe donc pas ici.
+
+Le shader recoit deja `root.sets[s]`, une simple adresse GPU : `vkCmdSetDescriptorBufferOffsets`
+n'a qu'a y ecrire `adresse_du_tampon + decalage`.
+
+### Ce qu'il a fallu ecrire
+
+`0045-kosmickrisp-descriptor-buffer.patch`, 20 fichiers :
+
+- `kk_GetDescriptorEXT`, qui reutilise les fonctions d'ecriture existantes une fois
+  `get_sampled_image_view_desc` et `get_storage_image_view_desc` sorties de leur `static` ;
+- les quatre points d'entree de commande et leurs variantes `2EXT` ;
+- les propietes et drapeaux. **Piege** : Mesa desambigue deux champs homonymes,
+  `samplerDescriptorSize` s'ecrit `EDBsamplerDescriptorSize` dans `vk_properties` ; ecrit
+  autrement il reste silencieusement a zero ;
+- `descriptorBufferPushDescriptors` et `bufferlessPushDescriptors` a vrai. vkd3d **exige** le
+  premier, et KosmicKrisp peut honorer les deux puisqu'il place deja ses push descriptors dans
+  sa propre memoire de commande ;
+- **les echantillonneurs immuables integres**, qui n'etaient pas implementes : le bloc herite
+  de NVK allouait son tampon, faisait trois assertions et le liberait sans rien ecrire.
+  `embedded_samplers_addr` restait a zero.
+- un **registre d'allocations interrogeable par adresse**, et un cache de textures de tampon.
+
+### Le cache de texels, deux fois refait
+
+C'est la seule vraie difficulte. Avec un tampon de descripteurs il n'y a plus de
+`VkBufferView`, seulement une adresse — or Metal exige un `MTLBuffer` pour creer une texture de
+tampon. Il faut donc remonter de l'adresse a l'allocation, puis creer et **conserver** une
+texture. Conserver, parce que le pilote ne peut jamais savoir qu'un descripteur ecrit par
+l'application a cesse d'etre utilise.
+
+| conception | pic memoire sur `test_typed_buffers_many_objects` |
+|---|---|
+| une texture par vue | **13,8 Go**, plusieurs minutes |
+| une texture par (allocation, format) | **340 Mo**, 8 s |
+| reference sans l'extension | 368 Mo, 8 s |
+
+La premiere a fait tuer une campagne entiere par la pression memoire. La seconde exige de
+porter les bornes **dans le descripteur** (`pad` devient `texel_count`) et de les verifier dans
+le shader, avec court-circuit des ecritures et des atomiques hors bornes — sans quoi elles
+corrompraient la memoire voisine.
+
+### Le defaut qui a coute le plus cher
+
+La seconde conception donnait 262 138 echecs sur `test_typed_buffers_many_objects`. Deux A/B
+m'ont menti : desactiver la prediction des ecritures ne changeait rien, et une premiere
+desactivation plantait pour une raison sans rapport — ma branche de repli deref^erencait un
+`def` inexistant pour une ecriture sans resultat.
+
+C'est le vidage du shader Metal (`MESA_KK_DEBUG=msl`) qui a tranche :
+
+```
+t261 = t45 >= t50;          /* t45 est le decalage, pas la coordonnee */
+if (!(t51 & t261)) { t263.write(...); }
+```
+
+Je calculais la comparaison de bornes **apres** avoir translate la coordonnee. Je comparais
+donc `texel_offset >= texel_count` : pour le descripteur *i*, `4i >= 2`, vrai des *i* = 1.
+**Toutes les ecritures du shader etaient supprimees** sauf celles du descripteur 0. Le chemin
+echantillonne, lui, calculait avant la translation — d'ou un seul test revelateur, le seul qui
+ecrive et fasse des atomiques a travers des tampons de texels decales.
+
+Corrige : `test_typed_buffers_many_objects` passe de 262 138 a **0**.
+
+### Le verdict, et pourquoi l'extension reste eteinte
+
+Campagne complete, chemin PE :
+
+| | reference | descriptor buffer |
+|---|---|---|
+| echecs | 2 210 | **2 228** |
+
+| fonction | avant | apres |
+|---|---|---|
+| `test_undefined_typed_read_structured_raw` (x2) | 96 | **0** |
+| `test_undefined_structured_raw_read_typed` (x2) | 224 | **334** |
+| `test_buffer_descriptor_byte_offset` | 0 | **4** |
+
+**+18 net : une regression.** Les trois familles ont la meme cause unique. vkd3d, sur le chemin
+des tampons de descripteurs, choisit « le plus grand format de tampon de texels qui divise la
+foulee » — soit `R32G32B32_UINT` pour les foulees de 12 et 24 octets. **Metal n'a aucun format
+96 bits** : sa table saute de `RG32` a `RGBA32`. Le descripteur reste vide et tout se lit a
+zero. Sans l'extension, vkd3d rescalait tout en `R32_UINT` et la question ne se posait pas.
+
+L'extension est donc placee derriere `MESA_KK_EXPERIMENTAL=descriptor_buffer`, **eteinte par
+defaut**, pour que la reference du projet reste a 2 210. `tests/etape2_pile_wine.sh` a ete
+corrige au passage : il exportait `MESA_KK_EXPERIMENTAL` en dur, ce qui rendait tout drapeau
+supplementaire inoperant sans le dire.
+
+### Ce qui reste a faire pour que ca paie
+
+Emuler les formats 96 bits : creer la texture en `R32`, porter un facteur 3 dans le descripteur
+(il reste 4 bits libres en haut de `texel_count`, dont la valeur maximale est 2^28), et
+reconstruire chaque acces en trois lectures ou ecritures consecutives. Cela supprimerait les
++114 et rendrait les -290 attendus, soit environ **1 920 echecs**. C'est un chantier de
+lowering NIR a part entiere, non entrepris.

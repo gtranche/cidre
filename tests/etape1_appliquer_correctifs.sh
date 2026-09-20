@@ -1,7 +1,7 @@
 #!/bin/sh
 # Applique les series de correctifs aux trois arbres amont.
 #
-#   mesa          -> KosmicKrisp : 29 correctifs (0001..0037, hors vkd3d et wine)
+#   mesa          -> KosmicKrisp : 30 correctifs (0001..0037 et 0045)
 #   wine          -> ARM64/macOS, memoire externe, suites de tests
 #                    (0028, 0035, 0036, 0038, 0040, 0041)
 #   vkd3d-proton  -> 6 correctifs (0004, 0007, 0008, 0014, 0016, 0044)
@@ -43,7 +43,7 @@ if [ "${1:-}" = "--cloner" ]; then
 fi
 
 serie_mesa() {
-   for f in "$R"/00[0-3][0-9]-kosmickrisp-*.patch; do
+   for f in "$R"/00[0-3][0-9]-kosmickrisp-*.patch "$R"/0045-kosmickrisp-*.patch; do
       case "$(basename "$f")" in 0000-*) continue;; esac
       echo "$f"
    done
