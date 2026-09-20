@@ -7109,3 +7109,63 @@ ligne 4305 et aucune ne produit la moindre sortie** — mais la cause reste inco
 sortie 5, aucun message d'exception. A chercher.
 
 Pas de campagne D3D12 a rejouer : vkd3d-proton n'utilise pas DXVK.
+
+---
+
+## 104. L'arret de la suite d3d11 : un appel a travers un pointeur nul (2026-09-20)
+
+### La cle : la suite est multi-thread
+
+`START_TEST(d3d11)` fait `use_mt = !getenv("WINETEST_NO_MT_D3D")` et empile ses tests par
+`queue_test()`. Par defaut ils s'executent **en parallele**, d'ou la sortie entrelacee qui
+rendait tout diagnostic impossible, et d'ou un point d'arret apparent (4305) qui n'etait que la
+ligne la plus haute ayant eu le temps d'ecrire.
+
+`WINETEST_NO_MT_D3D=1` rend l'execution deterministe. L'arret tombe alors a la ligne **3269**,
+dans `test_texture2d_interfaces` (definie ligne 3116), l'ordre d'execution etant
+`test_texture1d_interfaces`, `test_create_texture2d`, puis celle-ci.
+
+### La cause
+
+Avec `WINEDEBUG=+seh`, une seule exception dans toute la campagne :
+
+```
+dispatch_exception code=c0000005 (EXCEPTION_ACCESS_VIOLATION) addr=0000000000000000
+  info[0]=0  info[1]=0
+  rip=0000000000000000
+```
+
+**`rip` vaut zero** : le processus saute a l'adresse nulle. Ce n'est pas une ressource mal
+formee ni un descripteur invalide, c'est un **appel a travers un pointeur de fonction nul**.
+
+Le contexte immediat, dans l'ordre :
+
+```
+d3d11.c:3269: Test failed: Got unexpected device pointer ..., expected NULL.
+warn:  D3D11: Failed to write shared resource info for a texture
+err:   D3D11DXGIKeyedMutex::AcquireSync: Not supported
+d3d11.c:3269: Test failed: Test 3: ...
+-> EXCEPTION_ACCESS_VIOLATION rip=0
+```
+
+Les tests de mutex a cle du fichier sont a la ligne 35002, bien au-dela : c'est donc **DXVK
+lui-meme** qui appelle `AcquireSync` en interne sur une texture partagee, pas le test.
+
+### Ce que cela elimine
+
+Trois hypotheses tombent. Ce n'est pas `CloseHandle` sur notre pointeur `MTLHeap` deguise en
+descripteur : aucune erreur de descripteur invalide dans tout le journal (`grep -ic "invalid
+handle|NtClose|c0000008"` : zero). Ce n'est pas non plus un echec d'obtention du descripteur :
+`Failed to get shared handle` n'apparait jamais. Et ce n'est pas le partage en soi, puisque
+l'arret precedait toutes nos modifications (§ 103).
+
+### Ce qui reste a identifier
+
+Quel pointeur est nul. Les candidats sont un point d'entree Vulkan annonce mais non resolu par
+`vkGetDeviceProcAddr`, ou une entree de vtable COM laissee vide sur le chemin du mutex a cle —
+`VK_KHR_win32_keyed_mutex` restant a `0`, DXVK pourrait exposer `IDXGIKeyedMutex` sans
+l'implementer entierement.
+
+La marche a suivre est tracee : la campagne est desormais deterministe, l'exception unique et
+son contexte connu. Il reste a instrumenter le chemin `AcquireSync` de DXVK, ou a verifier ce
+que `vkGetDeviceProcAddr` rend pour chaque fonction de l'extension que nous venons d'exposer.
