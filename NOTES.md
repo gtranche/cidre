@@ -8353,3 +8353,82 @@ moindre. **Non explique.**
 L'image est jugee correcte a l'ecran. Le flou en deplacement est le flou de mouvement
 qu'Unigine active par defaut, d'autant plus visible que la frequence est basse — **non verifie**
 en le desactivant.
+
+---
+
+## 120. Capture Metal de Superposition : le fragment domine, et le pilote n'y est pour rien (2026-09-21)
+
+### L'outil
+
+`MESA_KK_GPU_CAPTURE` produit un `.gputrace` illisible sans l'interface d'Xcode. Autre canal,
+exploitable en ligne de commande : **`xctrace` avec le modele « Metal System Trace »**.
+
+`xcode-select` pointe sur les outils en ligne de commande, mais Xcode est installe. On appelle
+donc l'outil par son chemin absolu, **sans toucher au reglage systeme**, qui demanderait les
+droits administrateur :
+
+```
+/Applications/Xcode.app/Contents/Developer/usr/bin/xctrace record \
+  --template "Metal System Trace" --attach <pid> --time-limit 12s --output superp.trace
+```
+
+Puis `xctrace export --xpath '...table[@schema="metal-gpu-intervals"]'`.
+
+**Piege de lecture** : le schema comporte **deux** colonnes de type `duration`, la duree de
+l'intervalle et la latence CPU vers GPU. Extraire « le premier `<duration>` portant un
+identifiant » ramene parfois la latence. Il faut prendre le premier dans l'ordre du document.
+Avec l'erreur, le total GPU sortait a 2 271 s sur une fenetre de 12,7 s — un resultat absurde
+qui a servi de garde-fou. Les identifiants sont par ailleurs **globaux**, pas propres a chaque
+colonne.
+
+### Ce que la capture dit
+
+12,58 s de rendu, 77 428 intervalles :
+
+| canal | temps | part du mur | encodeurs | moyenne |
+|---|---|---|---|---|
+| **Fragment** | 10 150 ms | **80,7 %** | 28 601 | 355 us |
+| Vertex | 1 184 ms | 9,4 % | 29 870 | 39,7 us |
+| Compute | 210 ms | 1,7 % | 18 957 | 11,1 us |
+
+**GPU occupe 82,8 % du mur.** Par image : **95 encodeurs fragment, 33,6 ms**, ce qui
+reconstitue le temps d'image observe.
+
+Distribution tres desequilibree : mediane a 17 us, mais **8,3 % des encodeurs depassent la
+milliseconde et portent 73 % du temps fragment**, avec des pointes a 6,9 ms.
+
+### Contradiction levee, mais une hypothese non verifiee
+
+Le § 119 concluait « borne par du travail GPU independant de la resolution de sortie », puisque
+diviser la fenetre par neuf ne changeait rien. Si le fragment pese 80 %, reduire les pixels
+aurait du tout changer — **sauf si ces pixels ne sont pas ceux de la fenetre**. Superposition
+rend vraisemblablement a une resolution interne fixee par son reglage de qualite, puis met a
+l'echelle. **Non verifie.**
+
+### La piste du decoupage des passes : fausse
+
+95 passes fragment par image, c'est beaucoup, et sur un GPU a tuiles chaque passe coute un
+vidage. `kk_CmdPipelineBarrier2` contient d'ailleurs un decoupage **inconditionnel** des que
+`samples > 1`. Hypothese : notre pilote fabriquerait des passes.
+
+Mesure, par compteurs poses dans `kk_CmdBeginRendering` et `cs_start_render` :
+
+| | nombre |
+|---|---|
+| passes demandees par DXVK | 510 000 |
+| encodeurs Metal crees | 562 000 |
+| decoupages sur barriere | **0** |
+
+**Rapport 1,10.** Le pilote cree 10 % d'encodeurs de plus que de passes demandees, et **aucun**
+ne vient du decoupage sur barriere : le compteur n'a jamais atteint son seuil en huit minutes de
+rendu. Les 95 passes par image sont ce qu'Unigine demande.
+
+Le `samples > 1` existe bien et reste un cout potentiel, mais il ne se declenche pas sur cette
+charge. **Hypothese abandonnee**, instrumentation retiree, arbre verifie identique a la serie.
+
+### Ou chercher ensuite
+
+Le temps est dans **8,3 % des encodeurs fragment**. Ce ne sont pas les passes qui coutent, ce
+sont quelques passes precises. Les identifier nommement — par `metal-object-label`, que la
+capture expose — dirait s'il s'agit de la volumetrie, des ombres, ou d'un shader que notre
+traduction rend inutilement cher. C'est la question suivante, et elle est bien posee.
