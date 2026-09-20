@@ -7405,3 +7405,58 @@ engendrer un millier de processus. **Non verifie** : aucun Wine ne demarre pour 
 2. Verifier le garde-fou AeDebug.
 3. Relancer la suite d3d11 avec `WINETEST_NO_MT_D3D=1` et le correctif 0040 : c'est la mesure
    qui manque, et rien d'autre ne la bloque desormais.
+
+---
+
+## 108. Premier chiffre de conformite D3D11 : 44 % de la suite, 2 418 echecs (2026-09-20)
+
+### L'environnement, d'abord
+
+Redemarrage de la machine : les 954 clients IOSurface sont liberes, `probe_d3d11` repasse. Le
+garde-fou du § 107 a survecu — Wine a reecrit la cle `AeDebug` avec son propre horodatage
+(`1753735291` au lieu du mien), ce qui prouve qu'il l'a lue. Plus aucun empilement de `winedbg`
+possible.
+
+### Le resultat
+
+Suite d3d11 de Wine, mono-thread, avec le correctif 0040 :
+
+| | avant | apres |
+|---|---|---|
+| ligne source atteinte | 4 305 | **16 015** / 36 793 |
+| echecs | 79 | **2 418** |
+
+**De 12 % a 44 % de la suite.** Le correctif d'une ligne de defense a debloque plus de trois
+fois le parcours.
+
+### Ce que les echecs disent
+
+| famille | occurrences |
+|---|---|
+| niveaux de fonctionnalite (`Feature level ...: Got hr`) | 681 |
+| memes, variante `READ_WRITE` | 329 |
+| `Got unexpected hr` | 97 |
+| couleur relue inattendue | 80 |
+
+Le gros bloc concerne les **niveaux de fonctionnalite** : la suite verifie qu'un peripherique
+refuse ce qu'il n'annonce pas, et DXVK accepte plus largement. Ce n'est pas un defaut de rendu.
+Les 80 ecarts de couleur, eux, sont les seuls a designer directement le pipeline.
+
+### Le nouveau point d'arret
+
+```
+Assertion failed: !status && "vkQueuePresentKHR",
+  src/wine/dlls/winevulkan/loader_thunks.c, line 6191
+```
+
+Le thunk genere affirme que la traversee PE -> Unix reussit toujours. Or
+`thunk64_vkQueuePresentKHR` rend inconditionnellement `STATUS_SUCCESS` : le statut non nul ne
+peut donc venir que de la traversee elle-meme, c'est-a-dire d'une faute dans la fonction Unix.
+Celle-ci appelle `vk_funcs->p_vkQueuePresentKHR`, la presentation du pilote d'affichage.
+
+Piste, **non verifiee** : dans ce contexte de test sans fenetre geree, ce pointeur de
+presentation serait nul ou la chaine de swap invalide. C'est la meme classe de defaut que
+celui corrige au § 105 — une fonction supposee presente qui ne l'est pas — mais cette fois du
+cote du pilote d'affichage, pas de l'emulation d'extension.
+
+107 fonctions de test sur 164 restent au-dela de ce point.
