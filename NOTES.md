@@ -7460,3 +7460,47 @@ celui corrige au § 105 — une fonction supposee presente qui ne l'est pas — 
 cote du pilote d'affichage, pas de l'emulation d'extension.
 
 107 fonctions de test sur 164 restent au-dela de ce point.
+
+---
+
+## 109. Le verrou `vkQueuePresentKHR` etait une installation incomplete (2026-09-20)
+
+### Le resultat
+
+| | § 100 | § 108 | maintenant |
+|---|---|---|---|
+| ligne source atteinte | 4 305 | 16 015 | **35 155** / 36 793 |
+| part de la suite | 12 % | 44 % | **95,5 %** |
+| echecs | 79 | 2 418 | **4 272** |
+| assertions | 1 | 1 | **0** |
+
+Cinq fonctions de test sur 164 restent au-dela du point d'arret, et la derniere en cours est
+`test_shared_resource` — notre limitation connue, avec des `0xc0000008`
+(`STATUS_INVALID_HANDLE`) sur le partage par descripteur NT, exactement ce que le § 101
+predisait.
+
+### La cause, et elle etait chez moi
+
+J'avais suppose une chaine de swap nulle dans `win32u_vkQueuePresentKHR`, qui dereference
+`swapchain_from_handle()` sans verifier. J'ai pose une garde, reconstruit `win32u`, et la suite
+est passee.
+
+Mais **la garde n'a jamais tire** : zero `DIAG swapchain` sur toute la campagne. Verification
+faite en la retirant et en reconstruisant : **resultat identique**, 35 155 et 4 272 echecs. La
+garde n'y etait pour rien.
+
+Ce qui a debloque, c'est la **reconstruction de `win32u.so`**. Le correctif 0038 regenere
+`include/wine/vulkan.h`, que `winevulkan` **et** `win32u` incluent tous deux. N'avoir
+reconstruit que `winevulkan` laissait un `win32u` perime, avec une vue divergente des
+structures partagees — d'ou une faute dans le chemin de presentation, remontee en
+`NTSTATUS` non nul, puis en assertion dans le thunk genere.
+
+### Ce qu'il faut en retenir
+
+**Installer le correctif 0038 impose de reconstruire tous les consommateurs de
+`include/wine/vulkan.h`, pas seulement `winevulkan`.** A ajouter a la procedure. Le symptome
+— une assertion sur un appel Vulkan sans rapport apparent — ne designe pas du tout sa cause.
+
+Et une lecon de methode : la garde semblait avoir resolu le probleme, et je l'aurais versee au
+correctif si je n'avais pas remarque qu'elle ne s'etait jamais declenchee. Un correctif qui
+coincide avec une amelioration n'en est pas la cause.
