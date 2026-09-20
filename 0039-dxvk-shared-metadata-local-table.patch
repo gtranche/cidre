@@ -1,0 +1,90 @@
+Generated-by: LLM
+
+diff --git a/src/util/util_shared_res.cpp b/src/util/util_shared_res.cpp
+index 2a86da7..a9b3029 100644
+--- a/src/util/util_shared_res.cpp
++++ b/src/util/util_shared_res.cpp
+@@ -1,19 +1,55 @@
+ #include "util_shared_res.h"
+ #include "log/log.h"
+ 
++#include <algorithm>
++#include <cstring>
++#include <map>
++#include <mutex>
++#include <vector>
++
+ #ifdef _WIN32
+ #include <winioctl.h>
+ #endif
+ 
+ namespace dxvk {
+ 
++  /* Sans le pseudo-peripherique \\.\SharedGpuResource de Proton, les metadonnees
++   * d'une ressource partagee n'ont nulle part ou vivre. Sur une pile ou le partage
++   * se fait par un objet valable dans un seul processus, une table locale suffit
++   * et evite de dependre d'un pilote absent. */
++  namespace {
++    std::mutex g_localMetadataMutex;
++    std::map<HANDLE, std::vector<uint8_t>> g_localMetadata;
++
++    bool localSetMetadata(HANDLE handle, const void *buf, uint32_t bufSize) {
++      if (handle == INVALID_HANDLE_VALUE || !handle)
++        return false;
++      const uint8_t *bytes = reinterpret_cast<const uint8_t *>(buf);
++      std::lock_guard<std::mutex> lock(g_localMetadataMutex);
++      g_localMetadata[handle].assign(bytes, bytes + bufSize);
++      return true;
++    }
++
++    bool localGetMetadata(HANDLE handle, void *buf, uint32_t bufSize, uint32_t *metadataSize) {
++      std::lock_guard<std::mutex> lock(g_localMetadataMutex);
++      auto entry = g_localMetadata.find(handle);
++      if (entry == g_localMetadata.end())
++        return false;
++      uint32_t copied = std::min<uint32_t>(bufSize, entry->second.size());
++      std::memcpy(buf, entry->second.data(), copied);
++      if (metadataSize)
++        *metadataSize = copied;
++      return true;
++    }
++  }
++
+ #ifdef _WIN32
+   #define IOCTL_SHARED_GPU_RESOURCE_OPEN             CTL_CODE(FILE_DEVICE_VIDEO, 1, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+ 
+   HANDLE openKmtHandle(HANDLE kmt_handle) {
+     HANDLE handle = ::CreateFileA("\\\\.\\SharedGpuResource", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+     if (handle == INVALID_HANDLE_VALUE)
+-      return handle;
++      return kmt_handle;
+ 
+     struct
+     {
+@@ -34,7 +70,9 @@ namespace dxvk {
+ 
+   bool setSharedMetadata(HANDLE handle, void *buf, uint32_t bufSize) {
+     DWORD retSize;
+-    return ::DeviceIoControl(handle, IOCTL_SHARED_GPU_RESOURCE_SET_METADATA, buf, bufSize, NULL, 0, &retSize, NULL);
++    if (::DeviceIoControl(handle, IOCTL_SHARED_GPU_RESOURCE_SET_METADATA, buf, bufSize, NULL, 0, &retSize, NULL))
++      return true;
++    return localSetMetadata(handle, buf, bufSize);
+   }
+ 
+   #define IOCTL_SHARED_GPU_RESOURCE_GET_METADATA           CTL_CODE(FILE_DEVICE_VIDEO, 5, METHOD_BUFFERED, FILE_READ_ACCESS)
+@@ -42,9 +80,12 @@ namespace dxvk {
+   bool getSharedMetadata(HANDLE handle, void *buf, uint32_t bufSize, uint32_t *metadataSize) {
+     DWORD retSize;
+     bool ret = ::DeviceIoControl(handle, IOCTL_SHARED_GPU_RESOURCE_GET_METADATA, NULL, 0, buf, bufSize, &retSize, NULL);
+-    if (metadataSize)
+-      *metadataSize = retSize;
+-    return ret;
++    if (ret) {
++      if (metadataSize)
++        *metadataSize = retSize;
++      return true;
++    }
++    return localGetMetadata(handle, buf, bufSize, metadataSize);
+   }
+ #else
+   HANDLE openKmtHandle(HANDLE kmt_handle) {

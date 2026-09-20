@@ -6958,7 +6958,8 @@ bouge pas.
 ### Ce que cela etablit
 
 Le meme mur que Superposition (§ 95), que le § 99 a montre infranchissable : **le partage de
-ressources est le blocage unique du chemin D3D11 sur cette pile**. Ce n'etait donc pas une
+ressources est le blocage unique du chemin D3D11 sur cette pile**. **[Corrige au § 103 :
+l'arret a 4305 est anterieur a toute modification et n'est pas cause par le partage.]** Ce n'etait donc pas une
 particularite du lanceur Qt d'Unigine, c'est structurel, et la suite de conformite de Wine le
 confirme independamment.
 
@@ -7061,3 +7062,50 @@ ne bouge pas.
 
 La dette du § 101 est donc soldee : exposer `VK_KHR_external_memory_win32` par-dessus Metal ne
 change rien au chemin D3D12. Le correctif 0038 peut rester installe.
+
+---
+
+## 103. DXVK : metadonnees en table locale, et correction du § 100 (2026-09-20)
+
+### Le correctif
+
+`0039-dxvk-shared-metadata-local-table.patch`, 90 lignes, aller-retour verifie.
+
+Toute la dependance de DXVK a Proton tient dans trois fonctions de
+`src/util/util_shared_res.cpp` : `openKmtHandle` ouvre `\\.\SharedGpuResource`, et
+`set`/`getSharedMetadata` y attachent les metadonnees par `DeviceIoControl`. Le peripherique
+n'existe pas hors de Proton.
+
+Ces metadonnees — largeur, hauteur, format, niveaux de mip — n'ont aucune raison de passer par
+le noyau ici : un `MTLHeap` ne vaut que dans un processus, donc une table locale suffit. Le
+correctif garde le chemin Proton en premier et ne retombe sur la table que s'il echoue :
+`openKmtHandle` rend le descripteur inchange quand le peripherique est absent, et les deux
+autres fonctions basculent sur une `std::map<HANDLE, std::vector<uint8_t>>` sous mutex.
+
+### Mesure
+
+Suite d3d11 de Wine, meme invocation, trois etats successifs :
+
+| etat | echecs |
+|---|---|
+| avant tout (§ 100) | 23 |
+| extension exposee (§ 101) | 69 |
+| metadonnees en table locale | **29** |
+
+Les 69 venaient de tests qui allaient plus loin et tombaient sur l'absence de metadonnees. Le
+correctif en recupere 40. Et deux temoins directs : `Failed to get shared handle` **n'apparait
+jamais** — notre `vkGetMemoryWin32HandleKHR` rend bien un descripteur exploitable — et
+`Failed to write shared resource info` tombe a **2** occurrences.
+
+### Correction du § 100
+
+J'y ecrivais que la suite mourait sur les ressources partagees. **C'est faux.** L'arret est a la
+ligne source 4305 dans **les trois** executions, y compris celle d'avant toute modification. Il
+est donc anterieur a ce travail et sans rapport avec le partage : les messages de partage
+etaient simplement les derniers journalises, ce qui m'a induit en erreur.
+
+La suite s'arrete bien prematurement — **148 des 164 fonctions de test sont definies apres la
+ligne 4305 et aucune ne produit la moindre sortie** — mais la cause reste inconnue. Code de
+sortie 5, aucun message d'exception. A chercher.
+
+Pas de campagne D3D12 a rejouer : vkd3d-proton n'utilise pas DXVK.
