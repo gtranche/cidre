@@ -7711,3 +7711,81 @@ Ces deux sections parlaient de « 95,5 % de la suite ». Le chiffre etait juste 
 ete mesure, mais il n'etait pas une limite de notre pile : une lecture de tampon non initialise
 dans le test amont en etait seule responsable. Aucune des familles d'echec ne met en cause
 KosmicKrisp ni Metal.
+
+---
+
+## 113. Les huit relectures a zero de test_nv12 : aucune n'etait un defaut de rendu (2026-09-20)
+
+### Ce que je croyais mesurer
+
+Huit echecs de la forme `Got 0x00, expected 0x22` : une region de la texture NV12 relue a
+zero la ou le motif initial etait attendu. Je les avais classes « seul vrai chemin de donnees
+en defaut » au § 112.
+
+### Ce que la mesure dit
+
+`tests/probe_nv12_box.c` rejoue `UpdateSubresource` sur une texture NV12 de 640x480 avec une
+boite impaire, mais en remplissant la source d'un octet **temoin** `0xab` au lieu des zeros que
+le test amont y laisse :
+
+```
+boite paire (doit copier) :
+  boite 10,20 4x6 : luma(10,20) lu 0xab, intact 0x22 ; 24/24 octets = 0xab
+boites impaires (doivent etre des non-operants) :
+  boite 10,20 4x7 : luma(10,20) lu 0xab, intact 0x22 ; 28/28 octets = 0xab
+  boite 10,21 4x6 : luma(10,21) lu 0xab, intact 0x2a ; 24/24 octets = 0xab
+```
+
+**La copie a lieu, et elle est exacte.** Les zeros que voyait la suite venaient de son propre
+`copy_source`, alloue par `calloc` et rempli uniquement dans la branche paire. Notre pile a
+fidelement recopie ce qu'on lui donnait. Le defaut n'est pas d'ecrire mal, c'est d'ecrire
+alors que Windows ne le fait pas.
+
+### Premiere cause : un garde-fou inerte
+
+`D3D11CommonContext::UpdateTexture` verifie bien l'alignement :
+
+```cpp
+if (!util::isBlockAligned(offset, extent, formatInfo->blockSize, mipExtent))
+  return;
+```
+
+Mais pour `VK_FORMAT_G8_B8R8_2PLANE_420_UNORM`, la table des formats de DXVK donne
+`blockSize = {1, 1, 1}` : le sous-echantillonnage 2x2 n'est porte que par `planes[1]`. Tout
+decalage est donc multiple de 1 et le garde-fou **ne rejette jamais rien** sur un format
+multi-plans. DXVK emet alors une copie dont les coordonnees ne sont pas des multiples du bloc
+de plan, ce qui est hors specification Vulkan.
+
+`0042-dxvk-multiplanar-update-box-alignment.patch` derive l'alignement requis du maximum sur
+les plans. Onze lignes.
+
+### Seconde cause : des dimensions impaires acceptees
+
+Deux des huit relectures appartiennent au cas 641x481. Windows refuse une texture NV12 de
+dimensions impaires ; `D3D11CommonTexture::NormalizeTextureProperties` ne le verifiait pas, et
+le test se poursuivait sur une texture que Windows n'aurait jamais creee.
+
+`0043-dxvk-multiplanar-texture-dimensions.patch` ajoute la verification. La methode etant
+statique et sans acces au peripherique, elle recoit desormais un `D3D11Device*` pour resoudre
+le format empaquete — quatre appelants a ajuster.
+
+### Resultat
+
+| | avant | apres |
+|---|---|---|
+| echecs de `test_nv12` | 12 | **0** |
+| lignes en echec, suite entiere | 4 338 | 4 326 |
+| echecs au sens de winetest | 5 129 | 5 113 |
+
+Une seule fonction change de compte entre les deux campagnes : `test_nv12`. Aucune regression
+ailleurs, verifie fonction par fonction. Deux executions consecutives donnent des chiffres
+identiques, en 17,3 s.
+
+### Correction du § 112
+
+J'y ecrivais que huit relectures a zero etaient le « seul vrai chemin de donnees en defaut ».
+C'est faux : c'etaient deux validations absentes de DXVK, de la meme famille que les 2 087
+niveaux de fonctionnalite et les 484 formats compresses.
+
+**Plus aucun echec de la suite d3d11 ne met en cause KosmicKrisp, Metal ou notre chaine de
+rendu.** Les 4 326 restants sont tous des ecarts de validation entre DXVK et Direct3D.

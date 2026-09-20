@@ -5,7 +5,7 @@
 #   wine          -> ARM64/macOS, memoire externe, suites de tests
 #                    (0028, 0035, 0036, 0038, 0040, 0041)
 #   vkd3d-proton  -> 5 correctifs (0004, 0007, 0008, 0014, 0016)
-#   dxvk          -> 1 correctif (0039)
+#   dxvk          -> 3 correctifs (0039, 0042, 0043)
 #
 # Usage :
 #   etape1_appliquer_correctifs.sh            verifie les arbres existants
@@ -70,7 +70,7 @@ appliquer wine "$R"/0028-*.patch "$R"/0035-*.patch "$R"/0036-*.patch \
                "$R"/0038-*.patch "$R"/0040-*.patch "$R"/0041-*.patch
 appliquer vkd3d-proton "$R"/0004-*.patch "$R"/0007-*.patch "$R"/0008-*.patch \
                        "$R"/0014-*.patch "$R"/0016-*.patch
-appliquer dxvk "$R"/0039-*.patch
+appliquer dxvk "$R"/0039-*.patch "$R"/0042-*.patch "$R"/0043-*.patch
 
 echo
 echo "Les trois arbres sont patches. Enchainer sur :"

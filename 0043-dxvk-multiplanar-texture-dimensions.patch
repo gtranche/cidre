@@ -1,0 +1,94 @@
+Generated-by: LLM
+
+diff --git a/src/d3d11/d3d11_device.cpp b/src/d3d11/d3d11_device.cpp
+index 5f43ea3..cb86fa4 100644
+--- a/src/d3d11/d3d11_device.cpp
++++ b/src/d3d11/d3d11_device.cpp
+@@ -137,7 +137,7 @@ namespace dxvk {
+     desc.MiscFlags      = pDesc->MiscFlags;
+     desc.TextureLayout  = D3D11_TEXTURE_LAYOUT_UNDEFINED;
+     
+-    HRESULT hr = D3D11CommonTexture::NormalizeTextureProperties(&desc);
++    HRESULT hr = D3D11CommonTexture::NormalizeTextureProperties(this, &desc);
+ 
+     if (FAILED(hr))
+       return hr;
+@@ -224,7 +224,7 @@ namespace dxvk {
+     desc.MiscFlags      = pDesc->MiscFlags;
+     desc.TextureLayout  = pDesc->TextureLayout;
+     
+-    HRESULT hr = D3D11CommonTexture::NormalizeTextureProperties(&desc);
++    HRESULT hr = D3D11CommonTexture::NormalizeTextureProperties(this, &desc);
+ 
+     if ((desc.MiscFlags & D3D11_RESOURCE_MISC_TILED)
+      && !m_deviceFeatures.GetTiledResourcesTier())
+@@ -311,7 +311,7 @@ namespace dxvk {
+     desc.MiscFlags      = pDesc->MiscFlags;
+     desc.TextureLayout  = pDesc->TextureLayout;
+     
+-    HRESULT hr = D3D11CommonTexture::NormalizeTextureProperties(&desc);
++    HRESULT hr = D3D11CommonTexture::NormalizeTextureProperties(this, &desc);
+ 
+     if (FAILED(hr))
+       return hr;
+diff --git a/src/d3d11/d3d11_interop.cpp b/src/d3d11/d3d11_interop.cpp
+index 04fef38..e7281a0 100644
+--- a/src/d3d11/d3d11_interop.cpp
++++ b/src/d3d11/d3d11_interop.cpp
+@@ -140,7 +140,7 @@ namespace dxvk {
+     desc.MiscFlags      = pDesc->MiscFlags;
+     desc.TextureLayout  = pDesc->TextureLayout;
+     
+-    HRESULT hr = D3D11CommonTexture::NormalizeTextureProperties(&desc);
++    HRESULT hr = D3D11CommonTexture::NormalizeTextureProperties(static_cast<D3D11Device*>(m_device), &desc);
+ 
+     if (FAILED(hr))
+       return hr;
+diff --git a/src/d3d11/d3d11_texture.cpp b/src/d3d11/d3d11_texture.cpp
+index b9dbc3a..b1f28a9 100644
+--- a/src/d3d11/d3d11_texture.cpp
++++ b/src/d3d11/d3d11_texture.cpp
+@@ -398,9 +398,25 @@ namespace dxvk {
+   }
+ 
+ 
+-  HRESULT D3D11CommonTexture::NormalizeTextureProperties(D3D11_COMMON_TEXTURE_DESC* pDesc) {
++  HRESULT D3D11CommonTexture::NormalizeTextureProperties(
++          D3D11Device*               pDevice,
++          D3D11_COMMON_TEXTURE_DESC* pDesc) {
+     if (pDesc->Width == 0 || pDesc->Height == 0 || pDesc->Depth == 0 || pDesc->ArraySize == 0)
+       return E_INVALIDARG;
++
++    // Chroma planes of a multi-planar format are subsampled, so the image
++    // dimensions have to be a multiple of the plane block size.
++    auto packedFormat = pDevice->LookupPackedFormat(pDesc->Format, DXGI_VK_FORMAT_MODE_ANY).Format;
++    auto packedFormatInfo = lookupFormatInfo(packedFormat);
++
++    if (packedFormatInfo->flags.test(DxvkFormatFlag::MultiPlane)) {
++      for (uint32_t i = 0; i < vk::getPlaneCount(packedFormatInfo->aspectMask); i++) {
++        auto plane = &packedFormatInfo->planes[i];
++
++        if ((pDesc->Width % plane->blockSize.width) || (pDesc->Height % plane->blockSize.height))
++          return E_INVALIDARG;
++      }
++    }
+     
+     if (FAILED(DecodeSampleCount(pDesc->SampleDesc.Count, nullptr)))
+       return E_INVALIDARG;
+diff --git a/src/d3d11/d3d11_texture.h b/src/d3d11/d3d11_texture.h
+index 80bdc5a..170eb53 100644
+--- a/src/d3d11/d3d11_texture.h
++++ b/src/d3d11/d3d11_texture.h
+@@ -539,10 +539,12 @@ namespace dxvk {
+      * Fills in undefined values and validates the texture
+      * parameters. Any error returned by this method should
+      * be forwarded to the application.
++     * \param [in] pDevice Parent device
+      * \param [in,out] pDesc Texture description
+      * \returns \c S_OK if the parameters are valid
+      */
+     static HRESULT NormalizeTextureProperties(
++            D3D11Device*               pDevice,
+             D3D11_COMMON_TEXTURE_DESC* pDesc);
+     
+     /**

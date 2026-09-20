@@ -1,10 +1,10 @@
 # Suite d3d11 de Wine a travers la pile : reference etablie le 2026-09-20.
-# Invocation : WINETEST_NO_MT_D3D=1, correctifs 0040 et 0041 appliques.
+# Invocation : WINETEST_NO_MT_D3D=1, correctifs 0040 a 0043 appliques.
 # Parcours : la suite va jusqu'au bout, y compris les deux tests appeles hors file
 # apres run_queued_tests(). 163 fonctions invoquees sur 164 definies : la 164e,
 # test_dxgi_resource, n'est invoquee nulle part dans le fichier amont.
-# 538 943 assertions, 4338 lignes en echec + 791 blocs todo reussis = 5129
-# echecs au sens de winetest. Duree mesuree : 18 s.
+# 538891 assertions, 4326 lignes en echec + 787 blocs todo reussis = 5113
+# echecs au sens de winetest. Duree mesuree : 17,3 s ; chiffres identiques sur deux executions.
 # Comptage : lignes 'd3d11.c:N: Test failed:', attribuees a la fonction englobante.
 # Format : <fonction> <echecs>, par ordre decroissant.
 
@@ -28,7 +28,6 @@ test_constant_buffer_offset 17
 test_create_buffer 16
 test_staging_buffers 15
 test_device_interfaces 14
-test_nv12 12
 test_pipeline_statistics_query 11
 test_create_texture2d 8
 test_quad_tessellation 8
@@ -63,6 +62,9 @@ test_dxgi_resource 1
 
 # Familles de messages :
 # niveau de fonctionnalite refuse a tort : 2087
-# autres : 1761
+# autres : 1757
 # code de retour inattendu : 271
-# couleur ou texel relu inattendu : 219
+# couleur ou texel relu inattendu : 211
+
+# test_nv12 ne figure plus dans cette liste : ses 12 echecs sont tombes a zero
+# avec les correctifs 0042 et 0043.

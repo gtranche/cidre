@@ -1,0 +1,24 @@
+Generated-by: LLM
+
+diff --git a/src/d3d11/d3d11_context.cpp b/src/d3d11/d3d11_context.cpp
+index 84aa147..b9dfd93 100644
+--- a/src/d3d11/d3d11_context.cpp
++++ b/src/d3d11/d3d11_context.cpp
+@@ -5617,7 +5617,16 @@ namespace dxvk {
+       extent.depth  = pDstBox->back - pDstBox->front;
+     }
+ 
+-    if (!util::isBlockAligned(offset, extent, formatInfo->blockSize, mipExtent))
++    VkExtent3D blockSize = formatInfo->blockSize;
++
++    if (formatInfo->flags.test(DxvkFormatFlag::MultiPlane)) {
++      for (uint32_t i = 0; i < vk::getPlaneCount(formatInfo->aspectMask); i++) {
++        blockSize.width  = std::max(blockSize.width,  formatInfo->planes[i].blockSize.width);
++        blockSize.height = std::max(blockSize.height, formatInfo->planes[i].blockSize.height);
++      }
++    }
++
++    if (!util::isBlockAligned(offset, extent, blockSize, mipExtent))
+       return;
+ 
+     auto stagingSlice = AllocStagingBuffer(util::computeImageDataSize(packedFormat, extent));
