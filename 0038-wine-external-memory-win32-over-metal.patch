@@ -104,7 +104,7 @@ index 72a8d54..99f48e9 100755
      "vkGetPhysicalDeviceImageFormatProperties2KHR",
      "vkMapMemory",
 diff --git a/dlls/winevulkan/vulkan.c b/dlls/winevulkan/vulkan.c
-index 61b3a42..d52f94f 100644
+index 61b3a42..30967e3 100644
 --- a/dlls/winevulkan/vulkan.c
 +++ b/dlls/winevulkan/vulkan.c
 @@ -382,6 +382,8 @@ static VkResult wine_vk_physical_device_init(struct wine_phys_dev *object, VkPhy
@@ -455,6 +455,20 @@ index 61b3a42..d52f94f 100644
  }
  
  VkResult wine_vkCreateDebugUtilsMessengerEXT(VkInstance client_instance,
+@@ -2132,6 +2379,13 @@ NTSTATUS vk_is_available_device_function(void *arg)
+ {
+     struct is_available_device_function_params *params = arg;
+     struct vulkan_device *device = vulkan_device_from_handle(params->device);
++    struct wine_phys_dev *physical_device = CONTAINING_RECORD(device->physical_device, struct wine_phys_dev, obj);
++
++    if (physical_device->external_memory_metal &&
++        (!strcmp(params->name, "vkGetMemoryWin32HandleKHR") ||
++         !strcmp(params->name, "vkGetMemoryWin32HandlePropertiesKHR")))
++        return TRUE;
++
+     return !!vk_funcs->p_vkGetDeviceProcAddr(device->host.device, params->name);
+ }
+ 
 diff --git a/dlls/winevulkan/vulkan_private.h b/dlls/winevulkan/vulkan_private.h
 index 59b9009..5ef37c7 100644
 --- a/dlls/winevulkan/vulkan_private.h

@@ -7207,3 +7207,92 @@ silencieuse. Le pointeur fautif n'est toujours pas identifie.
 `rsp=0x21f368` ; l'adresse de retour est en tete de pile et designerait l'appelant. Un
 gestionnaire vectorise ajoute au test, ou une execution sous `winedbg`, le dirait. La campagne
 etant desormais deterministe et l'exception unique, la mesure est a portee.
+
+---
+
+## 105. La trace de pile livre la cause, et elle etait chez nous (2026-09-20)
+
+### Comment l'obtenir
+
+L'exception etant rattrapee, `winedbg` ne se declenche jamais. J'ai donc instrumente
+temporairement `dispatch_exception` (`dlls/ntdll/exception.c`) pour vider le sommet de pile
+quand `ExceptionAddress` est nul. Piege au passage : ce fichier est du cote **PE** de ntdll,
+donc il faut reconstruire `ntdll.dll` et non `ntdll.so` — ma premiere tentative n'a rien
+produit pour cette seule raison.
+
+### Ce que la pile dit
+
+```
+DIAG appel a l'adresse nulle, sommet de pile rsp=000000000021F368
+DIAG   [rsp+000] = 00006FFFFD6B3BA5
+```
+
+`d3d11.dll` etant charge a `0x6FFFFD5D0000`, l'adresse de retour tombe au decalage `0xE3BA5`.
+Desassemblage a cet endroit :
+
+```
+359133b9f:  ff 90 58 07 00 00   callq *0x758(%rax)
+359133ba5:  85 c0               testl %eax, %eax
+            _ZNK4dxvk9DxvkImage12sharedHandleEv
+```
+
+`DxvkImage::sharedHandle()` appelle l'entree `0x758` de sa table de dispatch Vulkan, et cette
+entree est nulle : **`vkGetMemoryWin32HandleKHR` n'etait pas resolu**.
+
+Cela corrige une deduction du § 104 : si `Failed to get shared handle` n'apparaissait jamais,
+ce n'etait pas parce que l'appel reussissait, mais parce qu'il **plantait avant de revenir**.
+
+### La cause, verifiee directement
+
+`tests/probe_getprocaddr.c`, avant correction :
+
+```
+VK_KHR_external_memory_win32 annonce : oui
+creation du peripherique avec l'extension : ok (0)
+vkGetMemoryWin32HandleKHR           : 0000000000000000
+vkGetMemoryWin32HandlePropertiesKHR : 0000000000000000
+vkAllocateMemory (temoin)           : 00006FFFFD9D5520
+```
+
+Le coupable est `vulkan.c:2378` :
+
+```c
+NTSTATUS vk_is_available_device_function(void *arg)
+{
+    ...
+    return !!vk_funcs->p_vkGetDeviceProcAddr(device->host.device, params->name);
+}
+```
+
+`vkGetDeviceProcAddr` ne rend un thunk que si le **pilote hote** connait la fonction. Or ces
+deux-la, c'est nous qui les emulons : KosmicKrisp ne les a evidemment pas. La table de DXVK
+recevait donc un pointeur nul, et DXVK, qui ne verifie que `features().khrExternalMemoryWin32`,
+appelait l'adresse zero.
+
+C'etait un defaut de notre propre correctif 0038, pas de DXVK ni de Wine.
+
+### Le correctif et sa mesure
+
+Six lignes : `vk_is_available_device_function` rend vrai pour les deux fonctions emulees quand
+le pilote hote porte `VK_EXT_external_memory_metal`. `0038` regenere, 674 lignes, aller-retour
+verifie.
+
+| | avant | apres |
+|---|---|---|
+| `vkGetMemoryWin32HandleKHR` | `0000000000000000` | `00006FFFFD9DE660` |
+| exceptions dans la campagne | 1 | **0** |
+| ligne source atteinte (mono-thread) | 3269 | **4305** |
+| echecs | 35 | 79 |
+
+Plus aucun plantage : le processus se termine desormais proprement. Les echecs montent parce
+que davantage de tests s'executent.
+
+### Ce qui reste
+
+La suite s'arrete toujours a 4305, mais **sans exception** — c'est donc un arret d'une autre
+nature. Les derniers messages pointent ailleurs : `D3D11: Cannot create render target view for
+a buffer`, puis un compte de references inattendu. Cent quarante-huit fonctions de test ne
+s'executent toujours pas.
+
+Instrumentation de `ntdll` retiree, `ntdll.dll` et `ntdll.so` d'origine reconstruits et
+reinstalles, pile verifiee au banc.
