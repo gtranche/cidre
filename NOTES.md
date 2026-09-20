@@ -8330,3 +8330,26 @@ Corriger demanderait de remplacer l'adressage par sommet par une allocation a co
 cote GPU, et de refaire les compteurs de requete. La machinerie de compteurs existe (§ 0011)
 mais n'est pas branchee sur ce chemin. **Chantier laisse ouvert, delibere** : il ne sert pas
 l'objectif du projet.
+
+### Premiere mesure sur Superposition (2026-09-21)
+
+| resolution | images/s | CPU |
+|---|---|---|
+| 1280x720 | 24 | 151 % |
+| 640x360 | 22-23 | **2,6 %** |
+
+Neuf fois moins de pixels, **meme frequence**. Mais contrairement a Godot, le CPU ne sature pas :
+2,6 % sur dix coeurs, soit un quart d'un coeur. Le CPU soumet puis **attend**.
+
+Frequence independante de la resolution **et** CPU libre : la charge est donc bornee par le GPU
+sur du travail qui ne depend pas du nombre de pixels de sortie — passes d'ombres a resolution
+fixe, volumetrie, ou cout propre des shaders.
+
+**C'est un regime inedit pour ce projet**, et une bonne nouvelle : sur cette charge reelle, la
+traversee `Rosetta -> Wine -> DXVK` n'est pas le facteur limitant. Les 151 % releves en 1280x720
+contre 2,6 % en 640x360 restent a expliquer : meme scene, meme frequence, charge CPU trente fois
+moindre. **Non explique.**
+
+L'image est jugee correcte a l'ecran. Le flou en deplacement est le flou de mouvement
+qu'Unigine active par defaut, d'autant plus visible que la frequence est basse — **non verifie**
+en le desactivant.
