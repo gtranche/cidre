@@ -7169,3 +7169,41 @@ l'implementer entierement.
 La marche a suivre est tracee : la campagne est desormais deterministe, l'exception unique et
 son contexte connu. Il reste a instrumenter le chemin `AcquireSync` de DXVK, ou a verifier ce
 que `vkGetDeviceProcAddr` rend pour chaque fonction de l'extension que nous venons d'exposer.
+
+### Instrumentation du chemin AcquireSync : trois pistes eliminees
+
+**Le mutex a cle n'est pas en cause.** `D3D11DXGIKeyedMutex` teste explicitement ses pointeurs
+avant de s'en servir (`d3d11_resource.cpp:17`) :
+
+```cpp
+m_supported = ...features().khrWin32KeyedMutex
+           && ...vkd()->wine_vkAcquireKeyedMutex != nullptr
+           && ...vkd()->wine_vkReleaseKeyedMutex != nullptr;
+```
+
+Ces deux fonctions sont propres au Wine de Proton ; chez nous `m_supported` vaut faux,
+`AcquireSync` journalise et rend la main. Aucun appel nul de ce cote.
+
+**Le comptage de references du peripherique D3D10 est equilibre.** Le test, a la ligne 3267,
+fait `GetDevice` puis `Release` sur le pointeur obtenu. `GetD3D10Device` (`d3d10_util.cpp:76`)
+prend bien une reference sur le peripherique D3D11 via `GetDevice`, et `GetD3D10Interface()`
+rend `m_d3d10Device` **sans** `AddRef` — mais `D3D10Device::Release` reexpedie vers
+`m_device->Release()`, donc le `Release` du test solde la reference prise. Pas de liberation
+prematurée, donc pas d'usage apres liberation par ce chemin.
+
+**Ce n'est pas `CloseHandle` sur notre pointeur Metal.** Zero erreur de descripteur invalide
+dans tout le journal.
+
+### Ce que l'exception dit exactement
+
+Une seule exception sur toute la campagne, et elle est **rattrapee** : un gestionnaire rend 1,
+il n'y a ni message « unhandled exception », ni lancement de `winedbg`. Le processus se termine
+ensuite avec le code 5, sans rien ecrire de plus.
+
+Autrement dit : un appel a l'adresse nulle, intercepte par un `__except`, suivi d'une sortie
+silencieuse. Le pointeur fautif n'est toujours pas identifie.
+
+**Prochaine etape concrete** : obtenir une trace de pile. Le contexte de l'exception donne
+`rsp=0x21f368` ; l'adresse de retour est en tete de pile et designerait l'appelant. Un
+gestionnaire vectorise ajoute au test, ou une execution sous `winedbg`, le dirait. La campagne
+etant desormais deterministe et l'exception unique, la mesure est a portee.
