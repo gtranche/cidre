@@ -7353,3 +7353,55 @@ ont sature le service IOSurface du systeme. Sans rapport avec l'arret.
 **Le canal `seh`.** Activer `+seh` sur la campagne complete produit **9 Go** de journal et
 ralentit tout au point de fausser la mesure. A n'utiliser que cible sur un plantage connu, ce
 qui etait le cas au § 105 mais plus ici.
+
+---
+
+## 107. Le test rendu defensif, et un environnement que j'ai sature (2026-09-20)
+
+### Le correctif
+
+`0040-wine-tests-survive-missing-buffer-rtv.patch`. Meme idiome que les correctifs 0008 et
+0016 pour vkd3d-proton : rendre un test survivant a une fonctionnalite absente plutot que de
+le laisser dereferencer un pointeur nul.
+
+`test_create_rendertarget_view` initialise desormais `rtview` a NULL, et si la creation ne
+produit pas de vue, il `skip()` le bloc qui la dereference au lieu de tomber. Le test de
+`hr == S_OK` reste, donc l'ecart reste signale.
+
+### Ce que je n'ai pas pu mesurer, et pourquoi
+
+Aucun processus Wine ne demarre plus :
+
+```
+Assertion failed: _iosConnectInitalize() unable to open IOSurface kernel service: e00002c7
+1020 existing clients: { ... wine64 = 954; ... }
+```
+
+**954 clients IOSurface** sont attribues a `wine64`. Origine trouvee : **956 processus
+`winedbg`** tournaient depuis 13 h 48, engendres ce matin par la boucle de division par zero du
+lanceur Superposition (§ 95) — chaque `wine: Unhandled division by zero ... starting
+debugger...` en lancait un, et aucun ne sortait.
+
+Les processus sont tues. **Le noyau n'a pas libere les clients** : le compte reste a 954 sans
+un seul processus Wine vivant. Un redemarrage de la machine sera necessaire pour retrouver un
+environnement de test sain.
+
+### Le garde-fou
+
+`wine/pfx10/system.reg` recoit :
+
+```
+[Software\\Microsoft\\Windows NT\\CurrentVersion\\AeDebug]
+"Auto"="0"
+```
+
+`start_debugger` (`dlls/kernelbase/debug.c:506`) lit cette valeur ; a zero, Wine signale
+l'exception et s'arrete au lieu de lancer `winedbg`. Une boucle de plantage ne pourra plus
+engendrer un millier de processus. **Non verifie** : aucun Wine ne demarre pour le tester.
+
+### A faire au redemarrage
+
+1. Verifier que `probe_d3d11` repasse.
+2. Verifier le garde-fou AeDebug.
+3. Relancer la suite d3d11 avec `WINETEST_NO_MT_D3D=1` et le correctif 0040 : c'est la mesure
+   qui manque, et rien d'autre ne la bloque desormais.
