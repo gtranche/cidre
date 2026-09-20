@@ -13,7 +13,7 @@ test_quad_tessellation_wrong_input_count_dxbc 6
 test_quad_tessellation_wrong_input_count_dxil 6
 test_line_tessellation_dxbc 50
 test_line_tessellation_dxil 50
-test_suballocate_small_textures_size 1650
+test_suballocate_small_textures_size 1650   # contrainte materielle, voir NOTES.md § 114 : non corrigeable
 test_undefined_structured_raw_read_typed_dxbc 112
 test_undefined_structured_raw_read_typed_dxil 112
 test_undefined_typed_read_structured_raw_dxbc 48

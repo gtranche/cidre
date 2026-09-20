@@ -7789,3 +7789,115 @@ niveaux de fonctionnalite et les 484 formats compresses.
 
 **Plus aucun echec de la suite d3d11 ne met en cause KosmicKrisp, Metal ou notre chaine de
 rendu.** Les 4 326 restants sont tous des ecarts de validation entre DXVK et Direct3D.
+
+---
+
+## 114. Les 1 650 echecs de suballocation : une contrainte du materiel, pas un defaut (2026-09-20)
+
+`test_suballocate_small_textures_size` porte **72 % des 2 305 echecs D3D12**. Premiere cible
+evidente. Elle ne se corrige pas — et la raison est instructive.
+
+### Un ecart rigoureusement constant
+
+Les 1 650 echecs tombent tous sur **la meme assertion** (ligne 2301, `info_small.SizeInBytes
+<= expected_size`) avec **le meme ecart : 12 288 octets**, quel que soit le format, la taille,
+le nombre de niveaux ou de couches. Un surcout constant, jamais proportionnel.
+
+La correlation est totale :
+
+| | echecs |
+|---|---|
+| 1 couche | **0** |
+| 2 a 16 couches | 110 chacune, soit 1 650 |
+| 1 niveau | 1 650 |
+| plus d'un niveau | **0** |
+
+Les textures en tableau, et elles seules. Les multi-niveaux echappent parce que le test
+s'accorde une marge de 2x des que `levels > 1`, ce qui absorbe les 12 Kio.
+
+### Ce n'est pas KosmicKrisp
+
+`tests/probe_image_size.c` interroge directement `vkGetImageMemoryRequirements` :
+
+```
+BC1 512x256, 1 niveau, couches variables
+  couches 1 : taille    65536  dense    65536  ecart 0  align   128
+  couches 2 : taille   131072  dense   131072  ecart 0  align 16384
+  couches 6 : taille   393216  dense   393216  ecart 0  align 16384
+```
+
+**Notre pilote rapporte la taille exactement dense, zero surcout.** Mais l'alignement saute de
+128 a 16 384 des la deuxieme couche.
+
+### C'est vkd3d qui rembourre, et il a raison
+
+`vkd3d_get_image_allocation_info` (`resource.c:1323`) :
+
+```c
+allocation_info->SizeInBytes += allocation_info->Alignment - target_alignment;
+allocation_info->Alignment = target_alignment;
+```
+
+`16 384 - 4 096 = 12 288`. Le compte y est, a l'octet. D3D12 n'admet que 4 Kio ou 64 Kio comme
+alignement de placement ; l'application peut donc placer la ressource a n'importe quel multiple
+de 4 Kio, et vkd3d doit garder de quoi la realigner sur 16 Kio a l'interieur. Le rembourrage
+est minimal.
+
+### Et Metal impose vraiment ce 16 Kio
+
+`tests/metal_heap_texture_align.m` montre que l'alignement vient de Metal lui-meme, pas de
+nous :
+
+```
+BC1 512x256  couches 1 : taille 65536  align   128
+BC1 512x256  couches 2 : taille 131072 align 16384
+```
+
+`tests/metal_heap_placement_offset.m` verifie que ce n'est pas une annonce prudente mais une
+regle appliquee — `newTextureWithDescriptor:offset:` sur un tas de placement :
+
+```
+  offset      0 : accepte
+  offset   4096 : REFUSE
+  offset   8192 : REFUSE
+  offset  12288 : REFUSE
+  offset  16384 : accepte
+  offset    128 : REFUSE
+```
+
+Une texture en tableau doit commencer sur une frontiere de 16 Kio — la taille de page d'Apple
+Silicon. Rien dans la chaine ne peut contourner cela.
+
+### La strategie alternative est bien pire
+
+vkd3d expose `VKD3D_CONFIG=reject_padded_small_resource_alignment`, qui fait echouer la requete
+au lieu de rembourrer. Mesure :
+
+| strategie | echecs |
+|---|---|
+| rembourrage (defaut) | **1 650** |
+| refus | 36 450 |
+
+Le refus rend `GetResourceAllocationInfo` invalide (`SizeInBytes = ~0`, alignement 64 Kio) et
+fait echouer en cascade les assertions d'alignement. **Le defaut est le bon choix ici**, et
+c'est desormais mesure plutot que suppose.
+
+### Ce que ca coute reellement
+
+Le test fonctionnel `test_suballocate_small_textures`, lui, **passe entierement** : 76
+assertions, zero echec. Le placement marche ; seule l'efficacite spatiale est en cause.
+
+Le prix est de **12 Kio par texture en tableau placee avec l'alignement 4 Kio**. Negligeable
+sur une grande texture, mais 37 % sur une RGBA8 64x64 a deux couches (33 024 octets). Un moteur
+qui suballoue des milliers de petites textures en tableau y laisserait quelques megaoctets.
+
+### Conclusion
+
+**Aucun correctif possible a notre niveau.** Le commentaire d'en-tete du test dit qu'il doit
+« exposer tout cas ou un pilote pessimise nos schemas d'allocation » : il fait exactement son
+travail, et la pessimisation est imposee par le materiel. Ces 1 650 echecs sont un cout connu
+et quantifie d'Apple Silicon, pas un defaut a corriger.
+
+Reste donc, cote D3D12, 655 echecs sur 2 305 qui meritent encore un examen — au premier rang
+`test_undefined_structured_raw_read_typed` (224) et `test_structured_buffer_addressing_wrap`
+(94).
