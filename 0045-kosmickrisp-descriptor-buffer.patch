@@ -199,6 +199,31 @@ index efbfb91..cebeccd 100644
     } state;
  
     struct kk_uploader uploader;
+diff --git a/src/kosmickrisp/vulkan/kk_debug.c b/src/kosmickrisp/vulkan/kk_debug.c
+index 1805d66..1b1c766 100644
+--- a/src/kosmickrisp/vulkan/kk_debug.c
++++ b/src/kosmickrisp/vulkan/kk_debug.c
+@@ -11,6 +11,7 @@ const struct debug_named_value debug_flags[] = {
+    {"nir", KK_DEBUG_NIR},
+    {"msl", KK_DEBUG_MSL},
+    {"force_robustness", KK_DEBUG_FORCE_ROBUSTNESS},
++   {"no_descriptor_buffer", KK_DEBUG_NO_DESCRIPTOR_BUFFER},
+    {NULL, 0},
+ };
+ 
+diff --git a/src/kosmickrisp/vulkan/kk_debug.h b/src/kosmickrisp/vulkan/kk_debug.h
+index f454804..a28fe9e 100644
+--- a/src/kosmickrisp/vulkan/kk_debug.h
++++ b/src/kosmickrisp/vulkan/kk_debug.h
+@@ -12,6 +12,8 @@ enum kk_debug {
+    KK_DEBUG_MSL = 1ull << 1,
+    /* Forces robustness for all shaders */
+    KK_DEBUG_FORCE_ROBUSTNESS = 1ull << 2,
++
++   KK_DEBUG_NO_DESCRIPTOR_BUFFER = 1ull << 3,
+ };
+ 
+ extern enum kk_debug kk_mesa_debug_flags;
 diff --git a/src/kosmickrisp/vulkan/kk_descriptor_buffer.c b/src/kosmickrisp/vulkan/kk_descriptor_buffer.c
 new file mode 100644
 index 0000000..ebe4252
@@ -1247,7 +1272,7 @@ index 3fb1eac..030df2d 100644
  }
  
 diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
-index c65c9d3..12c5954 100644
+index c65c9d3..b2073ad 100644
 --- a/src/kosmickrisp/vulkan/kk_physical_device.c
 +++ b/src/kosmickrisp/vulkan/kk_physical_device.c
 @@ -7,6 +7,7 @@
@@ -1262,7 +1287,7 @@ index c65c9d3..12c5954 100644
        .KHR_uniform_buffer_standard_layout = true,
        .KHR_vulkan_memory_model = true, /* Required in Vulkan 1.3 */
        .EXT_buffer_device_address = true,
-+      .EXT_descriptor_buffer = true,
++      .EXT_descriptor_buffer = !KK_DEBUG(NO_DESCRIPTOR_BUFFER),
        .EXT_descriptor_indexing = true,
        .EXT_host_query_reset = true,
        .EXT_sampler_filter_minmax = pdev->info.gpu_apple_family >= 10,

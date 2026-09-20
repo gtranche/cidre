@@ -8202,3 +8202,60 @@ dessus sans chercher a aller plus loin — c'est du territoire non specifie.
 Reste aussi un trou connu et sans consequence aujourd'hui : une UAV typee en `R32G32B32` lirait
 faux, puisque seul le chemin echantillonne assemble les trois recuperations. D3D12 interdit ce cas
 et vkd3d ne le produit jamais.
+
+---
+
+## 118. Ce que VK_EXT_descriptor_buffer rapporte vraiment : enorme sur les descripteurs, nul sur Godot (2026-09-21)
+
+Le § 117 a mesure la conformite. Restait a verifier la raison d'etre amont de l'extension : la
+performance. On ne l'avait pas fait, et c'etait un trou dans nos propres preuves.
+
+Un interrupteur `MESA_KK_DEBUG=no_descriptor_buffer` permet l'A/B sur un seul binaire.
+
+### Le micro-banc d'essai : un facteur trois sur les copies
+
+`descriptor-performance` de vkd3d-proton, 100 repetitions de chaque cote, medianes :
+
+| operation (1 M descripteurs) | sans | avec | ecart |
+|---|---|---|---|
+| copie vers tas visible GPU | 24,45 ms | **7,54 ms** | **-69 %** |
+| copie, duplicatas | 14,18 ms | **4,09 ms** | **-71 %** |
+| copies individuelles, duplicatas | 42,14 ms | **16,70 ms** | **-60 %** |
+| copies individuelles, tas mis a zero | 42,09 ms | **16,69 ms** | **-60 %** |
+| creation de SRV nulles | 45,92 ms | **20,00 ms** | **-56 %** |
+| creation de SRV, quatre variantes | 85,3 ms | 94,0 ms | **+10 %** |
+
+Les copies sont ce qu'un moteur fait a chaque image en recopiant ses tas CPU vers le tas visible
+GPU : elles tombent d'un facteur trois. La creation paie 10 %, tres probablement le verrou et la
+recherche de hachage du cache de textures de texels que j'ai introduits — optimisable, par
+exemple en memorisant la derniere entree par fil.
+
+### L'application reelle : rien
+
+Scene lourde de Godot, 1 500 objets, 24 lumieres a ombres, post-traitement, 640x360, 300 images
+mesurees apres 120 de chauffe. **Une paire A/B**, pas davantage :
+
+| | tirages | mediane | p95 |
+|---|---|---|---|
+| avec | 10 401 | 31,818 ms | 31,944 ms |
+| sans | 10 405 | 31,944 ms | 33,333 ms |
+
+**0,4 % d'ecart : du bruit.**
+
+### Pourquoi, et c'etait previsible
+
+Le § sur Godot avait etabli que cette scene est **limitee par le CPU sur la soumission des
+tirages** : diviser la resolution par neuf ne changeait pas le temps d'image. Le cout des
+descripteurs n'est qu'une fraction de ce goulot, domine par la traversee
+`Rosetta -> Wine -> vkd3d`. Accelerer les copies d'un facteur trois ne deplace rien tant que
+c'est la soumission qui borne.
+
+### Ce qu'il faut en retenir
+
+L'extension est un gain reel et mesure, mais **il ne se verra que sur une application qui brasse
+beaucoup de descripteurs par image** — un moteur avec des milliers de materiaux distincts, pas
+cette scene. Son benefice immediat et demontre reste la conformite : **-184 echecs**.
+
+Corollaire pour la suite : tant que la soumission des tirages borne le temps d'image, aucune
+optimisation du cote descripteurs ne se verra. C'est la traversee elle-meme qu'il faudrait
+attaquer, et le § sur Godot montrait que notre pile n'en represente que 21 %.
