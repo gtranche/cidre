@@ -7620,3 +7620,94 @@ validations que DXVK accorde plus largement que la specification.
 
 Ajouter la verification de famille dans DXVK serait un changement de comportement susceptible
 de casser des jeux qui s'appuient sur sa permissivite. C'est une decision amont, pas la notre.
+
+---
+
+## 112. La suite d3d11 va jusqu'au bout (2026-09-20)
+
+### Le point d'arret n'etait pas ou je le croyais
+
+Je pensais que `ID3D11Device_OpenSharedResource` tuait le processus sur notre faux descripteur
+(un pointeur `MTLHeap` deguise). **Faux.** Une sonde ecrite pour l'occasion,
+`tests/probe_shared_handle.c`, rejoue la sequence complete de `test_shared_resource` pour les
+six combinaisons de `MiscFlags` et survit a **tous** les appels, y compris
+`OpenSharedResource`, `OpenSharedResource1` et `CloseHandle` sur le faux descripteur.
+
+La cause reelle est trois lignes plus haut :
+
+```c
+status = NtQueryObject(h, ObjectTypeInformation, buffer, sizeof(buffer), &len);
+ok(!status, "got %#lx.\n", status);
+ok(!wcscmp(type->TypeName.Buffer, L"DxgkSharedResource"), ...);
+```
+
+`char buffer[1024]` **n'est pas initialise**. Quand `NtQueryObject` echoue — chez nous
+`0xc0000008`, `STATUS_INVALID_HANDLE`, puisque le descripteur n'est pas un objet noyau —
+le tampon reste tel quel et `type->TypeName.Buffer` est un pointeur pioche dans la pile. Le
+test le dereference sans condition.
+
+Dans la sonde ce pointeur est tombe sur une page lisible (`0x6fffffca9cb0`) et `wcscmp` a
+rendu 1 ; dans le binaire de test, la meme case de pile contenait autre chose. C'est du hasard
+d'agencement, pas un comportement stable — ce qui explique que le symptome ait resiste au
+diagnostic : la derniere ligne journalisee etait 35146, la mort tombait a 35147.
+
+### Deux gardes, meme idiome qu'aux correctifs 0008, 0016 et 0040
+
+`0041-wine-tests-survive-unshareable-nt-handles.patch` :
+
+- `test_shared_resource` : le nom de type n'est compare que si `NtQueryObject` a reussi ;
+- `test_keyed_mutex` : `handle` et `tex2` initialises a `NULL`, et sortie propre si le partage
+  avec un second peripherique echoue. Sans cela, `handle` non initialise partait dans
+  `OpenSharedResource` et `tex2` non initialise dans un `QueryInterface`.
+
+### Resultat
+
+| | avant | apres |
+|---|---|---|
+| ligne source atteinte | 35 155 | **36 539** / 36 793 |
+| fonctions atteintes | 156 | **163** sur 163 invoquees |
+| assertions | — | **538 943** |
+| lignes en echec | 4 272 | 4 338 |
+| code de sortie | 5 (mort) | 255 (plafond de winetest) |
+
+**La suite d3d11 de Wine s'execute integralement.** Deux executions consecutives donnent des
+chiffres rigoureusement identiques, en 18 s chacune. La 164e fonction definie,
+`test_dxgi_resource`, n'est invoquee nulle part dans le fichier amont : c'est du code mort.
+
+`test_instanced_draw` et `test_generate_mips` sont appeles **hors file**, apres
+`run_queued_tests()` : ils n'avaient donc jamais tourne non plus.
+
+### Ce que les cinq fonctions liberees disent
+
+| fonction | echecs |
+|---|---|
+| `test_nv12` | 12 |
+| `test_keyed_mutex` | 8 |
+| `test_generate_mips` | 2 |
+| `test_clear_during_render` | 0 |
+| `test_high_resource_count` | 0 |
+| `test_instanced_draw` | 0 |
+| `test_stencil_export` | ignore — *the device does not support stencil ref export* |
+
+Les trois qui touchent directement le rendu — effacement pendant une passe, grand nombre de
+ressources, dessin instancie — **passent sans un seul ecart**. C'est le resultat le plus utile
+de ce fil.
+
+Les 8 de `test_keyed_mutex` sont la machine a etats du verrou a cle, que DXVK n'implemente pas
+(`khrWin32KeyedMutex : 0`, `AcquireSync: Not supported`). Les 12 de `test_nv12` se scindent en
+deux : quatre refus de dimensions impaires que DXVK accorde — meme famille que les 653 de
+`test_format_support` — et huit relectures a zero la ou un plan de chrominance etait attendu,
+seul vrai chemin de donnees en defaut, sur un format video.
+
+### Le decompte de winetest
+
+Le cadre annonce 5 129 echecs la ou `grep 'Test failed:'` en compte 4 338. L'ecart est exact :
+**791 blocs `todo` reussis**, que winetest comptabilise comme des echecs. La reference
+`tests/conformance-baseline-d3d11.txt` est refaite sur cette base.
+
+### Correction du § 110 et du § 111
+
+Ces deux sections parlaient de « 95,5 % de la suite ». Le chiffre etait juste au moment ou il a
+ete mesure, mais il n'etait pas une limite de notre pile : une lecture de tampon non initialise
+dans le test amont en etait seule responsable. Aucune des familles d'echec ne met en cause
+KosmicKrisp ni Metal.

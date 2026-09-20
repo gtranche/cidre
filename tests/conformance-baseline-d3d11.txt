@@ -1,9 +1,13 @@
 # Suite d3d11 de Wine a travers la pile : reference etablie le 2026-09-20.
-# Invocation : WINETEST_NO_MT_D3D=1, correctif 0040 applique, win32u reconstruit.
-# Parcours : ligne source 35155 sur 36793, soit 95,5 pour cent ; 4272 echecs.
+# Invocation : WINETEST_NO_MT_D3D=1, correctifs 0040 et 0041 appliques.
+# Parcours : la suite va jusqu'au bout, y compris les deux tests appeles hors file
+# apres run_queued_tests(). 163 fonctions invoquees sur 164 definies : la 164e,
+# test_dxgi_resource, n'est invoquee nulle part dans le fichier amont.
+# 538 943 assertions, 4338 lignes en echec + 791 blocs todo reussis = 5129
+# echecs au sens de winetest. Duree mesuree : 18 s.
 # Comptage : lignes 'd3d11.c:N: Test failed:', attribuees a la fonction englobante.
-# Les 'Test marked todo' et 'Test succeeded inside todo block' ne comptent pas.
 # Format : <fonction> <echecs>, par ordre decroissant.
+
 test_resource_access 2052
 test_format_support 653
 test_compressed_format_compatibility 484
@@ -13,6 +17,7 @@ test_format_compatibility 150
 test_create_shader_resource_view 87
 test_texture 80
 test_fl10_stream_output_desc 64
+test_shared_resource 48
 test_create_rendertarget_view 44
 test_create_unordered_access_view 44
 test_line_antialiasing_blending 24
@@ -23,9 +28,11 @@ test_constant_buffer_offset 17
 test_create_buffer 16
 test_staging_buffers 15
 test_device_interfaces 14
+test_nv12 12
 test_pipeline_statistics_query 11
 test_create_texture2d 8
 test_quad_tessellation 8
+test_keyed_mutex 8
 test_create_query 7
 test_clear_image_unordered_access_view 6
 test_sample_shading 5
@@ -33,7 +40,6 @@ test_create_device 4
 test_texture2d_interfaces 4
 test_update_subresource 4
 test_resource_map 4
-test_shared_resource 4
 test_texture1d_interfaces 3
 test_create_texture3d 3
 test_texture3d_interfaces 3
@@ -44,6 +50,7 @@ test_create_texture1d 2
 test_multisample_resolve 2
 test_depth_clip 2
 test_deferred_context_swap_state 2
+test_generate_mips 2
 test_create_deferred_context 1
 test_occlusion_query 1
 test_blend 1
@@ -53,3 +60,9 @@ test_clip_distance 1
 test_multiple_viewports 1
 test_desktop_window 1
 test_dxgi_resource 1
+
+# Familles de messages :
+# niveau de fonctionnalite refuse a tort : 2087
+# autres : 1761
+# code de retour inattendu : 271
+# couleur ou texel relu inattendu : 219

@@ -1,0 +1,49 @@
+Generated-by: LLM
+
+diff --git a/dlls/d3d11/tests/d3d11.c b/dlls/d3d11/tests/d3d11.c
+index c8a1dff..89b7032 100644
+--- a/dlls/d3d11/tests/d3d11.c
++++ b/dlls/d3d11/tests/d3d11.c
+@@ -35144,7 +35144,10 @@ static void test_shared_resource(D3D_FEATURE_LEVEL feature_level)
+             CloseHandle(h2);
+             status = NtQueryObject(h, ObjectTypeInformation, buffer, sizeof(buffer), &len);
+             ok(!status, "got %#lx.\n", status);
+-            ok(!wcscmp(type->TypeName.Buffer, L"DxgkSharedResource"), "got %s.\n", debugstr_w(type->TypeName.Buffer));
++            if (status)
++                skip("Failed to query the object type, skipping type name test.\n");
++            else
++                ok(!wcscmp(type->TypeName.Buffer, L"DxgkSharedResource"), "got %s.\n", debugstr_w(type->TypeName.Buffer));
+         }
+         else
+         {
+@@ -35281,14 +35284,28 @@ static void test_keyed_mutex(void)
+     device2 = create_device(NULL);
+     ok(!!device2, "got NULL.\n");
+ 
++    handle = NULL;
++    tex2 = NULL;
+     hr = ID3D11Texture2D_QueryInterface(tex, &IID_IDXGIResource, (void **)&res);
+     ok(hr == S_OK, "got %#lx.\n", hr);
+     hr = IDXGIResource_GetSharedHandle(res, &handle);
+     ok(hr == S_OK, "got %#lx.\n", hr);
+     IDXGIResource_Release(res);
+ 
+-    hr = ID3D11Device_OpenSharedResource(device2, handle, &IID_ID3D11Texture2D, (void **)&tex2);
+-    ok(hr == S_OK, "got %#lx.\n", hr);
++    if (SUCCEEDED(hr))
++    {
++        hr = ID3D11Device_OpenSharedResource(device2, handle, &IID_ID3D11Texture2D, (void **)&tex2);
++        ok(hr == S_OK, "got %#lx.\n", hr);
++    }
++    if (FAILED(hr))
++    {
++        skip("Failed to share the texture with a second device.\n");
++        IDXGIKeyedMutex_Release(keyed_mutex);
++        ID3D11Texture2D_Release(tex);
++        ID3D11Device_Release(device);
++        ID3D11Device_Release(device2);
++        return;
++    }
+     hr = ID3D11Texture2D_QueryInterface(tex2, &IID_IDXGIKeyedMutex, (void **)&keyed_mutex2);
+     ok(hr == S_OK, "got %#lx.\n", hr);
+ 
