@@ -7504,3 +7504,66 @@ structures partagees — d'ou une faute dans le chemin de presentation, remontee
 Et une lecon de methode : la garde semblait avoir resolu le probleme, et je l'aurais versee au
 correctif si je n'avais pas remarque qu'elle ne s'etait jamais declenchee. Un correctif qui
 coincide avec une amelioration n'en est pas la cause.
+
+---
+
+## 110. Les 4 272 echecs D3D11, depouilles (2026-09-20)
+
+### Methode
+
+La suite d3d11 n'a pas les marqueurs par fonction de celle de vkd3d-proton. Chaque echec est
+donc attribue a la fonction qui **contient sa ligne source**, par recherche dichotomique dans
+la table des definitions. Seules les lignes `Test failed:` comptent ; les `Test marked todo` et
+`Test succeeded inside todo block` sont ecartes, comme au § 98.
+
+### Repartition
+
+**4 272 echecs sur 49 fonctions**, tres concentres :
+
+| fonction | echecs | part |
+|---|---|---|
+| `test_resource_access` | 2 052 | 48 % |
+| `test_format_support` | 653 | 15 % |
+| `test_compressed_format_compatibility` | 484 | 11 % |
+| `test_depth_bias` | 208 | 5 % |
+| `test_stream_output` | 158 | 4 % |
+| `test_format_compatibility` | 150 | 4 % |
+| quarante-trois autres | 567 | 13 % |
+
+**Trois fonctions portent 74 % du total.**
+
+### Par famille de message
+
+| famille | occurrences |
+|---|---|
+| `Got hr N, expected H` sur un niveau de fonctionnalite | 872 |
+| couleur relue inattendue (`H -> H: Got unexpected colour`) | 480 |
+| `Unexpected SHADER_GATHER for format` | 380 |
+| `Got hr N for READ_WRITE` | 329 |
+| `Got unexpected hr` | 230 |
+| `Got hr N for READ` / `for WRITE` | 210 + 210 |
+| `Unexpected BUFFER for format` | 165 |
+
+### Lecture
+
+Le gros du volume n'est pas du rendu. `test_resource_access` verifie qu'un peripherique
+**refuse** les combinaisons d'usage et d'acces CPU qu'il n'est pas cense accepter, par niveau
+de fonctionnalite ; DXVK accepte plus largement, d'ou 2 052 ecarts d'un meme motif.
+`test_format_support` et les deux fonctions de compatibilite de formats relevent du meme genre :
+des drapeaux de capacite annonces differemment de ce que la suite attend.
+
+Restent les **480 ecarts de couleur** de `test_compressed_format_compatibility`, qui eux
+designent directement le pipeline : ce sont les seuls a valoir une investigation graphique.
+
+### La reference
+
+`tests/conformance-baseline-d3d11.txt`, pendant de celle du D3D12. Une campagne future peut
+s'y differencier directement, ce qui rendra visible une regression d'une seule fonction —
+precisement ce qui manquait avant le § 98.
+
+Les deux references du projet, cote a cote :
+
+| suite | fonctions en echec | echecs | parcours |
+|---|---|---|---|
+| vkd3d-proton (D3D12) | 28 | 2 305 | complet, 574 fonctions |
+| Wine (D3D11) | 49 | 4 272 | 95,5 %, 159 fonctions sur 164 |
