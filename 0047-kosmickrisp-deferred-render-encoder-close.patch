@@ -2,37 +2,40 @@ Generated-by: LLM
 
 --- a/src/kosmickrisp/vulkan/kk_debug.h
 +++ b/src/kosmickrisp/vulkan/kk_debug.h
-@@ -16,6 +16,8 @@
+@@ -16,6 +16,10 @@
     KK_DEBUG_NO_DESCRIPTOR_BUFFER = 1ull << 3,
  
     KK_DEBUG_ENCODER_LABELS = 1ull << 4,
 +
 +   KK_DEBUG_BLANKET_BARRIER = 1ull << 5,
++
++   KK_DEBUG_BARRIER_STATS = 1ull << 6,
  };
  
  extern enum kk_debug kk_mesa_debug_flags;
 --- a/src/kosmickrisp/vulkan/kk_debug.c
 +++ b/src/kosmickrisp/vulkan/kk_debug.c
-@@ -13,6 +13,7 @@
+@@ -13,6 +13,8 @@
     {"force_robustness", KK_DEBUG_FORCE_ROBUSTNESS},
     {"no_descriptor_buffer", KK_DEBUG_NO_DESCRIPTOR_BUFFER},
     {"encoder_labels", KK_DEBUG_ENCODER_LABELS},
 +   {"blanket_barrier", KK_DEBUG_BLANKET_BARRIER},
++   {"barrier_stats", KK_DEBUG_BARRIER_STATS},
     {NULL, 0},
  };
  
 --- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h
 +++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
-@@ -311,6 +311,9 @@
+@@ -310,6 +310,9 @@
+       mtl_command_buffer *cmd_buf;
        mtl_render_encoder *render;
        mtl_compute_encoder *compute;
- 
++
 +      mtl_render_encoder *render_closing;
 +      bool closing_needs_barrier;
-+
+ 
        /* Metal command buffers already closed for this recording, in the order
         * they must execute. A recording that would overrun a single command
-        * buffer's encoder budget is spread over several; see
 @@ -327,6 +330,9 @@
     struct util_dynarray ts_stage_map;
     /* Deferred writes due to being mid render encoder */
@@ -43,17 +46,27 @@ Generated-by: LLM
  
     void *drawable;
     mtl_argument_table *argument_table;
-@@ -395,6 +401,7 @@
+@@ -395,6 +401,8 @@
  mtl_render_encoder *cs_get_render(struct kk_cmd_buffer *cmd);
  mtl_compute_encoder *cs_get_compute(struct kk_cmd_buffer *cmd);
  void cs_end(struct kk_cmd_buffer *cmd);
++void kk_barrier_stats_print(void);
 +void kk_cs_end_render_pass(struct kk_cmd_buffer *cmd);
  void kk_cmd_bind_root_to_argument_table(struct kk_cmd_buffer *cmd,
                                          uint64_t addr);
  
 --- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
 +++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
-@@ -98,6 +98,9 @@
+@@ -8,6 +8,8 @@
+ #include "kk_cmd_buffer.h"
+ #include "kk_debug.h"
+ 
++#include "util/u_atomic.h"
++
+ #include "kk_buffer.h"
+ #include "kk_cmd_pool.h"
+ #include "kk_descriptor_set_layout.h"
+@@ -98,6 +100,9 @@
     util_dynarray_fini(&cmd->large_bos);
     util_dynarray_fini(&cmd->metal.sealed_cmd_bufs);
     util_dynarray_fini(&cmd->post_render_writes);
@@ -63,7 +76,7 @@ Generated-by: LLM
     util_dynarray_fini(&cmd->ts_resolves);
     util_dynarray_fini(&cmd->ts_stage_map);
  
-@@ -132,6 +135,9 @@
+@@ -132,6 +137,9 @@
     cmd->ts_resolves = UTIL_DYNARRAY_INIT;
     cmd->ts_stage_map = UTIL_DYNARRAY_INIT;
     cmd->post_render_writes = UTIL_DYNARRAY_INIT;
@@ -73,11 +86,10 @@ Generated-by: LLM
     cmd->metal.sealed_cmd_bufs = UTIL_DYNARRAY_INIT;
  
     {
-@@ -314,7 +320,53 @@
-    if (cmd->vk.base.object_name)
+@@ -315,6 +323,52 @@
        mtl_command_buffer_set_label(cmd->metal.cmd_buf, cmd->vk.base.object_name);
  }
-+
+ 
 +static void
 +kk_collect_render_images(struct kk_cmd_buffer *cmd, struct util_dynarray *out)
 +{
@@ -93,7 +105,7 @@ Generated-by: LLM
 +         util_dynarray_append(
 +            out, (const void *)render->color_att[i].resolve_iview->vk.image);
 +   }
- 
++
 +   if (render->depth_att.iview)
 +      util_dynarray_append(out,
 +                           (const void *)render->depth_att.iview->vk.image);
@@ -127,7 +139,7 @@ Generated-by: LLM
  void
  cs_start_render(struct kk_cmd_buffer *cmd)
  {
-@@ -322,6 +374,19 @@
+@@ -322,6 +376,19 @@
     uint32_t view_mask = state->render.view_mask;
     assert(state->render_pass_descriptor);
  
@@ -147,18 +159,18 @@ Generated-by: LLM
     /* Ensure no other active encoder, aka compute */
     cs_end(cmd);
  
-@@ -332,6 +397,10 @@
-       cmd->metal.cmd_buf, state->render_pass_descriptor);
+@@ -333,6 +400,10 @@
  
     kk_encoder_update_debug(cmd, cmd->metal.render);
-+
+ 
 +   if (conflicts_older)
 +      mtl_barrier_after_queue_stages(cmd->metal.render, MTL_STAGE_ALL,
 +                                     MTL_STAGE_ALL);
- 
++
     if (KK_DEBUG(ENCODER_LABELS) && !cmd->vk.base.object_name) {
        char label[64];
-@@ -393,6 +462,8 @@
+       snprintf(label, sizeof(label), "%ux%u c%u%s x%u",
+@@ -393,6 +464,8 @@
        cmd->state.gfx.need_to_start_render_pass = true;
     }
  
@@ -167,7 +179,7 @@ Generated-by: LLM
     if (cmd->metal.compute == NULL) {
        /* Counted but not split on: a compute encoder can be opened from inside
         * cs_end() to flush post-render writes, where splitting would cut the
-@@ -407,10 +478,8 @@
+@@ -407,10 +480,8 @@
  }
  
  static void
@@ -179,7 +191,7 @@ Generated-by: LLM
     mtl_end_encoding(encoder);
     mtl_release(encoder);
  
-@@ -424,6 +493,36 @@
+@@ -424,6 +495,54 @@
  }
  
  static void
@@ -189,6 +201,19 @@ Generated-by: LLM
 +   util_dynarray_clear(&cmd->unordered_writes);
 +   close_encoder(cmd, encoder);
 +}
++
++uint64_t kk_barrier_emitted = 0u;
++void kk_barrier_stats_print(void);
++
++static void
++kk_barrier_stats_tick(uint64_t total)
++{
++   if (total % 20000u == 0u)
++      kk_barrier_stats_print();
++}
++
++uint64_t kk_barrier_skipped = 0u;
++uint64_t kk_pass_eager = 0u;
 +
 +static void
 +cs_flush_closing(struct kk_cmd_buffer *cmd, bool force_barrier)
@@ -201,9 +226,14 @@ Generated-by: LLM
 +   cmd->metal.render_closing = NULL;
 +
 +   if (cmd->metal.closing_needs_barrier || force_barrier) {
++      if (KK_DEBUG(BARRIER_STATS))
++         kk_barrier_stats_tick(p_atomic_inc_return(&kk_barrier_emitted) +
++                               kk_barrier_skipped);
 +      mtl_barrier_after_stages(encoder, MTL_STAGE_ALL, MTL_STAGE_ALL);
 +      util_dynarray_clear(&cmd->unordered_writes);
 +   } else {
++      if (KK_DEBUG(BARRIER_STATS))
++         p_atomic_inc(&kk_barrier_skipped);
 +      util_dynarray_foreach(&cmd->closing_writes, const void *, image)
 +         util_dynarray_append(&cmd->unordered_writes, *image);
 +   }
@@ -216,7 +246,7 @@ Generated-by: LLM
  flush_post_render_writes(struct kk_cmd_buffer *cmd)
  {
     assert(cmd->metal.render == NULL);
-@@ -444,6 +543,8 @@
+@@ -444,6 +563,8 @@
  {
     assert(cmd);
  
@@ -225,14 +255,10 @@ Generated-by: LLM
     /* Render first as it may open a compute encoder for post render writes. */
     if (cmd->metal.render) {
        end_encoder(cmd, cmd->metal.render);
-@@ -457,7 +558,34 @@
-    if (cmd->metal.compute) {
-       end_encoder(cmd, cmd->metal.compute);
-       cmd->metal.compute = NULL;
-+   }
-+}
-+
-+void
+@@ -461,6 +582,35 @@
+ }
+ 
+ void
 +kk_cs_end_render_pass(struct kk_cmd_buffer *cmd)
 +{
 +   assert(cmd);
@@ -244,9 +270,11 @@ Generated-by: LLM
 +
 +   if (KK_DEBUG(BLANKET_BARRIER) || cmd->metal.render == NULL ||
 +       cmd->metal.compute != NULL || has_post_render_writes || has_ts_resolves) {
++      if (KK_DEBUG(BARRIER_STATS) && cmd->metal.render)
++         p_atomic_inc(&kk_pass_eager);
 +      cs_end(cmd);
 +      return;
-    }
++   }
 +
 +   cs_flush_closing(cmd, true);
 +
@@ -257,10 +285,13 @@ Generated-by: LLM
 +   cmd->metal.render = NULL;
 +
 +   util_dynarray_clear(&cmd->ts_stage_map);
- }
- 
- void
-@@ -540,7 +668,9 @@
++}
++
++void
+ kk_cmd_bind_root_to_argument_table(struct kk_cmd_buffer *cmd, uint64_t addr)
+ {
+    mtl_set_address(cmd->argument_table, addr, 0u);
+@@ -540,7 +690,9 @@
     /* TODO_KOSMICKRISP Lighten barriers according to the actual requested
      * barrier. To take advantage of this we need to remove the chaining of
      * encoders. */
@@ -271,6 +302,25 @@ Generated-by: LLM
        /* Multisample attachments require render pass split always. Then based on
         * the barrier and if we are using depth/stencil or not, we may have to
         * break the render pass. See comment in kk_barrier_requires_encoder_split
+@@ -1332,3 +1484,18 @@
+       mtl_encoder_insert_debug_signpost(cmd->metal.compute,
+                                         pLabelInfo->pLabelName);
+ }
++
++void
++kk_barrier_stats_print(void)
++{
++   uint64_t differees = kk_barrier_emitted + kk_barrier_skipped;
++
++   fprintf(stderr,
++           "kk barrieres : differees=%llu emises=%llu evitees=%llu (%.1f%%) "
++           "fermetures_immediates=%llu\n",
++           (unsigned long long)differees,
++           (unsigned long long)kk_barrier_emitted,
++           (unsigned long long)kk_barrier_skipped,
++           differees ? 100.0 * (double)kk_barrier_skipped / (double)differees : 0.0,
++           (unsigned long long)kk_pass_eager);
++}
 --- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
 +++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
 @@ -629,14 +629,18 @@
@@ -297,3 +347,23 @@ Generated-by: LLM
  
     memset(render, 0, sizeof(*render));
  
+--- a/src/kosmickrisp/vulkan/kk_device.c
++++ b/src/kosmickrisp/vulkan/kk_device.c
+@@ -6,6 +6,7 @@
+  */
+ 
+ #include "kk_device.h"
++#include "kk_debug.h"
+ 
+ #include "kk_buffer.h"
+ #include "kk_buffer_view.h"
+@@ -376,6 +377,9 @@
+ 
+    if (!dev)
+       return;
++
++   if (KK_DEBUG(BARRIER_STATS))
++      kk_barrier_stats_print();
+ 
+    /* End capture before we start releasing resources. Otherwise, Metal capture
+     * may run into issues. */

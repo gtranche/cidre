@@ -9049,3 +9049,48 @@ moteurs GPU, donc un trou signifie « aucun moteur actif ». Il n'est pas compar
 La refonte reste acquise et mesuree la ou elle s'applique. Reste a trouver une charge
 reelle dont les passes soient reellement independantes — ombres en cascade, chaines de
 post-traitement paralleles — pour savoir si le -14 % du banc se retrouve en situation.
+
+### Godot : -1,1 %, et le compteur dit pourquoi (2026-09-21)
+
+Meme protocole entrelace, trois paires, scene `build/godot-heavy` en 1920x1080,
+3 000 objets, 24 lumieres avec ombres, post-traitement actif :
+
+| paire | barriere | suivi | ecart |
+| --- | --- | --- | --- |
+| 1 | 44,444 ms | 44,444 ms | 0,0 % |
+| 2 | 44,444 ms | 43,939 ms | -1,1 % |
+| 3 | 45,000 ms | 44,444 ms | -1,2 % |
+
+Plutot que d'expliquer ce resultat, il a ete mesure. Un compteur (`MESA_KK_DEBUG=barrier_stats`)
+tient le nombre de fermetures differees, de barrieres emises et de barrieres evitees :
+
+| | fermetures differees | barrieres evitees | fermetures immediates |
+| --- | --- | --- | --- |
+| Godot | 78 609 | **437 (0,6 %)** | 0 |
+| Superposition | 60 000 | **103 (0,2 %)** | 84 038 |
+
+**99,4 % des passes de Godot sont en conflit avec la suivante**, et sur Superposition le
+compteur d'evitees se fige a 103 : passee la mise en route, plus aucune barriere n'est
+evitee. Le -1,1 % est du bruit, pas un gain.
+
+Sur Superposition, 84 038 passes ne sont meme pas differables : elles retombent sur la
+fermeture immediate a cause des ecritures differees, des resolutions d'horodatage ou des
+resolutions meta. Godot n'en a aucune, donc le mecanisme de report fonctionne bien de bout
+en bout ; il ne trouve simplement rien a reporter.
+
+### Ce que vaut la refonte, au net
+
+Elle est correcte (4 326 en D3D11, 2 026 en D3D12), elle ne coute rien, et elle donne -14 %
+la ou les passes ecrivent des cibles distinctes. Mais les deux seules charges reelles dont
+on dispose ecrivent quasiment toujours dans les memes cibles d'une passe a l'autre : rendu
+differe pour Superposition, atlas d'ombres et chaine de rendu pour Godot. **Mesure : +0,2 %
+et -1,1 %.**
+
+Le gain existe et il est chiffre ; il n'est pas realise sur ce qu'on sait faire tourner.
+C'est une capacite acquise, pas une acceleration livree.
+
+Deux pieges d'outillage rencontres, tous deux les miens : `pgrep -f`/`pkill -f` avec un motif
+present dans la ligne de commande du shell appelant **tue ou attend le shell lui-meme** —
+c'est ce qui a fait croire a un blocage du pilote. Et le banc Godot ne se termine pas apres
+avoir imprime son resultat : il faut attendre la ligne `RESULT` dans le journal puis tuer,
+pas attendre la sortie du processus.
