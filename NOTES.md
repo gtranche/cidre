@@ -8912,3 +8912,101 @@ deux lignes vides parasites dans `kk_cmd_buffer.c` et un commentaire orphelin da
 `kk_cmd_buffer.h` decrivant un champ qui n'existait plus. Lecon : pour verifier qu'un
 retour en arriere est complet, la recherche de symboles ne suffit pas, il faut
 comparer a un arbre reconstruit.
+
+## 122. Refonte avec suivi des ressources : -34 % sur passes independantes (2026-09-21)
+
+La section 121 concluait que la barriere aveugle ne peut etre retiree que si l'on
+**differe la fermeture** de l'encodeur de rendu. C'est ce que fait cette refonte.
+
+### Le mecanisme
+
+A `vkCmdEndRendering`, l'encodeur n'est plus ferme : il passe dans
+`cmd->metal.render_closing` et reste ouvert. L'ensemble des images d'attachement de
+la passe est retenu dans `closing_writes`. A l'ouverture de la passe suivante, on
+compare ses attachements a `closing_writes` et a `unordered_writes` (l'accumule des
+passes fermees sans barriere depuis la derniere). Barriere seulement s'il y a
+intersection, ou si l'application en a demande une.
+
+Trois points de passage seulement creent ou detruisent un encodeur — `cs_start_render`,
+`cs_get_compute`, `cs_end` — ce qui rend le report sur : seule une passe de rendu
+suivante peut fermer sans barriere. Tout travail de calcul force l'ordonnancement,
+parce qu'il est le plus souvent interne au pilote (evenements, horodatages, meta) et
+qu'aucune barriere Vulkan ne le demande. La fermeture est aussi forcee quand la passe
+laisse des ecritures differees ou des resolutions d'horodatage en attente, et quand
+une resolution meta suit.
+
+### Deux corrections de methode, toutes deux les miennes
+
+**Le banc de la section 121 ne validait rien.** Ses 100 passes ecrivaient toutes la
+**meme** cible, sans barriere entre elles et **sans aucune verification du resultat**.
+Elles sont en conflit ecriture-apres-ecriture : les laisser se recouvrir les rend plus
+rapides *et* fausses. Le « prix » de -43 % annonce en section 121 mesurait donc une
+execution que rien ne controlait. Remplace par `tests/bench_pass_vulkan.c`, ou chaque
+passe ecrit une cible distincte en rotation.
+
+**Les mesures a 4 echantillons/pixel etaient du bruit.** Trois tirages identiques :
+0,35 / 0,17 / 0,27 ms. Mon « meilleur de trois » retenait le tirage le plus chanceux
+d'une distribution large. A 32 ech/pixel l'etendue tombe a 1-13 % sur n=12, et les
+deux horloges (murale et horodatage GPU) concordent. Tous les chiffres ci-dessous sont
+a 32 ech/pixel, n=10, **medianes**.
+
+### Mesures
+
+**Troisieme correction de methode.** Un premier protocole enchainait les dix mesures
+d'un mode puis les dix de l'autre, et donnait -34 %. La valeur absolue du mode barriere
+a derive de 0,815 a 0,500 ms entre deux campagnes : la derive contamine donc une
+comparaison non entrelacee. Refait en **alternant les deux modes a chaque tirage**, ce
+qui rend l'ecart par paire insensible a la derive.
+
+100 passes, 32 ech/pixel, n=12, modes entrelaces, ecart calcule **par paire** :
+
+| configuration | barriere | suivi | ecart median | etendue |
+| --- | --- | --- | --- | --- |
+| 16 cibles distinctes | 0,500 ms | **0,430 ms** | **-14,0 %** | -12,0 a -15,7 % |
+| 1 cible, conflit a chaque passe | 0,500 ms | 0,500 ms | **+0,0 %** | +0,0 a +0,0 % |
+
+Le pilote va vite exactement quand il en a le droit, et retombe a la vitesse d'origine
+quand les passes sont reellement dependantes. C'est la propriete recherchee.
+
+Le gain reel est donc **-14 %**, pas les -34 % d'un protocole non entrelace ni les
+-43 % de la section 121, qui mesuraient une execution non validee.
+
+### Conformite
+
+| suite | avant refonte | fermeture differee seule | + suivi des ressources |
+| --- | --- | --- | --- |
+| D3D11 | 4 326 | 4 326 | **4 326** |
+| D3D12 | 2 026 | 2 497 puis 2 493 | **2 026** |
+
+La fermeture differee seule cassait 471 tests, concentres sur
+`test_unused_attachments_mix_and_match` (+376). Ce test enchaine 512 passes qui
+accumulent en melange additif dans les **memes** cibles, sans aucune barriere : en
+D3D12 une cible de rendu qui reste cible de rendu ne transitionne pas, donc vkd3d
+n'emet rien. C'est exactement ce que le suivi des ressources detecte.
+
+### Le producteur non adjacent, et son durcissement
+
+Une premiere version laissait **+2 sur 24,2 millions de tests**, dans
+`test_execute_indirect_state`. Trois campagnes a fermeture differee ont donne 1, 2
+puis 0 echecs, contre 0 partout en mode barriere : intermittent, mais jamais observe
+sans la refonte.
+
+La cause est la limite de Metal 4 de la section 121. Une barriere ne peut etre posee
+sur un encodeur qu'avant sa fermeture. Si une passe consomme ce qu'a ecrit un
+producteur **non adjacent** reste non ordonne, `unordered_writes` detecte bien le
+conflit, mais l'encodeur du producteur est deja ferme : il n'y a plus rien sur quoi
+poser la barriere.
+
+Durcissement : quand le conflit porte sur `unordered_writes` plutot que sur l'encodeur
+qui se ferme, on pose **en plus** `barrierAfterQueueStages` a l'ouverture de la passe
+consommatrice. Celle-ci attend alors tout le travail anterieur de la file, producteur
+non adjacent compris. Seules ses actions de chargement restent decouvertes, pour la
+raison etablie en section 121.
+
+Deux campagnes completes apres durcissement : **2 026 en D3D12, 4 326 en D3D11, zero
+echec indirect**. Cout mesure : nul, la barriere supplementaire n'etant emise que dans
+ce cas rare.
+
+Limite connue restante : le suivi ne couvre que les images d'attachement, pas ce
+qu'une passe ecrit en ressource de stockage. Aucun test de la suite ne l'exerce
+aujourd'hui.

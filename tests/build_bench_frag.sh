@@ -36,4 +36,7 @@ glslangValidator -V --target-env vulkan1.3 -o "$R/build/bench_frag_vs.spv" "$T/v
 mk_fs 1; mk_fs 2
 cc -arch arm64 -std=c11 -O2 -I"$R/prefix/include" "$DIR/bench_frag_vulkan.c" \
    -L"$R/prefix/lib" -lvulkan -o "$R/build/bench_frag_vulkan"
+cc -arch arm64 -std=c11 -O2 -I"$R/prefix/include" "$DIR/bench_pass_vulkan.c" \
+   -L"$R/prefix/lib" -lvulkan -o "$R/build/bench_pass_vulkan"
 echo "$R/build/bench_frag_vulkan"
+echo "$R/build/bench_pass_vulkan"

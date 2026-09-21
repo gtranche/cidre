@@ -1,0 +1,299 @@
+Generated-by: LLM
+
+--- a/src/kosmickrisp/vulkan/kk_debug.h
++++ b/src/kosmickrisp/vulkan/kk_debug.h
+@@ -16,6 +16,8 @@
+    KK_DEBUG_NO_DESCRIPTOR_BUFFER = 1ull << 3,
+ 
+    KK_DEBUG_ENCODER_LABELS = 1ull << 4,
++
++   KK_DEBUG_BLANKET_BARRIER = 1ull << 5,
+ };
+ 
+ extern enum kk_debug kk_mesa_debug_flags;
+--- a/src/kosmickrisp/vulkan/kk_debug.c
++++ b/src/kosmickrisp/vulkan/kk_debug.c
+@@ -13,6 +13,7 @@
+    {"force_robustness", KK_DEBUG_FORCE_ROBUSTNESS},
+    {"no_descriptor_buffer", KK_DEBUG_NO_DESCRIPTOR_BUFFER},
+    {"encoder_labels", KK_DEBUG_ENCODER_LABELS},
++   {"blanket_barrier", KK_DEBUG_BLANKET_BARRIER},
+    {NULL, 0},
+ };
+ 
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+@@ -311,6 +311,9 @@
+       mtl_render_encoder *render;
+       mtl_compute_encoder *compute;
+ 
++      mtl_render_encoder *render_closing;
++      bool closing_needs_barrier;
++
+       /* Metal command buffers already closed for this recording, in the order
+        * they must execute. A recording that would overrun a single command
+        * buffer's encoder budget is spread over several; see
+@@ -327,6 +330,9 @@
+    struct util_dynarray ts_stage_map;
+    /* Deferred writes due to being mid render encoder */
+    struct util_dynarray post_render_writes;
++   struct util_dynarray closing_writes;
++   struct util_dynarray unordered_writes;
++   struct util_dynarray opening_reads;
+ 
+    void *drawable;
+    mtl_argument_table *argument_table;
+@@ -395,6 +401,7 @@
+ mtl_render_encoder *cs_get_render(struct kk_cmd_buffer *cmd);
+ mtl_compute_encoder *cs_get_compute(struct kk_cmd_buffer *cmd);
+ void cs_end(struct kk_cmd_buffer *cmd);
++void kk_cs_end_render_pass(struct kk_cmd_buffer *cmd);
+ void kk_cmd_bind_root_to_argument_table(struct kk_cmd_buffer *cmd,
+                                         uint64_t addr);
+ 
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+@@ -98,6 +98,9 @@
+    util_dynarray_fini(&cmd->large_bos);
+    util_dynarray_fini(&cmd->metal.sealed_cmd_bufs);
+    util_dynarray_fini(&cmd->post_render_writes);
++   util_dynarray_fini(&cmd->closing_writes);
++   util_dynarray_fini(&cmd->unordered_writes);
++   util_dynarray_fini(&cmd->opening_reads);
+    util_dynarray_fini(&cmd->ts_resolves);
+    util_dynarray_fini(&cmd->ts_stage_map);
+ 
+@@ -132,6 +135,9 @@
+    cmd->ts_resolves = UTIL_DYNARRAY_INIT;
+    cmd->ts_stage_map = UTIL_DYNARRAY_INIT;
+    cmd->post_render_writes = UTIL_DYNARRAY_INIT;
++   cmd->closing_writes = UTIL_DYNARRAY_INIT;
++   cmd->unordered_writes = UTIL_DYNARRAY_INIT;
++   cmd->opening_reads = UTIL_DYNARRAY_INIT;
+    cmd->metal.sealed_cmd_bufs = UTIL_DYNARRAY_INIT;
+ 
+    {
+@@ -314,7 +320,53 @@
+    if (cmd->vk.base.object_name)
+       mtl_command_buffer_set_label(cmd->metal.cmd_buf, cmd->vk.base.object_name);
+ }
++
++static void
++kk_collect_render_images(struct kk_cmd_buffer *cmd, struct util_dynarray *out)
++{
++   struct kk_rendering_state *render = &cmd->state.gfx.render;
++
++   util_dynarray_clear(out);
++
++   for (uint32_t i = 0; i < render->color_att_count; i++) {
++      if (render->color_att[i].iview)
++         util_dynarray_append(out,
++                              (const void *)render->color_att[i].iview->vk.image);
++      if (render->color_att[i].resolve_iview)
++         util_dynarray_append(
++            out, (const void *)render->color_att[i].resolve_iview->vk.image);
++   }
+ 
++   if (render->depth_att.iview)
++      util_dynarray_append(out,
++                           (const void *)render->depth_att.iview->vk.image);
++   if (render->depth_att.resolve_iview)
++      util_dynarray_append(
++         out, (const void *)render->depth_att.resolve_iview->vk.image);
++   if (render->stencil_att.iview)
++      util_dynarray_append(out,
++                           (const void *)render->stencil_att.iview->vk.image);
++   if (render->stencil_att.resolve_iview)
++      util_dynarray_append(
++         out, (const void *)render->stencil_att.resolve_iview->vk.image);
++}
++
++static bool
++kk_images_intersect(struct util_dynarray *a, struct util_dynarray *b)
++{
++   util_dynarray_foreach(a, const void *, x) {
++      util_dynarray_foreach(b, const void *, y) {
++         if (*x == *y)
++            return true;
++      }
++   }
++
++   return false;
++}
++
++static void cs_flush_closing(struct kk_cmd_buffer *cmd, bool force_barrier);
++
++
+ void
+ cs_start_render(struct kk_cmd_buffer *cmd)
+ {
+@@ -322,6 +374,19 @@
+    uint32_t view_mask = state->render.view_mask;
+    assert(state->render_pass_descriptor);
+ 
++   bool conflicts_older = false;
++   bool conflicts = false;
++   if (cmd->metal.render_closing) {
++      kk_collect_render_images(cmd, &cmd->opening_reads);
++      conflicts_older =
++         kk_images_intersect(&cmd->opening_reads, &cmd->unordered_writes);
++      conflicts =
++         conflicts_older ||
++         kk_images_intersect(&cmd->opening_reads, &cmd->closing_writes);
++   }
++
++   cs_flush_closing(cmd, conflicts);
++
+    /* Ensure no other active encoder, aka compute */
+    cs_end(cmd);
+ 
+@@ -332,6 +397,10 @@
+       cmd->metal.cmd_buf, state->render_pass_descriptor);
+ 
+    kk_encoder_update_debug(cmd, cmd->metal.render);
++
++   if (conflicts_older)
++      mtl_barrier_after_queue_stages(cmd->metal.render, MTL_STAGE_ALL,
++                                     MTL_STAGE_ALL);
+ 
+    if (KK_DEBUG(ENCODER_LABELS) && !cmd->vk.base.object_name) {
+       char label[64];
+@@ -393,6 +462,8 @@
+       cmd->state.gfx.need_to_start_render_pass = true;
+    }
+ 
++   cs_flush_closing(cmd, true);
++
+    if (cmd->metal.compute == NULL) {
+       /* Counted but not split on: a compute encoder can be opened from inside
+        * cs_end() to flush post-render writes, where splitting would cut the
+@@ -407,10 +478,8 @@
+ }
+ 
+ static void
+-end_encoder(struct kk_cmd_buffer *cmd, mtl_command_encoder *encoder)
++close_encoder(struct kk_cmd_buffer *cmd, mtl_command_encoder *encoder)
+ {
+-   /* TODO_KOSMICKRISP This is probably overkill */
+-   mtl_barrier_after_stages(encoder, MTL_STAGE_ALL, MTL_STAGE_ALL);
+    mtl_end_encoding(encoder);
+    mtl_release(encoder);
+ 
+@@ -424,6 +493,36 @@
+ }
+ 
+ static void
++end_encoder(struct kk_cmd_buffer *cmd, mtl_command_encoder *encoder)
++{
++   mtl_barrier_after_stages(encoder, MTL_STAGE_ALL, MTL_STAGE_ALL);
++   util_dynarray_clear(&cmd->unordered_writes);
++   close_encoder(cmd, encoder);
++}
++
++static void
++cs_flush_closing(struct kk_cmd_buffer *cmd, bool force_barrier)
++{
++   mtl_render_encoder *encoder = cmd->metal.render_closing;
++
++   if (encoder == NULL)
++      return;
++
++   cmd->metal.render_closing = NULL;
++
++   if (cmd->metal.closing_needs_barrier || force_barrier) {
++      mtl_barrier_after_stages(encoder, MTL_STAGE_ALL, MTL_STAGE_ALL);
++      util_dynarray_clear(&cmd->unordered_writes);
++   } else {
++      util_dynarray_foreach(&cmd->closing_writes, const void *, image)
++         util_dynarray_append(&cmd->unordered_writes, *image);
++   }
++
++   cmd->metal.closing_needs_barrier = false;
++   close_encoder(cmd, encoder);
++}
++
++static void
+ flush_post_render_writes(struct kk_cmd_buffer *cmd)
+ {
+    assert(cmd->metal.render == NULL);
+@@ -444,6 +543,8 @@
+ {
+    assert(cmd);
+ 
++   cs_flush_closing(cmd, true);
++
+    /* Render first as it may open a compute encoder for post render writes. */
+    if (cmd->metal.render) {
+       end_encoder(cmd, cmd->metal.render);
+@@ -457,7 +558,34 @@
+    if (cmd->metal.compute) {
+       end_encoder(cmd, cmd->metal.compute);
+       cmd->metal.compute = NULL;
++   }
++}
++
++void
++kk_cs_end_render_pass(struct kk_cmd_buffer *cmd)
++{
++   assert(cmd);
++
++   bool has_post_render_writes = util_dynarray_num_elements(
++      &cmd->post_render_writes, struct libkk_imm_write) > 0;
++   bool has_ts_resolves =
++      util_dynarray_num_elements(&cmd->ts_resolves, struct kk_ts_resolve) > 0;
++
++   if (KK_DEBUG(BLANKET_BARRIER) || cmd->metal.render == NULL ||
++       cmd->metal.compute != NULL || has_post_render_writes || has_ts_resolves) {
++      cs_end(cmd);
++      return;
+    }
++
++   cs_flush_closing(cmd, true);
++
++   kk_collect_render_images(cmd, &cmd->closing_writes);
++
++   cmd->metal.render_closing = cmd->metal.render;
++   cmd->metal.closing_needs_barrier = false;
++   cmd->metal.render = NULL;
++
++   util_dynarray_clear(&cmd->ts_stage_map);
+ }
+ 
+ void
+@@ -540,7 +668,9 @@
+    /* TODO_KOSMICKRISP Lighten barriers according to the actual requested
+     * barrier. To take advantage of this we need to remove the chaining of
+     * encoders. */
+-   if (cmd->metal.render) {
++   if (cmd->metal.render_closing) {
++      cmd->metal.closing_needs_barrier = true;
++   } else if (cmd->metal.render) {
+       /* Multisample attachments require render pass split always. Then based on
+        * the barrier and if we are using depth/stencil or not, we may have to
+        * break the render pass. See comment in kk_barrier_requires_encoder_split
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -629,14 +629,18 @@
+ 
+    kk_apply_attachment_store_ops(cmd, false);
+ 
+-   /* Clean up previous encoder */
+-   cs_end(cmd);
+-   mtl_release(cmd->state.gfx.render_pass_descriptor);
+-   cmd->state.gfx.render_pass_descriptor = NULL;
+-
+    if (render->flags &
+        (VK_RENDERING_SUSPENDING_BIT | VK_RENDERING_CUSTOM_RESOLVE_BIT_EXT))
+       need_meta_resolve = false;
++
++   /* Clean up previous encoder */
++   if (need_meta_resolve)
++      cs_end(cmd);
++   else
++      kk_cs_end_render_pass(cmd);
++
++   mtl_release(cmd->state.gfx.render_pass_descriptor);
++   cmd->state.gfx.render_pass_descriptor = NULL;
+ 
+    memset(render, 0, sizeof(*render));
+ 

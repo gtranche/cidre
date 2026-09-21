@@ -44,7 +44,7 @@ fi
 
 serie_mesa() {
    for f in "$R"/00[0-3][0-9]-kosmickrisp-*.patch "$R"/0045-kosmickrisp-*.patch \
-            "$R"/0046-kosmickrisp-*.patch; do
+            "$R"/0046-kosmickrisp-*.patch "$R"/0047-kosmickrisp-*.patch; do
       case "$(basename "$f")" in 0000-*) continue;; esac
       echo "$f"
    done
