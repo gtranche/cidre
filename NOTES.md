@@ -9010,3 +9010,42 @@ ce cas rare.
 Limite connue restante : le suivi ne couvre que les images d'attachement, pas ce
 qu'une passe ecrit en ressource de stockage. Aucun test de la suite ne l'exerce
 aujourd'hui.
+
+### Verification sur Superposition : aucun gain, et pourquoi (2026-09-21)
+
+Meme methode qu'en section 120 : `xctrace` avec le modele « Metal System Trace », 12 s
+attachees au moteur, comptage des `ca-client-present-request`. Deux executions
+consecutives, memes reglages, l'une avec `MESA_KK_DEBUG=blanket_barrier` (comportement
+d'origine), l'autre avec le suivi.
+
+| | presentations | fenetre | frequence | temps/image median |
+| --- | --- | --- | --- | --- |
+| barriere d'origine | 284 | 12,420 s | 22,79 img/s | 43,77 ms |
+| suivi des ressources | 285 | 12,442 s | 22,83 img/s | 43,77 ms |
+
+**+0,2 % en frequence, +0,0 % en temps par image.** Les medianes sont identiques a
+0,01 ms pres.
+
+Le suivi fait pourtant ce qu'il annonce. Sur les memes traces, intervalles GPU fusionnes :
+les trous passent de **160 a 44**. La serialisation est bien retiree ; elle ne change
+simplement rien, parce que le GPU est **occupe a 100 %** dans les deux cas. Le goulot
+est la quantite de travail, pas l'attente entre encodeurs.
+
+C'est exactement ce que le banc annoncait : -14 % quand les passes ecrivent des cibles
+distinctes, **+0,0 %** quand chaque passe est en conflit avec la precedente. Superposition
+est un rendu differe — G-buffer, eclairage, chaine de post-traitement — ou chaque passe
+lit ce que la precedente a ecrit. Le suivi detecte le conflit et emet la barriere, comme
+il doit.
+
+**Cela invalide la projection de la section 120**, qui annoncait 11 a 15 % de gain sur
+Superposition, soit 22 images par seconde devenant 25 ou 26. Elle extrapolait un cout par
+passe mesure sur un banc dont les passes n'etaient pas representatives. Mesure directe :
+le gain est nul sur cette scene.
+
+Note de methode : le comptage de trous ci-dessus fusionne les intervalles de tous les
+moteurs GPU, donc un trou signifie « aucun moteur actif ». Il n'est pas comparable aux
+7 493 trous de la section 120, comptes par encodeur.
+
+La refonte reste acquise et mesuree la ou elle s'applique. Reste a trouver une charge
+reelle dont les passes soient reellement independantes — ombres en cascade, chaines de
+post-traitement paralleles — pour savoir si le -14 % du banc se retrouve en situation.
