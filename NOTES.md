@@ -9152,3 +9152,83 @@ regime que les moteurs reels n'atteignent pas** sur cette pile.
 Pour que cela change il faudrait soit un moteur emettant beaucoup de passes courtes vers
 des cibles separees, soit avoir d'abord leve les limites qui dominent aujourd'hui — et
 c'est la qu'il faut chercher ensuite.
+
+## 124. Le debit de tirages : la geometrie est a parite, l'encodage etait 4,5 fois trop cher (2026-09-21)
+
+La section 123 laissait deux suspects pour les images par seconde : le travail fragment
+et le debit de tirages. Voici le second.
+
+### Cadrage : ce n'est pas le nombre de tirages qui domine
+
+Capture de la scene a 64 vues : GPU occupe a **99,6 %**, **155,94 ms de GPU par image**,
+57,6 millions de primitives. Elle n'est pas bornee par le CPU, et pas non plus par le
+nombre de tirages : c'est de la geometrie.
+
+### Le repere manquant
+
+`tests/bench_draw_metal.m` et `tests/bench_draw_vulkan.c` : D tirages de T triangles dans
+une seule passe, cible 256x256 et triangles minuscules pour annuler le cout fragment.
+Deux regimes : beaucoup de tirages minuscules (cout par tirage), peu de tirages enormes
+(debit par triangle).
+
+| regime | metal natif | notre pile | rapport |
+| --- | --- | --- | --- |
+| debit par triangle | 1,31 ns | 1,35 ns | **parite** |
+| cout par tirage | 0,078 us | 0,158 us | **x2,0** |
+
+En separant l'encodage CPU de l'execution GPU : GPU a parite (2,72 contre 2,85 ms), et
+**tout l'ecart dans `vkCmdDraw` cote CPU** — 0,027 contre 0,104 us, soit x3,9.
+
+### La cause
+
+Profil de 3 978 echantillons dans `vkCmdDraw` : **425 dans
+`kk_cmd_bind_root_to_argument_table`**. Le pilote reecrivait l'adresse de racine dans la
+table d'arguments **a chaque tirage**, alors que le banc ne change aucun etat. La
+fonction memorisait deja `cmd->state.root_addr` sans jamais le relire.
+
+### Le piege, et il etait de moi
+
+Premiere tentative : garder la valeur et sortir si elle est inchangee, en invalidant
+`root_addr` a chaque ouverture d'encodeur. Resultat : **D3D12 2 157 (+131), D3D11 4 341
+(+15)**.
+
+`cmd->state.root_addr` n'est pas un cache, c'est la **valeur sauvegardee** que le chemin
+de calcul interne du pilote restaure apres avoir ecrit sa propre adresse a l'indice 0
+(`kk_cmd_buffer.c`, « Rebind the existing root »). L'invalider detruisait la racine a
+restaurer.
+
+Correction : deux variables distinctes. `root_addr` reste la racine logique a restaurer,
+`argtable_addr0` memorise ce qui est reellement ecrit dans la table et vaut
+`KK_ARGTABLE_UNKNOWN` tant qu'on ne le sait pas. Les deux chemins qui ecrivent
+directement l'indice 0 mettent `argtable_addr0` a jour.
+
+Apres correction : **2 026 en D3D12, 4 326 en D3D11**, les references exactes.
+
+### Le gain
+
+A/B entrelace, `MESA_KK_DEBUG=no_bind_cache` contre defaut, n=10, ecart par paire :
+
+| | encodage par tirage |
+| --- | --- |
+| sans cache | 106,8 ns |
+| **avec cache** | **57,2 ns** |
+| metal natif | 23,8 ns |
+
+**-45,8 %** de mediane, etendue -40,7 a -47,4 %. Le rapport a Metal passe de **4,49x a
+2,40x**. Le temps GPU baisse aussi legerement : l'ecriture redondante renchérissait
+`drawPrimitives` lui-meme.
+
+Au profileur, la fonction passe de 425 a 37 echantillons. Ce qui reste par tirage : 43 %
+dans le `drawPrimitives` d'Apple (incompressible), environ 15 % dans
+`kk_flush_gfx_state`, 18 % dans `kk_draw`.
+
+### Ce que cela vaut, et ce que cela ne vaut pas
+
+Rien sur les scenes mesurees : la scene a 64 vues est bornee par le GPU a 99,6 %, et
+l'economie CPU y vaut 2,6 ms sur 125. Ce correctif compte pour une charge **bornee par
+le CPU** avec beaucoup de tirages, ce qui est le cas classique d'un jeu, mais pas celui
+de nos charges actuelles.
+
+C'est le premier correctif de performance de cette serie qui reduit un cout **reellement
+excessif** plutot que d'en deplacer un : 4,5 fois le cout natif pour reecrire une adresse
+inchangee.

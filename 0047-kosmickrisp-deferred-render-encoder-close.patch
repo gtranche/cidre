@@ -2,7 +2,7 @@ Generated-by: LLM
 
 --- a/src/kosmickrisp/vulkan/kk_debug.h
 +++ b/src/kosmickrisp/vulkan/kk_debug.h
-@@ -16,6 +16,10 @@
+@@ -16,6 +16,12 @@
     KK_DEBUG_NO_DESCRIPTOR_BUFFER = 1ull << 3,
  
     KK_DEBUG_ENCODER_LABELS = 1ull << 4,
@@ -10,33 +10,45 @@ Generated-by: LLM
 +   KK_DEBUG_BLANKET_BARRIER = 1ull << 5,
 +
 +   KK_DEBUG_BARRIER_STATS = 1ull << 6,
++
++   KK_DEBUG_NO_BIND_CACHE = 1ull << 7,
  };
  
  extern enum kk_debug kk_mesa_debug_flags;
 --- a/src/kosmickrisp/vulkan/kk_debug.c
 +++ b/src/kosmickrisp/vulkan/kk_debug.c
-@@ -13,6 +13,8 @@
+@@ -13,6 +13,9 @@
     {"force_robustness", KK_DEBUG_FORCE_ROBUSTNESS},
     {"no_descriptor_buffer", KK_DEBUG_NO_DESCRIPTOR_BUFFER},
     {"encoder_labels", KK_DEBUG_ENCODER_LABELS},
 +   {"blanket_barrier", KK_DEBUG_BLANKET_BARRIER},
 +   {"barrier_stats", KK_DEBUG_BARRIER_STATS},
++   {"no_bind_cache", KK_DEBUG_NO_BIND_CACHE},
     {NULL, 0},
  };
  
 --- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h
 +++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
-@@ -310,6 +310,9 @@
-       mtl_command_buffer *cmd_buf;
+@@ -7,6 +7,8 @@
+ 
+ #ifndef KK_CMD_BUFFER_H
+ #define KK_CMD_BUFFER_H 1
++
++#define KK_ARGTABLE_UNKNOWN UINT64_MAX
+ 
+ #include "poly/geometry.h"
+ 
+@@ -311,6 +313,9 @@
        mtl_render_encoder *render;
        mtl_compute_encoder *compute;
-+
+ 
 +      mtl_render_encoder *render_closing;
 +      bool closing_needs_barrier;
- 
++
        /* Metal command buffers already closed for this recording, in the order
         * they must execute. A recording that would overrun a single command
-@@ -327,6 +330,9 @@
+        * buffer's encoder budget is spread over several; see
+@@ -327,6 +332,9 @@
     struct util_dynarray ts_stage_map;
     /* Deferred writes due to being mid render encoder */
     struct util_dynarray post_render_writes;
@@ -46,7 +58,15 @@ Generated-by: LLM
  
     void *drawable;
     mtl_argument_table *argument_table;
-@@ -395,6 +401,8 @@
+@@ -339,6 +347,7 @@
+       /* Address of the binding 0 for when compute dispatches modify it.
+        * We are trying to be nice to ourselves. */
+       uint64_t root_addr;
++      uint64_t argtable_addr0;
+       /* Only tracks graphics shaders since compute is always bound for now. */
+       uint32_t dirty_shaders;
+ 
+@@ -395,6 +404,8 @@
  mtl_render_encoder *cs_get_render(struct kk_cmd_buffer *cmd);
  mtl_compute_encoder *cs_get_compute(struct kk_cmd_buffer *cmd);
  void cs_end(struct kk_cmd_buffer *cmd);
@@ -86,10 +106,20 @@ Generated-by: LLM
     cmd->metal.sealed_cmd_bufs = UTIL_DYNARRAY_INIT;
  
     {
-@@ -315,6 +323,52 @@
-       mtl_command_buffer_set_label(cmd->metal.cmd_buf, cmd->vk.base.object_name);
- }
+@@ -140,6 +148,7 @@
+       mtl_set_max_buffer_binding_count(desc, 3u);
+       cmd->argument_table = mtl_new_argument_table(dev->mtl_handle, desc);
+       mtl_set_address(cmd->argument_table, dev->samplers.table.bo->gpu, 1u);
++      cmd->state.argtable_addr0 = KK_ARGTABLE_UNKNOWN;
+       mtl_release(desc);
+    }
  
+@@ -313,8 +322,54 @@
+ 
+    if (cmd->vk.base.object_name)
+       mtl_command_buffer_set_label(cmd->metal.cmd_buf, cmd->vk.base.object_name);
++}
++
 +static void
 +kk_collect_render_images(struct kk_cmd_buffer *cmd, struct util_dynarray *out)
 +{
@@ -118,8 +148,8 @@ Generated-by: LLM
 +   if (render->stencil_att.resolve_iview)
 +      util_dynarray_append(
 +         out, (const void *)render->stencil_att.resolve_iview->vk.image);
-+}
-+
+ }
+ 
 +static bool
 +kk_images_intersect(struct util_dynarray *a, struct util_dynarray *b)
 +{
@@ -139,7 +169,7 @@ Generated-by: LLM
  void
  cs_start_render(struct kk_cmd_buffer *cmd)
  {
-@@ -322,6 +376,19 @@
+@@ -322,6 +377,19 @@
     uint32_t view_mask = state->render.view_mask;
     assert(state->render_pass_descriptor);
  
@@ -159,9 +189,11 @@ Generated-by: LLM
     /* Ensure no other active encoder, aka compute */
     cs_end(cmd);
  
-@@ -333,6 +400,10 @@
+@@ -332,7 +400,12 @@
+       cmd->metal.cmd_buf, state->render_pass_descriptor);
  
     kk_encoder_update_debug(cmd, cmd->metal.render);
++   cmd->state.argtable_addr0 = KK_ARGTABLE_UNKNOWN;
  
 +   if (conflicts_older)
 +      mtl_barrier_after_queue_stages(cmd->metal.render, MTL_STAGE_ALL,
@@ -170,7 +202,7 @@ Generated-by: LLM
     if (KK_DEBUG(ENCODER_LABELS) && !cmd->vk.base.object_name) {
        char label[64];
        snprintf(label, sizeof(label), "%ux%u c%u%s x%u",
-@@ -393,6 +464,8 @@
+@@ -393,6 +466,8 @@
        cmd->state.gfx.need_to_start_render_pass = true;
     }
  
@@ -179,7 +211,14 @@ Generated-by: LLM
     if (cmd->metal.compute == NULL) {
        /* Counted but not split on: a compute encoder can be opened from inside
         * cs_end() to flush post-render writes, where splitting would cut the
-@@ -407,10 +480,8 @@
+@@ -401,16 +476,15 @@
+       cmd->metal.compute = mtl_new_compute_command_encoder(cmd->metal.cmd_buf);
+       mtl_compute_set_argument_table(cmd->metal.compute, cmd->argument_table);
+       kk_encoder_update_debug(cmd, cmd->metal.compute);
++      cmd->state.argtable_addr0 = KK_ARGTABLE_UNKNOWN;
+    }
+ 
+    return cmd->metal.compute;
  }
  
  static void
@@ -191,7 +230,7 @@ Generated-by: LLM
     mtl_end_encoding(encoder);
     mtl_release(encoder);
  
-@@ -424,6 +495,54 @@
+@@ -424,6 +498,54 @@
  }
  
  static void
@@ -246,7 +285,7 @@ Generated-by: LLM
  flush_post_render_writes(struct kk_cmd_buffer *cmd)
  {
     assert(cmd->metal.render == NULL);
-@@ -444,6 +563,8 @@
+@@ -444,6 +566,8 @@
  {
     assert(cmd);
  
@@ -255,7 +294,7 @@ Generated-by: LLM
     /* Render first as it may open a compute encoder for post render writes. */
     if (cmd->metal.render) {
        end_encoder(cmd, cmd->metal.render);
-@@ -461,6 +582,35 @@
+@@ -461,10 +585,44 @@
  }
  
  void
@@ -290,8 +329,18 @@ Generated-by: LLM
 +void
  kk_cmd_bind_root_to_argument_table(struct kk_cmd_buffer *cmd, uint64_t addr)
  {
-    mtl_set_address(cmd->argument_table, addr, 0u);
-@@ -540,7 +690,9 @@
+-   mtl_set_address(cmd->argument_table, addr, 0u);
+    cmd->state.root_addr = addr;
++
++   if (cmd->state.argtable_addr0 == addr && !KK_DEBUG(NO_BIND_CACHE))
++      return;
++
++   mtl_set_address(cmd->argument_table, addr, 0u);
++   cmd->state.argtable_addr0 = addr;
+ }
+ 
+ /* Returns true if a render pass split is required. The main cases are:
+@@ -540,7 +698,9 @@
     /* TODO_KOSMICKRISP Lighten barriers according to the actual requested
      * barrier. To take advantage of this we need to remove the chaining of
      * encoders. */
@@ -302,10 +351,27 @@ Generated-by: LLM
        /* Multisample attachments require render pass split always. Then based on
         * the barrier and if we are using depth/stencil or not, we may have to
         * break the render pass. See comment in kk_barrier_requires_encoder_split
-@@ -1332,3 +1484,18 @@
+@@ -1020,6 +1180,7 @@
+       return;
+ 
+    mtl_set_address(cmd->argument_table, data_gpu.gpu, 0u);
++   cmd->state.argtable_addr0 = data_gpu.gpu;
+    mtl_compute_set_pipeline_state(encoder, prog->pipeline);
+ 
+    struct mtl_size local_size = {
+@@ -1038,6 +1199,7 @@
+ 
+    /* Rebind the existing root. */
+    mtl_set_address(cmd->argument_table, cmd->state.root_addr, 0u);
++   cmd->state.argtable_addr0 = cmd->state.root_addr;
+ }
+ 
+ void
+@@ -1331,4 +1493,19 @@
+    if (cmd->metal.compute)
        mtl_encoder_insert_debug_signpost(cmd->metal.compute,
                                          pLabelInfo->pLabelName);
- }
++}
 +
 +void
 +kk_barrier_stats_print(void)
@@ -320,7 +386,7 @@ Generated-by: LLM
 +           (unsigned long long)kk_barrier_skipped,
 +           differees ? 100.0 * (double)kk_barrier_skipped / (double)differees : 0.0,
 +           (unsigned long long)kk_pass_eager);
-+}
+ }
 --- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
 +++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
 @@ -629,14 +629,18 @@
