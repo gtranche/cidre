@@ -1,0 +1,51 @@
+Generated-by: LLM
+
+--- a/src/kosmickrisp/vulkan/kk_debug.h
++++ b/src/kosmickrisp/vulkan/kk_debug.h
+@@ -14,6 +14,8 @@
+    KK_DEBUG_FORCE_ROBUSTNESS = 1ull << 2,
+ 
+    KK_DEBUG_NO_DESCRIPTOR_BUFFER = 1ull << 3,
++
++   KK_DEBUG_ENCODER_LABELS = 1ull << 4,
+ };
+ 
+ extern enum kk_debug kk_mesa_debug_flags;
+--- a/src/kosmickrisp/vulkan/kk_debug.c
++++ b/src/kosmickrisp/vulkan/kk_debug.c
+@@ -12,6 +12,7 @@
+    {"msl", KK_DEBUG_MSL},
+    {"force_robustness", KK_DEBUG_FORCE_ROBUSTNESS},
+    {"no_descriptor_buffer", KK_DEBUG_NO_DESCRIPTOR_BUFFER},
++   {"encoder_labels", KK_DEBUG_ENCODER_LABELS},
+    {NULL, 0},
+ };
+ 
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+@@ -6,6 +6,7 @@
+  */
+ 
+ #include "kk_cmd_buffer.h"
++#include "kk_debug.h"
+ 
+ #include "kk_buffer.h"
+ #include "kk_cmd_pool.h"
+@@ -331,6 +332,17 @@
+       cmd->metal.cmd_buf, state->render_pass_descriptor);
+ 
+    kk_encoder_update_debug(cmd, cmd->metal.render);
++
++   if (KK_DEBUG(ENCODER_LABELS) && !cmd->vk.base.object_name) {
++      char label[64];
++      snprintf(label, sizeof(label), "%ux%u c%u%s x%u",
++               state->render.area.extent.width, state->render.area.extent.height,
++               state->render.color_att_count,
++               state->render.depth_att.iview ? " ds" : "",
++               state->render.samples);
++      mtl_encoder_set_label(cmd->metal.render, label);
++   }
++
+    /* Starting a new render pass means we already flushed and no barrier is
+     * needed. */
+    state->render.write_available = false;

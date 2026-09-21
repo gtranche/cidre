@@ -8790,3 +8790,125 @@ ici ; la quatrieme doit partir du modele, pas du symptome.
 **Piege rencontre** : un vestige de l'echafaudage (`kk_ending_render_pass`) a survecu au
 nettoyage et le pilote ne se chargeait plus du tout — `vkCreateInstance` rendait
 `INCOMPATIBLE_DRIVER`. Le symbole manquant n'apparait qu'au `dlopen`, pas a la construction.
+
+## 121. Le modele de synchronisation : la barriere aveugle est structurellement necessaire (2026-09-21)
+
+Reprise du probleme par le modele plutot que par le symptome. Rappel du constat de
+la section precedente : `end_encoder()` emet un `barrierAfterStages(ALL, ALL)` a la
+fermeture de *chaque* encodeur, ce qui serialise tout. Mesure de reference : 7 493
+intervalles morts pour 7 494 passes chez nous, contre 1 475 pour 7 623 chez le pilote
+natif.
+
+### L'idee : reporter la dependance au lieu de la diffuser
+
+Plutot que de faire attendre tout le monde a chaque fermeture, on note qu'une barriere
+Vulkan est arrivee (`pending_queue_barrier`) et on l'applique a l'ouverture de
+l'encodeur suivant, par `barrierAfterQueueStages(ALL, ALL)`.
+
+Un trou reel a ete bouche au passage : `kk_CmdPipelineBarrier2()` ne faisait
+**rien** quand aucun encodeur n'etait ouvert — plus de 10 000 barrieres Vulkan par
+campagne etaient silencieusement perdues, contre moins de 5 000 fermetures
+d'encodeur de rendu.
+
+Une deuxieme correction a ete necessaire : quand la barriere arrive pendant qu'un
+encodeur est ouvert, le pilote n'emettait qu'une barriere *interne* a cet encodeur.
+Elle n'ordonne rien vis-a-vis de l'encodeur **suivant**. La barriere aveugle
+rattrapait ce cas ; il a fallu poser aussi le drapeau differe. C'etait exactement
+la cause des 23 regressions de `test_cube_maps` (`UpdateSubresource` dans une face
+de cube, puis echantillonnage).
+
+D3D11 revient alors exactement a la reference : **4 326 echecs / 538 891 tests**.
+
+### Ce que D3D12 a refuse
+
+**2 115 contre 2 026, soit +89**, concentres sur cinq fonctions et cinq seulement :
+
+| fonction | ecart |
+| --- | --- |
+| `test_unused_attachments_mix_and_match` | +59 |
+| `test_atomic_instructions_dxbc` | +11 |
+| `test_atomic_instructions_dxil` | +11 |
+| `test_multisample_resolve_formats` | +6 |
+| `test_multisample_resolve` | +1 |
+| `test_stencil_load` | +1 |
+
+Le profil designe la cause : chargements d'attachements, resolutions, pile de
+stencil. Ce sont les actions de `load` et `store` d'une passe de rendu, et elles
+s'executent **a l'ouverture et a la fermeture de l'encodeur**, en dehors de toute
+commande encodee. Une barriere encodee *dans* l'encodeur ne peut donc pas preceder
+son `loadAction`.
+
+Verification faite dans `bridge/mtl_encoder.h` : les trois primitives disponibles
+(`barrierAfterStages`, `barrierAfterEncoderStages`, `barrierAfterQueueStages`) sont
+**toutes de portee encodeur**. Metal 4 n'expose pas de barriere au niveau du tampon
+de commandes. La seule facon d'ordonner quelque chose avant le `loadAction` d'une
+passe future est donc que le **producteur** emette `barrierAfterStages` avant de se
+fermer — c'est-a-dire precisement la barriere aveugle.
+
+### Le mode hybride tranche
+
+Barriere conservee a la fin des encodeurs de rendu, machinerie differee gardee pour
+le cas « aucun encodeur ouvert ». Campagne complete : **2 026, la reference exacte**.
+
+Banc fragment, memes binaires, etat machine identique, entrelace, meilleur de trois :
+
+| ech/pixel | origine | hybride (juste) | sans barriere de fin (faux) | gain hybride |
+| --- | --- | --- | --- | --- |
+| 4 | 0,140 ms | 0,140 ms | 0,080 ms | **+0,0 %** |
+| 32 | 0,510 ms | 0,510 ms | 0,440 ms | **+0,0 %** |
+| 128 | 1,840 ms | 1,840 ms | 1,790 ms | **+0,0 %** |
+
+Le mode juste rend exactement zero. Toute la performance venait de la suppression de
+la barriere de fin de rendu, c'est-a-dire de ce qui casse la correction.
+
+### Le gain reste chiffre, et reste hors d'atteinte ici
+
+Ce que vaudrait la barriere supprimee, si elle etait licite : **-43 % a 4 ech/pixel,
+-14 % a 32, -2,7 % a 128**. Le gain s'ecrase quand la charge fragment monte, ce qui
+est coherent : c'est un cout fixe par passe.
+
+Pour l'encaisser il faudrait ne plus fermer l'encodeur de rendu a `vkCmdEndRendering`,
+mais **differer sa fermeture** jusqu'a savoir si une barriere Vulkan suit. C'est la
+refonte avec suivi des ressources, pas un ajustement. Le prix est desormais connu.
+
+L'arbre est remis dans l'etat connu bon : 4 326 en D3D11, 2 026 en D3D12.
+
+### Deux pieges de mesure, tous deux les miens
+
+**L'etat de la machine derive.** Le repere Metal ecrit a la main est passe de 0,080 ms
+(valeur enregistree) a 0,140-0,240 ms a 4 ech/pixel, alors qu'a 128 ech/pixel il
+retombe sur la reference (1,700-1,740 contre 1,680). Seul le cas court, domine par le
+cout fixe, est touche. Un Godot oublie par une tache de fond tournait encore ; le tuer
+n'a pas suffi. Cause non identifiee, etat d'energie du GPU suspecte, **non verifie**.
+Consequence pratique : aucune comparaison a un chiffre d'une session anterieure n'est
+valable ; seul l'A/B apparie dans la meme session compte. Tous les tableaux ci-dessus
+respectent cette regle.
+
+**Un A/B cible qui ne mesurait rien.** `d3d12.exe` n'accepte pas de nom de test en
+argument : il ne produit alors aucune sortie. Une boucle censee ne tester que les six
+fonctions regressees a rendu 2 115 / 2 026 / 2 026 — des valeurs qui tombaient pile
+sur des totaux de suite complete connus. La coincidence etait assez exacte pour etre
+prise pour un resultat. Ecartee, puis refaite en campagne complete, qui a donne la
+meme conclusion pour de bonnes raisons.
+
+### Un trou de reproductibilite decouvert au passage
+
+En verifiant que l'arbre remis en etat correspondait bien aux correctifs, `0045`
+refusait de s'inverser sur trois fichiers. Ce n'etait pas le retour en arriere :
+`KK_DEBUG_ENCODER_LABELS`, ajoute pour la capture Metal de la section 120, **ne
+figurait dans aucun correctif**. Il n'existait que dans la copie de travail. Rejouer
+`tests/etape1_appliquer_correctifs.sh` sur un arbre vierge n'aurait pas reproduit le
+pilote mesure.
+
+Corrige par un correctif `0046-kosmickrisp-encoder-labels.patch` (4 hunks, 3 fichiers ;
+`mtl_encoder_set_label` est deja en amont, seul l'appel et le drapeau sont a nous), et
+`serie_mesa()` dans le script d'application a ete etendu.
+
+Le rejeu integral — arbre de travail git vierge sur `HEAD`, 31 correctifs appliques —
+donne maintenant un arbre **identique au caractere pres** a la copie de travail.
+
+C'est ce rejeu, et non `grep`, qui a trouve trois residus de mon retour en arriere :
+deux lignes vides parasites dans `kk_cmd_buffer.c` et un commentaire orphelin dans
+`kk_cmd_buffer.h` decrivant un champ qui n'existait plus. Lecon : pour verifier qu'un
+retour en arriere est complet, la recherche de symboles ne suffit pas, il faut
+comparer a un arbre reconstruit.
