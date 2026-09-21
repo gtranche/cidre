@@ -8545,3 +8545,30 @@ Rien de ce qui a ete mesure n'explique les 22 images par seconde autrement que p
 lui-meme : GPU a pleine frequence, thermique nominal, occupe a 85 %, pas de decoupage de passes
 surnumeraire, surcout de traduction borne a 15 %. Le seul angle non explore est l'efficacite du
 code Metal produit, et il demande un instrument dont on ne dispose pas sur ce binaire.
+
+### Repere de shader : la traduction ne coute rien sur le calcul (2026-09-21)
+
+Faute de compteurs GPU, mesure directe : **la meme chaine de multiplications-additions
+dependantes**, ecrite une fois en MSL a la main (`tests/bench_alu_metal.m`) et une fois en GLSL
+passant par SPIR-V et KosmicKrisp (`tests/bench_alu_vulkan.c`). Meme methode de chronometrage
+des deux cotes — meilleur de cinq soumissions, mur autour de submit et attente.
+
+| iterations | fils | Metal natif | notre pile | rapport |
+|---|---|---|---|---|
+| 25 000 | 16 384 | 1,5 ms | 2,2 ms | 1,47 |
+| 25 000 | 65 536 | 3,2 ms | 3,1 ms | 0,97 |
+| 100 000 | 16 384 | 3,3 ms | 3,3 ms | 1,00 |
+| 100 000 | 65 536 | 11,4 ms | 12,0 ms | 1,05 |
+| 400 000 | 16 384 | 12,6 ms | 12,8 ms | 1,02 |
+| 400 000 | 65 536 | 44,1 ms | 47,8 ms | 1,08 |
+
+Sur les cinq points ou le travail depasse 3 ms, **le rapport tient entre 0,97 et 1,08**. Le
+1,47 est sur la charge la plus courte, ou le cout fixe de soumission domine : cette ligne ne dit
+rien. Les sorties sont identiques au chiffre pres (`0,0100607`), ce qui prouve que les deux
+shaders font le meme calcul.
+
+**Portee de ce resultat.** Il mesure l'ALU, et seulement elle. La charge de Superposition est
+dominee par des passes fragment avec echantillonnage de textures, cibles multiples et bande
+passante memoire — chemins que ce banc n'exerce pas. On peut donc affirmer que le compilateur ne
+degrade pas le calcul ; on ne peut pas exclure une inefficacite sur les chemins de texture ou de
+memoire.
