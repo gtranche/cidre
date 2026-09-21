@@ -8660,3 +8660,37 @@ Sur Superposition : environ 0,05 a 0,07 ms par passe x 95 passes = **5 a 7 ms su
 **La retirer n'est pas le correctif** — elle garantit de vraies dependances, et l'interrupteur
 de mesure a ete retire. Le correctif est de la reduire aux etages reellement concernes plutot
 que `ALL` vers `ALL`. Les suites de conformite D3D11 et D3D12 serviraient de garde-fou.
+
+### Tentative de barriere reduite : deux hypotheses, deux echecs (2026-09-21)
+
+**Premiere : reduire les etages.** La barriere de `end_encoder` porte sur `MTL_STAGE_ALL`, qui
+inclut des etages que l'encodeur n'a jamais executes — maillage, accelération, apprentissage.
+Les attendre ne peut rien garantir. Remplacee par les seuls etages producteurs reels
+(`VERTEX | FRAGMENT | TILE | OBJECTS | MESH` pour un encodeur de rendu,
+`DISPATCH | BLIT | RESOURCE_STATE | ACCELERATION_STRUCTURE` pour un encodeur de calcul).
+
+**Gain : nul.** 0,140 / 0,510 / 1,840 ms, identique au dixieme de microseconde pres. Metal
+traite la barriere comme un vidage complet quels que soient les etages nommes.
+
+**Seconde : ne pas l'emettre quand l'application ferme la passe.** Raisonnement : dans le modele
+Vulkan, sans barriere explicite aucune ordonnance n'est garantie entre deux passes, donc le
+pilote n'a pas a en imposer une a `vkCmdEndRendering` — seulement lors de ses propres decoupages.
+
+**Gain : reel.** Rapport a Metal natif ramene de 1,75 / 1,19 / 1,10 a **1,12 / 1,02 / 1,07**.
+
+**Mais correction cassee** : la suite d3d11 passe de **4 326 a 5 195 echecs**, soit +869. Le
+raisonnement etait faux. Metal 4 n'offre aucune synchronisation implicite entre encodeurs, et
+quelque chose en depend — soit DXVK, soit les operations internes du pilote autour des
+attaches.
+
+**Revenu a l'etat d'origine**, verifie : d3d11 de nouveau a 4 326.
+
+### Ce qu'il faudrait reellement
+
+Le gain existe et il est mesure — 11 a 15 % sur Superposition — mais il ne s'obtient pas en
+supprimant la barriere. Il faudrait **suivre les ressources** : n'emettre la barriere que
+lorsque l'encodeur suivant touche ce que le precedent a ecrit. C'est un suivi de dependances a
+construire, pas un ajustement de drapeaux.
+
+L'etiquetage des encodeurs (`MESA_KK_DEBUG=encoder_labels`) est conserve : il a servi a
+identifier les passes et resservira.
