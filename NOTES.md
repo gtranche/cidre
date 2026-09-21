@@ -9672,3 +9672,69 @@ DXVK n'est pas requis pour la mesure Godot, qui passe par vkd3d en D3D12. Sa con
 aarch64 a demande un correctif de portabilite (`#include <algorithm>` manquant dans
 `src/util/config/config.cpp`, libc++ ne l'apportant pas indirectement contrairement a
 libstdc++) puis bute sur une erreur de gabarits dans `tuple` de libc++ avec `-std=c++17`.
+
+## 131. Wine arm64 natif sur macOS : impossible, et la preuve tient en trois lignes (2026-09-21)
+
+Suite de la section 130, qui laissait un SIGKILL muet. Il est elucide, et la conclusion
+depasse Wine.
+
+### La chaine de diagnostic
+
+Le SIGKILL etait muet parce que le processus mourait avant l'initialisation des traces.
+Trois etapes pour le faire parler :
+
+1. **`DYLD_*` depouille.** Les variables d'environnement dyld sont retirees d'un binaire
+   signe sans l'autorisation `allow-dyld-environment-variables`. D'ou les traces vides.
+2. **Flag d'edition de liens malforme.** Ma modification du Makefile avait produit
+   `-sectcreate` sans le prefixe `-Wl,`, ce qui cassait le lien silencieusement.
+3. **lldb avec `stop-on-exec` desactive**, le chargeur Wine se re-executant.
+
+Le message est alors apparu :
+
+```
+err:virtual:map_fixed_area out of memory for 0x7ffe0000-0x7ffe1000
+err:virtual:virtual_alloc_first_thread_data wine: failed to map the shared user data: c0000017
+```
+
+Wine doit placer `KUSER_SHARED_DATA` a l'adresse **fixe** `0x7ffe0000`, environ 2 Go. Or
+le binaire arm64 reserve les 4 premiers Go en `__PAGEZERO`.
+
+### La preuve, sans Wine
+
+Il suffit d'un programme de trois lignes :
+
+| edition de liens | `__PAGEZERO` obtenu | resultat |
+| --- | --- | --- |
+| par defaut | 4 Go | **s'execute** (code 42) |
+| `-pagezero_size,0x1000` | 16 Ko | **tue** (SIGKILL) |
+| `-segalign,0x1000,-pagezero_size,0x1000` | 4 Ko | **tue** |
+| `-segalign,0x4000,-pagezero_size,0x4000` | 16 Ko | **tue** |
+| `-no_pie` | — | lien refuse en arm64 |
+
+**macOS arm64 impose les 4 Go de `__PAGEZERO`.** Tout binaire natif qui les reduit est tue
+par le noyau au lancement. L'espace d'adressage bas est donc inaccessible, quoi qu'on
+fasse, et `0x7ffe0000` avec lui.
+
+Ce n'est pas un defaut de Wine : c'est une politique du noyau, et elle est absolue.
+
+### Ce que cela etablit
+
+**Wine natif arm64 est impossible sur macOS**, tant que cette politique tient et que
+Windows place `KUSER_SHARED_DATA` a une adresse fixe sous 4 Go. C'est la raison, enfin
+demontree, pour laquelle toutes les distributions commerciales sur Apple Silicon font
+tourner Wine en x86_64 sous Rosetta : un processus traduit obtient un petit `__PAGEZERO`
+et des pages de 4 Ko.
+
+La section 129 avait mesure que le pilote emule coute un facteur **2,3** sur son chemin
+CPU. Ce cout n'est donc pas evitable par cette voie.
+
+### Ce qui reste utilisable du travail
+
+Rien n'est perdu cote PE : vkd3d-proton en Aarch64, Godot Windows ARM64 et la chaine
+llvm-mingw restent valables le jour ou un hote arm64 deviendrait possible — par exemple si
+Wine relocalisait `KUSER_SHARED_DATA`, ce qui casserait la compatibilite avec le code qui
+code cette adresse en dur.
+
+**Consequence strategique.** Si Rosetta 2 disparait, ce n'est pas seulement une perte de
+performance pour ce projet : c'est la disparition du seul chemin viable. Le probleme n'est
+pas la performance du pilote, c'est l'existence de l'hote.
