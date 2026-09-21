@@ -9557,3 +9557,59 @@ C'est neanmoins la premiere mesure directe dont dispose le projet, et elle recad
 sections 120 a 127 : celles-ci etablissaient que le pilote n'ajoute rien de mesurable sur
 les axes testes, ce qui reste vrai. Le +31,7 % dit qu'il reste un ecart a l'echelle de la
 chaine, et les captures disent ou chercher : le travail GPU lui-meme, et l'occupation.
+
+## 129. L'occupation a 74,6 % : le pilote tourne sous Rosetta (2026-09-21)
+
+La section 128 avait montre deux choses : **+42 % de travail GPU par image**, et un GPU
+**inoccupe un quart du temps** la ou le natif le sature. Voici la seconde.
+
+### Le profil des trous
+
+Memes captures, intervalles GPU fusionnes :
+
+| | trous | temps mort | median | plus gros |
+| --- | --- | --- | --- | --- |
+| natif Metal | 118 | 57,7 ms (**0,5 %**) | 0,035 ms | 5,0 ms |
+| notre pile | **912** | 3 182 ms (**25,4 %**) | **1,862 ms** | **152 ms** |
+
+912 trous pour environ 57 images, soit **a peu pres 16 par image** — exactement le nombre
+de `SubViewport`. Un arret par passe, pas un manque de debit global.
+
+### La cause
+
+`wine/wine10/bin/wine64` est un executable **x86_64**. Tout ce qu'il charge l'est aussi,
+y compris notre pilote : `VK_DRIVER_FILES` pointe sur `prefix-x64`, dont la bibliotheque
+est x86_64. **Le pilote Vulkan tourne donc sous Rosetta**, alors que Godot natif est en
+arm64 avec Metal direct.
+
+Mesure du surcout, meme code de pilote, meme GPU, meme banc de 50 000 tirages :
+
+| construction | encodage |
+| --- | --- |
+| arm64 natif | 2,78 / 2,84 / 2,85 ms |
+| x86_64 sous Rosetta | 6,34 / 6,52 / 7,39 ms |
+
+**2,3 fois plus lent** cote CPU. Chaque `vkCmdDraw`, chaque barriere, chaque mise a jour
+de descripteur est du code emule.
+
+### Ce que cela recadre
+
+Toutes les mesures des sections 120 a 127 portaient sur le pilote **natif arm64**, via des
+bancs Vulkan compiles pour arm64. Elles restent valables telles quelles, mais elles ne
+decrivent pas le pilote tel qu'il s'execute dans le chemin Wine, ou il est 2,3 fois plus
+lent sur le CPU. Le correctif de la section 124 (-45,8 % sur l'encodage des tirages) vaut
+donc **davantage** dans le chemin reel que ce que le banc natif annonçait.
+
+### La direction, sans la surestimer
+
+Wine 10.0 dispose de `--enable-archs` avec `aarch64` et du mecanisme `wow64`. Un hote Wine
+**arm64** executant du PE x86_64 rendrait notre pilote natif, ce que font les distributions
+commerciales sur Apple Silicon.
+
+La reserve : seule la partie Unix deviendrait native. Godot, DXVK et vkd3d restent du code
+Windows x86_64 et continueraient d'etre traduits. Le gain se limite donc a la part CPU du
+pilote, qui n'est pas mesuree. **Il serait malhonnete d'annoncer que cela supprime les
+25 % de temps mort.**
+
+Ce qui est etabli : le pilote est emule, cela coute un facteur 2,3 sur son chemin CPU, et
+c'est la seule cause identifiee du GPU inoccupe.
