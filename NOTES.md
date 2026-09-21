@@ -8742,3 +8742,51 @@ Quatre axes mesures, trois a parite avec le natif :
 Le seul gaspillage identifie vaut 11 a 15 %, et il demande un suivi des ressources ecrites pour
 etre recupere sans casser la correction. **Rien de ce qui a ete mesure ne soutient l'idee d'un
 facteur deux a recuperer.**
+
+### Suivi des ressources : la vraie cause trouvee, la correction echouee (2026-09-21)
+
+Plutot que de deviner ce qui depend de la barriere aveugle, la supprimer et **depouiller les
+echecs**. Resultat : **50 fonctions regressent** — textures, copies, mipmaps, echantillonnage,
+UAV. Ce n'est pas une dependance manquee, c'est le cas general.
+
+La cause est dans `kk_CmdPipelineBarrier2` :
+
+```c
+if (cmd->metal.render)       { ... }
+else if (cmd->metal.compute) { ... }
+/* et sinon : rien */
+```
+
+**Quand aucun encodeur n'est ouvert — exactement l'etat entre deux passes — une barriere Vulkan
+ne produit rien.** Les dependances que DXVK demande entre les passes sont silencieusement
+perdues, et la barriere aveugle de `end_encoder` est ce qui les compense.
+
+### La correction tentee, et pourquoi elle ne suffit pas
+
+Conception : memoriser la barriere en attente (`cmd->pending_queue_barrier`) quand aucun
+encodeur n'est ouvert, et l'appliquer a l'ouverture du suivant avec
+`mtl_barrier_after_queue_stages` — primitive qui existait deja dans le pont. La barriere aveugle
+disparait ; `cs_end` conserve l'ordonnance pour les decoupages internes du pilote, et
+`kk_cs_end_render_pass` ne le fait pas quand c'est l'application qui ferme la passe.
+
+**Resultat : 5 901 echecs et la suite meurt en route** (507 049 tests au lieu de 538 891).
+Pire que la suppression seule. La barriere posee **au debut** de l'encodeur suivant n'est pas
+equivalente a celle posee **a la fin** du precedent — ou bien tous les chemins d'ouverture
+d'encodeur ne sont pas couverts (encodeurs de copie, operations internes, resolutions de
+requetes).
+
+**Revenu a l'etat d'origine, verifie : 4 326 echecs, 538 891 tests.**
+
+### Ce qui est acquis malgre l'echec
+
+La cause est **nommee** : les barrieres Vulkan emises hors encodeur sont perdues, et une
+barriere totale a chaque fin d'encodeur les compense au prix de 11 a 15 % du temps d'image.
+
+La corriger proprement demande de couvrir **tous** les points d'ouverture d'encodeur et de
+verifier l'equivalence des deux placements de barriere en Metal 4 — un travail de conception
+sur le modele de synchronisation du pilote, pas un correctif local. Trois tentatives ont echoue
+ici ; la quatrieme doit partir du modele, pas du symptome.
+
+**Piege rencontre** : un vestige de l'echafaudage (`kk_ending_render_pass`) a survecu au
+nettoyage et le pilote ne se chargeait plus du tout — `vkCreateInstance` rendait
+`INCOMPATIBLE_DRIVER`. Le symbole manquant n'apparait qu'au `dlopen`, pas a la construction.
