@@ -9613,3 +9613,62 @@ pilote, qui n'est pas mesuree. **Il serait malhonnete d'annoncer que cela suppri
 
 Ce qui est etabli : le pilote est emule, cela coute un facteur 2,3 sur son chemin CPU, et
 c'est la seule cause identifiee du GPU inoccupe.
+
+## 130. Pile entierement ARM64 : tres avancee, bloquee au dernier metre (2026-09-21)
+
+Decision prise de tout passer en ARM64, Rosetta etant annonce en fin de vie. Etat des
+lieux honnete : la plus grande partie est faite et verifiable, un obstacle reste.
+
+### Ce qui marche
+
+| piece | etat |
+| --- | --- |
+| chaine llvm-mingw aarch64 | deja dans `toolchain/`, produit du PE Aarch64 |
+| vkd3d-proton | **construit en PE Aarch64** (`d3d12.dll`, `d3d12core.dll`) |
+| Godot 4.7.2 Windows ARM64 | telecharge, `PE32+ Aarch64` |
+| pilote KosmicKrisp arm64 | deja construit (`prefix/`) |
+| Wine 11.18 arm64 | **construit et installe**, `wine`/`wineserver` en Mach-O arm64 |
+| `wineserver` arm64 | **demarre et tourne** |
+| `wine --version` | fonctionne |
+
+`tests/etape2_pile_arm64.sh` lance la pile complete.
+
+### Les deux obstacles rencontres, et ce qu'ils ont appris
+
+**1. Pages de 16 Ko.** Wine 10.0 refuse : `wineserver: page size is 16k but Wine requires
+4k pages`. macOS arm64 natif impose 16 Ko, le modele memoire Windows suppose 4 Ko. C'est
+la raison de fond pour laquelle les distributions commerciales gardent Wine en x86_64 :
+Rosetta fournit des pages de 4 Ko.
+
+Resolu en amont : **Wine 11.18** introduit `host_page_size` (50 occurrences dans
+`virtual.c`). D'ou la construction sur un arbre separe, `src/wine11`, la pile x86_64
+restant intacte sur Wine 10.
+
+**2. `__PAGEZERO` a 4 Go.** Le binaire arm64 reservait tout l'espace bas, la ou Wine doit
+placer l'espace Windows, d'ou `try_map_free_area mmap() error ... range 0x100000000`. Le
+Makefile demande pourtant `-pagezero_size,0x1000`. Relie a la main, l'option est prise.
+Note : a 16 Ko (`0x4000`) le binaire est tue au lancement, a 4 Ko (`0x1000`) il demarre —
+resultat contre-intuitif, mesure et non deduit.
+
+### L'obstacle restant
+
+`wine --version` repond, `wineserver` tourne, mais `wine cmd` est **tue par SIGKILL** a
+l'initialisation du sous-systeme Windows, sans aucune sortie, meme avec `WINEDEBUGLOG`.
+Le prefixe ne se cree pas. Signature ad hoc avec `allow-jit`,
+`allow-unsigned-executable-memory` et `disable-library-validation` : sans effet.
+
+La trace dyld (avec les droits permettant les variables `DYLD_*`) montrait 1 458
+bibliotheques chargees dont `aarch64-unix/ntdll.so` avant la mort. L'echec est donc apres
+le chargement, dans la mise en place de l'espace d'adressage Windows.
+
+### Ce qui reste a faire
+
+Diagnostiquer ce SIGKILL. Pistes non explorees : le `wow64` de Wine 11 attend peut-etre une
+configuration particuliere ; l'espace d'adressage bas peut rester inaccessible malgre le
+`__PAGEZERO` reduit ; le chargement des modules PE Aarch64 peut demander un traitement
+specifique sur macOS.
+
+DXVK n'est pas requis pour la mesure Godot, qui passe par vkd3d en D3D12. Sa construction
+aarch64 a demande un correctif de portabilite (`#include <algorithm>` manquant dans
+`src/util/config/config.cpp`, libc++ ne l'apportant pas indirectement contrairement a
+libstdc++) puis bute sur une erreur de gabarits dans `tuple` de libc++ avec `-std=c++17`.
