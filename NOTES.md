@@ -9825,30 +9825,45 @@ differe, donc plus de trou, au prix de l'optimisation pour ces passes.
 La solution complete serait de recenser les ressources de stockage ecrites, comme on le
 fait pour les attachements. Elle est nettement plus lourde et n'a pas ete tentee.
 
-### Ce qu'elle coute, mesure
+### Un defaut dans ma premiere version
 
-Sur Godot, la prudence se declenche sur **87 %** des passes :
+`cmd->state.shaders` est **partage avec le calcul** : les nuanceurs de calcul y occupent
+`MESA_SHADER_COMPUTE`. Ma boucle balayait tous les etages, donc un nuanceur de calcul lie —
+et il ecrit presque toujours en memoire — desactivait le differe pour **toutes** les passes
+de rendu. Restreint a `MESA_SHADER_VERTEX` jusqu'a `MESA_SHADER_FRAGMENT` :
 
-| | avant | apres |
+| Godot | tous les etages | etages graphiques |
 | --- | --- | --- |
-| fermetures differees | 78 609 | 10 359 |
-| barrieres evitees | 437 (0,6 %) | 417 (**4,0 %**) |
-| fermetures immediates | **0** | **68 250** |
+| fermetures differees | 10 359 | **78 175** |
+| fermetures immediates | **68 250** | **434** |
+| barrieres evitees | 417 (4,0 %) | 435 (0,6 %) |
 
-Les nuanceurs de Godot ecrivent en memoire, c'est un rendu par grappes avec tampons de
-lumieres. Le taux d'evitement **monte** a 4 % parce que le denominateur s'effondre : les
-passes qui restent differables sont justement celles qui n'ecrivent rien.
+Seules **0,55 %** des passes ont reellement un nuanceur graphique qui ecrit en memoire. La
+dette est donc fermee pour presque rien, et non pour 87 % des passes comme la premiere
+version le laissait croire.
 
-Temps par image sur Godot : **43,750 ms** contre 44,444 auparavant, donc aucune regression.
-C'etait previsible, le suivi n'y gagnait deja rien (section 123).
-
-Banc a passes independantes, 100 passes et 16 cibles distinctes : **-12,2 %** contre -14,0 %
-avant. L'ecart est du bruit machine, le nuanceur du banc n'ecrivant pas en memoire.
+Temps par image sur Godot : **43,750 ms** contre 44,444 auparavant, aucune regression.
+Banc a passes independantes : **-12,2 %**, l'ecart avec -14,0 % etant du bruit machine.
 
 Suites : **2 026 en D3D12, 4 326 en D3D11**.
 
-### Le compromis, dit clairement
+### Pourquoi le recensement complet est impossible ici
 
-Une charge qui ecrirait en memoire **et** aurait des passes independantes perdrait
-l'optimisation. Aucune de celles dont on dispose n'est dans ce cas, et la correction prime
-sur un gain qui, sur ces charges, n'existait pas.
+Recenser les ressources de stockage ecrites, puis les ressources lues par la passe
+suivante, demanderait d'enumerer ce que les descripteurs designent. Deux chemins coexistent
+dans le pilote : les ensembles classiques, que `kk_descriptor_state.sets[]` possede et qu'on
+pourrait inspecter, et les **tampons de descripteurs**, dont
+`cmd->state.descriptor_buffers[]` ne retient qu'une **adresse GPU opaque** en memoire de
+l'application.
+
+La section 117 a etabli que vkd3d utilise l'extension : desactiver
+`VK_EXT_descriptor_buffer` changeait la conformite, 2 210 contre 2 026. Sur le chemin D3D12,
+qui est la cible principale, le pilote ne peut donc enumerer **ni ce qu'une passe lit, ni
+ce qu'elle ecrit** a travers ses descripteurs.
+
+Cela explique la forme du suivi : les attachements sont les seules ressources passees
+**explicitement** dans l'API, hors descripteurs, donc les seules recensables. Tout le reste
+est opaque par construction.
+
+Le repli conservateur n'est pas un pis-aller en attendant mieux : c'est la seule option
+correcte sous tampons de descripteurs, et il ne coute que 0,55 % des passes.

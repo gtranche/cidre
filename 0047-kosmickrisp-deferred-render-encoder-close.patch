@@ -324,7 +324,7 @@ Generated-by: LLM
 +   assert(cmd);
 +
 +   bool writes_memory = false;
-+   for (uint32_t s = 0; s < MESA_SHADER_STAGES; s++) {
++   for (uint32_t s = MESA_SHADER_VERTEX; s <= MESA_SHADER_FRAGMENT; s++) {
 +      const struct kk_shader *shader = cmd->state.shaders[s];
 +      if (shader && shader->info.writes_memory)
 +         writes_memory = true;
