@@ -120,18 +120,17 @@ Generated-by: LLM
        mtl_release(desc);
     }
  
-@@ -314,14 +323,73 @@
-    if (cmd->vk.base.object_name)
+@@ -315,6 +324,52 @@
        mtl_command_buffer_set_label(cmd->metal.cmd_buf, cmd->vk.base.object_name);
  }
-+
+ 
 +static void
 +kk_collect_render_images(struct kk_cmd_buffer *cmd, struct util_dynarray *out)
 +{
 +   struct kk_rendering_state *render = &cmd->state.gfx.render;
 +
 +   util_dynarray_clear(out);
- 
++
 +   for (uint32_t i = 0; i < render->color_att_count; i++) {
 +      if (render->color_att[i].iview)
 +         util_dynarray_append(out,
@@ -174,10 +173,10 @@ Generated-by: LLM
  void
  cs_start_render(struct kk_cmd_buffer *cmd)
  {
-    struct kk_graphics_state *state = &cmd->state.gfx;
+@@ -322,6 +377,19 @@
     uint32_t view_mask = state->render.view_mask;
     assert(state->render_pass_descriptor);
-+
+ 
 +   bool conflicts_older = false;
 +   bool conflicts = false;
 +   if (cmd->metal.render_closing) {
@@ -188,7 +187,7 @@ Generated-by: LLM
 +         conflicts_older ||
 +         kk_images_intersect(&cmd->opening_reads, &cmd->closing_writes);
 +   }
- 
++
 +   cs_flush_closing(cmd, conflicts);
 +
     /* Ensure no other active encoder, aka compute */
@@ -235,7 +234,7 @@ Generated-by: LLM
     mtl_end_encoding(encoder);
     mtl_release(encoder);
  
-@@ -424,6 +498,64 @@
+@@ -424,6 +498,67 @@
  }
  
  static void
@@ -246,6 +245,9 @@ Generated-by: LLM
 +   close_encoder(cmd, encoder);
 +}
 +
++uint64_t kk_vk_none_none = 0u;
++uint64_t kk_vk_load_store = 0u;
++uint64_t kk_vk_autre = 0u;
 +uint64_t kk_load_load = 0u;
 +uint64_t kk_load_clear = 0u;
 +uint64_t kk_load_dontcare = 0u;
@@ -300,7 +302,7 @@ Generated-by: LLM
  flush_post_render_writes(struct kk_cmd_buffer *cmd)
  {
     assert(cmd->metal.render == NULL);
-@@ -444,6 +576,8 @@
+@@ -444,6 +579,8 @@
  {
     assert(cmd);
  
@@ -309,7 +311,7 @@ Generated-by: LLM
     /* Render first as it may open a compute encoder for post render writes. */
     if (cmd->metal.render) {
        end_encoder(cmd, cmd->metal.render);
-@@ -461,10 +595,44 @@
+@@ -461,10 +598,44 @@
  }
  
  void
@@ -355,7 +357,7 @@ Generated-by: LLM
  }
  
  /* Returns true if a render pass split is required. The main cases are:
-@@ -540,7 +708,9 @@
+@@ -540,7 +711,9 @@
     /* TODO_KOSMICKRISP Lighten barriers according to the actual requested
      * barrier. To take advantage of this we need to remove the chaining of
      * encoders. */
@@ -366,7 +368,7 @@ Generated-by: LLM
        /* Multisample attachments require render pass split always. Then based on
         * the barrier and if we are using depth/stencil or not, we may have to
         * break the render pass. See comment in kk_barrier_requires_encoder_split
-@@ -1020,6 +1190,7 @@
+@@ -1020,6 +1193,7 @@
        return;
  
     mtl_set_address(cmd->argument_table, data_gpu.gpu, 0u);
@@ -374,7 +376,7 @@ Generated-by: LLM
     mtl_compute_set_pipeline_state(encoder, prog->pipeline);
  
     struct mtl_size local_size = {
-@@ -1038,6 +1209,7 @@
+@@ -1038,6 +1212,7 @@
  
     /* Rebind the existing root. */
     mtl_set_address(cmd->argument_table, cmd->state.root_addr, 0u);
@@ -382,7 +384,7 @@ Generated-by: LLM
  }
  
  void
-@@ -1146,6 +1318,15 @@
+@@ -1146,6 +1321,15 @@
           enum mtl_store_action store_action = kk_get_attachment_store_op(
              &render->color_att[i], force_store,
              render->rendering_to_whole_framebuffer, VK_IMAGE_ASPECT_COLOR_BIT);
@@ -398,11 +400,10 @@ Generated-by: LLM
  
           mtl_render_set_color_store_action(encoder, store_action,
                                             logical_index);
-@@ -1331,4 +1512,42 @@
-    if (cmd->metal.compute)
+@@ -1332,3 +1516,48 @@
        mtl_encoder_insert_debug_signpost(cmd->metal.compute,
                                          pLabelInfo->pLabelName);
-+}
+ }
 +
 +void
 +kk_barrier_stats_print(void)
@@ -439,8 +440,15 @@ Generated-by: LLM
 +              (unsigned long long)kk_store_store,
 +              (unsigned long long)kk_store_dontcare,
 +              (unsigned long long)kk_store_autre);
++
++      fprintf(stderr,
++              "kk ops vulkan : NONE/NONE=%llu autre_avec_STORE_OP_NONE=%llu "
++              "reste=%llu\n",
++              (unsigned long long)kk_vk_none_none,
++              (unsigned long long)kk_vk_load_store,
++              (unsigned long long)kk_vk_autre);
 +   }
- }
++}
 --- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
 +++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
 @@ -11,6 +11,9 @@
@@ -453,11 +461,20 @@ Generated-by: LLM
  #include "kk_indirect_commands.h"
  #include "kk_format.h"
  #include "kk_image_view.h"
-@@ -150,6 +153,16 @@
+@@ -150,6 +153,25 @@
           ? MTL_LOAD_ACTION_LOAD
           : vk_attachment_load_op_to_mtl_load_action(info->load_op);
  
 +   if (KK_DEBUG(PASS_STATS)) {
++      extern uint64_t kk_vk_none_none, kk_vk_load_store, kk_vk_autre;
++      if (info->load_op == VK_ATTACHMENT_LOAD_OP_NONE &&
++          info->store_op == VK_ATTACHMENT_STORE_OP_NONE)
++         p_atomic_inc(&kk_vk_none_none);
++      else if (info->store_op == VK_ATTACHMENT_STORE_OP_NONE)
++         p_atomic_inc(&kk_vk_load_store);
++      else
++         p_atomic_inc(&kk_vk_autre);
++
 +      extern uint64_t kk_load_load, kk_load_clear, kk_load_dontcare;
 +      if (load_action == MTL_LOAD_ACTION_LOAD)
 +         p_atomic_inc(&kk_load_load);
@@ -470,11 +487,10 @@ Generated-by: LLM
     mtl_render_pass_attachment_descriptor_set_load_action(descriptor,
                                                           load_action);
     mtl_render_pass_attachment_descriptor_set_store_action(
-@@ -362,6 +375,21 @@
-        render->view_mask == BITFIELD64_MASK(render->layer_count));
+@@ -363,6 +385,21 @@
  
     render->rendering_to_whole_framebuffer = is_whole_framebuffer;
-+
+ 
 +   if (KK_DEBUG(PASS_STATS)) {
 +      extern uint64_t kk_pass_count, kk_pass_partial, kk_pass_px_area,
 +         kk_pass_px_fb;
@@ -489,29 +505,29 @@ Generated-by: LLM
 +      if (p_atomic_inc_return(&kk_pass_count) % 5000u == 0u)
 +         kk_barrier_stats_print();
 +   }
- 
++
     /* renderTargetWidth/Height doesn't seem to guarantee
      * that the attachments won't get touched outside the area
-@@ -628,16 +656,20 @@
-    };
+     * so just checking for offset = 0 doesn't cut it. */
+@@ -629,15 +666,19 @@
  
     kk_apply_attachment_store_ops(cmd, false);
--
+ 
 -   /* Clean up previous encoder */
 -   cs_end(cmd);
 -   mtl_release(cmd->state.gfx.render_pass_descriptor);
 -   cmd->state.gfx.render_pass_descriptor = NULL;
- 
+-
     if (render->flags &
         (VK_RENDERING_SUSPENDING_BIT | VK_RENDERING_CUSTOM_RESOLVE_BIT_EXT))
        need_meta_resolve = false;
- 
++
 +   /* Clean up previous encoder */
 +   if (need_meta_resolve)
 +      cs_end(cmd);
 +   else
 +      kk_cs_end_render_pass(cmd);
-+
+ 
 +   mtl_release(cmd->state.gfx.render_pass_descriptor);
 +   cmd->state.gfx.render_pass_descriptor = NULL;
 +

@@ -9460,3 +9460,39 @@ dans DXVK et non dans KosmicKrisp, et dont le gain n'est pas evalue.
 Il manque toujours ce que la section 120 reclamait deja : **un point de comparaison
 externe**, le meme banc sur le meme GPU sans notre pile. Sans lui, on sait que la pile
 n'ajoute rien de mesurable, mais pas si le chiffre absolu est bon.
+
+### Le STORE systematique de DXVK : le levier est vide (2026-09-21)
+
+La section 127 laissait un seul levier identifie : DXVK demande `STORE` sur tous les
+attachements couleur, `dontcare=0` sur 199 246 stockages. Verification faite, il n'y a
+rien a prendre.
+
+**DXVK a deja l'optimisation.** `DxvkContext::adjustAttachmentLoadStoreOps` retrograde les
+operations quand un attachement n'est pas ecrit pendant la passe : `LOAD_OP_NONE` et
+`STORE_OP_NONE` si le pilote annonce `VK_KHR_load_store_op_none`, sinon `LOAD` plus
+`STORE_OP_NONE`. Il suit pour cela un `attachmentMask` des acces reels.
+
+**Nous annoncons l'extension** (`kk_physical_device.c`, `KHR_load_store_op_none` et
+`EXT_load_store_op_none`), donc DXVK peut s'en servir.
+
+**Il ne s'en sert jamais ici.** Sur **204 829** descriptions d'attachement :
+
+```
+kk ops vulkan : NONE/NONE=0  autre_avec_STORE_OP_NONE=0  reste=204829
+```
+
+Tout attachement lie par DXVK est reellement ecrit. Le `STORE` n'est pas de la paresse,
+c'est la description fidele de ce que fait l'application.
+
+**Ce qui aurait ete un vrai defaut.** Si DXVK avait demande `NONE/NONE`, notre pilote
+aurait force un chargement **et** un stockage complets : `kk_get_attachment_store_op` et
+`kk_fill_common_attachment_description` traitent tous deux `(LOAD ou NONE) + STORE_OP_NONE`
+comme un cas ou il faut charger et stocker, faute pour Metal d'avoir un « laisser
+intact ». Le correctif aurait ete de ne pas attacher la texture du tout. Le cas existe
+dans le code et se declenchera pour une application qui lie des cibles sans y ecrire ; il
+ne se produit pas sur cette scene.
+
+Profil reel des chargements : **61 % LOAD, 11 % CLEAR, 28 % DONT_CARE**. Les `DONT_CARE`
+sont gratuits, les `LOAD` sont des lectures authentiques.
+
+Toutes les pistes identifiees sur ce front sont desormais fermees par la mesure.
