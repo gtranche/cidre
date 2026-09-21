@@ -9305,3 +9305,91 @@ Metal 4, qui n'existe pas encore ici.
 Le caractere **proportionnel** de l'ecart oriente vers une difference d'execution par
 fragment — occupation, pression de registres, chemin d'acces memoire — plutot que vers un
 cout fixe de configuration.
+
+## 126. Harnais Metal 4 : l'encodeur est hors de cause, la compression de texture ne l'etait pas (2026-09-21)
+
+Suite de la section 125, qui avait innocente le code genere et designe l'encodeur comme
+seul suspect restant.
+
+### L'encodeur n'y est pour rien
+
+`tests/bench_frag_mtl4.m` execute le **meme MSL genere** avec toute la structure du
+pilote : `MTL4Compiler`, `MTL4CommandBuffer`, `MTL4RenderCommandEncoder`, table
+d'arguments, ensemble de residence sur la file, et la barriere aveugle a la fin de chaque
+passe.
+
+| | 512 ech/pixel |
+| --- | --- |
+| metal ecrit a la main, encodeur classique | 8,31 ms |
+| MSL genere, encodeur classique | 8,38 ms |
+| **MSL genere, encodeur Metal 4 complet** | **8,38 ms** |
+| MSL genere, notre pilote | 11,08 ms |
+
+Le harnais reproduisait alors presque tout le pilote, et l'ecart persistait. Restait la
+texture source.
+
+### La cause
+
+| harnais Metal 4, texture source | 512 ech/pixel |
+| --- | --- |
+| usage lecture seule | **8,362 ms** |
+| + usage ecriture | **14,199 ms** |
+| `allowGPUOptimizedContents = NO` | 14,248 ms |
+
+La compression sans perte de Metal vaut **70 %** sur cette charge, et l'usage ecriture la
+desactive.
+
+Dans `kk_image_layout.c`, `VK_IMAGE_USAGE_TRANSFER_DST_BIT` ajoutait
+`MTL_TEXTURE_USAGE_SHADER_WRITE`. Or c'est le drapeau que porte **toute** texture qu'une
+application televerse.
+
+### Le correctif tient en une ligne
+
+Le pilote n'ecrit jamais dans une texture par nuanceur : toutes les copies passent par les
+operations natives de l'encodeur de calcul Metal 4 (`copyFromBuffer:toTexture:`,
+`copyFromTexture:toBuffer:`, `copyFromTexture:toTexture:`) et aucun noyau de `libkk` ne
+fait de `write_image`. L'usage ecriture etait demande pour rien.
+
+| | 512 ech/pixel |
+| --- | --- |
+| avant | 11,175 ms |
+| **apres** | **7,870 ms** (-29,6 %) |
+| metal ecrit a la main | 8,31 ms |
+
+Nous passons devant la reference ecrite a la main. Suites : **2 026 en D3D12, 4 326 en
+D3D11**, les references exactes.
+
+`MESA_KK_DEBUG=transfer_dst_write` retablit l'ancien comportement pour l'A/B.
+
+### Et pourtant, toujours rien sur Superposition
+
+Trois captures exploitables sur quatre, meme methode qu'en section 122 :
+
+| | img/s | temps/image median |
+| --- | --- | --- |
+| usage ecriture (ancien) | 22,28 | 43,81 ms |
+| compresse | 22,37 | 43,48 ms |
+| compresse | 22,36 | 43,61 ms |
+
+**-0,6 %.** L'explication a ete mesuree, pas supposee :
+
+| format de la texture source | lecture seule | + usage ecriture |
+| --- | --- | --- |
+| RGBA8 | 8,375 ms | 14,189 ms (**+69 %**) |
+| BC1 | 6,712 ms | 6,725 ms (**+0,2 %**) |
+
+Sur un format **compresse par blocs**, l'usage ecriture ne coute rien : la compression
+sans perte ne s'y applique pas, ces formats etant deja compresses. Les textures d'un jeu
+sont en BC, donc Superposition n'en profite pas.
+
+Le correctif compte pour les textures **non compressees** : cibles de rendu intermediaires,
+chaines de post-traitement, tampons G, interfaces, tables de correspondance. C'est reel,
+mais ce n'est pas le gros des textures d'un jeu.
+
+### Bilan des deux sections
+
+Le fragment a ete entierement disseque : code genere a parite (section 125), encodeur a
+parite, et un vrai defaut trouve et corrige a -29,6 % sur formats non compresses. Les
+22 images par seconde de Superposition ne viennent ni du compilateur, ni de l'encodeur, ni
+de la compression : elles restent le cout du travail lui-meme, comme la section 120 le
+concluait deja.

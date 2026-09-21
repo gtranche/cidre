@@ -2,7 +2,7 @@ Generated-by: LLM
 
 --- a/src/kosmickrisp/vulkan/kk_debug.h
 +++ b/src/kosmickrisp/vulkan/kk_debug.h
-@@ -16,6 +16,12 @@
+@@ -16,6 +16,14 @@
     KK_DEBUG_NO_DESCRIPTOR_BUFFER = 1ull << 3,
  
     KK_DEBUG_ENCODER_LABELS = 1ull << 4,
@@ -12,18 +12,21 @@ Generated-by: LLM
 +   KK_DEBUG_BARRIER_STATS = 1ull << 6,
 +
 +   KK_DEBUG_NO_BIND_CACHE = 1ull << 7,
++
++   KK_DEBUG_TRANSFER_DST_WRITE = 1ull << 8,
  };
  
  extern enum kk_debug kk_mesa_debug_flags;
 --- a/src/kosmickrisp/vulkan/kk_debug.c
 +++ b/src/kosmickrisp/vulkan/kk_debug.c
-@@ -13,6 +13,9 @@
+@@ -13,6 +13,10 @@
     {"force_robustness", KK_DEBUG_FORCE_ROBUSTNESS},
     {"no_descriptor_buffer", KK_DEBUG_NO_DESCRIPTOR_BUFFER},
     {"encoder_labels", KK_DEBUG_ENCODER_LABELS},
 +   {"blanket_barrier", KK_DEBUG_BLANKET_BARRIER},
 +   {"barrier_stats", KK_DEBUG_BARRIER_STATS},
 +   {"no_bind_cache", KK_DEBUG_NO_BIND_CACHE},
++   {"transfer_dst_write", KK_DEBUG_TRANSFER_DST_WRITE},
     {NULL, 0},
  };
  
@@ -433,3 +436,17 @@ Generated-by: LLM
  
     /* End capture before we start releasing resources. Otherwise, Metal capture
      * may run into issues. */
+--- a/src/kosmickrisp/vulkan/kk_image_layout.c
++++ b/src/kosmickrisp/vulkan/kk_image_layout.c
+@@ -46,8 +46,9 @@
+ {
+    enum mtl_texture_usage usage = 0u;
+ 
+-   const VkImageUsageFlags shader_write =
+-      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
++   VkImageUsageFlags shader_write = VK_IMAGE_USAGE_STORAGE_BIT;
++   if (KK_DEBUG(TRANSFER_DST_WRITE))
++      shader_write |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    if (usage_flags & shader_write)
+       usage |= MTL_TEXTURE_USAGE_SHADER_WRITE;
+ 
