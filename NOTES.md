@@ -9232,3 +9232,76 @@ de nos charges actuelles.
 C'est le premier correctif de performance de cette serie qui reduit un cout **reellement
 excessif** plutot que d'en deplacer un : 4,5 fois le cout natif pour reecrire une adresse
 inchangee.
+
+## 125. Le travail fragment : le code genere est hors de cause (2026-09-21)
+
+La section 123 laissait deux suspects. Apres le debit de tirages, voici le second, qui
+est celui qui borne reellement Superposition (34 ms de fragment sur 38,4 de GPU par image,
+section 120).
+
+### L'ecart, et il depend du regime
+
+Banc fragment, protocole entrelace, ecart par paire, n=8 :
+
+| ech/pixel | notre pile | metal ecrit a la main | ecart |
+| --- | --- | --- | --- |
+| 32 | 0,500 ms | 0,680 ms | **-26,5 %** |
+| 128 | 1,835 ms | 1,800 ms | +1,7 % |
+| 512 | 11,110 ms | 8,450 ms | **+31,3 %** |
+
+A forte charge d'echantillonnage nous sommes un tiers plus lents, et la mesure est
+resserree (+29,7 a +33,9 %). L'ecart est **proportionnel au travail**, pas fixe par passe.
+
+### Ce que montrait le MSL genere
+
+Dans la boucle, chaque iteration recharge le descripteur : pointeur, biais de lod fp16,
+index d'echantillonneur, puis l'echantillonneur depuis une table de 4 096 entrees indexee
+dynamiquement. Le code ecrit a la main, lui, a une texture et un echantillonneur lies
+directement.
+
+### Huit causes eliminees par mesure directe
+
+Chacune testee en l'ajoutant au repere ecrit a la main, ou en la desactivant chez nous :
+
+| hypothese | resultat |
+| --- | --- |
+| contournement 6 (`coherent device` force) | **+8 a +11 % quand on le desactive** : le retirer est pire |
+| biais de lod a chaque echantillon | -0,6 % |
+| 4 chargements de descripteur par echantillon | -2,0 % |
+| les memes, marques `volatile` | +0,3 % |
+| texture bindless deref depuis la memoire | +0,0 % |
+| echantillonneur pris dans une table de 4 096 | -0,8 % |
+| mode de calcul flottant | le pilote demande deja `FAST` |
+| `mathFloatingPointFunctions` | -0,2 % |
+| ensemble de residence contre `useResource` | +0,3 % |
+
+### L'experience decisive
+
+`tests/bench_frag_genmsl.m` prend le **MSL genere par notre pilote**, tel quel, et
+l'execute dans le harnais Metal avec les memes tampons : table racine, table
+d'echantillonneurs, descripteur bindless reconstruits a la main aux memes offsets.
+
+| | 512 ech/pixel |
+| --- | --- |
+| metal ecrit a la main | 8,31 ms |
+| **notre MSL genere, harnais Metal** | **8,38 ms** |
+| notre MSL genere, notre pilote | **11,08 ms** |
+
+**Le code genere est a parite.** Les 32 % ne viennent pas du compilateur de nuanceurs :
+ils viennent de la mise en place du pilote autour de la passe.
+
+Cela **clot l'angle laisse ouvert par la section 120**, qui designait « l'efficacite du
+code Metal produit » comme le seul suspect non explore et jugeait qu'il demandait un
+instrument dont on ne disposait pas. L'instrument etait a portee : reinjecter le code
+genere dans le harnais.
+
+### Ce qui reste
+
+La difference structurelle non encore testee est l'encodeur : notre pilote utilise
+`MTL4RenderCommandEncoder` avec tables d'arguments, le harnais l'encodeur classique avec
+liaison directe de tampons. C'est la qu'il faut chercher, et cela demande un harnais
+Metal 4, qui n'existe pas encore ici.
+
+Le caractere **proportionnel** de l'ecart oriente vers une difference d'execution par
+fragment — occupation, pression de registres, chemin d'acces memoire — plutot que vers un
+cout fixe de configuration.
