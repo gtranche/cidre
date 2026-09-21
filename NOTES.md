@@ -8572,3 +8572,44 @@ dominee par des passes fragment avec echantillonnage de textures, cibles multipl
 passante memoire — chemins que ce banc n'exerce pas. On peut donc affirmer que le compilateur ne
 degrade pas le calcul ; on ne peut pas exclure une inefficacite sur les chemins de texture ou de
 memoire.
+
+### Repere fragment : 30 us fixes par passe, et 8 % sur l'ombrage (2026-09-21)
+
+Prolongement du repere ALU sur le chemin qui domine reellement : passe plein ecran 1920x1080,
+N echantillonnages bilineaires d'une texture 2048x2048 par pixel, cibles RGBA16F.
+`tests/bench_frag_metal.m` en MSL a la main, `tests/bench_frag_vulkan.c` via GLSL, SPIR-V et
+KosmicKrisp.
+
+**Chronometrage GPU des deux cotes**, et non plus le mur : `GPUEndTime - GPUStartTime` cote
+Metal, requetes d'horodatage cote Vulkan. La distinction comptait — le mur incluait l'encodage
+CPU, qui dans une vraie charge serait masque par le GPU.
+
+| ech/pixel | Metal natif | notre pile | ecart |
+|---|---|---|---|
+| 1 | 0,050 ms | 0,080 ms | **30 us** |
+| 4 | 0,080 ms | 0,130 ms | 50 us |
+| 32 | 0,430 ms | 0,500 ms | 70 us |
+| 128 | 1,670 ms | 1,830 ms | 160 us |
+
+Le modele qui ajuste les quatre points : **~30 us fixes par passe, plus ~8 % proportionnels a
+l'ombrage**. C'est du **temps GPU**, pas de l'encodage.
+
+Contraste avec le repere ALU, ou le rapport tenait entre 0,97 et 1,08 : **le calcul est a
+parite, le chemin fragment ne l'est pas.**
+
+### Ce que ca vaut sur Superposition, et ce que ca n'explique pas
+
+95 passes fragment par image x 30 us = **2,9 ms**, plus 8 % des 34 ms d'ombrage = 2,7 ms. Soit
+environ **5,6 ms sur 45,2**, ou **12 %** : 22 images par seconde deviendraient environ 25.
+
+Reel et mesure, mais **cela n'explique pas un ecart d'un facteur deux**. Et rien dans ce qui a
+ete mesure n'etablit qu'un tel ecart existe : il n'y a toujours pas de point de comparaison
+externe pour dire ce que vaut un M1 Max sur ce banc.
+
+### Cause des 30 us : non identifiee
+
+Deux pistes ecartees : ce n'est pas un chargement d'attache force (`is_whole_framebuffer` est
+vrai dans le banc, donc `force_attachment_load` reste faux), et ce n'est pas du cout CPU
+d'encodage, puisque la mesure est cote GPU. Trente microsecondes sur deux millions de pixels
+correspond a l'ordre de grandeur d'un parcours complet de la cible. Identifier la cause
+demanderait une capture Metal du banc lui-meme, comparant les deux passes cote a cote.
