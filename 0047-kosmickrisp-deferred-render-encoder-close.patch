@@ -123,17 +123,18 @@ Generated-by: LLM
        mtl_release(desc);
     }
  
-@@ -315,6 +324,52 @@
+@@ -314,7 +323,53 @@
+    if (cmd->vk.base.object_name)
        mtl_command_buffer_set_label(cmd->metal.cmd_buf, cmd->vk.base.object_name);
  }
- 
++
 +static void
 +kk_collect_render_images(struct kk_cmd_buffer *cmd, struct util_dynarray *out)
 +{
 +   struct kk_rendering_state *render = &cmd->state.gfx.render;
 +
 +   util_dynarray_clear(out);
-+
+ 
 +   for (uint32_t i = 0; i < render->color_att_count; i++) {
 +      if (render->color_att[i].iview)
 +         util_dynarray_append(out,
@@ -314,7 +315,7 @@ Generated-by: LLM
     /* Render first as it may open a compute encoder for post render writes. */
     if (cmd->metal.render) {
        end_encoder(cmd, cmd->metal.render);
-@@ -461,10 +598,44 @@
+@@ -461,10 +598,52 @@
  }
  
  void
@@ -322,13 +323,21 @@ Generated-by: LLM
 +{
 +   assert(cmd);
 +
++   bool writes_memory = false;
++   for (uint32_t s = 0; s < MESA_SHADER_STAGES; s++) {
++      const struct kk_shader *shader = cmd->state.shaders[s];
++      if (shader && shader->info.writes_memory)
++         writes_memory = true;
++   }
++
 +   bool has_post_render_writes = util_dynarray_num_elements(
 +      &cmd->post_render_writes, struct libkk_imm_write) > 0;
 +   bool has_ts_resolves =
 +      util_dynarray_num_elements(&cmd->ts_resolves, struct kk_ts_resolve) > 0;
 +
 +   if (KK_DEBUG(BLANKET_BARRIER) || cmd->metal.render == NULL ||
-+       cmd->metal.compute != NULL || has_post_render_writes || has_ts_resolves) {
++       cmd->metal.compute != NULL || has_post_render_writes || has_ts_resolves ||
++       writes_memory) {
 +      if (KK_DEBUG(BARRIER_STATS) && cmd->metal.render)
 +         p_atomic_inc(&kk_pass_eager);
 +      cs_end(cmd);
@@ -360,7 +369,7 @@ Generated-by: LLM
  }
  
  /* Returns true if a render pass split is required. The main cases are:
-@@ -540,7 +711,9 @@
+@@ -540,7 +719,9 @@
     /* TODO_KOSMICKRISP Lighten barriers according to the actual requested
      * barrier. To take advantage of this we need to remove the chaining of
      * encoders. */
@@ -371,7 +380,7 @@ Generated-by: LLM
        /* Multisample attachments require render pass split always. Then based on
         * the barrier and if we are using depth/stencil or not, we may have to
         * break the render pass. See comment in kk_barrier_requires_encoder_split
-@@ -1020,6 +1193,7 @@
+@@ -1020,6 +1201,7 @@
        return;
  
     mtl_set_address(cmd->argument_table, data_gpu.gpu, 0u);
@@ -379,7 +388,7 @@ Generated-by: LLM
     mtl_compute_set_pipeline_state(encoder, prog->pipeline);
  
     struct mtl_size local_size = {
-@@ -1038,6 +1212,7 @@
+@@ -1038,6 +1220,7 @@
  
     /* Rebind the existing root. */
     mtl_set_address(cmd->argument_table, cmd->state.root_addr, 0u);
@@ -387,7 +396,7 @@ Generated-by: LLM
  }
  
  void
-@@ -1146,6 +1321,15 @@
+@@ -1146,6 +1329,15 @@
           enum mtl_store_action store_action = kk_get_attachment_store_op(
              &render->color_att[i], force_store,
              render->rendering_to_whole_framebuffer, VK_IMAGE_ASPECT_COLOR_BIT);
@@ -403,7 +412,7 @@ Generated-by: LLM
  
           mtl_render_set_color_store_action(encoder, store_action,
                                             logical_index);
-@@ -1332,3 +1516,48 @@
+@@ -1332,3 +1524,48 @@
        mtl_encoder_insert_debug_signpost(cmd->metal.compute,
                                          pLabelInfo->pLabelName);
  }
@@ -598,3 +607,23 @@ Generated-by: LLM
     if (usage_flags & shader_write)
        usage |= MTL_TEXTURE_USAGE_SHADER_WRITE;
  
+--- a/src/kosmickrisp/vulkan/kk_shader.h
++++ b/src/kosmickrisp/vulkan/kk_shader.h
+@@ -71,6 +71,7 @@
+ struct kk_shader_info {
+    mesa_shader_stage stage;
+    bool uses_per_draw_data;
++   bool writes_memory;
+ 
+    /* Required for fragment shader cull distance discards. */
+    uint8_t num_cull_distances;
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -1056,6 +1056,7 @@
+ {
+    shader->info.stage = nir->info.stage;
+    shader->info.uses_per_draw_data = msl_gather_uses_per_draw_data(nir);
++   shader->info.writes_memory = nir->info.writes_memory;
+    shader->info.num_cull_distances = nir->info.cull_distance_array_size;
+    if (nir->info.stage == MESA_SHADER_VERTEX) {
+       nir_shader_intrinsics_pass(nir, gather_vs_inputs, nir_metadata_all,

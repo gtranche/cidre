@@ -9797,3 +9797,58 @@ Le reste du cout par tirage est le `drawPrimitives` d'Apple et la traduction ell
 sur lesquels le pilote n'a pas prise.
 
 Suites : **2 026 en D3D12, 4 326 en D3D11**, avant et apres.
+
+## 133. La dette du suivi des ressources : fermee, et elle coutait plus cher qu'annonce (2026-09-21)
+
+Les sections 122 et 126 laissaient une dette explicite : le suivi des ressources compare
+les **images d'attachement**, mais une passe peut aussi ecrire par nuanceur dans des images
+ou des tampons de stockage, et ces ecritures n'etaient recensees nulle part.
+
+### Le scenario qui mordait
+
+Une passe A ecrit une ressource de stockage X. A se ferme en differe, `closing_writes` ne
+contenant que ses attachements. Si rien n'ouvre d'encodeur entre-temps, la barriere de
+l'application arrive alors que A est encore l'encodeur differe et le drapeau est pose :
+correct. Mais si une passe B s'ouvre avant la barriere, A est ferme **sans ordre**, et plus
+rien ne peut le rattraper : Metal n'autorise a poser une barriere sur un encodeur
+qu'avant sa fermeture, comme etabli en section 121.
+
+C'est le probleme du producteur non adjacent, restreint aux ressources que le suivi ne
+voyait pas.
+
+### Le correctif, conservateur et assume
+
+`nir->info.writes_memory` est propage dans `kk_shader_info`, et `kk_cs_end_render_pass`
+retombe sur la fermeture immediate des qu'un nuanceur lie peut ecrire en memoire. Plus de
+differe, donc plus de trou, au prix de l'optimisation pour ces passes.
+
+La solution complete serait de recenser les ressources de stockage ecrites, comme on le
+fait pour les attachements. Elle est nettement plus lourde et n'a pas ete tentee.
+
+### Ce qu'elle coute, mesure
+
+Sur Godot, la prudence se declenche sur **87 %** des passes :
+
+| | avant | apres |
+| --- | --- | --- |
+| fermetures differees | 78 609 | 10 359 |
+| barrieres evitees | 437 (0,6 %) | 417 (**4,0 %**) |
+| fermetures immediates | **0** | **68 250** |
+
+Les nuanceurs de Godot ecrivent en memoire, c'est un rendu par grappes avec tampons de
+lumieres. Le taux d'evitement **monte** a 4 % parce que le denominateur s'effondre : les
+passes qui restent differables sont justement celles qui n'ecrivent rien.
+
+Temps par image sur Godot : **43,750 ms** contre 44,444 auparavant, donc aucune regression.
+C'etait previsible, le suivi n'y gagnait deja rien (section 123).
+
+Banc a passes independantes, 100 passes et 16 cibles distinctes : **-12,2 %** contre -14,0 %
+avant. L'ecart est du bruit machine, le nuanceur du banc n'ecrivant pas en memoire.
+
+Suites : **2 026 en D3D12, 4 326 en D3D11**.
+
+### Le compromis, dit clairement
+
+Une charge qui ecrirait en memoire **et** aurait des passes independantes perdrait
+l'optimisation. Aucune de celles dont on dispose n'est dans ce cas, et la correction prime
+sur un gain qui, sur ces charges, n'existait pas.
