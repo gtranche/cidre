@@ -8432,3 +8432,41 @@ Le temps est dans **8,3 % des encodeurs fragment**. Ce ne sont pas les passes qu
 sont quelques passes precises. Les identifier nommement — par `metal-object-label`, que la
 capture expose — dirait s'il s'agit de la volumetrie, des ombres, ou d'un shader que notre
 traduction rend inutilement cher. C'est la question suivante, et elle est bien posee.
+
+### Identification des passes couteuses (2026-09-21)
+
+Les etiquettes d'encodeur etaient vides : KosmicKrisp ne nomme un encodeur que si l'application
+a pose un nom Vulkan, ce qu'Unigine ne fait pas. Ajout dans `cs_start_render`, sous
+`MESA_KK_DEBUG=encoder_labels`, d'une etiquette portant la geometrie des attaches. Toute capture
+future devient lisible.
+
+Seconde capture, 10 s, filtree sur `wine64` :
+
+| passe | total | fois | moyenne |
+|---|---|---|---|
+| 1920x1080, 1 cible | 1 571 ms | 330 | **4 761 us** |
+| 1920x1080, 1 cible + profondeur | 1 282 ms | 215 | **5 960 us** |
+| 1920x1080, 2 cibles | 1 109 ms | 420 | 2 641 us |
+| 1920x1080, 5 cibles + profondeur | 690 ms | 213 | 3 238 us |
+| 960x540, 2 cibles | 27 ms | 17 | 1 617 us |
+| 8192x8192, profondeur seule | 20 ms | 11 | 1 770 us |
+
+**Superposition rend en 1920x1080 alors que la fenetre fait 1280x720.** L'hypothese laissee
+« non verifiee » plus haut est **etablie** : `-video_width` ne pilote que la fenetre, la
+resolution interne vient du reglage de qualite. C'est pourquoi diviser la fenetre par neuf ne
+changeait rien.
+
+La structure est celle d'un rendu differe ordinaire : G-buffer a 5 cibles, eclairage et
+post-traitements plein ecran a 1 ou 2 cibles, carte d'ombres 8192x8192 occasionnelle. **Rien
+d'anormal** : le cout est la ou on l'attend pour ce moteur a cette resolution, et rien
+n'incrimine notre traduction plutot que le travail lui-meme.
+
+### Deux pieges d'analyse, tous deux dans mon code de depouillement
+
+1. La capture contient **WindowServer et l'application Claude** en plus de `wine64`. Sans filtre
+   sur le processus, les totaux etaient gonfles de 11 % : 10 361 ms pour wine64, 752 pour
+   WindowServer, 423 pour Claude.
+2. Ma regexp supprimait `0x[0-9a-f]+` pour enlever les identifiants — et mangeait le `0x1080` de
+   `1920x1080`, affichant `192`. Les passes ont d'abord paru avoir des resolutions absurdes.
+
+**Les deux fois, c'est l'invraisemblance du resultat qui a alerte, pas la relecture du code.**
