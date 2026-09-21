@@ -8470,3 +8470,40 @@ n'incrimine notre traduction plutot que le travail lui-meme.
    `1920x1080`, affichant `192`. Les passes ont d'abord paru avoir des resolutions absurdes.
 
 **Les deux fois, c'est l'invraisemblance du resultat qui a alerte, pas la relecture du code.**
+
+### Le budget d'une image, et ce qu'il reste a gagner (2026-09-21)
+
+La variation de qualite demandee **n'a pas pu etre faite** : le prereglage du banc reapplique
+`render_virtual_resolution 1920 1080` apres le chargement du monde et ecrase la commande
+console. Verifie dans le journal du moteur :
+
+```
+Unigine~# world_load superposition/superposition && render_virtual_resolution 960 540
+Loading "superposition/superposition.world" 944ms
+Unigine~# render_virtual_resolution 1920 1080      <- le prereglage reprend la main
+```
+
+La question sous-jacente se tranche mieux par l'occupation GPU, qui **borne** le surcout au lieu
+de l'inferer d'une proportionnalite.
+
+Repere de frequence fiable : le nombre de presentations (`ca-client-present-request`), et non le
+nombre de passes G-buffer — celles-ci reviennent 1,77 fois par presentation, donc une meme
+geometrie sert a plus d'une passe.
+
+239 presentations sur 10,80 s :
+
+| | par image | part |
+|---|---|---|
+| **GPU occupe** | **38,4 ms** | **85 %** |
+| dont fragment | 34,0 ms | 75 % |
+| **tout le reste** | **6,7 ms** | **15 %** |
+
+Ces 6,7 ms contiennent la soumission, la synchronisation, la presentation **et l'integralite du
+surcout de traduction**. C'est un plafond : supprimer entierement Rosetta, Wine, DXVK et
+KosmicKrisp ne rendrait pas plus de 15 %.
+
+**Conclusion de ce fil.** Les 22 images par seconde sont le cout d'un rendu differe en 1920x1080
+avec ce niveau d'effets sur ce GPU. Rien dans la structure ne cloche, le pilote ne decoupe pas
+les passes, et la traduction n'ajoute pas de surcout fixe notable. Pour savoir si ce chiffre est
+bon dans l'absolu il faudrait le meme banc sur le meme GPU sans notre pile — comparaison dont on
+ne dispose pas.
