@@ -8694,3 +8694,51 @@ construire, pas un ajustement de drapeaux.
 
 L'etiquetage des encodeurs (`MESA_KK_DEBUG=encoder_labels`) est conserve : il a servi a
 identifier les passes et resservira.
+
+### Reference externe : introuvable, et la question etait mal posee (2026-09-21)
+
+Recherche du classement Unigine pour le prereglage 1080p Medium : le tableau public est un
+**Top 50**, exclusivement des RTX 4090 et 5090. Aucun point de comparaison de gamme moyenne.
+Aucun score Superposition publie pour un M1 Max, ni natif — le banc n'existe pas sur macOS ARM —
+ni via CrossOver ou Parallels.
+
+**Et la comparaison aurait ete fausse de toute facon.** Nos 22 images par seconde viennent du
+**vol libre**, pas du parcours scripte du banc. Les scores du classement viennent de ce
+parcours, avec sa camera fixe et sa sequence d'effets. Les deux nombres ne mesurent pas la meme
+chose. Obtenir un vrai score demanderait de piloter le banc, dont la logique vit dans les
+archives de script, pas dans le binaire.
+
+### La reference qui vaut : la machine contre elle-meme
+
+Le banc fragment du § precedent donne le debit **mesure**, pas celui d'une fiche technique :
+Metal natif fait une passe 1920x1080 avec 32 echantillonnages bilineaires par pixel en
+**0,43 ms**, soit **154 milliards d'echantillons par seconde**.
+
+Ce que coutent les passes de Superposition, converti a ce debit :
+
+| passe | duree | equivalent |
+|---|---|---|
+| la plus chere | 5,96 ms | **444 echantillons par pixel** |
+| la deuxieme | 4,76 ms | 354 par pixel |
+| G-buffer, 5 cibles | 3,24 ms | 241 par pixel |
+
+Pour un eclairage differe avec une vingtaine de lumieres a ombres, plus la volumetrie et le
+post-traitement, plusieurs centaines d'echantillons par pixel est **normal**.
+
+**La machine est donc conduite pres de son debit natif mesure.** Les 22 images par seconde sont
+ce que coute cette scene a cette resolution, pas ce que notre pile gaspille.
+
+### Conclusion du fil performance
+
+Quatre axes mesures, trois a parite avec le natif :
+
+| axe | verdict |
+|---|---|
+| frequence GPU, thermique | Maximum 99,9 %, nominal |
+| decoupage des passes | rapport 1,10, aucun decoupage sur barriere |
+| efficacite du calcul | parite, rapport 0,97 a 1,08 |
+| efficacite du fragment | **11 a 15 % perdus** sur la barriere de fin d'encodeur |
+
+Le seul gaspillage identifie vaut 11 a 15 %, et il demande un suivi des ressources ecrites pour
+etre recupere sans casser la correction. **Rien de ce qui a ete mesure ne soutient l'idee d'un
+facteur deux a recuperer.**
