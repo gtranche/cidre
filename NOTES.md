@@ -9393,3 +9393,70 @@ parite, et un vrai defaut trouve et corrige a -29,6 % sur formats non compresses
 22 images par seconde de Superposition ne viennent ni du compilateur, ni de l'encodeur, ni
 de la compression : elles restent le cout du travail lui-meme, comme la section 120 le
 concluait deja.
+
+## 127. Le cout du travail lui-meme : tout ce qui est imputable au pilote est a zero (2026-09-21)
+
+Les sections 125 et 126 avaient innocente le compilateur de nuanceurs et l'encodeur, et
+corrige la compression de texture. Restait « le cout du travail », que la section 120
+designait deja comme la reponse par defaut. Cette fois il est mesure, pas suppose.
+
+### Instrumentation
+
+`MESA_KK_DEBUG=pass_stats` compte les passes de rendu, celles dont la zone n'est pas tout
+le tampon, la surface en pixels demandee contre celle du tampon, et le detail des actions
+de chargement et de stockage des attachements couleur.
+
+### Superposition, environ 95 secondes de rendu
+
+| mesure | valeur |
+| --- | --- |
+| passes de rendu | **160 000** (environ 76 par image) |
+| passes a zone partielle | **0** (0,0 %) |
+| gachis de pixels | **1,00x** |
+
+La piste ouverte en section 123 — `kk_cmd_draw.c` force le chargement **et** le stockage
+de l'attachement entier des que la zone de rendu n'est pas tout le tampon, Metal n'ayant
+pas de zone partielle — **ne se declenche jamais ici**. Elle reste vraie pour un moteur a
+atlas, elle ne coute rien a celui-ci.
+
+Le pilote ne cree par ailleurs aucune passe surnumeraire : le nombre d'encodeurs suit
+celui des passes demandees.
+
+### Le trafic d'attachements est celui que l'application demande
+
+```
+chargements : load=129167  clear=23025  dontcare=59192
+stockages   : store=199246  dontcare=0   autre=0
+```
+
+**Pas un seul attachement n'est abandonne.** Ce n'est pas une decision du pilote :
+`kk_get_attachment_store_op` suit l'operation Vulkan et ne force le stockage que dans des
+cas ici absents (zone partielle, resolution en attente, `STORE_OP_NONE` apres un
+chargement). C'est DXVK qui demande `STORE` partout, faute de savoir en D3D11 quand une
+cible devient morte.
+
+Par image : environ 94 stockages et 61 chargements plein ecran en 1920x1080, soit de
+l'ordre de **780 Mo ecrits et 500 Mo lus par image**.
+
+### Bilan des quatre sections
+
+Tout ce qui est imputable au pilote a ete mesure, et tout est a zero ou a parite :
+
+| axe | resultat |
+| --- | --- |
+| code MSL genere | parite (section 125, reinjection dans le harnais) |
+| encodeur Metal 4 | parite (section 126) |
+| compression de texture | defaut trouve, **-29,6 %** sur formats non compresses |
+| debit par triangle | parite |
+| cout par tirage a l'encodage | defaut trouve, **-45,8 %** |
+| passes surnumeraires | aucune |
+| chargements et stockages forces | aucun |
+| barriere d'encodeur | pas sur le chemin critique (sections 122, 123) |
+
+Les 22 images par seconde sont le travail que l'application demande, execute sans surcout
+mesurable. Le seul levier restant identifie est le `STORE` systematique de DXVK, qui est
+dans DXVK et non dans KosmicKrisp, et dont le gain n'est pas evalue.
+
+Il manque toujours ce que la section 120 reclamait deja : **un point de comparaison
+externe**, le meme banc sur le meme GPU sans notre pile. Sans lui, on sait que la pile
+n'ajoute rien de mesurable, mais pas si le chiffre absolu est bon.
