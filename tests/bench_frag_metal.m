@@ -83,7 +83,8 @@ int main(int argc, char **argv)
       id<MTLCommandQueue> q = [dev newCommandQueue];
 
       double meilleur = 1e9;
-      for (int rep = 0; rep < 4; ++rep) {
+      int reps = argc > 3 ? atoi(argv[3]) : 4;
+      for (int rep = 0; rep < reps; ++rep) {
          double t0 = maintenant();
          id<MTLCommandBuffer> cb = [q commandBuffer];
          for (uint32_t p = 0; p < passes; ++p) {

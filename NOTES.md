@@ -8613,3 +8613,50 @@ vrai dans le banc, donc `force_attachment_load` reste faux), et ce n'est pas du 
 d'encodage, puisque la mesure est cote GPU. Trente microsecondes sur deux millions de pixels
 correspond a l'ordre de grandeur d'un parcours complet de la cible. Identifier la cause
 demanderait une capture Metal du banc lui-meme, comparant les deux passes cote a cote.
+
+### La cause des 30 us : une barriere ALL vers ALL a chaque fin d'encodeur (2026-09-21)
+
+Capture des deux bancs cote a cote, `Metal System Trace`, meme charge :
+
+| | Metal natif | notre pile |
+|---|---|---|
+| duree totale | 3 655 ms | 4 489 ms |
+| GPU occupe | 3 247 ms (**88,8 %**) | 3 406 ms (**75,9 %**) |
+| encodeurs fragment | 7 623, moy 424,7 us | 7 494, moy 443,6 us |
+| **trous entre passes fragment** | **1 475** | **7 493** |
+| total des trous | 418 ms | **1 164 ms** |
+
+Le natif enchaine : 1 475 trous pour 7 623 passes. **Nous avons un trou entre chacune des
+7 494 passes.** L'ecart n'est donc pas dans les encodeurs — ils ne coutent que 19 us de plus —
+mais dans le temps mort **entre** eux.
+
+La cause est dans `end_encoder` :
+
+```c
+/* TODO_KOSMICKRISP This is probably overkill */
+mtl_barrier_after_stages(encoder, MTL_STAGE_ALL, MTL_STAGE_ALL);
+```
+
+**Chaque encodeur se termine par une barriere totale, inconditionnelle.** En Metal 4 cela vide
+le pipeline entre deux passes. Le commentaire amont dit deja « c'est probablement excessif ».
+Il n'y a aucune barriere Vulkan entre les passes du banc : la serialisation est gratuite.
+
+Mesure du plafond, en la retirant — **chronometrage au mur**, car sans barriere l'horodatage de
+fin n'attend plus la fin du travail et rendait des valeurs impossibles (0,01 ms, plus rapide que
+le natif) :
+
+| ech/pixel | avec | sans | Metal natif |
+|---|---|---|---|
+| 4 | 0,140 ms | **0,085 ms** | 0,080 ms |
+| 32 | 0,510 ms | **0,440 ms** | 0,435 ms |
+| 128 | 1,840 ms | **1,790 ms** | 1,680 ms |
+
+**Sans la barriere, nous sommes a parite avec Metal natif.** Elle constitue l'integralite du
+surcout fixe par passe.
+
+Sur Superposition : environ 0,05 a 0,07 ms par passe x 95 passes = **5 a 7 ms sur 45,2**, soit
+11 a 15 % ; 22 images par seconde deviendraient environ 25 ou 26.
+
+**La retirer n'est pas le correctif** — elle garantit de vraies dependances, et l'interrupteur
+de mesure a ete retire. Le correctif est de la reduire aux etages reellement concernes plutot
+que `ALL` vers `ALL`. Les suites de conformite D3D11 et D3D12 serviraient de garde-fou.

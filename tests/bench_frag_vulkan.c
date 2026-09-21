@@ -107,7 +107,8 @@ int main(int argc,char**argv){
    VkPhysicalDeviceProperties props; vkGetPhysicalDeviceProperties(pd,&props);
    double periode=props.limits.timestampPeriod;
    double best=1e9;
-   for(int rep=0;rep<4;++rep){
+   int reps=argc>6?atoi(argv[6]):4;
+   for(int rep=0;rep<reps;++rep){
       double t0=now();
       VkCommandBufferBeginInfo bi={.sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
       CK(vkBeginCommandBuffer(cmd,&bi));
@@ -148,7 +149,8 @@ int main(int argc,char**argv){
       vkGetQueryPoolResults(dev,qpool,0,2,sizeof(ts),ts,sizeof(uint64_t),
                             VK_QUERY_RESULT_64_BIT|VK_QUERY_RESULT_WAIT_BIT);
       double dt=(double)(ts[1]-ts[0])*periode*1e-9;
-      (void)t0; if(dt>0.0 && dt<best) best=dt;
+      if(getenv("KK_BENCH_WALL")) dt=now()-t0;
+      if(dt>0.0 && dt<best) best=dt;
    }
    printf("notre-pile   ech/pixel=%u passes=%u cibles=%u  meilleur=%.1f ms  (%.2f ms/passe)\n",
           ech,passes,mrt,best*1e3,best*1e3/passes);
