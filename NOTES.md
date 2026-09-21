@@ -8507,3 +8507,41 @@ avec ce niveau d'effets sur ce GPU. Rien dans la structure ne cloche, le pilote 
 les passes, et la traduction n'ajoute pas de surcout fixe notable. Pour savoir si ce chiffre est
 bon dans l'absolu il faudrait le meme banc sur le meme GPU sans notre pile — comparaison dont on
 ne dispose pas.
+
+### Compteurs GPU : inaccessibles, et un faux coupable (2026-09-21)
+
+**Les compteurs GPU ne sont pas lisibles ici.** `metal-gpu-counter-intervals`,
+`gpu-counter-value`, `gpu-counter-info` et `metal-gpu-counter-profile` rendent zero ligne, avec
+le modele « Metal System Trace » comme avec « Game Performance ». Sur Apple Silicon la lecture
+des compteurs exige que le processus porte une autorisation de profilage Metal ; `wine64` ne
+l'a pas, et la lui donner supposerait de signer le binaire.
+
+La question « notre traduction produit-elle du MSL inefficace ? » **reste donc ouverte**, faute
+d'instrument.
+
+### Le faux coupable
+
+Le modele « Game Performance » rapporte l'etat de performance GPU **« Minimum » sur 100 % de la
+capture**, 1 916 intervalles. Conclusion apparente : le GPU ne monte jamais en frequence, ce qui
+expliquerait tout.
+
+**C'est faux.** La table `gpu-performance-state-info` annonce « Consistent State Available:
+Yes » : ce modele **epingle** l'etat pour rendre les mesures reproductibles. Sur la capture
+« Metal System Trace », non epinglee :
+
+| etat | temps | part |
+|---|---|---|
+| **Maximum** | 9 943 ms | **99,9 %** |
+| Minimum | 8,8 ms | 0,1 % |
+
+Le GPU tourne bien a pleine frequence, et l'etat thermique est **nominal** sur toute la duree.
+
+Ce qui a mis la puce a l'oreille : la premiere capture contenait les deux etats, la seconde un
+seul. **Une mesure qui ne montre qu'une seule valeur doit etre suspectee avant d'etre crue.**
+
+### Ou en est la question de performance
+
+Rien de ce qui a ete mesure n'explique les 22 images par seconde autrement que par le travail
+lui-meme : GPU a pleine frequence, thermique nominal, occupe a 85 %, pas de decoupage de passes
+surnumeraire, surcout de traduction borne a 15 %. Le seul angle non explore est l'efficacite du
+code Metal produit, et il demande un instrument dont on ne dispose pas sur ce binaire.
