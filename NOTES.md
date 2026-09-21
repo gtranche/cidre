@@ -9738,3 +9738,62 @@ code cette adresse en dur.
 **Consequence strategique.** Si Rosetta 2 disparait, ce n'est pas seulement une perte de
 performance pour ce projet : c'est la disparition du seul chemin viable. Le probleme n'est
 pas la performance du pilote, c'est l'existence de l'hote.
+
+## 132. Optimiser le pilote pour Rosetta : un gain, deux impasses (2026-09-21)
+
+La section 131 ayant ferme la voie arm64, le pilote reste en x86_64 traduit. La section 129
+avait mesure que cela coute un facteur **2,3** sur son chemin CPU : chaque cycle economise
+y vaut donc plus qu'en natif.
+
+Toutes les mesures ci-dessous sont faites sur le **binaire x86_64 sous Rosetta**, pas sur
+le banc natif, puisque c'est la pile reelle.
+
+### Ce qui marche : raccourci d'etat propre
+
+`kk_flush_gfx_state` s'executait integralement a chaque tirage. Ajout d'une sortie
+anticipee quand rien n'est sale : encodeur de rendu deja ouvert, pas de passe a demarrer,
+`gfx->dirty` et `dirty_shaders` nuls, ni descripteurs pousses ni racine salie, etat
+dynamique vide.
+
+| | sous Rosetta |
+| --- | --- |
+| sans raccourci | 133,3 ns/tirage |
+| **avec raccourci** | **127,5 ns/tirage** |
+
+**-5,5 %** de mediane, quartiles -8,3 / +3,5, n=12 entrelaces.
+`MESA_KK_DEBUG=no_state_fastpath` retablit l'ancien comportement.
+
+Gain modeste, et c'etait previsible : les branches internes de `kk_flush_dynamic_state`
+etaient deja gardees une a une par leurs drapeaux `IS_DIRTY`.
+
+### Premiere impasse : cibler SSE4.2
+
+Le pilote x86_64 est compile en `-O3` sans `-march`, donc pour le x86-64 de base (SSE2).
+Rosetta 2 gere jusqu'a SSE4.2. Essai avec `-march=x86-64-v2` : **+1,6 %**, donc rien ou
+legerement pire. Le chemin de commandes est du parcours de pointeurs et des branchements,
+pas du calcul vectorisable, et rien ne garantit que Rosetta traduise mieux les
+instructions recentes. Annule.
+
+### Seconde impasse : optimisation inter-fichiers
+
+`-Db_lto=true` est refuse par Mesa lui-meme :
+`ERROR: Building Mesa with LTO is not supported. Please disable LTO for building Mesa.`
+
+### Etat du chemin de tirage
+
+Il est desormais mince : un seul appel Metal par tirage, `kk_flush_xfb_state` sort
+immediatement quand le nuanceur de sommets ne capture pas, `build_per_draw_upload_mask` se
+reduit a quelques tests de bits, et l'etat ne se recalcule plus quand rien n'a change.
+
+Le rapport traduit sur natif passe d'environ **2,3x a 2,1x** sur l'encodage.
+
+### Ce qu'il faut en retenir
+
+Le correctif reellement rentable de cette serie reste celui de la section 124, l'adresse
+de racine reecrite a chaque tirage, **-45,8 %** — et il vaut d'autant plus ici que chaque
+cycle economise est multiplie par 2,1. Ce raccourci-ci ajoute 5 %.
+
+Le reste du cout par tirage est le `drawPrimitives` d'Apple et la traduction elle-meme,
+sur lesquels le pilote n'a pas prise.
+
+Suites : **2 026 en D3D12, 4 326 en D3D11**, avant et apres.

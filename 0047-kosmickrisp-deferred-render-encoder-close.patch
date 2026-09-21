@@ -2,7 +2,7 @@ Generated-by: LLM
 
 --- a/src/kosmickrisp/vulkan/kk_debug.h
 +++ b/src/kosmickrisp/vulkan/kk_debug.h
-@@ -16,6 +16,16 @@
+@@ -16,6 +16,18 @@
     KK_DEBUG_NO_DESCRIPTOR_BUFFER = 1ull << 3,
  
     KK_DEBUG_ENCODER_LABELS = 1ull << 4,
@@ -16,12 +16,14 @@ Generated-by: LLM
 +   KK_DEBUG_TRANSFER_DST_WRITE = 1ull << 8,
 +
 +   KK_DEBUG_PASS_STATS = 1ull << 9,
++
++   KK_DEBUG_NO_STATE_FASTPATH = 1ull << 10,
  };
  
  extern enum kk_debug kk_mesa_debug_flags;
 --- a/src/kosmickrisp/vulkan/kk_debug.c
 +++ b/src/kosmickrisp/vulkan/kk_debug.c
-@@ -13,6 +13,11 @@
+@@ -13,6 +13,12 @@
     {"force_robustness", KK_DEBUG_FORCE_ROBUSTNESS},
     {"no_descriptor_buffer", KK_DEBUG_NO_DESCRIPTOR_BUFFER},
     {"encoder_labels", KK_DEBUG_ENCODER_LABELS},
@@ -30,6 +32,7 @@ Generated-by: LLM
 +   {"no_bind_cache", KK_DEBUG_NO_BIND_CACHE},
 +   {"transfer_dst_write", KK_DEBUG_TRANSFER_DST_WRITE},
 +   {"pass_stats", KK_DEBUG_PASS_STATS},
++   {"no_state_fastpath", KK_DEBUG_NO_STATE_FASTPATH},
     {NULL, 0},
  };
  
@@ -461,10 +464,11 @@ Generated-by: LLM
  #include "kk_indirect_commands.h"
  #include "kk_format.h"
  #include "kk_image_view.h"
-@@ -150,6 +153,25 @@
+@@ -149,6 +152,25 @@
+       force_attachment_load
           ? MTL_LOAD_ACTION_LOAD
           : vk_attachment_load_op_to_mtl_load_action(info->load_op);
- 
++
 +   if (KK_DEBUG(PASS_STATS)) {
 +      extern uint64_t kk_vk_none_none, kk_vk_load_store, kk_vk_autre;
 +      if (info->load_op == VK_ATTACHMENT_LOAD_OP_NONE &&
@@ -483,10 +487,9 @@ Generated-by: LLM
 +      else
 +         p_atomic_inc(&kk_load_dontcare);
 +   }
-+
+ 
     mtl_render_pass_attachment_descriptor_set_load_action(descriptor,
                                                           load_action);
-    mtl_render_pass_attachment_descriptor_set_store_action(
 @@ -363,6 +385,21 @@
  
     render->rendering_to_whole_framebuffer = is_whole_framebuffer;
@@ -509,15 +512,16 @@ Generated-by: LLM
     /* renderTargetWidth/Height doesn't seem to guarantee
      * that the attachments won't get touched outside the area
      * so just checking for offset = 0 doesn't cut it. */
-@@ -629,15 +666,19 @@
+@@ -628,15 +665,19 @@
+    };
  
     kk_apply_attachment_store_ops(cmd, false);
- 
+-
 -   /* Clean up previous encoder */
 -   cs_end(cmd);
 -   mtl_release(cmd->state.gfx.render_pass_descriptor);
 -   cmd->state.gfx.render_pass_descriptor = NULL;
--
+ 
     if (render->flags &
         (VK_RENDERING_SUSPENDING_BIT | VK_RENDERING_CUSTOM_RESOLVE_BIT_EXT))
        need_meta_resolve = false;
@@ -527,13 +531,39 @@ Generated-by: LLM
 +      cs_end(cmd);
 +   else
 +      kk_cs_end_render_pass(cmd);
- 
++
 +   mtl_release(cmd->state.gfx.render_pass_descriptor);
 +   cmd->state.gfx.render_pass_descriptor = NULL;
-+
+ 
     memset(render, 0, sizeof(*render));
  
-    if (need_meta_resolve) {
+@@ -1627,12 +1668,26 @@
+    }
+ }
+ 
++static bool
++kk_gfx_state_is_clean(const struct kk_cmd_buffer *cmd)
++{
++   const struct kk_graphics_state *gfx = &cmd->state.gfx;
++
++   return cmd->metal.render != NULL && !gfx->need_to_start_render_pass &&
++          gfx->dirty == 0u && cmd->state.dirty_shaders == 0u &&
++          gfx->descriptors.push_dirty == 0u && !gfx->descriptors.root_dirty &&
++          BITSET_IS_EMPTY(cmd->vk.dynamic_graphics_state.dirty);
++}
++
+ static void
+ kk_flush_gfx_state(struct kk_cmd_buffer *cmd)
+ {
+    struct kk_graphics_state *gfx = &cmd->state.gfx;
+    struct kk_descriptor_state *desc = &gfx->descriptors;
+ 
++   if (kk_gfx_state_is_clean(cmd) && !KK_DEBUG(NO_STATE_FASTPATH))
++      return;
++
+    kk_flush_render_pass(cmd);
+    kk_flush_pipeline(cmd);
+ 
 --- a/src/kosmickrisp/vulkan/kk_device.c
 +++ b/src/kosmickrisp/vulkan/kk_device.c
 @@ -6,6 +6,7 @@
