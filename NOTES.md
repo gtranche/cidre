@@ -9094,3 +9094,61 @@ present dans la ligne de commande du shell appelant **tue ou attend le shell lui
 c'est ce qui a fait croire a un blocage du pilote. Et le banc Godot ne se termine pas apres
 avoir imprime son resultat : il faut attendre la ligne `RESULT` dans le journal puis tuer,
 pas attendre la sortie du processus.
+
+## 123. Une charge a passes independantes : construite, mesuree, toujours rien (2026-09-21)
+
+Les deux charges reelles disponibles n'evitaient presque aucune barriere (0,6 % et
+0,2 %). Restait a savoir si le -14 % du banc existe sur un moteur reel dont les passes
+sont reellement independantes.
+
+### Pourquoi aucun moteur a atlas ne peut en profiter
+
+Verification dans `kk_cmd_draw.c:369` : des que la zone de rendu n'est pas tout le
+tampon, le pilote **force le chargement et le stockage de l'attachement entier**.
+Metal n'a pas de zone de rendu partielle. Une passe qui n'ecrit qu'une region d'un
+atlas d'ombres lit donc et reecrit tout l'atlas : la dependance est **reelle**, pas un
+defaut de granularite du suivi. Godot, qui met toutes les ombres positionnelles dans un
+atlas, ne pourra jamais en beneficier.
+
+Il faut des passes qui ecrivent des **textures separees**. C'est le patron des vues
+secondaires : cameras de surveillance, portails, minicartes, apercus d'interface.
+Godot le fait avec des `SubViewport`, chacun ayant sa propre cible.
+
+### La scene construite
+
+`build/godot-views/` : N `SubViewport`, chacun sa texture, sa camera, sur la meme scene
+3D, plus la vue principale. Parametres `views`, `size`, `objects`.
+
+| configuration | fermetures differees | barrieres evitees |
+| --- | --- | --- |
+| 8 vues, 512 px, 800 objets | 16 885 | 3 377 (**20,0 %**) |
+| 16 vues, 640 px, 1 500 objets | 30 349 | 6 753 (**22,3 %**) |
+| 64 vues, 160 px, 400 objets | 111 133 | 27 009 (**24,3 %**) |
+
+Contre 0,6 % sur la scene lourde. Le patron produit bien des passes independantes.
+
+### Et pourtant, aucun gain
+
+16 vues, trois paires entrelacees : 80,303 / 80,543 — 80,000 / 80,000 — 80,952 / 80,000.
+Mediane **0,0 %**.
+
+64 vues, trois paires : 125,000 / 123,503 — 125,000 / 125,000 — 125,758 / 125,000.
+Mediane **-0,6 %**.
+
+**Une barriere sur quatre est evitee, et le temps par image ne bouge pas.**
+
+### Ce que cela etablit
+
+Le cout de la barriere d'encodeur n'est pas sur le chemin critique des charges reelles.
+Chacune est limitee par autre chose : le travail fragment pour Superposition (GPU occupe
+a 100 %, mesure section 122), le debit de tirages pour la scene a 64 vues (25 314 tirages
+par image a 8 images par seconde). Le banc montre -14 % parce qu'il ne fait *que*
+enchainer des passes : ni cout de soumission, ni travail CPU, presque rien par passe.
+
+Trois charges, trois configurations, trois fois un resultat nul ou sous le pour cent. La
+refonte est correcte et gratuite, mais **le gain qu'elle debloque n'existe que dans un
+regime que les moteurs reels n'atteignent pas** sur cette pile.
+
+Pour que cela change il faudrait soit un moteur emettant beaucoup de passes courtes vers
+des cibles separees, soit avoir d'abord leve les limites qui dominent aujourd'hui — et
+c'est la qu'il faut chercher ensuite.
