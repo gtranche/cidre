@@ -9496,3 +9496,64 @@ Profil reel des chargements : **61 % LOAD, 11 % CLEAR, 28 % DONT_CARE**. Les `DO
 sont gratuits, les `LOAD` sont des lectures authentiques.
 
 Toutes les pistes identifiees sur ce front sont desormais fermees par la mesure.
+
+## 128. Le point de comparaison externe, enfin (2026-09-21)
+
+Depuis la section 120, chaque conclusion de performance butait sur la meme absence : aucun
+moyen de savoir si un chiffre absolu etait bon, faute de pouvoir executer la meme charge
+sur le meme GPU sans notre pile. Le point de comparaison etait deja installe.
+
+### Le dispositif
+
+`third_party/godot/Godot.app` est la construction macOS de Godot 4.7.2, universelle, avec
+un rendu **Metal natif**. Le meme projet, la meme scene, la meme resolution, le meme GPU :
+d'un cote `--rendering-driver metal` en natif arm64, de l'autre le Godot Windows a travers
+Rosetta, Wine, DXVK/vkd3d et KosmicKrisp.
+
+**Piege ecarte d'abord.** En natif, les deux scenes rendaient *exactement* 20,833 ms, soit
+48,0 img/s pile — deux charges tres differentes ne donnent pas la meme mediane au
+millieme. C'est une quantification de presentation par pas de 20,833 ms. Il a fallu monter
+la charge jusqu'a 16 vues, 1024 px, 6 000 objets pour que le natif en sorte (95 ms avec
+une vraie dispersion).
+
+### Le chiffre
+
+Trois paires alternees, meme configuration :
+
+| paire | natif Metal | notre pile | ecart |
+| --- | --- | --- | --- |
+| 1 | 96,667 ms | 133,333 ms | +37,9 % |
+| 2 | 98,148 ms | 129,167 ms | +31,6 % |
+| 3 | 98,611 ms | 129,249 ms | +31,1 % |
+
+Medianes : **98,1 contre 129,2 ms, soit +31,7 %**.
+
+### Ou l'ecart se loge
+
+Captures « Metal System Trace » des deux cotes, meme charge (la capture ralentit les deux,
+les frequences absolues ne sont pas comparables a celles ci-dessus) :
+
+| | GPU occupe | GPU par image |
+| --- | --- | --- |
+| natif Metal | **99,5 %** | **115,94 ms** |
+| notre pile | **74,6 %** | **164,31 ms** |
+
+Deux constats distincts, et ils appellent des correctifs differents :
+
+1. **+42 % de travail GPU par image.** Le GPU fait davantage, ou le fait moins
+   efficacement.
+2. **Le GPU est inoccupe un quart du temps** chez nous, sature en natif. Il y a donc aussi
+   une limite cote soumission ou synchronisation.
+
+### La reserve, et elle est importante
+
+Ceci compare le **backend D3D12 de Godot** au **backend Metal de Godot**. Ce ne sont pas
+les memes chemins de rendu : nuanceurs compiles differemment, strategies de ressources
+distinctes, passes possiblement differentes. Le +31,7 % borne le cout de **toute la
+chaine**, pas celui du pilote seul. Une partie appartient a Godot, a DXVK/vkd3d et a
+Rosetta.
+
+C'est neanmoins la premiere mesure directe dont dispose le projet, et elle recadre les
+sections 120 a 127 : celles-ci etablissaient que le pilote n'ajoute rien de mesurable sur
+les axes testes, ce qui reste vrai. Le +31,7 % dit qu'il reste un ecart a l'echelle de la
+chaine, et les captures disent ou chercher : le travail GPU lui-meme, et l'occupation.
