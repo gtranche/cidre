@@ -10833,3 +10833,45 @@ comprendre que le pilote n'était pas en cause.
 
 D'où `tests/run_conformance.sh`, désormais versionné : la recette complète ne se reconstitue
 pas de mémoire.
+
+## 148. L'arbitrage mémoire, pris : rétention à 192 (2026-09-22)
+
+La section 147 laissait la rétention de tampons en suspens, faute de genou dans la courbe. Le
+balayage y avait été fait avec le rognage **expérimental**. Refait avec le rognage réel, qui
+consomme moins de tampons, le genou apparaît :
+
+| plafond | mémoire max | constantes poussées |
+| --- | --- | --- |
+| 32 | 4 Mo | ~255 ns |
+| 64 | 8 Mo | ~237 ns |
+| 128 | 16 Mo | ~185 ns |
+| **192** | **24 Mo** | **~158 ns** |
+| 256 | 32 Mo | ~158 ns |
+| 384 | 48 Mo | ~158 ns |
+
+Plat au-delà de 192. Retenu : **192** (correctif 0051).
+
+L'argument qui emporte la décision n'est pas la courbe mais la nature du plafond : il borne une
+**liste de libres**, pas une réservation. `kk_cmd_pool_free_bo_list` n'y remet que des tampons
+réellement consommés par un tampon de commandes, donc un petit tas garde une petite empreinte.
+Les 24 Mo ne sont payés que par un tas ayant effectivement brassé 192 tampons de 128 Ko, c'est-
+à-dire enregistré des milliers de tirages. Ce n'est pas un coût imposé à tous.
+
+### Cumul des deux leviers, contre la référence de la section 146
+
+| profil | référence | rognage seul | + rétention | cumul |
+| --- | --- | --- | --- | --- |
+| constantes poussées | 455,9 ns | 263,7 | **157,5** | **−65 %** |
+| jeu de descripteurs | 453,2 ns | 265,2 | **157,8** | **−65 %** |
+| liaison de pipeline | 611,6 ns | 415,7 | **301,4** | **−51 %** |
+| tirage seul | 50,8 ns | 50,4 | 50,5 | inchangé |
+| état dynamique | 60,8 ns | 58,7 | 58,3 | inchangé |
+
+### Conformité, et une instabilité à connaître
+
+D3D12 **2026**, exact. D3D11 a d'abord donné **4328** contre 4326 attendus. Vérifié plutôt que
+supposé : trois campagnes supplémentaires **avec le même binaire** donnent 4326, 4328, 4326.
+
+**La suite D3D11 oscille donc de ±2 d'une campagne à l'autre.** À ne pas lire comme une
+régression, au même titre que `test_suballocate_va_alignment` et
+`test_unused_attachments_mix_and_match` côté D3D12.
