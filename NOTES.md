@@ -10923,3 +10923,62 @@ pour « après » — incohérent et dérivant. Cause : des **processus Wine oub
 attaché lors de la conformité ratée. Charge moyenne 2,3 au lieu de 0. C'est exactement le piège
 déjà consigné, et je l'ai repris de plein fouet. La reprise ajoute une garde qui attend
 l'absence de processus **et** une charge inférieure à 1,2 avant chaque exécution.
+
+## 150. Superposition : aucun gain, et correction du chiffre Godot (2026-09-22)
+
+### Superposition : rien, et c'était prévisible
+
+Unigine Superposition 1.1 en D3D11, 1280×720, monde chargé par commande console, 85 s de
+stabilisation puis 10 s de capture Metal ; fréquence mesurée par le nombre de présentations
+(`ca-client-present-request`), trois tours entrelacés.
+
+| | avant | après |
+| --- | --- | --- |
+| présentations / 10 s | 241, 237 | 238, 236, 242 |
+| **médiane** | **239** (23,9 img/s) | **238** (23,8 img/s) |
+
+**Aucun gain**, 0,4 % d'écart. Le troisième tour « avant » a donné **0 présentation** : capture
+ratée, charge à 7,56 au moment du déclenchement. Écartée, pas comptée comme un résultat.
+
+Ce zéro était annoncé par la section 8470 : Superposition occupe le GPU **38,4 ms par image sur
+45**, soit 85 %. Tout ce que nous avons optimisé vit dans les 6,7 ms restantes, qui contiennent
+aussi la soumission, la synchronisation, la présentation et toute la traduction. Un gain de
+quelques centaines de nanosecondes par tirage n'y est pas visible.
+
+### Correction du chiffre de la section 149
+
+La section 149 annonçait −30,7 % sur la scène Godot. **La mesure était contaminée** : un
+`start.exe` oublié consommait **100 % d'un cœur depuis 5 h 19** pendant tout l'A/B. Découvert
+en préparant Superposition.
+
+Reprise sur machine propre, trois tours entrelacés :
+
+| | avant | après |
+| --- | --- | --- |
+| médiane | **113,333 ms** | **82,788 ms** |
+| étendue | 1,2 % | 0,6 % |
+
+**Le chiffre juste est −27,0 %**, pas −30,7 %. L'entrelacement a bien préservé le signe et
+l'essentiel de l'ampleur — c'est ce pour quoi il est fait — mais la configuration privée de CPU
+encaissait davantage la charge parasite, ce qui gonflait l'écart de près de quatre points.
+L'étendue le dit aussi : 1,2 % maintenant contre 8 % avant.
+
+### Ce que les deux charges disent ensemble
+
+| charge | limite | gain |
+| --- | --- | --- |
+| Superposition 1280×720 | GPU (85 %) | **0 %** |
+| Godot, vues de 160 px | GPU | **0 %** |
+| Godot, vues de 32 px | tirages | **−27 %** |
+
+L'optimisation ne déplace que ce qui sature le CPU. Sur une charge limitée par le GPU elle est
+strictement invisible — ce qui est cohérent, pas décevant : on a réduit un coût qui n'était pas
+sur le chemin critique de ces scènes-là.
+
+### Quatre résidus Wine en une journée
+
+`winedevice` de 1 j 23 h, `wineboot` bloqué, `winedbg` attaché après un plantage, et ce
+`start.exe` à 100 %. Deux leçons pratiques : `pkill -x` **ne les atteint pas**, car leur nom de
+processus est le chemin Windows complet (`C:\windows\system32\services.exe`) — il faut tuer par
+PID via `ps -Ao pid=,comm= | grep system32`. Et une garde `pgrep -f` **se matche elle-même** ;
+compter sur `ps -Ao comm=` évite le piège.
