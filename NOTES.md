@@ -10234,3 +10234,78 @@ lequel la conformite D3D12 se degrade (2 210 contre 2 026, section 117).
 
 Le doublement du fragment sur un moteur reel est donc le prix de la chaine D3D12, pas un
 defaut corrigeable dans KosmicKrisp.
+
+## 139. Point complet : la campagne performance est close (2026-09-22)
+
+Le point de la section 134 laissait une question ouverte, les **+42 % de travail GPU** de
+la section 128. Les sections 135 a 138 l'ont tranchee. Voici le bilan definitif.
+
+### La question de depart et sa reponse
+
+**Pourquoi la pile rend-elle 22 images par seconde sur Superposition, et 129 ms par image
+la ou Godot natif en met 98 ?**
+
+Reponse, en trois niveaux :
+
+1. **+31,7 %** pour toute la chaine contre Godot en Metal natif (section 128).
+2. Decompose : **25 % de GPU inoccupe**, parce que le pilote tourne sous Rosetta et que
+   cela coute un facteur 2,3 sur son chemin CPU (section 129) ; et **+42 % de travail GPU**,
+   qui est entierement du fragment (section 135).
+3. Le fragment double parce que le modele **bindless** impose par `VK_EXT_descriptor_buffer`
+   fait tenir une poignee de texture vivante par echantillonnage. Mesure sur nuanceurs
+   ecrits a la main : **+138,6 % a 114 echantillonnages**, le compte exact du nuanceur reel
+   (section 137).
+
+Les deux causes sont **structurelles** : l'une tient a l'hote x86_64 obligatoire
+(section 131), l'autre a l'architecture de descripteurs qu'exige vkd3d.
+
+### Les correctifs acquis
+
+| correctif | section | gain | portee |
+| --- | --- | --- | --- |
+| adresse de racine reecrite a chaque tirage | 124 | **-45,8 %** d'encodage | toute charge riche en tirages |
+| compression tuee par `TRANSFER_DST` | 126 | **-29,6 %** | textures non compressees |
+| etat graphique recalcule sans raison | 132 | **-5,5 %** sous Rosetta | toute charge riche en tirages |
+| fermeture differee et suivi des ressources | 122, 133 | **-14 %** | passes a cibles distinctes |
+
+### Onze hypotheses ecartees par la mesure
+
+Barriere d'encodeur hors du chemin critique (122, 123), passes surnumeraires (127),
+chargements et stockages forces (127), operations d'attachement de DXVK (127 bis), code MSL
+genere sur nuanceur simple (125), encodeur Metal 4 (126), debit par triangle (124),
+compression sur la scene reelle (135), chargements d'attachements (135), rejet precoce
+(135 bis), contournement 6 sur nuanceur reel (136), et le deplacement global de code (138).
+
+Chacune a demande un instrument : harnais Metal, harnais Metal 4, reinjection du MSL genere,
+banc de recouvrement, banc de motif, compteurs dans le pilote.
+
+### Ce qui n'a pas abouti, et pourquoi
+
+- **Pile ARM64 complete** (130, 131) : Wine natif arm64 est impossible sur macOS, le noyau
+  tuant tout binaire dont le `__PAGEZERO` est reduit alors que Wine a besoin de l'espace bas
+  pour `KUSER_SHARED_DATA`. Preuve en trois lignes de C.
+- **Recensement complet des ressources** (133) : impossible sous tampons de descripteurs, le
+  pilote ne voyant qu'une adresse opaque.
+- **Comparaison du nuanceur natif** (136) : Godot ne laisse pas sortir son MSL.
+
+### Le risque, qui n'est pas technique
+
+La pile depend de Rosetta **pour exister**, pas seulement pour aller vite. Si Rosetta
+disparait, il n'y a pas d'hote de rechange sur macOS.
+
+### Discipline de mesure
+
+Sept resultats annonces puis corriges lors de la premiere campagne (section 134), aucun
+depuis. Les regles qui ont tenu : entrelacer les modes compares, publier medianes et
+etendues, verifier qu'un banc valide son resultat, tuer les residus avant de mesurer, se
+mefier d'un chiffre tombant pile sur une valeur connue, et ne jamais generaliser d'un
+nuanceur simple a un nuanceur reel — erreur commise en 125 et corrigee en 136.
+
+Le piege des **deux colonnes `duration`** dans les traces `xctrace` s'est represente en
+section 135 ; il a ete reconnu en une mesure absurde au lieu d'un faux resultat publie.
+
+### Ou le projet en est
+
+Le pilote est a parite sur tous les axes mesurables. Les deux ecarts restants sont imputes
+et structurels. Il n'y a plus de piste de performance identifiee et non exploree dans
+KosmicKrisp.
