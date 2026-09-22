@@ -10563,3 +10563,84 @@ Deux choses, distinctes de `x18` :
 2. Une section critique verrouillee **sans proprietaire** (`blocked by 0000`).
 
 Le quatrieme obstacle du portage est donc leve. Ceux qui restent sont d'une autre nature.
+
+## 144. La section critique sans proprietaire : x18 est efface a tout moment (2026-09-22)
+
+La section 143 laissait deux blocages. Celui de la section critique est elucide, et il mene a
+une conclusion bien plus large que lui.
+
+### La chaine causale, mesuree bout en bout
+
+Releve au moment du blocage :
+
+```
+LockCount=2  RecursionCount=0  SpinCount=0  Owner=0  ClientId=0028/002c
+```
+
+Personne n'a jamais acquis le verrou, alors que `LockCount` a ete incremente trois fois. Deux
+hypotheses tombent aussitot, mesurees sur place : `InterlockedIncrement(-1)` **rend 0**, la
+semantique est bonne ; et `LockCount` vaut **-1** avant l'entree, donc `.data` est bien chargee.
+L'alignement de sections du ntdll PE est de 0x10000, multiple des 16 Ko de page, ce qui ecarte
+aussi la piste des pages.
+
+Le desassemblage donne la reponse. `RtlEnterCriticalSection` faute sur :
+
+```
+mov x8, x18
+ldr w8, [x8, #0x48]      /* TEB->ClientId.UniqueThread */
+```
+
+C'est `GetCurrentThreadId()` en ligne, execute **apres** l'increment et **avant** de poser
+`OwningThread`. Avec `x18` nul, la faute laisse le verrou incremente et orphelin. Chaque
+tentative l'incremente encore. La section critique n'est pas un bogue : c'est la trace de
+`x18`.
+
+### Les fautes, toutes identiques
+
+| faute | pc | addr | x18 |
+| --- | --- | --- | --- |
+| 1 | `loader_init+0x40` | 0x17ee | 0 |
+| 2 | `__wine_dbg_get_channel_flags` | 0x60 | 0 |
+| 3-6 | `__wine_dbg_*`, `RtlEnterCriticalSection` | 0x180c, 0x48 | 0 |
+
+Toutes sont un petit offset de TEB avec `x18` a zero. La premiere est dans `loader_init`, le
+tout premier code PE d'un fil.
+
+### Le tremplin marche, et ne suffit pas
+
+Instrumente pour enregistrer ce qu'il charge, le tremplin **fonctionne** : il ecrit bien
+`0x14012a000`, le bon TEB. Et `frame->x[18]` vaut toujours `0x14012a000`. Pourtant la faute
+suivante a `x18 = 0`, hors de tout appel systeme (`dans_appel=0`).
+
+### La cause reelle
+
+`tests/x18_preempt.c` : on pose une valeur dans `x18`, puis on boucle en la relisant, **sans le
+moindre appel systeme**.
+
+| essai | perte |
+| --- | --- |
+| avec charge #1 | apres 227 378 tours |
+| avec charge #2 | 14 618 574 |
+| avec charge #3 | 12 473 500 |
+| sans charge #1 | 3 635 735 |
+| sans charge #2 | 13 718 087 |
+
+Cinq sur cinq, `x18` tombe a zero. **macOS efface `x18` a chaque retour du noyau vers
+l'espace utilisateur, y compris sur une simple preemption.** Il n'y a donc aucune frontiere ou
+le restaurer : il peut disparaitre entre deux instructions quelconques.
+
+### Ce que cela signifie pour le portage arm64
+
+Le code PE Windows ARM64 lit le TEB par `x18` — c'est l'ABI, cable dans chaque binaire. Sur
+macOS ce registre n'appartient pas au programme. Aucun correctif cote Wine ne peut y remedier :
+ni le tremplin de la section 143, ni aucun placement de restauration, puisque la perte est
+asynchrone.
+
+Les issues restantes sortent du cadre de Wine : recompiler tout le code PE avec un autre acces
+au TEB, ce qui interdit les binaires Windows reels et vide le portage de son sens ; ou emuler.
+C'est precisement ce que fait la voie x86_64, ou le TEB passe par un registre de segment que
+macOS conserve — et c'est pourquoi la pile sous Rosetta fonctionne, elle.
+
+**Le portage arm64 natif est ferme par une contrainte de plateforme, pas par un travail
+restant.** Le correctif 0048 et le tremplin 0049 restent justes et mesures ; ils levaient les
+obstacles qu'on pouvait lever. La voie x86_64 sous Rosetta demeure la seule praticable.
