@@ -10710,3 +10710,49 @@ available »). Cause : `/usr/local/bin/ninja` est un binaire **x86_64**, donc il
 Rosetta et le `cc` universel qu'il lance suit en x86_64. `toolchain/bin/ninja` est universel :
 `arch -arm64 toolchain/bin/ninja` corrige. Sans cela j'aurais mesure un pilote arm64 vieux de
 trois heures.
+
+## 146. Le chemin graphique : taxe Rosetta plus lourde, et un coût propre à nous (2026-09-22)
+
+La section 145 ne couvrait que `vkCmdDispatch`, la commande la moins chere. `bench_cpu_gfx`
+separe les chemins qu'un jeu emprunte vraiment : 20 000 tirages par tour, 15 tours, medianes,
+5 passes entrelacees arm64 / x86_64.
+
+| profil | arm64 natif | x86_64 sous Rosetta | taxe |
+| --- | --- | --- | --- |
+| tirage seul | 50,8 ns | 127,8 ns | **×2,52** |
+| + constantes poussees | 455,9 ns | 1 109,6 ns | ×2,43 |
+| + jeu de descripteurs | 453,2 ns | 1 092,8 ns | ×2,41 |
+| + liaison de pipeline | 611,6 ns | 1 507,0 ns | ×2,46 |
+| + etat dynamique | 60,8 ns | 179,3 ns | **×2,95** |
+
+Rappel du profil calcul : `vkCmdDispatch` seul donnait ×2,04.
+
+### Premiere lecture : la taxe est plus lourde ici
+
+**Le chemin graphique est taxe de 2,41 a 2,95, contre 2,04 pour le calcul.** La reserve
+formulee en section 145 etait donc fondee : le ×2,04 sous-estimait le cout reel. La valeur a
+retenir pour un jeu est de l'ordre de **×2,5**.
+
+### Deuxieme lecture, plus interessante : ce que le pilote coute en natif
+
+Couts marginaux en arm64, tirage nu deduit :
+
+| commande | cout marginal (arm64) |
+| --- | --- |
+| constante poussee | 405 ns |
+| jeu de descripteurs | 402 ns |
+| liaison de pipeline | 561 ns |
+| etat dynamique (viewport + ciseaux) | 10 ns |
+
+**Une constante poussee coute huit fois un tirage nu.** La cause est dans
+`kk_upload_descriptor_root` : tout changement marque `root_dirty`, et le vidage realloue puis
+recopie **la table racine entiere**. Sa taille, mesuree par sonde compilee avec les options de
+meson : **2 328 octets**. On recopie donc 2 328 octets pour modifier 16 octets de constantes,
+et l'adresse GPU changeant a chaque fois, le cache d'adresse racine de la section precedente
+ne peut pas s'appliquer.
+
+C'est un cout qui nous appartient, independant de Rosetta, et il est sur le chemin le plus
+chaud d'un jeu. Sous Rosetta il est paye ×2,4, soit **982 ns par constante poussee**.
+
+L'etat dynamique, a 10 ns, montre par contraste qu'il n'y a rien d'intrinseque : quand le
+pilote n'a pas a repasser par la racine, une commande est bon marche.
