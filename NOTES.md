@@ -10116,3 +10116,61 @@ Prouver l'imputation demanderait le nuanceur natif, que Godot ne laisse pas sort
 autre voie serait de mesurer le cout du motif lui-meme — 114 echantillonnages precedes
 chacun de ses chargements de descripteur, contre 114 echantillonnages a textures liees —
 dans le harnais Metal. Non fait.
+
+## 137. Le cout du motif de traduction : il explique le doublement (2026-09-22)
+
+La section 136 avait extrait le nuanceur reel — 51 585 lignes, 114 echantillonnages,
+890 chargements de descripteur — sans pouvoir l'imputer faute de reference native. Le motif
+lui-meme se mesure.
+
+### Le banc
+
+`tests/bench_motif_metal.m` genere deux nuanceurs MSL a N echantillonnages de la **meme**
+texture, pour que le cache se comporte identiquement :
+
+- **texture liee** : `tex.sample(smp, uv)`, le patron natif ;
+- **bindless** : la chaine exacte que KosmicKrisp produit, soit pour chaque
+  echantillonnage une adresse lue dans la table racine, le pointeur de descripteur, le
+  biais de lod, la texture, l'index d'echantillonneur, puis l'echantillonneur pris dans une
+  table de 4 096.
+
+Les deux sont ecrits a la main en Metal : le banc isole le **motif**, independamment de
+notre pilote.
+
+### Le resultat
+
+n=6 par point, medianes :
+
+| echantillonnages | texture liee | bindless | surcout |
+| --- | --- | --- | --- |
+| 8 | 0,530 ms | 0,571 ms | +7,4 % |
+| 16 | 0,790 ms | 0,933 ms | +17,6 % |
+| 32 | 1,217 ms | 1,738 ms | +51,9 % |
+| 64 | 1,142 ms | 2,289 ms | +99,6 % |
+| **114** | **1,664 ms** | **3,965 ms** | **+138,6 %** |
+
+Le surcout croit **surlineairement**, signature d'une pression de registres : plus de
+valeurs de descripteur vivantes, moins de fils en vol, effondrement du debit.
+
+**A 114 echantillonnages — le compte exact du nuanceur Godot — le motif coute +138,6 %.**
+L'ecart observe sur Godot etait de +103,6 %. Le motif suffit donc largement a l'expliquer.
+
+### Ce que cela etablit, et ce que cela n'etablit pas
+
+Etabli : recharger le descripteur a chaque echantillonnage est ruineux au-dela de quelques
+dizaines d'echantillonnages, et c'est ce que notre chaine produit.
+
+Non etabli : que Godot en natif evite ce motif. C'est tres probable, un backend Metal liant
+ses textures directement, mais son MSL reste hors d'atteinte (section 136).
+
+### La direction
+
+Le nuanceur reel fait **890 chargements pour 114 echantillonnages, soit 7,8 chacun**. Si
+plusieurs echantillonnages partagent une texture — ce qui est la regle dans un nuanceur
+d'eclairage — le descripteur pourrait etre charge **une fois** au lieu d'une fois par
+echantillonnage. Rien dans le code genere ne suggere que cette factorisation ait lieu.
+
+Piste a explorer : pourquoi `nir_opt_cse` ne fusionne pas ces chargements, alors qu'ils
+sont emis en `load_global_constant_offset` avec `ACCESS_CAN_SPECULATE`. Le qualificatif
+`coherent` impose par le contournement 6 agit apres, a la generation MSL, donc il
+n'explique pas une absence de fusion au niveau NIR.
