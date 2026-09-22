@@ -10756,3 +10756,80 @@ chaud d'un jeu. Sous Rosetta il est paye ×2,4, soit **982 ns par constante pous
 
 L'etat dynamique, a 10 ns, montre par contraste qu'il n'y a rien d'intrinseque : quand le
 pilote n'a pas a repasser par la racine, une commande est bon marche.
+
+## 147. Le coût de la table racine : rogner plutôt que recopier (2026-09-22)
+
+La section 146 montrait qu'une constante poussée coûte 405 ns, huit fois un tirage nu, parce
+que `kk_upload_descriptor_root` réalloue et recopie les 2 328 octets de la table racine.
+
+### D'abord décomposer, par doublement
+
+Sauter la recopie laisserait des adresses de descripteurs aléatoires et ferait fauter le GPU.
+On ajoute donc une opération **redondante** et on mesure l'écart : même information, sans
+risque. Leviers `root_alloc2`, `root_copy2`, `root_bind2`.
+
+| opération ajoutée | coût marginal | part |
+| --- | --- | --- |
+| **allocation dans le tas** | **325 ns** | **72 %** |
+| recopie des 2 328 octets | 50 ns | 11 % |
+| pose d'adresse Metal | 16 ns | 3,5 % |
+
+La recopie, que je soupçonnais, n'est qu'un neuvième. C'est l'allocation qui domine — et un
+allocateur à pointeur ne coûte pas 325 ns : `KK_CMD_BO_SIZE` vaut 128 Ko, donc 2 336 octets par
+tirage épuisent un tampon tous les 56 tirages, et `KK_CMD_POOL_BO_MAX` n'en recycle que 32
+alors que 20 000 tirages en consomment ~365. Les 333 autres sont détruits et recréés à chaque
+tour.
+
+### Deux leviers, un seul gratuit
+
+Porter la rétention de 32 à 512 donne 448 → 187 ns, soit −58 %. Mais le balayage ne montre
+**aucun genou** — c'est un troc mémoire linéaire :
+
+| plafond | mémoire retenue | complet | rogné |
+| --- | --- | --- | --- |
+| 32 | 4 Mo | 457 ns | 302 ns |
+| 64 | 8 Mo | 431 ns | 280 ns |
+| 128 | 16 Mo | 383 ns | 225 ns |
+| 256 | 32 Mo | 279 ns | 169 ns |
+
+Le rognage, lui, est un gain sec. C'est donc lui qu'on retient ; la rétention reste une
+décision d'arbitrage, non prise.
+
+### Le rognage
+
+La disposition mesurée : union de dessin 0-760, `push[256]` 760-1016, `sets[32]` 1016-1272,
+`dynamic_buffers[64]` 1272-2296, `set_dynamic_buffer_start[32]` 2296-2328.
+
+On tient donc dans `kk_descriptor_state` une borne haute `root_size` de ce que le nuanceur peut
+lire, étendue à chaque écriture : `sets[s]` étend jusqu'à `(s+1)*8`, une constante poussée
+jusqu'à `offset + size`. Détail qui compte : `set_dynamic_buffer_start` est **lu par le
+nuanceur mais jamais écrit par le pilote** — il reste à zéro — donc dès qu'une disposition
+déclare un descripteur dynamique, on téléverse tout.
+
+| profil | avant | après | gain |
+| --- | --- | --- | --- |
+| constantes poussées | 455,9 ns | **263,7 ns** | **−42 %** |
+| jeu de descripteurs | 453,2 ns | **265,2 ns** | −41 % |
+| liaison de pipeline | 611,6 ns | **415,7 ns** | −32 % |
+| tirage seul | 50,8 ns | 50,4 ns | inchangé |
+| état dynamique | 60,8 ns | 58,7 ns | inchangé |
+
+**Conformité : D3D11 4326, D3D12 2026** — les références exactes. Correctif 0050.
+
+### Trois pièges d'environnement, tous de mon fait
+
+La conformité a d'abord donné 18 677 échecs au lieu de 2 026, et il a fallu une heure pour
+comprendre que le pilote n'était pas en cause.
+
+1. `build/wine/wine` est un **script shell**, donc macOS efface `DYLD_LIBRARY_PATH` au
+   lancement (protection du système) : winevulkan ne trouvait jamais `libvulkan.1.dylib`. Le
+   script prévoit un point d'extension, `build/wine/.winewrapper`, qui est sourcé après.
+2. Le premier lancement de Wine sur `wine/pfx` a déclenché une mise à jour de préfixe qui a
+   **remplacé `dxgi.dll` et `d3d11.dll` de DXVK par les intégrées de Wine**. À réinstaller
+   depuis `build/dxvk-win64/src/*/`.
+3. Il manquait `MESA_KK_EXPERIMENTAL=custom_border,image_view_min_lod`. Le symptôme était
+   lisible : les échecs supplémentaires étaient **concentrés** sur trois tests de bordure,
+   8 192 + 8 192 + 256 = 16 640, exactement l'écart avec 2 026.
+
+D'où `tests/run_conformance.sh`, désormais versionné : la recette complète ne se reconstitue
+pas de mémoire.

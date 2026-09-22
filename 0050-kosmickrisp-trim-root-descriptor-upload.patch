@@ -1,0 +1,169 @@
+Generated-by: LLM
+
+--- a/src/kosmickrisp/vulkan/kk_debug.h
++++ b/src/kosmickrisp/vulkan/kk_debug.h
+@@ -32,6 +32,14 @@
+    KK_DEBUG_NO_STORAGE_WRITE = 1ull << 11,
+ 
+    KK_DEBUG_NO_ATTACHMENT_LOAD = 1ull << 12,
++
++   KK_DEBUG_ROOT_ALLOC2 = 1ull << 13,
++
++   KK_DEBUG_ROOT_COPY2 = 1ull << 14,
++
++   KK_DEBUG_ROOT_BIND2 = 1ull << 15,
++
++   KK_DEBUG_NO_ROOT_TRIM = 1ull << 16,
+ };
+ 
+ extern enum kk_debug kk_mesa_debug_flags;
+--- a/src/kosmickrisp/vulkan/kk_debug.c
++++ b/src/kosmickrisp/vulkan/kk_debug.c
+@@ -16,6 +16,10 @@
+    {"blanket_barrier", KK_DEBUG_BLANKET_BARRIER},
+    {"barrier_stats", KK_DEBUG_BARRIER_STATS},
+    {"no_bind_cache", KK_DEBUG_NO_BIND_CACHE},
++   {"root_alloc2", KK_DEBUG_ROOT_ALLOC2},
++   {"root_copy2", KK_DEBUG_ROOT_COPY2},
++   {"root_bind2", KK_DEBUG_ROOT_BIND2},
++   {"no_root_trim", KK_DEBUG_NO_ROOT_TRIM},
+    {"transfer_dst_write", KK_DEBUG_TRANSFER_DST_WRITE},
+    {"pass_stats", KK_DEBUG_PASS_STATS},
+    {"no_state_fastpath", KK_DEBUG_NO_STATE_FASTPATH},
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+@@ -84,6 +84,7 @@
+ 
+ struct kk_descriptor_state {
+    bool root_dirty;
++   uint32_t root_size;
+    struct kk_root_descriptor_table root;
+ 
+    uint32_t set_sizes[KK_MAX_SETS];
+@@ -93,6 +94,8 @@
+    struct kk_push_descriptor_set *push[KK_MAX_SETS];
+ };
+ 
++void kk_root_extend(struct kk_descriptor_state *desc, size_t end);
++
+ struct kk_per_draw_data {
+    uint32_t draw_id;
+    uint32_t index_size;
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+@@ -647,6 +647,8 @@
+       return;
+ 
+    mtl_set_address(cmd->argument_table, addr, 0u);
++   if (KK_DEBUG(ROOT_BIND2))
++      mtl_set_address(cmd->argument_table, addr, 0u);
+    cmd->state.argtable_addr0 = addr;
+ }
+ 
+@@ -746,6 +748,13 @@
+                                        MTL_STAGE_DISPATCH | MTL_STAGE_BLIT,
+                                        MTL_STAGE_DISPATCH | MTL_STAGE_BLIT);
+    }
++}
++
++void
++kk_root_extend(struct kk_descriptor_state *desc, size_t end)
++{
++   if (end > desc->root_size)
++      desc->root_size = (uint32_t)end;
+ }
+ 
+ static void
+@@ -784,6 +793,8 @@
+             desc->root.sets[s] = 0;
+             desc->set_sizes[s] = 0;
+          }
++         kk_root_extend(desc, offsetof(struct kk_root_descriptor_table, sets) +
++                                 (s + 1) * sizeof(desc->root.sets[0]));
+          desc->sets[s] = set;
+ 
+          /* Binding descriptors invalidates push descriptors */
+@@ -794,6 +805,9 @@
+          const struct kk_descriptor_set_layout *set_layout =
+             vk_to_kk_descriptor_set_layout(pipeline_layout->set_layouts[s]);
+ 
++         if (set_layout->vk.dynamic_descriptor_count > 0)
++            kk_root_extend(desc, sizeof(struct kk_root_descriptor_table));
++
+          if (set != NULL && set_layout->vk.dynamic_descriptor_count > 0) {
+             for (uint32_t j = 0; j < set_layout->vk.dynamic_descriptor_count;
+                  j++) {
+@@ -845,6 +859,8 @@
+       assert(s < KK_MAX_SETS);
+       assert(index < KK_MAX_DESCRIPTOR_BUFFERS);
+ 
++      kk_root_extend(desc, offsetof(struct kk_root_descriptor_table, sets) +
++                              (s + 1) * sizeof(desc->root.sets[0]));
+       desc->root.sets[s] = cmd->state.descriptor_buffers[index] +
+                            info->pOffsets[i];
+       desc->set_sizes[s] = UINT32_MAX;
+@@ -915,6 +931,8 @@
+    assert(set < KK_MAX_SETS);
+ 
+    desc->root.sets[set] = set_layout->embedded_samplers_addr;
++   kk_root_extend(desc, offsetof(struct kk_root_descriptor_table, sets) +
++                           (set + 1) * sizeof(desc->root.sets[0]));
+    desc->set_sizes[set] = set_layout->non_variable_descriptor_buffer_size;
+    desc->sets[set] = NULL;
+    desc->push_dirty &= ~BITFIELD_BIT(set);
+@@ -1030,6 +1048,8 @@
+                   const VkPushConstantsInfoKHR *info)
+ {
+    memcpy(desc->root.push + info->offset, info->pValues, info->size);
++   kk_root_extend(desc, offsetof(struct kk_root_descriptor_table, push) +
++                           info->offset + info->size);
+    desc->root_dirty = true;
+ }
+ 
+@@ -1157,14 +1177,24 @@
+ {
+    struct kk_descriptor_state *desc = kk_get_descriptors_state(cmd, bind_point);
+    struct kk_root_descriptor_table *root = &desc->root;
+-   struct kk_ptr root_ptr = kk_pool_alloc(cmd, sizeof(*root), 8u);
++   size_t root_size = sizeof(*root);
++   if (!KK_DEBUG(NO_ROOT_TRIM)) {
++      const size_t base = offsetof(struct kk_root_descriptor_table, push);
++      root_size = MAX2(base, align(desc->root_size, 8u));
++      root_size = MIN2(root_size, sizeof(*root));
++   }
++   struct kk_ptr root_ptr = kk_pool_alloc(cmd, root_size, 8u);
+    if (unlikely(!root_ptr.gpu))
+       return 0u;
+ 
++   if (KK_DEBUG(ROOT_ALLOC2))
++      kk_pool_alloc(cmd, sizeof(*root), 8u);
+ 
+    root->addr = root_ptr.gpu;
+ 
+-   memcpy(root_ptr.cpu, root, sizeof(*root));
++   memcpy(root_ptr.cpu, root, root_size);
++   if (KK_DEBUG(ROOT_COPY2))
++      memcpy(root_ptr.cpu, root, root_size);
+    desc->root_dirty = false;
+ 
+    return root_ptr.gpu;
+@@ -1182,6 +1212,8 @@
+          return;
+ 
+       desc->root.sets[set_idx] = push_gpu.gpu;
++      kk_root_extend(desc, offsetof(struct kk_root_descriptor_table, sets) +
++                              (set_idx + 1) * sizeof(desc->root.sets[0]));
+       desc->set_sizes[set_idx] = sizeof(push_set->data);
+    }
+ 
+--- a/src/kosmickrisp/vulkan/kk_cmd_meta.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_meta.c
+@@ -155,6 +155,8 @@
+    if (save->desc0) {
+       desc->sets[0] = save->desc0;
+       desc->root.sets[0] = save->desc0->addr;
++      kk_root_extend(desc, offsetof(struct kk_root_descriptor_table, sets) +
++                              sizeof(desc->root.sets[0]));
+       desc->set_sizes[0] = save->desc0->size;
+       desc->push_dirty &= ~BITFIELD_BIT(0);
+    } else if (save->has_push_desc0) {
