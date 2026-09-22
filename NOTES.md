@@ -10982,3 +10982,47 @@ sur le chemin critique de ces scènes-là.
 processus est le chemin Windows complet (`C:\windows\system32\services.exe`) — il faut tuer par
 PID via `ps -Ao pid=,comm= | grep system32`. Et une garde `pgrep -f` **se matche elle-même** ;
 compter sur `ps -Ao comm=` évite le piège.
+
+## 151. Chercher un moteur qui sature le CPU (2026-09-22)
+
+La section 150 laissait la question ouverte : l'optimisation ne vaut que si le CPU borne
+l'image, et les deux charges réelles testées étaient bornées par le GPU. Que reste-t-il ?
+
+### Ce qui est éliminé
+
+**Unigine Heaven 4.0** : inutilisable. L'installeur ne contient que des binaires 32 bits
+(13 `_x86`, zéro `_x64`, relevé en section 95), alors que notre pile — Wine, DXVK, vkd3d-proton,
+KosmicKrisp — est entièrement 64 bits.
+
+**Superposition** : mesuré en section 150, GPU à 85 %, aucun gain.
+
+Restent les échantillons D3D12 de Microsoft, présents en source seulement et à construire au
+llvm-mingw, et Godot.
+
+### Le critère, et comment on le teste
+
+Une charge est bornée par le CPU si **réduire le nombre de pixels ne change presque rien**.
+C'est mesurable directement : même scène, même nombre d'objets, deux tailles de vue.
+
+Scène Godot avec **une seule vue** — une image réaliste, pas les 64 vignettes de la section
+149 — 4 000 objets ayant chacun son propre matériau, donc un tirage par objet sans regroupement.
+
+| vue | pixels | tirages | temps d'image |
+| --- | --- | --- | --- |
+| 1280×1280 | ×4 | 5 238 | **16,252 ms** |
+| 640×640 | ×1 | 5 286 | **14,815 ms** |
+
+Diviser les pixels par quatre ne gagne que **8,8 %**. Donc **plus de 90 % du temps d'image
+n'est pas du travail par pixel** : c'est la soumission des tirages et le CPU.
+
+Et cette fois la configuration est plausible : une vue unique en 1280×1280, 61 images par
+seconde, 5 238 tirages. C'est le profil d'un moteur qui n'instancie pas ses objets — cas
+courant des titres D3D11 et de tout rendu où chaque objet porte son propre matériau.
+
+Le premier essai visait 20 000 objets en pleine résolution : la scène n'a pas atteint 300
+images en huit minutes, donc plus de 1,6 s par image. Inexploitable, redescendu à 4 000.
+
+### A/B en cours
+
+Premier tour : 24,242 ms avant contre 16,524 après, soit −31,8 % et 41 → 61 images par seconde.
+Second tour « avant » reproduit à 24,242. Résultat complet à consigner séparément.
