@@ -9964,3 +9964,64 @@ Le pilote est a parite sur tous les axes testes. Les deux pistes ouvertes sont a
    backends de Godot, donc une part appartient a Godot et a vkd3d, pas a nous. Un
    decoupage par passe des deux captures le dirait.
 2. **Le risque Rosetta**, qui est de nature strategique et non technique.
+
+## 135. Les +42 % de travail GPU : c'est le fragment, et trois causes sont ecartees (2026-09-22)
+
+La section 128 mesurait **+42 % de travail GPU par image** contre Godot en Metal natif, sans
+savoir ou. La decomposition des memes captures par etage le dit.
+
+### Piege de lecture, a nouveau
+
+Le schema `metal-gpu-intervals` porte **deux colonnes de type `duration`** : la duree et la
+latence CPU vers GPU. Quand la duree est une **reference** vers une valeur deja vue, une
+regex naive saute a la colonne suivante et ramene la latence. Premiere tentative :
+578 secondes de travail vertex dans une fenetre de 12,7 s — absurde, et c'est ce qui a
+alerte. Il faut resoudre les references dans l'ordre du document. Voir
+`/tmp/parse_gi.py`, meme piege qu'en section 120.
+
+### La decomposition
+
+| etage | natif | notre pile | ecart |
+| --- | --- | --- | --- |
+| Vertex | 78,70 ms/image | 80,33 ms/image | **+2,1 %** |
+| **Fragment** | **21,44 ms/image** | **43,65 ms/image** | **+103,6 %** |
+| Compute | 0,26 ms/image | 0,44 ms/image | +71 % |
+
+La geometrie est a parite. Le fragment est double, et comme il pese 21 ms sur les 100 ms
+de temps d'etage natif, ce doublement porte l'essentiel des 24 ms d'ecart.
+
+**Controle contre un biais de capture.** Sous capture notre execution tombe a 4,51 img/s
+contre 7,5 sans, le natif a 8,55 contre 10,3 : la capture nous penalise davantage, ce qui
+pourrait gonfler nos chiffres par image. Le rapport **fragment sur vertex**, lui, est
+immunise contre un ralentissement uniforme : **0,272 en natif contre 0,543 chez nous,
+soit x1,99**. Le doublement tient.
+
+### Trois causes ecartees par la mesure
+
+| hypothese | test | resultat |
+| --- | --- | --- |
+| compression perdue (section 126) | `MESA_KK_DEBUG=no_storage_write` | **~1,6 %** |
+| chargements d'attachements | `MESA_KK_DEBUG=no_attachment_load` | **0 %** |
+| travail soumis different | tirages et primitives rapportes par Godot | **0,6 %** |
+
+Les deux premiers phenomenes existent pourtant : **176 images sur 393 (44,8 %)** portent
+l'usage ecriture, et toutes sont des attachements de rendu ; **65 % des attachements sont
+charges**, 42 758 `LOAD` contre 21 714 `CLEAR`, a la demande de vkd3d et non par forcage du
+pilote. Ni l'un ni l'autre ne porte le cout.
+
+### Un biais de methode, a notre charge
+
+La fenetre principale fait **1 732x1 080** chez nous contre **1 920x1 080** en natif, Wine
+contraignant la taille. L'effet est faible, les 16 vues de 1 024 carres faisant 90 % du
+travail fragment et etant identiques, et il joue **contre nous** : moins de pixels rendus
+pour plus de temps. La comparaison n'est donc pas rigoureusement a surface egale.
+
+### Ce qui reste
+
+Nos intervalles fragment sont **25 % plus nombreux** (154,4 contre 123,4 par image) et
+**1,63x plus longs** chacun, pour une geometrie identique. Avec 6 000 objets qui se
+recouvrent, le suspect naturel est le **rejet precoce en profondeur** : si la configuration
+de pipeline empeche le GPU d'ecarter les fragments caches, l'ombrage double sans que rien
+d'autre ne change. Piste cote pilote, non encore testee faute de levier pour l'isoler.
+
+Suites : **2 026 en D3D12, 4 326 en D3D11**.
