@@ -10499,3 +10499,67 @@ chemin.
 
 Wine natif arm64 sur macOS reste possible, et le chemin est desormais entierement
 cartographie. Il demande d'ecrire ce tremplin, pas de lever un obstacle inconnu.
+
+## 143. Le tremplin x18 : ecrit, mesure, la faute PE disparait (2026-09-22)
+
+La section 142 concluait qu'il fallait detourner `PC_sig` vers un tremplin. Ecrit et mesure.
+
+### Le mecanisme, verifie seul d'abord
+
+Avant de toucher Wine, un programme de vingt lignes : un gestionnaire de signal qui empile
+deux valeurs sous `SP`, detourne `PC` vers le tremplin, et laisse le noyau revenir.
+
+| | `x18` apres le signal |
+| --- | --- |
+| ecriture directe dans l'`ucontext` (section 142) | `0` |
+| **via le tremplin** | **`1cafef00d`** |
+
+Fil principal et fil secondaire, meme resultat. Le noyau ignore `x18` mais **honore `PC`**.
+
+### Le tremplin
+
+Quatre instructions, dans `dlls/ntdll/unix/signal_arm64.c` :
+
+```
+ldr x18, [sp]
+ldr x16, [sp, #8]
+add sp, sp, #16
+ret x16
+```
+
+Il sacrifie `x16` : sur ARM64 tout branchement indirect laisse la cible dans le registre qu'il
+lit, donc reposer `x18` **et** reprendre a une adresse quelconque coute forcement un autre
+registre. Seul un branchement direct l'eviterait, au prix de code genere a moins de 128 Mo de
+la cible. Ce n'est pas un choix arbitraire : Wine lui-meme rentre en code PE par `ret x16` en
+fin de repartiteur. C'est la convention du fichier.
+
+Accroche aux cinq reprises vers du code PE : `restore_context`, `setup_raise_exception` (qui
+posait deja `REGn_sig(18)` en pure perte), `usr1_handler` (ses deux branches qui repointent
+vers du PE) et `usr2_handler`. `setup_raise_exception` reserve 16 octets de plus via
+`virtual_setup_exception` pour que la zone de transit soit dans la pile commitee. Et
+`save_context` rend desormais le vrai TEB dans `CONTEXT.X18` au lieu du zero du noyau.
+
+Une garde limite le tremplin aux reprises dont `SP` est dans la pile PE du TEB, pour ne pas
+ecraser `x16` au milieu d'un appel systeme unix. **Elle n'a rien change d'observable** : c'est
+une precaution de correction, pas un correctif mesure.
+
+### L'A/B, prefixe neuf, `WINEDEBUG=+loaddll,+process`
+
+| | fin de trace |
+| --- | --- |
+| **sans tremplin** | `virtual_setup_exception stack overflow 640 bytes addr 0x6fffffcdec30` sur les deux fils, puis le processus meurt |
+| **avec tremplin** | `RtlpWaitForCriticalSection "vectored_handlers_section" ... blocked by 0000` |
+
+L'adresse `0x6fffffcdec30` est celle du `mov x8, x18` de la section 141. **Sans le tremplin le
+ntdll PE prend la faute et le processus meurt ; avec, la faute a disparu** et le fil atteint
+`RtlAddVectoredExceptionHandler`. Reproduit deux fois a l'identique.
+
+### Ce qui bloque maintenant
+
+Deux choses, distinctes de `x18` :
+
+1. `try_map_free_area ... range 0x100000000-...` : le binaire hote occupe 0x1_0000_0000 sur
+   macOS arm64, donc Wine ne peut pas y placer l'image PE.
+2. Une section critique verrouillee **sans proprietaire** (`blocked by 0000`).
+
+Le quatrieme obstacle du portage est donc leve. Ceux qui restent sont d'une autre nature.

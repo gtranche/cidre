@@ -22,3 +22,4 @@ third_party/
 cube.bmp
 vkd3d-proton.cache
 vkd3d-proton.cache.write
+prefix-wine-arm64-tramp/

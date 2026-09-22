@@ -1,0 +1,124 @@
+diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
+index 576f76bd..65ec920e 100644
+--- a/dlls/ntdll/unix/signal_arm64.c
++++ b/dlls/ntdll/unix/signal_arm64.c
+@@ -322,11 +322,53 @@ static void save_context( CONTEXT *context, const ucontext_t *sigcontext )
+     context->Pc   = PC_sig(sigcontext);     /* Program Counter */
+     context->Cpsr = PSTATE_sig(sigcontext); /* Current State Register */
+     for (i = 0; i <= 28; i++) context->X[i] = REGn_sig( i, sigcontext );
++#ifdef __APPLE__
++    {
++        struct thread_data *data = get_thread_data();
++        if (data && data->teb) context->X18 = (DWORD64)data->teb;
++    }
++#endif
+     if (save_fpu( context->V, &context->Fpcr, &context->Fpsr, sigcontext ))
+         context->ContextFlags |= CONTEXT_FLOATING_POINT;
+ }
+ 
+ 
++#ifdef __APPLE__
++
++#define X18_RESUME_SIZE 16
++
++extern void x18_resume_trampoline(void);
++__ASM_GLOBAL_FUNC( x18_resume_trampoline,
++                   "ldr x18, [sp]\n\t"
++                   "ldr x16, [sp, #8]\n\t"
++                   "add sp, sp, #16\n\t"
++                   "ret x16" )
++
++static void resume_with_x18( ucontext_t *sigcontext, TEB *teb )
++{
++    ULONG_PTR sp = SP_sig( sigcontext );
++    ULONG_PTR *stack;
++
++    if (!teb) return;
++    if (sp <= (ULONG_PTR)teb->DeallocationStack || sp > (ULONG_PTR)teb->Tib.StackBase) return;
++    stack = (ULONG_PTR *)sp - 2;
++    stack[0] = (ULONG_PTR)teb;
++    stack[1] = PC_sig( sigcontext );
++    SP_sig( sigcontext ) = (ULONG_PTR)stack;
++    PC_sig( sigcontext ) = (ULONG_PTR)x18_resume_trampoline;
++}
++
++#else
++
++#define X18_RESUME_SIZE 0
++
++static void resume_with_x18( ucontext_t *sigcontext, TEB *teb )
++{
++}
++
++#endif
++
++
+ /***********************************************************************
+  *           restore_context
+  *
+@@ -357,6 +399,7 @@ static void restore_context( struct thread_data *data, const CONTEXT *context, u
+     PSTATE_sig(sigcontext) = context->Cpsr; /* Current State Register */
+     for (i = 0; i <= 28; i++) REGn_sig( i, sigcontext ) = context->X[i];
+     restore_fpu( context, sigcontext );
++    resume_with_x18( sigcontext, data->teb );
+ }
+ 
+ 
+@@ -789,7 +832,8 @@ static void setup_raise_exception( struct thread_data *data, ucontext_t *sigcont
+     /* fix up instruction pointer in context for EXCEPTION_BREAKPOINT */
+     if (rec->ExceptionCode == EXCEPTION_BREAKPOINT) context->Pc -= 4;
+ 
+-    stack = virtual_setup_exception( data, stack_ptr, sizeof(*stack), rec );
++    stack = virtual_setup_exception( data, stack_ptr, sizeof(*stack) + X18_RESUME_SIZE, rec );
++    stack = (struct exc_stack_layout *)((char *)stack + X18_RESUME_SIZE);
+     stack->rec = *rec;
+     stack->context = *context;
+     context_init_empty_xstate( &stack->context, stack->redzone );
+@@ -797,6 +841,7 @@ static void setup_raise_exception( struct thread_data *data, ucontext_t *sigcont
+     SP_sig(sigcontext) = (ULONG_PTR)stack;
+     PC_sig(sigcontext) = (ULONG_PTR)pKiUserExceptionDispatcher;
+     REGn_sig(18, sigcontext) = (ULONG_PTR)data->teb;
++    resume_with_x18( sigcontext, data->teb );
+ }
+ 
+ 
+@@ -1419,6 +1464,7 @@ static void usr1_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
+     struct thread_data *data = get_thread_data();
+     CHPE_V2_CPU_AREA_INFO *chpe;
+     CONTEXT context;
++    BOOL resume_pe = FALSE;
+ 
+     extern const ULONG_PTR __wine_syscall_dispatcher_kernel_stack_ptr;
+     extern const ULONG_PTR __wine_syscall_dispatcher_user_stack;
+@@ -1445,10 +1491,12 @@ static void usr1_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
+     {
+         struct syscall_frame *frame = get_syscall_frame( data );
+         PC_sig(sigcontext) = frame->pc;
++        resume_pe = TRUE;
+     }
+     else if (PC_sig(sigcontext) == call_user_mode_callback_user_stack_ptr)
+     {
+         PC_sig(sigcontext) = REGn_sig(3, sigcontext);
++        resume_pe = TRUE;
+     }
+ 
+     if (!data->teb)
+@@ -1479,7 +1527,10 @@ static void usr1_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
+         context.ContextFlags |= CONTEXT_EXCEPTION_REPORTING;
+         wait_suspend( &context );
+         restore_context( data, &context, sigcontext );
++        resume_pe = FALSE;
+     }
++
++    if (resume_pe) resume_with_x18( sigcontext, data->teb );
+ }
+ 
+ 
+@@ -1533,6 +1584,7 @@ static void usr2_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
+     sigcontext->uc_mcontext->__ns.__fpsr = frame->fpsr;
+     memcpy( sigcontext->uc_mcontext->__ns.__v, frame->v, sizeof(frame->v) );
+ #endif
++    resume_with_x18( sigcontext, data->teb );
+ }
+ 
+ 
