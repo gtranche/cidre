@@ -1,0 +1,185 @@
+Generated-by: LLM
+
+--- a/src/kosmickrisp/vulkan/kk_debug.h
++++ b/src/kosmickrisp/vulkan/kk_debug.h
+@@ -40,6 +40,8 @@
+    KK_DEBUG_ROOT_BIND2 = 1ull << 15,
+ 
+    KK_DEBUG_NO_ROOT_TRIM = 1ull << 16,
++
++   KK_DEBUG_DRAW_STATS = 1ull << 17,
+ };
+ 
+ extern enum kk_debug kk_mesa_debug_flags;
+--- a/src/kosmickrisp/vulkan/kk_debug.c
++++ b/src/kosmickrisp/vulkan/kk_debug.c
+@@ -20,6 +20,7 @@
+    {"root_copy2", KK_DEBUG_ROOT_COPY2},
+    {"root_bind2", KK_DEBUG_ROOT_BIND2},
+    {"no_root_trim", KK_DEBUG_NO_ROOT_TRIM},
++   {"draw_stats", KK_DEBUG_DRAW_STATS},
+    {"transfer_dst_write", KK_DEBUG_TRANSFER_DST_WRITE},
+    {"pass_stats", KK_DEBUG_PASS_STATS},
+    {"no_state_fastpath", KK_DEBUG_NO_STATE_FASTPATH},
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+@@ -408,6 +408,7 @@
+ mtl_compute_encoder *cs_get_compute(struct kk_cmd_buffer *cmd);
+ void cs_end(struct kk_cmd_buffer *cmd);
+ void kk_barrier_stats_print(void);
++void kk_draw_stats_print(void);
+ void kk_cs_end_render_pass(struct kk_cmd_buffer *cmd);
+ void kk_cmd_bind_root_to_argument_table(struct kk_cmd_buffer *cmd,
+                                         uint64_t addr);
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+@@ -523,7 +523,17 @@
+ uint64_t kk_pass_px_area = 0u;
+ uint64_t kk_pass_px_fb = 0u;
+ uint64_t kk_barrier_emitted = 0u;
++uint64_t kk_draw_calls = 0u;
++uint64_t kk_draw_fastpath = 0u;
++uint64_t kk_root_uploads = 0u;
++uint64_t kk_root_bytes = 0u;
++uint64_t kk_push_calls = 0u;
++uint64_t kk_setoff_calls = 0u;
++uint64_t kk_bindsets_calls = 0u;
++uint64_t kk_argtable_binds = 0u;
++uint64_t kk_argtable_hits = 0u;
+ void kk_barrier_stats_print(void);
++void kk_draw_stats_print(void);
+ 
+ static void
+ kk_barrier_stats_tick(uint64_t total)
+@@ -643,9 +653,15 @@
+ {
+    cmd->state.root_addr = addr;
+ 
+-   if (cmd->state.argtable_addr0 == addr && !KK_DEBUG(NO_BIND_CACHE))
++   if (cmd->state.argtable_addr0 == addr && !KK_DEBUG(NO_BIND_CACHE)) {
++      if (KK_DEBUG(DRAW_STATS))
++         p_atomic_inc(&kk_argtable_hits);
+       return;
++   }
+ 
++   if (KK_DEBUG(DRAW_STATS))
++      p_atomic_inc(&kk_argtable_binds);
++
+    mtl_set_address(cmd->argument_table, addr, 0u);
+    if (KK_DEBUG(ROOT_BIND2))
+       mtl_set_address(cmd->argument_table, addr, 0u);
+@@ -763,6 +779,9 @@
+ {
+    VK_FROM_HANDLE(vk_pipeline_layout, pipeline_layout, info->layout);
+ 
++   if (KK_DEBUG(DRAW_STATS))
++      p_atomic_inc(&kk_bindsets_calls);
++
+    /* From the Vulkan 1.3.275 spec:
+     *
+     *    "When binding a descriptor set (see Descriptor Set Binding) to
+@@ -861,6 +880,8 @@
+ 
+       kk_root_extend(desc, offsetof(struct kk_root_descriptor_table, sets) +
+                               (s + 1) * sizeof(desc->root.sets[0]));
++      if (KK_DEBUG(DRAW_STATS))
++         p_atomic_inc(&kk_setoff_calls);
+       desc->root.sets[s] = cmd->state.descriptor_buffers[index] +
+                            info->pOffsets[i];
+       desc->set_sizes[s] = UINT32_MAX;
+@@ -1050,6 +1071,8 @@
+    memcpy(desc->root.push + info->offset, info->pValues, info->size);
+    kk_root_extend(desc, offsetof(struct kk_root_descriptor_table, push) +
+                            info->offset + info->size);
++   if (KK_DEBUG(DRAW_STATS))
++      p_atomic_inc(&kk_push_calls);
+    desc->root_dirty = true;
+ }
+ 
+@@ -1182,6 +1205,10 @@
+       const size_t base = offsetof(struct kk_root_descriptor_table, push);
+       root_size = MAX2(base, align(desc->root_size, 8u));
+       root_size = MIN2(root_size, sizeof(*root));
++   }
++   if (KK_DEBUG(DRAW_STATS)) {
++      p_atomic_inc(&kk_root_uploads);
++      p_atomic_add(&kk_root_bytes, (uint64_t)root_size);
+    }
+    struct kk_ptr root_ptr = kk_pool_alloc(cmd, root_size, 8u);
+    if (unlikely(!root_ptr.gpu))
+@@ -1563,6 +1590,35 @@
+ }
+ 
+ void
++kk_draw_stats_print(void)
++{
++   if (!kk_draw_calls)
++      return;
++
++   fprintf(stderr,
++           "kk tirages : total=%llu chemin_rapide=%llu (%.1f%%) | racine "
++           "televersements=%llu (%.2f/tirage) octets=%llu (%.0f/tirage) | "
++           "poussees=%.2f/tirage offsets_desc=%.2f/tirage binds_desc=%.2f/tirage | "
++           "table_arg poses=%llu cache=%llu (%.1f%%)\n",
++           (unsigned long long)kk_draw_calls,
++           (unsigned long long)kk_draw_fastpath,
++           100.0 * (double)kk_draw_fastpath / (double)kk_draw_calls,
++           (unsigned long long)kk_root_uploads,
++           (double)kk_root_uploads / (double)kk_draw_calls,
++           (unsigned long long)kk_root_bytes,
++           (double)kk_root_bytes / (double)kk_draw_calls,
++           (double)kk_push_calls / (double)kk_draw_calls,
++           (double)kk_setoff_calls / (double)kk_draw_calls,
++           (double)kk_bindsets_calls / (double)kk_draw_calls,
++           (unsigned long long)kk_argtable_binds,
++           (unsigned long long)kk_argtable_hits,
++           (kk_argtable_binds + kk_argtable_hits)
++              ? 100.0 * (double)kk_argtable_hits /
++                   (double)(kk_argtable_binds + kk_argtable_hits)
++              : 0.0);
++}
++
++void
+ kk_barrier_stats_print(void)
+ {
+    uint64_t differees = kk_barrier_emitted + kk_barrier_skipped;
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -11,6 +11,9 @@
+ 
+ #include "kk_buffer.h"
+ #include "kk_cmd_buffer.h"
++
++extern uint64_t kk_draw_calls;
++extern uint64_t kk_draw_fastpath;
+ #include "kk_debug.h"
+ 
+ #include "util/u_atomic.h"
+@@ -1688,8 +1691,14 @@
+    struct kk_graphics_state *gfx = &cmd->state.gfx;
+    struct kk_descriptor_state *desc = &gfx->descriptors;
+ 
+-   if (kk_gfx_state_is_clean(cmd) && !KK_DEBUG(NO_STATE_FASTPATH))
++   if (KK_DEBUG(DRAW_STATS))
++      p_atomic_inc(&kk_draw_calls);
++
++   if (kk_gfx_state_is_clean(cmd) && !KK_DEBUG(NO_STATE_FASTPATH)) {
++      if (KK_DEBUG(DRAW_STATS))
++         p_atomic_inc(&kk_draw_fastpath);
+       return;
++   }
+ 
+    kk_flush_render_pass(cmd);
+    kk_flush_pipeline(cmd);
+--- a/src/kosmickrisp/vulkan/kk_device.c
++++ b/src/kosmickrisp/vulkan/kk_device.c
+@@ -381,6 +381,9 @@
+    if (KK_DEBUG(BARRIER_STATS))
+       kk_barrier_stats_print();
+ 
++   if (KK_DEBUG(DRAW_STATS))
++      kk_draw_stats_print();
++
+    /* End capture before we start releasing resources. Otherwise, Metal capture
+     * may run into issues. */
+    if (pdev->settings.gpu_capture_enabled) {

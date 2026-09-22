@@ -11064,3 +11064,53 @@ ce que l'optimisation vaut pour un moteur qui n'instancie pas ses objets.
 Et le gain y est **plus fort** que sur les vignettes, ce qui se comprend : chaque objet porte
 son propre matériau, donc chaque tirage change les descripteurs et les constantes poussées —
 exactement les deux chemins rognés, mesurés à −65 % au banc.
+
+## 153. Pourquoi chaque tirage salit la racine : ce ne sont pas les descripteurs (2026-09-22)
+
+La section 152 attribuait le gain au fait que « chaque objet porte son propre matériau, donc
+chaque tirage change les descripteurs ». **C'était une déduction à partir du script de scène,
+pas une mesure. Elle est fausse.**
+
+Compteurs ajoutés sur le chemin de tirage (levier `draw_stats`, correctif 0052) : tirages,
+chemin rapide, téléversements de racine et octets, constantes poussées, décalages de tampon de
+descripteurs, liaisons de jeux de descripteurs, poses de table d'arguments et succès de cache.
+
+Relevé sur la charge de la section 151, une vue 1280×1280 et 4 000 objets, ~850 images :
+
+```
+total=4 451 078  chemin_rapide=0 (0,0 %)
+racine : televersements=1,00/tirage  octets=1040/tirage
+poussees=1,50/tirage  offsets_desc=0,00/tirage  binds_desc=0,00/tirage
+table_arg : poses=4 452 056  cache=0 (0,0 %)
+```
+
+### Ce que cela dit
+
+**Zéro descripteur lié par tirage.** Ni `vkCmdBindDescriptorSets`, ni décalage de tampon de
+descripteurs : les deux compteurs sont à zéro. Godot lie ses descripteurs une fois et n'y
+retouche pas ; les matériaux par objet ne passent donc pas par là.
+
+Ce qui salit la racine, ce sont les **constantes poussées, 1,50 par tirage**. Godot passe les
+données par objet en constantes racine D3D12, que vkd3d traduit en `vkCmdPushConstants`. Chaque
+appel marque `root_dirty`, ce qui force un téléversement complet de la racine, donc une adresse
+GPU neuve, donc une pose de table d'arguments.
+
+D'où les deux zéros qui en découlent : **chemin rapide 0 %** — jamais pris, la racine étant
+toujours sale — et **cache de table d'arguments 0 %** — jamais utile, l'adresse changeant à
+chaque fois. Les deux optimisations des sections précédentes sont donc contournées par cette
+charge, et c'est le rognage qui l'a sauvée.
+
+### L'ampleur
+
+1 040 octets par tirage contre 2 328 sans rognage, soit **−55,3 %**. Sur la durée du relevé :
+**4,63 Go téléversés au lieu de 10,36 Go**. Ces 1 040 octets se décomposent en 1 016 pour
+l'union de dessin et `push[256]`, plus 24 octets pour trois jeux de descripteurs — cohérent
+avec un `sets[]` écrit une fois puis jamais retouché, exactement ce que la borne haute capture.
+
+### Ce que cela ouvre
+
+Le gain restant est identifié et il est net : **une constante poussée de quelques octets force
+la recopie de 1 040 octets**. Séparer les constantes poussées du reste de la racine, dans leur
+propre tampon, ramènerait ce coût à 256 octets au plus — les 760 de l'union de dessin et les
+jeux de descripteurs ne changeant pas entre deux tirages. Cela demande de toucher aux décalages
+que le nuanceur utilise (`kk_nir_lower_descriptors.c`), donc ce n'est pas une retouche locale.
