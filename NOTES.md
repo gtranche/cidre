@@ -10056,3 +10056,63 @@ HLSL, DXIL, dxil-spirv, SPIR-V, NIR puis MSL.
 
 Le tester demanderait d'extraire un nuanceur reel des deux chemins et de comparer, ce qui
 n'a pas ete fait.
+
+## 136. Extraction d'un vrai nuanceur : il est enorme, et la comparaison native est hors d'atteinte (2026-09-22)
+
+La section 135 laissait un seul suspect : la qualite du code fragment produit pour les
+nuanceurs reels de Godot, la parite de la section 125 n'ayant ete etablie que sur le
+nuanceur simple du banc.
+
+### Ce que produit notre chaine
+
+`MESA_KK_DEBUG=msl` sur la scene a vues, 23 nuanceurs fragment captures. Le principal :
+
+| | valeur |
+| --- | --- |
+| lignes de MSL | **51 585** |
+| temporaires declares | **17 660** |
+| registres | **970** |
+| branchements | 905 |
+| boucles restantes | 42 |
+| echantillonnages de texture | 114 |
+| chargements de descripteur | **890**, soit **7,8 par echantillonnage** |
+| gardes de boucle `no_crash` | 126 |
+
+Un nuanceur d'eclairage natif fait quelques milliers de lignes. **17 660 temporaires et
+970 registres** representent une pression de registres considerable, et sur un GPU a tuiles
+la pression de registres reduit le nombre de fils en vol, donc le debit d'ombrage.
+
+C'est coherent avec tout ce qui a ete ecarte : le cout est **par fragment**, pas dans le
+travail soumis ni dans la configuration des passes.
+
+### Cinquieme hypothese ecartee
+
+Le code est truffe de `coherent device`, impose par le contournement 6. La section 125
+l'avait teste sur le nuanceur **simple** du banc, ou le desactiver etait pire. Teste sur la
+scene reelle, avec 890 chargements de descripteur que `coherent` empeche de factoriser :
+-1,0 %, +1,8 %, +4,0 % sur trois paires. **Neutre.** La generalisation redoutee n'a pas eu
+lieu, mais il fallait la verifier.
+
+### Pourquoi la comparaison demandee n'aboutit pas
+
+Obtenir le MSL que Godot produit lui-meme pour son rendu Metal est hors d'atteinte avec le
+binaire distribue :
+
+- aucune option de vidage de nuanceurs, `--help` ne propose que `--generate-spirv-debug-info`,
+  reserve a Vulkan ;
+- `~/Library/Application Support/Godot/shader_cache` ne contient que des nuanceurs GLES3 de
+  l'editeur, et il est vide ;
+- le projet ne laisse aucun cache Metal a cote de `vkd3d-proton.cache` ;
+- une capture Metal produirait un `.gputrace` que seule l'interface d'Xcode sait ouvrir.
+
+### L'etat de la question
+
+Six hypotheses ecartees par la mesure pour le doublement du fragment : compression,
+chargements d'attachements, travail soumis different, rejet precoce, contournement 6, et
+la configuration des passes. Ce qui reste est le **cout par fragment du nuanceur traduit**,
+et la taille du code genere le rend credible sans le prouver.
+
+Prouver l'imputation demanderait le nuanceur natif, que Godot ne laisse pas sortir. Une
+autre voie serait de mesurer le cout du motif lui-meme — 114 echantillonnages precedes
+chacun de ses chargements de descripteur, contre 114 echantillonnages a textures liees —
+dans le harnais Metal. Non fait.
