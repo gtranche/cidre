@@ -10371,3 +10371,77 @@ l'est pas.
 La dependance a Rosetta reste entiere aujourd'hui, mais elle a maintenant une issue connue
 au lieu d'etre declaree sans issue. Et la premiere marche, celle qui semblait infranchissable,
 est franchie.
+
+## 141. La faute dans le ntdll PE : le registre x18 (2026-09-22)
+
+La section 140 laissait une faute non identifiee. Elle l'est, et elle designe un conflit
+d'ABI que ni le noyau ni Wine ne peuvent ignorer.
+
+### L'instruction fautive
+
+```
+0x6fffffcb47c8: mov  x8, x18
+0x6fffffcb47cc: ldrh w8, [x8, #0x17ee]   <- EXC_BAD_ACCESS, x18 = 0
+```
+
+Sur **ARM64 Windows, `x18` contient le pointeur du TEB**. Le code PE de Wine, compile pour
+cette ABI, l'y lit. Il vaut zero.
+
+### Pourquoi il vaut zero : Apple detruit x18
+
+Test direct, programme de quinze lignes compile avec `-ffixed-x18` :
+
+| etape | `x18` |
+| --- | --- |
+| apres ecriture de `0xdeadbeef` | `deadbeef` |
+| **apres un appel systeme** (`getpid`) | **0** |
+| apres `write` | 0 |
+| dans un gestionnaire de signal | 0 |
+| **apres retour du gestionnaire** | **0** |
+
+**macOS remet `x18` a zero a chaque appel systeme et a chaque signal, et ne le restaure pas
+au retour du gestionnaire.** Apple reserve ce registre ; ce n'est pas un effet de bord mais
+sa politique.
+
+Sur Linux, `x18` est libre et **persiste**. Tout le backend ARM64 de Wine repose sur cette
+persistance.
+
+### Ce que Wine fait, et ce qui manque
+
+Wine sauvegarde et restaure `x18` autour de ses propres transitions : le repartiteur
+d'appels systeme le remet en place (`ldp x18, x19, [sp, #0x90]`), et `init_syscall_frame`
+ecrit `context.X18 = teb`. Cote Unix, `get_thread_data()` passe par `pthread_getspecific`,
+donc ne depend pas de `x18`. Cette partie est saine.
+
+Ce qui manque est le **chemin des signaux**. La conversion de contexte **saute
+deliberement `x18`** :
+
+```c
+memcpy( frame->x, context->X, sizeof(context->X[0]) * 18 );
+/* skip x18 */
+memcpy( frame->x + 19, context->X + 19, ... );
+```
+
+Correct sur Linux, ou le noyau preserve le registre. Fatal ici : une exception dans du code
+PE amene le gestionnaire avec `x18` nul, Wine ne retrouve pas le TEB — d'ou le
+`virtual_setup_exception stack overflow` qui precede la faute — et le retour laisse `x18`
+a zero.
+
+### Le travail que cela represente
+
+Restaurer `x18` depuis les donnees de thread a l'entree des cinq gestionnaires de signal
+(`segv`, `ill`, `trap`, `fpe`, `int`), et cesser de le sauter dans la conversion de
+contexte, sous `__APPLE__`. C'est du portage borne, pas un mur.
+
+### Ou en est la question de la section 131
+
+Trois etages, desormais tous nommes :
+
+1. `__PAGEZERO` de 4 Go impose par le noyau : **contrainte reelle**, contournee en
+   deplacant `KUSER_SHARED_DATA` (correctif 0048).
+2. Espace d'adressage a 4 Go occupe par le binaire : **non bloquant**, Wine reessaie plus haut.
+3. `x18` detruit par Apple alors que l'ABI Windows ARM64 y met le TEB : **le vrai
+   obstacle**, et il demande de developper le chemin des signaux du backend ARM64.
+
+Aucun des trois n'est une impossibilite. La section 131 avait tort de conclure ainsi, et
+cette section dit precisement ce qu'il faudrait ecrire.
