@@ -11026,3 +11026,41 @@ images en huit minutes, donc plus de 1,6 s par image. Inexploitable, redescendu 
 
 Premier tour : 24,242 ms avant contre 16,524 après, soit −31,8 % et 41 → 61 images par seconde.
 Second tour « avant » reproduit à 24,242. Résultat complet à consigner séparément.
+
+## 152. Le résultat sur la charge réaliste : −34,2 % (2026-09-22)
+
+A/B complet de la section 151. Scène Godot, une vue en 1280×1280, 4 000 objets, 5 238 tirages,
+pilote x86_64 échangé entre chaque exécution, quatre tours entrelacés.
+
+| tour | avant | après |
+| --- | --- | --- |
+| 1 | 24,242 ms | 16,524 ms |
+| 2 | 24,242 | 16,124 |
+| 3 | 23,611 | 15,678 |
+| 4 | 25,000 | 15,760 |
+| **médiane** | **24,242 ms** | **15,942 ms** |
+| meilleure image (médiane) | 22,46 ms | 15,28 ms |
+
+**−34,2 %**, soit **41,3 → 62,7 images par seconde**. Sur les meilleures images, −32,0 %.
+
+Les charges machine sont allées de 1,75 à 4,86 selon les tours et les valeurs restent serrées
+— étendue de 6 % avant, 5 % après. Contrairement à la mesure gâchée de la section 149, rien
+n'indique ici de contamination.
+
+### Le tableau complet des charges réelles
+
+| charge | limite | gain |
+| --- | --- | --- |
+| Superposition 1280×720 | GPU, 85 % | **0 %** |
+| Godot, 64 vues de 160 px | GPU | **0 %** |
+| Godot, 64 vues de 32 px | tirages | −27,0 % |
+| **Godot, 1 vue de 1280 px, 4 000 objets** | **tirages** | **−34,2 %** |
+
+Le dernier est le plus significatif des quatre : c'est le seul qui soit à la fois **borné par
+les tirages** et **plausible comme image de jeu** — une vue unique, pleine résolution, à une
+fréquence jouable. Les 64 vignettes de la section 149 prouvaient le mécanisme ; celle-ci montre
+ce que l'optimisation vaut pour un moteur qui n'instancie pas ses objets.
+
+Et le gain y est **plus fort** que sur les vignettes, ce qui se comprend : chaque objet porte
+son propre matériau, donc chaque tirage change les descripteurs et les constantes poussées —
+exactement les deux chemins rognés, mesurés à −65 % au banc.
