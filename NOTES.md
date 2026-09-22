@@ -10174,3 +10174,63 @@ Piste a explorer : pourquoi `nir_opt_cse` ne fusionne pas ces chargements, alors
 sont emis en `load_global_constant_offset` avec `ACCESS_CAN_SPECULATE`. Le qualificatif
 `coherent` impose par le contournement 6 agit apres, a la generation MSL, donc il
 n'explique pas une absence de fusion au niveau NIR.
+
+## 138. Pourquoi la fusion n'a pas lieu : ce n'est pas le travail de CSE (2026-09-22)
+
+La section 137 laissait une piste : 890 chargements de descripteur pour 114
+echantillonnages, alors qu'ils sont emis en `load_global_constant_offset` avec
+`ACCESS_CAN_SPECULATE`, donc theoriquement fusionnables.
+
+### La redondance est reelle
+
+Sur le nuanceur extrait : **47 calculs d'adresse pour 12 distincts seulement**, soit
+`t987 + ulong(816u)` recalcule **27 fois**, et 74 chargements de texture depuis 33
+pointeurs distincts.
+
+### La cause
+
+`nir_opt_cse` ne fusionne que **par dominance**. Le nuanceur comptant **905 branchements**,
+ces calculs se trouvent dans des branches soeurs, dont aucune ne domine l'autre : CSE ne
+peut rien, et c'est son fonctionnement normal, pas un defaut.
+
+La passe qui traite ce cas est **`nir_opt_gcm`**, le deplacement global de code, qui remonte
+les instructions speculables hors du flot de controle. Elle ne figurait pas dans
+`msl_optimize_nir`.
+
+### Elle fonctionne, et elle ne sert a rien
+
+Ajoutee apres `nir_opt_licm` :
+
+| | sans | avec |
+| --- | --- | --- |
+| lignes de MSL | 51 585 | **38 999** (-24 %) |
+| temporaires | 17 660 | **13 786** |
+| calculs d'adresse | 47 pour 12 distincts | **12 pour 12** |
+| chargements de descripteur | 890 | **404** (-55 %) |
+| acces a la table d'echantillonneurs | 109 | **19** (-83 %) |
+
+La fusion est donc large, et pas seulement sur l'arithmetique. Et pourtant, sur la scene
+reelle, trois paires entrelacees : **-1,4 %, +1,5 %, +2,1 %**. Aucun gain, voire un peu
+pire. **Passe retiree.**
+
+### Ce que ce resultat apprend
+
+Il recoupe la section 125, ou quatre chargements volatiles par echantillonnage ne coutaient
+rien : **ces chargements ne sont pas le prix du motif**. Le prix est ailleurs — dans les
+poignees de texture vivantes simultanement, donc la pression de registres. Et remonter les
+chargements **allonge** leur duree de vie, ce qui explique le leger ralentissement.
+
+Le banc de la section 137 le confirme a posteriori : son variant bindless tient 114
+descripteurs **distincts** vivants, et c'est cela qui coute +138 %, pas le nombre
+d'instructions de chargement.
+
+### La consequence, et elle est structurelle
+
+Le cout ne vient pas d'une occasion manquee d'optimisation mais du **modele bindless
+lui-meme** : chaque echantillonnage doit tenir une poignee de texture vivante, la ou un
+backend Metal natif lie ses textures une fois pour toutes. Or le bindless n'est pas un
+choix du pilote : c'est ce qu'impose `VK_EXT_descriptor_buffer`, que vkd3d utilise et sans
+lequel la conformite D3D12 se degrade (2 210 contre 2 026, section 117).
+
+Le doublement du fragment sur un moteur reel est donc le prix de la chaine D3D12, pas un
+defaut corrigeable dans KosmicKrisp.
