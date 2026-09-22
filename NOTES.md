@@ -9720,7 +9720,11 @@ Ce n'est pas un defaut de Wine : c'est une politique du noyau, et elle est absol
 ### Ce que cela etablit
 
 **Wine natif arm64 est impossible sur macOS**, tant que cette politique tient et que
-Windows place `KUSER_SHARED_DATA` a une adresse fixe sous 4 Go. C'est la raison, enfin
+Windows place `KUSER_SHARED_DATA` a une adresse fixe sous 4 Go.
+
+> **Correction, section 140.** Cette conclusion est trop forte. La contrainte du noyau est
+> reelle et confirmee sur toute la plage, mais `KUSER_SHARED_DATA` peut etre **deplace**, ce
+> qui debloque l'initialisation de Wine. Voir la section 140. C'est la raison, enfin
 demontree, pour laquelle toutes les distributions commerciales sur Apple Silicon font
 tourner Wine en x86_64 sous Rosetta : un processus traduit obtient un petit `__PAGEZERO`
 et des pages de 4 Ko.
@@ -10309,3 +10313,61 @@ section 135 ; il a ete reconnu en une mesure absurde au lieu d'un faux resultat 
 Le pilote est a parite sur tous les axes mesurables. Les deux ecarts restants sont imputes
 et structurels. Il n'y a plus de piste de performance identifiee et non exploree dans
 KosmicKrisp.
+
+## 140. La dependance a Rosetta : ma conclusion de la section 131 etait trop forte (2026-09-22)
+
+La section 131 declarait Wine natif arm64 **impossible** sur macOS. Deux verifications
+montrent que la premiere moitie du raisonnement tient et que la seconde ne tient pas.
+
+### La contrainte du noyau, confirmee et generalisee
+
+La section 131 n'avait teste que de petites valeurs de `__PAGEZERO`, et en faisant varier
+`-segalign` **en meme temps**, ce qui faisait echouer l'edition de liens pour les grandes.
+Refait proprement, avec `-segalign` valide a 16 Ko :
+
+| `__PAGEZERO` demande | obtenu | resultat |
+| --- | --- | --- |
+| 16 Ko | 16 Ko | tue |
+| 16 Mo | 16 Mo | tue |
+| 256 Mo | 256 Mo | tue |
+| 1 Go | 1 Go | tue |
+| 1,5 Go | 1,5 Go | tue |
+| 2,13 Go | 2,13 Go | tue |
+| defaut | 4 Go | **s'execute** |
+
+L'editeur de liens obeit desormais, et le noyau tue quand meme. **macOS arm64 impose
+exactement les 4 Go**, sur toute la plage et pas seulement pour les petites valeurs.
+
+### Mais l'adresse de Wine n'est pas gravee dans le marbre
+
+`KUSER_SHARED_DATA` a 0x7ffe0000 n'est pas une constante de compilation : c'est un
+**initialiseur de pointeur**, en huit endroits du code de Wine. La porter a 0x17ffe0000,
+au-dessus des 4 Go, est une modification mecanique de huit lignes.
+
+Effet immediat : Wine passe de **tue par SIGKILL sans un mot** a
+
+- initialisation reussie,
+- **creation du prefixe**,
+- entree dans le ntdll PE.
+
+C'est `0048-wine-arm64-relocate-kuser-shared-data.patch`.
+
+### Ou cela s'arrete maintenant
+
+Une faute subsiste, `EXC_BAD_ACCESS` sur `ldrh w8, [x8, #0x17ee]` avec `x8` nul, dans
+l'init du ntdll PE **avant tout chargement de DLL** — le canal `+loaddll` ne produit rien.
+
+Indice sur sa nature : `dlls/ntdll/unix/signal_arm64.c` ne compte que **4** points
+specifiques a `__APPLE__`, contre **18** dans `signal_x86_64.c`. Le backend ARM64 de Wine
+vise Linux ; son support macOS est embryonnaire.
+
+### La conclusion corrigee
+
+Wine natif arm64 sur macOS n'est **pas impossible** : il demande de developper le backend
+ARM64 macOS de Wine, ce qui est un travail de portage et non un mur architectural. La
+section 131 confondait une contrainte du noyau, reelle, avec une impossibilite, qui ne
+l'est pas.
+
+La dependance a Rosetta reste entiere aujourd'hui, mais elle a maintenant une issue connue
+au lieu d'etre declaree sans issue. Et la premiere marche, celle qui semblait infranchissable,
+est franchie.

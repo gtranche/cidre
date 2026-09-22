@@ -1,0 +1,113 @@
+Wine arm64 sur macOS : deplace KUSER_SHARED_DATA au-dessus de 4 Go.
+
+macOS arm64 impose un __PAGEZERO de 4 Go, qui rend inaccessible l adresse fixe
+0x7ffe0000 attendue par Windows. L adresse est une variable en huit endroits ;
+la porter a 0x17ffe0000 suffit a laisser Wine initialiser et creer son prefixe.
+
+Ne suffit pas a faire tourner un programme : une faute subsiste dans l init de
+ntdll PE, avant tout chargement de DLL.
+
+diff --git a/dlls/kernel32/process.c b/dlls/kernel32/process.c
+index 9bbb18d8..5c8dc87e 100644
+--- a/dlls/kernel32/process.c
++++ b/dlls/kernel32/process.c
+@@ -39,7 +39,7 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(process);
+ 
+-static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x7ffe0000;
++static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x17ffe0000ull;
+ 
+ typedef struct
+ {
+diff --git a/dlls/kernel32/sync.c b/dlls/kernel32/sync.c
+index 5b2a8489..60cfac15 100644
+--- a/dlls/kernel32/sync.c
++++ b/dlls/kernel32/sync.c
+@@ -42,7 +42,7 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(sync);
+ 
+-static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x7ffe0000;
++static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x17ffe0000ull;
+ 
+ 
+ static void get_create_object_attributes( OBJECT_ATTRIBUTES *attr, UNICODE_STRING *nameW,
+diff --git a/dlls/kernelbase/memory.c b/dlls/kernelbase/memory.c
+index 2ce2dcad..09f13be4 100644
+--- a/dlls/kernelbase/memory.c
++++ b/dlls/kernelbase/memory.c
+@@ -40,7 +40,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(heap);
+ WINE_DECLARE_DEBUG_CHANNEL(virtual);
+ WINE_DECLARE_DEBUG_CHANNEL(globalmem);
+ 
+-static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x7ffe0000;
++static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x17ffe0000ull;
+ 
+ static CRITICAL_SECTION memstatus_section;
+ static CRITICAL_SECTION_DEBUG critsect_debug =
+diff --git a/dlls/kernelbase/sync.c b/dlls/kernelbase/sync.c
+index 94036acf..a7028ceb 100644
+--- a/dlls/kernelbase/sync.c
++++ b/dlls/kernelbase/sync.c
+@@ -39,7 +39,7 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(sync);
+ 
+-static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x7ffe0000;
++static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x17ffe0000ull;
+ 
+ /* check if current version is NT or Win95 */
+ static inline BOOL is_version_nt(void)
+diff --git a/dlls/ntdll/thread.c b/dlls/ntdll/thread.c
+index 1c25c8ff..9e3cd6e4 100644
+--- a/dlls/ntdll/thread.c
++++ b/dlls/ntdll/thread.c
+@@ -35,7 +35,7 @@ WINE_DECLARE_DEBUG_CHANNEL(relay);
+ WINE_DECLARE_DEBUG_CHANNEL(pid);
+ WINE_DECLARE_DEBUG_CHANNEL(timestamp);
+ 
+-struct _KUSER_SHARED_DATA *user_shared_data = (void *)0x7ffe0000;
++struct _KUSER_SHARED_DATA *user_shared_data = (void *)0x17ffe0000ull;
+ 
+ struct debug_info
+ {
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 38cab906..fd01d593 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -198,7 +198,7 @@ static void *host_addr_space_limit;  /* top of the host virtual address space */
+ static struct file_view *arm64ec_view;
+ 
+ ULONG_PTR user_space_wow_limit = 0;
+-struct _KUSER_SHARED_DATA *user_shared_data = (void *)0x7ffe0000;
++struct _KUSER_SHARED_DATA *user_shared_data = (void *)0x17ffe0000ull;
+ 
+ /* TEB allocation blocks */
+ static void *teb_block;
+diff --git a/dlls/ntoskrnl.exe/instr.c b/dlls/ntoskrnl.exe/instr.c
+index 31e1e6e2..c5fbdf96 100644
+--- a/dlls/ntoskrnl.exe/instr.c
++++ b/dlls/ntoskrnl.exe/instr.c
+@@ -490,7 +490,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(int);
+ #define SIB_BASE( sib, rex )    (((sib) & 7) | (((rex) & REX_B) ? 8 : 0))
+ 
+ /* keep in sync with dlls/ntdll/thread.c:thread_init */
+-static const BYTE *wine_user_shared_data = (BYTE *)0x7ffe0000;
++static const BYTE *wine_user_shared_data = (BYTE *)0x17ffe0000ull;
+ static const BYTE *user_shared_data      = (BYTE *)0xfffff78000000000;
+ 
+ static inline DWORD64 *get_int_reg( CONTEXT *context, int index )
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index 8c9a2aae..4eae2d0f 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -45,7 +45,7 @@ WINE_DECLARE_DEBUG_CHANNEL(relay);
+ #define QS_HARDWARE     0x40000000
+ #define QS_INTERNAL     (QS_DRIVER | QS_HARDWARE)
+ 
+-static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x7ffe0000;
++static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x17ffe0000ull;
+ 
+ static const struct ratio no_dpi;
+ 
