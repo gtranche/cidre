@@ -10875,3 +10875,51 @@ supposé : trois campagnes supplémentaires **avec le même binaire** donnent 43
 **La suite D3D11 oscille donc de ±2 d'une campagne à l'autre.** À ne pas lire comme une
 régression, au même titre que `test_suballocate_va_alignment` et
 `test_unused_attachments_mix_and_match` côté D3D12.
+
+## 149. Le gain sur un moteur réel : −30,7 %, mais seulement là où le CPU compte (2026-09-22)
+
+Les sections 147-148 mesuraient l'enregistrement de commandes. Reste à savoir si cela déplace
+un temps d'image. Scène Godot `tests/godot-views`, pile complète PE → Wine → DXVK/vkd3d →
+KosmicKrisp → Metal, deux pilotes x86_64 échangés entre chaque exécution : « avant » = plafond
+32 et `no_root_trim`, « après » = plafond 192 et rognage actif.
+
+### Premier essai : aucun gain, et c'est un résultat
+
+En 1280×720 avec des vues de 160 px, 25 329 tirages : **123,810 ms des deux côtés**, à trois
+décimales. La scène est limitée par le GPU — 123 ms par image — donc le CPU a tout le temps du
+monde et une économie d'enregistrement n'y change rien. Les journaux diffèrent bien (meilleures
+valeurs et nombre de tirages distincts) : les deux pilotes ont bien tourné.
+
+### Second essai : mettre le CPU sur le chemin critique
+
+En 640×480 avec des vues de 32 px, le nombre de tirages reste à ~25 300 mais le coût par pixel
+s'effondre. Le temps ne descend qu'à 87 ms : le coût est donc largement **par tirage**, pas par
+pixel. C'est la configuration qui peut révéler le gain.
+
+| tour | avant | après |
+| --- | --- | --- |
+| 1 | 116,667 ms | 82,710 ms |
+| 2 | 116,667 | 83,005 |
+| 3 | 125,926 | 83,466 |
+| 4 | 123,333 | 83,333 |
+| **médiane** | **120,000 ms** | **83,169 ms** |
+
+**−30,7 %**, soit 8,3 → 12,0 img/s. Les valeurs « après » tiennent dans 81,9-83,5 alors que
+« avant » s'étale de 112,6 à 125,9 : privée de CPU, la configuration d'avant encaissait la
+charge de la machine, ce que la nouvelle absorbe.
+
+### Portée honnête de ce chiffre
+
+La configuration a été **choisie** pour être limitée par les tirages. Un jeu limité par le GPU
+ne verra rien, comme le premier essai le montre. Le gain vaut pour ce qui sature le CPU :
+beaucoup de tirages, beaucoup de changements d'état — ce qui est le cas des moteurs qui
+n'utilisent pas le rendu indirect, et d'autant plus sous Rosetta où tout est taxé ×2,5.
+
+### Trois tours jetés, et pourquoi
+
+Le premier A/B en configuration CPU donnait 121 / 122 / 135 pour « avant » et 83 / 133 / 135
+pour « après » — incohérent et dérivant. Cause : des **processus Wine oubliés**, dont un
+`winedevice.exe` vieux de 1 j 23 h, le `wineboot.exe` bloqué de l'essai arm64 et le `winedbg`
+attaché lors de la conformité ratée. Charge moyenne 2,3 au lieu de 0. C'est exactement le piège
+déjà consigné, et je l'ai repris de plein fouet. La reprise ajoute une garde qui attend
+l'absence de processus **et** une charge inférieure à 1,2 avant chaque exécution.
