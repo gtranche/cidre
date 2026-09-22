@@ -10644,3 +10644,25 @@ macOS conserve — et c'est pourquoi la pile sous Rosetta fonctionne, elle.
 **Le portage arm64 natif est ferme par une contrainte de plateforme, pas par un travail
 restant.** Le correctif 0048 et le tremplin 0049 restent justes et mesures ; ils levaient les
 obstacles qu'on pouvait lever. La voie x86_64 sous Rosetta demeure la seule praticable.
+
+### Correction a la section 144 (meme jour)
+
+La section 144 concluait qu'« aucun correctif cote Wine ne peut y remedier ». C'est trop fort,
+et deux verifications le montrent.
+
+1. Tout le code PE de Wine lit le TEB par **une seule ligne**, dans `include/winnt.h` :
+   `register struct _TEB *__wine_current_teb __asm__("x18");`
+2. `TPIDRRO_EL0` est **stable** : 300 millions de tours sous charge, sans perte, la ou `x18`
+   tombe en quelques millions (`tests/tp_stable.c`).
+
+Donc les modules PE **de Wine** pourraient utiliser un autre porteur de TEB, au prix d'une
+ligne. Ce qui reste impossible, c'est d'executer un binaire Windows ARM64 **deja compile** :
+l'ABI y cable `x18` dans chaque acces au TEB, et on ne recompile pas les jeux.
+
+La portee exacte de la contrainte est donc : *pas de binaires Windows ARM64 tiers*, et non
+*pas de Wine arm64*.
+
+Cela ne rouvre pas la voie pour autant, pour une raison independante : **les jeux Windows sont
+x86_64**. Un Wine arm64 devrait de toute facon emuler du x86_64 dans le processus, et sur macOS
+le seul emulateur disponible est Rosetta — precisement ce qu'on cherche a quitter. Ecrire un
+JIT x86_64 est hors sujet ici.
