@@ -10025,3 +10025,34 @@ de pipeline empeche le GPU d'ecarter les fragments caches, l'ombrage double sans
 d'autre ne change. Piste cote pilote, non encore testee faute de levier pour l'isoler.
 
 Suites : **2 026 en D3D12, 4 326 en D3D11**.
+
+### Le rejet precoce : ecarte, il fonctionne (2026-09-22)
+
+Suspect designe par la section 135. Nouveau repere `tests/bench_depth_*` : N couches plein
+ecran dessinees de l'avant vers l'arriere, test de profondeur LESS avec ecriture, nuanceur
+fragment couteux a 128 echantillons par pixel. Si le GPU ecarte les fragments caches, le
+temps ne depend pas de N.
+
+| couches | metal natif | notre pile |
+| --- | --- | --- |
+| 1 | 1,89 ms | 1,92 ms |
+| 2 | 2,83 ms | **1,96 ms** |
+| 8 | 2,48 ms | **1,96 ms** |
+| 32 | 2,33 ms | **2,17 ms** |
+
+Le temps est plat des deux cotes : **le rejet precoce fonctionne**, et notre pile est meme
+legerement meilleure que la reference ecrite a la main au-dela d'une couche.
+
+Quatrieme hypothese ecartee, apres la compression, les chargements d'attachements et un
+travail soumis different.
+
+### Ce qui reste, et une limite de la section 125
+
+Le seul suspect encore debout est la **qualite du code fragment produit pour les nuanceurs
+reels de Godot**. La section 125 avait etabli la parite du code genere en reinjectant notre
+MSL dans le harnais Metal — mais sur le nuanceur **simple** du banc, une boucle
+d'echantillonnage. Rien n'y prouve la parite sur un nuanceur d'eclairage complet passe par
+HLSL, DXIL, dxil-spirv, SPIR-V, NIR puis MSL.
+
+Le tester demanderait d'extraire un nuanceur reel des deux chemins et de comparer, ce qui
+n'a pas ete fait.
