@@ -8913,7 +8913,7 @@ deux lignes vides parasites dans `kk_cmd_buffer.c` et un commentaire orphelin da
 retour en arriere est complet, la recherche de symboles ne suffit pas, il faut
 comparer a un arbre reconstruit.
 
-## 122. Refonte avec suivi des ressources : -34 % sur passes independantes (2026-09-21)
+## 122. Refonte avec suivi des ressources : -14 % sur passes independantes (2026-09-21)
 
 La section 121 concluait que la barriere aveugle ne peut etre retiree que si l'on
 **differe la fermeture** de l'encodeur de rendu. C'est ce que fait cette refonte.
@@ -9867,3 +9867,100 @@ est opaque par construction.
 
 Le repli conservateur n'est pas un pis-aller en attendant mieux : c'est la seule option
 correcte sous tampons de descripteurs, et il ne coute que 0,55 % des passes.
+
+## 134. Point complet apres la campagne performance (2026-09-22)
+
+Les sections 121 a 133 forment une campagne unique : comprendre pourquoi la pile rend
+22 images par seconde sur Superposition, et ce qu'on peut y faire. Voici le bilan, sans
+rien arrondir.
+
+### Les trois correctifs acquis
+
+| correctif | section | gain mesure | ou il porte |
+| --- | --- | --- | --- |
+| adresse de racine reecrite a chaque tirage | 124 | **-45,8 %** d'encodage | toute charge riche en tirages |
+| compression de texture desactivee par `TRANSFER_DST` | 126 | **-29,6 %** a 512 ech/pixel | textures **non compressees** |
+| etat graphique recalcule sans raison | 132 | **-5,5 %** d'encodage sous Rosetta | toute charge riche en tirages |
+
+Le premier est le plus rentable, et il vaut double dans le chemin reel puisque le pilote
+y tourne traduit. Le deuxieme ne porte pas sur les textures d'un jeu, qui sont compressees
+par blocs : mesure BC1, l'usage ecriture n'y coute **rien** (6,712 contre 6,725 ms).
+
+### La refonte de la synchronisation
+
+Fermeture differee de l'encodeur de rendu plus suivi des ressources : **-14 %** quand les
+passes ecrivent des cibles distinctes, **0 %** sinon. Correcte et gratuite, mais son
+domaine est etroit — ni Superposition, ni Godot, ni une scene a 16 vues n'en profitent,
+car leurs passes se recouvrent ou sont bornees ailleurs.
+
+Dette fermee en section 133, et le recensement complet demande est **impossible** : sous
+`VK_EXT_descriptor_buffer`, que vkd3d utilise, le pilote ne voit des descripteurs qu'une
+adresse opaque. Les attachements sont les seules ressources passees explicitement dans
+l'API, donc les seules recensables.
+
+### Ce qui a ete innocente, et comment
+
+| axe | verdict | methode |
+| --- | --- | --- |
+| code MSL genere | **parite** | reinjection du MSL genere dans le harnais Metal |
+| encodeur Metal 4 | **parite** | harnais Metal 4 complet, memes tampons |
+| debit par triangle | **parite** | 1,35 contre 1,31 ns |
+| passes surnumeraires | **aucune** | compteur, 160 000 passes, 0 partielle |
+| chargements et stockages forces | **aucun** | 0 NONE/NONE sur 204 829 attachements |
+| barriere d'encodeur | **hors du chemin critique** | 24 % de barrieres evitees pour 0 % de gain |
+
+Rien de ce qui reste n'est imputable au pilote.
+
+### Le chiffre qui manquait, et celui qu'il a revele
+
+Godot en Metal natif contre la pile complete, meme projet, meme GPU : **98,1 contre
+129,2 ms, soit +31,7 %**. Reserve importante, cela compare deux backends de Godot, pas le
+pilote seul.
+
+Les captures decomposent : **+42 %** de travail GPU par image, et un GPU **inoccupe 25 %
+du temps** contre 0,5 % en natif. Ce second point est explique : le pilote Vulkan tourne
+sous Rosetta, ce qui coute un facteur **2,3** sur son chemin CPU.
+
+### La limite structurelle
+
+Un Wine arm64 natif supprimerait cette traduction. Il est **impossible sur macOS**, et la
+preuve tient en trois lignes de C : tout binaire arm64 dont le `__PAGEZERO` est reduit est
+tue par le noyau, et Wine a besoin de l'espace bas pour `KUSER_SHARED_DATA` a `0x7ffe0000`.
+C'est la raison, demontree, pour laquelle toutes les distributions commerciales gardent
+Wine en x86_64 sous Rosetta.
+
+**La pile depend donc de Rosetta pour exister, pas seulement pour aller vite.** Si Rosetta
+disparait, le probleme n'est pas 30 % de performance, c'est l'absence d'hote.
+
+Ce qui reste utilisable du chantier ARM64 : vkd3d-proton en PE Aarch64, Godot Windows
+ARM64, la chaine llvm-mingw, et Wine 11.18 qui construit et s'installe en arm64. Tout cela
+attend qu'un hote arm64 devienne possible.
+
+### Ce que cette campagne a coute en erreurs, et ce qu'on en retient
+
+Sept resultats annonces puis corriges. Les causes, toutes methodologiques :
+
+- **un banc qui ne verifie pas son resultat** mesurait une execution fausse comme un gain
+  (-43 % annonce en section 121, inexistant) ;
+- **un protocole non entrelace** contamine par la derive machine (-34 % au lieu de -14 %) ;
+- **un « meilleur de trois »** sur une distribution large (0,35 / 0,17 / 0,27 ms pour le
+  meme banc) ;
+- **un processus oublie** d'une session precedente faussant tout pendant des heures ;
+- **`pgrep -f` et `pkill -f`** dont le motif matche le shell appelant, d'ou un faux
+  blocage impute au pilote ;
+- **un compteur balayant les etages de calcul** en croyant ne voir que le graphique
+  (87 % au lieu de 0,55 %) ;
+- **une compilation echouee** dont la mesure portait sur l'ancien binaire.
+
+Regles qui en decoulent, et qui ont fini par tenir : entrelacer les modes compares,
+publier medianes et etendues, verifier qu'un banc valide son resultat, tuer les residus
+avant de mesurer, et se mefier d'un chiffre qui tombe pile sur une valeur connue.
+
+### Ou chercher ensuite
+
+Le pilote est a parite sur tous les axes testes. Les deux pistes ouvertes sont ailleurs :
+
+1. **Les +42 % de travail GPU** de la section 128, non expliques. Ils comparent deux
+   backends de Godot, donc une part appartient a Godot et a vkd3d, pas a nous. Un
+   decoupage par passe des deux captures le dirait.
+2. **Le risque Rosetta**, qui est de nature strategique et non technique.
