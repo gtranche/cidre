@@ -10445,3 +10445,57 @@ Trois etages, desormais tous nommes :
 
 Aucun des trois n'est une impossibilite. La section 131 avait tort de conclure ainsi, et
 cette section dit precisement ce qu'il faudrait ecrire.
+
+## 142. Restaurer x18 dans les gestionnaires : le noyau refuse (2026-09-22)
+
+La section 141 concluait qu'il suffisait de restaurer `x18` a l'entree des gestionnaires de
+signal et de cesser de le sauter dans la conversion de contexte. Verification faite, la
+voie directe est fermee.
+
+### Le test
+
+Un gestionnaire de signal qui ecrit explicitement dans le contexte de retour :
+
+```c
+u->uc_mcontext->__ss.__x[18] = 0xcafef00d;
+```
+
+| | `x18` |
+| --- | --- |
+| avant le signal | `deadbeef` |
+| apres le signal, malgre l'ecriture | **0** |
+
+**Le noyau ignore `x18` dans l'`ucontext`.** Il le force a zero au retour du gestionnaire,
+quoi qu'on y mette. Ce n'est pas un oubli de Wine : c'est un refus de la plateforme.
+
+Consequence : toute exception survenant dans du code PE detruit definitivement le pointeur
+de TEB, et **aucun gestionnaire ne peut le retablir par les moyens normaux**.
+
+### Ce qu'il faudrait ecrire
+
+Une seule voie reste : ne pas retourner directement au code PE. Le gestionnaire detournerait
+`PC_sig` vers un **tremplin en assembleur** qui, s'executant apres le `sigreturn` avec
+`x18` a zero :
+
+1. retrouve le TEB sans passer par `x18`, via `pthread_getspecific` ou `TPIDRRO_EL0` ;
+2. remet `x18` ;
+3. saute a l'adresse de reprise d'origine.
+
+Le tremplin doit preserver tous les autres registres autour de cet appel, soit une
+vingtaine d'instructions, a placer dans `restore_context` qui fixe deja `PC_sig`.
+
+C'est faisable et c'est du vrai portage. Ce n'est pas la modification de quelques lignes
+qu'annoncait la section 141, et il n'existe ici aucune suite de tests pour valider ce
+chemin.
+
+### L'etat de la question, definitif
+
+| etage | statut |
+| --- | --- |
+| `__PAGEZERO` de 4 Go | contourne, correctif 0048 |
+| espace d'adressage a 4 Go | non bloquant |
+| `x18` detruit aux appels systeme | gere par Wine autour de ses propres transitions |
+| **`x18` detruit aux signaux, non restaurable** | **demande un tremplin, non ecrit** |
+
+Wine natif arm64 sur macOS reste possible, et le chemin est desormais entierement
+cartographie. Il demande d'ecrire ce tremplin, pas de lever un obstacle inconnu.
