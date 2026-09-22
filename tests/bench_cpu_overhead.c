@@ -10,7 +10,7 @@
 #include "bench_shaders.h"
 #define CK(x) do { VkResult _r=(x); if(_r!=VK_SUCCESS){printf("ECHEC %s -> %d (l.%d)\n",#x,_r,__LINE__); exit(1);} } while(0)
 #define DISPATCHES 20000
-#define ROUNDS 10
+#define ROUNDS 15
 
 static VkInstance inst; static VkPhysicalDevice pdev; static VkDevice dev;
 static VkQueue queue; static uint32_t qfam; static VkCommandPool pool;
@@ -18,6 +18,8 @@ static uint32_t mem_type(uint32_t bits, VkMemoryPropertyFlags p){
    VkPhysicalDeviceMemoryProperties mp; vkGetPhysicalDeviceMemoryProperties(pdev,&mp);
    for(uint32_t i=0;i<mp.memoryTypeCount;i++) if((bits&(1u<<i))&&(mp.memoryTypes[i].propertyFlags&p)==p) return i;
    printf("pas de type memoire\n"); exit(1); }
+static int cmpd(const void *a, const void *b){
+   double x=*(const double*)a, y=*(const double*)b; return x<y?-1:(x>y?1:0); }
 static double now(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t);
    return t.tv_sec + t.tv_nsec*1e-9; }
 
@@ -85,6 +87,7 @@ int main(void){
 
    printf("%s  --  %d dispatches par tour, %d tours\n\n", props.deviceName, DISPATCHES, ROUNDS);
 
+   double rec[ROUNDS], tot[ROUNDS];
    double rec_best = 1e9, tot_best = 1e9;
    for (int r = 0; r < ROUNDS; r++) {
       CK(vkResetCommandPool(dev,pool,0));
@@ -100,12 +103,15 @@ int main(void){
       CK(vkQueueSubmit(queue,1,&si,VK_NULL_HANDLE));
       CK(vkQueueWaitIdle(queue));
       double t2 = now();
+      rec[r] = t1-t0; tot[r] = t2-t0;
       if (t1-t0 < rec_best) rec_best = t1-t0;
       if (t2-t0 < tot_best) tot_best = t2-t0;
    }
+   qsort(rec, ROUNDS, sizeof(double), cmpd);
+   qsort(tot, ROUNDS, sizeof(double), cmpd);
 
-   printf("enregistrement : %8.2f ms   (%.2f M commandes/s)\n",
-          rec_best*1e3, DISPATCHES/rec_best/1e6);
-   printf("total (+ GPU)  : %8.2f ms\n", tot_best*1e3);
+   printf("enregistrement mediane %8.3f ms  meilleur %8.3f ms   (%.2f M commandes/s mediane)\n",
+          rec[ROUNDS/2]*1e3, rec_best*1e3, DISPATCHES/rec[ROUNDS/2]/1e6);
+   printf("total (+ GPU)  mediane %8.3f ms  meilleur %8.3f ms\n", tot[ROUNDS/2]*1e3, tot_best*1e3);
    return 0;
 }

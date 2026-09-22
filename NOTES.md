@@ -10666,3 +10666,47 @@ Cela ne rouvre pas la voie pour autant, pour une raison independante : **les jeu
 x86_64**. Un Wine arm64 devrait de toute facon emuler du x86_64 dans le processus, et sur macOS
 le seul emulateur disponible est Rosetta — precisement ce qu'on cherche a quitter. Ecrire un
 JIT x86_64 est hors sujet ici.
+
+## 145. La taxe Rosetta sur le pilote, chiffree (2026-09-22)
+
+Meme source de pilote, meme GPU, meme banc ; seule l'architecture CPU change. `bench_cpu_overhead`
+enregistre 20 000 `vkCmdDispatch` par tour, 15 tours, mediane et meilleur ; 12 passes
+entrelacees arm64 / x86_64.
+
+| | arm64 natif | x86_64 sous Rosetta | rapport |
+| --- | --- | --- | --- |
+| enregistrement (mediane de 12) | **2,348 ms** | **4,790 ms** | **×2,04** |
+| debit de commandes | 8,52 M/s | 4,18 M/s | ×0,49 |
+| total avec GPU (mediane de 5) | 3,940 ms | 6,472 ms | ×1,64 |
+| **part GPU** (total − enregistrement) | **1,592 ms** | **1,682 ms** | **×1,06** |
+
+Les intervalles ne se chevauchent pas : arm64 de 2,325 a 2,397, x86_64 de 4,691 a 4,883.
+
+### Lecture
+
+**La taxe est de ×2,04 sur le chemin CPU du pilote, et de ×1,06 seulement sur le GPU.** Le
+travail Metal est natif des deux cotes, ce qui valide la decomposition : ce que Rosetta coute,
+c'est l'enregistrement des commandes, pas le rendu.
+
+C'est coherent avec le 2,3× de CPU releve sur Godot dans la trace complete : la pile entiere
+(Wine, DXVK, vkd3d) est traduite elle aussi, donc un peu pire que le pilote seul.
+
+Corollaire utile : chaque optimisation d'encodage vaut **le double** sous Rosetta. Le cache
+d'adresse racine a −45,8 % et le chemin rapide d'etat graphique a −5,5 % rapportent deux fois
+plus la qu'en natif. Et inversement, les 25 % d'inactivite GPU imputes a Rosetta dans l'ecart
+de 31,7 % face au Metal natif se refermeraient en bonne partie sur une pile arm64.
+
+### Une precision sur ce que mesure ce chiffre
+
+Le ×2,04 compare « pilote compile en x86_64 et traduit » a « pilote compile en arm64 et
+natif ». Il additionne donc le cout de la traduction et les differences de generation de code
+entre les deux cibles, qu'on ne peut pas separer ici faute d'un Mac x86. C'est la comparaison
+qui compte en pratique, mais ce n'est pas le cout de traduction pur.
+
+### Piege de construction rencontre
+
+Le premier essai de reconstruction arm64 echouait sur `blake3_neon.c` (« NEON intrinsics not
+available »). Cause : `/usr/local/bin/ninja` est un binaire **x86_64**, donc il s'execute sous
+Rosetta et le `cc` universel qu'il lance suit en x86_64. `toolchain/bin/ninja` est universel :
+`arch -arm64 toolchain/bin/ninja` corrige. Sans cela j'aurais mesure un pilote arm64 vieux de
+trois heures.
