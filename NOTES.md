@@ -12343,3 +12343,60 @@ conformité de ces sessions. Pour mesurer ce que valent les correctifs 0056 à 0
 un jeu D3D11 ou D3D12.
 
 Rien n'a été mesuré en performance : le jeu a été lancé et joué, pas chronométré.
+
+---
+
+## 174. Grimrock : zéro adaptateur Direct3D 9
+
+Legend of Grimrock s'extrait et démarre, mais ouvre une boîte d'erreur. Son contenu, récupéré
+par `WINEDEBUG=+msgbox` puisqu'il n'apparaît nulle part ailleurs :
+
+```
+D3DError - GetDeviceCaps failed: D3DERR_INVALIDCALL
+```
+
+### La mesure
+
+Sonde posée dans `D3D9InterfaceEx::GetDeviceCaps` de DXVK :
+
+```
+avant : adapterCount=0  -> aucun adaptateur a cet indice  -> D3DERR_INVALIDCALL
+apres : adapterCount=1  -> adaptateur trouve, hr=0
+```
+
+DXVK, compilé en PE Windows, prend le chemin `#ifdef _WIN32` de son constructeur : il construit
+ses adaptateurs Direct3D 9 **à partir des écrans** rendus par `EnumDisplayDevices`, en ne
+gardant que ceux portant `DISPLAY_DEVICE_ATTACHED_TO_DESKTOP`. C'est l'option
+`d3d9.enumerateByDisplays`, vraie par défaut.
+
+Sous notre Wine, aucun écran ne porte ce drapeau. Zéro adaptateur Direct3D 9 — alors que
+l'instance Vulkan voit parfaitement le M1 Max et qu'aucune ligne « Skipping » n'apparaît dans
+le filtre de périphériques.
+
+### Le correctif
+
+`dxvk.conf` à la racine, pointé par `DXVK_CONFIG_FILE` depuis les deux lanceurs :
+
+```
+d3d9.enumerateByDisplays = False
+```
+
+DXVK énumère alors directement les adaptateurs Vulkan. Grimrock démarre par
+`tests/lancer_jeu.sh`, sans réglage manuel.
+
+### Ce qui reste inexpliqué
+
+**Braid a fonctionné sans ce réglage**, même préfixe, même Wine, même DXVK. Sonde à l'appui,
+Braid n'appelle jamais `GetDeviceCaps` — mais il lui faut quand même un adaptateur pour créer
+son périphérique. Soit un écran était signalé à ce moment-là, soit `CreateDevice` emprunte un
+chemin différent. La question n'est pas tranchée, et elle compte : si l'énumération d'écrans
+est instable d'un lancement à l'autre, d'autres jeux tomberont dessus au hasard.
+
+Indice dans la même direction, encore visible au démarrage de Grimrock :
+
+```
+err: Win32 WSI: retrieveDisplayMode: Failed to query monitor info
+```
+
+Non fatal, mais c'est la même faiblesse : Wine ne rend pas d'information d'écran exploitable
+dans ce préfixe.
