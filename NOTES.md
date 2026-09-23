@@ -11208,3 +11208,54 @@ du pilote ne bougent pas.
 Correctif 0055. Ce qui reste : calculer la disposition à la compilation des nuanceurs, la ranger
 dans leurs informations, et faire que le téléversement s'en serve. C'est l'étape qui changera
 enfin les chiffres.
+
+## 157. Refonte, étape 3b : la bascule ne tient pas, et pourquoi (2026-09-23)
+
+La disposition compacte a été branchée jusqu'au bout — calcul à la compilation depuis la
+disposition de pipeline, rangement dans les informations du nuanceur, tassement au
+téléversement, chemin DGC adapté. Elle est **abandonnée**. Trois mesures le justifient.
+
+### 1. Elle est fausse
+
+**D3D12 24 813 contre 2 026, D3D11 4 982 contre 4 326.**
+
+Diagnostic le plus probable, non confirmé faute d'avoir poursuivi : le masque des champs lus
+est collecté pour les nuanceurs de l'application, mais `NULL` est passé pour les **programmes
+internes** — émulation géométrie et tessellation, nuanceur de remplissage — qui lisent pourtant
+des valeurs système dans la même racine. Leurs champs ne sont jamais marqués, l'étendue ne les
+couvre pas, ils lisent au-delà du téléversé.
+
+### 2. Le gain d'octets est moitié moindre qu'annoncé
+
+**620 octets par tirage au lieu de 1 040, soit −40 %**, et non les −82 % avancés en section 153.
+
+Cette estimation supposait un dimensionnement sur l'usage réel. Or la disposition doit être
+**identique pour tous les étages** d'un pipeline, qui partagent un seul tampon racine ; elle ne
+peut donc se fonder que sur ce que la disposition de pipeline **déclare**. Godot déclare de
+larges plages de constantes et plusieurs jeux, utilisés en partie seulement. C'est une limite
+de conception, pas un réglage.
+
+### 3. Et ces −40 % ne donnent rien en temps
+
+**16,306 ms contre 16,297 de référence.** La boucle de tassement — dix-huit champs testés et
+recopiés — coûte ce que l'allocation plus petite économise.
+
+### La prémisse, et où elle casse
+
+« Moins d'octets, donc moins de pression sur le tas, donc moins de temps. » Les deux premiers
+maillons tiennent, le troisième non. La section 147 avait pourtant montré l'allocation à 72 %
+du coût — mais ce coût venait de **l'épuisement de tampons**, pas du volume en soi, et le
+plafond de rétention porté à 192 l'avait déjà largement supprimé. Une fois ce ressort détendu,
+réduire les octets ne rapporte plus rien.
+
+**C'est l'erreur de raisonnement à retenir** : j'ai réutilisé une décomposition mesurée *avant*
+un correctif qui en changeait la conclusion.
+
+### Ce qui reste acquis
+
+Les trois étapes précédentes sont conformes et commitées : indirection par disposition
+(`a35bd8f`), attributs entrelacés (`2451fdc`), machinerie de tassement (`d88b53b`). Elles ne
+changent rien aux chiffres mais rendent la racine paramétrable, ce qui resservira si le jour
+vient où le volume redevient le facteur limitant.
+
+Retour à `d88b53b` vérifié : **D3D11 4326, D3D12 2026**.
