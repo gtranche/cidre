@@ -11573,3 +11573,80 @@ passe de 262 à **126**.
 `kk_texel_oob_one` et le drapeau `KK_TEXEL_INT_SHIFT` sont sans commentaire. Ce qu'il faudrait
 y écrire : le bit 31 de `texel_count` dit que le format de la vue est entier pur, afin que la
 valeur substituée hors bornes le soit aussi, même si le shader a déclaré un type flottant.
+
+---
+
+## 162. Grandes vues de tampons de texels : le plafond de 2^28 de Metal
+
+`test_large_texel_buffer_view` : 42 échecs, le plus gros poste restant. Le test alloue un
+tampon de 2 Gio et y crée des vues de texels allant jusqu'à 2^29 éléments.
+
+Les échecs sont d'une netteté totale : **tout ce qui demande 2^29 échoue, tout ce qui demande
+2^27 ou 2^28 passe.**
+
+| test | format | éléments | |
+|---|---|---|---|
+| 0 | R32G32B32A32_UINT | 2^27 | passe |
+| 1 | R32G32_UINT | 2^28 | passe |
+| 3 | R16G16B16A16_UINT | 2^28 | passe |
+| 2, 4–9 | R32, R16G16, R16, R10G10B10A2, R8G8B8A8, R8G8, R8 | 2^29 | **échouent** |
+
+`Got element count 0` et `Got data 0` : le descripteur est vide, la vue est morte.
+
+### La mesure
+
+`KK_MAX_TEXEL_BUFFER_ELEMENTS` vaut `16384 * 16384` = 2^28, et c'est exactement la limite de
+Metal. Au-delà, Metal n'échoue pas proprement — **il avorte le processus** :
+
+```
+-[MTLTextureDescriptorInternal validateWithDevice:]:1416: failed assertion
+`MTLTextureDescriptor has width (536870912) greater than the maximum allowed
+size of 268435456.'
+```
+
+Le pilote a donc raison de se garder. Sonde dans `kk_texel_view_create` :
+
+```
+refus : bo=2147483648 texel=1 elements=2147483648 max=268435456 fmt=13  (R8)
+refus : bo=2147483648 texel=2 elements=1073741824 max=268435456 fmt=20  (R16)
+refus : bo=2147483648 texel=4 elements=536870912  max=268435456 fmt=98  (R32)
+```
+
+### Pourquoi ce n'est pas une simple borne à relever
+
+Chaque cas en échec demande **au moins 2^29 texels pour la vue elle-même**. Une texture Metal
+ne peut pas en couvrir plus de 2^28. Il faudrait donc découper la vue sur plusieurs textures
+et choisir dans le shader — et la difficulté est structurelle :
+
+`kk_texel_view_create` adosse **une texture à tout le tampon**, pas à la vue (le cache est
+indexé sur `(base, format)` pour partager une texture entre toutes les vues d'un même tampon).
+Couvrir 2 Gio en R8 demanderait 2^31 texels, soit **huit** morceaux. Huit identifiants font
+64 octets, plus l'offset et le compte : 72, au-delà de `KK_MAX_DESCRIPTOR_SIZE`. Et adosser
+les textures à la vue plutôt qu'au tampon ferait exploser le cache.
+
+La seule voie générale serait une table de morceaux hors ligne, l'identifiant du descripteur
+devenant une adresse de table. Coût : un chargement dépendant supplémentaire **à chaque accès
+de tampon de texels**, sur le chemin le plus chaud du pilote. Pour 42 échecs sur un
+comportement que le test lui-même déclare hors spécification — il fait taire les messages de
+validation Vulkan 09427 et 09428, *« Intentionally testing out of spec behavior »* — et alors
+que le minimum garanti par D3D12 (`D3D12_REQ_BUFFER_RESOURCE_TEXEL_COUNT_2_TO_EXP` = 27) est
+tenu et passe.
+
+### Un défaut latent trouvé au passage
+
+Le refus porte sur **la taille du tampon**, pas sur celle de la vue :
+
+```c
+uint64_t elements = bo->size_B / texel_size_B;
+if (elements == 0u || elements > KK_MAX_TEXEL_BUFFER_ELEMENTS)
+   return NULL;
+```
+
+Une vue de mille éléments dans un tampon de 2 Gio est donc **morte elle aussi**, alors qu'elle
+tiendrait largement. Un jeu qui place un petit tampon de texels dans une grosse allocation
+lirait des zéros. Aucun test de la suite ne l'exerce, donc aucun chiffre à l'appui : borner la
+texture à 2^28 au lieu de refuser, et n'accepter le descripteur que si
+`texel_offset + count <= 2^28`, corrigerait ça sans coût sur le chemin chaud. **Non fait, car
+non vérifiable par la conformité.**
+
+**Diagnostic seulement. Rien n'est modifié.**
