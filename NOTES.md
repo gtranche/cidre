@@ -11114,3 +11114,40 @@ la recopie de 1 040 octets**. Séparer les constantes poussées du reste de la r
 propre tampon, ramènerait ce coût à 256 octets au plus — les 760 de l'union de dessin et les
 jeux de descripteurs ne changeant pas entre deux tirages. Cela demande de toucher aux décalages
 que le nuanceur utilise (`kk_nir_lower_descriptors.c`), donc ce n'est pas une retouche locale.
+
+## 154. Refonte de la racine, étape 1 : l'indirection par disposition (2026-09-23)
+
+La section 153 avait montré que le vrai gaspillage n'est pas le bloc de sommets seul mais le
+dimensionnement de **tous** les tableaux au maximum Vulkan — 32 attributs, 32 jeux, 256 octets
+de constantes — alors qu'un pipeline en utilise une poignée. Pour la scène de la section 151 :
+1 040 octets téléversés par tirage contre ~192 réellement utiles, soit **−82 % possibles**.
+
+### Pourquoi un filet avant toute chose
+
+La séparation des constantes poussées, la veille, avait cassé la conformité sans que la cause
+soit localisable rapidement. La refonte touche les offsets gravés dans les nuanceurs : une
+erreur y donne des lectures silencieusement fausses. On procède donc en deux temps, et le
+premier ne change **aucune valeur**.
+
+### L'étape franchie
+
+`kk_root_layout.h` déclare 18 champs lus par les nuanceurs et une structure de disposition qui
+donne l'offset de chacun. Les deux passes d'abaissement — descripteurs et sommets — ne
+calculent plus leurs offsets par `offsetof` sur la structure C, mais les lisent dans une
+disposition passée en paramètre. `kk_root_layout_identity()` renvoie exactement les offsets
+actuels.
+
+Recensement de départ : 15 sites dans `kk_nir_lower_descriptors.c` et 3 dans
+`kk_nir_lower_vbo.c`. Un seul cas particulier, le chargement factice du contournement de
+barrière, qui lisait `dynamic_buffers[0].zero` sans s'intéresser à la valeur : ramené à
+l'offset 0, toujours valide quelle que soit la disposition.
+
+**Conformité : D3D11 4326, D3D12 2026** — les références exactes. La plomberie est donc juste,
+et ce point est un repère où revenir. Correctif 0053.
+
+### Ce qui reste
+
+L'étape suivante calcule une disposition **compacte par pipeline** à partir de ce que le
+nuanceur lit réellement, et tasse le téléversement en conséquence. La structure C grasse reste
+la zone de travail côté processeur — les dizaines d'écritures du pilote sont inchangées — et
+seul le téléversement recopie les champs utiles aux offsets compacts.
