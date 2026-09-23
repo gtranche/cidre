@@ -12400,3 +12400,54 @@ err: Win32 WSI: retrieveDisplayMode: Failed to query monitor info
 
 Non fatal, mais c'est la même faiblesse : Wine ne rend pas d'information d'écran exploitable
 dans ce préfixe.
+
+### Correction de la section 174 : le réglage ne suffit pas
+
+Le correctif annoncé ci-dessus est **partiel, et ne fait pas fonctionner Grimrock**. Il
+déplace l'échec :
+
+```
+par defaut                    : GetDeviceCaps  -> adapterCount=0 -> D3DERR_INVALIDCALL
+enumerateByDisplays = False   : GetDeviceCaps  -> hr=0
+                                CreateDevice   -> D3DERR_INVALIDCALL
+```
+
+Sonde sur les paramètres de présentation transmis par le jeu :
+
+```
+type=1 flags=82 ext=0 | w=0 h=0 fmt=21 count=1 swap=1 windowed=0
+interval=1 hwnd=0 mstype=0 autods=0 dsfmt=75 refresh=0
+```
+
+La validation passe (`hr=0`) ; l'échec est dans `InitialReset`. Grimrock demande un **plein
+écran** (`windowed=0`) en laissant les dimensions à zéro, à charge pour le runtime de les
+déduire du mode d'affichage courant. Or sans énumération par écrans, l'adaptateur n'a plus de
+moniteur associé, d'où l'avertissement persistant :
+
+```
+err: Win32 WSI: retrieveDisplayMode: Failed to query monitor info
+```
+
+Forcer le mode fenêtré par `grimrock.cfg` n'y change rien.
+
+### La contradiction non résolue
+
+Un programme de test 32 bits lancé dans le même préfixe rapporte pourtant des écrans corrects :
+
+```
+ecran 0 : \\.\DISPLAY1   flags=0x00000015 attache=1
+ecran 1 : \\.\DISPLAY2   flags=0x00000000 attache=0
+GetMonitorInfo : ok
+EnumDisplaySettings courant : ok  1280x720 @60Hz
+```
+
+`DISPLAY1` porte bien `DISPLAY_DEVICE_ATTACHED_TO_DESKTOP`. L'énumération par écrans de DXVK
+aurait donc dû produire un adaptateur. Elle en produit zéro dans le processus du jeu. Aucun
+bureau virtuel n'est configuré dans le registre, ce qui aurait pu expliquer l'écart.
+
+Ces deux observations sont incompatibles, ce qui veut dire qu'une variable m'échappe. Le
+réglage est donc **laissé commenté** dans `dxvk.conf` : la configuration par défaut est la
+seule dont on sait qu'elle fait tourner un jeu, Braid.
+
+**Grimrock ne fonctionne pas. Le pilote n'est pas en cause** — l'échec est entièrement dans
+l'association adaptateur/moniteur entre Wine et DXVK.
