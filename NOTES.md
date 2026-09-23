@@ -12066,3 +12066,91 @@ plus : l'écart, s'il existe, est sous le bruit de ce banc.
 
 Le temps de compilation des shaders reste non mesuré. C'est là que le gain de 15,3 % sur la
 taille du MSL pourrait se voir, s'il se voit quelque part.
+
+---
+
+## 169. Débordement d'adresse sur tampon structuré : le décalage est 32 bits par construction
+
+`test_structured_buffer_addressing_wrap` échoue 4 fois. Une lecture hors bornes rend la donnée
+au lieu de zéro quand `indice × pas` déborde 32 bits :
+
+```
+reads: buffer_index 10, value 1, expected 0, got 1
+reads: buffer_index 22, value 4, expected 0, got 1
+```
+
+Le pilote annonce `robustBufferAccess2` et abaisse les tampons via
+`nir_address_format_64bit_bounded_global` (`kk_buffer_addr_format`). Ce format porte une base
+64 bits, une taille 32 bits et un **décalage 32 bits**. La vérification de bornes se fait donc
+en arithmétique 32 bits : quand `indice × pas` déborde, le décalage repasse dans la plage et
+la vérification laisse passer.
+
+Ce n'est pas du code KosmicKrisp : c'est un format d'adresse partagé par plusieurs pilotes
+Mesa. Le corriger demanderait soit d'étendre `nir_lower_explicit_io` à une vérification
+64 bits, soit d'introduire un format d'adresse propre à KK. Pour 4 échecs, sur un test dont
+les commentaires reconnaissent eux-mêmes l'ambiguïté — *« It's ambiguous if application
+intends to read at offset 0 or >4G offset for those components »* — et qui dispense NVIDIA,
+Intel Windows et Adreno, l'échange n'est pas favorable.
+
+**Diagnostic seulement. Rien n'est modifié.**
+
+### Une fausse piste, pour mémoire
+
+Le MSL généré contient un motif qui ressemble à un défaut :
+
+```c
+int t42 = (ulong)&buf0.contents[0] && t34 ? t41 : t23;
+```
+
+C'est un contournement délibéré, `KK_WORKAROUND_10` dans `nir_to_msl.c` : tous les shaders ont
+`buf0` lié, donc le terme est toujours vrai et ne change pas la sémantique.
+
+---
+
+## 170. Statistiques SO : la section 159 se trompait, et le mur reste
+
+La section 159 concluait que vkd3d ne lisait qu'une des deux requêtes Vulkan. **C'est faux**,
+et la mesure qui le montre est simple : en faisant écrire la valeur 7 à `libkk_copy_queries`
+pour chaque requête copiée, le test rapporte **14**.
+
+Le rassemblement de vkd3d somme donc bien les deux segments. Ce que la section 159 mesurait
+— `100 + query` rendant 100 — signifiait non pas « la requête 1 est ignorée » mais
+« le rapport de la requête 1 vaut zéro ».
+
+### Ce qui est établi
+
+- le rassemblement somme (7 + 7 = 14) ;
+- le rapport de la requête 1 est nul au moment de la copie ;
+- les écritures de `libkk_xfb_account_tess` vers `q->counters` **atteignent le tirage** —
+  vérifié en pointant `xfb_counter` de la table racine dessus, la capture se décale ;
+- ces mêmes écritures **n'atteignent pas** `libkk_xfb_save_query`, quelle que soit la position
+  d'argument (testé en visant la même adresse depuis les deux paramètres du noyau).
+
+### Ce qui a été essayé, sans effet
+
+Entre la dépêche de comptabilité et `libkk_xfb_save_query` il y a un **encodeur de rendu**.
+Or `kk_dispatch_precomp` pose un barrage `mtl_barrier_after_encoder_stages`, de portée
+**encodeur**, qui n'ordonne pas contre un encodeur précédent — `mtl_barrier_after_queue_stages`
+est la variante de portée file.
+
+Ajouter un barrage de portée file :
+
+| essai | ligne | quad |
+|---|---|---|
+| base | 2 | 2 |
+| file **à la place** de l'encodeur | **54** | **5** |
+| file **en plus** de l'encodeur | 2 | 2 |
+
+Remplacer casse la chaîne de tessellation, qui dépend de l'ordonnancement intra-encodeur.
+Ajouter ne corrige rien. Les deux essais sont annulés : le correctif 0058 se régénère à
+l'identique.
+
+L'ordonnancement n'est donc pas la cause, ou pas celle-là. **Le mur reste.**
+
+### Ce que ça coûte
+
+Environ 16 échecs : les statistiques SO de `test_line_tessellation` (2 × 2) et de
+`test_quad_tessellation` (2 × 6). Plus `test_virtual_queries` (5), qui relève d'un autre
+mécanisme — les requêtes d'occlusion imbriquées, cf. 163.
+
+**Diagnostic seulement. Rien n'est modifié.**
