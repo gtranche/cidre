@@ -11259,3 +11259,63 @@ changent rien aux chiffres mais rendent la racine paramétrable, ce qui resservi
 vient où le volume redevient le facteur limitant.
 
 Retour à `d88b53b` vérifié : **D3D11 4326, D3D12 2026**.
+
+## 158. XFB depuis la tessellation : la cause, enfin localisée (2026-09-23)
+
+Le § 43 avait ramené `test_tessellation_read_tesslevel` à zéro et `test_line_tessellation` de
+54 à 50 échecs. Les 50 restants sont maintenant expliqués.
+
+### Ce que le test observe
+
+Contrairement à ce que le message le plus fréquent laisse croire — « Got primitive ID » —
+**tout** est à zéro : position, couleur et identifiant. Avec un détail décisif : les échecs
+commencent **à l'indice 2**. Les deux premiers sommets sont corrects, les seize suivants vides.
+Et le compteur annonce **0 primitive écrite là où le test en attend 9**.
+
+### La chaîne, de bout en bout
+
+La capture calcule son emplacement ainsi (`kk_nir_lower_xfb.c`) :
+
+```
+emplacement = instance_id * num_vertices + raw_vertex_id
+```
+
+et `raw_vertex_id` vaut `[[vertex_id]] - xfb_first_vertex` (`kk_nir_lower_descriptors.c:616`).
+
+Or la tessellation produit un tirage **indexé et indirect** : `kk_launch_tess` termine par
+`draw.grid = kk_grid_indirect(...)` avec un tampon d'indices. Dans un tirage indexé, le
+`[[vertex_id]]` de Metal est la **valeur** de l'indice, pas le rang dans le tampon.
+
+Et ces valeurs ne sont pas le rang d'émission : `cl/tessellator.h:311` écrit
+`indices[...] = index_bias + PatchIndexValue(...)`, donc des références à un réservoir de
+points **uniques** par patch. Deux segments de ligne voisins partagent un sommet et référencent
+le même indice.
+
+Le test, lui, attend une entrée par **position d'indice** — sa table de référence contient bien
+le même sommet deux fois de suite pour les extrémités partagées. D'où l'écart : nous écrivons
+une entrée par sommet unique, D3D en attend une par sommet émis.
+
+Le patch 0 (densité 1, détail 1) n'a qu'une ligne et deux points uniques : ses indices valent 0
+et 1, qui tombent juste. Tout le reste se télescope ou reste vide. **C'est exactement le motif
+observé.**
+
+Second défaut, indépendant : `kk_flush_xfb_state` s'exécute ligne 2745 et `kk_launch_tess`
+ligne 2788, donc les compteurs de requête sont calculés sur les 4 patchs de l'application, pas
+sur les 18 sommets produits — d'où le 0 rapporté.
+
+### Ce qu'il faudrait
+
+Le rang de capture doit être la **position dans le tampon d'indices**, que Metal n'expose pas.
+Trois voies :
+
+1. **Étendre le tampon d'indices quand la capture est active** : une entrée par sommet émis,
+   de valeur égale à sa position, avec les données par sommet dupliquées. Coût : modification
+   du noyau de tessellation et mémoire supplémentaire, mais borné au cas capturant.
+2. Capturer dans le programme de tessellation — il connaît l'ordre d'émission, mais pas les
+   sorties du shader d'évaluation, qu'il ne calcule pas.
+3. Exécuter l'évaluation en calcul quand la capture est active, y capturer, puis dessiner.
+
+La première est la seule qui reste dans l'architecture existante. Les compteurs de requête
+demandent en plus de lire le compte post-tessellation, qui vit sur le GPU.
+
+**Diagnostic seulement. Rien n'est modifié.**
