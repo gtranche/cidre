@@ -43,8 +43,8 @@ if [ "${1:-}" = "--cloner" ]; then
 fi
 
 serie_mesa() {
-   for f in "$R"/00[0-3][0-9]-kosmickrisp-*.patch "$R"/0045-kosmickrisp-*.patch \
-            "$R"/0046-kosmickrisp-*.patch "$R"/0047-kosmickrisp-*.patch; do
+   for f in "$R"/00[0-3][0-9]-kosmickrisp-*.patch \
+            "$R"/004[5-9]-kosmickrisp-*.patch "$R"/005[0-9]-kosmickrisp-*.patch; do
       case "$(basename "$f")" in 0000-*) continue;; esac
       echo "$f"
    done

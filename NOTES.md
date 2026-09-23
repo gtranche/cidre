@@ -11319,3 +11319,91 @@ La première est la seule qui reste dans l'architecture existante. Les compteurs
 demandent en plus de lire le compte post-tessellation, qui vit sur le GPU.
 
 **Diagnostic seulement. Rien n'est modifié.**
+
+---
+
+## 159. XFB depuis la tessellation : le correctif
+
+La voie retenue n'est aucune des trois envisagées en 158, mais une quatrième, plus courte :
+**rendre le tirage post-tessellation non indexé**. Metal n'expose pas la position dans le
+tampon d'indices ; en revanche, si le tirage n'est pas indexé, `[[vertex_id]]` *est* la
+position. Le shader va alors chercher lui-même l'indice.
+
+Ce que ça demande :
+
+- `libkk_prefix_sum_tess` écrit un second descripteur de tirage, non indexé, juste après
+  l'indexé (`draw_stride_el` passe de 5 à 9). Les quatre mots valent `{total, 1, 0, 0}`.
+- `kk_launch_tess` choisit ce descripteur et efface `index.el_size_B` quand le shader
+  d'évaluation capture, ce qui aiguille `kk_dispatch_draw` vers
+  `mtl_draw_primitives_indirect`.
+- `poly_nir_lower_tes_index_fetch` remplace les `load_vertex_id` du shader par
+  `poly_load_tes_index(p, load_vertex_id)` — la fonction existait déjà, elle servait au cas
+  tess+géométrie où l'évaluation tourne en calcul.
+
+Le piège d'ordonnancement : `kk_nir_lower_descriptors` abaisse `load_raw_vertex_id` en
+`load_vertex_id - first` **avant** l'abaissement poly, si bien que le rang de capture et la
+coordonnée de tessellation deviennent indiscernables. On ne peut pas non plus changer la
+signature de `poly_nir_lower_tes` : ses deux autres appelants sont dans `src/asahi` et
+`src/gallium/drivers/asahi`, interdits. Résolu en laissant `load_raw_vertex_id` intact pour
+l'étage TESS_EVAL et en l'abaissant dans `kk_shader.c` après poly, où il devient un
+`load_vertex_id` nu (le premier sommet vaut 0 pour ce tirage).
+
+### Comptabilité
+
+`kk_flush_xfb_state` ne peut rien calculer pour la tessellation : le nombre de sommets produits
+vit sur le GPU. La branche tessellation ne fait donc plus qu'établir l'adresse et la capacité
+restante, et laisse `xfb.written[]` intact.
+
+Un noyau `libkk_xfb_account_tess` prend le relais côté GPU. Il ne peut pas être dépêché
+**après** le tirage : une dépêche de calcul émise pendant la passe de rendu est perdue
+— vérifié, le noyau ne s'exécute pas. Il tourne donc **avant**, dans `kk_launch_tess`, juste
+après la somme préfixe, et prend un instantané du compteur : `snapshot[i] = counters[i]` avant
+d'avancer `counters[i]`. La table racine fait pointer `xfb_counter` sur l'instantané, de sorte
+que le shader lit bien la valeur d'avant le tirage.
+
+### Résultat mesuré
+
+`./tests/run_conformance.sh xfbtess` : **D3D12 2026 → 1912**, D3D11 4326 inchangé.
+Les 114 échecs en moins sont tous en tessellation, aucune régression ailleurs :
+
+| test | avant | après |
+|---|---|---|
+| `test_line_tessellation_dxbc` / `_dxil` | 50 | 2 |
+| `test_quad_tessellation_dxbc` / `_dxil` | 6 | 3 |
+| `test_quad_tessellation_wrong_input_count_*` | 6 | 3 |
+| `test_quad_tessellation_wrong_pso_topology_*` | 6 | 3 |
+
+### Ce qui reste, et pourquoi ce n'est pas la tessellation
+
+Les échecs résiduels sont les statistiques SO (`NumPrimitivesWritten`,
+`PrimitivesStorageNeeded`), rapportées à 0. Le noyau de comptabilité s'exécute bien et écrit
+bien : le tirage lit la valeur qu'il pose (vérifié en décalant l'instantané de 8 octets, la
+capture se décale d'autant).
+
+Le fil se casse ailleurs. vkd3d suspend la requête sur `SOSetTargets`, qui tombe entre
+`BeginQuery` et le tirage. Traces :
+
+```
+beginq pool=0x... query=0 report=90246120192
+endq   query=0                                  <- intervalle vide
+beginq pool=0x... query=1 report=90246120208
+                                                <- le tirage, ici
+endq   query=1
+copy first=0 count=2
+```
+
+Deux requêtes Vulkan, la seconde seule couvre le tirage, et vkd3d les copie toutes les deux
+pour les additionner. Mais en faisant écrire à `libkk_xfb_save_query` la valeur `100 + query`,
+le test rapporte **100** : seule la requête 0 arrive au résultat D3D. Avec `3` et `5` en dur
+dans les deux requêtes, le test rapporte `3` et `5`, pas `6` et `10` — il n'y a pas de somme.
+
+C'est donc la requête 1 qui est perdue, et rien là-dedans ne tient à la tessellation : la même
+suspension se produit pour une capture depuis un shader de sommets. Aucun autre test de la
+suite n'exerce `D3D12_QUERY_TYPE_SO_STATISTICS`, ce qui explique que ça n'ait jamais été vu.
+À creuser séparément.
+
+### Politique Mesa
+
+Le code ajouté dans l'arbre Mesa ne porte **aucun commentaire** : les quatre mots du
+descripteur non indexé sont, dans l'ordre, `vertex_count`, `instance_count`, `vertex_start`,
+`start_instance`. À documenter par l'auteur.

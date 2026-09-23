@@ -1,0 +1,302 @@
+Generated-by: LLM
+
+--- a/src/poly/nir/poly_nir.h
++++ b/src/poly/nir/poly_nir.h
+@@ -57,6 +57,8 @@
+ 
+ bool poly_nir_lower_tes(struct nir_shader *tes, bool to_hw_vs);
+ 
++bool poly_nir_lower_tes_index_fetch(struct nir_shader *tes);
++
+ uint64_t poly_tcs_per_vertex_outputs(const struct nir_shader *nir);
+ 
+ unsigned poly_tcs_output_stride(const struct nir_shader *nir);
+--- a/src/poly/nir/poly_nir_lower_tess.c
++++ b/src/poly/nir/poly_nir_lower_tess.c
+@@ -7,6 +7,7 @@
+ #include "poly/geometry.h"
+ #include "poly/nir/poly_nir.h"
+ #include "util/bitscan.h"
++#include "util/u_dynarray.h"
+ #include "util/macros.h"
+ #include "nir.h"
+ #include "nir_builder.h"
+@@ -301,4 +302,39 @@
+ 
+    nir_lower_idiv(tes, &(nir_lower_idiv_options){.allow_fp16 = true});
+    return nir_progress(true, nir_shader_get_entrypoint(tes), nir_metadata_none);
++}
++
++bool
++poly_nir_lower_tes_index_fetch(nir_shader *tes)
++{
++   nir_function_impl *impl = nir_shader_get_entrypoint(tes);
++   struct util_dynarray uses;
++
++   util_dynarray_init(&uses, NULL);
++
++   nir_foreach_block(block, impl) {
++      nir_foreach_instr(instr, block) {
++         if (instr->type != nir_instr_type_intrinsic)
++            continue;
++
++         nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
++         if (intr->intrinsic == nir_intrinsic_load_vertex_id)
++            util_dynarray_append_typed(&uses, nir_intrinsic_instr *, intr);
++      }
++   }
++
++   if (util_dynarray_num_elements(&uses, nir_intrinsic_instr *) == 0) {
++      util_dynarray_fini(&uses);
++      return false;
++   }
++
++   nir_builder b = nir_builder_at(nir_before_impl(impl));
++   nir_def *p = nir_load_tess_param_buffer_poly(&b);
++   nir_def *index = poly_load_tes_index(&b, p, nir_load_vertex_id(&b));
++
++   util_dynarray_foreach(&uses, nir_intrinsic_instr *, it)
++      nir_def_replace(&(*it)->def, index);
++
++   util_dynarray_fini(&uses);
++   return nir_progress(true, impl, nir_metadata_control_flow);
+ }
+--- a/src/kosmickrisp/libkk/kk_geometry.cl
++++ b/src/kosmickrisp/libkk/kk_geometry.cl
+@@ -41,6 +41,11 @@
+    desc[2] = alloc_B / elsize_B; /* start */
+    desc[3] = 0;                  /* index_bias */
+    desc[4] = 0;                  /* start_instance */
++
++   desc[5] = total;
++   desc[6] = 1;
++   desc[7] = 0;
++   desc[8] = 0;
+ }
+ 
+ /* Geometry shader emulation, indirect draw. Only the GPU knows the vertex and
+--- a/src/kosmickrisp/libkk/kk_xfb.cl
++++ b/src/kosmickrisp/libkk/kk_xfb.cl
+@@ -46,3 +46,39 @@
+    out[2] = 0u;
+    out[3] = first_instance;
+ }
++
++KERNEL(1)
++libkk_xfb_account_tess(global uint32_t *counters, global uint32_t *snapshot,
++                       global uint32_t *query, constant uint32_t *draw,
++                       uint32_t verts_per_prim, uint32_t stride0,
++                       uint32_t stride1, uint32_t stride2, uint32_t stride3,
++                       uint32_t size0, uint32_t size1, uint32_t size2,
++                       uint32_t size3)
++{
++   uint32_t strides[4] = {stride0, stride1, stride2, stride3};
++   uint32_t sizes[4] = {size0, size1, size2, size3};
++   uint32_t total = draw[0];
++   uint32_t fits = 0xffffffffu;
++
++   for (uint32_t i = 0u; i < 4u; ++i) {
++      uint32_t used = counters[i];
++
++      snapshot[i] = used;
++
++      if (strides[i] == 0u)
++         continue;
++
++      uint32_t room = sizes[i] > used ? sizes[i] - used : 0u;
++
++      fits = min(fits, room / strides[i]);
++      counters[i] = used + total * strides[i];
++   }
++
++   if (query && verts_per_prim) {
++      uint32_t prims = total / verts_per_prim;
++      uint32_t captured = min(total, fits) / verts_per_prim;
++
++      query[0] += prims;
++      query[1] += min(prims, captured);
++   }
++}
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+@@ -225,6 +225,7 @@
+ 
+       struct kk_ptr counters;
+       struct kk_ptr sink;
++      struct kk_ptr tess_snapshot;
+ 
+       bool active;
+ 
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -1435,7 +1435,7 @@
+          dyn->ts.domain_origin == VK_TESSELLATION_DOMAIN_ORIGIN_LOWER_LEFT;
+    }
+ 
+-   uint32_t draw_stride_el = 5;
++   uint32_t draw_stride_el = 9;
+    size_t draw_stride_B = draw_stride_el * sizeof(uint32_t);
+ 
+    /* heap is allocated by kk_heap */
+@@ -2404,15 +2404,44 @@
+                     state);
+ 
+    libkk_prefix_sum_tess(cmd, kk_grid_1d(1024u), true, state);
++
++   if (gfx->xfb.tess_snapshot.gpu != 0u) {
++      const struct kk_shader *capture = cmd->state.shaders[MESA_SHADER_VERTEX];
++      const struct kk_xfb_query *q = &gfx->xfb.query[0];
++      uint32_t stride[MAX_XFB_BUFFERS], size[MAX_XFB_BUFFERS];
++
++      for (unsigned i = 0u; i < MAX_XFB_BUFFERS; ++i) {
++         stride[i] = (uint32_t)capture->info.vs.xfb_stride[i] * 4u;
++         size[i] = stride[i] ? gfx->descriptors.root.draw.xfb_size[i] : 0u;
++      }
++
++      libkk_xfb_account_tess(
++         cmd, kk_grid_1d(1u), true, kk_xfb_counters(cmd).gpu,
++         gfx->xfb.tess_snapshot.gpu, q->active ? q->counters.gpu : 0u,
++         gfx->tess.out_draws_addr, mesa_vertices_per_prim(gfx->tess.prim),
++         stride[0], stride[1], stride[2], stride[3], size[0], size[1], size[2],
++         size[3]);
++   }
+ 
+    libkk_tessellate(cmd, grid_tess, true, info.mode, POLY_TESS_MODE_WITH_COUNTS,
+                     state);
+ 
+-   draw.grid = kk_grid_indirect(gfx->tess.out_draws_addr);
++   struct kk_shader *tes = cmd->state.shaders[MESA_SHADER_TESS_EVAL];
+ 
+-   draw.index.gpu.addr = dev->heap->gpu + sizeof(struct poly_heap);
+-   draw.index.gpu.range = dev->heap->size_B - sizeof(struct poly_heap);
+-   draw.index.el_size_B = 4u;
++   if (tes->info.tess.has_xfb) {
++      draw.grid = kk_grid_indirect(gfx->tess.out_draws_addr +
++                                   5u * sizeof(uint32_t));
++      draw.index.gpu.addr = 0u;
++      draw.index.gpu.range = 0u;
++      draw.index.el_size_B = 0u;
++   } else {
++      draw.grid = kk_grid_indirect(gfx->tess.out_draws_addr);
++
++      draw.index.gpu.addr = dev->heap->gpu + sizeof(struct poly_heap);
++      draw.index.gpu.range = dev->heap->size_B - sizeof(struct poly_heap);
++      draw.index.el_size_B = 4u;
++   }
++
+    draw.primitive_type = mesa_prim_to_mtl_primitive_type(gfx->tess.prim);
+    return draw;
+ }
+@@ -2487,6 +2516,9 @@
+    if (!cmd->state.gfx.xfb.active)
+       return false;
+ 
++   if (cmd->state.shaders[MESA_SHADER_TESS_EVAL] != NULL)
++      return true;
++
+    /* An indirect draw's vertex count is only known on the GPU. */
+    if (data->indirect)
+       return false;
+@@ -2554,6 +2586,8 @@
+    struct kk_descriptor_state *desc = &gfx->descriptors;
+    const struct kk_shader *vs = cmd->state.shaders[MESA_SHADER_VERTEX];
+ 
++   gfx->xfb.tess_snapshot = (struct kk_ptr){0};
++
+    /* Only shaders that capture read any of this. */
+    if (vs == NULL || !vs->info.vs.has_xfb)
+       return;
+@@ -2576,7 +2610,36 @@
+       /* The stream still produces primitives, they are just not captured. */
+       if (gfx->xfb.query[0].active)
+          gfx->xfb.query[0].generated += prims;
++
++      return;
++   }
++
++   if (cmd->state.shaders[MESA_SHADER_TESS_EVAL] != NULL) {
++      for (unsigned i = 0; i < MAX_XFB_BUFFERS; ++i) {
++         uint64_t size = gfx->xfb.buffers[i].size;
++         uint64_t used = gfx->xfb.written[i];
++
++         if (vs->info.vs.xfb_stride[i] == 0u)
++            continue;
++
++         desc->root.draw.xfb_address[i] =
++            used >= size ? 0u : gfx->xfb.buffers[i].addr + used;
++         desc->root.draw.xfb_size[i] =
++            used >= size ? 0u : MIN2(size - used, UINT32_MAX);
++      }
+ 
++      gfx->xfb.tess_snapshot =
++         kk_pool_alloc(cmd, MAX_XFB_BUFFERS * sizeof(uint32_t), 4u);
++
++      for (unsigned i = 0u; i < MAX_XFB_BUFFERS; ++i) {
++         desc->root.draw.xfb_counter[i] =
++            gfx->xfb.tess_snapshot.gpu
++               ? gfx->xfb.tess_snapshot.gpu + i * sizeof(uint32_t)
++               : 0u;
++      }
++
++      desc->root.draw.xfb_num_vertices = 0u;
++      desc->root.draw.xfb_first_vertex = 0u;
+       return;
+    }
+ 
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
+@@ -614,6 +614,9 @@
+     * to get the zero-based index the capture offsets are computed from.
+     */
+    case nir_intrinsic_load_raw_vertex_id: {
++      if (b->shader->info.stage == MESA_SHADER_TESS_EVAL)
++         return false;
++
+       unsigned offset = (kk_root_note(ctx, KK_ROOT_XFB_FIRST_VERTEX), ctx->root->off[KK_ROOT_XFB_FIRST_VERTEX]);
+       b->cursor = nir_instr_remove(&intrin->instr);
+       nir_def *first = load_root(b, 1, 32, nir_imm_int(b, offset), 4);
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -1248,6 +1248,24 @@
+     * where the entrypoint gets renamed. */
+    ralloc_steal(NULL, (void *)entrypoint_name);
+    data->entrypoint_name = (char *)entrypoint_name;
++}
++
++static bool
++lower_tes_xfb_ordinal(nir_builder *b, nir_intrinsic_instr *intr, void *data)
++{
++   if (intr->intrinsic != nir_intrinsic_load_raw_vertex_id)
++      return false;
++
++   b->cursor = nir_before_instr(&intr->instr);
++   nir_def_replace(&intr->def, nir_load_vertex_id(b));
++   return true;
++}
++
++static bool
++kk_nir_lower_tes_xfb_ordinal(nir_shader *nir)
++{
++   return nir_shader_intrinsics_pass(nir, lower_tes_xfb_ordinal,
++                                     nir_metadata_control_flow, NULL);
+ }
+ 
+ static VkResult
+@@ -1413,9 +1431,17 @@
+       shader->info.tess.info.points = nir->info.tess.point_mode;
+       shader->info.tess.info.spacing = nir->info.tess.spacing;
+       shader->info.tess.info.mode = nir->info.tess._primitive_mode;
++
++      bool captures = nir->info.has_transform_feedback_varyings &&
++                      nir->info.next_stage != MESA_SHADER_GEOMETRY;
+ 
+       /* This destroys info so it needs to happen after the gather */
+       NIR_PASS(_, nir, poly_nir_lower_tes, true);
++
++      if (captures) {
++         NIR_PASS(_, nir, poly_nir_lower_tes_index_fetch);
++         NIR_PASS(_, nir, kk_nir_lower_tes_xfb_ordinal);
++      }
+    }
+ 
+    struct nir_to_msl_options translate_options = {
