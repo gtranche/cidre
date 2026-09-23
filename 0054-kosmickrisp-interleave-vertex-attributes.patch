@@ -1,0 +1,117 @@
+Generated-by: LLM
+
+--- a/src/kosmickrisp/vulkan/kk_root_layout.h
++++ b/src/kosmickrisp/vulkan/kk_root_layout.h
+@@ -9,9 +9,7 @@
+ 
+ enum kk_root_field {
+    KK_ROOT_CS_BASE_GROUP,
+-   KK_ROOT_BUFFER_STRIDES,
+-   KK_ROOT_ATTRIB_BASE,
+-   KK_ROOT_ATTRIB_CLAMPS,
++   KK_ROOT_ATTRIBS,
+    KK_ROOT_BLEND_CONSTANT,
+    KK_ROOT_CLIP_Z_COEFF,
+    KK_ROOT_VIEWPORT_Z_RANGE,
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+@@ -34,15 +34,20 @@
+ 
+ struct kk_query_pool;
+ 
++struct kk_root_attribute {
++   uint64_t base;
++   uint32_t clamp;
++   uint32_t stride;
++};
++
+ struct kk_root_descriptor_table {
+    uint64_t addr;
+ 
+    union {
+       struct {
+          /* Vertex input state */
+-         uint32_t buffer_strides[KK_MAX_VBUFS];
+-         uint64_t attrib_base[KK_MAX_ATTRIBS];
+-         uint32_t attrib_clamps[KK_MAX_ATTRIBS];
++         struct kk_root_attribute attribs[KK_MAX_ATTRIBS];
++         uint32_t _pad_attribs[KK_MAX_VBUFS];
+ 
+          float blend_constant[4];
+          float clip_z_coeff;
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+@@ -1203,9 +1203,7 @@
+       .off =
+          {
+             [KK_ROOT_CS_BASE_GROUP] = KK_ROOT_OFF(cs.base_group),
+-            [KK_ROOT_BUFFER_STRIDES] = KK_ROOT_OFF(draw.buffer_strides),
+-            [KK_ROOT_ATTRIB_BASE] = KK_ROOT_OFF(draw.attrib_base),
+-            [KK_ROOT_ATTRIB_CLAMPS] = KK_ROOT_OFF(draw.attrib_clamps),
++            [KK_ROOT_ATTRIBS] = KK_ROOT_OFF(draw.attribs),
+             [KK_ROOT_BLEND_CONSTANT] = KK_ROOT_OFF(draw.blend_constant),
+             [KK_ROOT_CLIP_Z_COEFF] = KK_ROOT_OFF(draw.clip_z_coeff),
+             [KK_ROOT_VIEWPORT_Z_RANGE] = KK_ROOT_OFF(draw.viewport_z_range),
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -1493,13 +1493,6 @@
+    struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
+    mtl_render_encoder *enc = cs_get_render(cmd);
+ 
+-   if (IS_DIRTY(VI_BINDING_STRIDES)) {
+-      u_foreach_bit(ndx, dyn->vi->bindings_valid) {
+-         desc->root.draw.buffer_strides[ndx] = dyn->vi_binding_strides[ndx];
+-      }
+-      desc->root_dirty = true;
+-   }
+-
+    if (IS_DIRTY(RS_RASTERIZER_DISCARD_ENABLE)) {
+       if (dyn->rs.rasterizer_discard_enable) {
+          set_empty_scissor(enc);
+@@ -1647,11 +1640,11 @@
+             struct vk_vertex_attribute_state attr = dyn->vi->attributes[i];
+             struct kk_addr_range vb = gfx->vb.addr_range[attr.binding];
+ 
+-            desc->root.draw.attrib_clamps[slot] = kk_calculate_vbo_clamp(
++            desc->root.draw.attribs[slot].clamp = kk_calculate_vbo_clamp(
+                vb.addr, 0, vk_format_to_pipe_format(attr.format), vb.range,
+                dyn->vi_binding_strides[attr.binding], attr.offset,
+-               &desc->root.draw.attrib_base[slot]);
+-            desc->root.draw.buffer_strides[attr.binding] =
++               &desc->root.draw.attribs[slot].base);
++            desc->root.draw.attribs[slot].stride =
+                dyn->vi_binding_strides[attr.binding];
+          }
+          slot++;
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_vbo.c
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_vbo.c
+@@ -181,12 +181,16 @@
+    /* Load the pointer of the buffer from the argument buffer */
+    nir_def *argbuf = nir_load_buffer_ptr_kk(b, 1, 64, .binding = 0);
+    uint64_t attrib_base_offset =
+-      ctx->root->off[KK_ROOT_ATTRIB_BASE] + index * sizeof(uint64_t);
++      ctx->root->off[KK_ROOT_ATTRIBS] +
++      index * sizeof(struct kk_root_attribute) +
++      offsetof(struct kk_root_attribute, base);
+    nir_def *base = nir_load_global_constant(
+       b, 1, 64, nir_iadd_imm(b, argbuf, attrib_base_offset));
+ 
+    uint64_t buffer_stride_offset =
+-      ctx->root->off[KK_ROOT_BUFFER_STRIDES] + attrib.binding * sizeof(uint32_t);
++      ctx->root->off[KK_ROOT_ATTRIBS] +
++      index * sizeof(struct kk_root_attribute) +
++      offsetof(struct kk_root_attribute, stride);
+    nir_def *stride = nir_load_global_constant(
+       b, 1, 32, nir_iadd_imm(b, argbuf, buffer_stride_offset));
+    nir_def *stride_offset_el =
+@@ -199,7 +203,9 @@
+ 
+    if (ctx->requires_robustness2) {
+       uint64_t attrib_clamp_offset =
+-         ctx->root->off[KK_ROOT_ATTRIB_CLAMPS] + index * sizeof(uint32_t);
++         ctx->root->off[KK_ROOT_ATTRIBS] +
++         index * sizeof(struct kk_root_attribute) +
++         offsetof(struct kk_root_attribute, clamp);
+       nir_def *bounds = nir_load_global_constant(
+          b, 1, 32, nir_iadd_imm(b, argbuf, attrib_clamp_offset));
+       nir_def *oob = nir_ult(b, bounds, el);

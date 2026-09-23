@@ -11151,3 +11151,30 @@ L'étape suivante calcule une disposition **compacte par pipeline** à partir de
 nuanceur lit réellement, et tasse le téléversement en conséquence. La structure C grasse reste
 la zone de travail côté processeur — les dizaines d'écritures du pilote sont inchangées — et
 seul le téléversement recopie les champs utiles aux offsets compacts.
+
+## 155. Refonte, étape 2 : entrelacer les attributs de sommets (2026-09-23)
+
+Préalable à la disposition compacte. Les données par attribut étaient éclatées en trois
+tableaux — `buffer_strides[32]`, `attrib_base[32]`, `attrib_clamps[32]`, 512 octets en tout — si
+bien qu'un nuanceur lisant six attributs touchait jusqu'à l'offset 412 du bloc. Regroupées par
+attribut dans `struct kk_root_attribute { base, clamp, stride }`, seize octets chacun, six
+attributs ne touchent plus que les 96 premiers.
+
+**La taille totale ne change pas** — 32 × 16 = 512, au même endroit dans la structure. Ce qui
+change est la *localité* : l'étendue réellement lue devient proportionnelle au nombre
+d'attributs au lieu d'être quasi constante. C'est ce qui rendra la disposition compacte
+payante.
+
+Deux détails. Les strides étaient indexés par **liaison** et les attributs par **emplacement** ;
+ils le sont maintenant tous deux par emplacement, le pilote écrivant le stride de la liaison à
+l'emplacement de l'attribut qui l'utilise. Et le bloc qui réécrivait les strides seuls sur
+`IS_DIRTY(VI_BINDING_STRIDES)` devient redondant — la garde du bloc principal le couvre déjà —
+donc supprimé.
+
+### Conformité
+
+D3D12 **2026**, exact. D3D11 a d'abord donné 4328. Vérifié plutôt que supposé, trois campagnes
+supplémentaires donnent **4328, 4326, 4326**, soit une médiane de 4326 et exactement
+l'oscillation de ±2 mesurée en section 150 avec un binaire inchangé. Pas de régression.
+
+Correctif 0054. Second repère où revenir.
