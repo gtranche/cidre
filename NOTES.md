@@ -12199,3 +12199,60 @@ Tous les essais sont annulés : les correctifs 0058 et 0060 se régénèrent à 
 deux tests sont revenus à 2 échecs.
 
 **Diagnostic seulement. Rien n'est modifié.**
+
+---
+
+## 172. La reconstruction depuis zéro était cassée
+
+Objectif rappelé : le projet doit vivre dans un dépôt propre et se construire automatiquement
+en appliquant la série de correctifs sur des sources vanilla. Vérification faite — **elle ne
+marchait pas**.
+
+En appliquant la série sur un arbre Mesa vanilla à la révision figée : **7 correctifs sur 44
+échouaient**, et 18 fichiers source n'étaient pas reproduits.
+
+### Trois trous distincts
+
+**1. Le glob s'arrêtait à 0059.** `00[0-3][0-9]`, `004[5-9]`, `005[0-9]` — le correctif 0060
+n'était repris par rien. Remplacé par `00[0-9][0-9]-kosmickrisp-*.patch`, qui n'aura plus à
+être étendu.
+
+**2. Une modification jamais capturée.** Le correctif 0050 attendait les drapeaux
+`KK_DEBUG_NO_STORAGE_WRITE` et `KK_DEBUG_NO_ATTACHMENT_LOAD`, que la série n'introduisait
+nulle part — ils n'existaient que dans `0000-cumulatif`, que le script saute. Tout ce qui
+suivait tombait en cascade.
+
+Les états intermédiaires ayant disparu, réparer onze correctifs incrémentaux était de
+l'archéologie à faible rendement. Les correctifs 0050 à 0060 sont donc déplacés dans
+`patches-historique/` — ils restent le récit logique du travail — et remplacés par un
+**`0050-kosmickrisp-cumulatif-2.patch`** obtenu par différence entre « vanilla + 0001..0049 »
+et l'arbre de travail. Reproduction garantie par construction.
+
+**3. Un cinquième arbre ignoré.** `src/wine11`, le Wine ARM64, que visent les correctifs 0048
+et 0049 — le script ne le connaissait pas du tout, ni son URL ni sa révision. Ajouté.
+
+Et au passage, une ligne jamais capturée dans dxvk : un `#include <algorithm>` manquant dans
+`config.cpp`, devenu le correctif 0061.
+
+### Le garde-fou
+
+`tests/verifier_reconstruction.sh` : pour chacun des cinq arbres, crée un plan de travail git
+à la révision figée, applique la série, compare au répertoire de travail. Ne modifie rien.
+
+```
+mesa         : 33 correctifs, reproduction exacte
+wine         :  6 correctifs, reproduction exacte
+wine11       :  2 correctifs, reproduction exacte
+vkd3d-proton :  6 correctifs, reproduction exacte
+dxvk         :  4 correctifs, reproduction exacte
+RECONSTRUCTION VERIFIEE
+```
+
+À lancer après chaque nouveau correctif. C'est ce qui manquait : rien ne vérifiait que la
+série reconstruisait ce qu'on construisait réellement.
+
+### Sur la politique Mesa
+
+La prudence appliquée jusqu'ici — correctifs 0056 à 0060 écrits sans commentaire — visait une
+soumission en amont qui n'est pas au programme. Pour un dépôt personnel, elle ne s'applique
+pas. Les commentaires manquants sont un coût de lisibilité, pas une contrainte.
