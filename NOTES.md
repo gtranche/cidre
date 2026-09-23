@@ -11752,3 +11752,75 @@ vraie précision demande `Precise`, que Metal ne supporte pas ici sans perdre le
 `KK_TS_STAGE_COMPUTE` et le bloc de déduplication sont sans commentaire. Ce qu'il faudrait y
 écrire : Metal ne retient que la première écriture d'horodatage par encodeur en granularité
 relâchée, donc les suivantes réutilisent la même entrée de tas plutôt que de rendre zéro.
+
+---
+
+## 164. Convergence des opérations de vague : quatre pistes éliminées, cause non trouvée
+
+`test_shader_waveop_maximal_convergence` échoue 16 fois. Le shader partitionne les voies par
+valeur :
+
+```hlsl
+uint v = RO[thr];
+while (true) {
+    uint first = WaveReadLaneFirst(v);
+    if (v == first) { result = WaveActiveSum(v); break; }
+}
+RW[thr] = result;
+```
+
+Entrées `2,3,1,3, 2,0,0,1, 0,1,3,2, 2,1,2,2`. Deux pipelines : l'un où le compilateur a le
+droit de tout reconverger (référence : 25 partout, la somme totale), l'autre où la divergence
+doit être respectée (référence : `12,9,4,9, 12,0,0,4, 0,4,9,12, 12,4,12,12`).
+
+**La première moitié passe. La seconde rend 25 partout.** Les 16 échecs sont exactement les 16
+éléments de la moitié non convergée.
+
+### Ce qui a été éliminé, par mesure
+
+**1. Metal respecte la divergence.** Banc autonome, seize voies dans une SIMD de 32 :
+
+```
+voie  v   scrutin dans la branche
+  0   2   0x0000d811   <- voies 0,4,11,12,14,15
+  1   3   0x0000040a   <- voies 1,3,10
+  2   1   0x00002284   <- voies 2,7,9,13
+  5   0   0x00000160   <- voies 5,6,8
+```
+
+`simd_sum` y rend 12, 9, 4, 0. Exact. Et cela vaut aussi **à l'intérieur de la boucle avec
+sortie conditionnelle**, structure identique à celle du shader.
+
+**2. L'abaissement du pilote est correct.** KK n'émet pas `simd_sum` : il abaisse la réduction
+en scrutin `simd_or(1 << voie)`, puis balayage de Hillis-Steele sur le masque actif, puis
+diffusion depuis la voie active la plus haute (`31 - clz(scrutin)`). Rejoué mot pour mot dans
+un noyau Metal autonome : **12, 9, 4, 0**. Correct.
+
+**3. Ni la branche à deux voies ni le mode mathématique.** Le code généré teste
+`scrutin == 0xFFFFFFFF` pour prendre un papillon plutôt que le balayage. Ajouté au banc : sans
+effet. Le pilote compile en `MTL_MATH_MODE_FAST` ; testé aussi : sans effet.
+
+**4. Le bon shader est bien lié.** Sonde dans `kk_flush_compute_state` :
+
+```
+[KKCS] shader=0x...300 pso=0x...cf0 len=6563 boucle=0
+[KKCS] shader=0x...9e0 pso=0x...9a0 len=7698 boucle=1
+```
+
+Deux MSL distincts, deux pipelines Metal distincts, dans le bon ordre. Le second shader est
+bien celui qui garde la boucle — et son MSL, lu en entier, implémente exactement l'algorithme
+vérifié au point 2.
+
+### Où ça coince
+
+Le shader généré est correct, Metal est correct, le bon pipeline est lié — et le résultat est
+malgré tout la somme totale. L'écart est donc entre le MSL produit et son exécution réelle
+dans le contexte du pilote, ce qu'aucun banc autonome n'a su reproduire.
+
+L'expérience décisive restante : extraire le MSL généré tel quel dans un harnais autonome, en
+simulant la table racine qu'il lit (`buf0.contents`), et l'exécuter sur les mêmes entrées. Si
+le résultat est 25, le défaut est dans le code généré et il reste à trouver où ; s'il est
+correct, le défaut est dans l'environnement d'exécution — liaison, table racine, ou état
+d'encodeur.
+
+**Diagnostic partiel. Rien n'est modifié ; le test reste à 16 échecs.**
