@@ -11824,3 +11824,86 @@ correct, le défaut est dans l'environnement d'exécution — liaison, table rac
 d'encodeur.
 
 **Diagnostic partiel. Rien n'est modifié ; le test reste à 16 échecs.**
+
+---
+
+## 165. Opérations de vague : le générateur MSL déclarait tout au niveau de la fonction
+
+Suite de la section 164, où quatre pistes avaient été éliminées sans trouver la cause. Elle
+est trouvée.
+
+### Le harnais qui débloque tout
+
+Extraire le MSL généré tel quel et le faire tourner dans un harnais autonome — table racine
+simulée, adresses GPU écrites aux offsets 888 et 896 — reproduit le défaut immédiatement :
+**25 partout**. À partir de là, l'itération coûte une seconde au lieu d'une reconstruction du
+pilote.
+
+En instrumentant le shader, la cause saute aux yeux :
+
+```
+t33 : 2 3 1 3 2 0 0 1 0 1 3 2 2 1 2 2     <- devrait valoir 2 partout
+t34 : 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1     <- donc la condition est vraie pour tous
+t35 : 65535 partout                        <- aucune divergence
+```
+
+`t33 = simd_broadcast_first(t28)` rend **la valeur propre de chaque voie**. Aucune divergence,
+une seule itération, somme des seize = 25.
+
+### Le déclencheur, par bissection
+
+| variante | `t33` | condition | scrutin obtenu |
+|---|---|---|---|
+| vC | hors boucle | en ligne | **0xffff** |
+| vD | dans la boucle | hors boucle | 0xd811 ✓ |
+| vE | dans la boucle | en ligne | 0xd811 ✓ |
+| vH | hors boucle | booléen local | 0xd811 ✓ |
+
+**Ranger le résultat de `simd_broadcast_first` dans une variable déclarée hors de la boucle
+suffit à casser la compilation Metal.** Ni une copie par temporaire (`vF`) ni `volatile`
+(`vG`) n'y changent rien. C'est un bogue du compilateur d'Apple, et il est fragile : `vH`
+passe alors que `vC` échoue pour une différence purement cosmétique.
+
+Or `predeclare_ssa_values` déclarait **toutes** les temporaires au niveau de la fonction, dans
+un grand préambule, et n'émettait ensuite que des affectations. Toute opération de vague dans
+une boucle tombait donc dans le cas pathologique.
+
+### Le correctif
+
+Une temporaire est désormais déclarée à sa définition si **aucun de ses usages ne sort du
+nœud de flot de contrôle qui la contient** (`msl_def_stays_in_scope`, qui remonte la chaîne
+`cf_node.parent` de chaque usage). Sinon le préambule la déclare comme avant. Trois
+exclusions : textures et échantillonneurs, valeurs sans type MSL, et les opérations ALU
+encadrées d'un `#pragma METAL fp math_mode` — dont les accolades ouvriraient une portée trop
+étroite.
+
+Piège rencontré : la macro `P_IND` se termine par `} while (0);`, point-virgule compris. Un
+`if (...) P_IND(); else` ne compile pas ; il faut des accolades.
+
+### Résultat mesuré
+
+`./tests/run_conformance.sh portee` : **D3D12 1748** (contre 1764), D3D11 4326 inchangé.
+Un seul test bouge, aucune régression — et c'est le premier changement de cette session qui
+touche la génération de code de **tous** les shaders :
+
+| test | avant | après |
+|---|---|---|
+| `test_shader_waveop_maximal_convergence` | 16 | **0** |
+
+Effet secondaire mesuré sur les 37 noyaux de ce test :
+
+| | avant | après |
+|---|---|---|
+| MSL généré | 406686 o | **344305 o** (−15,3 %) |
+| déclarations en préambule | 3266 | **691** (−79 %) |
+
+Moins de source à analyser pour le compilateur Metal, et des durées de vie enfin visibles.
+**Le temps de compilation des shaders n'a pas été mesuré**, ni les performances d'exécution :
+le resserrement de portée ne peut qu'aider un compilateur, mais ce n'est pas chiffré.
+
+### Politique Mesa
+
+`msl_def_stays_in_scope`, `msl_def_declared_inline` et `msl_emit_dest` sont sans commentaire.
+Ce qu'il faudrait y écrire : Metal compile mal une opération de sous-groupe dont le résultat
+est rangé dans une variable déclarée hors de la boucle qui la contient, donc on déclare au
+plus près dès que la portée le permet.

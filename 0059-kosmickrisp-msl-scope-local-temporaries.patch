@@ -1,0 +1,108 @@
+Generated-by: LLM
+
+--- a/src/kosmickrisp/compiler/nir_to_msl.c
++++ b/src/kosmickrisp/compiler/nir_to_msl.c
+@@ -1076,6 +1076,65 @@
+       return "volatile device";
+    }
+    return access & ACCESS_COHERENT ? "coherent device" : "device";
++}
++
++static const char *alu_fp_math_mode_pragma(struct nir_to_msl_ctx *ctx,
++                                           const nir_alu_instr *alu);
++
++static bool
++msl_def_stays_in_scope(const nir_def *def)
++{
++   const nir_cf_node *scope = nir_def_instr((nir_def *)def)->block->cf_node.parent;
++
++   if (scope == NULL)
++      return false;
++
++   nir_foreach_use_including_if(src, def) {
++      const nir_block *block;
++
++      if (nir_src_is_if(src))
++         block = nir_cf_node_as_block(
++            nir_cf_node_prev(&nir_src_use_if(src)->cf_node));
++      else
++         block = nir_src_use_instr(src)->block;
++
++      const nir_cf_node *node = block->cf_node.parent;
++      while (node != NULL && node != scope)
++         node = node->parent;
++
++      if (node == NULL)
++         return false;
++   }
++
++   return true;
++}
++
++static bool
++msl_def_declared_inline(struct nir_to_msl_ctx *ctx, const nir_def *def)
++{
++   if (msl_def_is_texture(ctx, (nir_def *)def) ||
++       msl_def_is_sampler(ctx, (nir_def *)def))
++      return false;
++
++   if (msl_type_for_def(ctx->types, (nir_def *)def) == NULL)
++      return false;
++
++   if (nir_def_instr((nir_def *)def)->type == nir_instr_type_alu &&
++       alu_fp_math_mode_pragma(ctx, nir_instr_as_alu(nir_def_instr((nir_def *)def))))
++      return false;
++
++   return msl_def_stays_in_scope(def);
++}
++
++static void
++msl_emit_dest(struct nir_to_msl_ctx *ctx, const nir_def *def)
++{
++   if (msl_def_declared_inline(ctx, def)) {
++      P_IND(ctx, "%s t%d = ", msl_type_for_def(ctx->types, (nir_def *)def),
++            def->index);
++   } else {
++      P_IND(ctx, "t%d = ", def->index);
++   }
+ }
+ 
+ static void
+@@ -1092,7 +1151,7 @@
+ 
+    const nir_intrinsic_info *info = &nir_intrinsic_infos[instr->intrinsic];
+    if (instrinsic_needs_dest_type(instr)) {
+-      P_IND(ctx, "t%d = ", instr->def.index);
++      msl_emit_dest(ctx, &instr->def);
+    }
+    switch (instr->intrinsic) {
+    case nir_intrinsic_decl_reg: {
+@@ -1815,7 +1874,7 @@
+    // Projectors have to be lowered away to regular arithmetic
+    assert(!nir_tex_get_src(tex, nir_tex_src_projector));
+ 
+-   P_IND(ctx, "t%d = ", tex->def.index);
++   msl_emit_dest(ctx, &tex->def);
+ 
+    switch (tex->op) {
+    case nir_texop_tex:
+@@ -2088,7 +2147,7 @@
+          P_IND(ctx, "{\n");
+          P_IND(ctx, "#pragma METAL fp math_mode(%s)\n", math_mode);
+       }
+-      P_IND(ctx, "t%d = ", alu->def.index);
++      msl_emit_dest(ctx, &alu->def);
+       alu_to_msl(ctx, alu);
+       P(ctx, ";\n");
+       if (math_mode)
+@@ -2459,8 +2518,9 @@
+                continue;
+             if (msl_def_is_sampler(ctx, def)) {
+                P_IND(ctx, "%s t%u;\n", type, def->index);
+-            } else
++            } else if (!msl_def_declared_inline(ctx, def)) {
+                P_IND(ctx, "%s t%u = %s(0);\n", type, def->index, type);
++            }
+          }
+       }
+    }
