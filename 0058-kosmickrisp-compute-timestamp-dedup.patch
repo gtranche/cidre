@@ -1,0 +1,54 @@
+Generated-by: LLM
+
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+@@ -608,6 +608,8 @@
+    if (cmd->metal.compute) {
+       end_encoder(cmd, cmd->metal.compute);
+       cmd->metal.compute = NULL;
++
++      util_dynarray_clear(&cmd->ts_stage_map);
+    }
+ }
+ 
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+@@ -306,6 +306,8 @@
+    uint32_t index;
+    uint64_t dst_addr;
+ };
++
++#define KK_TS_STAGE_COMPUTE ((enum mtl_render_stages)(1UL << 16))
+ 
+ struct kk_ts_stage_entry {
+    const struct kk_query_pool *pool;
+--- a/src/kosmickrisp/vulkan/kk_query_pool.c
++++ b/src/kosmickrisp/vulkan/kk_query_pool.c
+@@ -452,7 +452,26 @@
+                       kk_query_report_addr(dev, pool, query),
+                       (uint32_t)LIBKK_QUERY_UNAVAILABLE);
+ 
+-      mtl_compute_write_timestamp(cmd->metal.compute, heap, heap_index);
++      bool reused = false;
++      util_dynarray_foreach(&cmd->ts_stage_map, struct kk_ts_stage_entry,
++                            entry) {
++         if (entry->stage == KK_TS_STAGE_COMPUTE && entry->pool == pool) {
++            heap = entry->heap;
++            heap_index = entry->index;
++            reused = true;
++            break;
++         }
++      }
++
++      if (!reused) {
++         struct kk_ts_stage_entry entry = {.pool = pool,
++                                           .heap = heap,
++                                           .stage = KK_TS_STAGE_COMPUTE,
++                                           .index = heap_index};
++         util_dynarray_append(&cmd->ts_stage_map, entry);
++
++         mtl_compute_write_timestamp(cmd->metal.compute, heap, heap_index);
++      }
+    }
+ 
+    /* Resolve the Metal timestamp value to all multiview query indices so that

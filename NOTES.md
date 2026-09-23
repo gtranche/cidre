@@ -11650,3 +11650,105 @@ texture à 2^28 au lieu de refuser, et n'accepter le descripteur que si
 non vérifiable par la conformité.**
 
 **Diagnostic seulement. Rien n'est modifié.**
+
+---
+
+## 163. Horodatages : la granularité précise perd le périphérique
+
+`test_query_heap_cpu_resolve_timestamp` échouait 12 fois. Le test pose quinze
+`EndQuery(TIMESTAMP)` hors passe de rendu, puis les relit depuis le CPU. Sonde dans
+`kk_GetQueryPoolResults` :
+
+```
+q=0 val=4046035143837
+q=1 val=4046035143837      <- la meme
+q=2 val=4046035143837
+q=3 val=4046035143837
+q=4..14 val=0              <- onze zeros
+```
+
+Quatre valeurs identiques, onze zéros.
+
+### La fausse piste
+
+Le pont écrit avec `MTL4TimestampGranularityRelaxed`. Le SDK est explicite : *« it may sample
+at command encoder boundaries »*, *« the command may group all timestamps for a pass
+together »*. En passant à `MTL4TimestampGranularityPrecise`, les quinze valeurs deviennent
+distinctes et croissantes, et le test tombe à zéro échec.
+
+**Mais la campagne complète est morte** : `VK_ERROR_DEVICE_LOST` dans
+`test_execute_indirect_state_predication`, puis blocage. Ce test entrelace des
+`EndQuery(TIMESTAMP)` avec des `ExecuteIndirect` prédiqués — précisément là où Apple annonce
+que le précis « peut découper les encodeurs de commandes ». A/B en isolation :
+
+| granularité | horodatage | prédication |
+|---|---|---|
+| `Relaxed` | 12 échecs | 1572 tests, 0 échec |
+| `Precise` | 0 échec | **périphérique perdu** |
+| `Precise` sur le calcul seul | 0 échec | **périphérique perdu** |
+
+Restreindre le précis au chemin calcul ne sauve rien. Voie abandonnée.
+
+### Ce que le test demande vraiment
+
+```c
+ok(query_data[i] >= before_gpu_timestamp, ...);
+ok(query_data[i] <= after_gpu_timestamp, ...);
+if (i != 0) ok(query_data[i] >= query_data[i - 1], ...);
+```
+
+Quinze valeurs **identiques mais valides** passent les trois vérifications. Les échecs
+venaient uniquement des onze zéros.
+
+### Le correctif
+
+Le chemin rendu réglait déjà le problème, et son commentaire dit tout :
+
+```c
+/* If we've already issued a timestamp write for a render stage, reuse it
+ * because reissuing might return a 0 timestamp */
+```
+
+Seule la première écriture par encodeur atterrit ; les suivantes rendent zéro. Le chemin
+calcul n'avait pas cette déduplication. Ajoutée, avec une sentinelle `KK_TS_STAGE_COMPUTE`
+dans `ts_stage_map`, vidée à la fermeture de l'encodeur de calcul comme elle l'est déjà à
+celle de l'encodeur de rendu. On reste en granularité relâchée : pas de découpage, pas de
+perte de périphérique.
+
+### Résultat mesuré
+
+`./tests/run_conformance.sh tsdedup` : **D3D12 1764** (contre 1776), D3D11 4328 — dans
+l'oscillation connue 4326–4328. Un seul test bouge :
+
+| test | avant | après |
+|---|---|---|
+| `test_query_heap_cpu_resolve_timestamp` | 12 | **0** |
+
+Et les voisins restent intacts : `test_query_timestamp`,
+`test_query_timestamp_write_after_read` et `test_execute_indirect_state_predication` à zéro
+échec.
+
+### Ce que ça ne fait pas
+
+Les quinze horodatages rendent désormais **la même valeur** au lieu de onze zéros. C'est
+strictement meilleur, et c'est ce que le pilote appliquait déjà en rendu — mais un profileur
+qui poserait plusieurs marqueurs dans un même encodeur de calcul les verrait confondus. La
+vraie précision demande `Precise`, que Metal ne supporte pas ici sans perdre le périphérique.
+
+### Les deux autres tests de requêtes, pour mémoire
+
+- `test_query_pipeline_statistics` (6) : KK n'expose qu'occlusion, horodatage et rétroaction
+  de transformation. `pipelineStatisticsQuery` n'est pas annoncé, donc vkd3d rend des zéros.
+  Les compter demanderait d'instrumenter chaque shader ; Metal n'a pas ces compteurs.
+- `test_virtual_queries` (5) : six requêtes d'occlusion **imbriquées**. `kk_CmdBeginQuery` ne
+  retient qu'un index (`cmd->state.gfx.occlusion.index`), et Metal n'a qu'un
+  `setVisibilityResultMode:offset:` actif à la fois — un second `Begin` écrase le premier.
+  Vulkan interdit d'ailleurs l'imbrication ; le test fait taire le message 01922 en renvoyant
+  à l'issue vkd3d-proton 2381. Les émuler demanderait un créneau par changement d'ensemble
+  actif, puis une somme GPU des créneaux couvrant chaque requête.
+
+### Politique Mesa
+
+`KK_TS_STAGE_COMPUTE` et le bloc de déduplication sont sans commentaire. Ce qu'il faudrait y
+écrire : Metal ne retient que la première écriture d'horodatage par encodeur en granularité
+relâchée, donc les suivantes réutilisent la même entrée de tas plutôt que de rendre zéro.
