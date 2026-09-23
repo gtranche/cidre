@@ -1,0 +1,331 @@
+Generated-by: LLM
+
+--- a/src/kosmickrisp/vulkan/kk_root_layout.h
++++ b/src/kosmickrisp/vulkan/kk_root_layout.h
+@@ -29,9 +29,21 @@
+ 
+ struct kk_root_layout {
+    uint16_t off[KK_ROOT_FIELD_COUNT];
++   uint16_t len[KK_ROOT_FIELD_COUNT];
+    uint16_t size;
++   uint8_t set_count;
+ };
+ 
+ const struct kk_root_layout *kk_root_layout_identity(void);
+ 
++void kk_root_layout_compute(uint32_t set_count, const uint8_t *dyn_per_set,
++                            uint32_t push_size, struct kk_root_layout *out);
++
++uint32_t kk_root_layout_extent(const struct kk_root_layout *l,
++                               uint32_t fields_read, uint32_t attrib_count);
++
++void kk_root_layout_pack(void *dst, const void *src, uint32_t size,
++                         const struct kk_root_layout *l,
++                         const struct kk_root_layout *src_layout);
++
+ #endif
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+@@ -1224,7 +1224,108 @@
+ 
+    return &identity;
+ }
++
++#define KK_ROOT_LEN(f) sizeof(((struct kk_root_descriptor_table *)0)->f)
++
++static void
++kk_root_place(struct kk_root_layout *l, enum kk_root_field f, uint32_t len,
++              uint32_t align_b, uint32_t *cursor)
++{
++   if (len == 0u) {
++      l->off[f] = 0u;
++      l->len[f] = 0u;
++      return;
++   }
++
++   *cursor = align(*cursor, align_b);
++   l->off[f] = *cursor;
++   l->len[f] = len;
++   *cursor += len;
++}
++
++void
++kk_root_layout_compute(uint32_t set_count, const uint8_t *dyn_per_set,
++                       uint32_t push_size, struct kk_root_layout *out)
++{
++   uint32_t dyn_total = 0u;
++   uint32_t cursor = 0u;
++
++   for (uint32_t i = 0; i < set_count; i++)
++      dyn_total += dyn_per_set ? dyn_per_set[i] : 0u;
+ 
++   memset(out, 0, sizeof(*out));
++   out->set_count = set_count;
++
++   kk_root_place(out, KK_ROOT_SETS, set_count * sizeof(uint64_t), 8u, &cursor);
++   kk_root_place(out, KK_ROOT_PUSH, push_size, 8u, &cursor);
++   kk_root_place(out, KK_ROOT_SET_DYN_START, set_count, 1u, &cursor);
++   kk_root_place(out, KK_ROOT_DYNAMIC_BUFFERS,
++                 dyn_total * sizeof(struct kk_buffer_address), 8u, &cursor);
++   kk_root_place(out, KK_ROOT_ATTRIBS, KK_ROOT_LEN(draw.attribs), 8u, &cursor);
++   kk_root_place(out, KK_ROOT_CS_BASE_GROUP, KK_ROOT_LEN(cs.base_group), 4u,
++                 &cursor);
++   kk_root_place(out, KK_ROOT_BLEND_CONSTANT, KK_ROOT_LEN(draw.blend_constant),
++                 4u, &cursor);
++   kk_root_place(out, KK_ROOT_CLIP_Z_COEFF, KK_ROOT_LEN(draw.clip_z_coeff), 4u,
++                 &cursor);
++   kk_root_place(out, KK_ROOT_VIEWPORT_Z_RANGE,
++                 KK_ROOT_LEN(draw.viewport_z_range), 4u, &cursor);
++   kk_root_place(out, KK_ROOT_EMULATE_DEPTH_CLAMP,
++                 KK_ROOT_LEN(draw.emulate_depth_clamp), 1u, &cursor);
++   kk_root_place(out, KK_ROOT_EMULATE_VIEWPORT_Z,
++                 KK_ROOT_LEN(draw.emulate_viewport_z), 1u, &cursor);
++   kk_root_place(out, KK_ROOT_XFB_ADDRESS, KK_ROOT_LEN(draw.xfb_address), 8u,
++                 &cursor);
++   kk_root_place(out, KK_ROOT_XFB_COUNTER, KK_ROOT_LEN(draw.xfb_counter), 8u,
++                 &cursor);
++   kk_root_place(out, KK_ROOT_XFB_SIZE, KK_ROOT_LEN(draw.xfb_size), 4u,
++                 &cursor);
++   kk_root_place(out, KK_ROOT_XFB_NUM_VERTICES,
++                 KK_ROOT_LEN(draw.xfb_num_vertices), 4u, &cursor);
++   kk_root_place(out, KK_ROOT_XFB_FIRST_VERTEX,
++                 KK_ROOT_LEN(draw.xfb_first_vertex), 4u, &cursor);
++
++   out->size = align(cursor, 8u);
++}
++
++uint32_t
++kk_root_layout_extent(const struct kk_root_layout *l, uint32_t fields_read,
++                      uint32_t attrib_count)
++{
++   uint32_t end = 8u;
++
++   for (uint32_t f = 0; f < KK_ROOT_FIELD_COUNT; f++) {
++      uint32_t len = l->len[f];
++
++      if (!(fields_read & (1u << f)) || len == 0u)
++         continue;
++
++      if (f == KK_ROOT_ATTRIBS)
++         len = MIN2(len, attrib_count * sizeof(struct kk_root_attribute));
++
++      end = MAX2(end, (uint32_t)l->off[f] + len);
++   }
++
++   return align(end, 8u);
++}
++
++void
++kk_root_layout_pack(void *dst, const void *src, uint32_t size,
++                    const struct kk_root_layout *l,
++                    const struct kk_root_layout *src_layout)
++{
++   for (uint32_t f = 0; f < KK_ROOT_FIELD_COUNT; f++) {
++      uint32_t len = l->len[f];
++
++      if (len == 0u || l->off[f] >= size)
++         continue;
++
++      len = MIN2(len, size - l->off[f]);
++      memcpy((char *)dst + l->off[f], (const char *)src + src_layout->off[f],
++             len);
++   }
++}
++
+ uint64_t
+ kk_upload_descriptor_root(struct kk_cmd_buffer *cmd,
+                           VkPipelineBindPoint bind_point)
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
+@@ -27,12 +27,20 @@
+ struct lower_descriptors_ctx {
+    const struct kk_descriptor_set_layout *set_layouts[KK_MAX_SETS];
+    const struct kk_root_layout *root;
++   uint32_t *fields_read;
+ 
+    bool clamp_desc_array_bounds;
+    nir_address_format ubo_addr_format;
+    nir_address_format ssbo_addr_format;
+ };
+ 
++static inline void
++kk_root_note(const struct lower_descriptors_ctx *ctx, enum kk_root_field f)
++{
++   if (ctx->fields_read)
++      *ctx->fields_read |= 1u << f;
++}
++
+ static const struct kk_descriptor_set_binding_layout *
+ get_binding_layout(uint32_t set, uint32_t binding,
+                    const struct lower_descriptors_ctx *ctx)
+@@ -92,6 +100,7 @@
+ {
+    uint32_t set_addr_offset =
+       ctx->root->off[KK_ROOT_SETS] + set * sizeof(uint64_t);
++   kk_root_note(ctx, KK_ROOT_SETS);
+ 
+    return load_root(b, 1, 64, nir_imm_int(b, set_addr_offset), 8);
+ }
+@@ -116,6 +125,7 @@
+    } else {
+       uint32_t root_offset =
+          ctx->root->off[KK_ROOT_SET_DYN_START] + set;
++      kk_root_note(ctx, KK_ROOT_SET_DYN_START);
+ 
+       return nir_u2u32(b, load_root(b, 1, 8, nir_imm_int(b, root_offset), 1));
+    }
+@@ -147,6 +157,7 @@
+          b, nir_imul_imm(b, index, sizeof(struct kk_buffer_address)),
+          ctx->root->off[KK_ROOT_DYNAMIC_BUFFERS]);
+ 
++      kk_root_note(ctx, KK_ROOT_DYNAMIC_BUFFERS);
+       assert(num_components == 4 && bit_size == 32);
+       nir_def *desc = load_root(b, 4, 32, root_desc_offset, 16);
+ 
+@@ -265,7 +276,8 @@
+ }
+ 
+ #define lower_sysval_to_root_table(b, intrin, member)                          \
+-   _lower_sysval_to_root_table(b, intrin, ctx->root->off[member])
++   (kk_root_note(ctx, member),                                                 \
++    _lower_sysval_to_root_table(b, intrin, ctx->root->off[member]))
+ 
+ static bool
+ _lower_sysval_to_per_draw(nir_builder *b, nir_intrinsic_instr *intrin,
+@@ -291,6 +303,8 @@
+                          const struct lower_descriptors_ctx *ctx)
+ {
+    const uint32_t push_region_offset = ctx->root->off[KK_ROOT_PUSH];
++
++   kk_root_note(ctx, KK_ROOT_PUSH);
+    const uint32_t base = nir_intrinsic_base(load);
+ 
+    b->cursor = nir_before_instr(&load->instr);
+@@ -566,7 +580,7 @@
+    case nir_intrinsic_load_xfb_size_kk: {
+       unsigned buffer = nir_intrinsic_base(intrin);
+       assert(buffer < MAX_XFB_BUFFERS);
+-      unsigned offset = ctx->root->off[KK_ROOT_XFB_SIZE] +
++      unsigned offset = (kk_root_note(ctx, KK_ROOT_XFB_SIZE), ctx->root->off[KK_ROOT_XFB_SIZE]) +
+                         buffer * sizeof(uint32_t);
+       b->cursor = nir_instr_remove(&intrin->instr);
+       nir_def_rewrite_uses(&intrin->def,
+@@ -577,7 +591,7 @@
+    case nir_intrinsic_load_xfb_counter_kk: {
+       unsigned buffer = nir_intrinsic_base(intrin);
+       assert(buffer < MAX_XFB_BUFFERS);
+-      unsigned offset = ctx->root->off[KK_ROOT_XFB_COUNTER] +
++      unsigned offset = (kk_root_note(ctx, KK_ROOT_XFB_COUNTER), ctx->root->off[KK_ROOT_XFB_COUNTER]) +
+                         buffer * sizeof(uint64_t);
+       b->cursor = nir_instr_remove(&intrin->instr);
+       nir_def *addr = load_root(b, 1, 64, nir_imm_int(b, offset), 8);
+@@ -588,7 +602,7 @@
+    case nir_intrinsic_load_xfb_address: {
+       unsigned buffer = nir_intrinsic_base(intrin);
+       assert(buffer < MAX_XFB_BUFFERS);
+-      unsigned offset = ctx->root->off[KK_ROOT_XFB_ADDRESS] +
++      unsigned offset = (kk_root_note(ctx, KK_ROOT_XFB_ADDRESS), ctx->root->off[KK_ROOT_XFB_ADDRESS]) +
+                         buffer * sizeof(uint64_t);
+       b->cursor = nir_instr_remove(&intrin->instr);
+       nir_def_rewrite_uses(&intrin->def,
+@@ -600,7 +614,7 @@
+     * to get the zero-based index the capture offsets are computed from.
+     */
+    case nir_intrinsic_load_raw_vertex_id: {
+-      unsigned offset = ctx->root->off[KK_ROOT_XFB_FIRST_VERTEX];
++      unsigned offset = (kk_root_note(ctx, KK_ROOT_XFB_FIRST_VERTEX), ctx->root->off[KK_ROOT_XFB_FIRST_VERTEX]);
+       b->cursor = nir_instr_remove(&intrin->instr);
+       nir_def *first = load_root(b, 1, 32, nir_imm_int(b, offset), 4);
+       nir_def_rewrite_uses(&intrin->def,
+@@ -609,7 +623,7 @@
+    }
+ 
+    case nir_intrinsic_load_is_depth_clamp_emulated_kk: {
+-      unsigned offset = ctx->root->off[KK_ROOT_EMULATE_DEPTH_CLAMP];
++      unsigned offset = (kk_root_note(ctx, KK_ROOT_EMULATE_DEPTH_CLAMP), ctx->root->off[KK_ROOT_EMULATE_DEPTH_CLAMP]);
+       b->cursor = nir_instr_remove(&intrin->instr);
+       nir_def *val = load_root(b, 1, 8, nir_imm_int(b, offset), 1);
+       nir_def_rewrite_uses(&intrin->def, nir_ieq_imm(b, val, 1));
+@@ -617,7 +631,7 @@
+    }
+ 
+    case nir_intrinsic_load_is_viewport_z_transform_emulated_kk: {
+-      unsigned offset = ctx->root->off[KK_ROOT_EMULATE_VIEWPORT_Z];
++      unsigned offset = (kk_root_note(ctx, KK_ROOT_EMULATE_VIEWPORT_Z), ctx->root->off[KK_ROOT_EMULATE_VIEWPORT_Z]);
+       b->cursor = nir_instr_remove(&intrin->instr);
+       nir_def *val = load_root(b, 1, 8, nir_imm_int(b, offset), 1);
+       nir_def_rewrite_uses(&intrin->def, nir_ieq_imm(b, val, 1));
+@@ -625,7 +639,7 @@
+    }
+ 
+    case nir_intrinsic_load_viewport_z_range_kk: {
+-      unsigned offset = ctx->root->off[KK_ROOT_VIEWPORT_Z_RANGE];
++      unsigned offset = (kk_root_note(ctx, KK_ROOT_VIEWPORT_Z_RANGE), ctx->root->off[KK_ROOT_VIEWPORT_Z_RANGE]);
+       assert((offset & 3) == 0 && "aligned");
+       b->cursor = nir_instr_remove(&intrin->instr);
+       nir_def *vp_offset =
+@@ -1029,6 +1043,7 @@
+                       nir_imul_imm(b, dynamic_buffer_start,
+                                    sizeof(struct kk_buffer_address)),
+                       ctx->root->off[KK_ROOT_DYNAMIC_BUFFERS]);
++      kk_root_note(ctx, KK_ROOT_DYNAMIC_BUFFERS);
+ 
+       binding_addr =
+          nir_iadd(b, root_desc_addr, nir_u2u64(b, dynamic_binding_offset));
+@@ -1147,10 +1162,13 @@
+                          const struct vk_pipeline_robustness_state *rs,
+                          uint32_t set_layout_count,
+                          struct vk_descriptor_set_layout *const *set_layouts,
+-                         const struct kk_root_layout *root)
++                         const struct kk_root_layout *root,
++                         uint32_t *fields_read)
+ {
++   uint32_t read_mask = 0u;
+    struct lower_descriptors_ctx ctx = {
+       .root = root,
++      .fields_read = &read_mask,
+       .clamp_desc_array_bounds =
+          rs->storage_buffers !=
+             VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED ||
+@@ -1178,6 +1196,9 @@
+    bool pass_lower_ssbo = nir_shader_intrinsics_pass(
+       nir, lower_ssbo_descriptor, nir_metadata_control_flow, &ctx);
+ 
++   if (fields_read)
++      *fields_read = read_mask;
++
+    return pass_lower_descriptors || pass_lower_ssbo;
+ }
+ 
+--- a/src/kosmickrisp/vulkan/kk_shader.h
++++ b/src/kosmickrisp/vulkan/kk_shader.h
+@@ -235,7 +235,8 @@
+                          const struct vk_pipeline_robustness_state *rs,
+                          uint32_t set_layout_count,
+                          struct vk_descriptor_set_layout *const *set_layouts,
+-                         const struct kk_root_layout *root);
++                         const struct kk_root_layout *root,
++                         uint32_t *fields_read);
+ 
+ /* KK_WORKAROUND_18 */
+ bool kk_nir_add_device_barrier_workaround(nir_shader *nir);
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -934,7 +934,7 @@
+     * the lower descriptor pass
+     */
+    NIR_PASS(_, nir, kk_nir_lower_descriptors, rs, set_layout_count,
+-            set_layouts, kk_root_layout_identity());
++            set_layouts, kk_root_layout_identity(), NULL);
+ 
+    /* KK_WORKAROUND_16 - must be called after kk_nir_lower_descriptors(), which
+     * lowers all image intrinsics to be bindless */
+@@ -1382,7 +1382,7 @@
+              * coefficient, for one). poly's programs carry no descriptors, so
+              * no set layout is needed to resolve them. */
+             NIR_PASS(_, extra[i].nir, kk_nir_lower_descriptors, robustness, 0u,
+-                     NULL, kk_root_layout_identity());
++                     NULL, kk_root_layout_identity(), NULL);
+ 
+             msl_nir_lower_clip_cull_distance(extra[i].nir, num_cull_distances);
+          }

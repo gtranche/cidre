@@ -11178,3 +11178,33 @@ supplémentaires donnent **4328, 4326, 4326**, soit une médiane de 4326 et exac
 l'oscillation de ±2 mesurée en section 150 avec un binaire inchangé. Pas de régression.
 
 Correctif 0054. Second repère où revenir.
+
+## 156. Refonte, étape 3a : la machinerie du tassement (2026-09-23)
+
+Deux pièces, toutes deux inertes tant que rien ne les appelle.
+
+**Le masque des champs lus.** L'abaissement des descripteurs marque désormais, à chacun de ses
+quinze sites, le champ de racine qu'il vient de lire, et rend le masque à l'appelant. C'est plus
+léger qu'un suivi d'offsets maximaux et cela suffit : combiné à la disposition, le masque donne
+l'étendue à téléverser. Détail de mise en œuvre : plusieurs sites ont un contexte `const`, donc
+le masque est atteint par pointeur, pas par valeur.
+
+Vérifié seul, appelants passant `NULL` : **D3D11 4326, D3D12 2026**. La réécriture de ce fichier
+— quinze sites plus la macro des valeurs système transformée en expression à virgule — ne casse
+rien.
+
+**Le calcul de disposition compacte.** `kk_root_layout_compute()` range les champs du plus chaud
+au plus froid : jeux de descripteurs, constantes poussées, index de départ des tampons
+dynamiques, tampons dynamiques, attributs, puis le bloc froid — groupe de calcul, constante de
+mélange, coefficient de clip, plage Z des vues, drapeaux d'émulation, et enfin le bloc de
+capture. Chaque tableau est dimensionné sur ce que la **disposition de pipeline** déclare, et
+non sur le maximum Vulkan.
+
+`kk_root_layout_extent()` donne l'étendue à téléverser à partir du masque et du nombre
+d'attributs ; `kk_root_layout_pack()` recopie depuis la structure grasse vers les offsets
+compacts. La structure grasse reste la zone de travail du processeur — les dizaines d'écritures
+du pilote ne bougent pas.
+
+Correctif 0055. Ce qui reste : calculer la disposition à la compilation des nuanceurs, la ranger
+dans leurs informations, et faire que le téléversement s'en serve. C'est l'étape qui changera
+enfin les chiffres.
