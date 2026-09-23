@@ -11962,3 +11962,107 @@ l'autre n'a été localisée — le calcul ne les explique sous aucune hypothès
 (arrondi, troncature, échelle 65535 ou 65536, demi-précision).
 
 **Diagnostic partiel. Rien n'est modifié ; le test reste à 6 échecs.**
+
+---
+
+## 167. Le sens de parcours : une régression introduite en 156, et sa correction
+
+En reprenant `test_quad_tessellation`, la comparaison **ligne par ligne** — et non plus par
+compte — révèle que le correctif 0056 avait déplacé le problème :
+
+```
+avant 0056 : lignes 372, 411, 457, 459, 461, 463   (6 echecs)
+apres 0056 : lignes 364, 461, 463                   (3 echecs)
+```
+
+La ligne 364 est **nouvelle**. Le bilan net de −3 la masquait. Elle vérifie que la cible de
+rendu reste blanche : la tessellation est antihoraire, donc tout doit être éliminé par le tri
+des faces. On rendait du vert.
+
+### Deux ordres, pas un
+
+`poly_load_tes_index` échange les deuxième et troisième sommets de chaque triangle quand
+`p->ccw`. Le chemin matériel indexé, lui, lit `index_buffer[i]` **sans échange** : c'est le
+rasteriseur qui applique le sens. En passant au tirage non indexé avec cette fonction,
+l'échange était appliqué une fois de trop.
+
+Mais le remplacer par une lecture brute fait échouer la ligne 372 à la place : la capture
+rend les sommets 2 et 3 intervertis.
+
+```
+obtenu  : v0, {-1, 1}, { 1,-1}
+attendu : v0, { 1,-1}, {-1, 1}
+```
+
+**Le rasteriseur veut l'ordre brut, la capture veut l'ordre échangé.** L'échange n'est pas une
+propriété de la lecture d'indice, c'est une propriété du *rang de capture*.
+
+### Le correctif
+
+Le pivot est extrait dans `poly_tes_ccw_slot`, et les deux usages sont séparés :
+
+- `poly_load_tes_index_raw(p, i)` — lecture brute, pour le sommet que le rasteriseur consomme ;
+- `poly_tes_ccw_slot(p, i)` — le rang où la capture doit écrire.
+
+`poly_load_tes_index` devient `index_buffer[poly_tes_ccw_slot(p, i)]`, strictement équivalent
+à ce qu'elle faisait, donc le chemin tess+géométrie d'asahi est inchangé.
+
+`poly_nir_lower_tes_index_fetch` traite maintenant les deux intrinsèques d'un coup :
+`load_vertex_id` devient la lecture brute, `load_raw_vertex_id` devient le rang pivoté. La
+passe `kk_nir_lower_tes_xfb_ordinal` côté kk devient inutile et disparaît.
+
+`p->ccw` vaut zéro pour les points et les isolignes, donc le pivot est neutre hors triangles —
+`test_line_tessellation` est inchangé.
+
+### Résultat mesuré
+
+`test_quad_tessellation_dxbc` passe de **3 à 2** échecs : la régression de la 364 et l'échec
+préexistant de la 372 tombent tous les deux. Six variantes du test sont concernées.
+
+### Résultat en campagne complète
+
+`./tests/run_conformance.sh ccw` : **D3D12 1742** (contre 1748), D3D11 4328 — dans
+l'oscillation connue. La comparaison ligne par ligne ne montre que les six lignes 364, sur les
+six variantes du test, et rien d'autre :
+
+```
+test_quad_tessellation_dxbc:364                  1 -> 0
+test_quad_tessellation_dxil:364                  1 -> 0
+test_quad_tessellation_wrong_input_count_dxbc:364   1 -> 0
+test_quad_tessellation_wrong_input_count_dxil:364   1 -> 0
+test_quad_tessellation_wrong_pso_topology_dxbc:364  1 -> 0
+test_quad_tessellation_wrong_pso_topology_dxil:364  1 -> 0
+```
+
+### La leçon
+
+Comparer les **comptes** par test ne suffit pas : un correctif peut corriger quatre échecs et
+en créer un sans que le total le montre. Comparer les **lignes**.
+
+### Politique Mesa
+
+`poly_tes_ccw_slot` reprend le commentaire qui existait déjà dans `poly_load_tes_index` — il
+décrit exactement ce que la fonction fait, et n'a pas été réécrit. `poly_load_tes_index_raw`
+est sans commentaire ; ce qu'il faudrait y écrire : lecture sans pivot, pour le sommet que le
+rasteriseur consomme, le pivot revenant au rang de capture.
+
+---
+
+## 168. Le changement de génération MSL ne change pas les performances
+
+Le correctif 0059 touche la génération de code de **tous** les shaders ; il devait donc être
+chiffré sur une charge réelle. A/B entrelacé, trois tours, Godot en 640×480, 64 vues,
+400 objets, machine vérifiée sans processus résiduel :
+
+```
+avant : 83.333  84.115  83.333   -> mediane 83.333 ms
+apres : 84.131  84.848  83.333   -> mediane 84.131 ms
+```
+
+Les deux séries se chevauchent — 83.333 apparaît dans les deux. **Aucun gain ni perte ne peut
+être revendiqué.** L'affirmation portée en 165, selon laquelle le resserrement de portée « ne
+peut qu'aider un compilateur », n'est pas confirmée par la mesure. Elle n'est pas infirmée non
+plus : l'écart, s'il existe, est sous le bruit de ce banc.
+
+Le temps de compilation des shaders reste non mesuré. C'est là que le gain de 15,3 % sur la
+taille du MSL pourrait se voir, s'il se voit quelque part.

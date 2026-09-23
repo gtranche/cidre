@@ -1,0 +1,118 @@
+Generated-by: LLM
+
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -1248,24 +1248,6 @@
+     * where the entrypoint gets renamed. */
+    ralloc_steal(NULL, (void *)entrypoint_name);
+    data->entrypoint_name = (char *)entrypoint_name;
+-}
+-
+-static bool
+-lower_tes_xfb_ordinal(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+-{
+-   if (intr->intrinsic != nir_intrinsic_load_raw_vertex_id)
+-      return false;
+-
+-   b->cursor = nir_before_instr(&intr->instr);
+-   nir_def_replace(&intr->def, nir_load_vertex_id(b));
+-   return true;
+-}
+-
+-static bool
+-kk_nir_lower_tes_xfb_ordinal(nir_shader *nir)
+-{
+-   return nir_shader_intrinsics_pass(nir, lower_tes_xfb_ordinal,
+-                                     nir_metadata_control_flow, NULL);
+ }
+ 
+ static VkResult
+@@ -1438,10 +1420,8 @@
+       /* This destroys info so it needs to happen after the gather */
+       NIR_PASS(_, nir, poly_nir_lower_tes, true);
+ 
+-      if (captures) {
++      if (captures)
+          NIR_PASS(_, nir, poly_nir_lower_tes_index_fetch);
+-         NIR_PASS(_, nir, kk_nir_lower_tes_xfb_ordinal);
+-      }
+    }
+ 
+    struct nir_to_msl_options translate_options = {
+--- a/src/poly/cl/tessellation.cl
++++ b/src/poly/cl/tessellation.cl
+@@ -35,7 +35,7 @@
+  * Therefore we do a simple load. No bounds checking needed.
+  */
+ uint32_t
+-poly_load_tes_index(constant struct poly_tess_params *p, uint32_t index)
++poly_tes_ccw_slot(constant struct poly_tess_params *p, uint32_t index)
+ {
+    /* Swap second and third vertices of each triangle to flip winding order
+     * dynamically if needed.
+@@ -49,6 +49,18 @@
+          index--;
+    }
+ 
++   return index;
++}
++
++uint32_t
++poly_load_tes_index(constant struct poly_tess_params *p, uint32_t index)
++{
++   return p->index_buffer[poly_tes_ccw_slot(p, index)];
++}
++
++uint32_t
++poly_load_tes_index_raw(constant struct poly_tess_params *p, uint32_t index)
++{
+    return p->index_buffer[index];
+ }
+ 
+--- a/src/poly/nir/poly_nir_lower_tess.c
++++ b/src/poly/nir/poly_nir_lower_tess.c
+@@ -311,6 +311,10 @@
+    struct util_dynarray uses;
+ 
+    util_dynarray_init(&uses, NULL);
++
++   struct util_dynarray slots;
++
++   util_dynarray_init(&slots, NULL);
+ 
+    nir_foreach_block(block, impl) {
+       nir_foreach_instr(instr, block) {
+@@ -320,21 +324,31 @@
+          nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+          if (intr->intrinsic == nir_intrinsic_load_vertex_id)
+             util_dynarray_append_typed(&uses, nir_intrinsic_instr *, intr);
++         else if (intr->intrinsic == nir_intrinsic_load_raw_vertex_id)
++            util_dynarray_append_typed(&slots, nir_intrinsic_instr *, intr);
+       }
+    }
+ 
+-   if (util_dynarray_num_elements(&uses, nir_intrinsic_instr *) == 0) {
++   if (util_dynarray_num_elements(&uses, nir_intrinsic_instr *) == 0 &&
++       util_dynarray_num_elements(&slots, nir_intrinsic_instr *) == 0) {
+       util_dynarray_fini(&uses);
++      util_dynarray_fini(&slots);
+       return false;
+    }
+ 
+    nir_builder b = nir_builder_at(nir_before_impl(impl));
+    nir_def *p = nir_load_tess_param_buffer_poly(&b);
+-   nir_def *index = poly_load_tes_index(&b, p, nir_load_vertex_id(&b));
++   nir_def *pos = nir_load_vertex_id(&b);
++   nir_def *index = poly_load_tes_index_raw(&b, p, pos);
++   nir_def *slot = poly_tes_ccw_slot(&b, p, pos);
+ 
+    util_dynarray_foreach(&uses, nir_intrinsic_instr *, it)
+       nir_def_replace(&(*it)->def, index);
+ 
++   util_dynarray_foreach(&slots, nir_intrinsic_instr *, it)
++      nir_def_replace(&(*it)->def, slot);
++
+    util_dynarray_fini(&uses);
++   util_dynarray_fini(&slots);
+    return nir_progress(true, impl, nir_metadata_control_flow);
+ }
