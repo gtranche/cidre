@@ -12451,3 +12451,136 @@ seule dont on sait qu'elle fait tourner un jeu, Braid.
 
 **Grimrock ne fonctionne pas. Le pilote n'est pas en cause** — l'échec est entièrement dans
 l'association adaptateur/moniteur entre Wine et DXVK.
+
+## 175. Grimrock : la variable qui manquait était un bit dans `FreeImage.dll`
+
+La section 174 s'arrêtait sur une contradiction : un programme de test voyait l'écran, le
+jeu n'en voyait aucun. La variable manquante se lit d'un seul coup en instrumentant le
+constructeur de DXVK.
+
+```
+SONDE ctor : enumerateByDisplays=1 vkAdapterCount=1 SM_CMONITORS=0
+SONDE attente : essai=0  t=0ms    SM_CMONITORS=0 enum=0
+SONDE attente : essai=29 t=2900ms SM_CMONITORS=0 enum=0
+```
+
+Ce n'est pas une course : `EnumDisplayDevices` rend FAUX pendant trois secondes d'affilée, et
+ni `PeekMessage`, ni `GetDesktopWindow`, ni `SendMessage` au bureau, ni `CreateWindowEx`, ni
+`EnumDisplayMonitors` ne le débloquent. Le cache d'écrans du processus est vide **et le reste**.
+
+### La chaîne, mesurée maillon par maillon
+
+Une trace dans `lock_display_devices` sépare le fil du jeu de tous les autres :
+
+```
+fil 0024 (grimrock) : force=0 serial=0 cached=0 sources_empty=1   x 337 appels
+fil 0034            : force=0 serial=2 cached=2 sources_empty=0
+fil 0074 (explorer) : force=0 serial=2 cached=2 sources_empty=0
+```
+
+`serial=0` vient de `get_monitor_update_serial`, qui rend 0 quand `get_shared_desktop` échoue.
+Le test `!force && monitor_update_serial >= serial` devient alors `0 >= 0` : Wine conclut que
+le cache est à jour, et rend la main sur une liste vide. Définitivement.
+
+Une trace dans `get_shared_desktop` donne le localisateur :
+
+```
+0024 locator id=1 offset=18 -> introuvable
+```
+
+Le localisateur est valide ; c'est la projection du bloc qui échoue :
+
+```
+0024 find_shared_session_block Failed to map session block for offset 18, size 148, status 0xc0000022
+0024 map_shared_session_block  Failed to map shared session block,  status 0xc0000022
+0024 err:virtual:map_file_into_view failed to set PROT_EXEC on file map, noexec filesystem?
+```
+
+`0xc0000022` est `STATUS_ACCESS_DENIED`. Il sort de `map_file_into_view`, quand `mmap` rend
+`EACCES` ou `EPERM` sur une projection `MAP_SHARED`. Et la raison du refus est dans le message
+juste après : Wine demande `PROT_EXEC`, **macOS ne l'accorde jamais sur une projection
+partagée**.
+
+### Pourquoi Wine demande l'exécution sur une page de données
+
+`force_exec_prot`, armé par le chargeur :
+
+```c
+if (!(nt->OptionalHeader.DllCharacteristics & IMAGE_DLLCHARACTERISTICS_NX_COMPAT))
+{
+    ULONG flags = MEM_EXECUTE_OPTION_ENABLE;
+    NtSetInformationProcess( GetCurrentProcess(), ProcessExecuteFlags, &flags, sizeof(flags) );
+}
+```
+
+Un seul module sans le bit suffit à armer le drapeau pour **tout le processus**. Mesure sur
+les binaires du jeu :
+
+```
+grimrock.exe   DllCharacteristics=0x8140  NX_COMPAT=oui
+FreeImage.dll  DllCharacteristics=0x0000  NX_COMPAT=NON
+```
+
+Grimrock lui-même est conforme. C'est `FreeImage.dll`, compilée en 2012 sans le bit, qui
+désarme le no-exec, ce qui met `PROT_EXEC` sur toutes les projections, ce que macOS refuse sur
+`MAP_SHARED`, ce qui empêche de projeter la mémoire partagée de session, ce qui vide le cache
+d'écrans, ce qui donne zéro adaptateur Direct3D 9.
+
+La même cause explique l'autre erreur observée, `Mapping non-persisted file failed: 5` dans
+l'allocateur D3D9 de DXVK : même appel, même refus.
+
+### Le correctif
+
+`0062-wine-macos-no-exec-on-shared-mappings.patch`, un seul bloc dans `map_file_into_view` :
+quand la permission d'exécution n'a été ajoutée que par `force_exec_prot` et que le noyau
+refuse la projection partagée, on retire `PROT_EXEC` et on réessaie, au lieu de rendre
+`STATUS_ACCESS_DENIED`. La page perd une permission que macOS n'accorde de toute façon pas.
+
+J'avais aussi retouché `mprotect_exec` pour le même motif. Le A/B montre que ce second bloc
+n'est pas nécessaire — et qu'avec lui le jeu produit des `nested exception on signal stack`.
+Il est retiré : le correctif tient en un bloc.
+
+### Où en est le jeu
+
+Avant, après :
+
+```
+avant : SM_CMONITORS=0  adaptateurs=0  -> GetDeviceCaps : D3DERR_INVALIDCALL
+apres : SM_CMONITORS=1  adaptateurs=1  -> peripherique cree
+                                          chaine d'echange 1728x1117, 3 images, FIFO
+                                          nuanciers compiles (8 VS/FS)
+```
+
+Puis le processus meurt, sans boîte de dialogue :
+
+```
+seh:dispatch_exception code=c0000005 addr=000000040124E540
+                       rip=000000040124e540 rsp=0000000001fdf434
+err:seh:call_seh_handlers invalid frame 0000000001FDF434 (0000000100D02000-0000000100DFFD20)
+err:seh:NtRaiseException Exception frame is not in stack limits => unable to dispatch exception.
+```
+
+L'adresse fautive **est** le pointeur d'instruction : c'est un saut vers une adresse non
+exécutable. Le `rip` vaut `0x4_0124E540`, soit une adresse 32 bits plausible avec un `0x4`
+parasite au-dessus du 32e bit, et `rsp` est dans l'espace 32 bits alors que Wine compare aux
+bornes de la pile 64 bits. Piste non vérifiée : une troncature dans le passage WoW64.
+
+**Braid n'est pas affecté** : relancé après le correctif, fenêtre ouverte, 35 % de processeur,
+aucune erreur. Le correctif ne change rien pour un processus conforme au no-exec.
+
+### Ce que la section 174 disait de faux
+
+Elle attribuait l'échec à « l'association adaptateur/moniteur entre Wine et DXVK ». C'est
+faux : DXVK énumère correctement, Wine énumère correctement, et le réglage
+`d3d9.enumerateByDisplays` n'avait rien à voir. La cause est deux couches plus bas, dans la
+projection mémoire.
+
+Elle disait aussi qu'un `grimrock.cfg` forçant le mode fenêtré « n'y change rien ». En réalité
+ce fichier, que j'avais écrit, était **invalide** : le format du jeu n'a pas de préfixe
+`config.`, et le jeu ouvrait une boîte de dialogue « attempt to index global 'config' (a nil
+value) » que l'auteur voyait sans pouvoir la lire. Les deux essais rapportés comme « la même
+erreur » étaient cette boîte-là, pas l'erreur Direct3D.
+
+Outil ajouté pour ne plus se retrouver aveugle devant une fenêtre : `tests/lister_fenetres.c`
+énumère les fenêtres visibles et le texte de leurs contrôles, `tests/cliquer_bouton.c` clique
+un bouton désigné par son texte.

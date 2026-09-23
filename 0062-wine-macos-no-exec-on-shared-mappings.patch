@@ -1,0 +1,37 @@
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -2119,15 +2120,17 @@
+     void *ptr;
+     int prot = get_unix_prot( vprot | VPROT_COMMITTED /* make sure it is accessible */ );
+     unsigned int flags = MAP_FIXED | ((vprot & VPROT_WRITECOPY) ? MAP_PRIVATE : MAP_SHARED);
++    BOOL exec_forced = FALSE;
+ 
+     assert( start < view->size );
+     assert( start + size <= view->size );
+ 
+-    if (force_exec_prot && (vprot & VPROT_READ))
++    if (force_exec_prot && (vprot & VPROT_READ) && !(prot & PROT_EXEC))
+     {
+         TRACE( "forcing exec permission on mapping %p-%p\n",
+                (char *)view->base + start, (char *)view->base + start + size - 1 );
+         prot |= PROT_EXEC;
++        exec_forced = TRUE;
+     }
+ 
+     /* only try mmap if media is not removable (or if we require write access) */
+@@ -2153,6 +2156,15 @@
+         case EPERM:  /* noexec filesystem, fall back to read() */
+             if (flags & MAP_SHARED)
+             {
++                /* Some kernels never grant exec permission on a shared mapping.
++                 * The permission was only forced because the process is not
++                 * NX-aware, so drop it instead of failing the mapping. */
++                if (exec_forced)
++                {
++                    prot &= ~PROT_EXEC;
++                    if (mmap( (char *)view->base + start, size, prot, flags, fd, offset ) != MAP_FAILED)
++                        goto done;
++                }
+                 if (prot & PROT_EXEC) ERR( "failed to set PROT_EXEC on file map, noexec filesystem?\n" );
+                 return STATUS_ACCESS_DENIED;
+             }
