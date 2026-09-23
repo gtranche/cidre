@@ -11498,3 +11498,78 @@ plateforme.
 ```
 
 **Diagnostic seulement. Rien n'est modifié.**
+
+---
+
+## 161. Alpha hors bornes : le format du descripteur, pas le type du shader
+
+`test_undefined_structured_raw_read_typed` échouait 68 fois par variante, 136 au total. Le
+motif :
+
+```
+RAW: output 6, index 28, expected (0, 0, 0, 1), got (0, 0, 0, 1065353216)
+```
+
+`1065353216` = `0x3F800000`, soit **1.0f**. Seule la composante w est fausse, et seulement
+pour deux sorties sur huit.
+
+### Pourquoi celles-là
+
+Le test lit un tampon **brut** (`R32_TYPELESS`, `D3D12_BUFFER_SRV_FLAG_RAW`) à travers un
+descripteur **typé** — c'est le comportement indéfini qu'il sonde. Le shader :
+
+```hlsl
+UAVStruct[12][thr] = SRV6[0].Load(thr);           // Buffer<uint4>   -> passe
+UAVStruct[14][thr] = asuint(SRV7[0].Load(thr));   // Buffer<float4>  -> echoue
+```
+
+Les sorties 6 et 7 de la boucle de validation sont `UAVStruct[14]` et `[15]`, les deux seules
+déclarées `Buffer<float4>`. Et le compte tombe juste : `in_bounds_dwords` vaut 28 et 32, donc
+36 et 32 entrées hors bornes — exactement 68.
+
+### La cause
+
+Sonde dans `kk_get_texel_buffer_desc` : **vkd3d transmet `VK_FORMAT_R32_UINT` (98) pour tous
+les descripteurs**, y compris ceux que le shader lit en flottant. Le format de la vue est
+entier ; l'alpha implicite doit donc être l'entier 1.
+
+`kk_texel_oob_value` choisissait sur le **type déclaré par le shader** :
+
+```c
+nir_def *one = nir_alu_type_get_base_type(type) == nir_type_float
+                  ? nir_imm_floatN_t(b, 1.0, bits)
+                  : nir_imm_intN_t(b, 1, bits);
+```
+
+Correct quand les deux concordent — une vue `R32_SFLOAT` lue en flottant doit bien rendre
+1.0f. Faux dès qu'ils divergent, ce qui est précisément le cas ici. Le test le dit :
+*« Assuming that typed side is a R32_UINT texel buffer. This seems to match NV behavior too. »*
+
+### Le correctif
+
+Le bit 31 de `texel_count` était libre : le champ de multiplication occupe les bits 30-31 mais
+n'utilise que les valeurs 0 et 1. Il porte désormais « le format de la vue est entier »,
+posé depuis `util_format_is_pure_integer` à la création de la vue, et lu dans le shader pour
+choisir entre l'entier 1 et 1.0f. L'extraction du champ de multiplication est masquée en
+conséquence.
+
+Le coût est nul : `packed` est déjà chargé pour la borne, et la sélection se greffe sur un
+`bcsel` qui existait déjà.
+
+### Résultat mesuré
+
+`./tests/run_conformance.sh oobalpha` : **D3D12 1776**, D3D11 4326 inchangé.
+
+| test | avant | après |
+|---|---|---|
+| `test_undefined_structured_raw_read_typed_dxbc` | 68 | **0** |
+| `test_undefined_structured_raw_read_typed_dxil` | 68 | **0** |
+
+Aucune régression ailleurs. L'écart de conformité réel (hors les 1650 de la section 160)
+passe de 262 à **126**.
+
+### Politique Mesa
+
+`kk_texel_oob_one` et le drapeau `KK_TEXEL_INT_SHIFT` sont sans commentaire. Ce qu'il faudrait
+y écrire : le bit 31 de `texel_count` dit que le format de la vue est entier pur, afin que la
+valeur substituée hors bornes le soit aussi, même si le shader a déclaré un type flottant.
