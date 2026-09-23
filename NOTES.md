@@ -12256,3 +12256,90 @@ série reconstruisait ce qu'on construisait réellement.
 La prudence appliquée jusqu'ici — correctifs 0056 à 0060 écrits sans commentaire — visait une
 soumission en amont qui n'est pas au programme. Pour un dépôt personnel, elle ne s'applique
 pas. Les commentaires manquants sont un coût de lisibilité, pas une contrainte.
+
+---
+
+## 173. Un vrai jeu tourne : Braid, de bout en bout
+
+Premier jeu commercial lancé sur la pile ouverte. Le journal DXVK en atteste :
+
+```
+info:  DXVK: v2.7.1+
+info:  Vulkan: Found vkGetInstanceProcAddr in winevulkan.dll
+info:  Found device: Apple M1 Max (KosmicKrisp 26.2.99)
+info:    Driver   : KosmicKrisp 26.2.99
+```
+
+Braid → DXVK → winevulkan → KosmicKrisp → Metal 4. Jouable.
+
+Six obstacles ont dû tomber, et **aucun ne venait du pilote**.
+
+### 1. Le 32 bits n'existait pas
+
+Wine etait construit `--enable-archs=x86_64` : aucun exécutable PE32 ne pouvait se lancer, pas
+même l'installeur. Reconstruit avec `--enable-archs=i386,x86_64` — le « nouveau WoW64 », seule
+voie sur macOS qui n'a plus aucun runtime 32 bits — dans `wine/wine10-wow64`, séparé de la pile
+existante. DXVK construit en i686 : `d3d8`, `d3d9`, `d3d10core`, `d3d11`, `dxgi`. Préfixe
+`wine/pfx-wow64` avec 829 fichiers dans `syswow64`.
+
+### 2. pkg-config n'était pas sur le PATH de configure
+
+Défaut latent de `etape2_construire_pile.sh` : le `PATH` restreint imposé à `configure`
+(`$BISON:$MINGW:/usr/bin:/bin:/usr/sbin:/sbin`) **ne contient pas `pkg-config`**. Wine ne
+pouvait donc découvrir aucune bibliothèque système. Toute la liste de
+`--without-freetype --without-x --without-gnutls --without-sdl…` n'était pas un choix, c'était
+une conséquence.
+
+Sans polices, **aucun jeu n'aurait affiché de texte**. On l'aurait découvert devant un menu vide.
+
+### 3. dyld ne cherche plus dans /usr/local/lib
+
+Wine construit avec freetype cherche `libfreetype.6.dylib`. Elle est installée, mais dyld ne
+la trouve pas : le chemin de repli par défaut ne contient plus `/usr/local/lib`. Vérifié par un
+`dlopen` depuis un processus x86_64. Réglé par `wine/deps`, qui porte les liens vers freetype
+et libpng, ajouté au `DYLD_LIBRARY_PATH` des lanceurs.
+
+### 4. L'installeur GOG plante
+
+Il meurt sur un appel à pointeur nul — `stack overflow ... addr 0x0` — dans son interface
+propre, aussi bien en mode silencieux qu'au premier clic. Wine qualifie lui-même ce WoW64
+d'`experimental`.
+
+Contourné en construisant **innoextract** dans `build/innoextract` : il déballe l'archive sans
+jamais exécuter l'installeur. Braid extrait, 263 Mo. Vaut pour tous les jeux GOG.
+
+### 5. Le compilateur HLSL de Wine refuse les shaders
+
+```
+err:d3dcompiler:D3DCompile2 Failed to compile shader, vkd3d result -4.
+    <anonymous>:24:11: E5000: syntax error, unexpected '<'
+```
+
+Écran noir : sans shader, rien à dessiner. Ni le pilote, ni DXVK, ni Metal en cause.
+
+### 6. L'override portait à côté
+
+Installer le `D3DCompiler_43.dll` de Microsoft n'a rien changé. La trace de chargement
+explique pourquoi :
+
+```
+d3d9.dll           -> native    (DXVK)
+d3dx9_43.dll       -> builtin   (Wine)
+d3dcompiler_47.dll -> builtin   (Wine)
+```
+
+Le `d3dx9_43` de Wine appelle **`d3dcompiler_47`**, pas le `_43`. Il fallait aussi remplacer
+`d3dx9_43` par celui de Microsoft — présent, comme le compilateur, dans le `__redist/DirectX`
+du jeu lui-même.
+
+`tests/installer_redist.sh` automatise désormais l'extraction de ces `.cab` et l'installation
+dans `syswow64` ; les overrides correspondants sont posés par `etape2_pile_wow64.sh`.
+
+### Ce que ça dit, et ce que ça ne dit pas
+
+La pile tient debout sur un vrai jeu. Mais Braid est en **Direct3D 9** : il valide Wine, DXVK,
+le pilote et Metal, **pas** les chemins D3D11/D3D12 sur lesquels a porté tout le travail de
+conformité de ces sessions. Pour mesurer ce que valent les correctifs 0056 à 0060, il faudra
+un jeu D3D11 ou D3D12.
+
+Rien n'a été mesuré en performance : le jeu a été lancé et joué, pas chronométré.

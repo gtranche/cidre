@@ -19,4 +19,4 @@ exe=$1; shift
 exe=$(cd "$(dirname "$exe")" && pwd)/$(basename "$exe")
 cd "$(dirname "$exe")"
 
-exec "$R/tests/etape2_pile_wine.sh" "$exe" "$@"
+exec "$R/tests/etape2_pile_wow64.sh" "$exe" "$@"

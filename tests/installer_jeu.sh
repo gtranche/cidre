@@ -14,13 +14,13 @@ src=$1
 [ -f "$src" ] || { echo "introuvable : $src" >&2; exit 2; }
 
 nom=${2:-$(basename "$src" .exe | sed 's/^setup_//; s/_[0-9].*$//')}
-pfx=${WINEPREFIX:-$R/wine/pfx10}
+pfx=${WINEPREFIX:-$R/wine/pfx-wow64}
 dst="$pfx/drive_c/Jeux/$nom"
 
-echo "installation de « $nom » dans C:\\Jeux\\$nom"
+printf 'installation de « %s » dans C:\\Jeux\\%s\n' "$nom" "$nom"
 mkdir -p "$(dirname "$dst")"
 
-WINEPREFIX=$pfx "$R/tests/etape2_pile_wine.sh" "$src" \
+WINEPREFIX=$pfx "$R/tests/etape2_pile_wow64.sh" "$src" \
    /VERYSILENT /SUPPRESSMSGBOXES /NOGUI /NORESTART /NOICONS \
    "/DIR=C:\\Jeux\\$nom" || {
       echo "l'installation silencieuse a echoue ; relance sans /VERYSILENT pour voir la fenetre" >&2
