@@ -11907,3 +11907,58 @@ le resserrement de portée ne peut qu'aider un compilateur, mais ce n'est pas ch
 Ce qu'il faudrait y écrire : Metal compile mal une opération de sous-groupe dont le résultat
 est rangé dans une variable déclarée hors de la boucle qui la contient, donc on déclare au
 plus près dès que la portée le permet.
+
+---
+
+## 166. Biais de profondeur selon le format : deux causes, aucune corrigée
+
+`test_depth_bias_formats` échoue 6 fois : deux cas sur neuf, chacun sur ses trois pipelines.
+
+| cas | format | biais | attendu | obtenu |
+|---|---|---|---|---|
+| 0 | D16_UNORM | 0 | rejet | **acceptation** |
+| 4 | D24_UNORM_S8 | 1 | acceptation | **rejet** |
+
+Le test dessine un fragment à profondeur constante `1/64` contre un tampon effacé un ou deux
+crans plus haut, en `GREATER_EQUAL`, sans écriture de profondeur.
+
+### Cas 4 : Apple silicon n'a pas de D24
+
+La table de formats du pilote n'expose que `Z16_UNORM`, `Z32_FLOAT` et
+`Z32_FLOAT_S8X24_UINT`. `DXGI_FORMAT_D24_UNORM_S8_UINT` est donc rendu en profondeur
+**flottante**, où le pas du biais est l'ULP du flottant — à `1/64`, `2⁻²⁹` — au lieu des
+`2⁻²⁴` que D3D attend. Le biais de 1 ne comble pas l'écart, d'où le rejet.
+
+vkd3d sait traiter ce cas : `vkd3d_get_depth_bias_representation` demande
+`VK_DEPTH_BIAS_REPRESENTATION_LEAST_REPRESENTABLE_VALUE_FORCE_UNORM_EXT` pour D16 et D24, via
+`VK_EXT_depth_bias_control`. **Le pilote n'expose pas cette extension** — aucune occurrence
+dans l'arbre. Mais même implémentée, elle ne sauverait pas ce cas : la spécification définit
+FORCE_UNORM sur le nombre de bits de l'**attachement**, soit 32 ici, pas 24. Hors d'atteinte
+sans format D24.
+
+### Cas 0 : l'écart d'une unité D16 se perd
+
+Ce cas ne met aucun biais en jeu. Mesures successives, en forçant la valeur d'effacement dans
+le pilote :
+
+| effacement forcé (D16) | cas 0 | cas 1 | cas 2 |
+|---|---|---|---|
+| valeur du test (`+1` unité) | accepte ✗ | accepte ✓ | rejette ✓ |
+| arrondi au cran supérieur | accepte ✗ | — | — |
+| `0.5` | rejette ✓ | rejette ✗ | rejette ✓ |
+| `1/64 + 3` unités | rejette ✓ | **accepte** ✗ | **accepte** ✗ |
+
+Ce que ça établit :
+
+- le test de profondeur fonctionne (l'effacement à `0.5` rejette tout) ;
+- la valeur d'effacement arrive correcte au pilote (sonde : `0.0156402587890625`), et la
+  pré-quantifier au format ne change rien ;
+- **sans aucun biais, le fragment franchit un écart d'une unité D16 mais pas de trois** ;
+- **avec un biais de 1, il franchit trois unités.**
+
+Donc deux anomalies de précision dans le chemin D16 : un décalage intrinsèque d'une à deux
+unités sur la profondeur du fragment, et un biais qui vaut plus d'une unité. Ni l'une ni
+l'autre n'a été localisée — le calcul ne les explique sous aucune hypothèse de quantification
+(arrondi, troncature, échelle 65535 ou 65536, demi-précision).
+
+**Diagnostic partiel. Rien n'est modifié ; le test reste à 6 échecs.**
