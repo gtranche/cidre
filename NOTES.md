@@ -12154,3 +12154,48 @@ Environ 16 échecs : les statistiques SO de `test_line_tessellation` (2 × 2) et
 mécanisme — les requêtes d'occlusion imbriquées, cf. 163.
 
 **Diagnostic seulement. Rien n'est modifié.**
+
+---
+
+## 171. Statistiques SO : sept hypothèses éliminées, le mur tient
+
+Reprise du mur de la section 170. Toutes les mesures ci-dessous portent sur
+`test_line_tessellation_dxbc`, avec le décalage de capture comme canal d'observation : écrire
+une valeur non nulle dans l'instantané décale la capture et fait exploser le compte d'échecs,
+ce qui rend les variables du noyau observables.
+
+### Le fait central, reconfirmé
+
+`libkk_xfb_account_tess` écrit vers deux pointeurs. Les écritures vers `snapshot` sont vues
+par le **tirage**. Les écritures vers `query` ne sont vues par **aucune dépêche ultérieure**.
+
+### Ce qui a été éliminé, par mesure
+
+| hypothèse | test | verdict |
+|---|---|---|
+| le rassemblement ignore la 2ᵉ requête | valeur 7 forcée à la copie | **faux** : 7+7 = 14 |
+| ordonnancement encodeur/file | barrage de portée file, en plus et à la place | sans effet (et casse tout à la place) |
+| cohérence de cache | `MTL4VisibilityOptionDevice` ajouté aux trois barrages | sans effet |
+| le tampon de compteurs | lecture de l'instantané à la place | **zéro aussi** |
+| la position d'argument | même adresse visée depuis les deux paramètres | zéro dans les deux cas |
+| le noyau ne s'exécute plus | `snapshot[i] = used + 8` | s'exécute (54 échecs) |
+| le bloc conditionnel est sauté | `snapshot[0] = 8` **dans** le bloc | s'exécute (54 échecs) |
+| `total` vaut zéro | `snapshot[i] = total` | **non nul** (56 échecs) |
+| le lecteur précède le tirage | le lecteur écrit 8 dans l'instantané | **non** : capture intacte, donc il suit |
+
+Et, décisif : écrire `33` et `44` **directement dans le rapport de requête** depuis le noyau
+de comptabilité rend zéro également.
+
+### Ce qui reste
+
+Le noyau s'exécute, après la somme préfixe et avant le tirage ; `total` est non nul ; le
+pointeur de requête est non nul ; le bloc s'exécute ; ses écritures vers l'instantané sont
+visibles du tirage ; ses écritures vers le rapport de requête ne sont visibles de rien.
+L'ordonnancement est correct et aucun barrage n'y change quoi que ce soit.
+
+Ces faits ne se recomposent pas. Il manque une pièce que je n'ai pas su trouver.
+
+Tous les essais sont annulés : les correctifs 0058 et 0060 se régénèrent à l'identique, et les
+deux tests sont revenus à 2 échecs.
+
+**Diagnostic seulement. Rien n'est modifié.**
