@@ -12584,3 +12584,44 @@ erreur » étaient cette boîte-là, pas l'erreur Direct3D.
 Outil ajouté pour ne plus se retrouver aveugle devant une fenêtre : `tests/lister_fenetres.c`
 énumère les fenêtres visibles et le texte de leurs contrôles, `tests/cliquer_bouton.c` clique
 un bouton désigné par son texte.
+
+### Ce qui reste, mesuré
+
+Le plantage n'est pas causé par le correctif. La sonde qui journalise chaque page dont on
+retire l'exécution donne des plages qui commencent toutes à `0x26e0000` :
+
+```
+SONDE noexec 0x26e0000-0x27dffff
+SONDE noexec 0x26f0000-0x270afff
+...
+```
+
+Les deux adresses fautives relevées, `0x0124E540` et `0x7bd1cddb`, sont en dehors de toutes
+ces plages. Aucune page dépouillée de son droit d'exécution n'est exécutée.
+
+Après la chaîne d'échange, le jeu se comporte de trois façons selon les essais :
+
+```
+1. sortie silencieuse, code 5, rien dans le journal meme avec le canal err
+2. faute de page, le processus meurt
+3. la fenetre reste, le processus vit a moins de 1 % de processeur
+```
+
+Dans le cas 3, un `sample` de l'hôte montre tous les fils DXVK (`dxvk-submit`, `dxvk-queue`,
+`dxvk-frame`) au repos sur `NtWaitForAlertByThreadId`, le fil principal dans la boucle Cocoa de
+`winemac.drv` — ce qui est normal sur macOS — et un fil Windows bloqué dans
+`NtWaitForMultipleObjects` → `server_wait`. `sample` ne sait pas dérouler une pile PE 32 bits :
+il répète `__wine_syscall_dispatcher`, donc on ne sait pas sur quoi ce fil attend.
+
+Dans le cas 2, le contexte de l'exception est incohérent :
+
+```
+rip=01ddfce07bd1cddb  rsp=0000000001ddfc70  rbp=0000000001ddfc6c
+err:seh:call_seh_handlers invalid frame 0000000001FDF434 (0000000100D02000-0000000100DFFD20)
+```
+
+Le `rip` se lit comme deux moitiés de 32 bits collées : `0x01ddfce0`, une adresse de pile, et
+`0x7bd1cddb`, une adresse dans `kernel32`. Et Wine compare un pointeur de pile 32 bits aux
+bornes d'une pile 64 bits. Les trois comportements et ce contexte pointent vers la frontière
+WoW64, pas vers le pilote : **hypothèse non vérifiée**, rien n'a encore été mesuré du côté de
+la traduction 32 bits.
