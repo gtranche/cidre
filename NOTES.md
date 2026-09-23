@@ -11407,3 +11407,94 @@ suite n'exerce `D3D12_QUERY_TYPE_SO_STATISTICS`, ce qui explique que ça n'ait j
 Le code ajouté dans l'arbre Mesa ne porte **aucun commentaire** : les quatre mots du
 descripteur non indexé sont, dans l'ordre, `vertex_count`, `instance_count`, `vertex_start`,
 `start_instance`. À documenter par l'auteur.
+
+---
+
+## 160. Les 1650 échecs de sous-allocation : une contrainte Metal, pas un défaut
+
+`test_suballocate_small_textures_size` porte **1650 des 1912 échecs D3D12**, soit 86 % de
+l'écart de conformité restant. Un seul test, une seule cause.
+
+Le motif est d'une régularité totale : l'écart vaut **exactement 12288 octets**, quels que
+soient le format, les dimensions et le nombre de couches.
+
+```
+143360 - 131072 = 12288     (BC1 512x256, 2 couches)
+208896 - 196608 = 12288     (3 couches)
+1060864 - 1048576 = 12288   (RGBA8 512x256)
+```
+
+Et uniquement pour `levels == 1` et `layers >= 2` : 110 configurations × 15 valeurs de
+couches = 1650. Au-delà d'un niveau, le test tolère un facteur 2 qui absorbe le surcoût.
+
+### La chaîne, mesurée bout en bout
+
+**Metal exige 16 Ko d'alignement pour les textures en tableau** dès qu'une couche atteint
+16 Ko. Mesuré sur M1 Max, `heapTextureSizeAndAlignWithDescriptor` :
+
+| BC1, 2 couches | taille | align |
+|---|---|---|
+| 128×128 | 16384 | **128** |
+| 256×128 | 32768 | **16384** |
+| 512×256 | 131072 | 16384 |
+
+La bascule tombe à 16 Ko *par couche* — une texture simple reste à 128 octets, un
+`MTLTextureType2DArray` même à une seule couche passe à 16384. Ce n'est pas de la prudence :
+un tas de placement **refuse** la texture aux offsets 4096, 8192 et 12288, et l'accepte à 0 et
+16384. Ni `allowGPUOptimizedContents = NO`, ni `MTLStorageModeShared`, ni aucun drapeau
+d'usage ne change l'alignement.
+
+**Le pilote rapporte la taille serrée.** Sonde dans `kk_get_image_memory_requirements` :
+
+```
+512x256 lvl=1 lay=2 -> size=131072 align=16384
+512x256 lvl=1 lay=3 -> size=196608 align=16384
+```
+
+Aucun surcoût. Les 12288 n'existent pas encore à ce stade.
+
+**C'est vkd3d qui rembourre**, `libs/vkd3d/resource.c:1333` :
+
+```c
+allocation_info->SizeInBytes += allocation_info->Alignment - target_alignment;
+allocation_info->Alignment = target_alignment;
+```
+
+`16384 - 4096 = 12288`. D3D12 n'admet que 4 Ko, 64 Ko ou 4 Mo comme alignement de placement ;
+le test demande `D3D12_SMALL_RESOURCE_PLACEMENT_ALIGNMENT` (4 Ko), et vkd3d rembourre de
+l'écart pour pouvoir réaligner lui-même à l'intérieur de la sous-allocation. Le commentaire du
+code le dit : *« Do not report alignments greater than DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT
+since that might confuse apps. Instead, pad the allocation so that we can align the image
+ourselves. »*
+
+### Rien à corriger
+
+Aucune voie n'existe dans notre pile :
+
+- Annoncer moins que 16384 casserait le placement — Metal refuse, c'est mesuré.
+- `VK_MESA_image_alignment_control`, que vkd3d interroge et que le test mentionne, sert
+  justement à demander un alignement plus faible au pilote. Metal ne peut pas l'accorder.
+- Un tableau en agencement linéaire contournerait l'alignement, mais Metal ne sait adosser à
+  un tampon qu'une texture 2D sans mipmap — pas un tableau.
+- Refuser plutôt que rembourrer (`REJECT_PADDED_SMALL_RESOURCE_ALIGNMENT`) fait retourner
+  `E_INVALIDARG` : le test échoue autrement, pas moins.
+
+Le test se décrit lui-même comme *« A strict test. Should expose any case where a driver is
+pessimizing our allocation patterns. »* Il fait exactement son travail : sur Apple silicon,
+une texture en tableau au-delà de 16 Ko par couche coûte 16 Ko d'alignement. C'est la
+plateforme.
+
+### Ce que ça change pour la mesure
+
+**L'écart de conformité réel n'est pas 1912, il est de 262.** Le reste du classement :
+
+```
+ 136  test_undefined_structured_raw_read_typed (dxbc+dxil)
+  21  test_large_tile_buffer_view
+  16  test_shader_waveop_maximal_convergence
+  12  test_query_heap_cpu_resolve_timestamp
+  20  les statistiques SO (tessellation, cf. 159)
+  …   le reste en miettes
+```
+
+**Diagnostic seulement. Rien n'est modifié.**
