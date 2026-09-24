@@ -14607,3 +14607,76 @@ chaines placee en fin de fichier. Une fois la table lue, 3722 noms sortent.
 
 Dead Cells est retenu : 64 bits, environ 1,5 Go, aucun lanceur d'editeur, usage Steamworks
 simple. Il va droit de `SteamAPI_Init` au rendu, ce qui isole le pont du reste.
+
+## 209. Les signatures se lisent dans le steam_api du jeu
+
+Le paragraphe 208 concluait que les jeux 32 bits etaient hors de portee. C'etait juste sur le
+diagnostic et faux sur la conclusion : il manquait, methode par methode, le nombre d'octets
+empiles. Or le `steam_api.dll` i386 livre avec chaque jeu exporte 1019 symboles, dont des
+centaines d'enveloppes plates **nommees**, une par methode.
+
+```
+SteamAPI_ISteamUser_GetSteamID :
+    mov  0x8(%ebp),%ecx      this
+    lea  -0x8(%ebp),%edx     tampon de retour, 8 octets
+    push %edx                le pointeur cache est empile
+    call *0x8(%eax)          emplacement 2
+    mov  %eax,%edx           la methode rend ce pointeur
+```
+
+Une seule fonction donne le nom, l'interface, l'emplacement, les octets empiles et la taille de
+la structure rendue. `tests/signatures_steam_api.py` le fait pour toutes : **31 interfaces, 421
+methodes**.
+
+### La validation
+
+Confrontation aux emplacements etablis autrement -- par les enveloppes plates du dylib natif et
+par les chaines de version lues dans le binaire :
+
+```
+ISteamClient  CreateSteamPipe 0   ConnectToGlobalUser 2   CreateLocalUser 3
+              ReleaseUser 4       GetISteamUser 5         GetISteamUtils 9
+              GetISteamApps 15
+ISteamUser    GetSteamID 2 (tampon 8)
+ISteamUtils   GetAppID 9
+```
+
+Neuf sur dix concordent ; le dixieme, `BReleaseSteamPipe`, n'est pas contredit mais non analyse.
+Deux resultats emportent la conviction a eux seuls :
+
+- `GetAnalogActionData` : emplacement 15, 20 octets empiles, tampon de **13 octets**. C'est
+  exactement `InputAnalogActionData_t` -- un mode, deux flottants, un booleen.
+- `GetFriendByIndex` : emplacement 4, 12 octets (deux entiers plus le pointeur cache), tampon de
+  8 -- un `CSteamID`.
+
+Rien de tout cela n'a ete devine.
+
+### Ce que ca debloque
+
+Les quatorze methodes a retour par pointeur cache sortent nommees, ce qui remplace la table
+`rendent_structure` que je construisais trace par trace :
+
+```
+ISteamApps GetAppOwner          ISteamFriends GetFriendByIndex, GetClanByIndex, GetCoplayFriend
+ISteamUser GetSteamID           ISteamMatchmaking GetLobbyByIndex
+ISteamGameServer GetSteamID, GetPublicIP, CreateUnauthenticatedUserConnection
+ISteamInput / ISteamController GetAnalogActionData, GetMotionData
+ISteamRemotePlay GetSessionSteamID
+```
+
+Et surtout, les octets empiles rendent le relais i386 possible : un thunk `__stdcall` a N
+arguments depile exactement comme le `__thiscall` attendu. Les jeux 32 bits redeviennent
+atteignables.
+
+### Erreur de recommandation
+
+J'avais propose Dead Cells comme banc d'essai « 64 bits ». Il ne l'est pas :
+
+```
+deadcells.exe   pei-i386
+steam_api.dll   pei-i386
+```
+
+Le telechargement n'est pas perdu -- il devient le banc d'essai du chemin i386 -- mais la
+recommandation etait fausse, et elle reposait sur une supposition au lieu d'une mesure. La regle
+du projet valait aussi pour ce choix-la.
