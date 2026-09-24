@@ -13663,3 +13663,48 @@ l'appelant déréférence l'interface nulle qui en résulte. Cohérent, non dém
 Si c'est bien ça, le chemin critique reste le client Steam Windows de la section 189 — son
 `steam_api64.dll` doit parler à un client par tubes nommés dans le préfixe, et le client macOS
 natif ne peut pas jouer ce rôle.
+
+## 194. Preuve : c'est bien Steamworks, pas la pile
+
+Surviving Mars comme second point de mesure. Le drapeau `steam_dev.cfg` fonctionne aussi sur un
+jeu qui a une version macOS — le client choisit bien le dépôt Windows :
+
+```
+MarsSteam.exe, ModTools/hgimgcvt.exe, ModTools/opusenc.exe
+depots partages 228986-228990 : les redistribuables Steamworks Windows
+```
+
+`MarsSteam.exe` est 64 bits et **Direct3D 11**, là où Elden Ring est D3D12 : deux API
+différentes, deux moteurs différents. Les deux meurent de la même façon :
+
+```
+Elden Ring      lecture a 0x08  dans eldenring.exe + 0x255995D
+Surviving Mars  lecture a 0x20  dans MarsSteam.exe + 0x912B3
+```
+
+Et la trace `+module` donne la cause, sans inférence cette fois :
+
+```
+find_dll_file      Skipping file search for L"steamclient64.dll".
+LdrGetDllHandleEx  L"steamclient64.dll" -> 0000000000000000
+```
+
+`steam_api64.dll` cherche la bibliothèque du client Steam en cours d'exécution et obtient un
+pointeur nul. `SteamAPI_Init` échoue, le jeu déréférence l'interface nulle qui en résulte.
+`d3d11.dll` n'est jamais chargee.
+
+La section 193 avait raison sur le mécanisme, mais le marquait comme non démontré. Il l'est
+maintenant.
+
+### Ce que ça fixe
+
+```
+telecharger un jeu Windows       resolu, section 190
+lancer un jeu Steam              bloque sur l'absence de client Steam Windows
+client Steam Windows             deux murs, section 189
+anti-triche et jeu en ligne      hors d'atteinte, structurel
+```
+
+Et un constat qui vaut d'être dit : **notre pile graphique n'a toujours pas ete mise a
+l'epreuve par un jeu Steam**. Ni Elden Ring ni Surviving Mars n'ont atteint la creation d'un
+peripherique. Tout ce qu'on sait de son comportement sur un vrai jeu vient encore de DREDGE.
