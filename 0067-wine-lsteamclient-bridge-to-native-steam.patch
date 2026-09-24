@@ -1,0 +1,196 @@
+diff --git a/configure.ac b/configure.ac
+index b999e350..97fefac9 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -2761,6 +2768,7 @@ WINE_CONFIG_MAKEFILE(dlls/localspl)
+ WINE_CONFIG_MAKEFILE(dlls/localspl/tests)
+ WINE_CONFIG_MAKEFILE(dlls/localui)
+ WINE_CONFIG_MAKEFILE(dlls/localui/tests)
++WINE_CONFIG_MAKEFILE(dlls/lsteamclient)
+ WINE_CONFIG_MAKEFILE(dlls/lz32)
+ WINE_CONFIG_MAKEFILE(dlls/lz32/tests)
+ WINE_CONFIG_MAKEFILE(dlls/lzexpand.dll16,enable_win16)
+
+diff --git a/dlls/lsteamclient/Makefile.in b/dlls/lsteamclient/Makefile.in
+new file mode 100644
+index 00000000..657deb4c
+--- /dev/null
++++ b/dlls/lsteamclient/Makefile.in
+@@ -0,0 +1,6 @@
++MODULE  = lsteamclient.dll
++UNIXLIB = lsteamclient.so
++
++SOURCES = \
++	main.c \
++	unix.c
+diff --git a/dlls/lsteamclient/lsteamclient.spec b/dlls/lsteamclient/lsteamclient.spec
+new file mode 100644
+index 00000000..778dda34
+--- /dev/null
++++ b/dlls/lsteamclient/lsteamclient.spec
+@@ -0,0 +1 @@
++@ cdecl CreateInterface(str ptr)
+diff --git a/dlls/lsteamclient/main.c b/dlls/lsteamclient/main.c
+new file mode 100644
+index 00000000..6083ff27
+--- /dev/null
++++ b/dlls/lsteamclient/main.c
+@@ -0,0 +1,33 @@
++/*
++ * Cote PE du pont Steamworks : ce que le steam_api du jeu appelle.
++ */
++
++#include <stdarg.h>
++
++#include "windef.h"
++#include "winbase.h"
++#include "wine/debug.h"
++
++#include "unixlib.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(lsteamclient);
++
++BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, void *reserved )
++{
++    if (reason == DLL_PROCESS_ATTACH)
++    {
++        DisableThreadLibraryCalls( inst );
++        if (__wine_init_unix_call()) return FALSE;
++        if (WINE_UNIX_CALL( unix_attach, NULL )) return FALSE;
++    }
++    return TRUE;
++}
++
++void * CDECL CreateInterface( const char *version, int *err )
++{
++    struct create_interface_params params = { version, err, NULL };
++
++    if (WINE_UNIX_CALL( unix_create_interface, &params )) return NULL;
++    TRACE( "%s -> %p\n", debugstr_a(version), params.ret );
++    return params.ret;
++}
+diff --git a/dlls/lsteamclient/unix.c b/dlls/lsteamclient/unix.c
+new file mode 100644
+index 00000000..34531df2
+--- /dev/null
++++ b/dlls/lsteamclient/unix.c
+@@ -0,0 +1,86 @@
++/*
++ * Cote unix du pont Steamworks : charge le steamclient.dylib du client Steam
++ * natif et lui demande ses interfaces.
++ */
++
++#if 0
++#pragma makedep unix
++#endif
++
++#include "config.h"
++
++#include <dlfcn.h>
++#include <stdarg.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include "ntstatus.h"
++#define WIN32_NO_STATUS
++#include "windef.h"
++#include "winbase.h"
++#include "winternl.h"
++#include "wine/debug.h"
++
++#include "unixlib.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(lsteamclient);
++
++typedef void *(*create_interface_t)( const char *version, int *err );
++
++static void *steamclient;
++static create_interface_t p_CreateInterface;
++
++static const char *chemins[] =
++{
++    "%s/Library/Application Support/Steam/Steam.AppBundle/Steam/Contents/MacOS/steamclient.dylib",
++    "%s/Library/Application Support/Steam/steamclient.dylib",
++};
++
++static NTSTATUS attach( void *args )
++{
++    const char *home = getenv( "HOME" );
++    char chemin[1024];
++    unsigned int i;
++
++    if (steamclient) return STATUS_SUCCESS;
++    if (!home) return STATUS_DLL_NOT_FOUND;
++
++    for (i = 0; i < ARRAY_SIZE(chemins); i++)
++    {
++        snprintf( chemin, sizeof(chemin), chemins[i], home );
++        if ((steamclient = dlopen( chemin, RTLD_NOW | RTLD_LOCAL ))) break;
++        TRACE( "%s : %s\n", chemin, dlerror() );
++    }
++    if (!steamclient)
++    {
++        ERR( "steamclient.dylib introuvable\n" );
++        return STATUS_DLL_NOT_FOUND;
++    }
++
++    if (!(p_CreateInterface = dlsym( steamclient, "CreateInterface" )))
++    {
++        ERR( "CreateInterface absent de steamclient.dylib\n" );
++        return STATUS_ENTRYPOINT_NOT_FOUND;
++    }
++
++    TRACE( "steamclient.dylib charge, CreateInterface a %p\n", p_CreateInterface );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS create_interface( void *args )
++{
++    struct create_interface_params *params = args;
++
++    if (!p_CreateInterface) return STATUS_DLL_NOT_FOUND;
++    params->ret = p_CreateInterface( params->version, params->err );
++    TRACE( "%s -> %p\n", debugstr_a(params->version), params->ret );
++    return STATUS_SUCCESS;
++}
++
++const unixlib_entry_t __wine_unix_call_funcs[] =
++{
++    attach,
++    create_interface,
++};
++
++C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );
+diff --git a/dlls/lsteamclient/unixlib.h b/dlls/lsteamclient/unixlib.h
+new file mode 100644
+index 00000000..417a294b
+--- /dev/null
++++ b/dlls/lsteamclient/unixlib.h
+@@ -0,0 +1,27 @@
++/*
++ * Pont Steamworks : interface entre le cote PE et le cote unix.
++ */
++
++#ifndef __WINE_LSTEAMCLIENT_UNIXLIB_H
++#define __WINE_LSTEAMCLIENT_UNIXLIB_H
++
++#include <stdarg.h>
++#include "windef.h"
++#include "winbase.h"
++#include "wine/unixlib.h"
++
++struct create_interface_params
++{
++    const char *version;
++    int        *err;
++    void       *ret;
++};
++
++enum lsteamclient_funcs
++{
++    unix_attach,
++    unix_create_interface,
++    unix_funcs_count
++};
++
++#endif

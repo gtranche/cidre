@@ -18,7 +18,7 @@ serie_wine() {
    ls "$R"/0028-*.patch "$R"/0035-*.patch "$R"/0036-*.patch \
       "$R"/0038-*.patch "$R"/0040-*.patch "$R"/0041-*.patch \
       "$R"/0062-*.patch "$R"/0064-*.patch "$R"/0065-*.patch \
-      "$R"/0066-*.patch 2>/dev/null
+      "$R"/0066-*.patch "$R"/0067-*.patch 2>/dev/null
 }
 
 serie_wine11() {

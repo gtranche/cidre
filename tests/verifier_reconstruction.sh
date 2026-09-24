@@ -35,6 +35,13 @@ verifier() {
    # Les correctifs creent des fichiers, suivis ou non selon les arbres. Pour
    # comparer la meme chose des deux cotes, on indexe tout — l'arbre de travail
    # dans un index temporaire, pour ne jamais toucher le sien.
+   # Meme regeneration que dans etape1, sinon la comparaison porterait sur un
+   # configure produit d'un cote et pas de l'autre.
+   if git -C "$dst" diff --name-only | grep -qx "configure.ac"; then
+      (cd "$dst" && autoconf -f >/dev/null 2>&1; rm -rf configure~ autom4te.cache)
+   fi
+   find "$dst" -name '*.orig' -delete 2>/dev/null
+
    git -C "$dst" add -A >/dev/null 2>&1
    git -C "$dst" diff HEAD > "$TMP/$arbre.attendu"
 

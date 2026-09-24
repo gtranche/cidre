@@ -13867,3 +13867,66 @@ au lieu d'un `.so`, et ce qui reste de specifique a Linux.
 
 C'est un chantier consequent, mais c'est **le seul chemin qui rende les jeux Steam jouables
 sans faire tomber l'ecran noir** — un mur contre lequel six tentatives ont echoue aujourd'hui.
+
+## 198. Le pont vers le Steam natif fonctionne
+
+Premier pas de l'architecture de la section 197, et il tient.
+
+### Ce qui est démontré
+
+Une sonde x86_64 native, donc traduite par Rosetta, charge le `steamclient.dylib` du client
+macOS et obtient ses interfaces :
+
+```
+dlopen : ok    CreateInterface : trouve
+SteamClient021 -> 0x10d5a6188 (err=0)
+SteamClient020 -> 0x10d5a6180 (err=0)
+SteamClient019 -> 0x10d5a6178 (err=0)
+SteamClient017 -> 0x10d5a6168 (err=0)
+```
+
+Puis la meme chose **depuis l'interieur de Wine**, a travers un unixlib :
+`0067-wine-lsteamclient-bridge-to-native-steam.patch` ajoute `dlls/lsteamclient`, un module
+Wine dont le cote PE appelle `__wine_unix_call` et dont le cote unix charge le dylib natif.
+
+```
+0158:trace:lsteamclient:CreateInterface "SteamClient021" -> 0000000214799188
+  SteamClient021 -> 0000000214799188 (err=0)
+  SteamClient020 -> 0000000214799180 (err=0)
+  SteamClient017 -> 0000000214799168 (err=0)
+```
+
+Un programme Windows dans Wine tient des pointeurs d'interface du client Steam **natif de
+macOS**. C'est le transport du pont de Proton, en etat de marche.
+
+### Ce que ca ne demontre pas
+
+Les pointeurs rendus designent des objets C++ **natifs**, dont les tables de methodes suivent
+l'ABI System V. Le jeu Windows, lui, appellera ces methodes selon l'ABI Microsoft x64 : ordre
+des registres different, convention de pile differente. C'est precisement ce que le
+`lsteamclient` de Proton resout, en generant un thunk pour chaque methode de chaque version
+d'interface — l'essentiel de ses cent mille lignes.
+
+Autrement dit : **la plomberie est faite, le travail reste entier**. Mais le risque principal
+— que le dylib soit inaccessible, ou incompatible avec un processus traduit — est leve.
+
+### Deux pieges du systeme de construction, pour la prochaine fois
+
+`makedep` ne devine pas quel fichier appartient au cote unix : il faut le marquer dans la source
+elle-meme.
+
+```c
+#if 0
+#pragma makedep unix
+#endif
+```
+
+Sans ce pragma, la source unix est compilee par le compilateur PE, qui n'a pas `dlfcn.h`.
+
+Et reconfigurer Wine demande l'environnement exact d'origine : `bison` recent en tete de `PATH`,
+`/usr/local/bin` pour que `pkg-config` soit trouve — sans quoi `configure` ne voit plus
+FreeType — et les `CPPFLAGS`/`LDFLAGS` pointant sur les prefixes du projet. L'invocation
+complete est dans `build/wine-wow64/config.log`.
+
+`configure` etant genere, il n'est pas versionne dans le correctif : `etape1` et le
+verificateur le refont par `autoconf`, mais seulement si la serie a touche `configure.ac`.
