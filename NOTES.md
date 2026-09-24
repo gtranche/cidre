@@ -13930,3 +13930,55 @@ complete est dans `build/wine-wow64/config.log`.
 
 `configure` etant genere, il n'est pas versionne dans le correctif : `etape1` et le
 verificateur le refont par `autoconf`, mais seulement si la serie a touche `configure.ac`.
+
+## 199. Un appel de methode traverse : le pont dialogue avec le client natif
+
+Le jalon annonce en section 198 : une seule methode, ecrite a la main, pour savoir si l'ABI se
+franchit.
+
+`ISteamClient::CreateSteamPipe` occupe le premier emplacement de la table de methodes. Le cote
+unix lit la table de l'objet natif et appelle directement :
+
+```c
+table = *(methode_t **)params->iface;
+params->ret = table[0]( params->iface );
+```
+
+Client macOS **arrete** :
+
+```
+iface 0x214799188, table 0x2146e5940, emplacement 0 = 0x21363c6ac
+CreateSteamPipe -> 0
+```
+
+La table est lue, le pointeur de fonction est valide, l'appel s'execute sans planter et rend
+proprement. Le zero vient de l'absence de client : il n'y a pas de tuyau a ouvrir.
+
+Client macOS **lance** :
+
+```
+SteamClient021 : CreateSteamPipe -> 1 (tuyau valide)
+SteamClient020 : CreateSteamPipe -> 2 (tuyau valide)
+SteamClient017 : CreateSteamPipe -> 3 (tuyau valide)
+```
+
+Trois tuyaux successifs, numerotes 1, 2, 3 : le client natif alloue de vraies ressources et
+tient son etat d'un appel a l'autre. **Un programme Windows tournant dans Wine dialogue avec le
+client Steam natif de macOS.**
+
+### Pourquoi ca marche du premier coup
+
+Sur l'ABI Itanium que suit clang, l'appel d'une methode virtuelle passe `this` dans le premier
+registre d'argument — exactement ce que fait une fonction C a un parametre. Le cote unix etant
+compile en System V x86_64, comme le dylib, l'appel se fait sans traduction.
+
+### Ce qu'il reste, et ou se trouve la vraie difficulte
+
+Ici c'est notre code PE qui appelle, avec une signature que nous choisissons. Un jeu appellera
+les methodes de l'objet **qu'il croit Windows**, en ABI Microsoft x64 : quatre registres
+d'arguments au lieu de six, espace de sauvegarde sur la pile, conventions differentes pour les
+structures rendues. Le `lsteamclient` de Proton resout cela en fabriquant, cote PE, un objet
+dont chaque emplacement de table est un thunk qui retraduit l'appel vers l'objet natif.
+
+C'est la partie generee, et elle couvre des centaines de methodes sur des dizaines de versions
+d'interfaces. Mais on sait desormais que le chemin existe et que le client repond.
