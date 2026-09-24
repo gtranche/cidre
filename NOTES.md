@@ -13818,3 +13818,52 @@ WSALookupServiceBegin rendant une recherche vide (0065)               supprime s
                                                                       pas celle de l'auth
 command_line_args_disabled neutralise dans libcef.dll                  sans effet, annule
 ```
+
+## 197. La bonne architecture existe, et ce n'est pas celle qu'on poursuivait
+
+Question de l'auteur : Kaon n'aurait-il pas la solution ? Non — mais il nomme la bonne.
+
+### Ce que Kaon fait, et ne fait pas
+
+Leur README est explicite :
+
+> « Once (if?) a functioning macOS-aware Wine `lsteamclient.dll` based on Proton's Linux
+> `lsteamclient` is built... it should be possible to install it as a SteamWorks client API
+> bridge within CrossOver to prevent the Windows Steam client from needing to be launched,
+> visible, or even (possibly) installed. »
+
+C'est leur objectif, pas leur implementation. Aujourd'hui Kaon exige le client Steam Windows,
+et celui-ci tourne chez eux parce qu'ils emploient **CrossOver**, dont le Wine porte 133
+correctifs quand le notre en porte dix. Le repertoire `lsteamclient/` de leur depot est une
+copie de l'arbre Proton, pas un portage.
+
+### Pourquoi c'est la bonne architecture
+
+`lsteamclient` est le mecanisme de Proton : le `steam_api64.dll` du jeu cherche
+`steamclient64.dll`, et Proton lui substitue un pont qui parle au client Steam **natif**. Sur
+macOS, cela rendrait notre ecran noir sans objet : plus besoin du client Windows du tout.
+
+### Les conditions de faisabilite, verifiees
+
+```
+steamclient.dylib du client macOS : binaire universel x86_64 + arm64
+symbole exporte                   : _CreateInterface
+```
+
+La tranche x86_64 est chargeable par notre Wine, qui tourne lui-meme en x86_64 sous Rosetta. Et
+`CreateInterface` est exactement le point d'entree qu'utilise le pont de Proton.
+
+Le point decisif est ailleurs : le pont relie du **Windows x64** a du **System V x86_64**.
+Notre cote unix etant x86_64 macOS, c'est **la meme ABI que Linux**. Les thunks generes par
+`gen_wrapper.py` devraient donc se transposer presque directement, la ou un portage vers un
+Wine arm64 natif aurait demande de tout regenerer.
+
+### Ce que ca coute, honnetement
+
+Le `lsteamclient` de Proton fait de l'ordre de cent mille lignes de code genere, couvrant des
+centaines de methodes sur de nombreuses versions d'interfaces. Le generateur existe et lit les
+en-tetes du SDK Steamworks. Les differences a traiter : le chargement par `dlopen` d'un dylib
+au lieu d'un `.so`, et ce qui reste de specifique a Linux.
+
+C'est un chantier consequent, mais c'est **le seul chemin qui rende les jeux Steam jouables
+sans faire tomber l'ecran noir** — un mur contre lequel six tentatives ont echoue aujourd'hui.
