@@ -14118,10 +14118,20 @@ Carte obtenue, entierement mesuree :
 3  ConnectToGlobalUser
 ```
 
-L'ordre public du SDK place `ConnectToGlobalUser` en 2. Ici, l'emplacement 2 est
-`CreateGlobalUser`. Avoir devine aurait ouvert une session au lieu d'en rejoindre une, sur le
-compte vivant de l'utilisateur. La regle « aucun chiffre qui ne vienne d'une mesure » a paye
-directement.
+**Correction.** J'ai d'abord ecrit que cette carte contredisait le SDK, et qu'avoir devine
+aurait ouvert une session au lieu d'en rejoindre une. C'est un pas de trop. Cette carte est
+celle de la table indexee par les enveloppes plates, c'est-a-dire de l'objet que leur accesseur
+commun (`0x9c18a9`) rend. **Rien ne prouve que ce soit la meme table que celle de l'objet rendu
+par `CreateInterface`.** Les indices vont meme dans l'autre sens : la carte mesuree est
+exactement l'ordre public avec `CreateGlobalUser` insere en 2 et un trou en 5, ce qui est la
+signature d'une interface interne plus riche que la publique. Et sur l'objet de
+`CreateInterface`, les emplacements 0 et 1 que nous avons reellement appeles concordent avec
+l'ordre public.
+
+Conclusion honnete : les sept emplacements sont mesures, mais ils decrivent probablement
+l'interface interne de Valve, pas les adaptateurs `SteamClient0NN` que recoit un jeu. Pour ces
+derniers, l'ordre du SDK est vraisemblablement le bon. La question se tranchera en confrontant
+les deux, pas en raisonnant.
 
 Le decalage de chargement se verifie : `0x214031598 - 0x1181598 = 0x212eb0000`, et
 `0x21387681b - 0x212eb0000 = 0x9c681b`, qui est bien `_Steam_BGetCallback` dans le fichier.
