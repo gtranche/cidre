@@ -12782,3 +12782,66 @@ Titres vérifiés sur PCGamingWiki, colonne `Executable` :
 
 Le catalogue indépendant est massivement 32 bits ; le 64 bits se trouve surtout côté gros
 titres. `tests/decrire_jeu.py` tranche en une commande sur un répertoire de jeu extrait.
+
+## 178. Écrire dans une page exécutable casse la bascule de mode — cas minimal et correctif
+
+La section 177 savait *quoi* : du code 64 bits décodé en 32 bits. Elle ne savait pas *quand*.
+Trois sondes pour le trouver, dont deux négatives.
+
+```
+200 fautes de page rattrapees, puis des appels systeme   -> aucun plantage
+16 fils fautant en parallele, 7 minutes                  -> aucun plantage
+du code genere a l'execution qui appelle Sleep()         -> plante au 3e appel
+```
+
+`tests/sonde_jit_wow64.c` fait quarante lignes : écrire `push 0 ; mov eax,<Sleep> ; call eax ;
+ret` dans une page `PAGE_EXECUTE_READWRITE`, appeler. La faute est identique à celle de DREDGE,
+octet pour octet :
+
+```
+eip=7bcc12a0  info[1]=00008E6A  cs=0107
+```
+
+### Ce n'est pas le contenu, c'est l'écriture
+
+```
+ecrit une fois, appele 3000 fois            -> ok
+reecrit avant chaque appel, page RWX        -> plante au 3e appel
+reecrit avec bascule W^X (RW, ecrire, RX)   -> ok, 2000 tours
+```
+
+Les octets écrits sont **identiques** à chaque tour. Le contenu ne change pas, donc ce n'est pas
+une invalidation de cache de traduction : c'est le fait d'écrire dans une page qui est en même
+temps inscriptible et exécutable qui laisse Rosetta dans un état incohérent.
+
+Hypothèse testée et écartée au passage : faire remonter `NtFlushInstructionCache` vers
+`sys_icache_invalidate` au lieu du `/* no-op */` que Wine met sur x86. Aucun effet. Retiré du
+correctif — un coût sans bénéfice mesuré.
+
+### Le correctif
+
+`0063-wine-rosetta-no-write-and-exec-on-the-same-page.patch` : deux `#if`. La machinerie
+existait déjà, écrite pour arm64 par le correctif 0036 — `VPROT_WXFLIP`, la page projetée soit
+inscriptible soit exécutable, et la bascule sur faute. Elle était simplement compilée hors de ce
+Wine, construit en x86_64. Elle vaut aussi sous Rosetta, pour une autre raison : là le noyau
+accepte RWX, mais le traducteur ne le supporte pas.
+
+### Effet mesuré
+
+```
+sonde JIT, page RWX  : plantait au 3e appel  ->  2000 tours sans plantage
+DREDGE               : mourait dans mono_jit_init, DXVK jamais charge
+                       ->  Unity demarre, et pour la premiere fois un vrai jeu
+                           atteint notre couche D3D11 :
+                             Direct3D 11.0 [level 11.1]
+                             Renderer: Apple M1 Max (ID=0x64)
+                             VRAM: 3072 MB
+                           puis meurt plus loin, sur ReloadAssembly
+Grimrock             : inchange -- son declencheur est autre
+Braid                : pas de regression, la fenetre s'ouvre
+```
+
+DREDGE ne va donc pas encore au bout, mais il est passé de « meurt avant tout graphisme » à
+« crée un périphérique Direct3D 11 de niveau 11.1 ». La faute restante a la même signature de
+registres collés, à une autre adresse (`kernel32+0x1DCDDB`, faute d'exécution) : il reste au
+moins un second déclencheur de la même bascule ratée.

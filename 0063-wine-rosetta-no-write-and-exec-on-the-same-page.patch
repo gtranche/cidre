@@ -1,0 +1,26 @@
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -1152,9 +1152,11 @@
+         if (vprot & VPROT_EXEC) prot |= PROT_EXEC | PROT_READ;
+         if (vprot & VPROT_WRITEWATCH) prot &= ~PROT_WRITE;
+     }
+-#if defined(__aarch64__) && defined(__APPLE__)
+-    /* macOS on arm64 refuses write and exec on the same page; map one of the two
+-     * and switch to the other one when a fault says it is needed. */
++#if defined(__APPLE__)
++    /* macOS on arm64 refuses write and exec on the same page. Under Rosetta the
++     * kernel allows it, but writing to a page that is also executable leaves the
++     * translator in an inconsistent state, so keep the two apart there as well:
++     * map one of them and switch to the other when a fault says it is needed. */
+     if ((prot & PROT_WRITE) && (prot & PROT_EXEC))
+     {
+         if (vprot & VPROT_WXFLIP) prot &= ~PROT_WRITE;
+@@ -4072,7 +4074,7 @@
+     }
+ #endif
+ 
+-#if defined(__aarch64__) && defined(__APPLE__)
++#if defined(__APPLE__)
+     if ((vprot & VPROT_COMMITTED) && is_vprot_exec_write( vprot ))
+     {
+         BYTE set = 0, clear = 0;
