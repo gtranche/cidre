@@ -14561,3 +14561,49 @@ surcouche d'editeur dirait bien plus sur l'etat reel du pont.
 Le journal du jeu contient des octets bruts, si bien que `grep` le classe « binaire » et
 n'affiche rien -- ce qui m'a fait croire deux fois de suite a une absence d'appels. `grep -a`
 est obligatoire sur ces traces.
+
+## 208. Le mur des jeux 32 bits
+
+DREDGE, achete sur Steam, est 32 bits comme sa version GOG :
+
+```
+DREDGE.exe                              pei-i386
+DREDGE_Data/Plugins/x86/steam_api.dll   pei-i386
+```
+
+Ce n'est pas un reglage a trouver, c'est une impasse de structure.
+
+### Pourquoi le relais generique ne peut pas marcher en 32 bits
+
+`steamclient.dylib` n'existe qu'en `x86_64` et `arm64` -- macOS a supprime i386. Un jeu 32 bits
+appelle donc notre pont i386, qui passe par l'unixlib **64 bits**, comme le veut le nouveau
+WoW64 de Wine.
+
+Or un appel de methode virtuelle MSVC en i386 se fait en `__thiscall` : « this » dans ECX,
+arguments sur la pile, et **c'est l'appele qui depile**. Notre thunk doit donc retirer exactement
+le bon nombre d'octets, ce qui suppose de connaitre la signature de chaque methode. En x86_64 la
+question ne se pose pas : l'appelant nettoie, et six registres suffisent -- c'est pourquoi tout
+a fonctionne avec Surviving Mars.
+
+Il existerait une echappatoire si les deux cotes etaient de meme largeur : un thunk assembleur
+qui remplace ECX par l'objet natif et saute directement dans la table native, sans toucher a la
+pile. L'appele natif depilerait lui-meme, correctement, sans qu'on sache rien de l'arite. Mais
+le natif est en 64 bits : ce saut est impossible.
+
+On pourrait deduire l'arite du desassemblage natif, en relevant quels registres d'argument une
+methode lit avant de les ecrire. Insuffisant : sur i386 un entier de huit octets occupe deux
+mots de pile, un flottant aussi, et le nombre de registres lus cote System V ne donne pas le
+nombre d'octets empiles cote i386. Il faudrait les types, donc les signatures -- ce que Proton
+tire du SDK et qu'on s'est interdit.
+
+Conclusion : **les jeux 32 bits sont hors de portee de cette approche.** C'est une limite a
+annoncer, pas un defaut a corriger.
+
+### Choix du banc d'essai
+
+La bibliotheque de l'utilisateur compte 196 titres. Les noms ne se lisent pas directement dans
+`appinfo.vdf` : depuis la version 0x29 les cles du VDF binaire sont des index vers une table de
+chaines placee en fin de fichier. Une fois la table lue, 3722 noms sortent.
+
+Dead Cells est retenu : 64 bits, environ 1,5 Go, aucun lanceur d'editeur, usage Steamworks
+simple. Il va droit de `SteamAPI_Init` au rendu, ce qui isole le pont du reste.
