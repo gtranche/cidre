@@ -1,0 +1,38 @@
+diff --git a/dlls/ws2_32/protocol.c b/dlls/ws2_32/protocol.c
+index 0b123136..610191bf 100644
+--- a/dlls/ws2_32/protocol.c
++++ b/dlls/ws2_32/protocol.c
+@@ -2067,8 +2067,13 @@ int WINAPI WSAGetServiceClassNameByClassIdW( GUID *class, WCHAR *service, DWORD
+ int WINAPI WSALookupServiceBeginA( WSAQUERYSETA *query, DWORD flags, HANDLE *lookup )
+ {
+     FIXME( "(%p %#lx %p) Stub!\n", query, flags, lookup );
+-    SetLastError( WSA_NOT_ENOUGH_MEMORY );
+-    return -1;
++    if (!lookup)
++    {
++        SetLastError( WSAEFAULT );
++        return -1;
++    }
++    *lookup = (HANDLE)(ULONG_PTR)0x1;
++    return 0;
+ }
+ 
+ 
+@@ -2077,9 +2082,14 @@ int WINAPI WSALookupServiceBeginA( WSAQUERYSETA *query, DWORD flags, HANDLE *loo
+  */
+ int WINAPI WSALookupServiceBeginW( WSAQUERYSETW *query, DWORD flags, HANDLE *lookup )
+ {
+-    FIXME( "(%p %#lx %p) Stub!\n", query, flags, lookup );
+-    SetLastError( WSA_NOT_ENOUGH_MEMORY );
+-    return -1;
++    FIXME( "(%p %#lx %p) Stub, returning an empty lookup.\n", query, flags, lookup );
++    if (!lookup)
++    {
++        SetLastError( WSAEFAULT );
++        return -1;
++    }
++    *lookup = (HANDLE)(ULONG_PTR)0x1;
++    return 0;
+ }
+ 
+ 

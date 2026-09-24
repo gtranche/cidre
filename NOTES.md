@@ -13520,3 +13520,49 @@ jeu sans DRM Steam ni anti-triche   -> devrait marcher des maintenant
 jeu avec DRM Steam                  -> exige le client Windows, donc l'ecran noir de la 189
 jeu avec anti-triche                -> hors d'atteinte
 ```
+
+## 191. Le client Steam Windows : un trou bouché, deux murs debout
+
+Si le client Windows fonctionne, il fait tout — installer, lancer, fournir Steamworks. Les
+points 2 et 4 de l'architecture Kaon disparaissent : plus d'image disque bidon, plus d'édition
+de `libraryfolders.vdf`, plus d'éditeur de métadonnées. Il devient donc le chemin critique
+unique, et c'est la remarque de l'auteur qui l'a mise en évidence.
+
+### Ce qui a été bouché
+
+`WSALookupServiceBeginW` est un stub qui rend `WSA_NOT_ENOUGH_MEMORY`. Chromium s'en sert pour
+surveiller l'état du réseau, et le journalisait :
+
+```
+ERROR:network_change_notifier_win.cc(268)] WSALookupServiceBegin failed with: 8
+```
+
+`0065-wine-wsalookupservice-empty-lookup.patch` lui fait rendre une recherche vide plutôt
+qu'une erreur. Mesuré : l'erreur disparaît complètement du journal.
+
+**Mais l'authentification échoue toujours**, sur la même erreur `10045` (`WSAEOPNOTSUPP`).
+C'était un vrai trou, ce n'était pas le bon.
+
+### Les deux murs restants
+
+```
+processus GPU de CEF   exit_code=-2147483645 (STATUS_BREAKPOINT), en boucle
+                       -cef-disable-gpu, -cef-disable-gpu-compositing et
+                       -cef-in-process-gpu passent bien sur la ligne de commande
+                       du webhelper -- verifie -- et ne changent rien
+reseau                 Unknown error 10045 mapped to net::ERR_FAILED
+                       "Failed to start auth session: Connection failed"
+```
+
+Le webhelper est **64 bits**, donc pas notre chemin 32 bits neuf : cette piste est écartée.
+Trois sites dans `ws2_32` peuvent rendre `WSAEOPNOTSUPP` — un `WSAIoctl` non implémenté, un
+`h_errno` inconnu en résolution DNS, un `getsockopt` sur socket non-flux. Aucun n'apparaît dans
+la trace `warn+winsock`, donc l'erreur vient d'ailleurs : probablement de
+`STATUS_NOT_SUPPORTED` ou `STATUS_NOT_IMPLEMENTED` remonte du serveur Wine, que la table de
+conversion mappe sur `WSAEOPNOTSUPP`. Non identifie.
+
+### Sur l'anti-triche
+
+Le jeu tourne en ligne sur Steam Deck parce qu'Epic fournit un Easy Anti-Cheat **natif Linux**
+que Valve intègre à Proton. Il n'existe pas d'équivalent macOS. Le jeu en ligne est donc hors
+d'atteinte, et aucun travail sur cette pile n'y changera rien. Reste le solo.
