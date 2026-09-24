@@ -14157,3 +14157,103 @@ Aller plus loin demande l'ordre complet de la table. Trois voies :
 
 La table de decouverte a 64 emplacements est en place dans le correctif : les emplacements
 inconnus journalisent et rendent zero, au lieu de sauter n'importe ou dans le client.
+
+## 202. La table se lit dans le binaire, sans le SDK
+
+Le SDK Steamworks est ecarte : ses en-tetes ne sont pas redistribuables, et un `lsteamclient`
+qui en derive ne pourrait pas etre publie sous licence libre. Il fallait donc obtenir l'ordre
+des methodes autrement. C'est fait, et entierement par la mesure.
+
+### Pourquoi la premiere tentative avait echoue
+
+J'avais desassemble 16 Mo d'un coup, en balayage lineaire. Un desassembleur qui part d'une
+adresse arbitraire se desynchronise et produit des instructions qui n'existent pas ; mes
+« cibles de thunks » etaient du bruit. La correction est de decoder les octets soi-meme, a
+partir d'adresses connues. La correspondance adresse virtuelle / position dans le fichier se
+verifie d'abord :
+
+```
+octets a 0x626be3 : 55 48 89 e5 e8 bd ac 39
+                    push %rbp ; mov %rsp,%rbp ; callq   -> _Steam_CreateSteamPipe
+```
+
+### Les entrees sont les vraies fonctions
+
+1613 entrees de table commencent par `push %rbp` : ce ne sont pas des thunks d'ajustement mais
+les methodes elles-memes, compilees une fois par version d'interface. Aucune adresse n'est donc
+partagee entre versions, et aligner par adresse etait voue a l'echec.
+
+### Le chainon : l'accesseur commun
+
+Chaque methode d'adaptateur releve du meme accesseur que les enveloppes plates :
+
+```
+CSteamClient021 emplacement 0 :        _Steam_CreateSteamPipe :
+  callq 0x9c18a9                         callq 0x9c18a9
+  movq (%rax), %rcx                      movq (%rax), %rcx
+  jmpq *(%rcx)                           jmpq *(%rcx)
+```
+
+Identiques. L'emplacement public se relie donc a l'emplacement interne, et les sept enveloppes
+plates nommees au paragraphe precedent donnent leurs noms.
+
+### Les noms sont ecrits en clair
+
+Les `GetISteamXxx` ont tous la meme forme : ils chargent une chaine constante -- le nom de la
+famille d'interface -- et sautent dans un repartiteur commun.
+
+```
+emplacement 5 :  leaq 0xf34dbf(%rip), %rax   ## -> "User"
+emplacement 6 :  leaq 0xf0fe95(%rip), %rax   ## -> "GameServer"
+emplacement 9 :  leaq 0xf1157c(%rip), %rcx   ## -> "Utils"   (avec xorl %edi,%edi : pas d'utilisateur)
+```
+
+Le binaire se nomme lui-meme. Aucun en-tete n'est necessaire.
+
+### Carte d'ISteamClient021 (40 methodes)
+
+`m` = nom mesure (chaine du binaire, ou enveloppe plate). `p` = deduit de la position seule.
+
+```
+ 0 m CreateSteamPipe          20 p RunFrame            (interne 19)
+ 1 m BReleaseSteamPipe        21 p GetIPCCallCount     (interne 26)
+ 2 m ConnectToGlobalUser      22 p SetWarningMessageHook (interne 26)
+ 3 m CreateLocalUser          23 p BShutdownIfAllPipesClosed (interne 49)
+ 4 m ReleaseUser              24 m GetISteamHTTP
+ 5 m GetISteamUser            25 m GetISteamController
+ 6 m GetISteamGameServer      26 m GetISteamUGC
+ 7 p SetLocalIPBinding        27 m GetISteamMusic
+       (interne 11)           28 m GetISteamMusicRemote
+ 8 m GetISteamFriends         29 m GetISteamHTMLSurface
+ 9 m GetISteamUtils           30 ?
+10 m GetISteamMatchmaking     31 ?
+11 m GetISteamMatchmakingServers  32 ? (interne 68)
+12 m GetISteamGenericInterface 33 m GetISteamInventory
+13 m GetISteamUserStats       34 m GetISteamVideo
+14 m GetISteamGameServerStats 35 m GetISteamParentalSettings
+15 m GetISteamApps            36 m GetISteamController (2e fois)
+16 m GetISteamNetworking      37 m GetISteamParties
+17 m GetISteamRemoteStorage   38 m GetISteamRemotePlay
+18 m GetISteamScreenshots     39 ?
+19 m GetISteamGameSearch
+```
+
+Deux reserves honnetes. Les entrees `p` sont deduites de la position, pas nommees par le
+binaire : elles restent a confirmer. Et « Controller » apparait a deux emplacements (25 et 36) :
+la chaine nomme la famille, pas l'interface exacte ; l'un des deux est vraisemblablement
+`GetISteamInput`, mais je ne l'ai pas etabli.
+
+### Le plus utile de tous : l'emplacement 12
+
+```
+emplacement 12 :  movl %esi,%edi ; movl %edx,%esi ; movq %rcx,%rdx ; xorl %ecx,%ecx ; jmp repartiteur
+```
+
+Meme repartiteur que les `GetISteamXxx`, mais le nom attendu est **nul** : le repartiteur prend
+alors celui que l'appelant fournit. C'est `GetISteamGenericInterface(utilisateur, tuyau,
+version)`. Avec cette seule methode, le pont atteint n'importe quelle interface Steamworks par
+son nom, sans connaitre aucun autre emplacement.
+
+L'ordre mesure coincide avec l'ordre publie du SDK partout ou les deux sont connus. La
+correction du paragraphe precedent est donc confirmee : la carte a sept entrees relevee alors
+decrivait bien l'interface interne de Valve, pas l'adaptateur que recoit un jeu.
