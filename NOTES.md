@@ -13252,3 +13252,69 @@ une attente. Non exploré.
 Un chiffre reste inexpliqué : la charge GPU passe de 65,5 % en `FIFO` à 74 % en
 `FIFO_RELAXED`, sans que le nombre d'images bouge. Les deux mesures viennent de sessions de jeu
 différentes et ne sont pas comparables ; je n'en tire rien.
+
+## 186. Steam macOS ne lit pas `compatibilitytools.d`
+
+Première tentative sur l'objectif de départ : faire lancer un jeu Windows par le Steam macOS
+natif, comme Proton sous Linux.
+
+### Ce qui a motivé l'essai
+
+```
+steamclient.dylib : CompatToolMapping
+steamclient.dylib : compatibilitytools.d
+```
+
+Les deux chaînes qui pilotent le mécanisme sous Linux sont bien dans le client macOS. J'avais
+affirmé plus tôt, sans jamais le vérifier, que le Steam macOS n'exposait pas Steam Play : cette
+affirmation était infondée, et ces chaînes semblaient la démentir.
+
+### L'outil, et ce qu'il a donné
+
+`steam/proton-ouvert/` : `compatibilitytool.vdf`, `toolmanifest.vdf`, et un script qui délègue
+à `etape2_pile_wow64.sh` en journalisant tout ce que Steam lui passe. Installé par lien
+symbolique dans `~/Library/Application Support/Steam/compatibilitytools.d/`, rien de copié.
+
+Les deux graphies de `to_oslist` — `macos` et `osx` — ont été déclarées ensemble pour qu'un seul
+redémarrage tranche.
+
+Résultat après redémarrage complet du client :
+
+```
+onglet Compatibilite dans les proprietes d'un jeu : absent
+CompatToolMapping dans config.vdf                 : absent
+compat_log.txt                                    : pas reecrit (dernier : 15/09/2025)
+```
+
+### La preuve
+
+`logs/compat_log.txt`, trois mégaoctets d'historique :
+
+```
+Registering tool proton_411,               AppID 1113280
+Registering tool steamlinuxruntime_sniper, AppID 1628350
+Ignoring tool steamlinuxruntime as it's for a different target platform linux.
+```
+
+**Chaque outil enregistré porte un AppID** : ce sont des outils distribués comme applications
+Steam, découverts dans le catalogue. Le mot `compatibilitytools` n'apparaît **pas une seule
+fois** dans tout le fichier. Le client macOS filtre bien par plateforme cible — il sait refuser
+`linux` — mais il ne scanne jamais le répertoire local.
+
+Les chaînes de `steamclient.dylib` sont du code partagé avec la version Linux, inerte ici.
+
+### Ce qui reste
+
+La voie de la porte d'entrée est fermée. Restent :
+
+```
+CompatToolMapping ecrit a la main dans config.vdf : non teste, faible espoir
+                    (mapper vers un outil que le client n'a jamais enregistre)
+jeu non-Steam pointant sur lancer_jeu.sh          : fonctionne deja
+```
+
+La seconde marche depuis la section 173, mais elle ne donne ni le déblocage des dépôts Windows
+— on ne peut pas télécharger un jeu Windows-only depuis le Steam macOS — ni l'intégration
+Steamworks.
+
+Le lien symbolique est laissé en place pour le dernier essai. Il se retire d'une commande.

@@ -1,0 +1,52 @@
+#!/bin/sh
+# Outil de compatibilite Steam : lance un jeu Windows a travers la pile ouverte.
+#
+# Steam appelle ce script comme il appelle Proton sous Linux :
+#   proton-ouvert run /chemin/vers/jeu.exe [arguments...]
+#
+# Les variables que Steam fournit sont journalisees a chaque appel, parce que
+# c'est la seule facon de savoir ce qu'il passe reellement sur macOS.
+set -e
+R=$(cd "$(dirname "$0")" && pwd)
+R=$(cd "$R/../.." && pwd)
+
+journal="$R/steam/appels.log"
+{
+   echo "--- $(date '+%Y-%m-%d %H:%M:%S') ---"
+   echo "verbe et arguments : $*"
+   echo "STEAM_COMPAT_DATA_PATH           = ${STEAM_COMPAT_DATA_PATH:-<vide>}"
+   echo "STEAM_COMPAT_CLIENT_INSTALL_PATH = ${STEAM_COMPAT_CLIENT_INSTALL_PATH:-<vide>}"
+   echo "STEAM_COMPAT_INSTALL_PATH        = ${STEAM_COMPAT_INSTALL_PATH:-<vide>}"
+   echo "SteamAppId                       = ${SteamAppId:-<vide>}"
+   echo "repertoire courant               = $(pwd)"
+} >> "$journal" 2>/dev/null || true
+
+verbe=$1
+[ $# -ge 1 ] && shift
+
+case "$verbe" in
+   run|waitforexitandrun|runinprefix)
+      ;;
+   getcompatpath|getnativepath)
+      # Steam demande une traduction de chemin ; sans bureau virtuel, l'identite suffit.
+      echo "$1"
+      exit 0
+      ;;
+   *)
+      echo "verbe inconnu : $verbe" >> "$journal" 2>/dev/null || true
+      ;;
+esac
+
+[ $# -ge 1 ] || { echo "aucun executable fourni" >&2; exit 2; }
+
+# Un prefixe par jeu quand Steam en propose un, sinon celui du projet.
+if [ -n "$STEAM_COMPAT_DATA_PATH" ]; then
+   WINEPREFIX="$STEAM_COMPAT_DATA_PATH/pfx"
+   export WINEPREFIX
+   mkdir -p "$WINEPREFIX" 2>/dev/null || true
+fi
+
+exe=$1; shift
+[ -f "$exe" ] && cd "$(dirname "$exe")"
+
+exec "$R/tests/etape2_pile_wow64.sh" "$exe" "$@"
