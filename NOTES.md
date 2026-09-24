@@ -15093,3 +15093,72 @@ Il faut trois choses :
 Le point 2 est celui qui brise le cercle : le cote unix connait le TEB et peut lire
 `TPIDRRO_EL0` comme n'importe qui, alors que le cote PE ne peut pas obtenir son TEB avant que
 l'acces ne fonctionne.
+
+## 217. Le TEB sans x18 : la barriere bouge
+
+Le correctif 0068 remplace la lecture de `x18` par une recherche indexee sur `TPIDRRO_EL0`.
+
+### Ce qu'il contient
+
+- `dlls/ntdll/signal_arm64.c` (cote PE) : une table ouverte de 1024 entrees, exportee, et
+  `__wine_current_teb()` qui lit `TPIDRRO_EL0` et la consulte. A defaut d'entree, retour sur
+  `x18` -- parfois juste, et toujours mieux que NULL, que l'appelant ne teste pas.
+- `dlls/ntdll/unix/signal_arm64.c` : `enregistrer_teb()`, appelee depuis `init_syscall_frame`
+  **avant** que le moindre code PE ne s'execute. La cle est posee en dernier, pour qu'un lecteur
+  ne voie jamais une entree a moitie ecrite.
+- `dlls/ntdll/unix/loader.c` : `GET_FUNC( __wine_teb_table )`, le meme mecanisme que Wine emploie
+  deja pour ses repartiteurs.
+- `include/winnt.h` : `NtCurrentTeb()` appelle `__wine_current_teb()`.
+
+### Deux pieges, tous deux resolus par la mesure
+
+**La garde etait fausse.** J'avais ecrit `defined(__GNUC__) && defined(WINE_TEB_SANS_X18)`. Or
+la cible `aarch64-windows` est la cible **MSVC** :
+
+```
+#define WINE_TEB_SANS_X18 1
+#define _MSC_VER 1933
+#define __aarch64__ 1
+```
+
+Pas de `__GNUC__`. La branche prise restait `__getReg(18)`, et rien ne changeait -- le binaire
+gardait ses 655 acces a `x18`. Verifie en comparant l'assembleur produit avec et sans le
+drapeau, au lieu de supposer que la recompilation avait pris.
+
+Pour la meme raison, la lecture du registre passe par `__builtin_arm_rsr64( "tpidrro_el0" )` et
+non par un bloc `__asm__`, indisponible en mode MSVC.
+
+**Changer un `-D` ne recompile rien.** Make ne suit pas les drapeaux. Il faut effacer les objets.
+
+### Le resultat
+
+```
+avant : 3 fautes, deplacements de TEB 0x180C et 0x48
+apres : 1 faute, a 0x378, dans du code natif -- plus dans le code PE
+acces a x18 dans ntdll.dll : 655 -> 28 (l'assembleur de sauvegarde de contexte)
+RtlEnterCriticalSection : « mov x8, x18 » -> « bl __wine_current_teb »
+```
+
+Les fautes du paragraphe 144 ont disparu. `x18` n'est plus le mur.
+
+### Ce qui bloque maintenant
+
+L'ancienne barriere memoire, deja presente dans la ligne de base :
+
+```
+err:virtual:try_map_free_area mmap() error Cannot allocate memory, range 0x100000000-0x100110000
+```
+
+`wineboot --init` ne peuple toujours pas `system32`. Le prochain obstacle est la disposition de
+l'espace d'adressage, pas le TEB.
+
+### Comment construire
+
+Le correctif ne fait rien sans son drapeau, volontairement : personne ne doit l'activer par
+accident sur une cible autre que macOS.
+
+```
+make aarch64_CFLAGS="-g -O2 -DWINE_TEB_SANS_X18" install
+```
+
+En cas de doute, effacer `dlls/*/aarch64-windows/*.o` d'abord.

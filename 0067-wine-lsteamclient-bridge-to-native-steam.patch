@@ -42,10 +42,10 @@ index 00000000..401db203
 +@ cdecl SondeInterfaceNative(ptr)
 diff --git a/dlls/lsteamclient/main.c b/dlls/lsteamclient/main.c
 new file mode 100644
-index 00000000..6096a215
+index 00000000..f783a321
 --- /dev/null
 +++ b/dlls/lsteamclient/main.c
-@@ -0,0 +1,529 @@
+@@ -0,0 +1,540 @@
 +/*
 + * Cote PE du pont Steamworks : ce que le steam_api du jeu appelle.
 + */
@@ -124,6 +124,10 @@ index 00000000..6096a215
 +     * d'appels plus tard, et donc une signature choisie au hasard. On la
 +     * recopie. Vide pour ISteamClient. */
 +    char         nom[64];
++    /* Signature resolue une fois par emplacement, a l'enveloppement. La
++     * chercher a chaque appel revenait a parcourir les 876 entrees de la table
++     * plusieurs centaines de fois par seconde, pour un resultat constant. */
++    const struct signature_steam *sigs[NB_SIGNATURES];
 +};
 +
 +/*
@@ -239,7 +243,7 @@ index 00000000..6096a215
 +    {
 +        if (WINE_UNIX_CALL( unix_appel_vtable, &params )) return 0;
 +
-+        sig = signature( objet->nom[0] ? objet->nom : "SteamClient", emplacement );
++        sig = emplacement < NB_SIGNATURES ? objet->sigs[emplacement] : NULL;
 +        if (sig && sig->tampon)
 +        {
 +            /* Le natif a rendu la valeur dans RAX ; l'appelant attend qu'elle
@@ -368,7 +372,7 @@ index 00000000..6096a215
 +{
 +    struct objet_pe *objet = self;
 +    const char *ou = objet->nom[0] ? objet->nom : "ISteamClient";
-+    const struct signature_steam *sig = signature( objet->nom[0] ? objet->nom : "SteamClient", emplacement );
++    const struct signature_steam *sig = emplacement < NB_SIGNATURES ? objet->sigs[emplacement] : NULL;
 +    struct appel_vtable_params params = { objet->natif, emplacement, 0, 0, 0, 0, 0, 0, 0, 0 };
 +    unsigned tampon = sig ? sig->tampon : 0;
 +    unsigned debut = tampon ? 1 : 0;   /* le pointeur cache occupe le premier mot */
@@ -415,7 +419,7 @@ index 00000000..6096a215
 +
 +/* Construit la table de methodes d'une interface : pour chaque emplacement, le
 + * thunk dont la discipline de pile correspond a la methode mesuree. */
-+static const void **table_pour( const char *version )
++static const void **table_pour( const struct objet_pe *objet )
 +{
 +    const void **table = HeapAlloc( GetProcessHeap(), 0, NB_EMPLACEMENTS32 * sizeof(*table) );
 +    unsigned k;
@@ -423,7 +427,7 @@ index 00000000..6096a215
 +    if (!table) return NULL;
 +    for (k = 0; k < NB_EMPLACEMENTS32; k++)
 +    {
-+        const struct signature_steam *sig = signature( version, k );
++        const struct signature_steam *sig = k < NB_SIGNATURES ? objet->sigs[k] : NULL;
 +        table[k] = table32[k][sig ? sig->mots : 0];
 +    }
 +    return table;
@@ -448,23 +452,30 @@ index 00000000..6096a215
 +static void *envelopper( UINT64 natif, const char *nom )
 +{
 +    struct objet_pe *objet;
++    unsigned k;
 +
 +    if (!natif) return NULL;
 +    if (!(objet = HeapAlloc( GetProcessHeap(), 0, sizeof(*objet) ))) return NULL;
++
++    objet->natif = natif;
++    objet->nom[0] = 0;
++    if (nom) lstrcpynA( objet->nom, nom, sizeof(objet->nom) );
++
++    /* Les signatures d'abord : la table de methodes en depend en 32 bits. */
++    for (k = 0; k < NB_SIGNATURES; k++)
++        objet->sigs[k] = signature( objet->nom[0] ? objet->nom : "SteamClient", k );
++
 +#ifdef _WIN64
 +    objet->table = table_steam_client;
 +#else
 +    /* En 32 bits chaque interface a sa propre table : la discipline de pile
 +     * depend de la methode, donc de l'interface. */
-+    if (!(objet->table = table_pour( nom ? nom : "SteamClient" )))
++    if (!(objet->table = table_pour( objet )))
 +    {
 +        HeapFree( GetProcessHeap(), 0, objet );
 +        return NULL;
 +    }
 +#endif
-+    objet->natif = natif;
-+    objet->nom[0] = 0;
-+    if (nom) lstrcpynA( objet->nom, nom, sizeof(objet->nom) );
 +    TRACE( "interface native %s -> objet PE %p\n", wine_dbgstr_longlong(natif), objet );
 +    return objet;
 +}
@@ -577,14 +588,16 @@ index 00000000..6096a215
 +}
 diff --git a/dlls/lsteamclient/signatures32.h b/dlls/lsteamclient/signatures32.h
 new file mode 100644
-index 00000000..50242cc5
+index 00000000..2b8989ff
 --- /dev/null
 +++ b/dlls/lsteamclient/signatures32.h
-@@ -0,0 +1,893 @@
+@@ -0,0 +1,895 @@
 +/* Engendre par tests/engendrer_i386.py -- ne pas editer a la main.
 + * Releve dans le steam_api.dll i386 d'un jeu : pour chaque methode, son
 + * emplacement, le nombre de mots empiles et la taille de la structure
 + * rendue par pointeur cache (zero si elle n'en rend pas). */
++
++#define NB_SIGNATURES 84
 +
 +struct signature_steam
 +{

@@ -1,0 +1,211 @@
+diff --git a/include/winnt.h b/include/winnt.h
+index 0cde7ab1..51df2501 100644
+--- a/include/winnt.h
++++ b/include/winnt.h
+@@ -2596,6 +2596,21 @@ static FORCEINLINE struct _TEB * WINAPI NtCurrentTeb(void)
+ {
+     return (struct _TEB *)__readfsdword( 0x18 );
+ }
++/* Sans __GNUC__ dans la garde : la cible aarch64-windows est la cible MSVC,
++ * ou clang definit _MSC_VER et non __GNUC__. */
++#elif (defined(__aarch64__) || defined(__arm64ec__)) && defined(WINE_TEB_SANS_X18)
++/*
++ * macOS efface x18 a chaque retour du noyau vers l'espace utilisateur,
++ * preemption comprise : le registre ne peut pas porter le TEB, et aucune
++ * frontiere ne permet de le restaurer. TPIDRRO_EL0 le remplace comme cle, et
++ * ntdll tient la correspondance. L'appel coute plus qu'une lecture de
++ * registre ; la justesse passe d'abord.
++ */
++NTSYSAPI struct _TEB * WINAPI __wine_current_teb(void);
++static FORCEINLINE struct _TEB * WINAPI NtCurrentTeb(void)
++{
++    return __wine_current_teb();
++}
+ #elif (defined(__aarch64__) || defined(__arm64ec__)) && defined(__GNUC__)
+ register struct _TEB *__wine_current_teb __asm__("x18");
+ static FORCEINLINE struct _TEB * WINAPI NtCurrentTeb(void)
+diff --git a/dlls/ntdll/ntdll.spec b/dlls/ntdll/ntdll.spec
+index 2c66313e..5b478534 100644
+--- a/dlls/ntdll/ntdll.spec
++++ b/dlls/ntdll/ntdll.spec
+@@ -1783,3 +1783,5 @@
+ @ cdecl wine_get_version()
+ @ cdecl wine_get_build_id()
+ @ cdecl wine_get_host_version(ptr ptr)
++@ stdcall -arch=arm64 __wine_current_teb()
++@ extern -private -arch=arm64 __wine_teb_table
+diff --git a/dlls/ntdll/signal_arm64.c b/dlls/ntdll/signal_arm64.c
+index e560718c..af1f7fae 100644
+--- a/dlls/ntdll/signal_arm64.c
++++ b/dlls/ntdll/signal_arm64.c
+@@ -893,3 +893,59 @@ __ASM_GLOBAL_FUNC( DbgUserBreakPoint, "brk #0xf000; ret"
+                     "\n\tnop; nop; nop; nop; nop; nop" );
+ 
+ #endif  /* __aarch64__ */
++
++
++/***********************************************************************
++ *           Retrouver le TEB sans x18, sur macOS
++ *
++ * macOS efface x18 a chaque retour du noyau vers l'espace utilisateur,
++ * preemption comprise : aucune frontiere ne permet de le restaurer. En
++ * revanche TPIDRRO_EL0 est lisible en mode utilisateur, propre au fil, et
++ * mesure stable sur deux cents millions de tours la ou x18 tombe en quelques
++ * millions.
++ *
++ * La table est remplie par le cote unix au demarrage de chaque fil, avant que
++ * le moindre code PE ne s'execute -- c'est ce qui brise le cercle, le cote PE
++ * ne pouvant pas obtenir son TEB tant que l'acces ne fonctionne pas.
++ *
++ * L'adressage est ouvert avec sondage lineaire. La table est volontairement
++ * bien plus grande que le nombre de fils attendu, pour que le sondage reste
++ * court.
++ */
++
++#define TEB_TABLE_TAILLE 1024
++
++struct entree_teb
++{
++    ULONG_PTR cle;
++    void     *teb;
++};
++
++struct entree_teb __wine_teb_table[TEB_TABLE_TAILLE] = { { 0 } };
++
++/* __builtin_arm_rsr64 plutot qu'un bloc __asm__ : ce fichier est compile en
++ * mode MSVC, ou la syntaxe d'assembleur en ligne de GCC n'est pas disponible. */
++static inline ULONG_PTR cle_du_fil(void)
++{
++    return (ULONG_PTR)__builtin_arm_rsr64( "tpidrro_el0" );
++}
++
++/***********************************************************************
++ *           __wine_current_teb
++ */
++TEB * WINAPI __wine_current_teb(void)
++{
++    ULONG_PTR cle = cle_du_fil();
++    unsigned int i = (unsigned int)((cle >> 14) % TEB_TABLE_TAILLE);
++    unsigned int n;
++
++    for (n = 0; n < TEB_TABLE_TAILLE; n++)
++    {
++        if (__wine_teb_table[i].cle == cle) return __wine_teb_table[i].teb;
++        if (!__wine_teb_table[i].cle) break;
++        i = (i + 1) % TEB_TABLE_TAILLE;
++    }
++    /* Rien d'enregistre : on retombe sur x18, qui est parfois juste. Rendre
++     * NULL serait pire, car le code appelant ne le teste pas. */
++    return (TEB *)__getReg(18);
++}
+diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
+index 65ec920e..101abb06 100644
+--- a/dlls/ntdll/unix/signal_arm64.c
++++ b/dlls/ntdll/unix/signal_arm64.c
+@@ -337,6 +337,53 @@ static void save_context( CONTEXT *context, const ucontext_t *sigcontext )
+ 
+ #define X18_RESUME_SIZE 16
+ 
++/*
++ * La table cle -> TEB, logee dans les donnees du ntdll PE.
++ *
++ * macOS efface x18 a chaque retour du noyau, preemption comprise : il n'existe
++ * aucune frontiere ou le restaurer. TPIDRRO_EL0, lui, est lisible en mode
++ * utilisateur, propre au fil, et mesure stable sur deux cents millions de
++ * tours. Le cote unix inscrit la correspondance des le demarrage du fil, avant
++ * que le moindre code PE ne s'execute.
++ */
++#define TEB_TABLE_TAILLE 1024
++
++struct entree_teb
++{
++    ULONG_PTR cle;
++    void     *teb;
++};
++
++struct entree_teb *teb_table;
++
++static inline ULONG_PTR cle_du_fil(void)
++{
++    ULONG_PTR v;
++    __asm__ __volatile__( "mrs %0, tpidrro_el0" : "=r"(v) );
++    return v;
++}
++
++void enregistrer_teb( TEB *teb )
++{
++    ULONG_PTR cle = cle_du_fil();
++    unsigned int i, n;
++
++    if (!teb_table) return;
++    i = (unsigned int)((cle >> 14) % TEB_TABLE_TAILLE);
++    for (n = 0; n < TEB_TABLE_TAILLE; n++)
++    {
++        if (!teb_table[i].cle || teb_table[i].cle == cle)
++        {
++            teb_table[i].teb = teb;
++            teb_table[i].cle = cle;   /* la cle en dernier : le lecteur ne voit
++                                       * jamais une entree a moitie posee */
++            return;
++        }
++        i = (i + 1) % TEB_TABLE_TAILLE;
++    }
++    ERR( "table des TEB saturee\n" );
++}
++
+ extern void x18_resume_trampoline(void);
+ __ASM_GLOBAL_FUNC( x18_resume_trampoline,
+                    "ldr x18, [sp]\n\t"
+@@ -1673,6 +1720,10 @@ void init_syscall_frame( LPTHREAD_START_ROUTINE entry, void *arg, TEB *teb )
+     I386_CONTEXT *i386_context;
+     ARM_CONTEXT *arm_context;
+ 
++    /* Avant tout code PE : sans cela, la toute premiere faute a lieu dans
++     * loader_init, sur un petit deplacement de TEB. */
++    enregistrer_teb( teb );
++
+     context.X0  = (DWORD64)entry;
+     context.X1  = (DWORD64)arg;
+     context.X18 = (DWORD64)teb;
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index ebfb6af5..e61f72b9 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -1555,6 +1555,9 @@ static void load_ntdll_functions( HMODULE module )
+     void **p__wine_unix_call_dispatcher_arm64ec = NULL;
+     unixlib_handle_t *p__wine_unixlib_handle;
+     const IMAGE_EXPORT_DIRECTORY *exports;
++#if defined(__aarch64__) && defined(__APPLE__)
++    void *p__wine_teb_table;
++#endif
+ 
+     exports = get_module_data_dir( module, IMAGE_DIRECTORY_ENTRY_EXPORT, NULL );
+     assert( exports );
+@@ -1575,6 +1578,12 @@ static void load_ntdll_functions( HMODULE module )
+     GET_FUNC( __wine_syscall_dispatcher );
+     GET_FUNC( __wine_unix_call_dispatcher );
+     GET_FUNC( __wine_unixlib_handle );
++#if defined(__aarch64__) && defined(__APPLE__)
++    /* La table cle -> TEB vit dans les donnees du ntdll PE ; le cote unix la
++     * remplit, le cote PE la consulte depuis NtCurrentTeb(). */
++    GET_FUNC( __wine_teb_table );
++    teb_table = p__wine_teb_table;
++#endif
+     if (is_arm64ec())
+     {
+         GET_FUNC( __wine_unix_call_dispatcher_arm64ec );
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 9b6401ee..dd08d8c5 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -739,4 +739,10 @@ static inline int is_gdt_sel( WORD sel )
+ 
+ #endif  /* defined(__i386__) || defined(__x86_64__) */
+ 
++#if defined(__aarch64__) && defined(__APPLE__)
++struct entree_teb;
++extern struct entree_teb *teb_table;
++extern void enregistrer_teb( TEB *teb );
++#endif
++
+ #endif /* __NTDLL_UNIX_PRIVATE_H */
