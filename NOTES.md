@@ -12699,3 +12699,86 @@ croire à une faute au point de transition. Ce n'était pas le lieu du crime.
 `tests/decrire_jeu.py` décrit un exécutable ou un répertoire de jeu : architecture — donc
 passage ou non par WoW64 —, bit `NX_COMPAT` de chaque module, et API graphique, y compris
 chargée dynamiquement. Sur Grimrock il désigne `FreeImage.dll` en une ligne.
+
+## 177. Le pont WoW64 s'exécute en mode 32 bits — preuve par l'encodage
+
+DREDGE (Black Salt Games, Unity 2021) a servi de troisième point de mesure. Le binaire dément
+ce que j'avais anticipé, et confirme la fiche PCGamingWiki :
+
+```
+DREDGE.exe       pei-i386   NX_COMPAT=oui
+UnityPlayer.dll  pei-i386   d3d11.dll, d3d12.dll, d3d9.dll, dxgi.dll, opengl32.dll, vulkan-1.dll
+```
+
+32 bits, et le jeu embarque un `UnityCrashHandler32.exe`. **Il ne teste donc pas Direct3D 11** :
+DXVK n'écrit pas une seule ligne, le jeu meurt avant. Son propre journal dit où :
+
+```
+Mono path[0] = 'C:/Jeux/dredge/DREDGE_Data/Managed'
+Got a UNKNOWN while executing native code. This usually indicates
+a fatal error in the mono runtime or one of the native libraries
+```
+
+### L'instruction fautive
+
+Les deux jeux tombent dans `wow64cpu.dll` (base `0x7BCC0000`). Le désassemblage de ces deux
+offsets exacts donne :
+
+```asm
+7a401248:  ff 15 b2 5d 00 00   call *0x5db2(%rip)      ; Grimrock
+7a4012a0:  ff 25 6a 8e 00 00   jmp  *0x8e6a(%rip)      ; DREDGE, Wow64SystemServiceEx
+```
+
+Et les adresses lues lors des fautes :
+
+```
+Grimrock : eip=7BCC1248  info[1]=00005DB2
+DREDGE   : eip=7BCC12A0  info[1]=00008E6A
+```
+
+**L'adresse lue est exactement le déplacement RIP-relatif de l'instruction à l'EIP fautif.**
+Deux jeux, deux instructions différentes, deux déplacements différents, la même coïncidence.
+Ce n'est pas une coïncidence : en mode 64 bits, `ff 15 disp32` calcule `rip + disp32` ; en mode
+32 bits, le même encodage signifie « appelle via l'adresse absolue `disp32` ». Lire `0x5DB2` au
+lieu de `rip + 0x5DB2` veut dire que le processeur a décodé cette instruction **en mode 32
+bits**.
+
+Le pont WoW64 de Wine — du code 64 bits — est donc exécuté alors que la bascule vers le mode
+64 bits n'a pas eu lieu. Sous Rosetta, cette bascule est émulée.
+
+### Correction des sections 175 et 176
+
+Elles donnaient `0x7BCC1248` comme une adresse **réécrite** par `BTCpuResetToConsistentState`,
+qui place `syscall_32to64` dans `Rip` après une faute en cours de transition. C'est faux :
+cette fonction écrirait toujours la même adresse, or on en observe deux, et chacune correspond
+au déplacement de l'instruction qui s'y trouve. Ce sont de vraies adresses de faute.
+
+### Les deux jeux ne tombent pas pareil
+
+```
+Grimrock : survit sous +relay, plante sans      -> intermittent, dependant du temps
+DREDGE   : plante aussi sous +relay             -> deterministe
+```
+
+Mono provoque volontairement des fautes de page — vérifications de nullité, barrières
+d'écriture du ramasse-miettes — et installe un gestionnaire vectorisé pour les rattraper
+(`0x761FD540`, soit `mono-2.0-bdwgc.dll` + `0x38D540`). Il en déclenche donc sans arrêt, et
+tombe tout de suite. Grimrock n'en provoque qu'exceptionnellement, d'où l'intermittence. Braid,
+qui tourne de bout en bout, n'en provoque apparemment jamais.
+
+### Ce que ça change
+
+Le blocage est dans la transition 32/64 bits, pas dans le pilote. Aucun des deux jeux n'a
+atteint Metal. Un jeu **64 bits** ne traverse jamais ce pont : c'est la seule voie pour mesurer
+enfin D3D11 et D3D12 sur une application réelle.
+
+Titres vérifiés sur PCGamingWiki, colonne `Executable` :
+
+```
+64 bits : Hollow Knight (D3D11), Disco Elysium (D3D11), Cyberpunk 2077 (D3D12)
+32 bits : DREDGE, Sunless Sea, Inscryption, Return of the Obra Dinn,
+          Shadow Tactics, Braid, Grimrock
+```
+
+Le catalogue indépendant est massivement 32 bits ; le 64 bits se trouve surtout côté gros
+titres. `tests/decrire_jeu.py` tranche en une commande sur un répertoire de jeu extrait.
