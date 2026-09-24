@@ -13039,3 +13039,70 @@ DREDGE     : 104 % de processeur, fenetre UnityWndClass. Il tourne.
 
 0063 part dans `patches-historique/`. Il garde sa valeur de documentation — c'est lui qui a
 mené au cas minimal de la section 178 — mais il n'est plus appliqué.
+
+## 182. Première mesure sur un vrai jeu : DREDGE
+
+Jamais fait jusqu'ici. Toute la conformité avait été mesurée sur des suites de tests.
+
+### Images par seconde et charge
+
+Lectures du HUD DXVK par l'auteur, charges en médianes sur 8 à 10 échantillons
+(`tests/mesurer_gpu.sh`, qui lit `ioreg` — accessible sans privilèges sur Apple Silicon — et
+vérifie qu'aucun `wineserver` résiduel ne fausse la mesure).
+
+```
+                    images/s   GPU device   GPU renderer   GPU tiler   processeur
+FIFO (defaut)        60-62        65,5 %        64,5 %        65 %       157 %
+IMMEDIATE            76-90        78,5 %        77,5 %        78 %       218 %
+```
+
+### Le 60 n'est pas un defaut
+
+L'écran est un ProMotion à 120 Hz. La pile rend 76 à 90 images. `VK_PRESENT_MODE_FIFO_KHR` ne
+sait pas afficher 85 sur un écran à 120 : il tombe au diviseur suivant, 60. Comportement normal
+du mode, pas une limite du pilote.
+
+Le WSI Metal de Mesa n'expose que deux modes :
+
+```c
+static const VkPresentModeKHR present_modes[] = {
+   VK_PRESENT_MODE_IMMEDIATE_KHR,
+   VK_PRESENT_MODE_FIFO_KHR,
+};
+```
+
+`VK_PRESENT_MODE_FIFO_RELAXED_KHR` manque, et c'est précisément celui qu'il faudrait :
+synchronisé quand l'image arrive à temps, immédiat quand elle est en retard. Il supprimerait la
+chute à 60 sans le déchirement d'`IMMEDIATE`.
+
+### Ce qui limite reellement
+
+Même sans synchronisation, **ni le GPU (78 %) ni le processeur (2,18 cœurs sur dix) ne sont
+saturés**. Il reste donc de la marge perdue quelque part — sérialisation entre soumission et
+présentation, ou taxe Rosetta sur la répartition. Non mesuré : c'est le prochain profilage, et
+rien ne permet encore de désigner un coupable.
+
+### Le blocage au chargement
+
+```
+graphicsPipelineLibrary : 0
+DXVK: Graphics pipeline libraries not supported
+```
+
+DXVK 2.x a supprimé son cache d'état sur disque au profit de `VK_EXT_graphics_pipeline_library`,
+que KosmicKrisp n'expose pas. Chaque pipeline est donc compilé au premier dessin qui l'utilise,
+sur le fil de rendu. D'où la chute et le blocage au chargement, puis le retour à la normale une
+fois les pipelines en mémoire.
+
+Pire : rien ne persiste d'un lancement à l'autre. Dans `kk_physical_device.c`, seule la
+destruction du cache disque existe :
+
+```c
+static void
+kk_physical_device_free_disk_cache(struct kk_physical_device *pdev)
+```
+
+Rien ne le crée jamais ; la branche sans cache affirme même qu'il est nul. KosmicKrisp utilise
+pourtant `vk_pipeline_cache` — la tuyauterie est là, sans adossement au disque. Câbler le
+`disk_cache` de Mesa supprimerait le bégaiement dès le second lancement, pour bien moins de
+travail que d'implémenter les pipeline libraries.
