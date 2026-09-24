@@ -12922,3 +12922,72 @@ sonde_jit_concurrent : un fil reecrit la page pendant que quatre l'executent.
 Le pont reste cassé dans le sens 64→32, de façon intermittente, et je n'ai pas trouvé de
 déclencheur reproductible pour ce sens-là. L'état livré est `0062` + `0063`, l'arbre `wow64cpu`
 est celui d'origine.
+
+## 180. CodeWeavers avait déjà le correctif : `lretq` au lieu du saut lointain
+
+Le miroir des sources CrossOver (`PhoenicisOrg/winecx`, CrossOver 25.1.0 sur Wine 10.0)
+contient, dans `dlls/wow64cpu/cpu.c`, exactement notre bug et son contournement.
+
+```c
+/* CW HACK 20760:
+ * When running under Rosetta 2, use lretq instead of ljmp to work around
+ * a SIGUSR1 race condition. */
+```
+
+Une **course avec un signal** : ça explique l'intermittence que je n'arrivais pas à reproduire.
+
+### Les deux moitiés du contournement
+
+Au retour 64→32, `lretq` remplace `ljmp *(%r14)` : on empile le sélecteur et l'adresse, puis
+on fait un retour lointain.
+
+```asm
+subq $0x10,%rsp
+movl 4(%r14),%edx ; movq %rdx,0x8(%rsp)   /* SegCs */
+movl 0(%r14),%edx ; movq %rdx,(%rsp)      /* Eip   */
+lretq
+```
+
+À l'entrée 32→64, le saut lointain devient un **appel** lointain suivi d'un saut :
+`lcall` vers un petit bloc qui fait `add $0x08,%esp` — pour retirer ce que le `lcall` a
+empilé — puis `jmp` vers `syscall_32to64`.
+
+La détection se fait sur le nom de processeur, qui sous Rosetta est émulé :
+
+```
+status=0x00000000  chaine="VirtualApple @ 2.50GHz"
+detection Rosetta 2 : OUI
+```
+
+Vérifié par `tests/sonde_rosetta.c` depuis un processus 32 bits, parce que le `sysctl` d'un
+shell natif répond « Apple M1 Max » et aurait laissé croire que la détection échouait.
+
+### Effet mesuré
+
+```
+avant : err:seh:call_seh_handlers invalid frame ... systematique
+        contexte incoherent : rip = deux mots 32 bits colles
+apres : zero "invalid frame"
+        contexte propre : eip=7615caa8 esp=0011f468 ebp=0011f4e0
+```
+
+La corruption de contexte a disparu. Et les jeux :
+
+```
+Grimrock : bloque a moins de 1 % de processeur  ->  170 % et sa fenetre, il tourne
+DREDGE   : meurt en silence a ReloadAssembly    ->  meme point, mais la faute est
+                                                    propre et interceptee par Unity :
+                                                    lecture de 0x0EB48C84 dans
+                                                    mono-2.0-bdwgc.dll. Un vrai
+                                                    plantage, plus une corruption.
+temoin JIT (0063) : toujours 2000 tours sans plantage
+```
+
+`0064-wine-rosetta-lretq-instead-of-far-jump.patch`. Le code vient de CrossOver, sous LGPL,
+écrit par CodeWeavers ; je l'ai porté et vérifié, je ne l'ai pas trouvé.
+
+### À garder en réserve
+
+Leur arbre contient aussi deux correctifs `MXCSR` (CW Hack 24256 et 24265) : sous Rosetta, le
+registre `MXCSR` est faux dans les contextes de signaux, et sur M3 Rosetta le restaure à une
+valeur incorrecte même après correction. Non porté, non mesuré chez nous.

@@ -76,7 +76,8 @@ appliquer() {
 appliquer mesa $(serie_mesa)
 appliquer wine "$R"/0028-*.patch "$R"/0035-*.patch "$R"/0036-*.patch \
                "$R"/0038-*.patch "$R"/0040-*.patch "$R"/0041-*.patch \
-               "$R"/0062-*.patch "$R"/0063-*.patch
+               "$R"/0062-*.patch "$R"/0063-*.patch \
+               "$R"/0064-*.patch
 appliquer wine11 "$R"/0048-*.patch "$R"/0049-*.patch
 appliquer vkd3d-proton "$R"/0004-*.patch "$R"/0007-*.patch "$R"/0008-*.patch \
                        "$R"/0014-*.patch "$R"/0016-*.patch "$R"/0044-*.patch
