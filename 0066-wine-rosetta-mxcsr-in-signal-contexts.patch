@@ -1,0 +1,113 @@
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index caa85249..e4b64d4e 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -35,6 +35,9 @@
+ #include <sys/types.h>
+ #include <sys/mman.h>
+ #include <unistd.h>
++#ifdef __APPLE__
++# include <sys/sysctl.h>
++#endif
+ #ifdef HAVE_MACHINE_SYSARCH_H
+ # include <machine/sysarch.h>
+ #endif
+@@ -432,6 +435,10 @@ C_ASSERT( offsetof( struct syscall_frame, xsave ) == 0xc0 );
+ C_ASSERT( offsetof( struct syscall_frame, xstate ) == 0x2c0 );
+ C_ASSERT( sizeof( struct syscall_frame ) == 0x300);
+ 
++#ifdef __APPLE__
++static BOOL is_rosetta2;
++#endif
++
+ struct amd64_thread_data
+ {
+     DWORD_PTR             dr0;           /* 02f0 debug registers */
+@@ -447,6 +454,9 @@ struct amd64_thread_data
+     DWORD                 xstate_features_size;  /* 033c */
+     UINT64                xstate_features_mask;  /* 0340 */
+     void                **instrumentation_callback; /* 0348 */
++#ifdef __APPLE__
++    DWORD                 mxcsr;         /* 0350 */
++#endif
+ };
+ 
+ C_ASSERT( sizeof(struct amd64_thread_data) <= sizeof(((struct ntdll_thread_data *)0)->cpu_data) );
+@@ -456,6 +466,9 @@ C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct amd64_thread_data, sys
+ C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct amd64_thread_data, fs ) == 0x338 );
+ C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct amd64_thread_data, xstate_features_size ) == 0x33c );
+ C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct amd64_thread_data, xstate_features_mask ) == 0x340 );
++#ifdef __APPLE__
++C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct amd64_thread_data, mxcsr ) == 0x350 );
++#endif
+ 
+ static inline struct amd64_thread_data *amd64_thread_data(void)
+ {
+@@ -919,6 +932,10 @@ static void save_context( struct xcontext *xcontext, const ucontext_t *sigcontex
+ 
+         context->ContextFlags |= CONTEXT_FLOATING_POINT;
+         context->FltSave = *FPU_sig(sigcontext);
++#ifdef __APPLE__
++        if (is_rosetta2)
++            __asm__ volatile( "stmxcsr %0" : "=m" (context->FltSave.MxCsr) );
++#endif
+         context->MxCsr = context->FltSave.MxCsr;
+         if (xstate_extended_features() && (xs = XState_sig(FPU_sig(sigcontext))))
+         {
+@@ -2263,6 +2280,20 @@ static void sigsys_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+     R11_sig(ucontext) = frame->eflags;
+     EFL_sig(ucontext) &= ~0x100;  /* clear single-step flag */
+     RIP_sig(ucontext) = (ULONG64)__wine_syscall_dispatcher_prolog_end_ptr;
++
++    if (is_rosetta2)
++    {
++        extern void __restore_mxcsr_thunk(void);
++        unsigned int direct_mxcsr;
++
++        __asm__ volatile( "stmxcsr %0" : "=m" (direct_mxcsr) );
++        if (FPU_sig(ucontext) && direct_mxcsr != FPU_sig(ucontext)->MxCsr)
++        {
++            FPU_sig(ucontext)->MxCsr = direct_mxcsr;
++            amd64_thread_data()->mxcsr = direct_mxcsr;
++            RIP_sig(ucontext) = (ULONG64)__restore_mxcsr_thunk;
++        }
++    }
+ }
+ #endif
+ 
+@@ -2541,6 +2572,17 @@ void signal_init_process(void)
+     }
+ #endif
+ 
++#ifdef __APPLE__
++    {
++        int traduit = 0;
++        size_t taille = sizeof(traduit);
++        if (sysctlbyname( "sysctl.proc_translated", &traduit, &taille, NULL, 0 ) == -1)
++            is_rosetta2 = FALSE;
++        else
++            is_rosetta2 = traduit;
++    }
++#endif
++
+     sig_act.sa_mask = server_block_set;
+     sig_act.sa_flags = SA_SIGINFO | SA_RESTART | SA_ONSTACK;
+ 
+@@ -2996,6 +3038,17 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher_instrumentation,
+                    "jmp " __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_prolog_end") )
+ 
+ 
++#ifdef __APPLE__
++extern void __restore_mxcsr_thunk(void);
++__ASM_GLOBAL_FUNC( __restore_mxcsr_thunk,
++                   "pushq %rcx\n\t"
++                   "movq %gs:0x30,%rcx\n\t"
++                   "ldmxcsr 0x350(%rcx)\n\t"
++                   "popq %rcx\n\t"
++                   "jmp " __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_prolog_end") )
++#endif
++
++
+ /***********************************************************************
+  *           __wine_unix_call_dispatcher
+  */

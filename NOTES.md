@@ -13566,3 +13566,65 @@ conversion mappe sur `WSAEOPNOTSUPP`. Non identifie.
 Le jeu tourne en ligne sur Steam Deck parce qu'Epic fournit un Easy Anti-Cheat **natif Linux**
 que Valve intègre à Proton. Il n'existe pas d'équivalent macOS. Le jeu en ligne est donc hors
 d'atteinte, et aucun travail sur cette pile n'y changera rien. Reste le solo.
+
+## 192. Le vérificateur de reconstruction ne vérifiait que Mesa
+
+Découvert en ajoutant 0065 et 0066 : le vérificateur annonçait « wine : 6 correctifs » alors
+que la série en compte dix. Deux défauts, tous les deux graves.
+
+### La liste avait dérivé
+
+`verifier_reconstruction.sh` recopiait la série au lieu de la partager avec
+`etape1_appliquer_correctifs.sh`. Les correctifs 0062, 0064, 0065 et 0066 n'y figuraient pas.
+Les deux scripts lisent désormais `tests/series.sh`, qui n'existe que pour ça.
+
+### Et la comparaison portait sur un répertoire inexistant
+
+```sh
+diff -rq ... "$dst/src" "$src/src" 2>/dev/null | wc -l
+```
+
+**Seul Mesa a un répertoire `src/`.** Wine a `dlls/`, vkd3d-proton a `libs/`, DXVK a `src/` —
+mais la comparaison échouait pour wine et wine11, l'erreur partait dans `/dev/null`, `wc -l`
+rendait zéro, et le verdict tombait : « reproduction exacte ».
+
+**Quatre arbres sur cinq passaient à vide.** Tous les « RECONSTRUCTION VERIFIEE » annoncés
+aujourd'hui ne garantissaient que Mesa.
+
+### Ce que la correction a révélé
+
+Le vérificateur compare maintenant l'**effet** des correctifs — `git diff HEAD` des deux côtés,
+en indexant tout, l'arbre de travail via un index temporaire pour ne jamais toucher le sien —
+plutôt que l'arborescence, qui contient aussi des sous-projets téléchargés et des journaux de
+construction sans rapport avec la série.
+
+Une seule vraie dérive, et elle était de mon fait : en annulant 0063, j'avais restauré la ligne
+`#if` de `get_unix_prot` mais perdu les deux lignes de commentaire que 0036 apporte. Une
+reconstruction depuis vanilla aurait produit un arbre différent du nôtre. Restauré.
+
+Le reste n'était que du bruit : fichiers créés par les correctifs, indexés d'un côté et non
+suivis de l'autre, plus `build-*.txt`, `subprojects/.wraplock` et des caches de tests.
+
+```
+mesa : 33 correctifs, reproduction exacte
+wine : 10 correctifs, reproduction exacte
+wine11 : 2 correctifs, reproduction exacte
+vkd3d-proton : 6 correctifs, reproduction exacte
+dxvk : 4 correctifs, reproduction exacte
+```
+
+### Le MXCSR, porté sans bénéfice mesuré
+
+`0066-wine-rosetta-mxcsr-in-signal-contexts.patch` porte les CW Hack 24256 et 24265 de
+CrossOver : sous Rosetta le registre `MXCSR` est faux dans les contextes de signaux, et sur M3
+Rosetta le restaure à une valeur incorrecte même après correction — d'où un thunk qui le
+réimpose depuis les données de fil.
+
+J'avais parié que ça expliquait l'écran noir de Steam : des masques d'exceptions flottantes
+erronés font rompre un processus Chromium. **Pari perdu** : neuf ruptures de plus sur le test
+suivant, et l'authentification échoue toujours.
+
+Le correctif est gardé sur la foi de CodeWeavers et parce que le symptôme qu'il traite est
+silencieux — des calculs flottants faux ne se voient pas dans un compteur de plantages. Mais
+**je n'ai mesuré aucun bénéfice**, et la suite de conformité est le seul outil qui pourrait en
+montrer un.

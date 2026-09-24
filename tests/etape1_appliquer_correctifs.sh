@@ -50,12 +50,7 @@ if [ "${1:-}" = "--cloner" ]; then
    cloner "$DXVK_URL"  "$DXVK_REV"  "$R/src/dxvk"
 fi
 
-serie_mesa() {
-   for f in "$R"/00[0-9][0-9]-kosmickrisp-*.patch; do
-      case "$(basename "$f")" in 0000-*) continue;; esac
-      echo "$f"
-   done
-}
+. "$R/tests/series.sh"
 
 appliquer() {
    arbre=$1; shift
@@ -74,15 +69,10 @@ appliquer() {
 }
 
 appliquer mesa $(serie_mesa)
-appliquer wine "$R"/0028-*.patch "$R"/0035-*.patch "$R"/0036-*.patch \
-               "$R"/0038-*.patch "$R"/0040-*.patch "$R"/0041-*.patch \
-               "$R"/0062-*.patch "$R"/0064-*.patch \
-               "$R"/0065-*.patch
-appliquer wine11 "$R"/0048-*.patch "$R"/0049-*.patch
-appliquer vkd3d-proton "$R"/0004-*.patch "$R"/0007-*.patch "$R"/0008-*.patch \
-                       "$R"/0014-*.patch "$R"/0016-*.patch "$R"/0044-*.patch
-appliquer dxvk "$R"/0039-*.patch "$R"/0042-*.patch "$R"/0043-*.patch \
-              "$R"/0061-*.patch
+appliquer wine $(serie_wine)
+appliquer wine11 $(serie_wine11)
+appliquer vkd3d-proton $(serie_vkd3d_proton)
+appliquer dxvk $(serie_dxvk)
 
 echo
 echo "Les trois arbres sont patches. Enchainer sur :"
