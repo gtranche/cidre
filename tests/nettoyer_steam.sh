@@ -30,7 +30,7 @@ if [ -f "$C.avant-proton-ouvert" ]; then
 fi
 
 # 3. Le raccourci non-Steam vers DREDGE, qui servait de sonde.
-U=$(ls -d "$S"/userdata/[0-9]* 2>/dev/null | head -1)
+U=$(ls -d "$S"/userdata/[0-9]* 2>/dev/null | grep -v "/0$" | head -1)
 if [ -n "$U" ] && [ -f "$U/config/shortcuts.vdf.avant-proton-ouvert" ]; then
    mv "$U/config/shortcuts.vdf.avant-proton-ouvert" "$U/config/shortcuts.vdf"
    rm -f "$U/config/shortcuts.vdf.guillemets"
