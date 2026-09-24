@@ -13421,3 +13421,63 @@ possible**, et aucun travail de notre côté n'y changera quoi que ce soit : le 
 le client, fermé.
 
 Reste Heroic, déjà configuré en section 187, qui couvre GOG, Epic et Amazon — mais pas Steam.
+
+## 189. Steam Windows sous la pile : l'interface passe, le rendu et le réseau non
+
+Puisque le client macOS refuse d'invoquer un outil de compatibilité (section 188), l'autre
+approche est de faire tourner le **client Steam Windows** dans la pile.
+
+### Ce qui marche
+
+```
+SteamSetup.exe installe sans erreur dans un prefixe dedie
+Steam.exe se met a jour tout seul : 1,4 Go telecharges
+cinq processus vivants, interface Chromium chargee
+fenetre "Se connecter a Steam", classe SDL_app, avec CefBrowserWindow
+```
+
+Que l'interface Chromium embarquée se charge du tout est la bonne surprise : c'était la partie
+la plus incertaine.
+
+### Ce qui ne marche pas
+
+La fenêtre est **noire**, et son journal dit pourquoi :
+
+```
+The GPU process has crashed 6 time(s)
+GPU process exited unexpectedly: exit_code=-2147483645   (STATUS_BREAKPOINT)
+```
+
+Le processus GPU de Chromium plante en boucle. Ni `-cef-disable-gpu` ni
+`-cef-disable-gpu-compositing` n'y changent quoi que ce soit : le compteur passe de 6 à 16 sur
+une seconde série.
+
+Et un second mur, indépendant du premier :
+
+```
+Unknown error 10045 mapped to net::ERR_FAILED
+Failed to start auth session: {"result":3,"message":"Connection failed"}
+```
+
+`10045` est `WSAEOPNOTSUPP` — une opération de socket que Wine ne gère pas. L'authentification
+échouerait donc même avec une interface qui s'affiche.
+
+### La configuration par jeu n'est pas un obstacle
+
+L'objection naturelle à un préfixe unique — on ne pourrait plus régler la pile jeu par jeu —
+ne tient pas. Trois couches se configurent déjà par nom d'exécutable :
+
+```
+Wine   AppDefaults dans le registre
+DXVK   Config::getAppConfig(appName)
+Mesa   drirc, <application executable="...">   — 166 profils deja livres
+```
+
+C'est même plus fin que les variables d'environnement posées à la main aujourd'hui.
+
+### La voie qui reste
+
+`steamcmd` natif macOS sait télécharger un dépôt Windows avec
+`+@sSteamCmdForcePlatformType windows`, sans Wine du tout. On récupère les fichiers, on lance
+avec la pile. Ce que ça ne donne pas : les jeux protégés par le DRM Steam, dont le
+`steam_api.dll` exige un client Steam compatible en cours d'exécution. Non teste.
