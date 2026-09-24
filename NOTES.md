@@ -13147,3 +13147,48 @@ réel. Le chronomètre actuel ne les voit pas.
 
 L'instrumentation a été retirée ; `verifier_reconstruction.sh` confirme que les cinq arbres se
 reproduisent à l'identique.
+
+## 184. Le blocage au chargement est dans Rosetta, pas dans la pile
+
+Deux profils `sample` du processus DREDGE : un de 45 s couvrant le démarrage, un de 90 s
+pendant lequel l'auteur a déclenché un chargement de partie. Les comptes bruts ne sont pas
+comparables — la cadence d'échantillonnage diffère — donc tout est normalisé par le nombre
+d'échantillons par fil (3353 et 5357), ce qui donne des équivalents-fil.
+
+```
+                                      demarrage   chargement
+Rosetta Runtime Routines 0x20000eb80     0,55        2,00
+Rosetta Runtime Routines 0x7ff7ffc0eed0  0,99        1,00
+notre pilote, par entree                 0,006       0,004
+Metal, par entree                        absent      0,004
+```
+
+Pendant le chargement, le travail de Rosetta équivaut à **deux fils pleins**, et il a plus que
+triplé par rapport au démarrage. Notre pilote reste à cinq millièmes de fil, et il *baisse*.
+Les entrées relevées sont les plus lourdes du pilote :
+
+```
+mtl_render_pass_descriptor_get_color_attachment   26
+kk_draw                                           23
+vk_common_QueueSubmit2                            21
+wsi_AcquireNextImageKHR                           18
+```
+
+Metal apparaît enfin, mais au même ordre : 23 échantillons pour
+`objectAtIndexedSubscript:` sur les descripteurs d'attachement.
+
+**Le blocage n'est pas chez nous.** C'est la traduction : au chargement d'une partie, quantité
+de chemins de code du jeu s'exécutent pour la première fois, et Rosetta doit les traduire. Mono
+aggrave le cas — il génère du code à l'exécution, que Rosetta doit traduire à son tour, à
+chaque lancement, sans pouvoir le mettre en cache comme il le fait pour un binaire lancé
+normalement.
+
+Rien à corriger dans le pilote pour ce symptôme, et rien à corriger tout court : Rosetta est
+fermé.
+
+### Limite de la méthode
+
+`sample` ne sait pas dérouler une pile PE 32 bits : il répète `__wine_syscall_dispatcher`, qui
+ressort à 39 092 échantillons avec la mention « recursive counted multiple ». **Ce nombre est
+inexploitable** et aucune conclusion ne s'appuie dessus. Les frames natives — pilote, Metal,
+Rosetta — sont attribuées correctement, et c'est sur elles seules que repose la comparaison.
