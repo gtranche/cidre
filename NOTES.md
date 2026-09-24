@@ -14892,3 +14892,75 @@ Une fois nettoye : `DREDGE.exe 166 %`, `wineserver 26 %`.
 
 C'est la deuxieme fois de la journee que des processus oublies faussent une mesure. La regle
 tient : avant toute observation de performance, verifier ce qui tourne.
+
+## 214. L'arm64 se rouvre : la conclusion du paragraphe 144 ne valait pas pour nous
+
+Apple retire Rosetta 2. La pile entiere etant x86_64 sous Rosetta, ce n'est plus une question
+d'optimisation mais de survie. Il fallait donc rouvrir le dossier arm64, ferme au paragraphe 144.
+
+### La mesure de 144 tient, sa conclusion non
+
+Rien a reprendre a la mesure : `x18` est efface par macOS a chaque retour du noyau vers l'espace
+utilisateur, preemption comprise, cinq essais sur cinq. Aucun point de restauration n'existe.
+
+Mais la conclusion disait : « recompiler tout le code PE avec un autre acces au TEB, ce qui
+interdit les binaires Windows reels et vide le portage de son sens ». Cette phrase suppose qu'on
+veuille executer des binaires **Windows ARM64**. Ce n'est pas notre cas :
+
+```
+DREDGE.exe          pei-i386
+MarsSteam.exe       pei-x86-64
+```
+
+Les jeux sont x86. Le seul code PE ARM64 de la pile serait celui de Wine lui-meme, que nous
+compilons. Et il lit le TEB en un seul endroit :
+
+```
+include/winnt.h:2460  register struct _TEB *__wine_current_teb __asm__("x18");
+include/winnt.h:2468  return (struct _TEB *)__getReg(18);
+```
+
+Trente-trois occurrences de `x18` hors du cote unix, dont la plupart sont des traces ou des
+tests ; les sites reels tiennent dans `winnt.h` et trois fragments d'assembleur de
+`signal_arm64.c`.
+
+### Un registre qui tient : TPIDRRO_EL0
+
+`tests/tpidrro_stable.c` reprend exactement le protocole qui avait tue `x18` -- boucle serree,
+aucun appel systeme, comparaison a chaque tour -- sur deux fils simultanes :
+
+```
+  fil A : TPIDRRO_EL0 = 0x16d8130e0 (pthread_self = 0x16d813000)
+  fil B : TPIDRRO_EL0 = 0x16d89f0e0 (pthread_self = 0x16d89f000)
+  fil B : STABLE sur 200000000 tours
+  fil A : STABLE sur 200000000 tours
+```
+
+Deux cents millions de tours sans perte, la ou `x18` tombait en quelques millions. La valeur est
+propre au fil et lisible en mode utilisateur. Elle peut donc servir de cle pour retrouver le TEB.
+
+### Le compilateur ne touche pas a x18
+
+Sous forte pression de registres, `aarch64-w64-mingw32-clang` n'emet **aucune** reference a
+`x18` : l'ABI Windows ARM64 le reserve au TEB, le compilateur s'en abstient. Le rendre inutile
+ne risque donc pas de casser du code genere ailleurs.
+
+### Ce qui reste, et c'est le vrai sujet
+
+Le portage arm64 de Wine redevient envisageable. Mais il ne suffit pas : **les jeux sont x86**.
+Un Wine arm64 natif a toujours besoin d'un emulateur x86 pour le code du jeu -- c'est ce que
+Rosetta fait aujourd'hui pour toute la pile.
+
+```
+FEX-Emu : absent    box64 : absent    qemu-x86_64 : absent
+```
+
+Rien d'installe, et la disponibilite de ces emulateurs sur macOS arm64 n'est pas etablie. Deux
+voies :
+
+1. garder la pile x86_64 et remplacer Rosetta par un autre emulateur -- aucun portage Wine, mais
+   tout repose sur l'existence d'un tel emulateur sur macOS ;
+2. porter Wine en arm64 -- desormais credible grace a TPIDRRO_EL0 -- et n'emuler que le code du
+   jeu, ce qui reduit la surface emulee mais ne supprime pas le besoin.
+
+Les deux exigent un emulateur x86. C'est la, pas dans `x18`, qu'est maintenant le risque.
