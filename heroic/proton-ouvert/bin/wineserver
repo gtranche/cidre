@@ -1,0 +1,17 @@
+#!/bin/sh
+# Wine de la pile ouverte, presente a Heroic comme une version de Wine ordinaire.
+#
+# Heroic appelle ce binaire directement : on pose ici l'environnement que
+# tests/etape2_pile_wow64.sh pose d'habitude, puis on passe la main au vrai wine.
+R=$(cd "$(dirname "$0")/../../.." && pwd)
+
+export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:-d3d12,d3d12core,dxgi,d3d11,d3d10core,d3d9,d3d8=n;d3dx9_43,d3dcompiler_43=n;mscoree,mshtml=d}"
+export VK_DRIVER_FILES="$R/prefix-x64/share/vulkan/icd.d/kosmickrisp_mesa_icd.x86_64.json"
+export DYLD_LIBRARY_PATH="$R/wine/vklib:$R/wine/deps:$R/prefix-x64/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+export MESA_KK_EXPERIMENTAL="${MESA_KK_EXPERIMENTAL:-custom_border,image_view_min_lod}"
+export WINEDEBUG="${WINEDEBUG:--all}"
+
+mkdir -p "$R/wine/vklib"
+ln -sf "$R/prefix-x64/lib/libvulkan.1.dylib" "$R/wine/vklib/libMoltenVK.dylib" 2>/dev/null || true
+
+exec "$R/wine/wine10-wow64/bin/wineserver" "$@"

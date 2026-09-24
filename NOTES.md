@@ -13318,3 +13318,54 @@ La seconde marche depuis la section 173, mais elle ne donne ni le déblocage des
 Steamworks.
 
 Le lien symbolique est laissé en place pour le dernier essai. Il se retire d'une commande.
+
+## 187. Steam honore `CompatToolMapping`, et Heroic est la meilleure porte
+
+### Steam : la correspondance passe, le répertoire non
+
+La section 186 concluait que la voie Steam était fermée. C'est à moitié faux, et la moitié qui
+reste est intéressante. Écrite à la main dans `config.vdf`, sous
+`InstallConfigStore/Software/Valve/Steam` :
+
+```
+"CompatToolMapping" { "0" { "name" "proton_ouvert_macos" "priority" "250" } }
+```
+
+Le client l'a lue, appliquée, et conservée :
+
+```
+[2026-09-24 16:28:34] Client version: 1788652215
+[2026-09-24 16:28:34] Mapping AppID 0 to tool "proton_ouvert_macos" with priority 250
+```
+
+`compat_log.txt`, muet depuis le 15 septembre 2025, a été réécrit. **Le client macOS honore
+donc la table de correspondance** ; ce qu'il ne fait pas, c'est scanner
+`compatibilitytools.d`. L'interface n'expose rien, mais le mécanisme vit.
+
+Reste à savoir s'il sait résoudre un nom d'outil qu'il n'a jamais enregistré — non testé.
+
+### Heroic : la voie directe
+
+Heroic est déjà installé, connaît GOG, et gère des versions de Wine :
+
+```
+tools/game-porting-toolkit/Game-Porting-Toolkit-latest   (version par defaut)
+customWinePaths : []
+autoInstallDxvk : false        <- ne touchera pas a notre DXVK
+autoInstallVkd3d : false
+```
+
+`heroic/proton-ouvert/` présente notre pile comme une version de Wine ordinaire : `bin/wine64`
+et `bin/wineserver` sont des enveloppes qui posent `VK_DRIVER_FILES`, `DYLD_LIBRARY_PATH`,
+`WINEDLLOVERRIDES` et `MESA_KK_EXPERIMENTAL` avant de passer la main, et `lib` pointe sur
+l'arbre Wine. Vérifié :
+
+```
+heroic/proton-ouvert/bin/wine64 --version  ->  wine-10.0
+```
+
+Déclarée dans la configuration d'Heroic comme « Proton ouvert », avec `enableWoW64` à vrai
+puisque notre Wine est un WoW64 neuf. `config.json` sauvegardé sous `.avant-proton-ouvert`.
+
+Tout ce qui est ajouté vit dans le dossier du projet ; côté Steam et Heroic, il n'y a qu'un
+lien symbolique et deux clés de configuration, chacun annulable d'une commande.
