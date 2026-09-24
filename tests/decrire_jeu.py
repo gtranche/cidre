@@ -58,6 +58,16 @@ def lire(chemin):
     return machine, dc, dlls
 
 
+def est_installeur(chemin):
+    """Un installeur GOG est lui-meme un binaire 32 bits : son architecture ne dit
+    rien de celle du jeu qu'il contient. Mieux vaut le signaler que laisser conclure."""
+    brut = open(chemin, "rb").read(4 << 20)
+    for marque in (b"Inno Setup", b"InnoSetupLdr", b"Nullsoft.NSIS", b"This installation was built with"):
+        if marque in brut:
+            return True
+    return False
+
+
 def nommer_api(chemin, importees):
     """Les jeux chargent souvent Direct3D par LoadLibrary : on cherche les noms
     de DLL dans tout le fichier, pas seulement dans la table d'imports."""
@@ -100,6 +110,12 @@ def main(args):
             print("  ce n'est pas un executable Windows")
             continue
         machine, dc, dlls = res
+        if est_installeur(chemin):
+            print("  C'EST UN INSTALLEUR, pas le jeu. Son architecture est celle de")
+            print("  l'installeur, pas celle du jeu. Extraire d'abord :")
+            print(f"    innoextract -d /tmp/jeu \"{chemin}\"")
+            print("  puis relancer cet outil sur le repertoire obtenu.")
+            continue
         nx = "oui" if dc & 0x0100 else "NON — desarme le no-exec du processus"
         gfx = sorted(set(nommer_api(chemin, dlls)))
         print(f"  architecture : {MACHINE.get(machine, hex(machine))}")
