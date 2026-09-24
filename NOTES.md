@@ -13481,3 +13481,42 @@ C'est même plus fin que les variables d'environnement posées à la main aujour
 `+@sSteamCmdForcePlatformType windows`, sans Wine du tout. On récupère les fichiers, on lance
 avec la pile. Ce que ça ne donne pas : les jeux protégés par le DRM Steam, dont le
 `steam_api.dll` exige un client Steam compatible en cours d'exécution. Non teste.
+
+## 190. Le verrou des dépôts Windows s'ouvre avec une ligne, et elle n'est pas où je cherchais
+
+Piste donnée par l'auteur : le projet **Kaon** (`github.com/natbro/kaon`).
+
+```
+~/Library/Application Support/Steam/Steam.AppBundle/Steam/Contents/MacOS/steam_dev.cfg
+@sSteamCmdForcePlatformType windows
+```
+
+Le fichier n'existait pas. Créé avec cette seule ligne et après un redémarrage du client, **le
+Steam macOS natif télécharge les jeux Windows**. Vérifié : Elden Ring (AppID 1245620) se
+télécharge, 66 Go, accompagné des redistribuables Steamworks (AppID 228980) — le client traite
+bien l'installation comme une installation Windows.
+
+J'ai passé la journée sur `compatibilitytools.d` puis sur `CompatToolMapping`, en concluant
+deux fois de suite que la voie était fermée. Les deux conclusions étaient exactes et sans
+intérêt : le verrou n'était ni l'un ni l'autre.
+
+### L'architecture de Kaon, et ce qu'on en garde
+
+```
+1. steam_dev.cfg forcant la plateforme Windows            <- pris, verifie
+2. bibliotheque macOS pointee sur celle du Steam Windows
+   via une image disque bidon, puis libraryfolders.vdf    <- pas necessaire pour lancer
+3. options de lancement par jeu vers un script enveloppe
+4. client Steam Windows en cours d'execution              <- notre mur (section 189)
+```
+
+Les points 2 et 4 n'existent que pour donner Steamworks aux jeux. Pour simplement lancer un
+jeu, le `.exe` téléchargé suffit, avec la pile — comme pour DREDGE.
+
+D'où un découpage net du problème restant :
+
+```
+jeu sans DRM Steam ni anti-triche   -> devrait marcher des maintenant
+jeu avec DRM Steam                  -> exige le client Windows, donc l'ecran noir de la 189
+jeu avec anti-triche                -> hors d'atteinte
+```
