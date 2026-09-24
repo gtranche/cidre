@@ -13708,3 +13708,55 @@ anti-triche et jeu en ligne      hors d'atteinte, structurel
 Et un constat qui vaut d'être dit : **notre pile graphique n'a toujours pas ete mise a
 l'epreuve par un jeu Steam**. Ni Elden Ring ni Surviving Mars n'ont atteint la creation d'un
 peripherique. Tout ce qu'on sait de son comportement sur un vrai jeu vient encore de DREDGE.
+
+## 195. Ce qu'on a raté chez CrossOver : l'inventaire
+
+Le miroir `winecx` compte **133 correctifs CW**, repartis ainsi :
+
+```
+63  dlls/ntdll          le coeur macOS et Rosetta
+24  dlls/winemac.drv
+ 5  dlls/wined3d
+ 4  dlls/win32u
+```
+
+On en a porté deux — le contournement `lretq` du pont WoW64 (section 180) et les correctifs
+`MXCSR` (section 192).
+
+### Ce qui vise notre écran noir, et ce que ça donne
+
+**CW HACK 22131** — « Setting debug registers is not supported under Rosetta, faking success ».
+Porté, testé : **il ne s'est jamais déclenché**, Chromium ne pose pas de registres de débogage.
+Retiré.
+
+**CW HACK 23854** — « Ignore the command_line_args_disabled flag in the cef_settings_t passed
+to cef_initialize ». Ça correspond exactement à notre symptôme : nos drapeaux arrivent sur la
+ligne de commande du webhelper — vérifié — et n'ont aucun effet.
+
+Mais leur méthode est de **corriger le binaire `libcef.dll` à des offsets fixes, version par
+version**. Leur table couvre CEF 72, 85, 90, 111 et 135 ; le Steam actuel embarque **Chrome
+126**. Même CrossOver ne couvre probablement pas cette version, et un tel correctif se périme à
+chaque mise à jour du client.
+
+### Ce qui éclaire notre travail d'hier
+
+**CW HACK 18947** : « If mach_vm_write() is used to modify code cross-process (which is how we
+implement NtWriteVirtualMemory), Rosetta won't notice the code change ». C'est exactement la
+famille de problèmes qui a produit l'écran noir de la section 178 — Rosetta qui ne voit pas une
+modification de code. Ils l'ont rencontrée par une autre porte.
+
+### Le reste de l'inventaire, non porté
+
+```
+20810   mode bouteille 32 bits, sans objet chez nous
+22144   renommage de l'icone du Dock
+22434   exports pour les DLL PE de D3DMetal
+22939   ASLR selon la version de Windows
+24711   limiter le nombre de processeurs par WINENCPU
+20186   NOP de CET
+18582   marge en queue d'allocation pour un installeur Rockstar
+```
+
+Aucun ne vise nos deux murs. La conclusion honnête est que **CrossOver ne détient pas la
+solution de notre écran noir** : soit leur build diffère ailleurs, soit ils corrigent une
+version de CEF que Steam n'utilise plus.
