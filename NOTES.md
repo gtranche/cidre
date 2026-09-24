@@ -13760,3 +13760,61 @@ modification de code. Ils l'ont rencontrée par une autre porte.
 Aucun ne vise nos deux murs. La conclusion honnête est que **CrossOver ne détient pas la
 solution de notre écran noir** : soit leur build diffère ailleurs, soit ils corrigent une
 version de CEF que Steam n'utilise plus.
+
+## 196. L'écran noir de Steam : la rupture est localisée, la cause non
+
+Progrès réel sur le diagnostic, aucun sur la correction.
+
+### Ce qui est établi
+
+`WINEDEBUG=+seh` donne enfin l'exception, que ni notre flux ni le journal de CEF ne montraient :
+
+```
+dispatch_exception code=80000003 (EXCEPTION_BREAKPOINT) addr=00006FFFEE97F905
+```
+
+Toujours la même adresse, à chaque relance du processus GPU. Corrélée aux bases de modules :
+**`libcef.dll + 0x59EF905`**. La rupture est donc dans le code de Chromium, pas dans Wine.
+
+### La piste suivie, et pourquoi elle n'aboutit pas
+
+CW HACK 23854 de CrossOver neutralise `command_line_args_disabled` dans `cef_settings_t`, ce qui
+correspondait à notre symptôme : des drapeaux présents sur la ligne de commande du webhelper et
+sans effet. La fonction de recopie existe dans le `libcef.dll` de Steam, avec la même forme et
+**aux mêmes décalages** que leur version CEF 90, seul le registre de destination différant :
+
+```
+0x2781B5  mov eax,[rdi+0x64]  mov [rsi+0x64],eax
+0x2781BB  mov eax,[rdi+0x68]  mov [rsi+0x68],eax   <- champ vise
+0x2781C1  lea r8,[rsi+0x70]   (une chaine suit)
+```
+
+Corrigé en `xor eax,eax ; nop` : **six ruptures de plus, rien de change**.
+
+Et je ne peux pas démontrer que le correctif agit, parce que je n'ai aucun observable. Steam ne
+relaie qu'une liste blanche de drapeaux `-cef-*` : `-cef-disable-gpu` et
+`-cef-disable-gpu-compositing` arrivent bien, mais `-cef-v=1` et `-cef-single-process` **ne
+figurent pas** sur la ligne de commande du webhelper. Le test par la verbosite, puis celui par
+le mode mono-processus, sont donc tous deux invalides.
+
+Le correctif est **annulé** : une modification non verifiee d'un binaire livre, sans benefice
+mesurable, vaut moins que rien — elle brouillerait le debogage suivant et sauterait a la
+premiere mise a jour du client.
+
+### Ce qu'il faudrait
+
+Nommer la verification qui rompt. Sans symboles dans 210 Mo de binaire depouille, ce n'est pas
+atteignable par les moyens employes ici. Il faudrait soit des symboles pour cette version de
+CEF, soit un debogueur capable de s'attacher au processus GPU — `winedbg` n'y arrive pas.
+
+### L'inventaire des impasses de la journee sur ce mur
+
+```
+-cef-disable-gpu, -cef-disable-gpu-compositing, -cef-in-process-gpu   sans effet
+CATransaction explicite autour du reglage de couche                   sans objet ici
+MXCSR corrige sous Rosetta (0066)                                     sans effet
+registres de debogage faussement reussis (CW 22131)                   jamais declenche
+WSALookupServiceBegin rendant une recherche vide (0065)               supprime son erreur,
+                                                                      pas celle de l'auth
+command_line_args_disabled neutralise dans libcef.dll                  sans effet, annule
+```
