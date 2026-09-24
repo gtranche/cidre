@@ -13369,3 +13369,55 @@ puisque notre Wine est un WoW64 neuf. `config.json` sauvegardé sous `.avant-pro
 
 Tout ce qui est ajouté vit dans le dossier du projet ; côté Steam et Heroic, il n'y a qu'un
 lien symbolique et deux clés de configuration, chacun annulable d'une commande.
+
+## 188. Steam Play n'existe pas sur macOS : la question est close
+
+Trois essais, trois refus, et une preuve à chaque étage.
+
+```
+1. outil depose dans compatibilitytools.d
+   -> jamais scanne. "compatibilitytools" n'apparait pas une fois dans
+      3 Mo de compat_log.txt ; tous les outils enregistres portent un AppID.
+
+2. CompatToolMapping ecrit a la main dans config.vdf
+   -> lu, applique, conserve. compat_log.txt, muet depuis un an, est reecrit :
+      Mapping AppID 0 to tool "proton_ouvert_macos" with priority 250
+
+3. raccourci non-Steam vers un .exe, associe nommement a l'outil
+   -> Mapping AppID 3624361000 to tool "proton_ouvert_macos"
+      Failed running GameID ... : "/chemin/DREDGE.exe" (OS Error 0)
+      steam/appels.log : jamais ecrit.
+```
+
+Le client **enregistre** la correspondance et **n'invoque jamais** l'outil : il tente
+d'exécuter le PE nativement, ce que macOS refuse. Le code qui lit la table est partagé avec la
+version Linux ; le lanceur, lui, n'en tient aucun compte.
+
+Et il n'y a pas de ruse possible : l'enregistrement d'un outil ne se produit que pour les
+outils distribués comme applications Steam, et ceux-là sont refusés sur macOS — le journal le
+dit lui-même, « Ignoring tool steamlinuxruntime as it's for a different target platform linux ».
+
+### Deux erreurs corrigées en route
+
+La section 186 concluait que la voie était fermée parce que le répertoire n'est pas scanné.
+C'était la bonne conclusion pour la mauvaise raison : la correspondance écrite à la main
+fonctionne parfaitement. Le vrai mur est un cran plus loin.
+
+Et j'ai stocké le chemin du raccourci entre guillemets, convention Windows de Steam, que le
+client macOS redouble :
+
+```
+Failed running GameID ... : ""/chemin/DREDGE.exe"" (OS Error 0)
+```
+
+Corrigé dans `tests/ajouter_raccourci_steam.py`, qui écrit désormais le chemin nu. L'outil
+reste utile : il ajoute un jeu non-Steam sans passer par le sélecteur de fichiers macOS, qui
+refuse les `.exe`.
+
+### Ce que ça laisse
+
+Lancer les jeux Windows d'une bibliothèque Steam depuis le Steam macOS natif **n'est pas
+possible**, et aucun travail de notre côté n'y changera quoi que ce soit : le verrou est dans
+le client, fermé.
+
+Reste Heroic, déjà configuré en section 187, qui couvre GOG, Epic et Amazon — mais pas Steam.
