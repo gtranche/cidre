@@ -16,10 +16,9 @@ typedef void *(__cdecl *fn_generique)(void *client, int user, int pipe, const ch
 typedef void *(__cdecl *fn_natif)(void *enveloppe);
 
 static const char *cibles[] = {
+    "SteamUser021",
+    "SteamUtils010",
     "STEAMAPPS_INTERFACE_VERSION008",
-    "SteamUser023",
-    "SteamUtils011",
-    "STEAMUSERSTATS_INTERFACE_VERSION013",
 };
 
 int main(void)

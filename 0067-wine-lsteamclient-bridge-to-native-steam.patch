@@ -42,15 +42,16 @@ index 00000000..401db203
 +@ cdecl SondeInterfaceNative(ptr)
 diff --git a/dlls/lsteamclient/main.c b/dlls/lsteamclient/main.c
 new file mode 100644
-index 00000000..559de45a
+index 00000000..a2162935
 --- /dev/null
 +++ b/dlls/lsteamclient/main.c
-@@ -0,0 +1,349 @@
+@@ -0,0 +1,399 @@
 +/*
 + * Cote PE du pont Steamworks : ce que le steam_api du jeu appelle.
 + */
 +
 +#include <stdarg.h>
++#include <string.h>
 +
 +#include "windef.h"
 +#include "winbase.h"
@@ -133,6 +134,45 @@ index 00000000..559de45a
 + */
 +#define NB_EMPLACEMENTS 64
 +
++/*
++ * Les methodes qui rendent une structure par valeur.
++ *
++ * Microsoft x64 rend un type de classe non trivial par pointeur cache : « this »
++ * dans RCX, le tampon dans RDX, et la methode doit rendre ce tampon dans RAX.
++ * System V, lui, rend un agregat entier de huit octets directement dans RAX --
++ * le desassemblage de la methode native le montre, elle prend « this » dans RDI
++ * et ne recoit aucun tampon. Relayer sans rien faire laisse donc l'appelant
++ * dereferencer une valeur comme si c'etait une adresse.
++ *
++ * On ne peut pas deviner quelles methodes sont concernees : les deux cotes
++ * compilent pareil pour un entier de huit octets, et seule la declaration du
++ * SDK les distingue. La liste se construit donc au fur et a mesure de ce que
++ * les jeux demandent, chaque entree etant justifiee par une trace.
++ */
++static const struct
++{
++    const char *prefixe;
++    unsigned    emplacement;
++} rendent_structure[] =
++{
++    /* ISteamUser::GetSteamID -- rend un CSteamID. Observe avec le steam_api64
++     * de Surviving Mars : « lea 0x478(%rsp),%rdx ; mov %rax,%rcx ; call
++     * *0x10(%r8) » puis « mov (%rax),%rcx ». */
++    { "SteamUser", 2 },
++};
++
++static BOOL rend_structure( const char *nom, unsigned emplacement )
++{
++    unsigned i;
++
++    if (!nom) return FALSE;
++    for (i = 0; i < ARRAY_SIZE(rendent_structure); i++)
++        if (rendent_structure[i].emplacement == emplacement &&
++            !strncmp( nom, rendent_structure[i].prefixe, strlen(rendent_structure[i].prefixe) ))
++            return TRUE;
++    return FALSE;
++}
++
 +static UINT64 repartir( unsigned emplacement, void *self,
 +                        UINT64 a, UINT64 b, UINT64 c, UINT64 d, UINT64 e, UINT64 f )
 +{
@@ -165,6 +205,16 @@ index 00000000..559de45a
 +    if (objet->nom)
 +    {
 +        if (WINE_UNIX_CALL( unix_appel_vtable, &params )) return 0;
++
++        if (rend_structure( objet->nom, emplacement ))
++        {
++            /* Le natif a rendu la valeur dans RAX ; l'appelant attend qu'elle
++             * soit ecrite dans son tampon et que RAX en porte l'adresse. */
++            if (!a) return 0;
++            *(UINT64 *)(ULONG_PTR)a = params.ret;
++            TRACE( "structure de 8 octets rendue via le tampon %p\n", (void *)(ULONG_PTR)a );
++            return a;
++        }
 +        return params.ret;
 +    }
 +

@@ -14445,3 +14445,70 @@ C'est l'inconnue qui restait sur la liste du paragraphe 200, et elle est mainten
 par la mesure, pas par la conjecture. Le pont ne pourra pas rester generique : il faudra
 connaitre, methode par methode, celles qui rendent une structure -- ce que Proton obtient du
 SDK, et qu'il faudra ici tirer du desassemblage.
+
+## 206. SteamAPI_Init rend 1
+
+### Le pointeur cache n'etait pas ou je le cherchais
+
+Le desassemblage de `steam_api64.dll` au point de faute, resynchronise depuis une frontiere
+d'instruction, donne la convention exacte :
+
+```
+mov  (%rcx),%rax        ; rcx = ISteamClient
+call *0x28(%rax)        ; emplacement 5 = GetISteamUser
+mov  (%rax),%r8         ; table d'ISteamUser
+lea  0x478(%rsp),%rdx   ; RDX = tampon de retour
+mov  %rax,%rcx          ; RCX = this
+call *0x10(%r8)         ; emplacement 2 = GetSteamID
+mov  (%rax),%rcx        ; deref du pointeur rendu  <- la faute
+```
+
+« this » reste dans RCX et le tampon arrive dans RDX -- l'inverse de ce que j'avais suppose au
+paragraphe precedent, ou j'ecrivais que Microsoft x64 place le pointeur cache **avant** `this`.
+C'est faux pour une methode membre : `this` garde le premier rang. La trace le disait deja et je
+ne l'avais pas lue : le journal affichait `a = ""`, qui n'etait pas un argument parasite mais le
+tampon de pile, vide.
+
+Cote natif, `ISteamUser` emplacement 2 prend « this » dans RDI et ne recoit aucun tampon : il
+rend le `CSteamID` dans RAX. Le relais doit donc ecrire la valeur dans le tampon et rendre son
+adresse.
+
+Impossible de deviner quelles methodes sont concernees : les deux cotes compilent pareil pour un
+entier de huit octets, et seule la declaration du SDK les separe. La table `rendent_structure`
+se construit donc au fil des traces, chaque entree portant la sienne en commentaire.
+
+### Le resultat
+
+```
+SteamAPI_IsSteamRunning -> 1
+--- SteamAPI_Init ---
+  CreateInterface "SteamClient020"
+  emplacement  0   CreateSteamPipe
+  emplacement  2   ConnectToGlobalUser
+  emplacement 12   GetISteamGenericInterface(0, 1, "SteamUtils010")
+    SteamUtils010 emplacement 9
+  emplacement 34
+  emplacement  5   GetISteamUser(1, 1, "SteamUser021")
+    SteamUser021 emplacement 2
+SteamAPI_Init -> 1
+--- SteamAPI_RunCallbacks x20 ---
+  SteamUtils010 emplacement 14
+  GetISteamGenericInterface "SteamController007", "SteamInput001"
+  SteamInput001 emplacement 2, SteamController007 emplacement 2
+  ... la boucle se repete a l'identique, sans faute
+```
+
+Steamworks s'initialise, contre le compte reellement connecte du client Steam macOS, depuis un
+binaire Windows sous notre pile. La boucle de rappels tourne et se stabilise : interrogation de
+l'identifiant d'application, du temps, des manettes -- le comportement normal d'un jeu a chaque
+image.
+
+### Ce qui n'est pas demontre
+
+Le jeu lui-meme ne tourne pas. Ce qui est etabli, c'est que `SteamAPI_Init` reussit et que
+`SteamAPI_RunCallbacks` s'execute sans faute vingt fois de suite. Un jeu appelle bien davantage,
+et chaque methode rendant une structure cassera de la meme maniere jusqu'a etre inscrite dans la
+table.
+
+Le faux client (`tests/faux_steam.c`) reste necessaire : sans un processus vivant a
+`ActiveProcess\pid`, `SteamAPI_Init` attend indefiniment. Il faudra le lancer avec le jeu.
