@@ -15214,3 +15214,59 @@ peut etre reserve, `NtCurrentTeb()` redevient inlinable et le cout s'efface.
 
 A eprouver : quels emplacements macOS laisse a un tiers, et si `pthread_key_create` en rend un
 utilisable sous cette forme. La table actuelle reste utile comme repli.
+
+## 219. L'acces direct au stockage local : les services de Wine demarrent
+
+### Deux questions, une mesure
+
+`tests/tpidrro_tsd.c`, sur deux fils simultanes :
+
+```
+cle pthread = 258
+  fil A : partie haute STABLE sur 300000000 tours ; bits bas vus : 0x0
+  fil A : cle=258, [(tpidrro & ~7) + 8*cle] = 0xdeadbeefcafe <-- CONCORDE
+  fil B : idem
+```
+
+La partie haute de `TPIDRRO_EL0` ne bouge pas, et le stockage local du fil est atteignable a
+`(TPIDRRO_EL0 & ~7) + 8 * cle`. Les trois bits de poids faible sont masques par precaution :
+macOS y loge le numero de coeur, meme si aucun n'est apparu ici.
+
+### NtCurrentTeb() redevient du code en ligne
+
+```
+adrp x8, __imp___wine_teb_tsd_key
+ldr  x8, [x8, :lo12:__imp___wine_teb_tsd_key]
+mrs  x9, TPIDRRO_EL0
+and  x9, x9, #0xfffffffffffffff8
+ldr  w8, [x8]
+lsl  w8, w8, #3
+ldr  x0, [x9, w8, uxtw]
+cbz  x0, repli
+ret
+```
+
+Huit instructions contre une pour `x18`, mais ni appel ni sondage. La table du paragraphe 217
+reste le repli, quand l'emplacement vaut encore zero.
+
+Un piege au passage : `NTSYSAPI unsigned int __wine_teb_tsd_key;` dans un en-tete est une
+definition provisoire dans **chaque** unite de compilation, d'ou un symbole duplique a l'edition
+de liens. Il fallait `extern`.
+
+### Le resultat
+
+```
+avant : wineboot.exe a 100 %, 771 echantillons dans __wine_current_teb
+apres : services.exe, plugplay.exe, rpcss.exe demarrent
+        0 exception
+```
+
+Toute la pile de services de Wine s'execute en arm64 natif sans une seule faute. C'est le plus
+loin que ce portage soit jamais alle.
+
+### Ce qui reste
+
+Les processus restent a 0 % et `wineboot --init` ne peuple toujours pas `system32` ; trois jeux
+de services coexistent, signe que le demarrage recommence. Le blocage suivant est une attente,
+pas une faute -- vraisemblablement du cote des communications entre services ou du serveur.
+C'est un tout autre terrain que `x18`, et il faudra l'aborder comme tel.
