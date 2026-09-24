@@ -42,10 +42,10 @@ index 00000000..401db203
 +@ cdecl SondeInterfaceNative(ptr)
 diff --git a/dlls/lsteamclient/main.c b/dlls/lsteamclient/main.c
 new file mode 100644
-index 00000000..a2162935
+index 00000000..1b5d2662
 --- /dev/null
 +++ b/dlls/lsteamclient/main.c
-@@ -0,0 +1,399 @@
+@@ -0,0 +1,403 @@
 +/*
 + * Cote PE du pont Steamworks : ce que le steam_api du jeu appelle.
 + */
@@ -72,26 +72,29 @@ index 00000000..a2162935
 +    return TRUE;
 +}
 +
-+static void *envelopper( void *natif, const char *nom );
++static void *envelopper( UINT64 natif, const char *nom );
 +
 +/* Ce que le steam_api du jeu appelle en premier. L'interface rendue doit etre
 + * un objet PE : rendre l'objet natif ferait entrer le jeu en ABI System V. */
 +void * CDECL CreateInterface( const char *version, int *err )
 +{
-+    struct create_interface_params params = { version, err, NULL };
++    struct create_interface_params params = { (ULONG_PTR)version, (ULONG_PTR)err, 0 };
 +    void *objet;
 +
 +    if (WINE_UNIX_CALL( unix_create_interface, &params )) return NULL;
 +    if (!params.ret) { ERR( "%s : le client natif ne connait pas cette interface\n", debugstr_a(version) ); return NULL; }
 +
 +    objet = envelopper( params.ret, NULL );
-+    ERR( "%s : natif %p -> objet PE %p\n", debugstr_a(version), params.ret, objet );
++    /* L'adresse native fait 64 bits ; la tronquer a la largeur du PE rendrait
++     * la trace trompeuse cote 32 bits. */
++    ERR( "%s : natif %s -> objet PE %p\n", debugstr_a(version),
++         wine_dbgstr_longlong(params.ret), objet );
 +    return objet;
 +}
 +
 +int CDECL SondeCreateSteamPipe( void *iface )
 +{
-+    struct create_steam_pipe_params params = { iface, 0 };
++    struct create_steam_pipe_params params = { (ULONG_PTR)iface, 0 };
 +
 +    if (WINE_UNIX_CALL( unix_create_steam_pipe, &params )) return 0;
 +    TRACE( "%p -> %d\n", iface, params.ret );
@@ -113,7 +116,8 @@ index 00000000..a2162935
 +struct objet_pe
 +{
 +    const void **table;   /* doit rester en tete : c'est ce que le jeu deref */
-+    void        *natif;
++    UINT64       natif;   /* adresse 64 bits, qu'un « void * » de PE 32 bits
++                           * ne pourrait pas contenir */
 +    const char  *nom;     /* NULL pour ISteamClient ; sinon, sous-interface */
 +};
 +
@@ -177,7 +181,7 @@ index 00000000..a2162935
 +                        UINT64 a, UINT64 b, UINT64 c, UINT64 d, UINT64 e, UINT64 f )
 +{
 +    struct objet_pe *objet = self;
-+    struct appel_vtable_params params = { objet->natif, emplacement, a, b, c, d, e, f, 0 };
++    struct appel_vtable_params params = { objet->natif, emplacement, 0, a, b, c, d, e, f, 0 };
 +    const char *ou = objet->nom ? objet->nom : "ISteamClient";
 +
 +    if (!IsBadStringPtrA( (LPCSTR)(ULONG_PTR)a, 64 ))
@@ -240,7 +244,7 @@ index 00000000..a2162935
 +
 +        if (!IsBadStringPtrA( (LPCSTR)(ULONG_PTR)c, 64 )) nom = (const char *)(ULONG_PTR)c;
 +        else if (!IsBadStringPtrA( (LPCSTR)(ULONG_PTR)b, 64 )) nom = (const char *)(ULONG_PTR)b;
-+        return (ULONG_PTR)envelopper( (void *)(ULONG_PTR)params.ret, nom );
++        return (ULONG_PTR)envelopper( params.ret, nom );
 +    }
 +    default:
 +        return params.ret;
@@ -329,7 +333,7 @@ index 00000000..a2162935
 +    thunk_56, thunk_57, thunk_58, thunk_59, thunk_60, thunk_61, thunk_62, thunk_63,
 +};
 +
-+static void *envelopper( void *natif, const char *nom )
++static void *envelopper( UINT64 natif, const char *nom )
 +{
 +    struct objet_pe *objet;
 +
@@ -338,13 +342,13 @@ index 00000000..a2162935
 +    objet->table = table_steam_client;
 +    objet->natif = natif;
 +    objet->nom   = nom;
-+    TRACE( "interface native %p -> objet PE %p\n", natif, objet );
++    TRACE( "interface native %s -> objet PE %p\n", wine_dbgstr_longlong(natif), objet );
 +    return objet;
 +}
 +
 +void * CDECL SondeEnvelopperSteamClient( void *natif )
 +{
-+    return envelopper( natif, NULL );
++    return envelopper( (ULONG_PTR)natif, NULL );
 +}
 +
 +/* Atteindre une sous-interface par son nom, via l'emplacement 12. L'objet
@@ -354,7 +358,7 @@ index 00000000..a2162935
 +void * CDECL SondeInterfaceGenerique( void *client, int user, int pipe, const char *version )
 +{
 +    struct objet_pe *objet = client;
-+    struct generic_interface_params params = { objet ? objet->natif : NULL, user, pipe, version, NULL };
++    struct generic_interface_params params = { objet ? objet->natif : 0, user, pipe, (ULONG_PTR)version, 0 };
 +
 +    if (!objet) return NULL;
 +    if (WINE_UNIX_CALL( unix_get_generic_interface, &params )) return NULL;
@@ -365,7 +369,7 @@ index 00000000..a2162935
 +void * CDECL SondeInterfaceNative( void *enveloppe )
 +{
 +    struct objet_pe *objet = enveloppe;
-+    return objet ? objet->natif : NULL;
++    return objet ? (void *)(ULONG_PTR)objet->natif : NULL;
 +}
 +
 +/*
@@ -431,7 +435,7 @@ index 00000000..a2162935
 +
 +    msg->m_hSteamUser = params.msg.user;
 +    msg->m_iCallback  = params.msg.callback;
-+    msg->m_pubParam   = params.msg.param;
++    msg->m_pubParam   = (unsigned char *)(ULONG_PTR)params.msg.param;
 +    msg->m_cubParam   = params.msg.taille;
 +    if (call) *call = params.call;
 +
@@ -447,10 +451,10 @@ index 00000000..a2162935
 +}
 diff --git a/dlls/lsteamclient/unix.c b/dlls/lsteamclient/unix.c
 new file mode 100644
-index 00000000..1b22f58d
+index 00000000..b0b37b47
 --- /dev/null
 +++ b/dlls/lsteamclient/unix.c
-@@ -0,0 +1,290 @@
+@@ -0,0 +1,318 @@
 +/*
 + * Cote unix du pont Steamworks : charge le steamclient.dylib du client Steam
 + * natif et lui demande ses interfaces.
@@ -563,8 +567,10 @@ index 00000000..1b22f58d
 +    struct create_interface_params *params = args;
 +
 +    if (!p_CreateInterface) return STATUS_DLL_NOT_FOUND;
-+    params->ret = p_CreateInterface( params->version, params->err );
-+    TRACE( "%s -> %p\n", debugstr_a(params->version), params->ret );
++    params->ret = (UINT64)(ULONG_PTR)p_CreateInterface( (const char *)(ULONG_PTR)params->version,
++                                                        (int *)(ULONG_PTR)params->err );
++    TRACE( "%s -> %p\n", debugstr_a((const char *)(ULONG_PTR)params->version),
++           (void *)(ULONG_PTR)params->ret );
 +    return STATUS_SUCCESS;
 +}
 +
@@ -584,10 +590,11 @@ index 00000000..1b22f58d
 +
 +    if (!params->iface) return STATUS_INVALID_PARAMETER;
 +
-+    table = *(methode_t **)params->iface;
-+    TRACE( "iface %p, table %p, emplacement 0 = %p\n", params->iface, table, table[0] );
++    table = *(methode_t **)(ULONG_PTR)params->iface;
++    TRACE( "iface %p, table %p, emplacement 0 = %p\n",
++           (void *)(ULONG_PTR)params->iface, table, table[0] );
 +
-+    params->ret = table[0]( params->iface );
++    params->ret = table[0]( (void *)(ULONG_PTR)params->iface );
 +    TRACE( "CreateSteamPipe -> %d\n", params->ret );
 +    return STATUS_SUCCESS;
 +}
@@ -605,8 +612,8 @@ index 00000000..1b22f58d
 +
 +    if (!params->iface) return STATUS_INVALID_PARAMETER;
 +
-+    table = *(methode_t **)params->iface;
-+    params->ret = table[1]( params->iface, params->pipe );
++    table = *(methode_t **)(ULONG_PTR)params->iface;
++    params->ret = table[1]( (void *)(ULONG_PTR)params->iface, params->pipe );
 +    TRACE( "BReleaseSteamPipe(%d) -> %d\n", params->pipe, params->ret );
 +    return STATUS_SUCCESS;
 +}
@@ -668,7 +675,7 @@ index 00000000..1b22f58d
 +    {
 +        params->msg.user     = msg.m_hSteamUser;
 +        params->msg.callback = msg.m_iCallback;
-+        params->msg.param    = msg.m_pubParam;
++        params->msg.param    = (UINT64)(ULONG_PTR)msg.m_pubParam;
 +        params->msg.taille   = msg.m_cubParam;
 +        params->call         = call;
 +        TRACE( "rappel %d, utilisateur %d, %d octets a %p\n",
@@ -705,9 +712,11 @@ index 00000000..1b22f58d
 +    if (!params->iface) return STATUS_INVALID_PARAMETER;
 +
 +    table = *(methode_t **)params->iface;
-+    params->ret = table[12]( params->iface, params->user, params->pipe, params->version );
++    params->ret = (UINT64)(ULONG_PTR)table[12]( (void *)(ULONG_PTR)params->iface, params->user,
++                                                params->pipe, (const char *)(ULONG_PTR)params->version );
 +    TRACE( "%s (utilisateur %d, tuyau %d) -> %p\n",
-+           debugstr_a(params->version), params->user, params->pipe, params->ret );
++           debugstr_a((const char *)(ULONG_PTR)params->version), params->user, params->pipe,
++           (void *)(ULONG_PTR)params->ret );
 +    return STATUS_SUCCESS;
 +}
 +
@@ -720,8 +729,8 @@ index 00000000..1b22f58d
 +
 +    if (!params->iface) return STATUS_INVALID_PARAMETER;
 +
-+    table = *(methode_t **)params->iface;
-+    params->ret = table[params->emplacement]( params->iface, params->a, params->b, params->c,
++    table = *(methode_t **)(ULONG_PTR)params->iface;
++    params->ret = table[params->emplacement]( (void *)(ULONG_PTR)params->iface, params->a, params->b, params->c,
 +                                             params->d, params->e, params->f );
 +    TRACE( "emplacement %d -> %s\n", params->emplacement, wine_dbgstr_longlong(params->ret) );
 +    return STATUS_SUCCESS;
@@ -741,12 +750,35 @@ index 00000000..1b22f58d
 +};
 +
 +C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );
++
++/*
++ * La meme table pour les appelants 32 bits.
++ *
++ * Wine exige cette seconde entree des qu'un PE 32 bits appelle l'unixlib, car
++ * les structures d'arguments n'ont d'ordinaire pas la meme disposition selon la
++ * largeur. Les notres etant entierement en largeur fixe, il n'y a rien a
++ * convertir et les deux tables coincident.
++ */
++const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
++{
++    attach,
++    create_interface,
++    create_steam_pipe,
++    release_steam_pipe,
++    appel_plat,
++    get_callback,
++    free_last_callback,
++    get_generic_interface,
++    appel_vtable,
++};
++
++C_ASSERT( ARRAYSIZE(__wine_unix_call_wow64_funcs) == unix_funcs_count );
 diff --git a/dlls/lsteamclient/unixlib.h b/dlls/lsteamclient/unixlib.h
 new file mode 100644
-index 00000000..8fa8fbe4
+index 00000000..796f7100
 --- /dev/null
 +++ b/dlls/lsteamclient/unixlib.h
-@@ -0,0 +1,119 @@
+@@ -0,0 +1,134 @@
 +/*
 + * Pont Steamworks : interface entre le cote PE et le cote unix.
 + */
@@ -759,24 +791,36 @@ index 00000000..8fa8fbe4
 +#include "winbase.h"
 +#include "wine/unixlib.h"
 +
++/*
++ * Toutes les structures d'arguments sont en largeur fixe.
++ *
++ * Un PE 32 bits ne peut appeler une unixlib que si celle-ci expose
++ * « __wine_unix_call_wow64_funcs », parce qu'un « void * » n'a pas la meme
++ * taille des deux cotes. Plutot qu'une table de conversion, on impose des
++ * champs de 64 bits partout : la disposition devient identique en 32 et en 64
++ * bits, et la meme table sert aux deux. Les pointeurs natifs, eux, sont de
++ * toute facon des adresses 64 bits qu'un « void * » de PE 32 bits ne pourrait
++ * pas contenir.
++ */
 +struct create_interface_params
 +{
-+    const char *version;
-+    int        *err;
-+    void       *ret;
++    UINT64 version;   /* const char * */
++    UINT64 err;       /* int * */
++    UINT64 ret;
 +};
 +
 +struct create_steam_pipe_params
 +{
-+    void *iface;
-+    int   ret;
++    UINT64 iface;
++    INT32  ret;
++    INT32  bourrage;
 +};
 +
 +struct release_steam_pipe_params
 +{
-+    void *iface;
-+    int   pipe;
-+    int   ret;
++    UINT64 iface;
++    INT32  pipe;
++    INT32  ret;
 +};
 +
 +/* Les fonctions plates prenant (utilisateur, tuyau) ou (tuyau) seul partagent
@@ -792,10 +836,10 @@ index 00000000..8fa8fbe4
 +
 +struct appel_plat_params
 +{
-+    int quoi;
-+    int pipe;
-+    int user;
-+    int ret;
++    INT32 quoi;
++    INT32 pipe;
++    INT32 user;
++    INT32 ret;
 +};
 +
 +/* Copie du CallbackMsg_t de Steamworks. Le cote unix ne la passe jamais telle
@@ -804,11 +848,11 @@ index 00000000..8fa8fbe4
 + * frontiere. */
 +struct generic_interface_params
 +{
-+    void       *iface;
-+    int         user;
-+    int         pipe;
-+    const char *version;
-+    void       *ret;
++    UINT64 iface;
++    INT32  user;
++    INT32  pipe;
++    UINT64 version;   /* const char * */
++    UINT64 ret;
 +};
 +
 +/* Relais generique vers un emplacement de la table native.
@@ -824,31 +868,34 @@ index 00000000..8fa8fbe4
 + * rendues par valeur. */
 +struct appel_vtable_params
 +{
-+    void   *iface;
-+    int     emplacement;
-+    UINT64  a, b, c, d, e, f;
-+    UINT64  ret;
++    UINT64 iface;
++    INT32  emplacement;
++    INT32  bourrage;
++    UINT64 a, b, c, d, e, f;
++    UINT64 ret;
 +};
 +
 +struct callback_msg
 +{
-+    int    user;
-+    int    callback;
-+    void  *param;
-+    int    taille;
++    INT32  user;
++    INT32  callback;
++    UINT64 param;
++    INT32  taille;
++    INT32  bourrage;
 +};
 +
 +struct get_callback_params
 +{
-+    int                 pipe;
++    INT32               pipe;
++    INT32               bourrage;
 +    struct callback_msg msg;
-+    int                 call;
-+    int                 ret;
++    INT32               call;
++    INT32               ret;
 +};
 +
 +struct free_last_callback_params
 +{
-+    int pipe;
++    INT32 pipe;
 +};
 +
 +enum lsteamclient_funcs

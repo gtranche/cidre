@@ -14680,3 +14680,53 @@ steam_api.dll   pei-i386
 Le telechargement n'est pas perdu -- il devient le banc d'essai du chemin i386 -- mais la
 recommandation etait fausse, et elle reposait sur une supposition au lieu d'une mesure. La regle
 du projet valait aussi pour ce choix-la.
+
+## 210. Le pont repond en 32 bits
+
+Avant d'engendrer les thunks `__thiscall`, il fallait savoir si la plomberie tenait. Premier
+essai :
+
+```
+LoadLibrary a echoue : 1114        ERROR_DLL_INIT_FAILED
+warn:module:process_attach Initialization of L"lsteamclient.dll" failed
+```
+
+`__wine_init_unix_call` echoue pour le module 32 bits. Wine exige d'une unixlib une seconde
+table, `__wine_unix_call_wow64_funcs`, des qu'un PE 32 bits l'appelle : les structures
+d'arguments n'ont pas la meme disposition selon la largeur.
+
+### La reponse : des structures de largeur fixe
+
+Plutot qu'ecrire une table de conversion entree par entree, toutes les structures d'arguments
+passent en `UINT64` / `INT32`. La disposition devient identique en 32 et en 64 bits, et la meme
+table sert aux deux -- `__wine_unix_call_wow64_funcs` reprend exactement les memes fonctions.
+
+Ce choix repondait de toute facon a une contrainte incontournable : les interfaces natives
+vivent a des adresses 64 bits, qu'un `void *` de PE 32 bits ne peut pas contenir. L'objet PE
+garde donc son pointeur natif en `UINT64`, quelle que soit sa propre largeur.
+
+```
+lsteamclient 32 bits charge : 7b2c0000
+CreateInterface "SteamClient020" : natif 214bf2180 -> objet PE 00013740
+tuyau 1, utilisateur 1
+plomberie 32 bits operationnelle
+```
+
+Un binaire i386 obtient une interface Steamworks et ouvre une session sur le client macOS natif.
+
+### Un detail de trace
+
+La premiere version affichait `natif 14BF2180` : l'adresse etait tronquee a la largeur du PE par
+un `(void *)(ULONG_PTR)`. La valeur stockee etait juste, mais la trace mentait. Elle passe par
+`wine_dbgstr_longlong`.
+
+### Non-regression
+
+Le chemin 64 bits est inchange : `SteamAPI_Init -> 1`, meme suite d'appels.
+
+### Ce qui reste pour les jeux 32 bits
+
+Les fonctions plates passent, parce qu'elles sont en `__cdecl`. Les appels de methode virtuelle,
+eux, sont en `__thiscall` et restent a traiter : il faut des thunks qui depilent le bon nombre
+d'octets. Les signatures du paragraphe 209 les donnent -- 76 emplacements et au plus neuf mots
+empiles, soit 760 thunks pour une grille complete, 204 couples reellement utilises.
