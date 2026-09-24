@@ -14304,3 +14304,63 @@ table qui n'est pas la sienne.
 La suite est mecanique et connue : appliquer a `ISteamApps`, `ISteamUser` et `ISteamUtils` la
 lecture qui a donne la carte d'`ISteamClient` -- relever la table a l'execution, decoder les
 octets de chaque methode, et laisser le binaire se nommer lui-meme quand il le fait.
+
+## 204. La plomberie est prete ; il manque un jeu
+
+### ISteamApps ne se nomme pas
+
+La technique du paragraphe 202 ne se transpose pas. Les methodes d'`ISteamApps` n'appellent
+aucun accesseur commun et ne chargent aucune chaine : elles implementent directement, ou
+relaient vers un objet interne loge a `0x10(%rdi)`.
+
+```
+emplacement 0 : movq 0x10(%rdi), %rdi ; leaq 0x11bf2dd(%rip), %rax ; ... masques 0xff000000 / 0xffffff
+emplacement 2 : xorl %eax, %eax ; retq          -- methode obsolete, rend toujours faux
+```
+
+Le binaire ne se nomme plus. Restait la voie empirique : appeler chaque emplacement et
+identifier par le comportement. **Je ne l'ai pas prise.** `ISteamApps` contient `UninstallDLC`
+et `InstallDLC` ; appeler a l'aveugle sur le compte vivant de l'utilisateur peut desinstaller
+du contenu. Les getters en lecture seule ne se distinguent pas des autres avant de les avoir
+appeles, ce qui est precisement le probleme.
+
+### La voie sure : laisser le jeu appeler
+
+Un `steam_api64.dll` sait ou il appelle. La table de decouverte journalise et rend zero sans
+jamais relayer : le jeu revele l'ordre exact des emplacements dont il a besoin, et rien
+d'inconnu n'est appele cote natif. Reste a lui presenter le pont comme il s'y attend.
+
+### Ce que cherche un steam_api
+
+Il ne connait pas « lsteamclient ». Il lit `HKCU\Software\Valve\Steam\ActiveProcess`,
+`SteamClientDll64`, charge ce chemin, et prend `CreateInterface`. Premier essai, en installant
+le pont sous le nom `steamclient64.dll` :
+
+```
+registre  : C:\Program Files (x86)\Steam\steamclient64.dll
+chargement impossible : 1114
+```
+
+`ERROR_DLL_INIT_FAILED`. Wine resout l'unixlib d'un module PE par le nom de ce module : sous un
+autre nom, il n'existe pas de `steamclient64.so` et `__wine_init_unix_call` echoue dans
+`DllMain`. La reponse est de ne pas renommer et de faire pointer le registre sur le module tel
+quel -- ce que fait Proton. `tests/preparer_pont_steam.sh` s'en charge.
+
+### La chaine complete, rejouee
+
+`tests/sonde_comme_steam_api.c` refait pas a pas ce que fait un `steam_api64.dll`, y compris
+l'appel virtuel de l'emplacement 12 :
+
+```
+registre  : C:\windows\system32\lsteamclient.dll
+charge    : 00006ffffb140000
+tuyau 1, utilisateur 1
+ISteamApps  -> 0000000000241810
+ISteamUtils -> 0000000000241840
+ISteamUser  -> 0000000000241870
+chaine complete
+```
+
+Tout tient sauf une chose : il n'y a plus de jeu Steam Windows 64 bits installe. Rocksmith2014
+n'est qu'un `Rocksmith.ini` residuel, et « Steamworks Shared » ne contient que des
+redistribuables DirectX. Sans `steam_api64.dll`, la decouverte ne peut pas demarrer.
