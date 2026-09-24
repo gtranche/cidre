@@ -14364,3 +14364,84 @@ chaine complete
 Tout tient sauf une chose : il n'y a plus de jeu Steam Windows 64 bits installe. Rocksmith2014
 n'est qu'un `Rocksmith.ini` residuel, et « Steamworks Shared » ne contient que des
 redistribuables DirectX. Sans `steam_api64.dll`, la decouverte ne peut pas demarrer.
+
+## 205. Le vrai steam_api pilote le pont
+
+### Le jeu n'etait pas le bon banc d'essai
+
+`MarsSteam.exe` passe par le lanceur Paradox (`pops_api.dll`) et ne se comporte pas deux fois
+pareil : un lancement atteint Steamworks, le suivant s'arrete avant. Son `steam_api64.dll`, lui,
+est du code Valve deterministe. `tests/sonde_steam_api_reel.c` l'appelle directement --
+`SteamAPI_Init` fait exactement la meme suite d'appels que dans le jeu.
+
+Deux lecons de methode, payees comptant. Tuer `wineserver` declenche un `wineboot` complet qui
+mange la fenetre d'observation. Et un `printf` vers un fichier est bufferise : tant que le
+processus est bloque, rien ne sort, et on croit a tort qu'il n'a rien fait. La sonde ecrit
+maintenant sur la sortie d'erreur.
+
+### Il manquait un client Steam credible
+
+```
+SteamAPI_IsSteamRunning -> 0
+--- SteamAPI_Init ---
+(blocage indefini, aucun appel au pont)
+```
+
+`SteamAPI_Init` verifie que le processus designe par `ActiveProcess\pid` est vivant, et attend
+que Steam apparaisse s'il ne l'est pas. `tests/faux_steam.c` est un processus Windows qui
+inscrit son propre identifiant et ne fait rien d'autre : le client qui repond reellement est
+celui de macOS, derriere l'unixlib.
+
+### La trace complete
+
+```
+SteamAPI_IsSteamRunning -> 1
+CreateInterface "SteamClient017" -> objet PE
+CreateInterface "SteamClient020" -> objet PE
+  emplacement  0   CreateSteamPipe()
+  emplacement  2   ConnectToGlobalUser(1)
+  emplacement  0   CreateSteamPipe()
+  emplacement 12   GetISteamGenericInterface(0, 1, "SteamUtils010")
+    SteamUtils010 emplacement 9        -- GetAppID
+  emplacement 34
+  emplacement  5   GetISteamUser(1, 1, "SteamUser021")
+    SteamUser021 emplacement 2         -- puis faute de page
+```
+
+Avant que les sous-interfaces ne soient relayees, la trace s'arretait a `SteamUtils010`
+emplacement 9 et `SteamAPI_Init` rendait 0 : Valve verifie l'identifiant d'application, nous
+rendions zero, il abandonnait. Le relais l'a fait passer.
+
+### Le relais n'a pas besoin de carte
+
+Correction d'une prudence mal placee. J'avais ecrit qu'on ne pouvait pas relayer une
+sous-interface faute de connaitre sa table. C'est faux pour un simple relais : l'emplacement N
+de notre table designe l'emplacement N de la table native **du meme objet**. C'est le jeu qui
+choisit la methode, et elle atterrit sur celle qu'il visait. La carte ne sert qu'a interpreter,
+pas a transmettre.
+
+Le relais transporte six arguments, ce qui couvre toute methode d'au plus six parametres :
+Microsoft x64 en loge quatre dans des registres et les suivants sur la pile, System V en loge
+six dans des registres, et en declarer plus que n'en prend la methode appelee est sans effet.
+Le « plus de quatre arguments » de la liste des inconnues est donc traite.
+
+### Ce qui casse maintenant : les structures rendues par valeur
+
+```
+repartir SteamUser021 emplacement 2( "", 00006FFFFC724040, 00000000009A2850 )
+wine: Unhandled page fault on read access to 0110000104F52756
+      at address 00006FFFFC76622B
+```
+
+L'adresse fautive tombe dans `steam_api64.dll` (chargee a `0x6ffffc760000`), juste apres le
+retour de l'emplacement 2 -- `ISteamUser::GetSteamID`, qui rend un `CSteamID` par valeur.
+
+C'est precisement le cas que les deux ABI traitent differemment. Un type de classe non trivial
+revient par pointeur cache, mais ce pointeur n'occupe pas le meme rang : Microsoft x64 le place
+avant `this`, System V le passe dans le premier registre d'argument. Un relais qui se contente
+de decaler les registres ne peut pas etre juste des qu'une methode rend une structure.
+
+C'est l'inconnue qui restait sur la liste du paragraphe 200, et elle est maintenant atteinte
+par la mesure, pas par la conjecture. Le pont ne pourra pas rester generique : il faudra
+connaitre, methode par methode, celles qui rendent une structure -- ce que Proton obtient du
+SDK, et qu'il faudra ici tirer du desassemblage.

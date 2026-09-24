@@ -42,10 +42,10 @@ index 00000000..401db203
 +@ cdecl SondeInterfaceNative(ptr)
 diff --git a/dlls/lsteamclient/main.c b/dlls/lsteamclient/main.c
 new file mode 100644
-index 00000000..9859f603
+index 00000000..559de45a
 --- /dev/null
 +++ b/dlls/lsteamclient/main.c
-@@ -0,0 +1,334 @@
+@@ -0,0 +1,349 @@
 +/*
 + * Cote PE du pont Steamworks : ce que le steam_api du jeu appelle.
 + */
@@ -133,59 +133,74 @@ index 00000000..9859f603
 + */
 +#define NB_EMPLACEMENTS 64
 +
-+static UINT64 repartir( unsigned emplacement, void *self, UINT64 a, UINT64 b, UINT64 c )
++static UINT64 repartir( unsigned emplacement, void *self,
++                        UINT64 a, UINT64 b, UINT64 c, UINT64 d, UINT64 e, UINT64 f )
 +{
 +    struct objet_pe *objet = self;
++    struct appel_vtable_params params = { objet->natif, emplacement, a, b, c, d, e, f, 0 };
++    const char *ou = objet->nom ? objet->nom : "ISteamClient";
 +
 +    if (!IsBadStringPtrA( (LPCSTR)(ULONG_PTR)a, 64 ))
-+        ERR( "emplacement %u( \"%s\", %p, %p )\n", emplacement,
++        ERR( "%s emplacement %u( \"%s\", %p, %p )\n", ou, emplacement,
 +             (const char *)(ULONG_PTR)a, (void *)(ULONG_PTR)b, (void *)(ULONG_PTR)c );
 +    else if (!IsBadStringPtrA( (LPCSTR)(ULONG_PTR)b, 64 ))
-+        ERR( "emplacement %u( %p, \"%s\", %p )\n", emplacement,
++        ERR( "%s emplacement %u( %p, \"%s\", %p )\n", ou, emplacement,
 +             (void *)(ULONG_PTR)a, (const char *)(ULONG_PTR)b, (void *)(ULONG_PTR)c );
++    else if (!IsBadStringPtrA( (LPCSTR)(ULONG_PTR)c, 64 ))
++        ERR( "%s emplacement %u( %p, %p, \"%s\" )\n", ou, emplacement,
++             (void *)(ULONG_PTR)a, (void *)(ULONG_PTR)b, (const char *)(ULONG_PTR)c );
 +    else
-+        ERR( "emplacement %u( %p, %p, %p )\n", emplacement,
++        ERR( "%s emplacement %u( %p, %p, %p )\n", ou, emplacement,
 +             (void *)(ULONG_PTR)a, (void *)(ULONG_PTR)b, (void *)(ULONG_PTR)c );
 +
-+    /* Une sous-interface n'a pas encore de carte : on journalise, on ne relaie
-+     * rien. Relayer d'apres les emplacements d'ISteamClient sauterait au
-+     * hasard dans une table qui n'est pas la sienne. */
++    /*
++     * Pour une sous-interface, le relais se passe de carte : l'emplacement N de
++     * notre table designe l'emplacement N de la table native du meme objet.
++     * Aucun nom n'est necessaire -- c'est le jeu qui choisit la methode, et
++     * elle atterrit sur celle qu'il visait.
++     *
++     * ISteamClient, lui, demande un traitement : certaines de ses methodes
++     * rendent une interface, qu'il faut envelopper avant de la donner au jeu.
++     */
 +    if (objet->nom)
 +    {
-+        ERR( "%s : emplacement %u non cartographie\n", objet->nom, emplacement );
-+        return 0;
++        if (WINE_UNIX_CALL( unix_appel_vtable, &params )) return 0;
++        return params.ret;
 +    }
++
++    /*
++     * Les emplacements 0 a 18 d'ISteamClient sont identiques d'une version a
++     * l'autre -- verifie sur 017, 020 et 021, qui ne divergent qu'a partir de
++     * 19. Au-dela, savoir lesquels rendent une interface demanderait la carte
++     * de la version exacte, alors on relaie sans envelopper.
++     */
++    if (WINE_UNIX_CALL( unix_appel_vtable, &params )) return 0;
++    if (!params.ret) return 0;
 +
 +    switch (emplacement)
 +    {
-+    case 0:   /* CreateSteamPipe() */
++    case 5: case 6: case 8: case 9: case 10: case 11:
++    case 12: case 13: case 14: case 15: case 16: case 17: case 18:
 +    {
-+        struct create_steam_pipe_params params = { objet->natif, 0 };
-+        if (WINE_UNIX_CALL( unix_create_steam_pipe, &params )) return 0;
-+        return params.ret;
-+    }
-+    case 1:   /* BReleaseSteamPipe(tuyau) */
-+    {
-+        struct release_steam_pipe_params params = { objet->natif, (int)a, 0 };
-+        if (WINE_UNIX_CALL( unix_release_steam_pipe, &params )) return 0;
-+        return params.ret;
-+    }
-+    case 12:  /* GetISteamGenericInterface(utilisateur, tuyau, version) */
-+    {
-+        struct generic_interface_params params =
-+            { objet->natif, (int)a, (int)b, (const char *)(ULONG_PTR)c, NULL };
-+        if (WINE_UNIX_CALL( unix_get_generic_interface, &params )) return 0;
-+        if (!params.ret) return 0;
-+        return (ULONG_PTR)envelopper( params.ret, params.version );
++        /* Rend une interface : l'envelopper, sinon le jeu recevrait un objet
++         * System V. Le nom ne sert qu'au journal ; c'est la chaine de version,
++         * en dernier argument pour les getters a trois parametres, en
++         * avant-dernier pour ceux qui se passent d'utilisateur. */
++        const char *nom = NULL;
++
++        if (!IsBadStringPtrA( (LPCSTR)(ULONG_PTR)c, 64 )) nom = (const char *)(ULONG_PTR)c;
++        else if (!IsBadStringPtrA( (LPCSTR)(ULONG_PTR)b, 64 )) nom = (const char *)(ULONG_PTR)b;
++        return (ULONG_PTR)envelopper( (void *)(ULONG_PTR)params.ret, nom );
 +    }
 +    default:
-+        return 0;
++        return params.ret;
 +    }
 +}
 +
 +#define EMPLACEMENT(n) \
-+    static UINT64 thunk_##n( void *self, UINT64 a, UINT64 b, UINT64 c ) \
-+    { return repartir( n, self, a, b, c ); }
++    static UINT64 thunk_##n( void *self, UINT64 a, UINT64 b, UINT64 c, \
++                             UINT64 d, UINT64 e, UINT64 f ) \
++    { return repartir( n, self, a, b, c, d, e, f ); }
 +EMPLACEMENT(0)
 +EMPLACEMENT(1)
 +EMPLACEMENT(2)
@@ -382,10 +397,10 @@ index 00000000..9859f603
 +}
 diff --git a/dlls/lsteamclient/unix.c b/dlls/lsteamclient/unix.c
 new file mode 100644
-index 00000000..92c1998c
+index 00000000..1b22f58d
 --- /dev/null
 +++ b/dlls/lsteamclient/unix.c
-@@ -0,0 +1,273 @@
+@@ -0,0 +1,290 @@
 +/*
 + * Cote unix du pont Steamworks : charge le steamclient.dylib du client Steam
 + * natif et lui demande ses interfaces.
@@ -646,6 +661,22 @@ index 00000000..92c1998c
 +    return STATUS_SUCCESS;
 +}
 +
++static NTSTATUS appel_vtable( void *args )
++{
++    struct appel_vtable_params *params = args;
++    typedef UINT64 (*methode_t)( void *iface, UINT64 a, UINT64 b, UINT64 c,
++                                 UINT64 d, UINT64 e, UINT64 f );
++    methode_t *table;
++
++    if (!params->iface) return STATUS_INVALID_PARAMETER;
++
++    table = *(methode_t **)params->iface;
++    params->ret = table[params->emplacement]( params->iface, params->a, params->b, params->c,
++                                             params->d, params->e, params->f );
++    TRACE( "emplacement %d -> %s\n", params->emplacement, wine_dbgstr_longlong(params->ret) );
++    return STATUS_SUCCESS;
++}
++
 +const unixlib_entry_t __wine_unix_call_funcs[] =
 +{
 +    attach,
@@ -656,15 +687,16 @@ index 00000000..92c1998c
 +    get_callback,
 +    free_last_callback,
 +    get_generic_interface,
++    appel_vtable,
 +};
 +
 +C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );
 diff --git a/dlls/lsteamclient/unixlib.h b/dlls/lsteamclient/unixlib.h
 new file mode 100644
-index 00000000..018b1707
+index 00000000..8fa8fbe4
 --- /dev/null
 +++ b/dlls/lsteamclient/unixlib.h
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,119 @@
 +/*
 + * Pont Steamworks : interface entre le cote PE et le cote unix.
 + */
@@ -729,6 +761,25 @@ index 00000000..018b1707
 +    void       *ret;
 +};
 +
++/* Relais generique vers un emplacement de la table native.
++ *
++ * Six arguments transitent, ce qui couvre toute methode d'au plus six
++ * parametres : Microsoft x64 en loge quatre dans des registres et les suivants
++ * sur la pile, System V en loge six dans des registres. En declarer plus que
++ * n'en prend la methode appelee est sans effet dans les deux ABI.
++ *
++ * La valeur de retour revient dans RAX sans etre retaillee : une methode qui
++ * ne renseigne que AL garde donc exactement la semantique que le jeu attend.
++ * Restent hors de portee les flottants, qui voyagent en XMM, et les structures
++ * rendues par valeur. */
++struct appel_vtable_params
++{
++    void   *iface;
++    int     emplacement;
++    UINT64  a, b, c, d, e, f;
++    UINT64  ret;
++};
++
 +struct callback_msg
 +{
 +    int    user;
@@ -760,6 +811,7 @@ index 00000000..018b1707
 +    unix_get_callback,
 +    unix_free_last_callback,
 +    unix_get_generic_interface,
++    unix_appel_vtable,
 +    unix_funcs_count
 +};
 +
