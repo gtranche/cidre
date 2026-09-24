@@ -10,7 +10,6 @@ index b999e350..97fefac9 100644
  WINE_CONFIG_MAKEFILE(dlls/lz32)
  WINE_CONFIG_MAKEFILE(dlls/lz32/tests)
  WINE_CONFIG_MAKEFILE(dlls/lzexpand.dll16,enable_win16)
-
 diff --git a/dlls/lsteamclient/Makefile.in b/dlls/lsteamclient/Makefile.in
 new file mode 100644
 index 00000000..657deb4c
@@ -25,19 +24,26 @@ index 00000000..657deb4c
 +	unix.c
 diff --git a/dlls/lsteamclient/lsteamclient.spec b/dlls/lsteamclient/lsteamclient.spec
 new file mode 100644
-index 00000000..edc0ab52
+index 00000000..004bc8ac
 --- /dev/null
 +++ b/dlls/lsteamclient/lsteamclient.spec
-@@ -0,0 +1,3 @@
+@@ -0,0 +1,10 @@
 +@ cdecl CreateInterface(str ptr)
 +@ cdecl SondeCreateSteamPipe(ptr)
 +@ cdecl SondeEnvelopperSteamClient(ptr)
++@ cdecl Steam_CreateSteamPipe()
++@ cdecl Steam_ConnectToGlobalUser(long)
++@ cdecl Steam_ReleaseUser(long long)
++@ cdecl Steam_BConnected(long long)
++@ cdecl Steam_BLoggedOn(long long)
++@ cdecl Steam_BGetCallback(long ptr ptr)
++@ cdecl Steam_FreeLastCallback(long)
 diff --git a/dlls/lsteamclient/main.c b/dlls/lsteamclient/main.c
 new file mode 100644
-index 00000000..c3549f1b
+index 00000000..702ac48d
 --- /dev/null
 +++ b/dlls/lsteamclient/main.c
-@@ -0,0 +1,96 @@
+@@ -0,0 +1,294 @@
 +/*
 + * Cote PE du pont Steamworks : ce que le steam_api du jeu appelle.
 + */
@@ -63,13 +69,21 @@ index 00000000..c3549f1b
 +    return TRUE;
 +}
 +
++static void *envelopper( void *natif );
++
++/* Ce que le steam_api du jeu appelle en premier. L'interface rendue doit etre
++ * un objet PE : rendre l'objet natif ferait entrer le jeu en ABI System V. */
 +void * CDECL CreateInterface( const char *version, int *err )
 +{
 +    struct create_interface_params params = { version, err, NULL };
++    void *objet;
 +
 +    if (WINE_UNIX_CALL( unix_create_interface, &params )) return NULL;
-+    TRACE( "%s -> %p\n", debugstr_a(version), params.ret );
-+    return params.ret;
++    if (!params.ret) { ERR( "%s : le client natif ne connait pas cette interface\n", debugstr_a(version) ); return NULL; }
++
++    objet = envelopper( params.ret );
++    ERR( "%s : natif %p -> objet PE %p\n", debugstr_a(version), params.ret, objet );
++    return objet;
 +}
 +
 +int CDECL SondeCreateSteamPipe( void *iface )
@@ -99,31 +113,138 @@ index 00000000..c3549f1b
 +    void        *natif;
 +};
 +
-+static int thunk_CreateSteamPipe( struct objet_pe *self )
-+{
-+    struct create_steam_pipe_params params = { self->natif, 0 };
++/*
++ * Table de decouverte.
++ *
++ * L'ordre des methodes d'ISteamClient n'est publie que dans le SDK
++ * Steamworks, qui est proprietaire : le deviner reviendrait a appeler des
++ * fonctions inconnues sur la session Steam vivante de l'utilisateur, ce qui
++ * peut le deconnecter. On fait donc l'inverse : la table est peuplee de
++ * thunks qui journalisent leur emplacement et rendent zero. Le steam_api du
++ * jeu, lui, sait ou il appelle ; il suffit de le laisser parler pour obtenir
++ * la liste exacte, dans l'ordre, des emplacements qui comptent -- et les
++ * chaines de version qu'il transmet identifient les interfaces demandees.
++ *
++ * Seuls les emplacements deja eprouves sont reellement suivis ; les autres
++ * rendent zero, ce qui echoue proprement au lieu de sauter n'importe ou.
++ */
++#define NB_EMPLACEMENTS 64
 +
-+    TRACE( "objet PE %p, interface native %p\n", self, self->natif );
-+    if (WINE_UNIX_CALL( unix_create_steam_pipe, &params )) return 0;
-+    return params.ret;
++static UINT64 repartir( unsigned emplacement, void *self, UINT64 a, UINT64 b, UINT64 c )
++{
++    struct objet_pe *objet = self;
++
++    if (!IsBadStringPtrA( (LPCSTR)(ULONG_PTR)a, 64 ))
++        ERR( "emplacement %u( \"%s\", %p, %p )\n", emplacement,
++             (const char *)(ULONG_PTR)a, (void *)(ULONG_PTR)b, (void *)(ULONG_PTR)c );
++    else if (!IsBadStringPtrA( (LPCSTR)(ULONG_PTR)b, 64 ))
++        ERR( "emplacement %u( %p, \"%s\", %p )\n", emplacement,
++             (void *)(ULONG_PTR)a, (const char *)(ULONG_PTR)b, (void *)(ULONG_PTR)c );
++    else
++        ERR( "emplacement %u( %p, %p, %p )\n", emplacement,
++             (void *)(ULONG_PTR)a, (void *)(ULONG_PTR)b, (void *)(ULONG_PTR)c );
++
++    switch (emplacement)
++    {
++    case 0:   /* CreateSteamPipe() */
++    {
++        struct create_steam_pipe_params params = { objet->natif, 0 };
++        if (WINE_UNIX_CALL( unix_create_steam_pipe, &params )) return 0;
++        return params.ret;
++    }
++    case 1:   /* BReleaseSteamPipe(tuyau) */
++    {
++        struct release_steam_pipe_params params = { objet->natif, (int)a, 0 };
++        if (WINE_UNIX_CALL( unix_release_steam_pipe, &params )) return 0;
++        return params.ret;
++    }
++    default:
++        return 0;
++    }
 +}
 +
-+static int thunk_BReleaseSteamPipe( struct objet_pe *self, int pipe )
-+{
-+    struct release_steam_pipe_params params = { self->natif, pipe, 0 };
++#define EMPLACEMENT(n) \
++    static UINT64 thunk_##n( void *self, UINT64 a, UINT64 b, UINT64 c ) \
++    { return repartir( n, self, a, b, c ); }
++EMPLACEMENT(0)
++EMPLACEMENT(1)
++EMPLACEMENT(2)
++EMPLACEMENT(3)
++EMPLACEMENT(4)
++EMPLACEMENT(5)
++EMPLACEMENT(6)
++EMPLACEMENT(7)
++EMPLACEMENT(8)
++EMPLACEMENT(9)
++EMPLACEMENT(10)
++EMPLACEMENT(11)
++EMPLACEMENT(12)
++EMPLACEMENT(13)
++EMPLACEMENT(14)
++EMPLACEMENT(15)
++EMPLACEMENT(16)
++EMPLACEMENT(17)
++EMPLACEMENT(18)
++EMPLACEMENT(19)
++EMPLACEMENT(20)
++EMPLACEMENT(21)
++EMPLACEMENT(22)
++EMPLACEMENT(23)
++EMPLACEMENT(24)
++EMPLACEMENT(25)
++EMPLACEMENT(26)
++EMPLACEMENT(27)
++EMPLACEMENT(28)
++EMPLACEMENT(29)
++EMPLACEMENT(30)
++EMPLACEMENT(31)
++EMPLACEMENT(32)
++EMPLACEMENT(33)
++EMPLACEMENT(34)
++EMPLACEMENT(35)
++EMPLACEMENT(36)
++EMPLACEMENT(37)
++EMPLACEMENT(38)
++EMPLACEMENT(39)
++EMPLACEMENT(40)
++EMPLACEMENT(41)
++EMPLACEMENT(42)
++EMPLACEMENT(43)
++EMPLACEMENT(44)
++EMPLACEMENT(45)
++EMPLACEMENT(46)
++EMPLACEMENT(47)
++EMPLACEMENT(48)
++EMPLACEMENT(49)
++EMPLACEMENT(50)
++EMPLACEMENT(51)
++EMPLACEMENT(52)
++EMPLACEMENT(53)
++EMPLACEMENT(54)
++EMPLACEMENT(55)
++EMPLACEMENT(56)
++EMPLACEMENT(57)
++EMPLACEMENT(58)
++EMPLACEMENT(59)
++EMPLACEMENT(60)
++EMPLACEMENT(61)
++EMPLACEMENT(62)
++EMPLACEMENT(63)
++#undef EMPLACEMENT
 +
-+    TRACE( "objet PE %p, tuyau %d\n", self, pipe );
-+    if (WINE_UNIX_CALL( unix_release_steam_pipe, &params )) return 0;
-+    return params.ret;
-+}
-+
-+static const void *table_steam_client[] =
++static const void *table_steam_client[NB_EMPLACEMENTS] =
 +{
-+    thunk_CreateSteamPipe,
-+    thunk_BReleaseSteamPipe,
++    thunk_0, thunk_1, thunk_2, thunk_3, thunk_4, thunk_5, thunk_6, thunk_7,
++    thunk_8, thunk_9, thunk_10, thunk_11, thunk_12, thunk_13, thunk_14, thunk_15,
++    thunk_16, thunk_17, thunk_18, thunk_19, thunk_20, thunk_21, thunk_22, thunk_23,
++    thunk_24, thunk_25, thunk_26, thunk_27, thunk_28, thunk_29, thunk_30, thunk_31,
++    thunk_32, thunk_33, thunk_34, thunk_35, thunk_36, thunk_37, thunk_38, thunk_39,
++    thunk_40, thunk_41, thunk_42, thunk_43, thunk_44, thunk_45, thunk_46, thunk_47,
++    thunk_48, thunk_49, thunk_50, thunk_51, thunk_52, thunk_53, thunk_54, thunk_55,
++    thunk_56, thunk_57, thunk_58, thunk_59, thunk_60, thunk_61, thunk_62, thunk_63,
 +};
 +
-+void * CDECL SondeEnvelopperSteamClient( void *natif )
++static void *envelopper( void *natif )
 +{
 +    struct objet_pe *objet;
 +
@@ -134,12 +255,95 @@ index 00000000..c3549f1b
 +    TRACE( "interface native %p -> objet PE %p\n", natif, objet );
 +    return objet;
 +}
++
++void * CDECL SondeEnvelopperSteamClient( void *natif )
++{
++    return envelopper( natif );
++}
++
++/*
++ * Les fonctions plates de steamclient.
++ *
++ * Le steam_api.dll livre avec le jeu ne passe pas par une table de methodes
++ * pour ces sept-la : il fait un GetProcAddress sur steamclient.dll. Elles
++ * doivent donc exister sous leur nom exact. Sur x86_64 les deux ABI se
++ * rejoignent pour des entiers -- quatre au plus, aucun flottant, aucune
++ * structure -- si bien que la traduction se reduit au passage par l'unixlib.
++ */
++static int plate( int quoi, int pipe, int user )
++{
++    struct appel_plat_params params = { quoi, pipe, user, 0 };
++
++    if (WINE_UNIX_CALL( unix_appel_plat, &params )) return 0;
++    return params.ret;
++}
++
++int CDECL Steam_CreateSteamPipe(void)
++{
++    return plate( plate_create_steam_pipe, 0, 0 );
++}
++
++int CDECL Steam_ConnectToGlobalUser( int pipe )
++{
++    return plate( plate_connect_to_global_user, pipe, 0 );
++}
++
++void CDECL Steam_ReleaseUser( int pipe, int user )
++{
++    plate( plate_release_user, pipe, user );
++}
++
++BOOL CDECL Steam_BConnected( int user, int pipe )
++{
++    return plate( plate_b_connected, pipe, user ) != 0;
++}
++
++BOOL CDECL Steam_BLoggedOn( int user, int pipe )
++{
++    return plate( plate_b_logged_on, pipe, user ) != 0;
++}
++
++/* Disposition Windows du CallbackMsg_t : identique a la native sur x86_64,
++ * mais on la redeclare ici plutot que de supposer que les deux cotes ont lu la
++ * meme definition. */
++typedef struct
++{
++    int            m_hSteamUser;
++    int            m_iCallback;
++    unsigned char *m_pubParam;
++    int            m_cubParam;
++} CallbackMsg_t;
++
++BOOL CDECL Steam_BGetCallback( int pipe, CallbackMsg_t *msg, int *call )
++{
++    struct get_callback_params params = { pipe };
++
++    if (!msg) return FALSE;
++    if (WINE_UNIX_CALL( unix_get_callback, &params )) return FALSE;
++    if (!params.ret) return FALSE;
++
++    msg->m_hSteamUser = params.msg.user;
++    msg->m_iCallback  = params.msg.callback;
++    msg->m_pubParam   = params.msg.param;
++    msg->m_cubParam   = params.msg.taille;
++    if (call) *call = params.call;
++
++    TRACE( "rappel %d, %d octets\n", msg->m_iCallback, msg->m_cubParam );
++    return TRUE;
++}
++
++void CDECL Steam_FreeLastCallback( int pipe )
++{
++    struct free_last_callback_params params = { pipe };
++
++    WINE_UNIX_CALL( unix_free_last_callback, &params );
++}
 diff --git a/dlls/lsteamclient/unix.c b/dlls/lsteamclient/unix.c
 new file mode 100644
-index 00000000..94d245f2
+index 00000000..34743ad3
 --- /dev/null
 +++ b/dlls/lsteamclient/unix.c
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,247 @@
 +/*
 + * Cote unix du pont Steamworks : charge le steamclient.dylib du client Steam
 + * natif et lui demande ses interfaces.
@@ -169,8 +373,34 @@ index 00000000..94d245f2
 +
 +typedef void *(*create_interface_t)( const char *version, int *err );
 +
++/* Toutes ces fonctions rendent un bool d'un octet ou un entier ; les bools
++ * sont declares « unsigned char » car le natif ne renseigne que AL. */
++typedef int           (*plate_pipe_t)( int pipe );
++typedef void          (*plate_pipe_user_t)( int pipe, int user );
++typedef unsigned char (*plate_user_pipe_t)( int user, int pipe );
++typedef int           (*plate_rien_t)( void );
++
++/* Disposition exacte du CallbackMsg_t de Steamworks, cote natif. */
++struct callback_msg_natif
++{
++    int            m_hSteamUser;
++    int            m_iCallback;
++    unsigned char *m_pubParam;
++    int            m_cubParam;
++};
++
++typedef unsigned char (*b_get_callback_t)( int pipe, struct callback_msg_natif *msg, int *call );
++typedef void          (*free_last_callback_t)( int pipe );
++
 +static void *steamclient;
 +static create_interface_t p_CreateInterface;
++static plate_pipe_t         p_ConnectToGlobalUser;
++static plate_pipe_user_t    p_ReleaseUser;
++static plate_user_pipe_t    p_BConnected;
++static plate_user_pipe_t    p_BLoggedOn;
++static plate_rien_t         p_CreateSteamPipe;
++static b_get_callback_t     p_BGetCallback;
++static free_last_callback_t p_FreeLastCallback;
 +
 +static const char *chemins[] =
 +{
@@ -205,7 +435,19 @@ index 00000000..94d245f2
 +        return STATUS_ENTRYPOINT_NOT_FOUND;
 +    }
 +
-+    TRACE( "steamclient.dylib charge, CreateInterface a %p\n", p_CreateInterface );
++    /* Les fonctions de gestion d'utilisateur et la pompe a rappels ne sont pas
++     * des methodes virtuelles : steamclient.dylib les exporte a plat. Un
++     * dlsym suffit, aucune table de methodes a deviner. */
++    p_ConnectToGlobalUser = dlsym( steamclient, "Steam_ConnectToGlobalUser" );
++    p_ReleaseUser         = dlsym( steamclient, "Steam_ReleaseUser" );
++    p_BConnected          = dlsym( steamclient, "Steam_BConnected" );
++    p_BLoggedOn           = dlsym( steamclient, "Steam_BLoggedOn" );
++    p_CreateSteamPipe     = dlsym( steamclient, "Steam_CreateSteamPipe" );
++    p_BGetCallback        = dlsym( steamclient, "Steam_BGetCallback" );
++    p_FreeLastCallback    = dlsym( steamclient, "Steam_FreeLastCallback" );
++
++    TRACE( "steamclient.dylib charge, CreateInterface a %p, BGetCallback a %p\n",
++           p_CreateInterface, p_BGetCallback );
 +    return STATUS_SUCCESS;
 +}
 +
@@ -262,21 +504,99 @@ index 00000000..94d245f2
 +    return STATUS_SUCCESS;
 +}
 +
++static NTSTATUS appel_plat( void *args )
++{
++    struct appel_plat_params *params = args;
++
++    switch (params->quoi)
++    {
++    case plate_connect_to_global_user:
++        if (!p_ConnectToGlobalUser) return STATUS_ENTRYPOINT_NOT_FOUND;
++        params->ret = p_ConnectToGlobalUser( params->pipe );
++        break;
++    case plate_release_user:
++        if (!p_ReleaseUser) return STATUS_ENTRYPOINT_NOT_FOUND;
++        p_ReleaseUser( params->pipe, params->user );
++        params->ret = 0;
++        break;
++    case plate_b_connected:
++        if (!p_BConnected) return STATUS_ENTRYPOINT_NOT_FOUND;
++        params->ret = p_BConnected( params->user, params->pipe );
++        break;
++    case plate_b_logged_on:
++        if (!p_BLoggedOn) return STATUS_ENTRYPOINT_NOT_FOUND;
++        params->ret = p_BLoggedOn( params->user, params->pipe );
++        break;
++    case plate_create_steam_pipe:
++        if (!p_CreateSteamPipe) return STATUS_ENTRYPOINT_NOT_FOUND;
++        params->ret = p_CreateSteamPipe();
++        break;
++    default:
++        return STATUS_INVALID_PARAMETER;
++    }
++    TRACE( "plate %d (tuyau %d, utilisateur %d) -> %d\n",
++           params->quoi, params->pipe, params->user, params->ret );
++    return STATUS_SUCCESS;
++}
++
++/*
++ * La pompe a rappels.
++ *
++ * Steamworks ne rappelle jamais le jeu de lui-meme : c'est le jeu qui vient
++ * chercher ses evenements, en boucle, depuis son propre fil. La frontiere ne
++ * se franchit donc que dans le sens jeu -> client, comme le reste. Le champ
++ * m_pubParam pointe dans la memoire du client ; unixlib partageant l'espace
++ * d'adressage du PE, le jeu pourra le lire directement, sans recopie.
++ */
++static NTSTATUS get_callback( void *args )
++{
++    struct get_callback_params *params = args;
++    struct callback_msg_natif msg = { 0 };
++    int call = 0;
++
++    if (!p_BGetCallback) return STATUS_ENTRYPOINT_NOT_FOUND;
++
++    params->ret = p_BGetCallback( params->pipe, &msg, &call );
++    if (params->ret)
++    {
++        params->msg.user     = msg.m_hSteamUser;
++        params->msg.callback = msg.m_iCallback;
++        params->msg.param    = msg.m_pubParam;
++        params->msg.taille   = msg.m_cubParam;
++        params->call         = call;
++        TRACE( "rappel %d, utilisateur %d, %d octets a %p\n",
++               msg.m_iCallback, msg.m_hSteamUser, msg.m_cubParam, msg.m_pubParam );
++    }
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS free_last_callback( void *args )
++{
++    struct free_last_callback_params *params = args;
++
++    if (!p_FreeLastCallback) return STATUS_ENTRYPOINT_NOT_FOUND;
++    p_FreeLastCallback( params->pipe );
++    return STATUS_SUCCESS;
++}
++
 +const unixlib_entry_t __wine_unix_call_funcs[] =
 +{
 +    attach,
 +    create_interface,
 +    create_steam_pipe,
 +    release_steam_pipe,
++    appel_plat,
++    get_callback,
++    free_last_callback,
 +};
 +
 +C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );
 diff --git a/dlls/lsteamclient/unixlib.h b/dlls/lsteamclient/unixlib.h
 new file mode 100644
-index 00000000..675c74ac
+index 00000000..9c80234c
 --- /dev/null
 +++ b/dlls/lsteamclient/unixlib.h
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,89 @@
 +/*
 + * Pont Steamworks : interface entre le cote PE et le cote unix.
 + */
@@ -309,12 +629,59 @@ index 00000000..675c74ac
 +    int   ret;
 +};
 +
++/* Les fonctions plates prenant (utilisateur, tuyau) ou (tuyau) seul partagent
++ * cette forme ; « quoi » designe laquelle appeler. */
++enum fonction_plate
++{
++    plate_connect_to_global_user,   /* (tuyau) -> utilisateur */
++    plate_release_user,             /* (tuyau, utilisateur) */
++    plate_b_connected,              /* (utilisateur, tuyau) -> bool */
++    plate_b_logged_on,              /* (utilisateur, tuyau) -> bool */
++    plate_create_steam_pipe,        /* () -> tuyau */
++};
++
++struct appel_plat_params
++{
++    int quoi;
++    int pipe;
++    int user;
++    int ret;
++};
++
++/* Copie du CallbackMsg_t de Steamworks. Le cote unix ne la passe jamais telle
++ * quelle au client natif : il remplit sa propre structure native puis recopie
++ * champ par champ, pour qu'aucune hypothese d'alignement ne traverse la
++ * frontiere. */
++struct callback_msg
++{
++    int    user;
++    int    callback;
++    void  *param;
++    int    taille;
++};
++
++struct get_callback_params
++{
++    int                 pipe;
++    struct callback_msg msg;
++    int                 call;
++    int                 ret;
++};
++
++struct free_last_callback_params
++{
++    int pipe;
++};
++
 +enum lsteamclient_funcs
 +{
 +    unix_attach,
 +    unix_create_interface,
 +    unix_create_steam_pipe,
 +    unix_release_steam_pipe,
++    unix_appel_plat,
++    unix_get_callback,
++    unix_free_last_callback,
 +    unix_funcs_count
 +};
 +

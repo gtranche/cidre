@@ -14041,3 +14041,109 @@ facile.
 
 Mais le chemin principal est demontre de bout en bout, et le reste — des centaines de methodes
 sur des dizaines de versions — est du volume que le generateur de Proton sait produire.
+
+## 201. Les rappels ne sont pas ce que je croyais, et la table ne s'invente pas
+
+Deux resultats ce soir, et un echec que je note aussi.
+
+### Les rappels sont tires, pas pousses
+
+La crainte du paragraphe precedent — le client natif rappelant du code du jeu, depuis System V
+vers Microsoft x64, sur un fil etranger a Wine — ne correspond a rien. La liste des symboles
+exportes par `steamclient.dylib` le dit :
+
+```
+nm -g steamclient.dylib | awk '$2=="T"{print $3}'
+...
+_Steam_BGetCallback
+_Steam_FreeLastCallback
+_Steam_GetAPICallResult
+```
+
+Ce sont des fonctions C plates, appelees *par* le jeu. `SteamAPI_RunCallbacks`, que le jeu
+invoque a chaque image, se resume a une boucle sur `Steam_BGetCallback` suivie d'une
+repartition vers les objets de rappel du jeu — repartition qui reste entierement en code PE.
+La frontiere d'ABI n'est donc jamais franchie que dans le sens jeu -> client. L'inconnue que
+j'annonçais comme la plus serieuse n'existe pas a cette frontiere.
+
+Le pont implemente ces fonctions (`unix_appel_plat`, `unix_get_callback`,
+`unix_free_last_callback`) et les exporte sous leur nom exact, puisque le `steam_api` du jeu
+les cherche par `GetProcAddress`.
+
+### Un binaire Windows dans la session Steam reelle
+
+```
+Steam_CreateSteamPipe -> 1
+Steam_ConnectToGlobalUser(1) -> 1
+Steam_BConnected -> 1
+Steam_BLoggedOn  -> 1 (session Steam reelle)
+```
+
+Un executable PE, sous notre pile, est rattache au compte connecte du client Steam macOS natif.
+C'est le socle : plus besoin que le client Steam Windows demarre.
+
+La pompe, elle, n'a rien rendu : `431 tours, 0 rappels` en cinq secondes. Client au repos, aucun
+jeu enregistre : c'est plausible, mais ce n'est pas une preuve que la pompe fonctionne. **La
+pompe est non eprouvee**, pas validee.
+
+### `CreateInterface` ne distribue que `SteamClient`
+
+Sur les 222 chaines de version que le dylib contient, `CreateInterface` n'en honore que 18 :
+
+```
+RENDU  SteamClient006 ... SteamClient023
+--- 18 interfaces sur 222 rendues ---
+```
+
+`ISteamUser`, `ISteamApps`, `ISteamUtils` ne s'obtiennent donc que par la table de methodes
+d'`ISteamClient`. Il faut son ordre.
+
+### L'ordre se lit, il ne se devine pas
+
+Le SDK Steamworks est proprietaire : hors charte du projet, et de toute facon absent d'ici.
+Mais les enveloppes plates du dylib indexent la table, et le desassemblage le montre :
+
+```
+_Steam_CreateSteamPipe:      jmpq *(%rcx)           emplacement 0
+_Steam_ConnectToGlobalUser:  movq 0x18(%rcx), %rcx  emplacement 3
+_Steam_ReleaseUser:          movq 0x30(%rcx), %rcx  emplacement 6
+```
+
+Carte obtenue, entierement mesuree :
+
+```
+0  CreateSteamPipe          4  CreateLocalUser
+1  BReleaseSteamPipe        6  ReleaseUser
+2  CreateGlobalUser        25  TerminateGameConnection
+3  ConnectToGlobalUser
+```
+
+L'ordre public du SDK place `ConnectToGlobalUser` en 2. Ici, l'emplacement 2 est
+`CreateGlobalUser`. Avoir devine aurait ouvert une session au lieu d'en rejoindre une, sur le
+compte vivant de l'utilisateur. La regle « aucun chiffre qui ne vienne d'une mesure » a paye
+directement.
+
+Le decalage de chargement se verifie : `0x214031598 - 0x1181598 = 0x212eb0000`, et
+`0x21387681b - 0x212eb0000 = 0x9c681b`, qui est bien `_Steam_BGetCallback` dans le fichier.
+
+### L'echec : l'alignement entre versions
+
+J'ai voulu cartographier les 38 a 42 methodes de chaque version en resolvant les thunks
+d'adaptation vers leur vraie fonction, puis en alignant les versions par adresse commune. La
+resolution s'effondre : la plupart des entrees retombent sur une meme adresse, et le tableau
+produit donnait le meme emplacement 5 pour une vingtaine de methodes differentes. **Ce tableau
+est faux et n'est pas conserve.** Les seuls emplacements connus restent les sept ci-dessus.
+
+### La decision qui reste
+
+Aller plus loin demande l'ordre complet de la table. Trois voies :
+
+1. le desassemblage, en continuant ce qui a marche pour sept emplacements — lent mais libre et
+   mesure ;
+2. laisser le `steam_api` d'un vrai jeu appeler une table de decouverte qui journalise au lieu
+   d'appeler — DREDGE est 32 bits, et l'ABI `__thiscall` d'i386 ne se prete pas a des thunks
+   generiques sans corrompre la pile ; il faudrait un jeu Steam 64 bits installe ;
+3. le SDK Steamworks, qui est proprietaire et contredit la charte du projet.
+
+La table de decouverte a 64 emplacements est en place dans le correctif : les emplacements
+inconnus journalisent et rendent zero, au lieu de sauter n'importe ou dans le client.
