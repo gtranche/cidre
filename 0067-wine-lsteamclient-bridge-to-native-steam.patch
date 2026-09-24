@@ -25,18 +25,19 @@ index 00000000..657deb4c
 +	unix.c
 diff --git a/dlls/lsteamclient/lsteamclient.spec b/dlls/lsteamclient/lsteamclient.spec
 new file mode 100644
-index 00000000..b37e083b
+index 00000000..edc0ab52
 --- /dev/null
 +++ b/dlls/lsteamclient/lsteamclient.spec
-@@ -0,0 +1,2 @@
+@@ -0,0 +1,3 @@
 +@ cdecl CreateInterface(str ptr)
 +@ cdecl SondeCreateSteamPipe(ptr)
++@ cdecl SondeEnvelopperSteamClient(ptr)
 diff --git a/dlls/lsteamclient/main.c b/dlls/lsteamclient/main.c
 new file mode 100644
-index 00000000..5562e4a3
+index 00000000..c3549f1b
 --- /dev/null
 +++ b/dlls/lsteamclient/main.c
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,96 @@
 +/*
 + * Cote PE du pont Steamworks : ce que le steam_api du jeu appelle.
 + */
@@ -79,12 +80,66 @@ index 00000000..5562e4a3
 +    TRACE( "%p -> %d\n", iface, params.ret );
 +    return params.ret;
 +}
++
++/*
++ * L'objet que le jeu croira Windows.
++ *
++ * Un jeu appelle une methode virtuelle en ABI Microsoft x64 : « this » dans
++ * RCX. L'objet natif, lui, attend System V : « this » dans RDI. On fabrique
++ * donc cote PE un objet dont la table de methodes contient nos thunks ; chacun
++ * recoit l'appel a la mode Windows, retrouve l'interface native, et passe par
++ * l'unixlib qui fera l'appel a la mode System V.
++ *
++ * Le compilateur PE emettant du Microsoft x64, une simple fonction C dont le
++ * premier parametre est l'objet suffit a recevoir un appel virtuel.
++ */
++struct objet_pe
++{
++    const void **table;   /* doit rester en tete : c'est ce que le jeu deref */
++    void        *natif;
++};
++
++static int thunk_CreateSteamPipe( struct objet_pe *self )
++{
++    struct create_steam_pipe_params params = { self->natif, 0 };
++
++    TRACE( "objet PE %p, interface native %p\n", self, self->natif );
++    if (WINE_UNIX_CALL( unix_create_steam_pipe, &params )) return 0;
++    return params.ret;
++}
++
++static int thunk_BReleaseSteamPipe( struct objet_pe *self, int pipe )
++{
++    struct release_steam_pipe_params params = { self->natif, pipe, 0 };
++
++    TRACE( "objet PE %p, tuyau %d\n", self, pipe );
++    if (WINE_UNIX_CALL( unix_release_steam_pipe, &params )) return 0;
++    return params.ret;
++}
++
++static const void *table_steam_client[] =
++{
++    thunk_CreateSteamPipe,
++    thunk_BReleaseSteamPipe,
++};
++
++void * CDECL SondeEnvelopperSteamClient( void *natif )
++{
++    struct objet_pe *objet;
++
++    if (!natif) return NULL;
++    if (!(objet = HeapAlloc( GetProcessHeap(), 0, sizeof(*objet) ))) return NULL;
++    objet->table = table_steam_client;
++    objet->natif = natif;
++    TRACE( "interface native %p -> objet PE %p\n", natif, objet );
++    return objet;
++}
 diff --git a/dlls/lsteamclient/unix.c b/dlls/lsteamclient/unix.c
 new file mode 100644
-index 00000000..1bceb3e0
+index 00000000..94d245f2
 --- /dev/null
 +++ b/dlls/lsteamclient/unix.c
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,131 @@
 +/*
 + * Cote unix du pont Steamworks : charge le steamclient.dylib du client Steam
 + * natif et lui demande ses interfaces.
@@ -188,20 +243,40 @@ index 00000000..1bceb3e0
 +    return STATUS_SUCCESS;
 +}
 +
++/* ISteamClient::BReleaseSteamPipe occupe l'emplacement 1 et prend un argument :
++ * de quoi eprouver le passage de parametre, que CreateSteamPipe ne testait pas. */
++static NTSTATUS release_steam_pipe( void *args )
++{
++    struct release_steam_pipe_params *params = args;
++    /* La methode rend un bool d'un octet : elle ne renseigne que AL, et lire
++     * EAX entier ramene les bits de poids fort laisses indefinis. Le type de
++     * retour doit donc etre declare a sa vraie largeur. */
++    typedef unsigned char (*methode_t)( void *iface, int pipe );
++    methode_t *table;
++
++    if (!params->iface) return STATUS_INVALID_PARAMETER;
++
++    table = *(methode_t **)params->iface;
++    params->ret = table[1]( params->iface, params->pipe );
++    TRACE( "BReleaseSteamPipe(%d) -> %d\n", params->pipe, params->ret );
++    return STATUS_SUCCESS;
++}
++
 +const unixlib_entry_t __wine_unix_call_funcs[] =
 +{
 +    attach,
 +    create_interface,
 +    create_steam_pipe,
++    release_steam_pipe,
 +};
 +
 +C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );
 diff --git a/dlls/lsteamclient/unixlib.h b/dlls/lsteamclient/unixlib.h
 new file mode 100644
-index 00000000..035197e6
+index 00000000..675c74ac
 --- /dev/null
 +++ b/dlls/lsteamclient/unixlib.h
-@@ -0,0 +1,34 @@
+@@ -0,0 +1,42 @@
 +/*
 + * Pont Steamworks : interface entre le cote PE et le cote unix.
 + */
@@ -227,11 +302,19 @@ index 00000000..035197e6
 +    int   ret;
 +};
 +
++struct release_steam_pipe_params
++{
++    void *iface;
++    int   pipe;
++    int   ret;
++};
++
 +enum lsteamclient_funcs
 +{
 +    unix_attach,
 +    unix_create_interface,
 +    unix_create_steam_pipe,
++    unix_release_steam_pipe,
 +    unix_funcs_count
 +};
 +

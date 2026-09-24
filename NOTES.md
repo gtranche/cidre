@@ -13982,3 +13982,62 @@ dont chaque emplacement de table est un thunk qui retraduit l'appel vers l'objet
 
 C'est la partie generee, et elle couvre des centaines de methodes sur des dizaines de versions
 d'interfaces. Mais on sait desormais que le chemin existe et que le client repond.
+
+## 200. Le franchissement d'ABI dans le sens du jeu
+
+Le symetrique de la section 199, et le jalon qui decidait de tout.
+
+### L'objet que le jeu croira Windows
+
+`dlls/lsteamclient/main.c` fabrique cote PE un objet dont le premier membre est une table de
+methodes, exactement ce qu'un jeu deference pour un appel virtuel. Chaque emplacement contient
+un thunk : il recoit l'appel en ABI Microsoft x64, retrouve l'interface native, et passe par
+l'unixlib qui fera l'appel en System V.
+
+Le compilateur PE emettant du Microsoft x64, une fonction C dont le premier parametre est
+l'objet suffit a recevoir un appel virtuel — pas besoin d'assembleur.
+
+### La mesure
+
+La sonde n'appelle plus une fonction exportee : elle deference la table et invoque
+l'emplacement, comme le fera le `steam_api64.dll` d'un jeu.
+
+```
+interface native 0x214799188 -> objet PE 0x2416C0
+thunk_CreateSteamPipe objet PE 0x2416C0, interface native 0x214799188
+SteamClient021 : CreateSteamPipe -> 1 (tuyau valide)
+SteamClient021 : BReleaseSteamPipe(1) -> 1 (argument transmis)
+```
+
+Le tuyau rendu vaut **1 aux deux interfaces successives** la ou il valait 1 puis 2 avant qu'on
+libere : le client natif reutilise le descripteur, ce qui prouve que la liberation a eu lieu et
+donc que l'argument a bien traverse.
+
+### Un vrai piege, trouve et corrige
+
+`BReleaseSteamPipe` rendait d'abord `821210113`, soit `0x30F30001`. La methode native rend un
+booleen d'un octet : elle ne renseigne que `AL`, et lire `EAX` entier ramene des bits de poids
+fort indefinis. Declarer le type de retour a sa vraie largeur suffit.
+
+C'est exactement la classe de details que les thunks generes doivent traiter, et le genre
+d'erreur qu'on n'aurait jamais vue sur une valeur nulle ou sur un pointeur.
+
+### Ce qui reste, et ce qui reste inconnu
+
+```
+eprouve    l'objet PE et sa table, l'appel virtuel Microsoft x64
+           un argument entier, une valeur de retour etroite
+           l'aller-retour complet, avec etat coherent cote client
+
+non eprouve  plus de quatre arguments, donc passage par la pile
+             structures rendues, flottants
+             les rappels : le client natif appelant vers le jeu
+```
+
+Les rappels sont l'inconnue la plus serieuse. Steamworks livre ses evenements en rappelant du
+code fourni par le jeu ; il faudra franchir la frontiere dans l'autre sens, depuis du System V
+vers du Microsoft x64, et sur un fil qui n'est pas celui de Wine. Rien ici ne dit que c'est
+facile.
+
+Mais le chemin principal est demontre de bout en bout, et le reste — des centaines de methodes
+sur des dizaines de versions — est du volume que le generateur de Proton sait produire.
