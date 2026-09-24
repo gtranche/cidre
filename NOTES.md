@@ -12845,3 +12845,60 @@ DREDGE ne va donc pas encore au bout, mais il est passé de « meurt avant tout 
 « crée un périphérique Direct3D 11 de niveau 11.1 ». La faute restante a la même signature de
 registres collés, à une autre adresse (`kernel32+0x1DCDDB`, faute d'exécution) : il reste au
 moins un second déclencheur de la même bascule ratée.
+
+## 179. Le second déclencheur : le retour 64→32 ne rebascule pas
+
+Avec 0063, DREDGE va deux étapes plus loin et meurt ailleurs. La trace d'appels nomme l'endroit
+exactement.
+
+```
+01d4:Call KERNEL32.ResetEvent(00000488) ret=7b05c0ee
+01d4:Call ntdll.NtResetEvent(00000488,00000000) ret=7b6229cd
+```
+
+Et le `rip` de la faute vaut `0x00000488_7B6229CD` : **l'argument `0x488` collé à l'adresse de
+retour `0x7B6229CD`**, deux mots voisins sur la pile 32 bits. Un `ret` qui dépile 8 octets au
+lieu de 4. Le processeur était donc resté en 64 bits alors que le pont venait de rendre la main
+au code 32 bits.
+
+C'est le miroir de la section 178 : là c'était 32→64 qui ne basculait pas, ici c'est 64→32.
+
+### Pourquoi on ne peut pas rattraper après coup
+
+`syscall_32to64` commence par `xchgq %r14,%rsp`, soit `49 87 e6`. Décodé en 32 bits, ça donne
+`dec ecx` puis `xchg esi,esp` — **l'échange du pointeur de pile avec `esi`**. Les instructions
+suivantes écrivent à travers `ebp` au lieu de `r13`. Quand la faute finit par tomber sur l'appel
+indirect, une dizaine d'instructions ont déjà détruit l'état. Le `esp=7ffa2000` relevé sur
+Grimrock en section 176 s'explique par là.
+
+`BTCpuResetToConsistentState` est bien appelée — 40 fois dans une seule session de DREDGE — et
+elle redémarre la transition depuis le début. Mais elle ne peut pas défaire ce que la dizaine
+d'instructions mal décodées a déjà fait.
+
+### Tentative, mesurée, annulée
+
+Wine a deux chemins de retour 64→32 : un `ljmp` rapide et un `iretq`. J'ai forcé le second, en
+pariant qu'un transfert lointain aussi courant serait mieux émulé.
+
+```
+ljmp (defaut) : GfxDevice -> Direct3D 11.0 [level 11.1] -> ReloadAssembly
+iretq force   : GfxDevice -> plantage, deux essais sur deux
+```
+
+C'est une régression stable, pas une amélioration. **Annulé**, l'arbre `wow64cpu` est revenu à
+l'original.
+
+### Où en est DREDGE
+
+```
+sans 0063 : meurt dans mono_jit_init, DXVK jamais charge
+avec 0063 : Initialize engine version: 2021.3.5f1
+            GfxDevice: creating device client; threaded=1; jobified=1
+            Direct3D: Version 11.0 [level 11.1]
+                      Renderer: Apple M1 Max (ID=0x64)
+                      VRAM: 3072 MB
+            puis meurt sur le retour 64->32 d'un appel systeme
+```
+
+Le jeu ne tourne pas. Mais la pile graphique, elle, répond : DXVK expose un niveau 11.1 sur
+KosmicKrisp et Unity l'accepte. Aucun des deux blocages restants n'est dans le pilote.
