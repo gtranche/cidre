@@ -14257,3 +14257,50 @@ son nom, sans connaitre aucun autre emplacement.
 L'ordre mesure coincide avec l'ordre publie du SDK partout ou les deux sont connus. La
 correction du paragraphe precedent est donc confirmee : la carte a sept entrees relevee alors
 decrivait bien l'interface interne de Valve, pas l'adaptateur que recoit un jeu.
+
+## 203. Une seule methode ouvre les 187 interfaces
+
+L'emplacement 12 est branche dans le pont (`unix_get_generic_interface`, et le relais du meme
+emplacement cote PE). La sonde demande au client les 204 chaines de version que le dylib
+contient, hors `SteamClient` :
+
+```
+tuyau 1, utilisateur 1
+
+  STEAMAPPS_INTERFACE_VERSION008                -> 00007fe35ff3d620
+  STEAMUSERSTATS_INTERFACE_VERSION013           -> 00007fe3588082c0
+  SteamFriends017                               -> 00007fe358a16980
+  SteamUser023                                  -> 00007fe6d08583e0
+  SteamUtils011                                 -> 00007fe6d08584a0
+  ...
+--- 187 interfaces sur 204 ---
+```
+
+`GetISteamGenericInterface` est donc bien a l'emplacement 12 : l'identification par la forme du
+code -- meme repartiteur que les `GetISteamXxx`, mais nom attendu nul -- est confirmee par le
+comportement. Et elle suffit : aucun autre emplacement de la table n'a eu besoin d'etre connu
+pour atteindre `ISteamApps`, `ISteamUser`, `ISteamUtils`, `ISteamFriends`, `ISteamUserStats`.
+
+### Les dix-sept absentes ne sont pas des echecs
+
+```
+SteamGameServer002 .. SteamGameServer015
+SteamGameServerStats001
+SteamMasterServerUpdater001
+SteamNetworkingMessages002
+```
+
+Toutes des interfaces de serveur de jeu, qui exigent un handle de serveur et non un utilisateur
+client. Leur refus est la bonne reponse, pas une defaillance : c'est meme un controle de
+coherence, puisque rien d'autre ne manque.
+
+### Ce que le pont fait, et ce qu'il ne fait pas encore
+
+L'objet rendu est enveloppe cote PE, mais **sans aucun relais** : la table de methodes de chaque
+sous-interface n'est pas encore cartographiee, alors ses emplacements journalisent et rendent
+zero. Relayer d'apres les emplacements d'ISteamClient reviendrait a sauter au hasard dans une
+table qui n'est pas la sienne.
+
+La suite est mecanique et connue : appliquer a `ISteamApps`, `ISteamUser` et `ISteamUtils` la
+lecture qui a donne la carte d'`ISteamClient` -- relever la table a l'execution, decoder les
+octets de chaque methode, et laisser le binaire se nommer lui-meme quand il le fait.

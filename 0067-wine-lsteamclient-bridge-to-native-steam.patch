@@ -24,10 +24,10 @@ index 00000000..657deb4c
 +	unix.c
 diff --git a/dlls/lsteamclient/lsteamclient.spec b/dlls/lsteamclient/lsteamclient.spec
 new file mode 100644
-index 00000000..004bc8ac
+index 00000000..401db203
 --- /dev/null
 +++ b/dlls/lsteamclient/lsteamclient.spec
-@@ -0,0 +1,10 @@
+@@ -0,0 +1,12 @@
 +@ cdecl CreateInterface(str ptr)
 +@ cdecl SondeCreateSteamPipe(ptr)
 +@ cdecl SondeEnvelopperSteamClient(ptr)
@@ -38,12 +38,14 @@ index 00000000..004bc8ac
 +@ cdecl Steam_BLoggedOn(long long)
 +@ cdecl Steam_BGetCallback(long ptr ptr)
 +@ cdecl Steam_FreeLastCallback(long)
++@ cdecl SondeInterfaceGenerique(ptr long long str)
++@ cdecl SondeInterfaceNative(ptr)
 diff --git a/dlls/lsteamclient/main.c b/dlls/lsteamclient/main.c
 new file mode 100644
-index 00000000..702ac48d
+index 00000000..9859f603
 --- /dev/null
 +++ b/dlls/lsteamclient/main.c
-@@ -0,0 +1,294 @@
+@@ -0,0 +1,334 @@
 +/*
 + * Cote PE du pont Steamworks : ce que le steam_api du jeu appelle.
 + */
@@ -69,7 +71,7 @@ index 00000000..702ac48d
 +    return TRUE;
 +}
 +
-+static void *envelopper( void *natif );
++static void *envelopper( void *natif, const char *nom );
 +
 +/* Ce que le steam_api du jeu appelle en premier. L'interface rendue doit etre
 + * un objet PE : rendre l'objet natif ferait entrer le jeu en ABI System V. */
@@ -81,7 +83,7 @@ index 00000000..702ac48d
 +    if (WINE_UNIX_CALL( unix_create_interface, &params )) return NULL;
 +    if (!params.ret) { ERR( "%s : le client natif ne connait pas cette interface\n", debugstr_a(version) ); return NULL; }
 +
-+    objet = envelopper( params.ret );
++    objet = envelopper( params.ret, NULL );
 +    ERR( "%s : natif %p -> objet PE %p\n", debugstr_a(version), params.ret, objet );
 +    return objet;
 +}
@@ -111,6 +113,7 @@ index 00000000..702ac48d
 +{
 +    const void **table;   /* doit rester en tete : c'est ce que le jeu deref */
 +    void        *natif;
++    const char  *nom;     /* NULL pour ISteamClient ; sinon, sous-interface */
 +};
 +
 +/*
@@ -144,6 +147,15 @@ index 00000000..702ac48d
 +        ERR( "emplacement %u( %p, %p, %p )\n", emplacement,
 +             (void *)(ULONG_PTR)a, (void *)(ULONG_PTR)b, (void *)(ULONG_PTR)c );
 +
++    /* Une sous-interface n'a pas encore de carte : on journalise, on ne relaie
++     * rien. Relayer d'apres les emplacements d'ISteamClient sauterait au
++     * hasard dans une table qui n'est pas la sienne. */
++    if (objet->nom)
++    {
++        ERR( "%s : emplacement %u non cartographie\n", objet->nom, emplacement );
++        return 0;
++    }
++
 +    switch (emplacement)
 +    {
 +    case 0:   /* CreateSteamPipe() */
@@ -157,6 +169,14 @@ index 00000000..702ac48d
 +        struct release_steam_pipe_params params = { objet->natif, (int)a, 0 };
 +        if (WINE_UNIX_CALL( unix_release_steam_pipe, &params )) return 0;
 +        return params.ret;
++    }
++    case 12:  /* GetISteamGenericInterface(utilisateur, tuyau, version) */
++    {
++        struct generic_interface_params params =
++            { objet->natif, (int)a, (int)b, (const char *)(ULONG_PTR)c, NULL };
++        if (WINE_UNIX_CALL( unix_get_generic_interface, &params )) return 0;
++        if (!params.ret) return 0;
++        return (ULONG_PTR)envelopper( params.ret, params.version );
 +    }
 +    default:
 +        return 0;
@@ -244,7 +264,7 @@ index 00000000..702ac48d
 +    thunk_56, thunk_57, thunk_58, thunk_59, thunk_60, thunk_61, thunk_62, thunk_63,
 +};
 +
-+static void *envelopper( void *natif )
++static void *envelopper( void *natif, const char *nom )
 +{
 +    struct objet_pe *objet;
 +
@@ -252,13 +272,35 @@ index 00000000..702ac48d
 +    if (!(objet = HeapAlloc( GetProcessHeap(), 0, sizeof(*objet) ))) return NULL;
 +    objet->table = table_steam_client;
 +    objet->natif = natif;
++    objet->nom   = nom;
 +    TRACE( "interface native %p -> objet PE %p\n", natif, objet );
 +    return objet;
 +}
 +
 +void * CDECL SondeEnvelopperSteamClient( void *natif )
 +{
-+    return envelopper( natif );
++    return envelopper( natif, NULL );
++}
++
++/* Atteindre une sous-interface par son nom, via l'emplacement 12. L'objet
++ * rendu est enveloppe lui aussi, mais sans aucun relais : sa table de methodes
++ * n'est pas encore cartographiee, alors ses emplacements journalisent et
++ * rendent zero plutot que de sauter dans du code inconnu. */
++void * CDECL SondeInterfaceGenerique( void *client, int user, int pipe, const char *version )
++{
++    struct objet_pe *objet = client;
++    struct generic_interface_params params = { objet ? objet->natif : NULL, user, pipe, version, NULL };
++
++    if (!objet) return NULL;
++    if (WINE_UNIX_CALL( unix_get_generic_interface, &params )) return NULL;
++    if (!params.ret) return NULL;
++    return envelopper( params.ret, version );
++}
++
++void * CDECL SondeInterfaceNative( void *enveloppe )
++{
++    struct objet_pe *objet = enveloppe;
++    return objet ? objet->natif : NULL;
 +}
 +
 +/*
@@ -340,10 +382,10 @@ index 00000000..702ac48d
 +}
 diff --git a/dlls/lsteamclient/unix.c b/dlls/lsteamclient/unix.c
 new file mode 100644
-index 00000000..34743ad3
+index 00000000..92c1998c
 --- /dev/null
 +++ b/dlls/lsteamclient/unix.c
-@@ -0,0 +1,247 @@
+@@ -0,0 +1,273 @@
 +/*
 + * Cote unix du pont Steamworks : charge le steamclient.dylib du client Steam
 + * natif et lui demande ses interfaces.
@@ -579,6 +621,31 @@ index 00000000..34743ad3
 +    return STATUS_SUCCESS;
 +}
 +
++/*
++ * ISteamClient::GetISteamGenericInterface, emplacement 12.
++ *
++ * Les GetISteamXxx nommes chargent une chaine constante -- le nom de la
++ * famille d'interface -- avant de sauter dans un repartiteur commun.
++ * L'emplacement 12 emprunte le meme repartiteur avec un nom NUL : le
++ * repartiteur prend alors celui que l'appelant fournit. Une seule methode
++ * suffit donc a atteindre n'importe quelle interface Steamworks par son nom,
++ * sans connaitre aucun autre emplacement.
++ */
++static NTSTATUS get_generic_interface( void *args )
++{
++    struct generic_interface_params *params = args;
++    typedef void *(*methode_t)( void *iface, int user, int pipe, const char *version );
++    methode_t *table;
++
++    if (!params->iface) return STATUS_INVALID_PARAMETER;
++
++    table = *(methode_t **)params->iface;
++    params->ret = table[12]( params->iface, params->user, params->pipe, params->version );
++    TRACE( "%s (utilisateur %d, tuyau %d) -> %p\n",
++           debugstr_a(params->version), params->user, params->pipe, params->ret );
++    return STATUS_SUCCESS;
++}
++
 +const unixlib_entry_t __wine_unix_call_funcs[] =
 +{
 +    attach,
@@ -588,15 +655,16 @@ index 00000000..34743ad3
 +    appel_plat,
 +    get_callback,
 +    free_last_callback,
++    get_generic_interface,
 +};
 +
 +C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );
 diff --git a/dlls/lsteamclient/unixlib.h b/dlls/lsteamclient/unixlib.h
 new file mode 100644
-index 00000000..9c80234c
+index 00000000..018b1707
 --- /dev/null
 +++ b/dlls/lsteamclient/unixlib.h
-@@ -0,0 +1,89 @@
+@@ -0,0 +1,99 @@
 +/*
 + * Pont Steamworks : interface entre le cote PE et le cote unix.
 + */
@@ -652,6 +720,15 @@ index 00000000..9c80234c
 + * quelle au client natif : il remplit sa propre structure native puis recopie
 + * champ par champ, pour qu'aucune hypothese d'alignement ne traverse la
 + * frontiere. */
++struct generic_interface_params
++{
++    void       *iface;
++    int         user;
++    int         pipe;
++    const char *version;
++    void       *ret;
++};
++
 +struct callback_msg
 +{
 +    int    user;
@@ -682,6 +759,7 @@ index 00000000..9c80234c
 +    unix_appel_plat,
 +    unix_get_callback,
 +    unix_free_last_callback,
++    unix_get_generic_interface,
 +    unix_funcs_count
 +};
 +
