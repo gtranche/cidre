@@ -15162,3 +15162,55 @@ make aarch64_CFLAGS="-g -O2 -DWINE_TEB_SANS_X18" install
 ```
 
 En cas de doute, effacer `dlls/*/aarch64-windows/*.o` d'abord.
+
+## 218. Le TEB sans x18 : juste, et beaucoup trop lent
+
+### Les fautes ont disparu
+
+Apres avoir enregistre aussi le fil courant dans `load_ntdll_functions` -- il demarrait avant
+que l'adresse de la table ne soit connue, et son enregistrement ne faisait rien -- et borne le
+sondage a huit entrees :
+
+```
+fautes d'acces pendant wineboot --init : 0
+```
+
+Zero, contre trois dans la ligne de base du paragraphe 216 et une au paragraphe 217. L'acces au
+TEB fonctionne.
+
+### Mais wineboot tourne a 100 % sans finir
+
+```
+67090  100.0  1:28.71  C:\windows\system32\wineboot.exe
+```
+
+L'echantillonnage designe un seul coupable :
+
+```
+771 echantillons a 0x6fffffcd96b4
+ntdll PE base 0x6fffffc70000  ->  RVA 0x696b4
+__wine_current_teb            ->  RVA 0x696b4
+```
+
+C'est la fonction elle-meme. Rien d'etonnant : `NtCurrentTeb()` est partout, et on a remplace
+une lecture de registre par un appel de fonction suivi d'un sondage. Le facteur est de l'ordre
+de cinquante a cent sur le chemin le plus chaud de Wine.
+
+**La conception est juste et inexploitable en l'etat.** Il ne suffit pas que ce soit correct.
+
+### La suite : revenir a deux instructions
+
+`TPIDRRO_EL0` pointe sur la zone de donnees propre au fil -- mesure au paragraphe 214,
+`TPIDRRO_EL0 = pthread_self + 0xe0`. macOS y loge les emplacements de stockage local, et
+`pthread_getspecific` pour une cle directe se compile exactement ainsi :
+
+```
+mrs x0, tpidrro_el0
+ldr x0, [x0, #8*cle]
+```
+
+Deux instructions, sans appel ni sondage -- au lieu d'une pour `x18`. Si un emplacement direct
+peut etre reserve, `NtCurrentTeb()` redevient inlinable et le cout s'efface.
+
+A eprouver : quels emplacements macOS laisse a un tiers, et si `pthread_key_create` en rend un
+utilisable sous cette forme. La table actuelle reste utile comme repli.
