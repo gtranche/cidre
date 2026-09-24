@@ -14730,3 +14730,63 @@ Les fonctions plates passent, parce qu'elles sont en `__cdecl`. Les appels de me
 eux, sont en `__thiscall` et restent a traiter : il faut des thunks qui depilent le bon nombre
 d'octets. Les signatures du paragraphe 209 les donnent -- 76 emplacements et au plus neuf mots
 empiles, soit 760 thunks pour une grille complete, 204 couples reellement utilises.
+
+## 211. SteamAPI_Init rend 1 en 32 bits
+
+Le relais `__thiscall` est en place. Un thunk `fastcall` a deux parametres registre reproduit
+exactement la convention : le premier occupe ECX comme « this », le second occupe EDX et n'est
+pas lu, les mots suivants sont sur la pile et l'appele les depile. Reste a choisir, pour chaque
+emplacement, le thunk dont la discipline correspond -- d'ou une grille de 760 thunks
+(76 emplacements x 10 tailles) et une table de 423 signatures, toutes deux engendrees par
+`tests/engendrer_i386.py`.
+
+```
+SteamAPI_IsSteamRunning -> 1
+--- SteamAPI_Init ---
+  CreateInterface "SteamClient017" / "SteamClient020"
+  repartir32 ISteamClient   emplacement  0 (0 mots)
+  repartir32 ISteamClient   emplacement  2 (1 mots)
+  repartir32 ISteamClient   emplacement  0 (0 mots)
+  repartir32 ISteamClient   emplacement 12 (3 mots)
+  repartir32 SteamUtils010  emplacement  9 (0 mots)
+  repartir32 ISteamClient   emplacement 34 (1 mots)
+  repartir32 ISteamClient   emplacement  5 (3 mots)
+  repartir32 SteamUser021   emplacement  2 (1 mots, retour par pointeur cache)
+SteamAPI_Init -> 1
+```
+
+Un `steam_api.dll` i386 de jeu, pilote directement, initialise Steamworks sur le client Steam
+macOS natif. Le chemin 64 bits est inchange.
+
+### Deux corrections en route
+
+L'enveloppement manquait : `repartir32` rendait le pointeur natif brut, qu'un registre de
+32 bits ne peut meme pas contenir. Les methodes d'ISteamClient qui rendent une interface la
+rendent desormais enveloppee, comme en 64 bits.
+
+Puis l'emplacement 34 depilait zero octet alors qu'il prend un mot -- quatre octets de pile
+corrompus, et une faute plusieurs appels plus loin, a `[esi+0x34]` avec `esi` nul. Sept
+emplacements d'ISteamClient (1, 20, 23, 25, 32, 33, 34) n'ont pas d'enveloppe plate ; leurs
+signatures se lisent sur leurs sites d'appel, ou steam_api.dll designe l'objet par une variable
+globale :
+
+```
+mov  0x3b4392c8,%ecx     l'objet ISteamClient
+push $0x3b406620         un pointeur de fonction
+mov  (%ecx),%eax
+call *0x88(%eax)         emplacement 34, un mot
+```
+
+Le scan de tous ces sites donne : emplacement 0 sans argument, 1 un mot, 4 deux, 5 trois,
+12 trois, 23 aucun, 34 un. Deux entrees manquantes sont ainsi comblees.
+
+### Ou ca s'arrete
+
+`SteamAPI_RunCallbacks` enchaine plusieurs tours puis faute en ecriture a `8B4055F0`, dans
+steam_api, apres `SteamController008 emplacement 2`. Cet emplacement est bien `RunFrame` sans
+argument -- la pile est juste cette fois. **La cause n'est pas etablie.**
+
+Une piste, non verifiee : la table de signatures est indexee par famille d'interface, pas par
+version. Le jeu demande `SteamInput002` et `SteamController008` alors que les enveloppes plates
+du meme fichier visent d'autres versions ; rien ne garantit que la numerotation des emplacements
+soit identique d'une version a l'autre. Il faudra le mesurer avant d'y croire.

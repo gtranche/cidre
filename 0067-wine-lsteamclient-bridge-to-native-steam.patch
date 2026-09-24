@@ -42,10 +42,10 @@ index 00000000..401db203
 +@ cdecl SondeInterfaceNative(ptr)
 diff --git a/dlls/lsteamclient/main.c b/dlls/lsteamclient/main.c
 new file mode 100644
-index 00000000..1b5d2662
+index 00000000..8f54e7d6
 --- /dev/null
 +++ b/dlls/lsteamclient/main.c
-@@ -0,0 +1,403 @@
+@@ -0,0 +1,519 @@
 +/*
 + * Cote PE du pont Steamworks : ce que le steam_api du jeu appelle.
 + */
@@ -58,6 +58,7 @@ index 00000000..1b5d2662
 +#include "wine/debug.h"
 +
 +#include "unixlib.h"
++#include "signatures32.h"
 +
 +WINE_DEFAULT_DEBUG_CHANNEL(lsteamclient);
 +
@@ -139,50 +140,72 @@ index 00000000..1b5d2662
 +#define NB_EMPLACEMENTS 64
 +
 +/*
-+ * Les methodes qui rendent une structure par valeur.
++ * Retrouver la signature d'une methode.
 + *
-+ * Microsoft x64 rend un type de classe non trivial par pointeur cache : « this »
-+ * dans RCX, le tampon dans RDX, et la methode doit rendre ce tampon dans RAX.
-+ * System V, lui, rend un agregat entier de huit octets directement dans RAX --
-+ * le desassemblage de la methode native le montre, elle prend « this » dans RDI
-+ * et ne recoit aucun tampon. Relayer sans rien faire laisse donc l'appelant
-+ * dereferencer une valeur comme si c'etait une adresse.
-+ *
-+ * On ne peut pas deviner quelles methodes sont concernees : les deux cotes
-+ * compilent pareil pour un entier de huit octets, et seule la declaration du
-+ * SDK les distingue. La liste se construit donc au fur et a mesure de ce que
-+ * les jeux demandent, chaque entree etant justifiee par une trace.
++ * Le jeu designe une interface par sa chaine de version : « SteamUser021 », ou
++ * « STEAMAPPS_INTERFACE_VERSION008 ». La table mesuree, elle, les nomme
++ * « ISteamUser », « ISteamApps ». On compare donc la partie utile, sans tenir
++ * compte de la casse que la premiere forme a perdue.
 + */
-+static const struct
++static BOOL meme_interface( const char *interface, const char *version )
 +{
-+    const char *prefixe;
-+    unsigned    emplacement;
-+} rendent_structure[] =
-+{
-+    /* ISteamUser::GetSteamID -- rend un CSteamID. Observe avec le steam_api64
-+     * de Surviving Mars : « lea 0x478(%rsp),%rdx ; mov %rax,%rcx ; call
-+     * *0x10(%r8) » puis « mov (%rax),%rcx ». */
-+    { "SteamUser", 2 },
-+};
++    const char *v = version, *i = interface;
++    const char *sep;
 +
-+static BOOL rend_structure( const char *nom, unsigned emplacement )
++    if (!version) return FALSE;
++    if (strncmp( i, "ISteam", 6 )) return FALSE;
++    i += 6;
++
++    if ((sep = strstr( v, "_INTERFACE_VERSION" )))
++    {
++        if (!strncasecmp( v, "STEAM", 5 )) v += 5;
++        if (sep - v != (int)strlen( i )) return FALSE;
++        return !strncasecmp( v, i, sep - v );
++    }
++    if (!strncasecmp( v, "Steam", 5 )) v += 5;
++    /* « SteamUser021 » : la partie utile s'arrete au premier chiffre. */
++    {
++        size_t n = 0;
++        while (v[n] && (v[n] < '0' || v[n] > '9')) n++;
++        if (n != strlen( i )) return FALSE;
++        return !strncasecmp( v, i, n );
++    }
++}
++
++/* Les emplacements d'ISteamClient qui rendent une interface. Identiques de la
++ * version 017 a la version 021 : elles ne divergent qu'a partir de 19. */
++static BOOL rend_interface( unsigned emplacement )
++{
++    switch (emplacement)
++    {
++    case 5: case 6: case 8: case 9: case 10: case 11:
++    case 12: case 13: case 14: case 15: case 16: case 17: case 18:
++        return TRUE;
++    default:
++        return FALSE;
++    }
++}
++
++static const struct signature_steam *signature( const char *version, unsigned emplacement )
 +{
 +    unsigned i;
 +
-+    if (!nom) return FALSE;
-+    for (i = 0; i < ARRAY_SIZE(rendent_structure); i++)
-+        if (rendent_structure[i].emplacement == emplacement &&
-+            !strncmp( nom, rendent_structure[i].prefixe, strlen(rendent_structure[i].prefixe) ))
-+            return TRUE;
-+    return FALSE;
++    if (!version) return NULL;
++    for (i = 0; i < ARRAY_SIZE(signatures); i++)
++        if (signatures[i].emplacement == emplacement &&
++            meme_interface( signatures[i].interface, version ))
++            return &signatures[i];
++    return NULL;
 +}
 +
++#ifdef _WIN64
 +static UINT64 repartir( unsigned emplacement, void *self,
 +                        UINT64 a, UINT64 b, UINT64 c, UINT64 d, UINT64 e, UINT64 f )
 +{
 +    struct objet_pe *objet = self;
 +    struct appel_vtable_params params = { objet->natif, emplacement, 0, a, b, c, d, e, f, 0 };
 +    const char *ou = objet->nom ? objet->nom : "ISteamClient";
++    const struct signature_steam *sig;
 +
 +    if (!IsBadStringPtrA( (LPCSTR)(ULONG_PTR)a, 64 ))
 +        ERR( "%s emplacement %u( \"%s\", %p, %p )\n", ou, emplacement,
@@ -210,10 +233,15 @@ index 00000000..1b5d2662
 +    {
 +        if (WINE_UNIX_CALL( unix_appel_vtable, &params )) return 0;
 +
-+        if (rend_structure( objet->nom, emplacement ))
++        sig = signature( objet->nom, emplacement );
++        if (sig && sig->tampon)
 +        {
 +            /* Le natif a rendu la valeur dans RAX ; l'appelant attend qu'elle
-+             * soit ecrite dans son tampon et que RAX en porte l'adresse. */
++             * soit ecrite dans son tampon et que RAX en porte l'adresse. Au-dela
++             * de huit octets la structure ne revient plus dans un seul registre
++             * -- classe MEMORY ou mixte entier/flottant -- et le relais ne sait
++             * pas encore la traiter. */
++            if (sig->tampon != 8) { ERR( "%s emplacement %u : tampon de %u octets, non traite\n", ou, emplacement, sig->tampon ); return 0; }
 +            if (!a) return 0;
 +            *(UINT64 *)(ULONG_PTR)a = params.ret;
 +            TRACE( "structure de 8 octets rendue via le tampon %p\n", (void *)(ULONG_PTR)a );
@@ -231,10 +259,7 @@ index 00000000..1b5d2662
 +    if (WINE_UNIX_CALL( unix_appel_vtable, &params )) return 0;
 +    if (!params.ret) return 0;
 +
-+    switch (emplacement)
-+    {
-+    case 5: case 6: case 8: case 9: case 10: case 11:
-+    case 12: case 13: case 14: case 15: case 16: case 17: case 18:
++    if (rend_interface( emplacement ))
 +    {
 +        /* Rend une interface : l'envelopper, sinon le jeu recevrait un objet
 +         * System V. Le nom ne sert qu'au journal ; c'est la chaine de version,
@@ -246,9 +271,7 @@ index 00000000..1b5d2662
 +        else if (!IsBadStringPtrA( (LPCSTR)(ULONG_PTR)b, 64 )) nom = (const char *)(ULONG_PTR)b;
 +        return (ULONG_PTR)envelopper( params.ret, nom );
 +    }
-+    default:
-+        return params.ret;
-+    }
++    return params.ret;
 +}
 +
 +#define EMPLACEMENT(n) \
@@ -321,6 +344,87 @@ index 00000000..1b5d2662
 +EMPLACEMENT(63)
 +#undef EMPLACEMENT
 +
++#endif /* _WIN64 */
++
++#include "thunks32.h"
++
++#ifndef _WIN64
++/*
++ * Le relais __thiscall.
++ *
++ * Le thunk a deja fait le plus difficile : il depilera le bon nombre d'octets,
++ * parce que sa signature a ete choisie a l'enveloppement d'apres la table
++ * mesuree. Reste a transporter les arguments. Chaque mot de pile devient un
++ * argument de 64 bits ; une methode prenant un entier long occupe deux mots et
++ * n'est donc pas encore traitee -- elle est signalee plutot que mal appelee.
++ */
++static UINT64 repartir32( unsigned emplacement, void *self, unsigned mots, const UINT32 *args )
++{
++    struct objet_pe *objet = self;
++    const char *ou = objet->nom ? objet->nom : "ISteamClient";
++    const struct signature_steam *sig = signature( objet->nom, emplacement );
++    struct appel_vtable_params params = { objet->natif, emplacement, 0, 0, 0, 0, 0, 0, 0, 0 };
++    unsigned tampon = sig ? sig->tampon : 0;
++    unsigned debut = tampon ? 1 : 0;   /* le pointeur cache occupe le premier mot */
++    UINT64 *dest[6];
++    unsigned i;
++
++    ERR( "%s emplacement %u (%u mots%s)\n", ou, emplacement, mots,
++         tampon ? ", retour par pointeur cache" : "" );
++
++    dest[0] = &params.a; dest[1] = &params.b; dest[2] = &params.c;
++    dest[3] = &params.d; dest[4] = &params.e; dest[5] = &params.f;
++    for (i = debut; i < mots && i - debut < 6; i++)
++        *dest[i - debut] = args[i];
++
++    if (WINE_UNIX_CALL( unix_appel_vtable, &params )) return 0;
++
++    if (tampon)
++    {
++        if (tampon != 8)
++        {
++            ERR( "%s emplacement %u : tampon de %u octets, non traite\n", ou, emplacement, tampon );
++            return 0;
++        }
++        *(UINT64 *)(ULONG_PTR)args[0] = params.ret;
++        return args[0];
++    }
++
++    /* Les methodes d'ISteamClient qui rendent une interface doivent la rendre
++     * enveloppee : le jeu recevrait sinon un pointeur natif de 64 bits, qu'un
++     * registre de 32 bits ne peut meme pas contenir. La chaine de version est
++     * le dernier argument. */
++    if (!objet->nom && params.ret && rend_interface( emplacement ))
++    {
++        const char *nom = NULL;
++        unsigned k;
++
++        for (k = mots; k > debut; k--)
++            if (!IsBadStringPtrA( (LPCSTR)(ULONG_PTR)args[k - 1], 64 ))
++            { nom = (const char *)(ULONG_PTR)args[k - 1]; break; }
++        return (ULONG_PTR)envelopper( params.ret, nom );
++    }
++    return params.ret;
++}
++
++/* Construit la table de methodes d'une interface : pour chaque emplacement, le
++ * thunk dont la discipline de pile correspond a la methode mesuree. */
++static const void **table_pour( const char *version )
++{
++    const void **table = HeapAlloc( GetProcessHeap(), 0, NB_EMPLACEMENTS32 * sizeof(*table) );
++    unsigned k;
++
++    if (!table) return NULL;
++    for (k = 0; k < NB_EMPLACEMENTS32; k++)
++    {
++        const struct signature_steam *sig = signature( version, k );
++        table[k] = table32[k][sig ? sig->mots : 0];
++    }
++    return table;
++}
++#endif
++
++#ifdef _WIN64
 +static const void *table_steam_client[NB_EMPLACEMENTS] =
 +{
 +    thunk_0, thunk_1, thunk_2, thunk_3, thunk_4, thunk_5, thunk_6, thunk_7,
@@ -332,6 +436,8 @@ index 00000000..1b5d2662
 +    thunk_48, thunk_49, thunk_50, thunk_51, thunk_52, thunk_53, thunk_54, thunk_55,
 +    thunk_56, thunk_57, thunk_58, thunk_59, thunk_60, thunk_61, thunk_62, thunk_63,
 +};
++#endif /* _WIN64 */
++
 +
 +static void *envelopper( UINT64 natif, const char *nom )
 +{
@@ -339,7 +445,17 @@ index 00000000..1b5d2662
 +
 +    if (!natif) return NULL;
 +    if (!(objet = HeapAlloc( GetProcessHeap(), 0, sizeof(*objet) ))) return NULL;
++#ifdef _WIN64
 +    objet->table = table_steam_client;
++#else
++    /* En 32 bits chaque interface a sa propre table : la discipline de pile
++     * depend de la methode, donc de l'interface. */
++    if (!(objet->table = table_pour( nom ? nom : "SteamClient" )))
++    {
++        HeapFree( GetProcessHeap(), 0, objet );
++        return NULL;
++    }
++#endif
 +    objet->natif = natif;
 +    objet->nom   = nom;
 +    TRACE( "interface native %s -> objet PE %p\n", wine_dbgstr_longlong(natif), objet );
@@ -449,6 +565,2076 @@ index 00000000..1b5d2662
 +
 +    WINE_UNIX_CALL( unix_free_last_callback, &params );
 +}
+diff --git a/dlls/lsteamclient/signatures32.h b/dlls/lsteamclient/signatures32.h
+new file mode 100644
+index 00000000..0491d917
+--- /dev/null
++++ b/dlls/lsteamclient/signatures32.h
+@@ -0,0 +1,440 @@
++/* Engendre par tests/engendrer_i386.py -- ne pas editer a la main.
++ * Releve dans le steam_api.dll i386 d'un jeu : pour chaque methode, son
++ * emplacement, le nombre de mots empiles et la taille de la structure
++ * rendue par pointeur cache (zero si elle n'en rend pas). */
++
++struct signature_steam
++{
++    const char *interface;
++    unsigned    emplacement;
++    unsigned    mots;
++    unsigned    tampon;
++    const char *methode;
++};
++
++static const struct signature_steam signatures[] =
++{
++    { "ISteamClient", 1, 1, 0, "BReleaseSteamPipe" },
++    { "ISteamClient", 34, 1, 0, "sans_nom_34" },
++    { "ISteamAppList", 4, 1, 0, "GetAppBuildId" },
++    { "ISteamAppList", 3, 3, 0, "GetAppInstallDir" },
++    { "ISteamAppList", 2, 3, 0, "GetAppName" },
++    { "ISteamAppList", 1, 2, 0, "GetInstalledApps" },
++    { "ISteamAppList", 0, 0, 0, "GetNumInstalledApps" },
++    { "ISteamApps", 23, 0, 0, "GetAppBuildId" },
++    { "ISteamApps", 18, 3, 0, "GetAppInstallDir" },
++    { "ISteamApps", 20, 1, 8, "GetAppOwner" },
++    { "ISteamApps", 5, 0, 0, "GetAvailableGameLanguages" },
++    { "ISteamApps", 4, 0, 0, "GetCurrentGameLanguage" },
++    { "ISteamApps", 10, 0, 0, "GetDLCCount" },
++    { "ISteamApps", 8, 1, 0, "GetEarliestPurchaseUnixTime" },
++    { "ISteamApps", 17, 3, 0, "GetInstalledDepots" },
++    { "ISteamApps", 26, 2, 0, "GetLaunchCommandLine" },
++    { "ISteamApps", 21, 1, 0, "GetLaunchQueryParam" },
++    { "ISteamApps", 12, 1, 0, "InstallDLC" },
++    { "ISteamApps", 24, 0, 0, "RequestAllProofOfPurchaseKeys" },
++    { "ISteamApps", 14, 1, 0, "RequestAppProofOfPurchaseKey" },
++    { "ISteamApps", 13, 1, 0, "UninstallDLC" },
++    { "ISteamClient", 2, 1, 0, "ConnectToGlobalUser" },
++    { "ISteamClient", 3, 2, 0, "CreateLocalUser" },
++    { "ISteamClient", 0, 0, 0, "CreateSteamPipe" },
++    { "ISteamClient", 21, 0, 0, "GetIPCCallCount" },
++    { "ISteamClient", 28, 3, 0, "GetISteamAppList" },
++    { "ISteamClient", 15, 3, 0, "GetISteamApps" },
++    { "ISteamClient", 26, 3, 0, "GetISteamController" },
++    { "ISteamClient", 8, 3, 0, "GetISteamFriends" },
++    { "ISteamClient", 19, 3, 0, "GetISteamGameSearch" },
++    { "ISteamClient", 6, 3, 0, "GetISteamGameServer" },
++    { "ISteamClient", 14, 3, 0, "GetISteamGameServerStats" },
++    { "ISteamClient", 12, 3, 0, "GetISteamGenericInterface" },
++    { "ISteamClient", 31, 3, 0, "GetISteamHTMLSurface" },
++    { "ISteamClient", 24, 3, 0, "GetISteamHTTP" },
++    { "ISteamClient", 38, 3, 0, "GetISteamInput" },
++    { "ISteamClient", 35, 3, 0, "GetISteamInventory" },
++    { "ISteamClient", 10, 3, 0, "GetISteamMatchmaking" },
++    { "ISteamClient", 11, 3, 0, "GetISteamMatchmakingServers" },
++    { "ISteamClient", 29, 3, 0, "GetISteamMusic" },
++    { "ISteamClient", 30, 3, 0, "GetISteamMusicRemote" },
++    { "ISteamClient", 16, 3, 0, "GetISteamNetworking" },
++    { "ISteamClient", 37, 3, 0, "GetISteamParentalSettings" },
++    { "ISteamClient", 39, 3, 0, "GetISteamParties" },
++    { "ISteamClient", 40, 3, 0, "GetISteamRemotePlay" },
++    { "ISteamClient", 17, 3, 0, "GetISteamRemoteStorage" },
++    { "ISteamClient", 18, 3, 0, "GetISteamScreenshots" },
++    { "ISteamClient", 27, 3, 0, "GetISteamUGC" },
++    { "ISteamClient", 5, 3, 0, "GetISteamUser" },
++    { "ISteamClient", 13, 3, 0, "GetISteamUserStats" },
++    { "ISteamClient", 9, 2, 0, "GetISteamUtils" },
++    { "ISteamClient", 36, 3, 0, "GetISteamVideo" },
++    { "ISteamClient", 4, 2, 0, "ReleaseUser" },
++    { "ISteamClient", 7, 2, 0, "SetLocalIPBinding" },
++    { "ISteamClient", 22, 1, 0, "SetWarningMessageHook" },
++    { "ISteamController", 5, 4, 0, "ActivateActionSet" },
++    { "ISteamController", 7, 4, 0, "ActivateActionSetLayer" },
++    { "ISteamController", 8, 4, 0, "DeactivateActionSetLayer" },
++    { "ISteamController", 9, 2, 0, "DeactivateAllActionSetLayers" },
++    { "ISteamController", 31, 3, 0, "GetActionOriginFromXboxOrigin" },
++    { "ISteamController", 10, 3, 0, "GetActiveActionSetLayers" },
++    { "ISteamController", 15, 5, 13, "GetAnalogActionData" },
++    { "ISteamController", 16, 7, 0, "GetAnalogActionOrigins" },
++    { "ISteamController", 3, 1, 0, "GetConnectedControllers" },
++    { "ISteamController", 12, 5, 0, "GetDigitalActionData" },
++    { "ISteamController", 13, 7, 0, "GetDigitalActionOrigins" },
++    { "ISteamController", 28, 2, 0, "GetGamepadIndexForController" },
++    { "ISteamController", 17, 1, 0, "GetGlyphForActionOrigin" },
++    { "ISteamController", 30, 1, 0, "GetGlyphForXboxOrigin" },
++    { "ISteamController", 26, 2, 0, "GetInputTypeForHandle" },
++    { "ISteamController", 20, 3, 40, "GetMotionData" },
++    { "ISteamController", 18, 1, 0, "GetStringForActionOrigin" },
++    { "ISteamController", 29, 1, 0, "GetStringForXboxOrigin" },
++    { "ISteamController", 2, 0, 0, "RunFrame" },
++    { "ISteamController", 24, 6, 0, "SetLEDColor" },
++    { "ISteamController", 19, 4, 0, "StopAnalogActionMomentum" },
++    { "ISteamController", 32, 2, 0, "TranslateActionOrigin" },
++    { "ISteamController", 21, 4, 0, "TriggerHapticPulse" },
++    { "ISteamController", 22, 7, 0, "TriggerRepeatedHapticPulse" },
++    { "ISteamController", 23, 4, 0, "TriggerVibration" },
++    { "ISteamFriends", 28, 1, 0, "ActivateGameOverlay" },
++    { "ISteamFriends", 33, 2, 0, "ActivateGameOverlayInviteDialog" },
++    { "ISteamFriends", 75, 1, 0, "ActivateGameOverlayInviteDialogConnectString" },
++    { "ISteamFriends", 73, 2, 0, "ActivateGameOverlayRemotePlayTogetherInviteDialog" },
++    { "ISteamFriends", 31, 2, 0, "ActivateGameOverlayToStore" },
++    { "ISteamFriends", 29, 3, 0, "ActivateGameOverlayToUser" },
++    { "ISteamFriends", 30, 2, 0, "ActivateGameOverlayToWebPage" },
++    { "ISteamFriends", 44, 0, 0, "ClearRichPresence" },
++    { "ISteamFriends", 57, 4, 0, "GetChatMemberByIndex" },
++    { "ISteamFriends", 19, 2, 8, "GetClanByIndex" },
++    { "ISteamFriends", 56, 2, 0, "GetClanChatMemberCount" },
++    { "ISteamFriends", 59, 7, 0, "GetClanChatMessage" },
++    { "ISteamFriends", 18, 0, 0, "GetClanCount" },
++    { "ISteamFriends", 20, 2, 0, "GetClanName" },
++    { "ISteamFriends", 41, 4, 0, "GetClanOfficerByIndex" },
++    { "ISteamFriends", 40, 2, 0, "GetClanOfficerCount" },
++    { "ISteamFriends", 39, 3, 0, "GetClanOwner" },
++    { "ISteamFriends", 21, 2, 0, "GetClanTag" },
++    { "ISteamFriends", 51, 2, 8, "GetCoplayFriend" },
++    { "ISteamFriends", 50, 0, 0, "GetCoplayFriendCount" },
++    { "ISteamFriends", 4, 3, 8, "GetFriendByIndex" },
++    { "ISteamFriends", 53, 2, 0, "GetFriendCoplayGame" },
++    { "ISteamFriends", 52, 2, 0, "GetFriendCoplayTime" },
++    { "ISteamFriends", 3, 1, 0, "GetFriendCount" },
++    { "ISteamFriends", 24, 2, 0, "GetFriendCountFromSource" },
++    { "ISteamFriends", 25, 4, 0, "GetFriendFromSourceByIndex" },
++    { "ISteamFriends", 66, 6, 0, "GetFriendMessage" },
++    { "ISteamFriends", 7, 2, 0, "GetFriendPersonaName" },
++    { "ISteamFriends", 9, 3, 0, "GetFriendPersonaNameHistory" },
++    { "ISteamFriends", 6, 2, 0, "GetFriendPersonaState" },
++    { "ISteamFriends", 5, 2, 0, "GetFriendRelationship" },
++    { "ISteamFriends", 45, 3, 0, "GetFriendRichPresence" },
++    { "ISteamFriends", 47, 3, 0, "GetFriendRichPresenceKeyByIndex" },
++    { "ISteamFriends", 46, 2, 0, "GetFriendRichPresenceKeyCount" },
++    { "ISteamFriends", 10, 2, 0, "GetFriendSteamLevel" },
++    { "ISteamFriends", 12, 0, 0, "GetFriendsGroupCount" },
++    { "ISteamFriends", 13, 1, 0, "GetFriendsGroupIDByIndex" },
++    { "ISteamFriends", 15, 1, 0, "GetFriendsGroupMembersCount" },
++    { "ISteamFriends", 16, 3, 0, "GetFriendsGroupMembersList" },
++    { "ISteamFriends", 14, 1, 0, "GetFriendsGroupName" },
++    { "ISteamFriends", 36, 2, 0, "GetLargeFriendAvatar" },
++    { "ISteamFriends", 35, 2, 0, "GetMediumFriendAvatar" },
++    { "ISteamFriends", 72, 0, 0, "GetNumChatsWithUnreadPriorityMessages" },
++    { "ISteamFriends", 0, 0, 0, "GetPersonaName" },
++    { "ISteamFriends", 2, 0, 0, "GetPersonaState" },
++    { "ISteamFriends", 11, 2, 0, "GetPlayerNickname" },
++    { "ISteamFriends", 34, 2, 0, "GetSmallFriendAvatar" },
++    { "ISteamFriends", 42, 0, 0, "GetUserRestrictions" },
++    { "ISteamFriends", 48, 2, 0, "RequestFriendRichPresence" },
++    { "ISteamFriends", 27, 3, 0, "SetInGameVoiceSpeaking" },
++    { "ISteamFriends", 32, 2, 0, "SetPlayedWith" },
++    { "ISteamGameSearch", 3, 0, 0, "AcceptGame" },
++    { "ISteamGameSearch", 0, 2, 0, "AddGameSearchParams" },
++    { "ISteamGameSearch", 11, 0, 0, "CancelRequestPlayersForGame" },
++    { "ISteamGameSearch", 4, 0, 0, "DeclineGame" },
++    { "ISteamGameSearch", 13, 2, 0, "EndGame" },
++    { "ISteamGameSearch", 6, 0, 0, "EndGameSearch" },
++    { "ISteamGameSearch", 10, 2, 0, "HostConfirmGameStart" },
++    { "ISteamGameSearch", 9, 3, 0, "RequestPlayersForGame" },
++    { "ISteamGameSearch", 5, 4, 0, "RetrieveConnectionDetails" },
++    { "ISteamGameSearch", 2, 2, 0, "SearchForGameSolo" },
++    { "ISteamGameSearch", 1, 4, 0, "SearchForGameWithLobby" },
++    { "ISteamGameSearch", 8, 2, 0, "SetConnectionDetails" },
++    { "ISteamGameSearch", 7, 2, 0, "SetGameHostParams" },
++    { "ISteamGameSearch", 12, 5, 0, "SubmitPlayerResult" },
++    { "ISteamGameServer", 29, 4, 0, "BeginAuthSession" },
++    { "ISteamGameServer", 31, 1, 0, "CancelAuthTicket" },
++    { "ISteamGameServer", 19, 0, 0, "ClearAllKeyValues" },
++    { "ISteamGameServer", 25, 1, 8, "CreateUnauthenticatedUserConnection" },
++    { "ISteamGameServer", 39, 1, 0, "EnableHeartbeats" },
++    { "ISteamGameServer", 30, 2, 0, "EndAuthSession" },
++    { "ISteamGameServer", 41, 0, 0, "ForceHeartbeat" },
++    { "ISteamGameServer", 28, 3, 0, "GetAuthSessionTicket" },
++    { "ISteamGameServer", 34, 0, 0, "GetGameplayStats" },
++    { "ISteamGameServer", 38, 4, 0, "GetNextOutgoingPacket" },
++    { "ISteamGameServer", 36, 1, 20, "GetPublicIP" },
++    { "ISteamGameServer", 10, 1, 8, "GetSteamID" },
++    { "ISteamGameServer", 7, 0, 0, "LogOff" },
++    { "ISteamGameServer", 5, 1, 0, "LogOn" },
++    { "ISteamGameServer", 6, 0, 0, "LogOnAnonymous" },
++    { "ISteamGameServer", 26, 2, 0, "SendUserDisconnect" },
++    { "ISteamGameServer", 13, 1, 0, "SetBotPlayerCount" },
++    { "ISteamGameServer", 4, 1, 0, "SetDedicatedServer" },
++    { "ISteamGameServer", 22, 1, 0, "SetGameData" },
++    { "ISteamGameServer", 2, 1, 0, "SetGameDescription" },
++    { "ISteamGameServer", 21, 1, 0, "SetGameTags" },
++    { "ISteamGameServer", 40, 1, 0, "SetHeartbeatInterval" },
++    { "ISteamGameServer", 20, 2, 0, "SetKeyValue" },
++    { "ISteamGameServer", 15, 1, 0, "SetMapName" },
++    { "ISteamGameServer", 12, 1, 0, "SetMaxPlayerCount" },
++    { "ISteamGameServer", 3, 1, 0, "SetModDir" },
++    { "ISteamGameServer", 16, 1, 0, "SetPasswordProtected" },
++    { "ISteamGameServer", 1, 1, 0, "SetProduct" },
++    { "ISteamGameServer", 23, 1, 0, "SetRegion" },
++    { "ISteamGameServer", 14, 1, 0, "SetServerName" },
++    { "ISteamGameServer", 17, 1, 0, "SetSpectatorPort" },
++    { "ISteamGameServer", 18, 1, 0, "SetSpectatorServerName" },
++    { "ISteamGameServer", 32, 3, 0, "UserHasLicenseForApp" },
++    { "ISteamHTMLSurface", 11, 3, 0, "AddHeader" },
++    { "ISteamHTMLSurface", 35, 2, 0, "AllowStartRequest" },
++    { "ISteamHTMLSurface", 25, 1, 0, "CopyToClipboard" },
++    { "ISteamHTMLSurface", 12, 2, 0, "ExecuteJavascript" },
++    { "ISteamHTMLSurface", 37, 2, 0, "FileLoadDialogResponse" },
++    { "ISteamHTMLSurface", 27, 4, 0, "Find" },
++    { "ISteamHTMLSurface", 29, 3, 0, "GetLinkAtPosition" },
++    { "ISteamHTMLSurface", 9, 1, 0, "GoBack" },
++    { "ISteamHTMLSurface", 10, 1, 0, "GoForward" },
++    { "ISteamHTMLSurface", 36, 2, 0, "JSDialogResponse" },
++    { "ISteamHTMLSurface", 20, 3, 0, "KeyChar" },
++    { "ISteamHTMLSurface", 18, 4, 0, "KeyDown" },
++    { "ISteamHTMLSurface", 19, 3, 0, "KeyUp" },
++    { "ISteamHTMLSurface", 5, 3, 0, "LoadURL" },
++    { "ISteamHTMLSurface", 15, 2, 0, "MouseDoubleClick" },
++    { "ISteamHTMLSurface", 14, 2, 0, "MouseDown" },
++    { "ISteamHTMLSurface", 16, 3, 0, "MouseMove" },
++    { "ISteamHTMLSurface", 13, 2, 0, "MouseUp" },
++    { "ISteamHTMLSurface", 17, 2, 0, "MouseWheel" },
++    { "ISteamHTMLSurface", 34, 1, 0, "OpenDeveloperTools" },
++    { "ISteamHTMLSurface", 26, 1, 0, "PasteFromClipboard" },
++    { "ISteamHTMLSurface", 8, 1, 0, "Reload" },
++    { "ISteamHTMLSurface", 4, 1, 0, "RemoveBrowser" },
++    { "ISteamHTMLSurface", 32, 2, 0, "SetBackgroundMode" },
++    { "ISteamHTMLSurface", 30, 7, 0, "SetCookie" },
++    { "ISteamHTMLSurface", 33, 2, 0, "SetDPIScalingFactor" },
++    { "ISteamHTMLSurface", 21, 2, 0, "SetHorizontalScroll" },
++    { "ISteamHTMLSurface", 23, 2, 0, "SetKeyFocus" },
++    { "ISteamHTMLSurface", 31, 4, 0, "SetPageScaleFactor" },
++    { "ISteamHTMLSurface", 6, 3, 0, "SetSize" },
++    { "ISteamHTMLSurface", 22, 2, 0, "SetVerticalScroll" },
++    { "ISteamHTMLSurface", 28, 1, 0, "StopFind" },
++    { "ISteamHTMLSurface", 7, 1, 0, "StopLoad" },
++    { "ISteamHTMLSurface", 24, 1, 0, "ViewSource" },
++    { "ISteamHTTP", 17, 1, 0, "CreateCookieContainer" },
++    { "ISteamHTTP", 0, 2, 0, "CreateHTTPRequest" },
++    { "ISteamInput", 5, 4, 0, "ActivateActionSet" },
++    { "ISteamInput", 7, 4, 0, "ActivateActionSetLayer" },
++    { "ISteamInput", 8, 4, 0, "DeactivateActionSetLayer" },
++    { "ISteamInput", 9, 2, 0, "DeactivateAllActionSetLayers" },
++    { "ISteamInput", 31, 3, 0, "GetActionOriginFromXboxOrigin" },
++    { "ISteamInput", 10, 3, 0, "GetActiveActionSetLayers" },
++    { "ISteamInput", 15, 5, 13, "GetAnalogActionData" },
++    { "ISteamInput", 16, 7, 0, "GetAnalogActionOrigins" },
++    { "ISteamInput", 3, 1, 0, "GetConnectedControllers" },
++    { "ISteamInput", 12, 5, 0, "GetDigitalActionData" },
++    { "ISteamInput", 13, 7, 0, "GetDigitalActionOrigins" },
++    { "ISteamInput", 28, 2, 0, "GetGamepadIndexForController" },
++    { "ISteamInput", 17, 1, 0, "GetGlyphForActionOrigin" },
++    { "ISteamInput", 30, 1, 0, "GetGlyphForXboxOrigin" },
++    { "ISteamInput", 26, 2, 0, "GetInputTypeForHandle" },
++    { "ISteamInput", 20, 3, 40, "GetMotionData" },
++    { "ISteamInput", 34, 2, 0, "GetRemotePlaySessionID" },
++    { "ISteamInput", 18, 1, 0, "GetStringForActionOrigin" },
++    { "ISteamInput", 29, 1, 0, "GetStringForXboxOrigin" },
++    { "ISteamInput", 2, 0, 0, "RunFrame" },
++    { "ISteamInput", 22, 6, 0, "SetLEDColor" },
++    { "ISteamInput", 19, 4, 0, "StopAnalogActionMomentum" },
++    { "ISteamInput", 32, 2, 0, "TranslateActionOrigin" },
++    { "ISteamInput", 23, 4, 0, "TriggerHapticPulse" },
++    { "ISteamInput", 24, 7, 0, "TriggerRepeatedHapticPulse" },
++    { "ISteamInput", 21, 4, 0, "TriggerVibration" },
++    { "ISteamInventory", 5, 1, 0, "DestroyResult" },
++    { "ISteamInventory", 27, 0, 0, "GetNumItemsWithPrices" },
++    { "ISteamInventory", 0, 1, 0, "GetResultStatus" },
++    { "ISteamInventory", 3, 1, 0, "GetResultTimestamp" },
++    { "ISteamInventory", 17, 0, 0, "SendItemDropHeartbeat" },
++    { "ISteamMatchmaking", 2, 6, 0, "AddFavoriteGame" },
++    { "ISteamMatchmaking", 11, 2, 0, "AddRequestLobbyListCompatibleMembersFilter" },
++    { "ISteamMatchmaking", 9, 1, 0, "AddRequestLobbyListDistanceFilter" },
++    { "ISteamMatchmaking", 8, 1, 0, "AddRequestLobbyListFilterSlotsAvailable" },
++    { "ISteamMatchmaking", 7, 2, 0, "AddRequestLobbyListNearValueFilter" },
++    { "ISteamMatchmaking", 6, 3, 0, "AddRequestLobbyListNumericalFilter" },
++    { "ISteamMatchmaking", 10, 1, 0, "AddRequestLobbyListResultCountFilter" },
++    { "ISteamMatchmaking", 5, 3, 0, "AddRequestLobbyListStringFilter" },
++    { "ISteamMatchmaking", 0, 0, 0, "GetFavoriteGameCount" },
++    { "ISteamMatchmaking", 12, 2, 8, "GetLobbyByIndex" },
++    { "ISteamMatchmaking", 27, 7, 0, "GetLobbyChatEntry" },
++    { "ISteamMatchmaking", 19, 3, 0, "GetLobbyData" },
++    { "ISteamMatchmaking", 21, 2, 0, "GetLobbyDataCount" },
++    { "ISteamMatchmaking", 18, 4, 0, "GetLobbyMemberByIndex" },
++    { "ISteamMatchmaking", 24, 5, 0, "GetLobbyMemberData" },
++    { "ISteamMatchmaking", 32, 2, 0, "GetLobbyMemberLimit" },
++    { "ISteamMatchmaking", 35, 3, 0, "GetLobbyOwner" },
++    { "ISteamMatchmaking", 17, 2, 0, "GetNumLobbyMembers" },
++    { "ISteamMatchmaking", 15, 2, 0, "LeaveLobby" },
++    { "ISteamMatchmaking", 29, 6, 0, "SetLobbyGameServer" },
++    { "ISteamMatchmaking", 25, 4, 0, "SetLobbyMemberData" },
++    { "ISteamMatchmakingPingResponse", 1, 0, 0, "ServerFailedToRespond" },
++    { "ISteamMatchmakingPingResponse", 0, 1, 0, "ServerResponded" },
++    { "ISteamMatchmakingPlayersResponse", 0, 3, 0, "AddPlayerToList" },
++    { "ISteamMatchmakingPlayersResponse", 1, 0, 0, "PlayersFailedToRespond" },
++    { "ISteamMatchmakingPlayersResponse", 2, 0, 0, "PlayersRefreshComplete" },
++    { "ISteamMatchmakingRulesResponse", 1, 0, 0, "RulesFailedToRespond" },
++    { "ISteamMatchmakingRulesResponse", 2, 0, 0, "RulesRefreshComplete" },
++    { "ISteamMatchmakingRulesResponse", 0, 2, 0, "RulesResponded" },
++    { "ISteamMatchmakingServerListResponse", 2, 2, 0, "RefreshComplete" },
++    { "ISteamMatchmakingServerListResponse", 1, 2, 0, "ServerFailedToRespond" },
++    { "ISteamMatchmakingServerListResponse", 0, 2, 0, "ServerResponded" },
++    { "ISteamMatchmakingServers", 8, 1, 0, "CancelQuery" },
++    { "ISteamMatchmakingServers", 16, 1, 0, "CancelServerQuery" },
++    { "ISteamMatchmakingServers", 11, 1, 0, "GetServerCount" },
++    { "ISteamMatchmakingServers", 7, 2, 0, "GetServerDetails" },
++    { "ISteamMatchmakingServers", 13, 3, 0, "PingServer" },
++    { "ISteamMatchmakingServers", 14, 3, 0, "PlayerDetails" },
++    { "ISteamMatchmakingServers", 9, 1, 0, "RefreshQuery" },
++    { "ISteamMatchmakingServers", 12, 2, 0, "RefreshServer" },
++    { "ISteamMatchmakingServers", 6, 1, 0, "ReleaseRequest" },
++    { "ISteamMatchmakingServers", 3, 4, 0, "RequestFavoritesServerList" },
++    { "ISteamMatchmakingServers", 2, 4, 0, "RequestFriendsServerList" },
++    { "ISteamMatchmakingServers", 4, 4, 0, "RequestHistoryServerList" },
++    { "ISteamMatchmakingServers", 0, 4, 0, "RequestInternetServerList" },
++    { "ISteamMatchmakingServers", 1, 2, 0, "RequestLANServerList" },
++    { "ISteamMatchmakingServers", 5, 4, 0, "RequestSpectatorServerList" },
++    { "ISteamMatchmakingServers", 15, 3, 0, "ServerRules" },
++    { "ISteamMusic", 2, 0, 0, "GetPlaybackStatus" },
++    { "ISteamMusic", 4, 0, 0, "Pause" },
++    { "ISteamMusic", 3, 0, 0, "Play" },
++    { "ISteamMusic", 6, 0, 0, "PlayNext" },
++    { "ISteamMusic", 5, 0, 0, "PlayPrevious" },
++    { "ISteamMusic", 7, 1, 0, "SetVolume" },
++    { "ISteamNetworking", 9, 5, 0, "CreateP2PConnectionSocket" },
++    { "ISteamNetworking", 21, 1, 0, "GetMaxPacketSize" },
++    { "ISteamNetworking", 20, 1, 0, "GetSocketConnectionType" },
++    { "ISteamNetworkingMessages", 5, 3, 0, "GetSessionConnectionInfo" },
++    { "ISteamNetworkingMessages", 1, 3, 0, "ReceiveMessagesOnChannel" },
++    { "ISteamNetworkingMessages", 0, 5, 0, "SendMessageToUser" },
++    { "ISteamNetworkingSockets", 4, 1, 0, "AcceptConnection" },
++    { "ISteamNetworkingSockets", 1, 3, 0, "ConnectByIPAddress" },
++    { "ISteamNetworkingSockets", 3, 4, 0, "ConnectP2P" },
++    { "ISteamNetworkingSockets", 35, 5, 0, "ConnectP2PCustomSignaling" },
++    { "ISteamNetworkingSockets", 29, 4, 0, "ConnectToHostedDedicatedServer" },
++    { "ISteamNetworkingSockets", 33, 3, 0, "CreateHostedDedicatedServerListenSocket" },
++    { "ISteamNetworkingSockets", 0, 3, 0, "CreateListenSocketIP" },
++    { "ISteamNetworkingSockets", 2, 3, 0, "CreateListenSocketP2P" },
++    { "ISteamNetworkingSockets", 23, 0, 0, "CreatePollGroup" },
++    { "ISteamNetworkingSockets", 28, 3, 0, "FindRelayAuthTicketForServer" },
++    { "ISteamNetworkingSockets", 13, 1, 0, "FlushMessagesOnConnection" },
++    { "ISteamNetworkingSockets", 22, 1, 0, "GetAuthenticationStatus" },
++    { "ISteamNetworkingSockets", 17, 3, 0, "GetDetailedConnectionStatus" },
++    { "ISteamNetworkingSockets", 34, 3, 0, "GetGameCoordinatorServerLogin" },
++    { "ISteamNetworkingSockets", 32, 1, 0, "GetHostedDedicatedServerAddress" },
++    { "ISteamNetworkingSockets", 31, 0, 0, "GetHostedDedicatedServerPOPID" },
++    { "ISteamNetworkingSockets", 30, 0, 0, "GetHostedDedicatedServerPort" },
++    { "ISteamNetworkingSockets", 21, 0, 0, "InitAuthentication" },
++    { "ISteamNetworkingSockets", 14, 3, 0, "ReceiveMessagesOnConnection" },
++    { "ISteamNetworkingSockets", 26, 3, 0, "ReceiveMessagesOnPollGroup" },
++    { "ISteamNetworkingSockets", 39, 0, 0, "RunCallbacks" },
++    { "ISteamNetworkingSockets", 11, 5, 0, "SendMessageToConnection" },
++    { "ISteamNetworkingSockets", 12, 3, 0, "SendMessages" },
++    { "ISteamNetworkingSockets", 9, 2, 0, "SetConnectionName" },
++    { "ISteamNetworkingUtils", 0, 1, 0, "AllocateMessage" },
++    { "ISteamNetworkingUtils", 5, 3, 0, "ConvertPingLocationToString" },
++    { "ISteamNetworkingUtils", 3, 2, 0, "EstimatePingTimeBetweenTwoLocations" },
++    { "ISteamNetworkingUtils", 4, 1, 0, "EstimatePingTimeFromLocalHost" },
++    { "ISteamNetworkingUtils", 15, 6, 0, "GetConfigValue" },
++    { "ISteamNetworkingUtils", 9, 1, 0, "GetDirectPingToPOP" },
++    { "ISteamNetworkingUtils", 17, 0, 0, "GetFirstConfigValue" },
++    { "ISteamNetworkingUtils", 10, 0, 0, "GetPOPCount" },
++    { "ISteamNetworkingUtils", 11, 2, 0, "GetPOPList" },
++    { "ISteamNetworkingUtils", 8, 2, 0, "GetPingToDataCenter" },
++    { "ISteamNetworkingUtils", 1, 1, 0, "GetRelayNetworkStatus" },
++    { "ISteamNetworkingUtils", 7, 1, 0, "InitRelayNetworkAccess" },
++    { "ISteamNetworkingUtils", 13, 2, 0, "SetDebugOutputFunction" },
++    { "ISteamNetworkingUtils", 18, 4, 0, "SteamNetworkingIPAddr_ToString" },
++    { "ISteamNetworkingUtils", 20, 3, 0, "SteamNetworkingIdentity_ToString" },
++    { "ISteamParties", 8, 4, 0, "CancelReservation" },
++    { "ISteamParties", 0, 0, 0, "GetNumActiveBeacons" },
++    { "ISteamParties", 7, 4, 0, "OnReservationCompleted" },
++    { "ISteamRemotePlay", 4, 1, 0, "GetSessionClientFormFactor" },
++    { "ISteamRemotePlay", 3, 1, 0, "GetSessionClientName" },
++    { "ISteamRemotePlay", 0, 0, 0, "GetSessionCount" },
++    { "ISteamRemotePlay", 1, 1, 0, "GetSessionID" },
++    { "ISteamRemotePlay", 2, 2, 8, "GetSessionSteamID" },
++    { "ISteamRemoteStorage", 1, 3, 0, "FileRead" },
++    { "ISteamRemoteStorage", 28, 0, 0, "GetCachedUGCCount" },
++    { "ISteamRemoteStorage", 18, 0, 0, "GetFileCount" },
++    { "ISteamRemoteStorage", 19, 2, 0, "GetFileNameAndSize" },
++    { "ISteamRemoteStorage", 15, 1, 0, "GetFileSize" },
++    { "ISteamRemoteStorage", 17, 1, 0, "GetSyncPlatforms" },
++    { "ISteamRemoteStorage", 23, 1, 0, "SetCloudEnabledForApp" },
++    { "ISteamRemoteStorage", 27, 6, 0, "UGCRead" },
++    { "ISteamScreenshots", 1, 4, 0, "AddScreenshotToLibrary" },
++    { "ISteamScreenshots", 8, 3, 0, "AddVRScreenshotToLibrary" },
++    { "ISteamScreenshots", 3, 1, 0, "HookScreenshots" },
++    { "ISteamScreenshots", 2, 0, 0, "TriggerScreenshot" },
++    { "ISteamScreenshots", 0, 4, 0, "WriteScreenshot" },
++    { "ISteamUGC", 67, 2, 0, "GetItemState" },
++    { "ISteamUGC", 58, 4, 0, "GetItemUpdateProgress" },
++    { "ISteamUGC", 65, 0, 0, "GetNumSubscribedItems" },
++    { "ISteamUGC", 13, 3, 0, "GetQueryUGCNumAdditionalPreviews" },
++    { "ISteamUGC", 15, 3, 0, "GetQueryUGCNumKeyValueTags" },
++    { "ISteamUGC", 6, 3, 0, "GetQueryUGCNumTags" },
++    { "ISteamUGC", 66, 2, 0, "GetSubscribedItems" },
++    { "ISteamUGC", 72, 1, 0, "SuspendDownloads" },
++    { "ISteamUser", 19, 4, 0, "AdvertiseGame" },
++    { "ISteamUser", 14, 4, 0, "BeginAuthSession" },
++    { "ISteamUser", 16, 1, 0, "CancelAuthTicket" },
++    { "ISteamUser", 11, 6, 0, "DecompressVoice" },
++    { "ISteamUser", 15, 2, 0, "EndAuthSession" },
++    { "ISteamUser", 13, 3, 0, "GetAuthSessionTicket" },
++    { "ISteamUser", 9, 3, 0, "GetAvailableVoice" },
++    { "ISteamUser", 22, 2, 0, "GetGameBadgeLevel" },
++    { "ISteamUser", 0, 0, 0, "GetHSteamUser" },
++    { "ISteamUser", 23, 0, 0, "GetPlayerSteamLevel" },
++    { "ISteamUser", 2, 1, 8, "GetSteamID" },
++    { "ISteamUser", 10, 9, 0, "GetVoice" },
++    { "ISteamUser", 12, 0, 0, "GetVoiceOptimalSampleRate" },
++    { "ISteamUser", 3, 7, 0, "InitiateGameConnection" },
++    { "ISteamUser", 7, 0, 0, "StartVoiceRecording" },
++    { "ISteamUser", 8, 0, 0, "StopVoiceRecording" },
++    { "ISteamUser", 4, 2, 0, "TerminateGameConnection" },
++    { "ISteamUser", 5, 2, 0, "TrackAppUsageEvent" },
++    { "ISteamUser", 17, 3, 0, "UserHasLicenseForApp" },
++    { "ISteamUserStats", 12, 2, 0, "GetAchievementDisplayAttribute" },
++    { "ISteamUserStats", 11, 1, 0, "GetAchievementIcon" },
++    { "ISteamUserStats", 15, 1, 0, "GetAchievementName" },
++    { "ISteamUserStats", 41, 3, 0, "GetGlobalStatHistoryDouble" },
++    { "ISteamUserStats", 42, 3, 0, "GetGlobalStatHistoryInt64" },
++    { "ISteamUserStats", 27, 2, 0, "GetLeaderboardDisplayType" },
++    { "ISteamUserStats", 25, 2, 0, "GetLeaderboardEntryCount" },
++    { "ISteamUserStats", 24, 2, 0, "GetLeaderboardName" },
++    { "ISteamUserStats", 26, 2, 0, "GetLeaderboardSortMethod" },
++    { "ISteamUserStats", 35, 4, 0, "GetMostAchievedAchievementInfo" },
++    { "ISteamUserStats", 36, 5, 0, "GetNextMostAchievedAchievementInfo" },
++    { "ISteamUserStats", 14, 0, 0, "GetNumAchievements" },
++    { "ISteamUtils", 32, 6, 0, "FilterText" },
++    { "ISteamUtils", 12, 2, 0, "GetAPICallFailureReason" },
++    { "ISteamUtils", 9, 0, 0, "GetAppID" },
++    { "ISteamUtils", 2, 0, 0, "GetConnectedUniverse" },
++    { "ISteamUtils", 21, 0, 0, "GetEnteredGamepadTextLength" },
++    { "ISteamUtils", 15, 0, 0, "GetIPCCallCount" },
++    { "ISteamUtils", 4, 0, 0, "GetIPCountry" },
++    { "ISteamUtils", 33, 1, 0, "GetIPv6ConnectivityState" },
++    { "ISteamUtils", 0, 0, 0, "GetSecondsSinceAppActive" },
++    { "ISteamUtils", 1, 0, 0, "GetSecondsSinceComputerActive" },
++    { "ISteamUtils", 3, 0, 0, "GetServerRealTime" },
++    { "ISteamUtils", 23, 0, 0, "GetSteamUILanguage" },
++    { "ISteamUtils", 25, 2, 0, "SetOverlayNotificationInset" },
++    { "ISteamUtils", 10, 1, 0, "SetOverlayNotificationPosition" },
++    { "ISteamUtils", 29, 1, 0, "SetVRHeadsetStreamingEnabled" },
++    { "ISteamUtils", 16, 1, 0, "SetWarningMessageHook" },
++    { "ISteamUtils", 27, 0, 0, "StartVRDashboard" },
++    { "ISteamVideo", 2, 1, 0, "GetOPFSettings" },
++    { "ISteamVideo", 0, 1, 0, "GetVideoURL" },
++};
+diff --git a/dlls/lsteamclient/thunks32.h b/dlls/lsteamclient/thunks32.h
+new file mode 100644
+index 00000000..85dc196f
+--- /dev/null
++++ b/dlls/lsteamclient/thunks32.h
+@@ -0,0 +1,1618 @@
++/* Engendre par tests/engendrer_i386.py -- ne pas editer a la main. */
++#ifndef _WIN64
++
++#define NB_EMPLACEMENTS32 76
++#define NB_MOTS32 10
++
++static UINT64 repartir32( unsigned emplacement, void *self, unsigned mots,
++                          const UINT32 *args );
++
++/*
++ * « fastcall » a deux parametres registre : le premier occupe ECX, comme
++ * « this » en __thiscall, le second occupe EDX et n'est pas lu. Les mots
++ * suivants sont sur la pile, et l'appele les depile -- exactement la
++ * discipline attendue. La valeur de retour est declaree sur 64 bits pour
++ * transporter EDX:EAX, ce que fait une methode rendant un entier long.
++ */
++static UINT64 __attribute__((fastcall)) t0_0( void *self, void *inutilise )
++{ return repartir32( 0, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t0_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 0, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t0_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 0, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t0_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 0, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t0_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 0, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t0_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 0, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t0_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 0, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t0_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 0, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t0_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 0, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t0_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 0, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t1_0( void *self, void *inutilise )
++{ return repartir32( 1, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t1_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 1, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t1_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 1, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t1_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 1, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t1_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 1, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t1_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 1, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t1_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 1, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t1_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 1, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t1_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 1, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t1_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 1, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t2_0( void *self, void *inutilise )
++{ return repartir32( 2, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t2_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 2, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t2_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 2, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t2_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 2, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t2_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 2, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t2_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 2, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t2_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 2, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t2_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 2, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t2_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 2, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t2_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 2, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t3_0( void *self, void *inutilise )
++{ return repartir32( 3, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t3_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 3, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t3_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 3, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t3_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 3, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t3_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 3, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t3_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 3, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t3_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 3, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t3_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 3, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t3_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 3, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t3_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 3, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t4_0( void *self, void *inutilise )
++{ return repartir32( 4, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t4_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 4, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t4_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 4, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t4_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 4, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t4_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 4, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t4_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 4, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t4_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 4, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t4_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 4, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t4_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 4, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t4_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 4, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t5_0( void *self, void *inutilise )
++{ return repartir32( 5, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t5_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 5, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t5_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 5, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t5_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 5, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t5_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 5, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t5_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 5, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t5_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 5, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t5_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 5, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t5_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 5, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t5_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 5, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t6_0( void *self, void *inutilise )
++{ return repartir32( 6, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t6_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 6, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t6_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 6, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t6_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 6, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t6_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 6, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t6_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 6, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t6_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 6, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t6_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 6, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t6_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 6, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t6_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 6, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t7_0( void *self, void *inutilise )
++{ return repartir32( 7, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t7_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 7, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t7_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 7, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t7_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 7, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t7_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 7, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t7_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 7, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t7_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 7, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t7_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 7, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t7_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 7, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t7_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 7, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t8_0( void *self, void *inutilise )
++{ return repartir32( 8, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t8_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 8, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t8_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 8, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t8_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 8, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t8_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 8, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t8_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 8, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t8_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 8, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t8_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 8, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t8_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 8, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t8_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 8, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t9_0( void *self, void *inutilise )
++{ return repartir32( 9, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t9_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 9, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t9_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 9, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t9_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 9, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t9_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 9, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t9_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 9, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t9_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 9, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t9_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 9, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t9_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 9, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t9_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 9, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t10_0( void *self, void *inutilise )
++{ return repartir32( 10, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t10_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 10, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t10_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 10, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t10_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 10, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t10_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 10, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t10_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 10, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t10_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 10, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t10_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 10, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t10_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 10, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t10_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 10, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t11_0( void *self, void *inutilise )
++{ return repartir32( 11, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t11_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 11, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t11_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 11, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t11_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 11, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t11_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 11, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t11_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 11, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t11_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 11, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t11_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 11, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t11_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 11, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t11_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 11, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t12_0( void *self, void *inutilise )
++{ return repartir32( 12, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t12_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 12, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t12_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 12, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t12_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 12, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t12_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 12, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t12_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 12, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t12_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 12, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t12_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 12, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t12_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 12, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t12_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 12, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t13_0( void *self, void *inutilise )
++{ return repartir32( 13, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t13_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 13, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t13_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 13, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t13_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 13, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t13_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 13, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t13_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 13, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t13_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 13, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t13_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 13, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t13_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 13, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t13_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 13, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t14_0( void *self, void *inutilise )
++{ return repartir32( 14, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t14_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 14, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t14_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 14, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t14_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 14, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t14_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 14, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t14_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 14, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t14_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 14, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t14_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 14, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t14_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 14, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t14_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 14, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t15_0( void *self, void *inutilise )
++{ return repartir32( 15, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t15_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 15, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t15_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 15, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t15_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 15, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t15_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 15, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t15_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 15, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t15_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 15, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t15_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 15, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t15_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 15, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t15_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 15, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t16_0( void *self, void *inutilise )
++{ return repartir32( 16, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t16_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 16, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t16_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 16, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t16_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 16, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t16_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 16, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t16_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 16, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t16_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 16, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t16_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 16, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t16_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 16, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t16_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 16, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t17_0( void *self, void *inutilise )
++{ return repartir32( 17, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t17_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 17, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t17_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 17, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t17_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 17, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t17_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 17, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t17_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 17, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t17_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 17, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t17_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 17, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t17_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 17, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t17_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 17, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t18_0( void *self, void *inutilise )
++{ return repartir32( 18, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t18_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 18, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t18_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 18, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t18_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 18, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t18_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 18, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t18_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 18, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t18_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 18, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t18_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 18, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t18_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 18, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t18_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 18, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t19_0( void *self, void *inutilise )
++{ return repartir32( 19, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t19_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 19, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t19_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 19, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t19_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 19, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t19_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 19, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t19_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 19, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t19_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 19, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t19_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 19, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t19_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 19, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t19_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 19, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t20_0( void *self, void *inutilise )
++{ return repartir32( 20, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t20_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 20, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t20_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 20, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t20_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 20, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t20_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 20, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t20_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 20, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t20_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 20, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t20_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 20, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t20_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 20, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t20_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 20, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t21_0( void *self, void *inutilise )
++{ return repartir32( 21, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t21_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 21, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t21_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 21, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t21_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 21, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t21_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 21, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t21_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 21, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t21_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 21, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t21_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 21, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t21_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 21, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t21_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 21, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t22_0( void *self, void *inutilise )
++{ return repartir32( 22, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t22_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 22, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t22_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 22, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t22_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 22, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t22_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 22, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t22_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 22, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t22_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 22, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t22_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 22, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t22_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 22, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t22_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 22, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t23_0( void *self, void *inutilise )
++{ return repartir32( 23, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t23_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 23, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t23_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 23, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t23_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 23, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t23_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 23, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t23_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 23, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t23_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 23, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t23_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 23, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t23_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 23, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t23_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 23, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t24_0( void *self, void *inutilise )
++{ return repartir32( 24, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t24_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 24, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t24_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 24, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t24_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 24, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t24_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 24, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t24_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 24, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t24_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 24, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t24_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 24, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t24_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 24, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t24_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 24, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t25_0( void *self, void *inutilise )
++{ return repartir32( 25, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t25_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 25, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t25_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 25, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t25_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 25, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t25_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 25, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t25_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 25, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t25_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 25, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t25_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 25, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t25_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 25, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t25_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 25, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t26_0( void *self, void *inutilise )
++{ return repartir32( 26, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t26_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 26, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t26_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 26, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t26_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 26, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t26_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 26, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t26_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 26, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t26_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 26, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t26_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 26, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t26_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 26, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t26_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 26, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t27_0( void *self, void *inutilise )
++{ return repartir32( 27, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t27_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 27, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t27_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 27, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t27_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 27, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t27_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 27, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t27_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 27, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t27_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 27, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t27_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 27, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t27_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 27, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t27_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 27, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t28_0( void *self, void *inutilise )
++{ return repartir32( 28, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t28_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 28, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t28_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 28, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t28_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 28, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t28_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 28, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t28_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 28, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t28_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 28, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t28_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 28, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t28_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 28, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t28_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 28, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t29_0( void *self, void *inutilise )
++{ return repartir32( 29, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t29_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 29, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t29_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 29, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t29_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 29, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t29_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 29, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t29_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 29, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t29_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 29, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t29_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 29, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t29_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 29, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t29_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 29, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t30_0( void *self, void *inutilise )
++{ return repartir32( 30, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t30_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 30, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t30_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 30, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t30_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 30, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t30_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 30, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t30_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 30, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t30_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 30, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t30_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 30, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t30_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 30, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t30_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 30, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t31_0( void *self, void *inutilise )
++{ return repartir32( 31, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t31_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 31, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t31_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 31, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t31_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 31, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t31_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 31, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t31_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 31, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t31_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 31, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t31_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 31, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t31_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 31, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t31_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 31, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t32_0( void *self, void *inutilise )
++{ return repartir32( 32, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t32_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 32, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t32_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 32, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t32_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 32, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t32_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 32, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t32_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 32, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t32_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 32, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t32_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 32, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t32_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 32, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t32_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 32, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t33_0( void *self, void *inutilise )
++{ return repartir32( 33, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t33_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 33, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t33_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 33, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t33_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 33, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t33_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 33, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t33_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 33, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t33_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 33, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t33_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 33, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t33_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 33, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t33_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 33, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t34_0( void *self, void *inutilise )
++{ return repartir32( 34, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t34_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 34, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t34_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 34, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t34_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 34, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t34_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 34, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t34_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 34, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t34_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 34, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t34_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 34, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t34_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 34, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t34_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 34, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t35_0( void *self, void *inutilise )
++{ return repartir32( 35, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t35_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 35, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t35_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 35, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t35_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 35, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t35_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 35, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t35_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 35, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t35_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 35, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t35_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 35, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t35_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 35, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t35_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 35, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t36_0( void *self, void *inutilise )
++{ return repartir32( 36, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t36_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 36, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t36_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 36, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t36_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 36, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t36_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 36, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t36_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 36, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t36_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 36, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t36_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 36, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t36_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 36, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t36_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 36, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t37_0( void *self, void *inutilise )
++{ return repartir32( 37, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t37_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 37, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t37_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 37, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t37_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 37, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t37_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 37, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t37_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 37, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t37_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 37, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t37_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 37, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t37_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 37, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t37_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 37, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t38_0( void *self, void *inutilise )
++{ return repartir32( 38, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t38_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 38, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t38_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 38, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t38_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 38, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t38_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 38, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t38_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 38, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t38_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 38, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t38_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 38, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t38_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 38, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t38_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 38, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t39_0( void *self, void *inutilise )
++{ return repartir32( 39, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t39_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 39, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t39_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 39, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t39_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 39, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t39_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 39, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t39_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 39, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t39_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 39, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t39_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 39, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t39_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 39, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t39_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 39, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t40_0( void *self, void *inutilise )
++{ return repartir32( 40, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t40_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 40, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t40_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 40, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t40_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 40, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t40_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 40, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t40_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 40, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t40_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 40, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t40_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 40, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t40_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 40, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t40_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 40, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t41_0( void *self, void *inutilise )
++{ return repartir32( 41, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t41_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 41, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t41_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 41, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t41_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 41, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t41_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 41, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t41_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 41, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t41_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 41, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t41_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 41, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t41_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 41, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t41_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 41, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t42_0( void *self, void *inutilise )
++{ return repartir32( 42, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t42_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 42, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t42_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 42, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t42_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 42, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t42_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 42, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t42_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 42, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t42_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 42, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t42_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 42, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t42_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 42, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t42_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 42, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t43_0( void *self, void *inutilise )
++{ return repartir32( 43, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t43_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 43, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t43_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 43, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t43_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 43, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t43_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 43, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t43_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 43, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t43_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 43, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t43_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 43, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t43_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 43, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t43_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 43, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t44_0( void *self, void *inutilise )
++{ return repartir32( 44, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t44_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 44, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t44_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 44, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t44_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 44, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t44_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 44, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t44_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 44, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t44_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 44, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t44_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 44, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t44_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 44, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t44_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 44, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t45_0( void *self, void *inutilise )
++{ return repartir32( 45, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t45_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 45, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t45_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 45, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t45_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 45, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t45_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 45, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t45_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 45, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t45_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 45, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t45_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 45, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t45_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 45, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t45_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 45, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t46_0( void *self, void *inutilise )
++{ return repartir32( 46, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t46_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 46, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t46_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 46, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t46_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 46, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t46_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 46, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t46_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 46, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t46_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 46, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t46_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 46, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t46_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 46, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t46_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 46, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t47_0( void *self, void *inutilise )
++{ return repartir32( 47, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t47_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 47, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t47_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 47, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t47_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 47, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t47_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 47, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t47_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 47, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t47_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 47, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t47_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 47, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t47_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 47, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t47_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 47, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t48_0( void *self, void *inutilise )
++{ return repartir32( 48, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t48_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 48, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t48_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 48, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t48_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 48, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t48_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 48, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t48_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 48, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t48_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 48, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t48_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 48, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t48_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 48, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t48_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 48, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t49_0( void *self, void *inutilise )
++{ return repartir32( 49, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t49_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 49, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t49_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 49, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t49_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 49, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t49_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 49, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t49_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 49, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t49_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 49, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t49_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 49, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t49_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 49, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t49_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 49, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t50_0( void *self, void *inutilise )
++{ return repartir32( 50, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t50_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 50, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t50_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 50, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t50_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 50, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t50_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 50, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t50_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 50, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t50_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 50, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t50_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 50, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t50_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 50, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t50_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 50, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t51_0( void *self, void *inutilise )
++{ return repartir32( 51, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t51_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 51, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t51_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 51, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t51_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 51, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t51_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 51, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t51_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 51, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t51_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 51, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t51_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 51, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t51_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 51, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t51_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 51, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t52_0( void *self, void *inutilise )
++{ return repartir32( 52, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t52_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 52, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t52_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 52, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t52_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 52, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t52_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 52, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t52_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 52, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t52_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 52, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t52_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 52, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t52_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 52, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t52_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 52, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t53_0( void *self, void *inutilise )
++{ return repartir32( 53, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t53_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 53, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t53_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 53, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t53_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 53, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t53_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 53, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t53_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 53, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t53_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 53, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t53_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 53, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t53_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 53, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t53_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 53, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t54_0( void *self, void *inutilise )
++{ return repartir32( 54, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t54_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 54, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t54_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 54, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t54_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 54, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t54_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 54, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t54_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 54, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t54_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 54, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t54_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 54, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t54_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 54, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t54_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 54, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t55_0( void *self, void *inutilise )
++{ return repartir32( 55, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t55_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 55, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t55_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 55, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t55_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 55, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t55_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 55, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t55_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 55, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t55_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 55, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t55_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 55, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t55_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 55, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t55_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 55, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t56_0( void *self, void *inutilise )
++{ return repartir32( 56, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t56_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 56, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t56_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 56, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t56_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 56, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t56_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 56, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t56_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 56, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t56_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 56, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t56_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 56, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t56_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 56, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t56_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 56, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t57_0( void *self, void *inutilise )
++{ return repartir32( 57, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t57_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 57, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t57_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 57, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t57_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 57, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t57_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 57, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t57_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 57, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t57_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 57, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t57_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 57, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t57_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 57, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t57_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 57, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t58_0( void *self, void *inutilise )
++{ return repartir32( 58, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t58_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 58, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t58_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 58, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t58_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 58, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t58_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 58, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t58_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 58, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t58_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 58, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t58_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 58, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t58_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 58, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t58_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 58, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t59_0( void *self, void *inutilise )
++{ return repartir32( 59, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t59_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 59, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t59_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 59, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t59_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 59, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t59_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 59, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t59_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 59, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t59_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 59, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t59_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 59, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t59_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 59, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t59_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 59, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t60_0( void *self, void *inutilise )
++{ return repartir32( 60, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t60_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 60, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t60_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 60, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t60_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 60, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t60_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 60, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t60_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 60, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t60_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 60, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t60_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 60, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t60_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 60, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t60_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 60, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t61_0( void *self, void *inutilise )
++{ return repartir32( 61, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t61_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 61, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t61_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 61, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t61_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 61, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t61_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 61, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t61_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 61, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t61_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 61, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t61_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 61, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t61_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 61, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t61_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 61, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t62_0( void *self, void *inutilise )
++{ return repartir32( 62, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t62_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 62, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t62_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 62, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t62_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 62, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t62_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 62, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t62_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 62, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t62_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 62, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t62_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 62, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t62_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 62, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t62_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 62, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t63_0( void *self, void *inutilise )
++{ return repartir32( 63, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t63_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 63, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t63_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 63, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t63_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 63, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t63_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 63, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t63_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 63, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t63_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 63, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t63_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 63, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t63_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 63, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t63_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 63, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t64_0( void *self, void *inutilise )
++{ return repartir32( 64, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t64_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 64, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t64_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 64, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t64_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 64, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t64_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 64, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t64_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 64, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t64_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 64, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t64_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 64, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t64_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 64, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t64_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 64, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t65_0( void *self, void *inutilise )
++{ return repartir32( 65, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t65_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 65, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t65_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 65, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t65_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 65, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t65_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 65, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t65_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 65, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t65_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 65, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t65_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 65, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t65_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 65, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t65_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 65, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t66_0( void *self, void *inutilise )
++{ return repartir32( 66, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t66_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 66, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t66_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 66, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t66_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 66, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t66_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 66, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t66_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 66, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t66_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 66, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t66_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 66, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t66_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 66, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t66_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 66, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t67_0( void *self, void *inutilise )
++{ return repartir32( 67, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t67_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 67, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t67_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 67, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t67_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 67, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t67_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 67, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t67_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 67, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t67_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 67, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t67_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 67, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t67_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 67, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t67_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 67, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t68_0( void *self, void *inutilise )
++{ return repartir32( 68, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t68_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 68, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t68_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 68, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t68_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 68, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t68_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 68, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t68_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 68, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t68_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 68, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t68_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 68, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t68_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 68, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t68_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 68, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t69_0( void *self, void *inutilise )
++{ return repartir32( 69, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t69_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 69, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t69_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 69, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t69_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 69, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t69_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 69, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t69_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 69, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t69_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 69, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t69_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 69, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t69_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 69, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t69_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 69, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t70_0( void *self, void *inutilise )
++{ return repartir32( 70, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t70_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 70, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t70_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 70, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t70_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 70, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t70_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 70, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t70_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 70, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t70_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 70, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t70_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 70, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t70_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 70, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t70_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 70, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t71_0( void *self, void *inutilise )
++{ return repartir32( 71, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t71_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 71, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t71_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 71, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t71_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 71, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t71_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 71, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t71_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 71, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t71_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 71, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t71_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 71, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t71_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 71, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t71_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 71, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t72_0( void *self, void *inutilise )
++{ return repartir32( 72, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t72_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 72, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t72_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 72, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t72_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 72, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t72_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 72, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t72_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 72, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t72_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 72, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t72_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 72, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t72_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 72, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t72_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 72, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t73_0( void *self, void *inutilise )
++{ return repartir32( 73, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t73_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 73, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t73_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 73, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t73_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 73, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t73_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 73, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t73_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 73, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t73_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 73, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t73_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 73, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t73_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 73, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t73_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 73, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t74_0( void *self, void *inutilise )
++{ return repartir32( 74, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t74_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 74, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t74_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 74, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t74_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 74, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t74_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 74, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t74_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 74, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t74_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 74, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t74_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 74, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t74_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 74, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t74_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 74, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t75_0( void *self, void *inutilise )
++{ return repartir32( 75, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t75_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 75, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t75_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 75, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t75_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 75, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t75_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 75, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t75_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 75, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t75_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 75, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t75_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 75, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t75_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 75, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t75_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 75, self, 9, &a0 ); }
++
++static const void *table32[NB_EMPLACEMENTS32][NB_MOTS32] =
++{
++    { t0_0, t0_1, t0_2, t0_3, t0_4, t0_5, t0_6, t0_7, t0_8, t0_9 },
++    { t1_0, t1_1, t1_2, t1_3, t1_4, t1_5, t1_6, t1_7, t1_8, t1_9 },
++    { t2_0, t2_1, t2_2, t2_3, t2_4, t2_5, t2_6, t2_7, t2_8, t2_9 },
++    { t3_0, t3_1, t3_2, t3_3, t3_4, t3_5, t3_6, t3_7, t3_8, t3_9 },
++    { t4_0, t4_1, t4_2, t4_3, t4_4, t4_5, t4_6, t4_7, t4_8, t4_9 },
++    { t5_0, t5_1, t5_2, t5_3, t5_4, t5_5, t5_6, t5_7, t5_8, t5_9 },
++    { t6_0, t6_1, t6_2, t6_3, t6_4, t6_5, t6_6, t6_7, t6_8, t6_9 },
++    { t7_0, t7_1, t7_2, t7_3, t7_4, t7_5, t7_6, t7_7, t7_8, t7_9 },
++    { t8_0, t8_1, t8_2, t8_3, t8_4, t8_5, t8_6, t8_7, t8_8, t8_9 },
++    { t9_0, t9_1, t9_2, t9_3, t9_4, t9_5, t9_6, t9_7, t9_8, t9_9 },
++    { t10_0, t10_1, t10_2, t10_3, t10_4, t10_5, t10_6, t10_7, t10_8, t10_9 },
++    { t11_0, t11_1, t11_2, t11_3, t11_4, t11_5, t11_6, t11_7, t11_8, t11_9 },
++    { t12_0, t12_1, t12_2, t12_3, t12_4, t12_5, t12_6, t12_7, t12_8, t12_9 },
++    { t13_0, t13_1, t13_2, t13_3, t13_4, t13_5, t13_6, t13_7, t13_8, t13_9 },
++    { t14_0, t14_1, t14_2, t14_3, t14_4, t14_5, t14_6, t14_7, t14_8, t14_9 },
++    { t15_0, t15_1, t15_2, t15_3, t15_4, t15_5, t15_6, t15_7, t15_8, t15_9 },
++    { t16_0, t16_1, t16_2, t16_3, t16_4, t16_5, t16_6, t16_7, t16_8, t16_9 },
++    { t17_0, t17_1, t17_2, t17_3, t17_4, t17_5, t17_6, t17_7, t17_8, t17_9 },
++    { t18_0, t18_1, t18_2, t18_3, t18_4, t18_5, t18_6, t18_7, t18_8, t18_9 },
++    { t19_0, t19_1, t19_2, t19_3, t19_4, t19_5, t19_6, t19_7, t19_8, t19_9 },
++    { t20_0, t20_1, t20_2, t20_3, t20_4, t20_5, t20_6, t20_7, t20_8, t20_9 },
++    { t21_0, t21_1, t21_2, t21_3, t21_4, t21_5, t21_6, t21_7, t21_8, t21_9 },
++    { t22_0, t22_1, t22_2, t22_3, t22_4, t22_5, t22_6, t22_7, t22_8, t22_9 },
++    { t23_0, t23_1, t23_2, t23_3, t23_4, t23_5, t23_6, t23_7, t23_8, t23_9 },
++    { t24_0, t24_1, t24_2, t24_3, t24_4, t24_5, t24_6, t24_7, t24_8, t24_9 },
++    { t25_0, t25_1, t25_2, t25_3, t25_4, t25_5, t25_6, t25_7, t25_8, t25_9 },
++    { t26_0, t26_1, t26_2, t26_3, t26_4, t26_5, t26_6, t26_7, t26_8, t26_9 },
++    { t27_0, t27_1, t27_2, t27_3, t27_4, t27_5, t27_6, t27_7, t27_8, t27_9 },
++    { t28_0, t28_1, t28_2, t28_3, t28_4, t28_5, t28_6, t28_7, t28_8, t28_9 },
++    { t29_0, t29_1, t29_2, t29_3, t29_4, t29_5, t29_6, t29_7, t29_8, t29_9 },
++    { t30_0, t30_1, t30_2, t30_3, t30_4, t30_5, t30_6, t30_7, t30_8, t30_9 },
++    { t31_0, t31_1, t31_2, t31_3, t31_4, t31_5, t31_6, t31_7, t31_8, t31_9 },
++    { t32_0, t32_1, t32_2, t32_3, t32_4, t32_5, t32_6, t32_7, t32_8, t32_9 },
++    { t33_0, t33_1, t33_2, t33_3, t33_4, t33_5, t33_6, t33_7, t33_8, t33_9 },
++    { t34_0, t34_1, t34_2, t34_3, t34_4, t34_5, t34_6, t34_7, t34_8, t34_9 },
++    { t35_0, t35_1, t35_2, t35_3, t35_4, t35_5, t35_6, t35_7, t35_8, t35_9 },
++    { t36_0, t36_1, t36_2, t36_3, t36_4, t36_5, t36_6, t36_7, t36_8, t36_9 },
++    { t37_0, t37_1, t37_2, t37_3, t37_4, t37_5, t37_6, t37_7, t37_8, t37_9 },
++    { t38_0, t38_1, t38_2, t38_3, t38_4, t38_5, t38_6, t38_7, t38_8, t38_9 },
++    { t39_0, t39_1, t39_2, t39_3, t39_4, t39_5, t39_6, t39_7, t39_8, t39_9 },
++    { t40_0, t40_1, t40_2, t40_3, t40_4, t40_5, t40_6, t40_7, t40_8, t40_9 },
++    { t41_0, t41_1, t41_2, t41_3, t41_4, t41_5, t41_6, t41_7, t41_8, t41_9 },
++    { t42_0, t42_1, t42_2, t42_3, t42_4, t42_5, t42_6, t42_7, t42_8, t42_9 },
++    { t43_0, t43_1, t43_2, t43_3, t43_4, t43_5, t43_6, t43_7, t43_8, t43_9 },
++    { t44_0, t44_1, t44_2, t44_3, t44_4, t44_5, t44_6, t44_7, t44_8, t44_9 },
++    { t45_0, t45_1, t45_2, t45_3, t45_4, t45_5, t45_6, t45_7, t45_8, t45_9 },
++    { t46_0, t46_1, t46_2, t46_3, t46_4, t46_5, t46_6, t46_7, t46_8, t46_9 },
++    { t47_0, t47_1, t47_2, t47_3, t47_4, t47_5, t47_6, t47_7, t47_8, t47_9 },
++    { t48_0, t48_1, t48_2, t48_3, t48_4, t48_5, t48_6, t48_7, t48_8, t48_9 },
++    { t49_0, t49_1, t49_2, t49_3, t49_4, t49_5, t49_6, t49_7, t49_8, t49_9 },
++    { t50_0, t50_1, t50_2, t50_3, t50_4, t50_5, t50_6, t50_7, t50_8, t50_9 },
++    { t51_0, t51_1, t51_2, t51_3, t51_4, t51_5, t51_6, t51_7, t51_8, t51_9 },
++    { t52_0, t52_1, t52_2, t52_3, t52_4, t52_5, t52_6, t52_7, t52_8, t52_9 },
++    { t53_0, t53_1, t53_2, t53_3, t53_4, t53_5, t53_6, t53_7, t53_8, t53_9 },
++    { t54_0, t54_1, t54_2, t54_3, t54_4, t54_5, t54_6, t54_7, t54_8, t54_9 },
++    { t55_0, t55_1, t55_2, t55_3, t55_4, t55_5, t55_6, t55_7, t55_8, t55_9 },
++    { t56_0, t56_1, t56_2, t56_3, t56_4, t56_5, t56_6, t56_7, t56_8, t56_9 },
++    { t57_0, t57_1, t57_2, t57_3, t57_4, t57_5, t57_6, t57_7, t57_8, t57_9 },
++    { t58_0, t58_1, t58_2, t58_3, t58_4, t58_5, t58_6, t58_7, t58_8, t58_9 },
++    { t59_0, t59_1, t59_2, t59_3, t59_4, t59_5, t59_6, t59_7, t59_8, t59_9 },
++    { t60_0, t60_1, t60_2, t60_3, t60_4, t60_5, t60_6, t60_7, t60_8, t60_9 },
++    { t61_0, t61_1, t61_2, t61_3, t61_4, t61_5, t61_6, t61_7, t61_8, t61_9 },
++    { t62_0, t62_1, t62_2, t62_3, t62_4, t62_5, t62_6, t62_7, t62_8, t62_9 },
++    { t63_0, t63_1, t63_2, t63_3, t63_4, t63_5, t63_6, t63_7, t63_8, t63_9 },
++    { t64_0, t64_1, t64_2, t64_3, t64_4, t64_5, t64_6, t64_7, t64_8, t64_9 },
++    { t65_0, t65_1, t65_2, t65_3, t65_4, t65_5, t65_6, t65_7, t65_8, t65_9 },
++    { t66_0, t66_1, t66_2, t66_3, t66_4, t66_5, t66_6, t66_7, t66_8, t66_9 },
++    { t67_0, t67_1, t67_2, t67_3, t67_4, t67_5, t67_6, t67_7, t67_8, t67_9 },
++    { t68_0, t68_1, t68_2, t68_3, t68_4, t68_5, t68_6, t68_7, t68_8, t68_9 },
++    { t69_0, t69_1, t69_2, t69_3, t69_4, t69_5, t69_6, t69_7, t69_8, t69_9 },
++    { t70_0, t70_1, t70_2, t70_3, t70_4, t70_5, t70_6, t70_7, t70_8, t70_9 },
++    { t71_0, t71_1, t71_2, t71_3, t71_4, t71_5, t71_6, t71_7, t71_8, t71_9 },
++    { t72_0, t72_1, t72_2, t72_3, t72_4, t72_5, t72_6, t72_7, t72_8, t72_9 },
++    { t73_0, t73_1, t73_2, t73_3, t73_4, t73_5, t73_6, t73_7, t73_8, t73_9 },
++    { t74_0, t74_1, t74_2, t74_3, t74_4, t74_5, t74_6, t74_7, t74_8, t74_9 },
++    { t75_0, t75_1, t75_2, t75_3, t75_4, t75_5, t75_6, t75_7, t75_8, t75_9 },
++};
++
++#endif /* _WIN64 */
 diff --git a/dlls/lsteamclient/unix.c b/dlls/lsteamclient/unix.c
 new file mode 100644
 index 00000000..b0b37b47
