@@ -13106,3 +13106,44 @@ Rien ne le crée jamais ; la branche sans cache affirme même qu'il est nul. Kos
 pourtant `vk_pipeline_cache` — la tuyauterie est là, sans adossement au disque. Câbler le
 `disk_cache` de Mesa supprimerait le bégaiement dès le second lancement, pour bien moins de
 travail que d'implémenter les pipeline libraries.
+
+## 183. La compilation de nuanciers ne coûte rien, et la section 182 se trompait
+
+La section 182 attribuait le blocage au chargement à la compilation des pipelines, faute de
+`VK_EXT_graphics_pipeline_library`, et proposait de câbler le `disk_cache`. Chronométrage posé
+dans le pilote, sur un démarrage complet de DREDGE jusqu'à la boucle de jeu :
+
+```
+frontal (SPIR-V -> NIR -> MSL)   86 nuanciers    0,281 s
+bibliotheques Metal             125 libs         0,034 s   (5,4 Mo de MSL)
+etats de pipeline               125 etats        0,046 s
+                                                 -------
+                                                 0,36 s
+```
+
+**Trente-six centièmes de seconde en tout.** Ce n'est pas un blocage visible, et le cache disque
+ne ferait gagner que les 0,28 s du frontal. La recommandation était fausse.
+
+Deux surprises dans ces chiffres :
+
+`newLibraryWithDescriptor:` compile 5,4 Mo de source MSL en 34 ms. C'est impossible pour une
+vraie compilation : le `MTL4Compiler` est paresseux, le travail est différé. Et la création des
+états de pipeline ne coûte pas davantage. Metal 4 compile donc ailleurs, plus tard, ou en
+arrière-plan sur ses propres fils — ce qui expliquerait qu'on ne le voie dans aucun des deux
+compteurs.
+
+### Ce qui reste vrai de la section 182
+
+`graphicsPipelineLibrary` vaut bien 0, et `kk_physical_device` ne crée bien jamais de
+`disk_cache` — seule la destruction existe. Ce sont des manques réels. Mais ils ne coûtent pas
+ce que je leur attribuais, et rien ne justifie de les traiter en priorité.
+
+### Ce qu'on ne sait toujours pas
+
+D'où vient le blocage au chargement. Trois candidats non mesurés : le chargement et la
+décompression des ressources par Unity, doublés par la taxe Rosetta ; les premiers transferts
+de ressources vers le GPU ; une compilation Metal différée qui se paierait au premier dessin
+réel. Le chronomètre actuel ne les voit pas.
+
+L'instrumentation a été retirée ; `verifier_reconstruction.sh` confirme que les cinq arbres se
+reproduisent à l'identique.
