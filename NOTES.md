@@ -12625,3 +12625,77 @@ Le `rip` se lit comme deux moitiés de 32 bits collées : `0x01ddfce0`, une adre
 bornes d'une pile 64 bits. Les trois comportements et ce contexte pointent vers la frontière
 WoW64, pas vers le pilote : **hypothèse non vérifiée**, rien n'a encore été mesuré du côté de
 la traduction 32 bits.
+
+## 176. Le plantage de Grimrock est dans la transition 32↔64 bits
+
+La section 175 laissait trois comportements et une hypothèse. La trace d'appels les explique.
+
+### Ce que `+relay` montre
+
+D'abord un fait qui oriente tout le reste : **sous `+relay`, le jeu ne plante pas**. Il affiche
+un écran de chargement et tourne plusieurs minutes, là où il meurt en moins de trente secondes
+sans trace. La trace sérialise chaque appel d'API et ralentit de plusieurs ordres de grandeur.
+C'est donc une course.
+
+Ensuite, le blocage du cas 3 n'est plus un mystère :
+
+```
+0024:err:sync:RtlpWaitForCriticalSection section 005FB800 "?" wait timed out
+     in thread 0024, blocked by 011c, retrying (300 sec)
+```
+
+Le fil principal attend une section critique que le fil `011c` détient. Et `011c` est mort. Les
+deux comportements — la mort brutale et le blocage à 1 % de processeur — sont donc le même bug :
+selon que l'exception tue le processus ou passe inaperçue, on voit l'un ou l'autre.
+
+### Le contexte d'exception est incohérent
+
+```
+rip=0124e6c076bfa9ec  rsp=0000000001fdef7c  rbp=0124e6c076bfa9ec
+rax=cf8fea5aa25e0092  rbx=01fdefd001c63300  rcx=ef227a0001fdef68
+rsi=0000000076bfa9ec  r14=0000000100dff600
+err:seh:call_seh_handlers invalid frame 0000000001FDEF7C (0000000100D02000-0000000100DFFD20)
+```
+
+`rip` vaut exactement `rbp`, et chaque registre 64 bits contient deux valeurs 32 bits sans
+rapport collées bout à bout, dont les moitiés basses sont des adresses 32 bits plausibles
+(`0x76bfa9ec` tombe dans `D3D9.DLL`, base `0x76B40000`). `rsp` est dans l'espace 32 bits alors
+que Wine le compare aux bornes de la pile 64 bits du fil — d'où le refus de dispatcher.
+
+Sur trois exécutions, la faute est une **faute d'exécution** (`info[1] == rip`) vers des
+adresses groupées : `0x0124E540`, `0x0124E6C0`, `0x0124E730`. Une adresse de tas, avec des bits
+parasites au-dessus du 32e. Un processeur en mode 32 bits ne peut pas produire un `rip` pareil :
+le fil était déjà passé en 64 bits avec des registres restés 32 bits.
+
+### Fausses pistes écartées, chacune par une mesure
+
+```
+correctif 0062            : les pages privees d'exec commencent a 0x26e0000,
+                            les adresses fautives sont en dessous
+bascule W^X (0036)        : ce Wine est construit en x86_64 sous Rosetta,
+                            le bloc __aarch64__ n'est pas compile
+pilote audio              : couper Audio="" deplace la faute mais ne l'enleve pas
+                            (et introduit un dereferencement nul dans xaudio2_7)
+xaudio2_7=d               : le jeu ne demarre plus du tout, il a besoin de la DLL
+dxvk.numCompilerThreads=1 : plante pareil
+```
+
+Le fil qui meurt est celui de `xaudio2_7` (`ret=7808f686`, base `0x78080000`), mais couper le
+son ne change rien : c'est le fil le plus actif en transitions, pas la cause.
+
+### Ce que ça veut dire
+
+**Braid, 32 bits lui aussi, tourne de bout en bout.** Le chemin 32 bits n'est donc pas cassé en
+général. Ce qui distingue Grimrock, c'est le nombre de fils qui traversent la frontière en
+parallèle. Le bug est dans `wow64cpu` ou dans la façon dont Rosetta livre une faute survenue en
+mode 32 bits — et Rosetta est fermé.
+
+`0x7BCC1248`, que la section 175 donnait comme adresse fautive, est en réalité l'adresse
+**réécrite** par `BTCpuResetToConsistentState`, qui place `syscall_32to64` dans `Rip` pour faire
+croire à une faute au point de transition. Ce n'était pas le lieu du crime.
+
+### Outil
+
+`tests/decrire_jeu.py` décrit un exécutable ou un répertoire de jeu : architecture — donc
+passage ou non par WoW64 —, bit `NX_COMPAT` de chaque module, et API graphique, y compris
+chargée dynamiquement. Sur Grimrock il désigne `FreeImage.dll` en une ligne.
