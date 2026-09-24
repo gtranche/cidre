@@ -12991,3 +12991,51 @@ temoin JIT (0063) : toujours 2000 tours sans plantage
 Leur arbre contient aussi deux correctifs `MXCSR` (CW Hack 24256 et 24265) : sous Rosetta, le
 registre `MXCSR` est faux dans les contextes de signaux, et sur M3 Rosetta le restaure à une
 valeur incorrecte même après correction. Non porté, non mesuré chez nous.
+
+## 181. DREDGE tourne, et 0063 était le dernier obstacle
+
+Une fois 0064 en place, le correctif 0063 devient non seulement inutile mais nuisible.
+
+```
+temoin JIT, page RWX reecrite 2000 fois, avec 0064 et SANS 0063 -> aucun plantage
+```
+
+La bascule W^X soignait un symptôme : écrire dans une page exécutable déclenchait un signal,
+et c'est ce signal qui perdait la course contre le saut lointain. Avec `lretq`, la course
+n'existe plus, donc les pages RWX redeviennent inoffensives.
+
+Et 0063 coûtait **une faute de page à chaque écriture de code**. Pour un moteur qui compile en
+permanence, c'était exactement l'étranglement :
+
+```
+avec 0063    : Begin MonoManager ReloadAssembly    -> plantage
+sans 0063    : Begin MonoManager ReloadAssembly
+               UnloadTime: 5.38 ms
+               Unloading 5 Unused Serialized files ...
+               fenetre UnityWndClass "DREDGE", 104 % de processeur
+```
+
+**DREDGE tourne.** Unity rend, son ramasse-miettes tourne, DXVK a sa chaîne d'échange. Les
+seules erreurs au journal sont bénignes : `readMonitorEdidFromKey: Failed to get EDID reg key
+size`, faute d'EDID dans le registre.
+
+### État des trois jeux
+
+```
+Braid      : lanceur FLTK ouvert, 39 % de processeur, aucune erreur.
+             FLTK dessine ses boutons sans fenetres filles, donc je n'ai pas pu
+             cliquer "Play" par programme -- verification limitee au demarrage.
+Grimrock   : 169 % de processeur, sa fenetre, aucune erreur. Il tourne.
+DREDGE     : 104 % de processeur, fenetre UnityWndClass. Il tourne.
+```
+
+### La série Wine, au propre
+
+```
+0062  macOS refuse PROT_EXEC sur une projection partagee     garde
+0063  bascule W^X sous Rosetta                               ARCHIVE, redondant depuis 0064
+0064  lretq au lieu du saut lointain (CodeWeavers, LGPL)     garde
+```
+
+0063 part dans `patches-historique/`. Il garde sa valeur de documentation — c'est lui qui a
+mené au cas minimal de la section 178 — mais il n'est plus appliqué.
