@@ -66,6 +66,7 @@ def signatures(sig):
          ' * Releve dans le steam_api.dll i386 d\'un jeu : pour chaque methode, son\n'
          ' * emplacement, le nombre de mots empiles et la taille de la structure\n'
          ' * rendue par pointeur cache (zero si elle n\'en rend pas). */\n\n',
+         '#define NB_SIGNATURES %d\n\n' % EMPLACEMENTS,
          'struct signature_steam\n{\n'
          '    const char *interface;\n'
          '    unsigned    emplacement;\n'

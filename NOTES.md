@@ -15037,3 +15037,59 @@ publiquement resolu.
    chantier d'un tout autre ordre. La decision raisonnable est d'attendre les sources de
    CrossOver 27 -- debut 2027, avant l'echeance -- tout en sachant que la partie FEX pourrait ne
    jamais etre publiee.
+
+## 216. Ligne de base arm64, mesuree a nouveau
+
+Avant de toucher a quoi que ce soit, retablir l'etat reel de la pile arm64.
+
+### Premiere erreur : la mauvaise construction
+
+`wine/wine10-arm64` echoue bien avant `x18`, sur la disposition memoire :
+
+```
+err:virtual:try_map_free_area mmap() error Cannot allocate memory,
+    range 0x7fffffdf0000-0x7fffffff0000
+    range 0x100000000-0x100100000
+```
+
+C'est une construction **non corrigee**. Les correctifs arm64 de la serie -- 0048 et 0049 --
+s'appliquent a l'arbre wine11. La construction a eprouver est `wine/wine11-arm64` (wine-11.18).
+
+### La vraie ligne de base
+
+Sur la construction corrigee, le tremplin du correctif 0049 fonctionne : les contextes
+d'exception portent `x18=000000014012a000`, le bon TEB. Et pourtant :
+
+```
+code=c0000005 (EXCEPTION_ACCESS_VIOLATION)  info[1]=0x180C
+code=c0000005 (EXCEPTION_ACCESS_VIOLATION)  info[1]=0x48
+```
+
+`0x180C` et `0x48` sont de petits deplacements de TEB -- `0x48` est
+`TEB->ClientId.UniqueThread`, lu par `RtlEnterCriticalSection`. Exactement le tableau du
+paragraphe 144. Le tremplin restaure `x18` a la frontiere du signal ; la perte, elle, est
+asynchrone, et la faute a deja eu lieu.
+
+`wineboot --init` ne peuple pas `system32` : le prefixe arm64 ne se cree pas.
+
+### Le plan
+
+Remplacer la lecture de `x18` plutot que la reparer. `include/winnt.h` la concentre en un point :
+
+```c
+register struct _TEB *__wine_current_teb __asm__("x18");
+return (struct _TEB *)__getReg(18);
+```
+
+La cle sera `TPIDRRO_EL0`, mesuree stable sur deux cents millions de tours au paragraphe 214.
+Il faut trois choses :
+
+1. une table cle -> TEB, logee dans les donnees du ntdll PE ;
+2. son remplissage par le cote unix au demarrage de chaque fil, **avant** l'appel a
+   `loader_init` -- c'est la que se produit la toute premiere faute, donc l'enregistrement doit
+   la preceder ;
+3. `NtCurrentTeb()` reecrit pour lire `TPIDRRO_EL0` et consulter la table.
+
+Le point 2 est celui qui brise le cercle : le cote unix connait le TEB et peut lire
+`TPIDRRO_EL0` comme n'importe qui, alors que le cote PE ne peut pas obtenir son TEB avant que
+l'acces ne fonctionne.
