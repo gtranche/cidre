@@ -14790,3 +14790,55 @@ Une piste, non verifiee : la table de signatures est indexee par famille d'inter
 version. Le jeu demande `SteamInput002` et `SteamController008` alors que les enveloppes plates
 du meme fichier visent d'autres versions ; rien ne garantit que la numerotation des emplacements
 soit identique d'une version a l'autre. Il faudra le mesurer avant d'y croire.
+
+## 212. Le cycle complet, en 32 comme en 64 bits
+
+### La piste du paragraphe 211 etait fausse
+
+Je soupçonnais un decalage de numerotation entre versions d'interface. Les accesseurs de
+`steam_api.dll` le refutent : `SteamAPI_SteamController_v008` et `SteamAPI_SteamInput_v002`
+visent exactement les versions que le jeu demande. Aucun decalage.
+
+### La vraie cause : un pointeur tronque
+
+La faute tombait dans un `memcpy` de steam_api (`movups %xmm0,(%edi)`), `edi` invalide. Le
+pointeur venait de `Steam_BGetCallback`, qui recopiait tel quel le `m_pubParam` rendu par le
+client natif :
+
+```c
+msg->m_pubParam = (unsigned char *)(ULONG_PTR)params.msg.param;   /* tronque a 32 bits */
+```
+
+La charge utile d'un rappel vit dans le tas du client natif, a une adresse de 64 bits. Un jeu
+32 bits ne peut pas l'atteindre -- et meme en 64 bits, rien ne garantit qu'elle survive a
+`Steam_FreeLastCallback`. Le cote unix la recopie desormais dans un tampon fourni par le cote
+PE, et la taille est verifiee avant la copie.
+
+### Le cycle complet
+
+```
+SteamAPI_Init -> 1
+Steam_BGetCallback rappel 1040044, 784 octets
+Steam_BGetCallback rappel 1270006,  16 octets
+Steam_BGetCallback rappel 1270009, 144 octets
+Steam_BGetCallback rappel     336,  12 octets      AvatarImageLoaded
+Steam_BGetCallback rappel     304,  12 octets      PersonaStateChange
+Steam_BGetCallback rappel 1040011, 260 octets
+... vingt tours de RunCallbacks, aucune faute ...
+ISteamClient emplacement  4 (2 mots)    ReleaseUser
+ISteamClient emplacement  1 (1 mots)    BReleaseSteamPipe
+ISteamClient emplacement  1 (1 mots)
+ISteamClient emplacement 23 (0 mots)    BShutdownIfAllPipesClosed
+SteamInternal_SetMinidumpSteamID:  Caching Steam ID:  7656119804344xxxx
+```
+
+La derniere ligne vient de Valve, pas de nous : son propre code a lu l'identifiant Steam reel du
+compte a travers le pont. Initialisation, pompe a rappels, arret propre -- le cycle entier, avec
+le `steam_api.dll` i386 d'un vrai jeu.
+
+La pompe a rappels, que le paragraphe 201 declarait honnetement « non eprouvee » faute
+d'evenements, est maintenant demontree : six rappels reels, dont `PersonaStateChange` et
+`AvatarImageLoaded`.
+
+Le chemin 64 bits donne la meme trace, aux adresses pres. Reconstruction verifiee sur les cinq
+arbres.

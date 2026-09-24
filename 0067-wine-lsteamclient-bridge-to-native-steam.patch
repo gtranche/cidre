@@ -42,10 +42,10 @@ index 00000000..401db203
 +@ cdecl SondeInterfaceNative(ptr)
 diff --git a/dlls/lsteamclient/main.c b/dlls/lsteamclient/main.c
 new file mode 100644
-index 00000000..8f54e7d6
+index 00000000..9c131f1c
 --- /dev/null
 +++ b/dlls/lsteamclient/main.c
-@@ -0,0 +1,519 @@
+@@ -0,0 +1,522 @@
 +/*
 + * Cote PE du pont Steamworks : ce que le steam_api du jeu appelle.
 + */
@@ -543,7 +543,10 @@ index 00000000..8f54e7d6
 +
 +BOOL CDECL Steam_BGetCallback( int pipe, CallbackMsg_t *msg, int *call )
 +{
-+    struct get_callback_params params = { pipe };
++    /* La charge utile est recopiee ici : les rappels Steamworks sont tires
++     * depuis le fil du jeu, un par un, et consommes avant le suivant. */
++    static unsigned char charge[8192];
++    struct get_callback_params params = { pipe, sizeof(charge), (ULONG_PTR)charge };
 +
 +    if (!msg) return FALSE;
 +    if (WINE_UNIX_CALL( unix_get_callback, &params )) return FALSE;
@@ -555,7 +558,7 @@ index 00000000..8f54e7d6
 +    msg->m_cubParam   = params.msg.taille;
 +    if (call) *call = params.call;
 +
-+    TRACE( "rappel %d, %d octets\n", msg->m_iCallback, msg->m_cubParam );
++    ERR( "rappel %d, %d octets a %p\n", msg->m_iCallback, msg->m_cubParam, msg->m_pubParam );
 +    return TRUE;
 +}
 +
@@ -2637,10 +2640,10 @@ index 00000000..85dc196f
 +#endif /* _WIN64 */
 diff --git a/dlls/lsteamclient/unix.c b/dlls/lsteamclient/unix.c
 new file mode 100644
-index 00000000..b0b37b47
+index 00000000..1d285943
 --- /dev/null
 +++ b/dlls/lsteamclient/unix.c
-@@ -0,0 +1,318 @@
+@@ -0,0 +1,338 @@
 +/*
 + * Cote unix du pont Steamworks : charge le steamclient.dylib du client Steam
 + * natif et lui demande ses interfaces.
@@ -2861,9 +2864,29 @@ index 00000000..b0b37b47
 +    {
 +        params->msg.user     = msg.m_hSteamUser;
 +        params->msg.callback = msg.m_iCallback;
-+        params->msg.param    = (UINT64)(ULONG_PTR)msg.m_pubParam;
 +        params->msg.taille   = msg.m_cubParam;
 +        params->call         = call;
++
++        /*
++         * La charge utile vit dans le tas du client natif, a une adresse de
++         * 64 bits. Un jeu 32 bits ne peut pas l'atteindre -- et meme en 64 bits,
++         * rien ne garantit qu'elle reste valide apres Steam_FreeLastCallback.
++         * On la recopie donc dans un tampon fourni par le cote PE.
++         */
++        if (params->tampon && msg.m_pubParam && msg.m_cubParam > 0 &&
++            msg.m_cubParam <= params->taille_tampon)
++        {
++            memcpy( (void *)(ULONG_PTR)params->tampon, msg.m_pubParam, msg.m_cubParam );
++            params->msg.param = params->tampon;
++        }
++        else
++        {
++            if (msg.m_cubParam > params->taille_tampon)
++                ERR( "rappel %d : charge utile de %d octets, tampon de %d\n",
++                     msg.m_iCallback, msg.m_cubParam, params->taille_tampon );
++            params->msg.param = 0;
++            params->msg.taille = 0;
++        }
 +        TRACE( "rappel %d, utilisateur %d, %d octets a %p\n",
 +               msg.m_iCallback, msg.m_hSteamUser, msg.m_cubParam, msg.m_pubParam );
 +    }
@@ -2961,10 +2984,10 @@ index 00000000..b0b37b47
 +C_ASSERT( ARRAYSIZE(__wine_unix_call_wow64_funcs) == unix_funcs_count );
 diff --git a/dlls/lsteamclient/unixlib.h b/dlls/lsteamclient/unixlib.h
 new file mode 100644
-index 00000000..796f7100
+index 00000000..e1009e84
 --- /dev/null
 +++ b/dlls/lsteamclient/unixlib.h
-@@ -0,0 +1,134 @@
+@@ -0,0 +1,135 @@
 +/*
 + * Pont Steamworks : interface entre le cote PE et le cote unix.
 + */
@@ -3073,7 +3096,8 @@ index 00000000..796f7100
 +struct get_callback_params
 +{
 +    INT32               pipe;
-+    INT32               bourrage;
++    INT32               taille_tampon;
++    UINT64              tampon;       /* ou recopier la charge utile */
 +    struct callback_msg msg;
 +    INT32               call;
 +    INT32               ret;
