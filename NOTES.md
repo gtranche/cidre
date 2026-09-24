@@ -14970,12 +14970,24 @@ Les deux exigent un emulateur x86. C'est la, pas dans `x18`, qu'est maintenant l
 Le paragraphe 214 concluait que le risque n'etait plus `x18` mais l'emulation. Voici ce que
 donne l'etat de l'art, en septembre 2026.
 
-### Le calendrier n'est pas celui qu'on croyait
+### Le calendrier, corrige
 
-Rosetta 2 n'est pas retire par la mise a jour disponible : **la suppression est prevue pour
-macOS 28, a l'automne 2027**, avec un maintien restreint « pour certains vieux jeux non
-maintenus ». L'alerte affichee aujourd'hui est l'avertissement preliminaire. Cela laisse environ
-un an -- ce qui change l'urgence, pas la direction.
+J'avais ecrit que Rosetta 2 n'etait pas retire par la mise a jour disponible. **C'est faux**, et
+l'utilisateur l'a corrige. La machine est sur macOS 26.5.2 et `softwareupdate -l` propose
+`macOS 27` :
+
+```
+* Label: macOS 27-26A428
+	Title: macOS 27, Version: 27, Size: 11865773KiB, Recommended: YES, Action: restart,
+```
+
+**macOS 27 supprime Rosetta 2 pendant son installation** s'il etait present, et aucune
+application Intel ne demarre ensuite. La nuance qui sauve la pile : macOS 27 permet de le
+**reinstaller** a la demande. C'est macOS 28, a l'automne 2027, qui coupe definitivement -- avec
+seulement un sous-ensemble de Rosetta conserve pour de vieux jeux non maintenus.
+
+Donc deux echeances, pas une : une rupture immediate a reparer d'une commande, et une echeance
+ferme dans un an. J'avais retenu la seconde et manque la premiere.
 
 ### La voie existe, et quelqu'un l'a deja prise
 
