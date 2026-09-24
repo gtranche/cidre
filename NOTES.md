@@ -14964,3 +14964,64 @@ voies :
    jeu, ce qui reduit la surface emulee mais ne supprime pas le besoin.
 
 Les deux exigent un emulateur x86. C'est la, pas dans `x18`, qu'est maintenant le risque.
+
+## 215. L'etat de l'emulation x86 sur macOS arm64
+
+Le paragraphe 214 concluait que le risque n'etait plus `x18` mais l'emulation. Voici ce que
+donne l'etat de l'art, en septembre 2026.
+
+### Le calendrier n'est pas celui qu'on croyait
+
+Rosetta 2 n'est pas retire par la mise a jour disponible : **la suppression est prevue pour
+macOS 28, a l'automne 2027**, avec un maintien restreint « pour certains vieux jeux non
+maintenus ». L'alerte affichee aujourd'hui est l'avertissement preliminaire. Cela laisse environ
+un an -- ce qui change l'urgence, pas la direction.
+
+### La voie existe, et quelqu'un l'a deja prise
+
+CodeWeavers distribue depuis juillet 2026 une preversion de CrossOver native arm64 sur macOS.
+Sa pile :
+
+- **Wine ARM64EC**, sous LGPL. Wine 10 integre le support complet d'ARM64EC, avec le travail de
+  compilateur correspondant verse dans LLVM 21. Les sources accompagneront CrossOver 27, prevu
+  debut 2027.
+- **un portage macOS de FEX**, realise par CodeWeavers : FEX amont ne supporte pas Darwin.
+- **DXMT** en arm64 pour la partie graphique.
+
+La preversion exige macOS 26.5 et n'est pas jugee utilisable au-dela du test.
+
+### Rien d'utilisable publiquement aujourd'hui
+
+```
+FEX amont        Linux seulement, aucun projet de support macOS
+box64            Linux seulement
+FEX_MacOs        depot annonce « Arm64 MacOS », mais instructions et
+                 prerequis entierement Linux : bifurcation mal nommee,
+                 aucun portage Darwin documente
+```
+
+Le seul portage macOS connu de FEX est celui de CodeWeavers, non public. Et attention a la
+nuance de licence : Wine est LGPL, donc leur ARM64EC sera publie ; **FEX est MIT**, donc rien ne
+les oblige a publier leur portage Darwin. C'est le point de risque reel.
+
+### `x18` reste le probleme, meme en ARM64EC
+
+ARM64EC n'echappe pas a la question : l'ABI prevoit que le code natif lise l'adresse du TEB
+dans `x18`, exactement comme l'ARM64 ordinaire. Apple reserve ce registre. CodeWeavers a donc
+du resoudre le meme obstacle que nous ; leur solution n'est pas documentee publiquement.
+
+La mesure du paragraphe 214 garde donc toute sa valeur : `TPIDRRO_EL0` tient sur deux cents
+millions de tours la ou `x18` tombe en quelques millions, et le compilateur ARM64 Windows
+n'emet aucune reference a `x18`. C'est une reponse candidate a un probleme que personne n'a
+publiquement resolu.
+
+### Ce que cela dicte
+
+1. La pile x86_64 sous Rosetta reste valable environ un an. Rien n'oblige a l'abandonner
+   maintenant, et elle vient de faire tourner un vrai jeu Steam.
+2. Le portage arm64 de Wine est de notre ressort et n'attend personne : `x18` a une reponse
+   candidate a eprouver.
+3. L'emulateur x86 n'est pas de notre ressort a ce stade. Ecrire un portage Darwin de FEX est un
+   chantier d'un tout autre ordre. La decision raisonnable est d'attendre les sources de
+   CrossOver 27 -- debut 2027, avant l'echeance -- tout en sachant que la partie FEX pourrait ne
+   jamais etre publiee.
