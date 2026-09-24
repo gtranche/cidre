@@ -49,6 +49,7 @@ def analyser(instr, debut, base):
     pousses = 0
     tampon = 0
     edx_local = 0
+    emplacement_charge = None   # « mov 0x18(%eax),%eax » puis « call *%eax »
     for _ in range(64):
         while p not in instr and p < debut + 160:
             p += 1
@@ -57,12 +58,19 @@ def analyser(instr, debut, base):
         mn, op = instr[p]
         if mn.startswith("call") or mn.startswith("jmp"):
             m = re.match(r"\*(?:(0x[0-9a-f]+))?\(%eax\)$", op)
-            if not m:
-                return None
-            dep = int(m.group(1), 16) if m.group(1) else 0
-            return dep // 4, pousses * 4, tampon
+            if m:
+                dep = int(m.group(1), 16) if m.group(1) else 0
+                return dep // 4, pousses * 4, tampon
+            # Le compilateur charge parfois l'emplacement dans un registre
+            # avant d'appeler : « mov 0x18(%eax),%eax ; call *%eax ».
+            if op == "*%eax" and emplacement_charge is not None:
+                return emplacement_charge // 4, pousses * 4, tampon
+            return None
         if mn.startswith("ret"):
             return None
+        m = re.match(r"(?:(0x[0-9a-f]+))?\(%eax\),%eax$", op)
+        if mn == "mov" and m:
+            emplacement_charge = int(m.group(1), 16) if m.group(1) else 0
         # « lea -0x18(%ebp),%edx » : un tampon local, dont le deplacement donne
         # la taille de la structure rendue.
         m = re.match(r"-(0x[0-9a-f]+)\(%ebp\),%edx$", op)
@@ -77,6 +85,28 @@ def analyser(instr, debut, base):
                 tampon = edx_local
         p += 1
     return None
+
+
+def desassembler_une(chemin, adresse):
+    """Desassembler une seule fonction, a partir d'une frontiere sure.
+
+    Le balayage lineaire de .text se desynchronise sur certaines fonctions et
+    produit des instructions qui n'existent pas -- c'est ainsi que
+    BIsSubscribedApp manquait a la table, et qu'un thunk depilait zero octet
+    pour une methode qui prend un argument. Repartir de l'adresse exacte de la
+    fonction supprime le probleme.
+    """
+    out = subprocess.run([OBJDUMP, "--disassemble", "--no-show-raw-insn",
+                          "--start-address=%d" % adresse,
+                          "--stop-address=%d" % (adresse + 180), chemin],
+                         capture_output=True, text=True).stdout
+    instr = {}
+    pat = re.compile(r"^\s*([0-9a-f]+):\s+(\S+)\s*(.*)$")
+    for l in out.splitlines():
+        m = pat.match(l)
+        if m:
+            instr[int(m.group(1), 16)] = (m.group(2), m.group(3).split("#")[0].strip())
+    return instr
 
 
 def main(chemin):
@@ -94,6 +124,8 @@ def main(chemin):
         if not m:
             continue
         a = analyser(instr, imagebase + rva, imagebase)
+        if a is None:
+            a = analyser(desassembler_une(chemin, imagebase + rva), imagebase + rva, imagebase)
         if a is None:
             continue
         emplacement, octets, tampon = a

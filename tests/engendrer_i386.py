@@ -14,7 +14,7 @@ steam_api.dll du jeu. Rien n'est devine.
 """
 import json, sys, os
 
-EMPLACEMENTS = 76     # emplacement maximal releve : 75
+EMPLACEMENTS = 84     # emplacement maximal releve : 81
 MOTS = 10             # au plus 36 octets empiles, soit 9 mots
 
 

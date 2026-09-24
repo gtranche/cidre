@@ -14842,3 +14842,53 @@ d'evenements, est maintenant demontree : six rappels reels, dont `PersonaStateCh
 
 Le chemin 64 bits donne la meme trace, aux adresses pres. Reconstruction verifiee sur les cinq
 arbres.
+
+## 213. DREDGE tourne
+
+Un jeu Steam Windows, achete sur Steam, lance sous la pile ouverte, et qui joue : 180 secondes
+sans plantage, **14775 appels au pont**, D3D11 initialise sur l'Apple M1 Max.
+
+### Trois defauts corriges pour y arriver
+
+**Le lanceur court-circuitait la pile.** `lancer_jeu_steam.sh` appelait `wine` directement, sans
+`VK_DRIVER_FILES` ni `DYLD_LIBRARY_PATH` -- DXVK ne trouvait pas `libvulkan.1.dylib` et le jeu
+echouait a creer son peripherique Direct3D. Il delegue desormais a `etape2_pile_wow64.sh`, qui
+pose tout cela.
+
+Au passage : les redirections de DLL du prefixe avaient disparu. C'est le `wineboot` declenche
+quand j'ai tue `wineserver` au paragraphe 205 qui les avait effacees. Wine chargeait donc son
+`wined3d` integre au lieu de DXVK.
+
+**La chaine de version n'etait pas recopiee.** `envelopper` gardait le pointeur de l'appelant.
+Quelques milliers d'appels plus tard le journal affichait `repartir32 <<}p.d emplacement 6` :
+un nom corrompu, donc une signature choisie au hasard, donc une discipline de pile fausse. La
+chaine est desormais copiee dans l'objet.
+
+**L'extracteur manquait la moitie des methodes.** Le compilateur charge parfois l'emplacement
+dans un registre avant d'appeler :
+
+```
+mov  0x18(%eax),%eax
+call *%eax
+```
+
+L'analyseur n'acceptait que `call *0x18(%eax)`. En ajoutant ce motif, la table passe de **421 a
+874 methodes**. C'est ainsi que `ISteamApps::BIsSubscribedApp` manquait -- emplacement 6, un
+argument -- et qu'un thunk depilait zero octet la ou le jeu en poussait quatre. Le gel se
+produisait la, a chaque partie, toujours au meme endroit.
+
+### Ce qui ralentissait
+
+Rien dans le pont. Deux causes, toutes deux de ma main :
+
+- Je journalisais chaque appel en `ERR`, donc toujours actif et sur une sortie non tamponnee.
+  Les journaux d'appel passent en `TRACE` ; `ERR` ne sert plus qu'aux anomalies.
+- Surtout, des processus residuels des essais precedents tournaient a plein regime : quatre
+  `winedbg` a 100 % chacun et deux `UnityCrashHandler32`, soit environ 600 % de processeur voles
+  au jeu. Le debogueur automatique du prefixe est desormais desactive (`AeDebug\Debugger` a
+  `false`), pour qu'un plantage n'en laisse plus derriere lui.
+
+Une fois nettoye : `DREDGE.exe 166 %`, `wineserver 26 %`.
+
+C'est la deuxieme fois de la journee que des processus oublies faussent une mesure. La regle
+tient : avant toute observation de performance, verifier ce qui tourne.

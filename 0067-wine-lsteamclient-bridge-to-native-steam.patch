@@ -42,10 +42,10 @@ index 00000000..401db203
 +@ cdecl SondeInterfaceNative(ptr)
 diff --git a/dlls/lsteamclient/main.c b/dlls/lsteamclient/main.c
 new file mode 100644
-index 00000000..9c131f1c
+index 00000000..6096a215
 --- /dev/null
 +++ b/dlls/lsteamclient/main.c
-@@ -0,0 +1,522 @@
+@@ -0,0 +1,529 @@
 +/*
 + * Cote PE du pont Steamworks : ce que le steam_api du jeu appelle.
 + */
@@ -88,8 +88,8 @@ index 00000000..9c131f1c
 +    objet = envelopper( params.ret, NULL );
 +    /* L'adresse native fait 64 bits ; la tronquer a la largeur du PE rendrait
 +     * la trace trompeuse cote 32 bits. */
-+    ERR( "%s : natif %s -> objet PE %p\n", debugstr_a(version),
-+         wine_dbgstr_longlong(params.ret), objet );
++    TRACE( "%s : natif %s -> objet PE %p\n", debugstr_a(version),
++           wine_dbgstr_longlong(params.ret), objet );
 +    return objet;
 +}
 +
@@ -119,7 +119,11 @@ index 00000000..9c131f1c
 +    const void **table;   /* doit rester en tete : c'est ce que le jeu deref */
 +    UINT64       natif;   /* adresse 64 bits, qu'un « void * » de PE 32 bits
 +                           * ne pourrait pas contenir */
-+    const char  *nom;     /* NULL pour ISteamClient ; sinon, sous-interface */
++    /* La chaine de version appartient a l'appelant et peut etre temporaire :
++     * la garder par pointeur donnait un nom corrompu quelques milliers
++     * d'appels plus tard, et donc une signature choisie au hasard. On la
++     * recopie. Vide pour ISteamClient. */
++    char         nom[64];
 +};
 +
 +/*
@@ -204,20 +208,22 @@ index 00000000..9c131f1c
 +{
 +    struct objet_pe *objet = self;
 +    struct appel_vtable_params params = { objet->natif, emplacement, 0, a, b, c, d, e, f, 0 };
-+    const char *ou = objet->nom ? objet->nom : "ISteamClient";
++    const char *ou = objet->nom[0] ? objet->nom : "ISteamClient";
 +    const struct signature_steam *sig;
 +
++    /* Un appel par methode et par image : en ERR, le journal coutait plus cher
++     * que le pont lui-meme. En TRACE, il ne s'active qu'a la demande. */
 +    if (!IsBadStringPtrA( (LPCSTR)(ULONG_PTR)a, 64 ))
-+        ERR( "%s emplacement %u( \"%s\", %p, %p )\n", ou, emplacement,
++        TRACE( "%s emplacement %u( \"%s\", %p, %p )\n", ou, emplacement,
 +             (const char *)(ULONG_PTR)a, (void *)(ULONG_PTR)b, (void *)(ULONG_PTR)c );
 +    else if (!IsBadStringPtrA( (LPCSTR)(ULONG_PTR)b, 64 ))
-+        ERR( "%s emplacement %u( %p, \"%s\", %p )\n", ou, emplacement,
++        TRACE( "%s emplacement %u( %p, \"%s\", %p )\n", ou, emplacement,
 +             (void *)(ULONG_PTR)a, (const char *)(ULONG_PTR)b, (void *)(ULONG_PTR)c );
 +    else if (!IsBadStringPtrA( (LPCSTR)(ULONG_PTR)c, 64 ))
-+        ERR( "%s emplacement %u( %p, %p, \"%s\" )\n", ou, emplacement,
++        TRACE( "%s emplacement %u( %p, %p, \"%s\" )\n", ou, emplacement,
 +             (void *)(ULONG_PTR)a, (void *)(ULONG_PTR)b, (const char *)(ULONG_PTR)c );
 +    else
-+        ERR( "%s emplacement %u( %p, %p, %p )\n", ou, emplacement,
++        TRACE( "%s emplacement %u( %p, %p, %p )\n", ou, emplacement,
 +             (void *)(ULONG_PTR)a, (void *)(ULONG_PTR)b, (void *)(ULONG_PTR)c );
 +
 +    /*
@@ -229,11 +235,11 @@ index 00000000..9c131f1c
 +     * ISteamClient, lui, demande un traitement : certaines de ses methodes
 +     * rendent une interface, qu'il faut envelopper avant de la donner au jeu.
 +     */
-+    if (objet->nom)
++    if (objet->nom[0])
 +    {
 +        if (WINE_UNIX_CALL( unix_appel_vtable, &params )) return 0;
 +
-+        sig = signature( objet->nom, emplacement );
++        sig = signature( objet->nom[0] ? objet->nom : "SteamClient", emplacement );
 +        if (sig && sig->tampon)
 +        {
 +            /* Le natif a rendu la valeur dans RAX ; l'appelant attend qu'elle
@@ -361,16 +367,16 @@ index 00000000..9c131f1c
 +static UINT64 repartir32( unsigned emplacement, void *self, unsigned mots, const UINT32 *args )
 +{
 +    struct objet_pe *objet = self;
-+    const char *ou = objet->nom ? objet->nom : "ISteamClient";
-+    const struct signature_steam *sig = signature( objet->nom, emplacement );
++    const char *ou = objet->nom[0] ? objet->nom : "ISteamClient";
++    const struct signature_steam *sig = signature( objet->nom[0] ? objet->nom : "SteamClient", emplacement );
 +    struct appel_vtable_params params = { objet->natif, emplacement, 0, 0, 0, 0, 0, 0, 0, 0 };
 +    unsigned tampon = sig ? sig->tampon : 0;
 +    unsigned debut = tampon ? 1 : 0;   /* le pointeur cache occupe le premier mot */
 +    UINT64 *dest[6];
 +    unsigned i;
 +
-+    ERR( "%s emplacement %u (%u mots%s)\n", ou, emplacement, mots,
-+         tampon ? ", retour par pointeur cache" : "" );
++    TRACE( "%s emplacement %u (%u mots%s)\n", ou, emplacement, mots,
++           tampon ? ", retour par pointeur cache" : "" );
 +
 +    dest[0] = &params.a; dest[1] = &params.b; dest[2] = &params.c;
 +    dest[3] = &params.d; dest[4] = &params.e; dest[5] = &params.f;
@@ -394,7 +400,7 @@ index 00000000..9c131f1c
 +     * enveloppee : le jeu recevrait sinon un pointeur natif de 64 bits, qu'un
 +     * registre de 32 bits ne peut meme pas contenir. La chaine de version est
 +     * le dernier argument. */
-+    if (!objet->nom && params.ret && rend_interface( emplacement ))
++    if (!objet->nom[0] && params.ret && rend_interface( emplacement ))
 +    {
 +        const char *nom = NULL;
 +        unsigned k;
@@ -457,7 +463,8 @@ index 00000000..9c131f1c
 +    }
 +#endif
 +    objet->natif = natif;
-+    objet->nom   = nom;
++    objet->nom[0] = 0;
++    if (nom) lstrcpynA( objet->nom, nom, sizeof(objet->nom) );
 +    TRACE( "interface native %s -> objet PE %p\n", wine_dbgstr_longlong(natif), objet );
 +    return objet;
 +}
@@ -558,7 +565,7 @@ index 00000000..9c131f1c
 +    msg->m_cubParam   = params.msg.taille;
 +    if (call) *call = params.call;
 +
-+    ERR( "rappel %d, %d octets a %p\n", msg->m_iCallback, msg->m_cubParam, msg->m_pubParam );
++    TRACE( "rappel %d, %d octets a %p\n", msg->m_iCallback, msg->m_cubParam, msg->m_pubParam );
 +    return TRUE;
 +}
 +
@@ -570,10 +577,10 @@ index 00000000..9c131f1c
 +}
 diff --git a/dlls/lsteamclient/signatures32.h b/dlls/lsteamclient/signatures32.h
 new file mode 100644
-index 00000000..0491d917
+index 00000000..50242cc5
 --- /dev/null
 +++ b/dlls/lsteamclient/signatures32.h
-@@ -0,0 +1,440 @@
+@@ -0,0 +1,893 @@
 +/* Engendre par tests/engendrer_i386.py -- ne pas editer a la main.
 + * Releve dans le steam_api.dll i386 d'un jeu : pour chaque methode, son
 + * emplacement, le nombre de mots empiles et la taille de la structure
@@ -597,20 +604,37 @@ index 00000000..0491d917
 +    { "ISteamAppList", 2, 3, 0, "GetAppName" },
 +    { "ISteamAppList", 1, 2, 0, "GetInstalledApps" },
 +    { "ISteamAppList", 0, 0, 0, "GetNumInstalledApps" },
++    { "ISteamApps", 11, 5, 0, "BGetDLCDataByIndex" },
++    { "ISteamApps", 19, 1, 0, "BIsAppInstalled" },
++    { "ISteamApps", 2, 0, 0, "BIsCybercafe" },
++    { "ISteamApps", 7, 1, 0, "BIsDlcInstalled" },
++    { "ISteamApps", 1, 0, 0, "BIsLowViolence" },
++    { "ISteamApps", 0, 0, 0, "BIsSubscribed" },
++    { "ISteamApps", 6, 1, 0, "BIsSubscribedApp" },
++    { "ISteamApps", 27, 0, 0, "BIsSubscribedFromFamilySharing" },
++    { "ISteamApps", 9, 0, 0, "BIsSubscribedFromFreeWeekend" },
++    { "ISteamApps", 28, 2, 0, "BIsTimedTrial" },
++    { "ISteamApps", 3, 0, 0, "BIsVACBanned" },
 +    { "ISteamApps", 23, 0, 0, "GetAppBuildId" },
 +    { "ISteamApps", 18, 3, 0, "GetAppInstallDir" },
 +    { "ISteamApps", 20, 1, 8, "GetAppOwner" },
 +    { "ISteamApps", 5, 0, 0, "GetAvailableGameLanguages" },
++    { "ISteamApps", 15, 2, 0, "GetCurrentBetaName" },
 +    { "ISteamApps", 4, 0, 0, "GetCurrentGameLanguage" },
 +    { "ISteamApps", 10, 0, 0, "GetDLCCount" },
++    { "ISteamApps", 22, 3, 0, "GetDlcDownloadProgress" },
 +    { "ISteamApps", 8, 1, 0, "GetEarliestPurchaseUnixTime" },
++    { "ISteamApps", 25, 1, 0, "GetFileDetails" },
 +    { "ISteamApps", 17, 3, 0, "GetInstalledDepots" },
 +    { "ISteamApps", 26, 2, 0, "GetLaunchCommandLine" },
 +    { "ISteamApps", 21, 1, 0, "GetLaunchQueryParam" },
 +    { "ISteamApps", 12, 1, 0, "InstallDLC" },
++    { "ISteamApps", 16, 1, 0, "MarkContentCorrupt" },
 +    { "ISteamApps", 24, 0, 0, "RequestAllProofOfPurchaseKeys" },
 +    { "ISteamApps", 14, 1, 0, "RequestAppProofOfPurchaseKey" },
 +    { "ISteamApps", 13, 1, 0, "UninstallDLC" },
++    { "ISteamClient", 1, 1, 0, "BReleaseSteamPipe" },
++    { "ISteamClient", 23, 0, 0, "BShutdownIfAllPipesClosed" },
 +    { "ISteamClient", 2, 1, 0, "ConnectToGlobalUser" },
 +    { "ISteamClient", 3, 2, 0, "CreateLocalUser" },
 +    { "ISteamClient", 0, 0, 0, "CreateSteamPipe" },
@@ -650,11 +674,17 @@ index 00000000..0491d917
 +    { "ISteamController", 8, 4, 0, "DeactivateActionSetLayer" },
 +    { "ISteamController", 9, 2, 0, "DeactivateAllActionSetLayers" },
 +    { "ISteamController", 31, 3, 0, "GetActionOriginFromXboxOrigin" },
++    { "ISteamController", 4, 1, 0, "GetActionSetHandle" },
 +    { "ISteamController", 10, 3, 0, "GetActiveActionSetLayers" },
 +    { "ISteamController", 15, 5, 13, "GetAnalogActionData" },
++    { "ISteamController", 14, 1, 0, "GetAnalogActionHandle" },
 +    { "ISteamController", 16, 7, 0, "GetAnalogActionOrigins" },
 +    { "ISteamController", 3, 1, 0, "GetConnectedControllers" },
++    { "ISteamController", 33, 4, 0, "GetControllerBindingRevision" },
++    { "ISteamController", 27, 1, 0, "GetControllerForGamepadIndex" },
++    { "ISteamController", 6, 2, 0, "GetCurrentActionSet" },
 +    { "ISteamController", 12, 5, 0, "GetDigitalActionData" },
++    { "ISteamController", 11, 1, 0, "GetDigitalActionHandle" },
 +    { "ISteamController", 13, 7, 0, "GetDigitalActionOrigins" },
 +    { "ISteamController", 28, 2, 0, "GetGamepadIndexForController" },
 +    { "ISteamController", 17, 1, 0, "GetGlyphForActionOrigin" },
@@ -663,8 +693,11 @@ index 00000000..0491d917
 +    { "ISteamController", 20, 3, 40, "GetMotionData" },
 +    { "ISteamController", 18, 1, 0, "GetStringForActionOrigin" },
 +    { "ISteamController", 29, 1, 0, "GetStringForXboxOrigin" },
++    { "ISteamController", 0, 0, 0, "Init" },
 +    { "ISteamController", 2, 0, 0, "RunFrame" },
 +    { "ISteamController", 24, 6, 0, "SetLEDColor" },
++    { "ISteamController", 25, 2, 0, "ShowBindingPanel" },
++    { "ISteamController", 1, 0, 0, "Shutdown" },
 +    { "ISteamController", 19, 4, 0, "StopAnalogActionMomentum" },
 +    { "ISteamController", 32, 2, 0, "TranslateActionOrigin" },
 +    { "ISteamController", 21, 4, 0, "TriggerHapticPulse" },
@@ -678,7 +711,11 @@ index 00000000..0491d917
 +    { "ISteamFriends", 29, 3, 0, "ActivateGameOverlayToUser" },
 +    { "ISteamFriends", 30, 2, 0, "ActivateGameOverlayToWebPage" },
 +    { "ISteamFriends", 44, 0, 0, "ClearRichPresence" },
++    { "ISteamFriends", 63, 2, 0, "CloseClanChatWindowInSteam" },
++    { "ISteamFriends", 23, 2, 0, "DownloadClanActivityCounts" },
++    { "ISteamFriends", 69, 1, 0, "EnumerateFollowingList" },
 +    { "ISteamFriends", 57, 4, 0, "GetChatMemberByIndex" },
++    { "ISteamFriends", 22, 5, 0, "GetClanActivityCounts" },
 +    { "ISteamFriends", 19, 2, 8, "GetClanByIndex" },
 +    { "ISteamFriends", 56, 2, 0, "GetClanChatMemberCount" },
 +    { "ISteamFriends", 59, 7, 0, "GetClanChatMessage" },
@@ -690,12 +727,14 @@ index 00000000..0491d917
 +    { "ISteamFriends", 21, 2, 0, "GetClanTag" },
 +    { "ISteamFriends", 51, 2, 8, "GetCoplayFriend" },
 +    { "ISteamFriends", 50, 0, 0, "GetCoplayFriendCount" },
++    { "ISteamFriends", 67, 2, 0, "GetFollowerCount" },
 +    { "ISteamFriends", 4, 3, 8, "GetFriendByIndex" },
 +    { "ISteamFriends", 53, 2, 0, "GetFriendCoplayGame" },
 +    { "ISteamFriends", 52, 2, 0, "GetFriendCoplayTime" },
 +    { "ISteamFriends", 3, 1, 0, "GetFriendCount" },
 +    { "ISteamFriends", 24, 2, 0, "GetFriendCountFromSource" },
 +    { "ISteamFriends", 25, 4, 0, "GetFriendFromSourceByIndex" },
++    { "ISteamFriends", 8, 3, 0, "GetFriendGamePlayed" },
 +    { "ISteamFriends", 66, 6, 0, "GetFriendMessage" },
 +    { "ISteamFriends", 7, 2, 0, "GetFriendPersonaName" },
 +    { "ISteamFriends", 9, 3, 0, "GetFriendPersonaNameHistory" },
@@ -718,9 +757,28 @@ index 00000000..0491d917
 +    { "ISteamFriends", 11, 2, 0, "GetPlayerNickname" },
 +    { "ISteamFriends", 34, 2, 0, "GetSmallFriendAvatar" },
 +    { "ISteamFriends", 42, 0, 0, "GetUserRestrictions" },
++    { "ISteamFriends", 17, 3, 0, "HasFriend" },
++    { "ISteamFriends", 49, 3, 0, "InviteUserToGame" },
++    { "ISteamFriends", 60, 4, 0, "IsClanChatAdmin" },
++    { "ISteamFriends", 61, 2, 0, "IsClanChatWindowOpenInSteam" },
++    { "ISteamFriends", 71, 2, 0, "IsClanOfficialGameGroup" },
++    { "ISteamFriends", 70, 2, 0, "IsClanPublic" },
++    { "ISteamFriends", 68, 2, 0, "IsFollowing" },
++    { "ISteamFriends", 26, 4, 0, "IsUserInSource" },
++    { "ISteamFriends", 54, 2, 0, "JoinClanChatRoom" },
++    { "ISteamFriends", 55, 2, 0, "LeaveClanChatRoom" },
++    { "ISteamFriends", 62, 2, 0, "OpenClanChatWindowInSteam" },
++    { "ISteamFriends", 74, 1, 0, "RegisterProtocolInOverlayBrowser" },
++    { "ISteamFriends", 65, 3, 0, "ReplyToFriendMessage" },
++    { "ISteamFriends", 38, 2, 0, "RequestClanOfficerList" },
 +    { "ISteamFriends", 48, 2, 0, "RequestFriendRichPresence" },
++    { "ISteamFriends", 37, 3, 0, "RequestUserInformation" },
++    { "ISteamFriends", 58, 3, 0, "SendClanChatMessage" },
 +    { "ISteamFriends", 27, 3, 0, "SetInGameVoiceSpeaking" },
++    { "ISteamFriends", 64, 1, 0, "SetListenForFriendsMessages" },
++    { "ISteamFriends", 1, 1, 0, "SetPersonaName" },
 +    { "ISteamFriends", 32, 2, 0, "SetPlayedWith" },
++    { "ISteamFriends", 43, 2, 0, "SetRichPresence" },
 +    { "ISteamGameSearch", 3, 0, 0, "AcceptGame" },
 +    { "ISteamGameSearch", 0, 2, 0, "AddGameSearchParams" },
 +    { "ISteamGameSearch", 11, 0, 0, "CancelRequestPlayersForGame" },
@@ -735,9 +793,14 @@ index 00000000..0491d917
 +    { "ISteamGameSearch", 8, 2, 0, "SetConnectionDetails" },
 +    { "ISteamGameSearch", 7, 2, 0, "SetGameHostParams" },
 +    { "ISteamGameSearch", 12, 5, 0, "SubmitPlayerResult" },
++    { "ISteamGameServer", 42, 2, 0, "AssociateWithClan" },
++    { "ISteamGameServer", 8, 0, 0, "BLoggedOn" },
++    { "ISteamGameServer", 9, 0, 0, "BSecure" },
++    { "ISteamGameServer", 27, 4, 0, "BUpdateUserData" },
 +    { "ISteamGameServer", 29, 4, 0, "BeginAuthSession" },
 +    { "ISteamGameServer", 31, 1, 0, "CancelAuthTicket" },
 +    { "ISteamGameServer", 19, 0, 0, "ClearAllKeyValues" },
++    { "ISteamGameServer", 43, 2, 0, "ComputeNewPlayerCompatibility" },
 +    { "ISteamGameServer", 25, 1, 8, "CreateUnauthenticatedUserConnection" },
 +    { "ISteamGameServer", 39, 1, 0, "EnableHeartbeats" },
 +    { "ISteamGameServer", 30, 2, 0, "EndAuthSession" },
@@ -746,10 +809,14 @@ index 00000000..0491d917
 +    { "ISteamGameServer", 34, 0, 0, "GetGameplayStats" },
 +    { "ISteamGameServer", 38, 4, 0, "GetNextOutgoingPacket" },
 +    { "ISteamGameServer", 36, 1, 20, "GetPublicIP" },
++    { "ISteamGameServer", 35, 0, 0, "GetServerReputation" },
 +    { "ISteamGameServer", 10, 1, 8, "GetSteamID" },
++    { "ISteamGameServer", 37, 4, 0, "HandleIncomingPacket" },
 +    { "ISteamGameServer", 7, 0, 0, "LogOff" },
 +    { "ISteamGameServer", 5, 1, 0, "LogOn" },
 +    { "ISteamGameServer", 6, 0, 0, "LogOnAnonymous" },
++    { "ISteamGameServer", 33, 4, 0, "RequestUserGroupStatus" },
++    { "ISteamGameServer", 24, 4, 0, "SendUserConnectAndAuthenticate" },
 +    { "ISteamGameServer", 26, 2, 0, "SendUserDisconnect" },
 +    { "ISteamGameServer", 13, 1, 0, "SetBotPlayerCount" },
 +    { "ISteamGameServer", 4, 1, 0, "SetDedicatedServer" },
@@ -768,15 +835,28 @@ index 00000000..0491d917
 +    { "ISteamGameServer", 17, 1, 0, "SetSpectatorPort" },
 +    { "ISteamGameServer", 18, 1, 0, "SetSpectatorServerName" },
 +    { "ISteamGameServer", 32, 3, 0, "UserHasLicenseForApp" },
++    { "ISteamGameServer", 11, 0, 0, "WasRestartRequested" },
++    { "ISteamGameServerStats", 8, 3, 0, "ClearUserAchievement" },
++    { "ISteamGameServerStats", 3, 4, 0, "GetUserAchievement" },
++    { "ISteamGameServerStats", 1, 4, 0, "GetUserStatFloat" },
++    { "ISteamGameServerStats", 2, 4, 0, "GetUserStatInt32" },
++    { "ISteamGameServerStats", 0, 2, 0, "RequestUserStats" },
++    { "ISteamGameServerStats", 7, 3, 0, "SetUserAchievement" },
++    { "ISteamGameServerStats", 4, 4, 0, "SetUserStatFloat" },
++    { "ISteamGameServerStats", 5, 4, 0, "SetUserStatInt32" },
++    { "ISteamGameServerStats", 9, 2, 0, "StoreUserStats" },
++    { "ISteamGameServerStats", 6, 3, 0, "UpdateUserAvgRateStat" },
 +    { "ISteamHTMLSurface", 11, 3, 0, "AddHeader" },
 +    { "ISteamHTMLSurface", 35, 2, 0, "AllowStartRequest" },
 +    { "ISteamHTMLSurface", 25, 1, 0, "CopyToClipboard" },
++    { "ISteamHTMLSurface", 3, 2, 0, "CreateBrowser" },
 +    { "ISteamHTMLSurface", 12, 2, 0, "ExecuteJavascript" },
 +    { "ISteamHTMLSurface", 37, 2, 0, "FileLoadDialogResponse" },
 +    { "ISteamHTMLSurface", 27, 4, 0, "Find" },
 +    { "ISteamHTMLSurface", 29, 3, 0, "GetLinkAtPosition" },
 +    { "ISteamHTMLSurface", 9, 1, 0, "GoBack" },
 +    { "ISteamHTMLSurface", 10, 1, 0, "GoForward" },
++    { "ISteamHTMLSurface", 1, 0, 0, "Init" },
 +    { "ISteamHTMLSurface", 36, 2, 0, "JSDialogResponse" },
 +    { "ISteamHTMLSurface", 20, 3, 0, "KeyChar" },
 +    { "ISteamHTMLSurface", 18, 4, 0, "KeyDown" },
@@ -799,21 +879,51 @@ index 00000000..0491d917
 +    { "ISteamHTMLSurface", 31, 4, 0, "SetPageScaleFactor" },
 +    { "ISteamHTMLSurface", 6, 3, 0, "SetSize" },
 +    { "ISteamHTMLSurface", 22, 2, 0, "SetVerticalScroll" },
++    { "ISteamHTMLSurface", 2, 0, 0, "Shutdown" },
 +    { "ISteamHTMLSurface", 28, 1, 0, "StopFind" },
 +    { "ISteamHTMLSurface", 7, 1, 0, "StopLoad" },
 +    { "ISteamHTMLSurface", 24, 1, 0, "ViewSource" },
 +    { "ISteamHTTP", 17, 1, 0, "CreateCookieContainer" },
 +    { "ISteamHTTP", 0, 2, 0, "CreateHTTPRequest" },
++    { "ISteamHTTP", 7, 1, 0, "DeferHTTPRequest" },
++    { "ISteamHTTP", 15, 2, 0, "GetHTTPDownloadProgressPct" },
++    { "ISteamHTTP", 24, 2, 0, "GetHTTPRequestWasTimedOut" },
++    { "ISteamHTTP", 12, 3, 0, "GetHTTPResponseBodyData" },
++    { "ISteamHTTP", 11, 2, 0, "GetHTTPResponseBodySize" },
++    { "ISteamHTTP", 9, 3, 0, "GetHTTPResponseHeaderSize" },
++    { "ISteamHTTP", 10, 4, 0, "GetHTTPResponseHeaderValue" },
++    { "ISteamHTTP", 13, 4, 0, "GetHTTPStreamingResponseBodyData" },
++    { "ISteamHTTP", 8, 1, 0, "PrioritizeHTTPRequest" },
++    { "ISteamHTTP", 18, 1, 0, "ReleaseCookieContainer" },
++    { "ISteamHTTP", 14, 1, 0, "ReleaseHTTPRequest" },
++    { "ISteamHTTP", 5, 2, 0, "SendHTTPRequest" },
++    { "ISteamHTTP", 6, 2, 0, "SendHTTPRequestAndStreamResponse" },
++    { "ISteamHTTP", 19, 4, 0, "SetCookie" },
++    { "ISteamHTTP", 23, 2, 0, "SetHTTPRequestAbsoluteTimeoutMS" },
++    { "ISteamHTTP", 1, 3, 0, "SetHTTPRequestContextValue" },
++    { "ISteamHTTP", 20, 2, 0, "SetHTTPRequestCookieContainer" },
++    { "ISteamHTTP", 4, 3, 0, "SetHTTPRequestGetOrPostParameter" },
++    { "ISteamHTTP", 3, 3, 0, "SetHTTPRequestHeaderValue" },
++    { "ISteamHTTP", 2, 2, 0, "SetHTTPRequestNetworkActivityTimeout" },
++    { "ISteamHTTP", 16, 4, 0, "SetHTTPRequestRawPostBody" },
++    { "ISteamHTTP", 22, 2, 0, "SetHTTPRequestRequiresVerifiedCertificate" },
++    { "ISteamHTTP", 21, 2, 0, "SetHTTPRequestUserAgentInfo" },
 +    { "ISteamInput", 5, 4, 0, "ActivateActionSet" },
 +    { "ISteamInput", 7, 4, 0, "ActivateActionSetLayer" },
 +    { "ISteamInput", 8, 4, 0, "DeactivateActionSetLayer" },
 +    { "ISteamInput", 9, 2, 0, "DeactivateAllActionSetLayers" },
 +    { "ISteamInput", 31, 3, 0, "GetActionOriginFromXboxOrigin" },
++    { "ISteamInput", 4, 1, 0, "GetActionSetHandle" },
 +    { "ISteamInput", 10, 3, 0, "GetActiveActionSetLayers" },
 +    { "ISteamInput", 15, 5, 13, "GetAnalogActionData" },
++    { "ISteamInput", 14, 1, 0, "GetAnalogActionHandle" },
 +    { "ISteamInput", 16, 7, 0, "GetAnalogActionOrigins" },
 +    { "ISteamInput", 3, 1, 0, "GetConnectedControllers" },
++    { "ISteamInput", 27, 1, 0, "GetControllerForGamepadIndex" },
++    { "ISteamInput", 6, 2, 0, "GetCurrentActionSet" },
++    { "ISteamInput", 33, 4, 0, "GetDeviceBindingRevision" },
 +    { "ISteamInput", 12, 5, 0, "GetDigitalActionData" },
++    { "ISteamInput", 11, 1, 0, "GetDigitalActionHandle" },
 +    { "ISteamInput", 13, 7, 0, "GetDigitalActionOrigins" },
 +    { "ISteamInput", 28, 2, 0, "GetGamepadIndexForController" },
 +    { "ISteamInput", 17, 1, 0, "GetGlyphForActionOrigin" },
@@ -823,18 +933,54 @@ index 00000000..0491d917
 +    { "ISteamInput", 34, 2, 0, "GetRemotePlaySessionID" },
 +    { "ISteamInput", 18, 1, 0, "GetStringForActionOrigin" },
 +    { "ISteamInput", 29, 1, 0, "GetStringForXboxOrigin" },
++    { "ISteamInput", 0, 0, 0, "Init" },
 +    { "ISteamInput", 2, 0, 0, "RunFrame" },
 +    { "ISteamInput", 22, 6, 0, "SetLEDColor" },
++    { "ISteamInput", 25, 2, 0, "ShowBindingPanel" },
++    { "ISteamInput", 1, 0, 0, "Shutdown" },
 +    { "ISteamInput", 19, 4, 0, "StopAnalogActionMomentum" },
 +    { "ISteamInput", 32, 2, 0, "TranslateActionOrigin" },
 +    { "ISteamInput", 23, 4, 0, "TriggerHapticPulse" },
 +    { "ISteamInput", 24, 7, 0, "TriggerRepeatedHapticPulse" },
 +    { "ISteamInput", 21, 4, 0, "TriggerVibration" },
++    { "ISteamInventory", 12, 2, 0, "AddPromoItem" },
++    { "ISteamInventory", 13, 3, 0, "AddPromoItems" },
++    { "ISteamInventory", 4, 3, 0, "CheckResultSteamID" },
++    { "ISteamInventory", 14, 4, 0, "ConsumeItem" },
++    { "ISteamInventory", 9, 4, 0, "DeserializeResult" },
 +    { "ISteamInventory", 5, 1, 0, "DestroyResult" },
++    { "ISteamInventory", 15, 7, 0, "ExchangeItems" },
++    { "ISteamInventory", 10, 4, 0, "GenerateItems" },
++    { "ISteamInventory", 6, 1, 0, "GetAllItems" },
++    { "ISteamInventory", 24, 4, 0, "GetEligiblePromoItemDefinitionIDs" },
++    { "ISteamInventory", 21, 2, 0, "GetItemDefinitionIDs" },
++    { "ISteamInventory", 22, 4, 0, "GetItemDefinitionProperty" },
++    { "ISteamInventory", 29, 3, 0, "GetItemPrice" },
++    { "ISteamInventory", 7, 3, 0, "GetItemsByID" },
++    { "ISteamInventory", 28, 4, 0, "GetItemsWithPrices" },
 +    { "ISteamInventory", 27, 0, 0, "GetNumItemsWithPrices" },
++    { "ISteamInventory", 2, 5, 0, "GetResultItemProperty" },
++    { "ISteamInventory", 1, 3, 0, "GetResultItems" },
 +    { "ISteamInventory", 0, 1, 0, "GetResultStatus" },
 +    { "ISteamInventory", 3, 1, 0, "GetResultTimestamp" },
++    { "ISteamInventory", 11, 1, 0, "GrantPromoItems" },
++    { "ISteamInventory", 37, 2, 0, "InspectItem" },
++    { "ISteamInventory", 20, 0, 0, "LoadItemDefinitions" },
++    { "ISteamInventory", 31, 5, 0, "RemoveProperty" },
++    { "ISteamInventory", 23, 2, 0, "RequestEligiblePromoItemDefinitionsIDs" },
++    { "ISteamInventory", 26, 0, 0, "RequestPrices" },
 +    { "ISteamInventory", 17, 0, 0, "SendItemDropHeartbeat" },
++    { "ISteamInventory", 8, 3, 0, "SerializeResult" },
++    { "ISteamInventory", 34, 6, 0, "SetPropertyBool" },
++    { "ISteamInventory", 32, 6, 0, "SetPropertyFloat" },
++    { "ISteamInventory", 33, 7, 0, "SetPropertyInt64" },
++    { "ISteamInventory", 35, 6, 0, "SetPropertyString" },
++    { "ISteamInventory", 25, 3, 0, "StartPurchase" },
++    { "ISteamInventory", 30, 0, 0, "StartUpdateProperties" },
++    { "ISteamInventory", 36, 3, 0, "SubmitUpdateProperties" },
++    { "ISteamInventory", 19, 9, 0, "TradeItems" },
++    { "ISteamInventory", 16, 6, 0, "TransferItemQuantity" },
++    { "ISteamInventory", 18, 2, 0, "TriggerItemDrop" },
 +    { "ISteamMatchmaking", 2, 6, 0, "AddFavoriteGame" },
 +    { "ISteamMatchmaking", 11, 2, 0, "AddRequestLobbyListCompatibleMembersFilter" },
 +    { "ISteamMatchmaking", 9, 1, 0, "AddRequestLobbyListDistanceFilter" },
@@ -843,19 +989,36 @@ index 00000000..0491d917
 +    { "ISteamMatchmaking", 6, 3, 0, "AddRequestLobbyListNumericalFilter" },
 +    { "ISteamMatchmaking", 10, 1, 0, "AddRequestLobbyListResultCountFilter" },
 +    { "ISteamMatchmaking", 5, 3, 0, "AddRequestLobbyListStringFilter" },
++    { "ISteamMatchmaking", 13, 2, 0, "CreateLobby" },
++    { "ISteamMatchmaking", 23, 3, 0, "DeleteLobbyData" },
++    { "ISteamMatchmaking", 1, 7, 0, "GetFavoriteGame" },
 +    { "ISteamMatchmaking", 0, 0, 0, "GetFavoriteGameCount" },
 +    { "ISteamMatchmaking", 12, 2, 8, "GetLobbyByIndex" },
 +    { "ISteamMatchmaking", 27, 7, 0, "GetLobbyChatEntry" },
 +    { "ISteamMatchmaking", 19, 3, 0, "GetLobbyData" },
++    { "ISteamMatchmaking", 22, 7, 0, "GetLobbyDataByIndex" },
 +    { "ISteamMatchmaking", 21, 2, 0, "GetLobbyDataCount" },
++    { "ISteamMatchmaking", 30, 5, 0, "GetLobbyGameServer" },
 +    { "ISteamMatchmaking", 18, 4, 0, "GetLobbyMemberByIndex" },
 +    { "ISteamMatchmaking", 24, 5, 0, "GetLobbyMemberData" },
 +    { "ISteamMatchmaking", 32, 2, 0, "GetLobbyMemberLimit" },
 +    { "ISteamMatchmaking", 35, 3, 0, "GetLobbyOwner" },
 +    { "ISteamMatchmaking", 17, 2, 0, "GetNumLobbyMembers" },
++    { "ISteamMatchmaking", 16, 4, 0, "InviteUserToLobby" },
++    { "ISteamMatchmaking", 14, 2, 0, "JoinLobby" },
 +    { "ISteamMatchmaking", 15, 2, 0, "LeaveLobby" },
++    { "ISteamMatchmaking", 3, 5, 0, "RemoveFavoriteGame" },
++    { "ISteamMatchmaking", 28, 2, 0, "RequestLobbyData" },
++    { "ISteamMatchmaking", 4, 0, 0, "RequestLobbyList" },
++    { "ISteamMatchmaking", 26, 4, 0, "SendLobbyChatMsg" },
++    { "ISteamMatchmaking", 37, 4, 0, "SetLinkedLobby" },
++    { "ISteamMatchmaking", 20, 4, 0, "SetLobbyData" },
 +    { "ISteamMatchmaking", 29, 6, 0, "SetLobbyGameServer" },
++    { "ISteamMatchmaking", 34, 3, 0, "SetLobbyJoinable" },
 +    { "ISteamMatchmaking", 25, 4, 0, "SetLobbyMemberData" },
++    { "ISteamMatchmaking", 31, 3, 0, "SetLobbyMemberLimit" },
++    { "ISteamMatchmaking", 36, 4, 0, "SetLobbyOwner" },
++    { "ISteamMatchmaking", 33, 3, 0, "SetLobbyType" },
 +    { "ISteamMatchmakingPingResponse", 1, 0, 0, "ServerFailedToRespond" },
 +    { "ISteamMatchmakingPingResponse", 0, 1, 0, "ServerResponded" },
 +    { "ISteamMatchmakingPlayersResponse", 0, 3, 0, "AddPlayerToList" },
@@ -871,6 +1034,7 @@ index 00000000..0491d917
 +    { "ISteamMatchmakingServers", 16, 1, 0, "CancelServerQuery" },
 +    { "ISteamMatchmakingServers", 11, 1, 0, "GetServerCount" },
 +    { "ISteamMatchmakingServers", 7, 2, 0, "GetServerDetails" },
++    { "ISteamMatchmakingServers", 10, 1, 0, "IsRefreshing" },
 +    { "ISteamMatchmakingServers", 13, 3, 0, "PingServer" },
 +    { "ISteamMatchmakingServers", 14, 3, 0, "PlayerDetails" },
 +    { "ISteamMatchmakingServers", 9, 1, 0, "RefreshQuery" },
@@ -883,19 +1047,76 @@ index 00000000..0491d917
 +    { "ISteamMatchmakingServers", 1, 2, 0, "RequestLANServerList" },
 +    { "ISteamMatchmakingServers", 5, 4, 0, "RequestSpectatorServerList" },
 +    { "ISteamMatchmakingServers", 15, 3, 0, "ServerRules" },
++    { "ISteamMusic", 0, 0, 0, "BIsEnabled" },
++    { "ISteamMusic", 1, 0, 0, "BIsPlaying" },
 +    { "ISteamMusic", 2, 0, 0, "GetPlaybackStatus" },
++    { "ISteamMusic", 8, 0, 0, "GetVolume" },
 +    { "ISteamMusic", 4, 0, 0, "Pause" },
 +    { "ISteamMusic", 3, 0, 0, "Play" },
 +    { "ISteamMusic", 6, 0, 0, "PlayNext" },
 +    { "ISteamMusic", 5, 0, 0, "PlayPrevious" },
 +    { "ISteamMusic", 7, 1, 0, "SetVolume" },
++    { "ISteamMusicRemote", 3, 1, 0, "BActivationSuccess" },
++    { "ISteamMusicRemote", 2, 0, 0, "BIsCurrentMusicRemote" },
++    { "ISteamMusicRemote", 21, 0, 0, "CurrentEntryDidChange" },
++    { "ISteamMusicRemote", 17, 1, 0, "CurrentEntryIsAvailable" },
++    { "ISteamMusicRemote", 16, 0, 0, "CurrentEntryWillChange" },
++    { "ISteamMusicRemote", 1, 0, 0, "DeregisterSteamMusicRemote" },
++    { "ISteamMusicRemote", 9, 1, 0, "EnableLooped" },
++    { "ISteamMusicRemote", 7, 1, 0, "EnablePlayNext" },
++    { "ISteamMusicRemote", 6, 1, 0, "EnablePlayPrevious" },
++    { "ISteamMusicRemote", 11, 1, 0, "EnablePlaylists" },
++    { "ISteamMusicRemote", 10, 1, 0, "EnableQueue" },
++    { "ISteamMusicRemote", 8, 1, 0, "EnableShuffled" },
++    { "ISteamMusicRemote", 31, 0, 0, "PlaylistDidChange" },
++    { "ISteamMusicRemote", 27, 0, 0, "PlaylistWillChange" },
++    { "ISteamMusicRemote", 26, 0, 0, "QueueDidChange" },
++    { "ISteamMusicRemote", 22, 0, 0, "QueueWillChange" },
++    { "ISteamMusicRemote", 0, 1, 0, "RegisterSteamMusicRemote" },
++    { "ISteamMusicRemote", 28, 0, 0, "ResetPlaylistEntries" },
++    { "ISteamMusicRemote", 23, 0, 0, "ResetQueueEntries" },
++    { "ISteamMusicRemote", 30, 1, 0, "SetCurrentPlaylistEntry" },
++    { "ISteamMusicRemote", 25, 1, 0, "SetCurrentQueueEntry" },
++    { "ISteamMusicRemote", 4, 1, 0, "SetDisplayName" },
++    { "ISteamMusicRemote", 5, 2, 0, "SetPNGIcon_64x64" },
++    { "ISteamMusicRemote", 29, 3, 0, "SetPlaylistEntry" },
++    { "ISteamMusicRemote", 24, 3, 0, "SetQueueEntry" },
++    { "ISteamMusicRemote", 20, 2, 0, "UpdateCurrentEntryCoverArt" },
++    { "ISteamMusicRemote", 19, 1, 0, "UpdateCurrentEntryElapsedSeconds" },
++    { "ISteamMusicRemote", 18, 1, 0, "UpdateCurrentEntryText" },
++    { "ISteamMusicRemote", 14, 1, 0, "UpdateLooped" },
++    { "ISteamMusicRemote", 12, 1, 0, "UpdatePlaybackStatus" },
++    { "ISteamMusicRemote", 13, 1, 0, "UpdateShuffled" },
++    { "ISteamMusicRemote", 15, 1, 0, "UpdateVolume" },
++    { "ISteamNetworking", 3, 2, 0, "AcceptP2PSessionWithUser" },
++    { "ISteamNetworking", 7, 1, 0, "AllowP2PPacketRelay" },
++    { "ISteamNetworking", 5, 3, 0, "CloseP2PChannelWithUser" },
++    { "ISteamNetworking", 4, 2, 0, "CloseP2PSessionWithUser" },
 +    { "ISteamNetworking", 9, 5, 0, "CreateP2PConnectionSocket" },
++    { "ISteamNetworking", 12, 2, 0, "DestroyListenSocket" },
++    { "ISteamNetworking", 11, 2, 0, "DestroySocket" },
++    { "ISteamNetworking", 19, 3, 0, "GetListenSocketInfo" },
 +    { "ISteamNetworking", 21, 1, 0, "GetMaxPacketSize" },
++    { "ISteamNetworking", 6, 3, 0, "GetP2PSessionState" },
 +    { "ISteamNetworking", 20, 1, 0, "GetSocketConnectionType" },
++    { "ISteamNetworking", 18, 5, 0, "GetSocketInfo" },
++    { "ISteamNetworking", 16, 3, 0, "IsDataAvailable" },
++    { "ISteamNetworking", 14, 2, 0, "IsDataAvailableOnSocket" },
++    { "ISteamNetworking", 1, 2, 0, "IsP2PPacketAvailable" },
++    { "ISteamNetworking", 2, 5, 0, "ReadP2PPacket" },
++    { "ISteamNetworking", 17, 5, 0, "RetrieveData" },
++    { "ISteamNetworking", 15, 4, 0, "RetrieveDataFromSocket" },
++    { "ISteamNetworking", 13, 4, 0, "SendDataOnSocket" },
++    { "ISteamNetworking", 0, 6, 0, "SendP2PPacket" },
++    { "ISteamNetworkingMessages", 2, 1, 0, "AcceptSessionWithUser" },
++    { "ISteamNetworkingMessages", 4, 2, 0, "CloseChannelWithUser" },
++    { "ISteamNetworkingMessages", 3, 1, 0, "CloseSessionWithUser" },
 +    { "ISteamNetworkingMessages", 5, 3, 0, "GetSessionConnectionInfo" },
 +    { "ISteamNetworkingMessages", 1, 3, 0, "ReceiveMessagesOnChannel" },
 +    { "ISteamNetworkingMessages", 0, 5, 0, "SendMessageToUser" },
 +    { "ISteamNetworkingSockets", 4, 1, 0, "AcceptConnection" },
++    { "ISteamNetworkingSockets", 5, 4, 0, "CloseConnection" },
++    { "ISteamNetworkingSockets", 6, 1, 0, "CloseListenSocket" },
 +    { "ISteamNetworkingSockets", 1, 3, 0, "ConnectByIPAddress" },
 +    { "ISteamNetworkingSockets", 3, 4, 0, "ConnectP2P" },
 +    { "ISteamNetworkingSockets", 35, 5, 0, "ConnectP2PCustomSignaling" },
@@ -904,89 +1125,292 @@ index 00000000..0491d917
 +    { "ISteamNetworkingSockets", 0, 3, 0, "CreateListenSocketIP" },
 +    { "ISteamNetworkingSockets", 2, 3, 0, "CreateListenSocketP2P" },
 +    { "ISteamNetworkingSockets", 23, 0, 0, "CreatePollGroup" },
++    { "ISteamNetworkingSockets", 19, 5, 0, "CreateSocketPair" },
++    { "ISteamNetworkingSockets", 24, 1, 0, "DestroyPollGroup" },
 +    { "ISteamNetworkingSockets", 28, 3, 0, "FindRelayAuthTicketForServer" },
 +    { "ISteamNetworkingSockets", 13, 1, 0, "FlushMessagesOnConnection" },
 +    { "ISteamNetworkingSockets", 22, 1, 0, "GetAuthenticationStatus" },
++    { "ISteamNetworkingSockets", 37, 3, 0, "GetCertificateRequest" },
++    { "ISteamNetworkingSockets", 15, 2, 0, "GetConnectionInfo" },
++    { "ISteamNetworkingSockets", 10, 3, 0, "GetConnectionName" },
++    { "ISteamNetworkingSockets", 8, 1, 0, "GetConnectionUserData" },
 +    { "ISteamNetworkingSockets", 17, 3, 0, "GetDetailedConnectionStatus" },
 +    { "ISteamNetworkingSockets", 34, 3, 0, "GetGameCoordinatorServerLogin" },
 +    { "ISteamNetworkingSockets", 32, 1, 0, "GetHostedDedicatedServerAddress" },
 +    { "ISteamNetworkingSockets", 31, 0, 0, "GetHostedDedicatedServerPOPID" },
 +    { "ISteamNetworkingSockets", 30, 0, 0, "GetHostedDedicatedServerPort" },
++    { "ISteamNetworkingSockets", 20, 1, 0, "GetIdentity" },
++    { "ISteamNetworkingSockets", 18, 2, 0, "GetListenSocketAddress" },
++    { "ISteamNetworkingSockets", 16, 2, 0, "GetQuickConnectionStatus" },
 +    { "ISteamNetworkingSockets", 21, 0, 0, "InitAuthentication" },
 +    { "ISteamNetworkingSockets", 14, 3, 0, "ReceiveMessagesOnConnection" },
 +    { "ISteamNetworkingSockets", 26, 3, 0, "ReceiveMessagesOnPollGroup" },
++    { "ISteamNetworkingSockets", 36, 3, 0, "ReceivedP2PCustomSignal" },
++    { "ISteamNetworkingSockets", 27, 3, 0, "ReceivedRelayAuthTicket" },
 +    { "ISteamNetworkingSockets", 39, 0, 0, "RunCallbacks" },
 +    { "ISteamNetworkingSockets", 11, 5, 0, "SendMessageToConnection" },
 +    { "ISteamNetworkingSockets", 12, 3, 0, "SendMessages" },
++    { "ISteamNetworkingSockets", 38, 3, 0, "SetCertificate" },
 +    { "ISteamNetworkingSockets", 9, 2, 0, "SetConnectionName" },
++    { "ISteamNetworkingSockets", 25, 2, 0, "SetConnectionPollGroup" },
++    { "ISteamNetworkingSockets", 7, 3, 0, "SetConnectionUserData" },
 +    { "ISteamNetworkingUtils", 0, 1, 0, "AllocateMessage" },
++    { "ISteamNetworkingUtils", 7, 1, 0, "CheckPingDataUpToDate" },
 +    { "ISteamNetworkingUtils", 5, 3, 0, "ConvertPingLocationToString" },
 +    { "ISteamNetworkingUtils", 3, 2, 0, "EstimatePingTimeBetweenTwoLocations" },
 +    { "ISteamNetworkingUtils", 4, 1, 0, "EstimatePingTimeFromLocalHost" },
 +    { "ISteamNetworkingUtils", 15, 6, 0, "GetConfigValue" },
++    { "ISteamNetworkingUtils", 16, 5, 0, "GetConfigValueInfo" },
 +    { "ISteamNetworkingUtils", 9, 1, 0, "GetDirectPingToPOP" },
 +    { "ISteamNetworkingUtils", 17, 0, 0, "GetFirstConfigValue" },
++    { "ISteamNetworkingUtils", 2, 1, 0, "GetLocalPingLocation" },
++    { "ISteamNetworkingUtils", 12, 0, 0, "GetLocalTimestamp" },
 +    { "ISteamNetworkingUtils", 10, 0, 0, "GetPOPCount" },
 +    { "ISteamNetworkingUtils", 11, 2, 0, "GetPOPList" },
 +    { "ISteamNetworkingUtils", 8, 2, 0, "GetPingToDataCenter" },
 +    { "ISteamNetworkingUtils", 1, 1, 0, "GetRelayNetworkStatus" },
 +    { "ISteamNetworkingUtils", 7, 1, 0, "InitRelayNetworkAccess" },
++    { "ISteamNetworkingUtils", 6, 2, 0, "ParsePingLocationString" },
++    { "ISteamNetworkingUtils", 14, 5, 0, "SetConfigValue" },
++    { "ISteamNetworkingUtils", 14, 4, 0, "SetConfigValueStruct" },
++    { "ISteamNetworkingUtils", 14, 5, 0, "SetConnectionConfigValueFloat" },
++    { "ISteamNetworkingUtils", 14, 5, 0, "SetConnectionConfigValueInt32" },
++    { "ISteamNetworkingUtils", 14, 5, 0, "SetConnectionConfigValueString" },
 +    { "ISteamNetworkingUtils", 13, 2, 0, "SetDebugOutputFunction" },
++    { "ISteamNetworkingUtils", 14, 5, 0, "SetGlobalCallback_MessagesSessionFailed" },
++    { "ISteamNetworkingUtils", 14, 5, 0, "SetGlobalCallback_MessagesSessionRequest" },
++    { "ISteamNetworkingUtils", 14, 5, 0, "SetGlobalCallback_SteamNetAuthenticationStatusChanged" },
++    { "ISteamNetworkingUtils", 14, 5, 0, "SetGlobalCallback_SteamNetConnectionStatusChanged" },
++    { "ISteamNetworkingUtils", 14, 5, 0, "SetGlobalCallback_SteamRelayNetworkStatusChanged" },
++    { "ISteamNetworkingUtils", 14, 5, 0, "SetGlobalConfigValueFloat" },
++    { "ISteamNetworkingUtils", 14, 5, 0, "SetGlobalConfigValueInt32" },
++    { "ISteamNetworkingUtils", 14, 5, 0, "SetGlobalConfigValuePtr" },
++    { "ISteamNetworkingUtils", 14, 5, 0, "SetGlobalConfigValueString" },
++    { "ISteamNetworkingUtils", 19, 2, 0, "SteamNetworkingIPAddr_ParseString" },
 +    { "ISteamNetworkingUtils", 18, 4, 0, "SteamNetworkingIPAddr_ToString" },
++    { "ISteamNetworkingUtils", 21, 2, 0, "SteamNetworkingIdentity_ParseString" },
 +    { "ISteamNetworkingUtils", 20, 3, 0, "SteamNetworkingIdentity_ToString" },
++    { "ISteamParentalSettings", 2, 1, 0, "BIsAppBlocked" },
++    { "ISteamParentalSettings", 3, 1, 0, "BIsAppInBlockList" },
++    { "ISteamParentalSettings", 4, 1, 0, "BIsFeatureBlocked" },
++    { "ISteamParentalSettings", 5, 1, 0, "BIsFeatureInBlockList" },
++    { "ISteamParentalSettings", 0, 0, 0, "BIsParentalLockEnabled" },
++    { "ISteamParentalSettings", 1, 0, 0, "BIsParentalLockLocked" },
 +    { "ISteamParties", 8, 4, 0, "CancelReservation" },
++    { "ISteamParties", 9, 3, 0, "ChangeNumOpenSlots" },
++    { "ISteamParties", 6, 4, 0, "CreateBeacon" },
++    { "ISteamParties", 10, 2, 0, "DestroyBeacon" },
++    { "ISteamParties", 5, 2, 0, "GetAvailableBeaconLocations" },
++    { "ISteamParties", 1, 1, 0, "GetBeaconByIndex" },
++    { "ISteamParties", 2, 6, 0, "GetBeaconDetails" },
 +    { "ISteamParties", 0, 0, 0, "GetNumActiveBeacons" },
++    { "ISteamParties", 4, 1, 0, "GetNumAvailableBeaconLocations" },
++    { "ISteamParties", 3, 2, 0, "JoinParty" },
 +    { "ISteamParties", 7, 4, 0, "OnReservationCompleted" },
++    { "ISteamRemotePlay", 5, 3, 0, "BGetSessionClientResolution" },
++    { "ISteamRemotePlay", 6, 2, 0, "BSendRemotePlayTogetherInvite" },
 +    { "ISteamRemotePlay", 4, 1, 0, "GetSessionClientFormFactor" },
 +    { "ISteamRemotePlay", 3, 1, 0, "GetSessionClientName" },
 +    { "ISteamRemotePlay", 0, 0, 0, "GetSessionCount" },
 +    { "ISteamRemotePlay", 1, 1, 0, "GetSessionID" },
 +    { "ISteamRemotePlay", 2, 2, 8, "GetSessionSteamID" },
++    { "ISteamRemoteStorage", 38, 2, 0, "CommitPublishedFileUpdate" },
++    { "ISteamRemoteStorage", 31, 2, 0, "CreatePublishedFileUpdateRequest" },
++    { "ISteamRemoteStorage", 40, 2, 0, "DeletePublishedFile" },
++    { "ISteamRemoteStorage", 52, 2, 0, "EnumeratePublishedFilesByUserAction" },
++    { "ISteamRemoteStorage", 53, 6, 0, "EnumeratePublishedWorkshopFiles" },
++    { "ISteamRemoteStorage", 41, 1, 0, "EnumerateUserPublishedFiles" },
++    { "ISteamRemoteStorage", 49, 5, 0, "EnumerateUserSharedWorkshopFiles" },
++    { "ISteamRemoteStorage", 43, 1, 0, "EnumerateUserSubscribedFiles" },
++    { "ISteamRemoteStorage", 6, 1, 0, "FileDelete" },
++    { "ISteamRemoteStorage", 13, 1, 0, "FileExists" },
++    { "ISteamRemoteStorage", 5, 1, 0, "FileForget" },
++    { "ISteamRemoteStorage", 14, 1, 0, "FilePersisted" },
 +    { "ISteamRemoteStorage", 1, 3, 0, "FileRead" },
++    { "ISteamRemoteStorage", 3, 3, 0, "FileReadAsync" },
++    { "ISteamRemoteStorage", 4, 4, 0, "FileReadAsyncComplete" },
++    { "ISteamRemoteStorage", 7, 1, 0, "FileShare" },
++    { "ISteamRemoteStorage", 0, 3, 0, "FileWrite" },
++    { "ISteamRemoteStorage", 2, 3, 0, "FileWriteAsync" },
++    { "ISteamRemoteStorage", 12, 2, 0, "FileWriteStreamCancel" },
++    { "ISteamRemoteStorage", 11, 2, 0, "FileWriteStreamClose" },
++    { "ISteamRemoteStorage", 9, 1, 0, "FileWriteStreamOpen" },
++    { "ISteamRemoteStorage", 10, 4, 0, "FileWriteStreamWriteChunk" },
 +    { "ISteamRemoteStorage", 28, 0, 0, "GetCachedUGCCount" },
++    { "ISteamRemoteStorage", 29, 1, 0, "GetCachedUGCHandle" },
 +    { "ISteamRemoteStorage", 18, 0, 0, "GetFileCount" },
 +    { "ISteamRemoteStorage", 19, 2, 0, "GetFileNameAndSize" },
 +    { "ISteamRemoteStorage", 15, 1, 0, "GetFileSize" },
++    { "ISteamRemoteStorage", 16, 1, 0, "GetFileTimestamp" },
++    { "ISteamRemoteStorage", 39, 3, 0, "GetPublishedFileDetails" },
++    { "ISteamRemoteStorage", 46, 2, 0, "GetPublishedItemVoteDetails" },
++    { "ISteamRemoteStorage", 20, 2, 0, "GetQuota" },
 +    { "ISteamRemoteStorage", 17, 1, 0, "GetSyncPlatforms" },
++    { "ISteamRemoteStorage", 26, 6, 0, "GetUGCDetails" },
++    { "ISteamRemoteStorage", 25, 4, 0, "GetUGCDownloadProgress" },
++    { "ISteamRemoteStorage", 48, 2, 0, "GetUserPublishedItemVoteDetails" },
++    { "ISteamRemoteStorage", 21, 0, 0, "IsCloudEnabledForAccount" },
++    { "ISteamRemoteStorage", 22, 0, 0, "IsCloudEnabledForApp" },
++    { "ISteamRemoteStorage", 50, 9, 0, "PublishVideo" },
++    { "ISteamRemoteStorage", 30, 8, 0, "PublishWorkshopFile" },
 +    { "ISteamRemoteStorage", 23, 1, 0, "SetCloudEnabledForApp" },
++    { "ISteamRemoteStorage", 8, 2, 0, "SetSyncPlatforms" },
++    { "ISteamRemoteStorage", 51, 3, 0, "SetUserPublishedFileAction" },
++    { "ISteamRemoteStorage", 42, 2, 0, "SubscribePublishedFile" },
++    { "ISteamRemoteStorage", 24, 3, 0, "UGCDownload" },
++    { "ISteamRemoteStorage", 54, 4, 0, "UGCDownloadToLocation" },
 +    { "ISteamRemoteStorage", 27, 6, 0, "UGCRead" },
++    { "ISteamRemoteStorage", 44, 2, 0, "UnsubscribePublishedFile" },
++    { "ISteamRemoteStorage", 35, 3, 0, "UpdatePublishedFileDescription" },
++    { "ISteamRemoteStorage", 32, 3, 0, "UpdatePublishedFileFile" },
++    { "ISteamRemoteStorage", 33, 3, 0, "UpdatePublishedFilePreviewFile" },
++    { "ISteamRemoteStorage", 45, 3, 0, "UpdatePublishedFileSetChangeDescription" },
++    { "ISteamRemoteStorage", 37, 3, 0, "UpdatePublishedFileTags" },
++    { "ISteamRemoteStorage", 34, 3, 0, "UpdatePublishedFileTitle" },
++    { "ISteamRemoteStorage", 36, 3, 0, "UpdatePublishedFileVisibility" },
++    { "ISteamRemoteStorage", 47, 3, 0, "UpdateUserPublishedItemVote" },
 +    { "ISteamScreenshots", 1, 4, 0, "AddScreenshotToLibrary" },
 +    { "ISteamScreenshots", 8, 3, 0, "AddVRScreenshotToLibrary" },
 +    { "ISteamScreenshots", 3, 1, 0, "HookScreenshots" },
++    { "ISteamScreenshots", 7, 0, 0, "IsScreenshotsHooked" },
++    { "ISteamScreenshots", 4, 2, 0, "SetLocation" },
++    { "ISteamScreenshots", 6, 3, 0, "TagPublishedFile" },
++    { "ISteamScreenshots", 5, 3, 0, "TagUser" },
 +    { "ISteamScreenshots", 2, 0, 0, "TriggerScreenshot" },
 +    { "ISteamScreenshots", 0, 4, 0, "WriteScreenshot" },
++    { "ISteamUGC", 78, 3, 0, "AddAppDependency" },
++    { "ISteamUGC", 76, 4, 0, "AddDependency" },
++    { "ISteamUGC", 21, 3, 0, "AddExcludedTag" },
++    { "ISteamUGC", 51, 4, 0, "AddItemKeyValueTag" },
++    { "ISteamUGC", 52, 4, 0, "AddItemPreviewFile" },
++    { "ISteamUGC", 53, 3, 0, "AddItemPreviewVideo" },
++    { "ISteamUGC", 61, 3, 0, "AddItemToFavorites" },
++    { "ISteamUGC", 36, 4, 0, "AddRequiredKeyValueTag" },
++    { "ISteamUGC", 19, 3, 0, "AddRequiredTag" },
++    { "ISteamUGC", 20, 3, 0, "AddRequiredTagGroup" },
++    { "ISteamUGC", 71, 2, 0, "BInitWorkshopForGameServer" },
++    { "ISteamUGC", 38, 2, 0, "CreateItem" },
++    { "ISteamUGC", 1, 5, 0, "CreateQueryAllUGCRequestCursor" },
++    { "ISteamUGC", 2, 5, 0, "CreateQueryAllUGCRequestPage" },
++    { "ISteamUGC", 3, 2, 0, "CreateQueryUGCDetailsRequest" },
++    { "ISteamUGC", 0, 7, 0, "CreateQueryUserUGCRequest" },
++    { "ISteamUGC", 81, 2, 0, "DeleteItem" },
++    { "ISteamUGC", 70, 3, 0, "DownloadItem" },
++    { "ISteamUGC", 80, 2, 0, "GetAppDependencies" },
++    { "ISteamUGC", 69, 4, 0, "GetItemDownloadInfo" },
++    { "ISteamUGC", 68, 6, 0, "GetItemInstallInfo" },
 +    { "ISteamUGC", 67, 2, 0, "GetItemState" },
 +    { "ISteamUGC", 58, 4, 0, "GetItemUpdateProgress" },
 +    { "ISteamUGC", 65, 0, 0, "GetNumSubscribedItems" },
++    { "ISteamUGC", 16, 6, 0, "GetQueryFirstUGCKeyValueTag" },
++    { "ISteamUGC", 14, 9, 0, "GetQueryUGCAdditionalPreview" },
++    { "ISteamUGC", 11, 5, 0, "GetQueryUGCChildren" },
++    { "ISteamUGC", 17, 8, 0, "GetQueryUGCKeyValueTag" },
++    { "ISteamUGC", 10, 5, 0, "GetQueryUGCMetadata" },
 +    { "ISteamUGC", 13, 3, 0, "GetQueryUGCNumAdditionalPreviews" },
 +    { "ISteamUGC", 15, 3, 0, "GetQueryUGCNumKeyValueTags" },
 +    { "ISteamUGC", 6, 3, 0, "GetQueryUGCNumTags" },
++    { "ISteamUGC", 9, 5, 0, "GetQueryUGCPreviewURL" },
++    { "ISteamUGC", 5, 4, 0, "GetQueryUGCResult" },
++    { "ISteamUGC", 12, 5, 0, "GetQueryUGCStatistic" },
++    { "ISteamUGC", 7, 6, 0, "GetQueryUGCTag" },
++    { "ISteamUGC", 8, 6, 0, "GetQueryUGCTagDisplayName" },
 +    { "ISteamUGC", 66, 2, 0, "GetSubscribedItems" },
++    { "ISteamUGC", 60, 2, 0, "GetUserItemVote" },
++    { "ISteamUGC", 18, 2, 0, "ReleaseQueryUGCRequest" },
++    { "ISteamUGC", 49, 2, 0, "RemoveAllItemKeyValueTags" },
++    { "ISteamUGC", 79, 3, 0, "RemoveAppDependency" },
++    { "ISteamUGC", 77, 4, 0, "RemoveDependency" },
++    { "ISteamUGC", 62, 3, 0, "RemoveItemFromFavorites" },
++    { "ISteamUGC", 50, 3, 0, "RemoveItemKeyValueTags" },
++    { "ISteamUGC", 56, 3, 0, "RemoveItemPreview" },
++    { "ISteamUGC", 37, 3, 0, "RequestUGCDetails" },
++    { "ISteamUGC", 4, 2, 0, "SendQueryUGCRequest" },
++    { "ISteamUGC", 31, 3, 0, "SetAllowCachedResponse" },
++    { "ISteamUGC", 48, 3, 0, "SetAllowLegacyUpload" },
++    { "ISteamUGC", 32, 3, 0, "SetCloudFileNameFilter" },
++    { "ISteamUGC", 46, 3, 0, "SetItemContent" },
++    { "ISteamUGC", 41, 3, 0, "SetItemDescription" },
++    { "ISteamUGC", 43, 3, 0, "SetItemMetadata" },
++    { "ISteamUGC", 47, 3, 0, "SetItemPreview" },
++    { "ISteamUGC", 45, 3, 0, "SetItemTags" },
++    { "ISteamUGC", 40, 3, 0, "SetItemTitle" },
++    { "ISteamUGC", 42, 3, 0, "SetItemUpdateLanguage" },
++    { "ISteamUGC", 44, 3, 0, "SetItemVisibility" },
++    { "ISteamUGC", 30, 3, 0, "SetLanguage" },
++    { "ISteamUGC", 33, 3, 0, "SetMatchAnyTag" },
++    { "ISteamUGC", 35, 3, 0, "SetRankedByTrendDays" },
++    { "ISteamUGC", 27, 3, 0, "SetReturnAdditionalPreviews" },
++    { "ISteamUGC", 26, 3, 0, "SetReturnChildren" },
++    { "ISteamUGC", 23, 3, 0, "SetReturnKeyValueTags" },
++    { "ISteamUGC", 24, 3, 0, "SetReturnLongDescription" },
++    { "ISteamUGC", 25, 3, 0, "SetReturnMetadata" },
++    { "ISteamUGC", 22, 3, 0, "SetReturnOnlyIDs" },
++    { "ISteamUGC", 29, 3, 0, "SetReturnPlaytimeStats" },
++    { "ISteamUGC", 28, 3, 0, "SetReturnTotalOnly" },
++    { "ISteamUGC", 34, 3, 0, "SetSearchText" },
++    { "ISteamUGC", 59, 3, 0, "SetUserItemVote" },
++    { "ISteamUGC", 39, 3, 0, "StartItemUpdate" },
++    { "ISteamUGC", 73, 2, 0, "StartPlaytimeTracking" },
++    { "ISteamUGC", 74, 2, 0, "StopPlaytimeTracking" },
++    { "ISteamUGC", 75, 0, 0, "StopPlaytimeTrackingForAllItems" },
++    { "ISteamUGC", 57, 3, 0, "SubmitItemUpdate" },
++    { "ISteamUGC", 63, 2, 0, "SubscribeItem" },
 +    { "ISteamUGC", 72, 1, 0, "SuspendDownloads" },
++    { "ISteamUGC", 64, 2, 0, "UnsubscribeItem" },
++    { "ISteamUGC", 54, 4, 0, "UpdateItemPreviewFile" },
++    { "ISteamUGC", 55, 4, 0, "UpdateItemPreviewVideo" },
 +    { "ISteamUser", 19, 4, 0, "AdvertiseGame" },
++    { "ISteamUser", 18, 0, 0, "BIsBehindNAT" },
++    { "ISteamUser", 27, 0, 0, "BIsPhoneIdentifying" },
++    { "ISteamUser", 28, 0, 0, "BIsPhoneRequiringVerification" },
++    { "ISteamUser", 25, 0, 0, "BIsPhoneVerified" },
++    { "ISteamUser", 26, 0, 0, "BIsTwoFactorEnabled" },
++    { "ISteamUser", 1, 0, 0, "BLoggedOn" },
++    { "ISteamUser", 31, 1, 0, "BSetDurationControlOnlineState" },
 +    { "ISteamUser", 14, 4, 0, "BeginAuthSession" },
 +    { "ISteamUser", 16, 1, 0, "CancelAuthTicket" },
 +    { "ISteamUser", 11, 6, 0, "DecompressVoice" },
 +    { "ISteamUser", 15, 2, 0, "EndAuthSession" },
 +    { "ISteamUser", 13, 3, 0, "GetAuthSessionTicket" },
 +    { "ISteamUser", 9, 3, 0, "GetAvailableVoice" },
++    { "ISteamUser", 30, 0, 0, "GetDurationControl" },
++    { "ISteamUser", 21, 3, 0, "GetEncryptedAppTicket" },
 +    { "ISteamUser", 22, 2, 0, "GetGameBadgeLevel" },
 +    { "ISteamUser", 0, 0, 0, "GetHSteamUser" },
++    { "ISteamUser", 29, 0, 0, "GetMarketEligibility" },
 +    { "ISteamUser", 23, 0, 0, "GetPlayerSteamLevel" },
 +    { "ISteamUser", 2, 1, 8, "GetSteamID" },
++    { "ISteamUser", 6, 2, 0, "GetUserDataFolder" },
 +    { "ISteamUser", 10, 9, 0, "GetVoice" },
 +    { "ISteamUser", 12, 0, 0, "GetVoiceOptimalSampleRate" },
 +    { "ISteamUser", 3, 7, 0, "InitiateGameConnection" },
++    { "ISteamUser", 20, 2, 0, "RequestEncryptedAppTicket" },
++    { "ISteamUser", 24, 1, 0, "RequestStoreAuthURL" },
 +    { "ISteamUser", 7, 0, 0, "StartVoiceRecording" },
 +    { "ISteamUser", 8, 0, 0, "StopVoiceRecording" },
 +    { "ISteamUser", 4, 2, 0, "TerminateGameConnection" },
 +    { "ISteamUser", 5, 2, 0, "TrackAppUsageEvent" },
 +    { "ISteamUser", 17, 3, 0, "UserHasLicenseForApp" },
++    { "ISteamUserStats", 32, 4, 0, "AttachLeaderboardUGC" },
++    { "ISteamUserStats", 8, 1, 0, "ClearAchievement" },
++    { "ISteamUserStats", 28, 5, 0, "DownloadLeaderboardEntries" },
++    { "ISteamUserStats", 29, 4, 0, "DownloadLeaderboardEntriesForUsers" },
++    { "ISteamUserStats", 23, 1, 0, "FindLeaderboard" },
++    { "ISteamUserStats", 22, 3, 0, "FindOrCreateLeaderboard" },
++    { "ISteamUserStats", 6, 2, 0, "GetAchievement" },
++    { "ISteamUserStats", 37, 2, 0, "GetAchievementAchievedPercent" },
++    { "ISteamUserStats", 9, 3, 0, "GetAchievementAndUnlockTime" },
 +    { "ISteamUserStats", 12, 2, 0, "GetAchievementDisplayAttribute" },
 +    { "ISteamUserStats", 11, 1, 0, "GetAchievementIcon" },
 +    { "ISteamUserStats", 15, 1, 0, "GetAchievementName" },
++    { "ISteamUserStats", 43, 3, 0, "GetAchievementProgressLimitsFloat" },
++    { "ISteamUserStats", 44, 3, 0, "GetAchievementProgressLimitsInt32" },
++    { "ISteamUserStats", 30, 6, 0, "GetDownloadedLeaderboardEntry" },
++    { "ISteamUserStats", 39, 2, 0, "GetGlobalStatDouble" },
 +    { "ISteamUserStats", 41, 3, 0, "GetGlobalStatHistoryDouble" },
 +    { "ISteamUserStats", 42, 3, 0, "GetGlobalStatHistoryInt64" },
++    { "ISteamUserStats", 40, 2, 0, "GetGlobalStatInt64" },
 +    { "ISteamUserStats", 27, 2, 0, "GetLeaderboardDisplayType" },
 +    { "ISteamUserStats", 25, 2, 0, "GetLeaderboardEntryCount" },
 +    { "ISteamUserStats", 24, 2, 0, "GetLeaderboardName" },
@@ -994,36 +1418,72 @@ index 00000000..0491d917
 +    { "ISteamUserStats", 35, 4, 0, "GetMostAchievedAchievementInfo" },
 +    { "ISteamUserStats", 36, 5, 0, "GetNextMostAchievedAchievementInfo" },
 +    { "ISteamUserStats", 14, 0, 0, "GetNumAchievements" },
++    { "ISteamUserStats", 33, 0, 0, "GetNumberOfCurrentPlayers" },
++    { "ISteamUserStats", 1, 2, 0, "GetStatFloat" },
++    { "ISteamUserStats", 2, 2, 0, "GetStatInt32" },
++    { "ISteamUserStats", 19, 4, 0, "GetUserAchievement" },
++    { "ISteamUserStats", 20, 5, 0, "GetUserAchievementAndUnlockTime" },
++    { "ISteamUserStats", 17, 4, 0, "GetUserStatFloat" },
++    { "ISteamUserStats", 18, 4, 0, "GetUserStatInt32" },
++    { "ISteamUserStats", 13, 3, 0, "IndicateAchievementProgress" },
++    { "ISteamUserStats", 0, 0, 0, "RequestCurrentStats" },
++    { "ISteamUserStats", 34, 0, 0, "RequestGlobalAchievementPercentages" },
++    { "ISteamUserStats", 38, 1, 0, "RequestGlobalStats" },
++    { "ISteamUserStats", 16, 2, 0, "RequestUserStats" },
++    { "ISteamUserStats", 21, 1, 0, "ResetAllStats" },
++    { "ISteamUserStats", 7, 1, 0, "SetAchievement" },
++    { "ISteamUserStats", 3, 2, 0, "SetStatFloat" },
++    { "ISteamUserStats", 4, 2, 0, "SetStatInt32" },
++    { "ISteamUserStats", 10, 0, 0, "StoreStats" },
++    { "ISteamUserStats", 5, 1, 0, "UpdateAvgRateStat" },
++    { "ISteamUserStats", 31, 6, 0, "UploadLeaderboardScore" },
++    { "ISteamUtils", 18, 0, 0, "BOverlayNeedsPresent" },
++    { "ISteamUtils", 19, 1, 0, "CheckFileSignature" },
 +    { "ISteamUtils", 32, 6, 0, "FilterText" },
 +    { "ISteamUtils", 12, 2, 0, "GetAPICallFailureReason" },
++    { "ISteamUtils", 13, 6, 0, "GetAPICallResult" },
 +    { "ISteamUtils", 9, 0, 0, "GetAppID" },
 +    { "ISteamUtils", 2, 0, 0, "GetConnectedUniverse" },
++    { "ISteamUtils", 8, 0, 0, "GetCurrentBatteryPower" },
++    { "ISteamUtils", 22, 2, 0, "GetEnteredGamepadTextInput" },
 +    { "ISteamUtils", 21, 0, 0, "GetEnteredGamepadTextLength" },
 +    { "ISteamUtils", 15, 0, 0, "GetIPCCallCount" },
 +    { "ISteamUtils", 4, 0, 0, "GetIPCountry" },
 +    { "ISteamUtils", 33, 1, 0, "GetIPv6ConnectivityState" },
++    { "ISteamUtils", 6, 3, 0, "GetImageRGBA" },
++    { "ISteamUtils", 5, 3, 0, "GetImageSize" },
 +    { "ISteamUtils", 0, 0, 0, "GetSecondsSinceAppActive" },
 +    { "ISteamUtils", 1, 0, 0, "GetSecondsSinceComputerActive" },
 +    { "ISteamUtils", 3, 0, 0, "GetServerRealTime" },
 +    { "ISteamUtils", 23, 0, 0, "GetSteamUILanguage" },
++    { "ISteamUtils", 31, 1, 0, "InitFilterText" },
++    { "ISteamUtils", 11, 3, 0, "IsAPICallCompleted" },
++    { "ISteamUtils", 17, 0, 0, "IsOverlayEnabled" },
++    { "ISteamUtils", 30, 0, 0, "IsSteamChinaLauncher" },
++    { "ISteamUtils", 26, 0, 0, "IsSteamInBigPictureMode" },
++    { "ISteamUtils", 24, 0, 0, "IsSteamRunningInVR" },
++    { "ISteamUtils", 28, 0, 0, "IsVRHeadsetStreamingEnabled" },
 +    { "ISteamUtils", 25, 2, 0, "SetOverlayNotificationInset" },
 +    { "ISteamUtils", 10, 1, 0, "SetOverlayNotificationPosition" },
 +    { "ISteamUtils", 29, 1, 0, "SetVRHeadsetStreamingEnabled" },
 +    { "ISteamUtils", 16, 1, 0, "SetWarningMessageHook" },
++    { "ISteamUtils", 20, 5, 0, "ShowGamepadTextInput" },
 +    { "ISteamUtils", 27, 0, 0, "StartVRDashboard" },
 +    { "ISteamVideo", 2, 1, 0, "GetOPFSettings" },
++    { "ISteamVideo", 3, 3, 0, "GetOPFStringForApp" },
 +    { "ISteamVideo", 0, 1, 0, "GetVideoURL" },
++    { "ISteamVideo", 1, 1, 0, "IsBroadcasting" },
 +};
 diff --git a/dlls/lsteamclient/thunks32.h b/dlls/lsteamclient/thunks32.h
 new file mode 100644
-index 00000000..85dc196f
+index 00000000..27e4973f
 --- /dev/null
 +++ b/dlls/lsteamclient/thunks32.h
-@@ -0,0 +1,1618 @@
+@@ -0,0 +1,1786 @@
 +/* Engendre par tests/engendrer_i386.py -- ne pas editer a la main. */
 +#ifndef _WIN64
 +
-+#define NB_EMPLACEMENTS32 76
++#define NB_EMPLACEMENTS32 84
 +#define NB_MOTS32 10
 +
 +static UINT64 repartir32( unsigned emplacement, void *self, unsigned mots,
@@ -2556,6 +3016,166 @@ index 00000000..85dc196f
 +{ return repartir32( 75, self, 8, &a0 ); }
 +static UINT64 __attribute__((fastcall)) t75_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
 +{ return repartir32( 75, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t76_0( void *self, void *inutilise )
++{ return repartir32( 76, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t76_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 76, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t76_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 76, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t76_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 76, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t76_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 76, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t76_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 76, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t76_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 76, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t76_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 76, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t76_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 76, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t76_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 76, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t77_0( void *self, void *inutilise )
++{ return repartir32( 77, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t77_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 77, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t77_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 77, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t77_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 77, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t77_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 77, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t77_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 77, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t77_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 77, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t77_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 77, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t77_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 77, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t77_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 77, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t78_0( void *self, void *inutilise )
++{ return repartir32( 78, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t78_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 78, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t78_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 78, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t78_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 78, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t78_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 78, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t78_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 78, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t78_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 78, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t78_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 78, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t78_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 78, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t78_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 78, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t79_0( void *self, void *inutilise )
++{ return repartir32( 79, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t79_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 79, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t79_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 79, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t79_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 79, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t79_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 79, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t79_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 79, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t79_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 79, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t79_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 79, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t79_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 79, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t79_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 79, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t80_0( void *self, void *inutilise )
++{ return repartir32( 80, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t80_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 80, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t80_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 80, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t80_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 80, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t80_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 80, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t80_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 80, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t80_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 80, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t80_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 80, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t80_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 80, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t80_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 80, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t81_0( void *self, void *inutilise )
++{ return repartir32( 81, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t81_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 81, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t81_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 81, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t81_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 81, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t81_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 81, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t81_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 81, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t81_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 81, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t81_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 81, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t81_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 81, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t81_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 81, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t82_0( void *self, void *inutilise )
++{ return repartir32( 82, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t82_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 82, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t82_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 82, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t82_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 82, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t82_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 82, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t82_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 82, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t82_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 82, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t82_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 82, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t82_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 82, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t82_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 82, self, 9, &a0 ); }
++static UINT64 __attribute__((fastcall)) t83_0( void *self, void *inutilise )
++{ return repartir32( 83, self, 0, NULL ); }
++static UINT64 __attribute__((fastcall)) t83_1( void *self, void *inutilise, UINT32 a0 )
++{ return repartir32( 83, self, 1, &a0 ); }
++static UINT64 __attribute__((fastcall)) t83_2( void *self, void *inutilise, UINT32 a0, UINT32 a1 )
++{ return repartir32( 83, self, 2, &a0 ); }
++static UINT64 __attribute__((fastcall)) t83_3( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2 )
++{ return repartir32( 83, self, 3, &a0 ); }
++static UINT64 __attribute__((fastcall)) t83_4( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3 )
++{ return repartir32( 83, self, 4, &a0 ); }
++static UINT64 __attribute__((fastcall)) t83_5( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4 )
++{ return repartir32( 83, self, 5, &a0 ); }
++static UINT64 __attribute__((fastcall)) t83_6( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5 )
++{ return repartir32( 83, self, 6, &a0 ); }
++static UINT64 __attribute__((fastcall)) t83_7( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6 )
++{ return repartir32( 83, self, 7, &a0 ); }
++static UINT64 __attribute__((fastcall)) t83_8( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7 )
++{ return repartir32( 83, self, 8, &a0 ); }
++static UINT64 __attribute__((fastcall)) t83_9( void *self, void *inutilise, UINT32 a0, UINT32 a1, UINT32 a2, UINT32 a3, UINT32 a4, UINT32 a5, UINT32 a6, UINT32 a7, UINT32 a8 )
++{ return repartir32( 83, self, 9, &a0 ); }
 +
 +static const void *table32[NB_EMPLACEMENTS32][NB_MOTS32] =
 +{
@@ -2635,6 +3255,14 @@ index 00000000..85dc196f
 +    { t73_0, t73_1, t73_2, t73_3, t73_4, t73_5, t73_6, t73_7, t73_8, t73_9 },
 +    { t74_0, t74_1, t74_2, t74_3, t74_4, t74_5, t74_6, t74_7, t74_8, t74_9 },
 +    { t75_0, t75_1, t75_2, t75_3, t75_4, t75_5, t75_6, t75_7, t75_8, t75_9 },
++    { t76_0, t76_1, t76_2, t76_3, t76_4, t76_5, t76_6, t76_7, t76_8, t76_9 },
++    { t77_0, t77_1, t77_2, t77_3, t77_4, t77_5, t77_6, t77_7, t77_8, t77_9 },
++    { t78_0, t78_1, t78_2, t78_3, t78_4, t78_5, t78_6, t78_7, t78_8, t78_9 },
++    { t79_0, t79_1, t79_2, t79_3, t79_4, t79_5, t79_6, t79_7, t79_8, t79_9 },
++    { t80_0, t80_1, t80_2, t80_3, t80_4, t80_5, t80_6, t80_7, t80_8, t80_9 },
++    { t81_0, t81_1, t81_2, t81_3, t81_4, t81_5, t81_6, t81_7, t81_8, t81_9 },
++    { t82_0, t82_1, t82_2, t82_3, t82_4, t82_5, t82_6, t82_7, t82_8, t82_9 },
++    { t83_0, t83_1, t83_2, t83_3, t83_4, t83_5, t83_6, t83_7, t83_8, t83_9 },
 +};
 +
 +#endif /* _WIN64 */
