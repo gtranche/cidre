@@ -13628,3 +13628,38 @@ Le correctif est gardé sur la foi de CodeWeavers et parce que le symptôme qu'i
 silencieux — des calculs flottants faux ne se voient pas dans un compteur de plantages. Mais
 **je n'ai mesuré aucun bénéfice**, et la suite de conformité est le seul outil qui pourrait en
 montrer un.
+
+## 193. Elden Ring : les fichiers arrivent, le jeu meurt avant le graphisme
+
+Premier vrai jeu Steam téléchargé grâce au `steam_dev.cfg` de la section 190. 66 Go.
+
+```
+eldenring.exe              64 bits, Direct3D 12
+start_protected_game.exe   le lanceur anti-triche, evite
+steam_api64.dll            present a cote
+```
+
+64 bits et D3D12 : pas de transition WoW64, et c'est le chemin vkd3d-proton. Lancé
+directement avec `lancer_jeu.sh` :
+
+```
+Loaded steam_api64.dll   : oui
+Loaded d3d12.dll, dxgi.dll : oui (les notres)
+wine: Unhandled page fault on read access to 0000000000000008
+      at address 000000014255995D (thread 0024)
+```
+
+`0x14255995D` tombe dans `eldenring.exe` lui-même, base `0x140000000`. Le jeu charge nos
+bibliothèques graphiques mais ne les initialise jamais — ni vkd3d-proton ni DXVK n'écrivent une
+ligne — et meurt sur un pointeur nul déréférencé.
+
+**Ce qui est établi** : le jeu meurt dans son propre code, avant toute création de périphérique
+graphique. Notre pile n'est pas en cause et n'a rien eu à faire.
+
+**Ce qui est une inférence, pas une preuve** : une lecture à l'adresse 8 juste après le
+chargement de `steam_api64.dll` est la signature d'un `SteamAPI_Init` qui rend faux, dont
+l'appelant déréférence l'interface nulle qui en résulte. Cohérent, non démontré.
+
+Si c'est bien ça, le chemin critique reste le client Steam Windows de la section 189 — son
+`steam_api64.dll` doit parler à un client par tubes nommés dans le préfixe, et le client macOS
+natif ne peut pas jouer ce rôle.
