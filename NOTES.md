@@ -12902,3 +12902,23 @@ avec 0063 : Initialize engine version: 2021.3.5f1
 
 Le jeu ne tourne pas. Mais la pile graphique, elle, répond : DXVK expose un niveau 11.1 sur
 KosmicKrisp et Unity l'accepte. Aucun des deux blocages restants n'est dans le pilote.
+
+### Quatre tentatives de plus, toutes négatives
+
+```
+sonde_suspend_wow64  : 2000 suspensions/reprises d'un fil qui traverse le pont
+                       -> aucun plantage. Le ramasse-miettes n'est pas en cause.
+SegCs reinjecte      : copy_context_64to32 recopie le selecteur 64 bits tel quel,
+                       mais son seul appelant est protege par un retour anticipe.
+                       Hypothese ecartee a la lecture.
+sys_icache_invalidate: reessaye pour le cas multi-fils. Sans effet, comme en
+                       mono-fil. Retire pour de bon.
+sonde_jit_concurrent : un fil reecrit la page pendant que quatre l'executent.
+                       Plante, mais sur une faute a l'adresse zero dont je ne
+                       peux pas prouver qu'elle n'est pas une course de la sonde
+                       elle-meme. **Non concluant**, garde tel quel.
+```
+
+Le pont reste cassé dans le sens 64→32, de façon intermittente, et je n'ai pas trouvé de
+déclencheur reproductible pour ce sens-là. L'état livré est `0062` + `0063`, l'arbre `wow64cpu`
+est celui d'origine.
