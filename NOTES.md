@@ -14512,3 +14512,52 @@ table.
 
 Le faux client (`tests/faux_steam.c`) reste necessaire : sans un processus vivant a
 `ActiveProcess\pid`, `SteamAPI_Init` attend indefiniment. Il faudra le lancer avec le jeu.
+
+## 207. Le jeu parle au client Steam de macOS
+
+`tests/lancer_jeu_steam.sh` met en place le faux client puis lance l'executable. Sur Surviving
+Mars, le vrai jeu -- pas la sonde -- produit exactement la meme suite que `sonde_api_reel`, et
+va plus loin :
+
+```
+CreateInterface "SteamClient017" / "SteamClient020"
+  emplacement  0   CreateSteamPipe
+  emplacement  2   ConnectToGlobalUser
+  emplacement 12   GetISteamGenericInterface(0, 1, "SteamUtils010")
+    SteamUtils010 emplacement 9
+  emplacement 34
+  emplacement  5   GetISteamUser(1, 1, "SteamUser021")
+    SteamUser021 emplacement 2
+  emplacement 12   GetISteamGenericInterface(0, 1, "SteamUtils010")
+  emplacement 12   GetISteamGenericInterface(1, 1, "STEAMAPPS_INTERFACE_VERSION008")
+    SteamUtils010 emplacement 9
+```
+
+Son `SteamAPI_Init` reussit et il atteint `ISteamApps`. La preuve que ce n'est pas une
+simulation tient en une ligne :
+
+```
+lsof : MarsSteam 2399  TCP 127.0.0.1:55553->127.0.0.1:57343 (ESTABLISHED)
+       steam_osx 94471 TCP 127.0.0.1:57343 (LISTEN)
+```
+
+Deux connexions etablies entre le processus Windows et `steam_osx`. Un jeu Windows dialogue avec
+le client Steam de macOS.
+
+### Ou il s'arrete
+
+Le jeu se fige ensuite : 0 % de processeur, aucune fenetre de premier niveau, 51 modules charges
+et **aucun** `d3d11`, `dxgi` ni `winevulkan`. Il n'a donc jamais atteint l'initialisation
+graphique. Les derniers modules charges avant le gel sont `secur32`, `Kerberos`, `netutils`,
+`netapi32`, `MSV1_0` -- de l'authentification, chargee puis dechargee. Rien de tout cela ne
+passe par le pont.
+
+Le blocage est donc dans `pops_api.dll`, la couche de compte Paradox, en aval de Steamworks.
+Surviving Mars n'est pas le meilleur banc d'essai : son lanceur s'interpose. Un jeu Steam sans
+surcouche d'editeur dirait bien plus sur l'etat reel du pont.
+
+### Detail de methode
+
+Le journal du jeu contient des octets bruts, si bien que `grep` le classe « binaire » et
+n'affiche rien -- ce qui m'a fait croire deux fois de suite a une absence d'appels. `grep -a`
+est obligatoire sur ces traces.
