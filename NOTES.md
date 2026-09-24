@@ -13192,3 +13192,63 @@ fermé.
 ressort à 39 092 échantillons avec la mention « recursive counted multiple ». **Ce nombre est
 inexploitable** et aucune conclusion ne s'appuie dessus. Les frames natives — pilote, Metal,
 Rosetta — sont attribuées correctement, et c'est sur elles seules que repose la comparaison.
+
+## 185. FIFO_RELAXED : implémenté, mesuré, annulé
+
+L'idée de la section 182 était bonne sur le papier et fausse en pratique. Compte rendu complet,
+parce que l'échec est instructif.
+
+### Ce qui a marché
+
+Le mode a bien été ajouté au WSI Metal, et **DXVK l'a retenu** :
+
+```
+info:    Present mode: VK_PRESENT_MODE_FIFO_RELAXED_KHR (dynamic: no)
+```
+
+Avec, au passage, une vérification faite avant d'écrire une ligne : DXVK ne demande
+`FIFO_RELAXED` que si `dxvk.tearFree` vaut explicitement `False`, alors que le défaut est
+`Auto`. Sans ce réglage, l'implémentation n'aurait servi à personne.
+
+La période d'écran est lisible : `CGDisplayModeGetRefreshRate` et
+`NSScreen.maximumFramesPerSecond` rendent tous deux 120 sur cette machine.
+
+### Ce qui n'a pas marché
+
+`CAMetalLayer.displaySyncEnabled` **ne peut pas être basculé en cours de route**. Trois essais,
+chacun mesuré :
+
+```
+bascule a la presentation                 60 images/s, GPU 74 %
+bascule a l'acquisition du drawable       60 images/s, GPU 74 %
+mode immediat force en permanence         60 images/s, GPU 74 %
+   plus une CATransaction explicite       60 images/s, GPU 74 %
+```
+
+Le troisième essai est celui qui tranche : en forçant l'absence de synchronisation à chaque
+acquisition, on devrait obtenir les 76 à 90 images/s du mode `IMMEDIATE`. On obtient 60. La
+propriété n'est donc honorée qu'à la configuration de la couche, et l'encadrer d'une
+`CATransaction` explicite — la cause habituelle d'une propriété `CALayer` jamais validée hors
+du fil principal — n'y change rien.
+
+Un détail de méthode au passage : ma première tentative plaçait la bascule à la présentation.
+C'était faux indépendamment du reste — avec `displaySyncEnabled`, l'attente du balayage a lieu
+à l'acquisition du drawable, pas à la présentation. Corrigé, puis rendu sans objet par le
+troisième essai.
+
+### Pourquoi c'est annulé
+
+Annoncer `FIFO_RELAXED` en se comportant exactement comme `FIFO` serait pire que de ne pas
+l'annoncer : DXVK le choisirait en croyant obtenir un comportement qu'il n'aurait pas. Tout est
+retiré, `verifier_reconstruction.sh` confirme les cinq arbres à l'identique.
+
+### Ce qu'il faudrait
+
+Pas un interrupteur. Soit reconfigurer la couche à chaque changement de régime — coûteux, et à
+valider —, soit une mécanique de cadencement, `presentAtTime:` ou
+`presentAfterMinimumDuration:`, qui contrôle l'instant de présentation au lieu d'activer ou non
+une attente. Non exploré.
+
+Un chiffre reste inexpliqué : la charge GPU passe de 65,5 % en `FIFO` à 74 % en
+`FIFO_RELAXED`, sans que le nombre d'images bouge. Les deux mesures viennent de sessions de jeu
+différentes et ne sont pas comparables ; je n'en tire rien.
