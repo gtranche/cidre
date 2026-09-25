@@ -15397,3 +15397,66 @@ reste     kernel32 s'attache puis se detache ; cause a nommer
 ```
 
 C'est de loin le plus loin que ce portage soit alle. Le mur du paragraphe 144 n'existe plus.
+
+## 222. FEX se construit sur macOS, sans toucher a son code
+
+La question n'etait pas « porter FEX sur macOS » mais « produire le module que Wine attend ».
+Ce sont deux choses tres differentes, et la seconde est bien plus petite.
+
+### Ce que Wine attend
+
+FEX a un coeur modulaire utilisable comme backend WoW64 d'un Wine arm64. Le produit n'est pas un
+binaire Linux mais **un module PE Windows**, `libwow64fex.dll`, qui s'installe dans l'arbre de
+Wine. L'hote importe donc bien moins que je ne le craignais : le module tourne dans Wine, pas
+sur macOS.
+
+La chaine llvm-mingw du projet fournit deja les 48 outils `arm64ec-w64-mingw32` et les
+`aarch64-w64-mingw32` necessaires.
+
+### Deux obstacles, tous deux dans le systeme de construction
+
+```
+No CMAKE_ASM_NASM_COMPILER could be found        -> -DBUILD_TESTING=OFF
+FileNotFoundError: '/proc/cpuinfo'               -> -DTUNE_CPU=generic
+```
+
+Le second est la seule vraie hypothese Linux rencontree : `aarch64_fit_native.py` et
+`NeedDisabledSVE.py` lisent `/proc/cpuinfo` pour regler `-mcpu=native`. La branche n'est prise
+que si `TUNE_CPU` vaut « native » ; un autre reglage la contourne entierement.
+
+### Le resultat
+
+```
+[229/229] Linking CXX shared library Bin/libwow64fex.dll
+libwow64fex.dll : 4710400 octets
+
+BTCpuProcessInit   BTCpuSimulate      BTCpuResetToConsistentState
+BTCpuGetBopCode    BTCpuThreadInit    BTCpuNotifyMemoryProtect
+BTCpuGetContext    BTCpuSetContext    ... 22 points d'entree
+```
+
+L'interface CPU complete de WoW64. **Aucune ligne du code de FEX n'a ete modifiee** : deux
+options de cmake ont suffi.
+
+### La politique de FEX
+
+Le depot porte, comme Mesa, un fichier a l'intention des agents :
+
+> AI must not be used to generate code for contributions to this project.
+
+Elle est respectee : rien n'a ete ecrit dans leur arbre. Si des correctifs macOS s'averent
+necessaires plus tard -- et il y en aura -- je decrirai precisement quoi faire, et c'est
+l'utilisateur qui decidera qui l'ecrit.
+
+### Ce qui n'est pas demontre
+
+Le module est construit, pas execute. Deux risques propres a macOS restent devant :
+
+- **W^X.** Un JIT ecrit puis execute sa memoire. macOS l'interdit sans `MAP_JIT` et
+  `pthread_jit_write_protect_np`. Ce que Wine fait de ces demandes sur arm64 reste a etablir.
+- **x18 dans le code engendre.** L'ABI Windows arm64 y met le TEB, et macOS l'efface. Le
+  probleme qu'on vient de resoudre dans Wine se repose dans le JIT de FEX, ou il est plus
+  difficile puisque le code est produit a l'execution.
+
+Et il faut un Wine arm64 qui demarre pour l'essayer : au paragraphe 221 il s'arrete encore sur
+kernel32.
