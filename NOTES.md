@@ -16006,3 +16006,45 @@ programme x86-64           -> charge, puis
 
 Le programme x86-64 n'est plus refuse : il est charge et l'emulation demarre, puis faute. C'est
 le prochain point a instruire.
+
+## 235. FEX est charge par Wine arm64
+
+### Le nom que Wine attend
+
+Pour un invite x86-64 sur ARM64, Wine charge `xtajit64.dll` -- pas `xtajit.dll`, qui sert aux
+invites 32 bits. `libarm64ecfex.dll` installe sous ce nom, Wine le prend.
+
+### macOS refuse RWX, meme par mprotect
+
+```
+SONDE mprotect 0x140000000 taille 4000 prot 7 -> Permission denied
+```
+
+`prot 7` est `PROT_READ|PROT_WRITE|PROT_EXEC`. Mesure sur une projection de fichier :
+
+```
+MAP_PRIVATE R  puis mprotect RX  : ok
+MAP_PRIVATE RW puis mprotect RX  : ok
+MAP_PRIVATE RW puis mprotect RWX : Permission denied
+MAP_PRIVATE R+X a la projection  : Operation not permitted
+```
+
+L'execution s'obtient par `mprotect`, jamais en meme temps que l'ecriture, et jamais a la
+projection. Or `force_exec_prot` -- que Wine active pour les images non conscientes du bit NX --
+ajoute l'execution partout, y compris sur des pages inscriptibles.
+
+`mprotect_exec` gerait deja le cas ou l'execution est *ajoutee*, pas celui ou elle est *deja
+demandee* avec l'ecriture. Il retire desormais l'execution plutot que d'echouer : le chargeur
+pose ensuite la protection finale de chaque section, et les erreurs
+« failed to set protection » ont disparu.
+
+### Ou ca s'arrete
+
+```
+err:seh:NtRaiseException Unhandled exception code c0000005 addr 0x6ffff22dde38
+info[1] = 0x60
+```
+
+`0x60` est le deplacement du PEB dans le TEB : un fil lit `NtCurrentTeb()->Peb` avec un TEB nul.
+Un chemin de creation de fil du cote ARM64EC echappe encore a l'enregistrement -- meme famille
+que le paragraphe 228, autre chemin.

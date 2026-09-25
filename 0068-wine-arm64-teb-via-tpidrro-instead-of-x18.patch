@@ -416,3 +416,31 @@ index 9b6401ee..82d3435b 100644
 +#endif
 +
  #endif /* __NTDLL_UNIX_PRIVATE_H */
+diff --git aa/dlls/ntdll/unix/virtual.c bb/dlls/ntdll/unix/virtual.c
+index fd01d593..f628ef49 100644
+--- aa/dlls/ntdll/unix/virtual.c
++++ bb/dlls/ntdll/unix/virtual.c
+@@ -1980,7 +1980,22 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
+         if (!(unix_prot & PROT_WRITE)) return -1;
+     }
+ 
+-    return mprotect( base, size, unix_prot );
++    if (!mprotect( base, size, unix_prot )) return 0;
++
++    /*
++     * macOS n'accorde jamais ecriture et execution ensemble. Mesure :
++     * « mmap RW puis mprotect RX » passe, « mprotect RWX » rend EPERM.
++     * Quand les deux sont demandes, l'execution vient de force_exec_prot, qui
++     * l'ajoute partout pour les images non conscientes du bit NX ; elle n'est
++     * donc pas un besoin reel de cette page. On la retire plutot que d'echouer,
++     * ce qui laisse le chargeur poser ensuite la protection finale de chaque
++     * section.
++     */
++    if ((errno == EACCES || errno == EPERM) &&
++        (unix_prot & PROT_WRITE) && (unix_prot & PROT_EXEC))
++        return mprotect( base, size, unix_prot & ~PROT_EXEC );
++
++    return -1;
+ }
+ 
+ 
