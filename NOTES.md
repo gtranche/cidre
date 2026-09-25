@@ -15641,3 +15641,57 @@ prefixe arm64             :    0 fichier
 
 Il sort donc sans avoir fait son travail. Ce n'est plus un plantage ni une boucle : c'est un
 chemin d'execution a comprendre dans `wineboot` lui-meme. La nature du probleme a change.
+
+## 227. Ce n'est plus le TEB : la creation de processus echoue
+
+### La trace de wineboot
+
+```
+002c:err:wineboot:start_services_process Couldn't start services.exe: error 731
+002c:trace:wineboot:start_rundll32 machine 1 starting L"C:\windows\system32\rundll32.exe"
+002c:trace:wineboot:update_wineprefix wine: configuration ... has been updated.
+```
+
+Et dans tout le journal, **un seul identifiant de processus** : `002c`. Ni `services.exe` ni
+`rundll32.exe` n'emettent quoi que ce soit -- ils ne demarrent pas.
+
+### Pourquoi le message « has been updated » ment
+
+```c
+if ((process = start_rundll32( inf_path, L"PreInstall", IMAGE_FILE_MACHINE_TARGET_HOST )))
+{
+    ...  /* toute l'installation par wine.inf */
+}
+install_root_pnp_devices();
+update_user_profile();
+TRACE( "wine: configuration in %s has been updated.\n", ... );
+```
+
+Quand `start_rundll32` rend zero, le bloc entier est saute **en silence**, et le message de
+succes s'affiche quand meme. D'ou un `system32` vide et un `wineboot` qui sort proprement : il
+croit avoir fait son travail.
+
+C'est aussi l'explication complete du paragraphe 224 : `kernel32` introuvable pour le processus
+principal decoule de ce `system32` jamais peuple.
+
+### Le vrai point de blocage
+
+Les deux echecs passent par la meme fonction :
+
+```c
+create_native_process( L"C:\\windows\\system32\\services.exe", ... )
+create_native_process( app /* rundll32.exe */, ... )
+```
+
+La creation de processus echoue. L'erreur 731 -- `ERROR_WAIT_1` -- n'a aucun sens ici : c'est
+une valeur residuelle, `GetLastError` n'ayant pas ete renseigne par l'echec.
+
+Le prefixe etant vide, la creation doit passer par le repli d'amorcage de
+`dlls/ntdll/unix/process.c` :
+
+```c
+if (status && is_prefix_bootstrap && is_system_dir_path( attr->ObjectName, &info->machine ))
+```
+
+C'est ce chemin qu'il faut eprouver ensuite. Le probleme a de nouveau change de nature : ni
+faute, ni boucle, ni TEB -- la creation de processus.
