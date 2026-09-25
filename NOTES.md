@@ -15756,3 +15756,63 @@ paragraphe 216 relevait deja `try_map_free_area` balayant des centaines de plage
 `0x100000000`. La piste est la, pas dans le TEB.
 
 Sondes retirees, serie verifiee.
+
+## 230. FEX : c'est la variante ARM64EC qu'il faut
+
+Objectif reprecise par l'utilisateur : tout doit tourner **sans Rosetta, maintenant**. Le
+sequencement change en consequence -- on attaque le seul verrou binaire, FEX, avant le reste.
+
+### Le JIT alloue x18... sauf en ARM64EC
+
+`FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.cpp` definit deux jeux de registres.
+Hors ARM64EC :
+
+```c
+constexpr std::array<ARMEmitter::Register, 7> RA = {
+    r20, r21, r22, r23, r24, r30, r18,
+};
+```
+
+`r18` sert de registre general pour des valeurs emulees. Sur macOS, ou il est efface a tout
+moment, cela donnerait une corruption silencieuse du code emule -- bien pire qu'une faute.
+
+En ARM64EC, le meme tableau l'exclut :
+
+```c
+constexpr std::array<ARMEmitter::Register, 6> RA = {
+    r6, r7, r14, r15, r16, r30,
+};
+```
+
+L'ABI ARM64EC reserve `x18` au TEB, donc FEX s'en abstient deja. **La variante WoW64 que j'avais
+construite au paragraphe 222 est inutilisable sur macOS ; la variante ARM64EC ne l'est pas.**
+
+### Construite
+
+```
+[242/242] Linking CXX executable Bin/FEXOfflineCompiler64.exe
+libarm64ecfex.dll : 5279744 octets
+libFEXCore.dll    : 3534848 octets
+```
+
+Meme recette qu'au paragraphe 222, avec `-DMINGW_TRIPLE=arm64ec-w64-mingw32`. Toujours aucune
+ligne du code de FEX modifiee.
+
+### Ce qui reste cote x18
+
+Trois lectures du TEB par `x18` dans le code **emis** :
+
+```
+JIT/MiscOps.cpp:369  ldr(TMP2, XReg::x18, TEB_CPU_AREA_OFFSET)
+JIT/MiscOps.cpp:382  idem
+Arm64Emitter.cpp:810 ldr(TmpReg.X(), Reg::r18, TEB_CPU_AREA_OFFSET)
+```
+
+Meme classe de probleme que dans Wine, mais dans du code produit a l'execution. Borne -- trois
+sites -- et ce sont des lectures, pas une allocation. La politique de FEX interdisant d'y ecrire
+du code, ce sera a l'utilisateur de trancher si une modification s'impose.
+
+### Consequence pour les jeux 32 bits
+
+ARM64EC emule du x86-64. DREDGE est un jeu i386 : il releverait de la variante WoW64, celle qui
+alloue `x18`. Les jeux 32 bits sont donc, la aussi, la voie difficile.
