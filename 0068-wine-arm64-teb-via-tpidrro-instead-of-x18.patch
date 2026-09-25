@@ -263,3 +263,21 @@ index 9b6401ee..82d3435b 100644
 +#endif
 +
  #endif /* __NTDLL_UNIX_PRIVATE_H */
+diff --git aa/dlls/ntdll/unix/virtual.c bb/dlls/ntdll/unix/virtual.c
+index fd01d593..95f2c1fd 100644
+--- aa/dlls/ntdll/unix/virtual.c
++++ bb/dlls/ntdll/unix/virtual.c
+@@ -4052,6 +4052,13 @@ static void init_teb( struct thread_data *data, void *ptr )
+     teb->StaticUnicodeString.MaximumLength = sizeof(teb->StaticUnicodeBuffer);
+     teb->RealClientId = teb->ClientId;
+     data->teb = teb;
++#if defined(__aarch64__) && defined(__APPLE__)
++    /* Ici, et pas a la creation de thread_data : « teb » n'y est pas encore
++     * renseigne, et enregistrer un TEB nul faisait pire que rien -- la table le
++     * rendait ensuite tel quel, au lieu de laisser le repli jouer. Un TEB nul
++     * donne un PEB nul, d'ou la faute a 0x378. */
++    enregistrer_teb( teb );
++#endif
+     list_add_head( &teb_list, &data->entry );
+ }
+ 

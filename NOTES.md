@@ -15270,3 +15270,59 @@ Les processus restent a 0 % et `wineboot --init` ne peuple toujours pas `system3
 de services coexistent, signe que le demarrage recommence. Le blocage suivant est une attente,
 pas une faute -- vraisemblablement du cote des communications entre services ou du serveur.
 C'est un tout autre terrain que `x18`, et il faudra l'aborder comme tel.
+
+## 220. Le verrou orphelin, et un TEB nul que j'avais fabrique
+
+### Le point chaud, mesure dans un environnement propre
+
+Base du ntdll PE relevee dans la meme execution que l'echantillon, faute de quoi la
+symbolisation est fausse -- je m'y suis laisse prendre une fois :
+
+```
+base=0x6fffffc50000
+  285 -> RtlEnterCriticalSection
+  232 -> call_seh_handlers
+  189 -> virtual_unwind
+```
+
+Une exception levee et deroulee en boucle, dans une section critique. C'est la forme exacte du
+paragraphe 144 : une faute a l'interieur de `RtlEnterCriticalSection` laisse le verrou
+incremente et sans proprietaire, et chaque tentative suivante l'incremente encore.
+
+### Le piege des processus residuels, troisieme fois
+
+Avant cette mesure, des `start.exe` tournaient a 99 % **depuis 213 minutes**, residus d'essais
+precedents. Toutes les mesures prises avant le nettoyage sont a jeter. La regle est desormais :
+avant toute observation, tuer tout ce qui porte `.exe` ou `wineserver`.
+
+### La faute : un TEB nul, de ma main
+
+Quatre violations d'acces, toutes a l'adresse `0x378`. Un TEB nul donne un PEB nul, et une
+lecture a `PEB + 0x378` tombe exactement la.
+
+J'avais accroche l'enregistrement au point ou Wine pose sa propre cle de fil :
+
+```c
+thread_data = init_thread_data( view->base );
+pthread_setspecific( thread_data_key, thread_data );
+enregistrer_teb( thread_data->teb );     /* faux */
+```
+
+Or `init_thread_data` ne renseigne pas `teb` -- il l'est plus loin. J'enregistrais donc `NULL`
+pour chaque fil, et c'etait **pire que ne rien enregistrer** : la table rendait ensuite ce `NULL`
+au lieu de laisser le repli sur `x18` jouer. L'appel est deplace la ou `data->teb = teb` est
+reellement execute.
+
+Les fautes passent de quatre a deux. Il en reste une, a la meme adresse `0x378`, sur un seul fil,
+avec un compteur de programme dans du code natif. Un chemin d'initialisation echappe encore a
+l'enregistrement.
+
+### Etat du portage arm64
+
+```
+acquis    plus aucune faute liee a x18 ; 655 -> 28 acces au registre
+          NtCurrentTeb() en ligne, huit instructions, sans appel
+          services.exe, plugplay.exe, rpcss.exe demarrent
+reste     une faute a 0x378 sur un fil, puis un verrou orphelin qui boucle
+          wineboot --init ne peuple pas system32
+```
