@@ -282,10 +282,67 @@ index 65ec920e..d866c562 100644
                     "stp x18, x19, [x10, #0x90]\n\t"
                     "stp x20, x21, [x10, #0xa0]\n\t"
 diff --git aa/dlls/ntdll/unix/loader.c bb/dlls/ntdll/unix/loader.c
-index ebfb6af5..9fb4f1d2 100644
+index ebfb6af5..61f3570b 100644
 --- aa/dlls/ntdll/unix/loader.c
 +++ bb/dlls/ntdll/unix/loader.c
-@@ -1555,6 +1555,10 @@ static void load_ntdll_functions( HMODULE module )
+@@ -436,6 +436,47 @@ char *get_alternate_wineloader( WORD machine )
+ }
+ 
+ 
++/*
++ * Recopier l'environnement en memoire basse avant d'executer.
++ *
++ * Sur macOS arm64, execve rend EFAULT quand le tableau d'environnement se
++ * trouve tres haut dans l'espace d'adressage. Mesure : les appels dont
++ * « environ » etait vers 47 Gio echouaient, ceux dont il tenait sous 5 Gio
++ * reussissaient -- y compris avec un argv haut. Wine reservant de vastes
++ * plages basses, un realloc de putenv dans le fils de fork peut atterrir
++ * n'importe ou.
++ *
++ * On recopie donc le tableau et ses chaines dans une seule projection demandee
++ * en bas. En cas d'echec on rend l'environnement d'origine : mieux vaut
++ * retenter tel quel que ne rien faire.
++ */
++static char **env_bas(void)
++{
++    extern char **environ;
++    size_t taille = sizeof(char *), n = 0;
++    char *bloc, **tab;
++    unsigned int i;
++
++    if (!environ) return environ;
++    for (n = 0; environ[n]; n++) taille += sizeof(char *) + strlen( environ[n] ) + 1;
++
++    bloc = mmap( (void *)0x110000000, taille, PROT_READ | PROT_WRITE,
++                 MAP_PRIVATE | MAP_ANON, -1, 0 );
++    if (bloc == MAP_FAILED) return environ;
++
++    tab = (char **)bloc;
++    bloc += (n + 1) * sizeof(char *);
++    for (i = 0; i < n; i++)
++    {
++        size_t l = strlen( environ[i] ) + 1;
++        memcpy( bloc, environ[i], l );
++        tab[i] = bloc;
++        bloc += l;
++    }
++    tab[n] = NULL;
++    return tab;
++}
++
+ static void preloader_exec( char **argv )
+ {
+ #ifdef HAVE_WINE_PRELOADER
+@@ -452,7 +493,7 @@ static void preloader_exec( char **argv )
+     execv( argv[0], argv );
+     free( argv[0] );
+ #endif
+-    execv( argv[1], argv + 1 );
++    execve( argv[1], argv + 1, env_bas() );
+ }
+ 
+ /* exec the appropriate wine loader for the specified machine */
+@@ -1555,6 +1596,10 @@ static void load_ntdll_functions( HMODULE module )
      void **p__wine_unix_call_dispatcher_arm64ec = NULL;
      unixlib_handle_t *p__wine_unixlib_handle;
      const IMAGE_EXPORT_DIRECTORY *exports;
@@ -296,7 +353,7 @@ index ebfb6af5..9fb4f1d2 100644
  
      exports = get_module_data_dir( module, IMAGE_DIRECTORY_ENTRY_EXPORT, NULL );
      assert( exports );
-@@ -1575,6 +1579,19 @@ static void load_ntdll_functions( HMODULE module )
+@@ -1575,6 +1620,19 @@ static void load_ntdll_functions( HMODULE module )
      GET_FUNC( __wine_syscall_dispatcher );
      GET_FUNC( __wine_unix_call_dispatcher );
      GET_FUNC( __wine_unixlib_handle );

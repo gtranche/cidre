@@ -15886,3 +15886,50 @@ Deux issues, et la seconde est la bonne pour nous :
 
 Le risque que j'annoncais comme binaire au paragraphe 230 n'en est donc pas un : le JIT est
 possible sur macOS, et le chemin passe par du code qui nous appartient.
+
+## 232. Le prefixe arm64 se cree, et un programme Windows tourne
+
+### La cause de l'EFAULT : l'environnement, pas argv
+
+Sonde sur chaque `execv`, cible et errno :
+
+```
+argv=0x84ac08878  env=0x103883e80   -> reussit   (argv haut, env bas)
+argv=0x1027ecf28  env=0x1027ed020   -> reussit
+argv=0x100efb3b8  env=0xb1aca8200   -> EFAULT    (env a ~47 Gio)
+argv=0x100efcf88  env=0xb1aca8200   -> EFAULT
+```
+
+Le premier cas tranche : `argv` haut ne gene pas, `environ` haut si. macOS refuse le tableau
+d'environnement au-dela d'une certaine hauteur. Wine reservant de vastes plages basses, un
+`realloc` de `putenv` dans le fils de `fork` peut atterrir n'importe ou -- d'ou le caractere
+intermittent de la panne.
+
+`env_bas()` recopie le tableau et ses chaines dans une seule projection demandee vers
+`0x110000000`, et `preloader_exec` appelle desormais `execve` avec cette copie.
+
+### Ce qui tourne
+
+```
+wineboot --init -> code 0
+system32        -> 783 fichiers
+
+wine reg query "HKCU\Software"
+  HKEY_CURRENT_USER\Software\Classes
+  HKEY_CURRENT_USER\Software\Microsoft
+  HKEY_CURRENT_USER\Software\Wine
+```
+
+Le prefixe arm64 se cree, et un vrai programme Windows s'execute et rend ses resultats, sur une
+pile **entierement native arm64, sans Rosetta**. Le prefixe x86_64 de reference en compte 782 :
+on est au meme niveau.
+
+### Ce qui reste visible
+
+```
+Unhandled page fault on read access to 00000000000008A0 at 0x6FFFFFC8D370 (un fil)
+failed to start L"\??\C:\windows\syswow64\rundll32.exe": c0000135
+```
+
+Le second est attendu : rien n'emule encore le 32 bits. Le premier est un deplacement de TEB de
+plus, sur un fil ou le repli ne joue pas.
