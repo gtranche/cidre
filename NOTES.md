@@ -15503,3 +15503,48 @@ Pourquoi `start.exe` atteint le chemin « integre » et pas `kernel32.dll`. La r
 
 Rien ne dit non plus qu'il soit nouveau. La ligne de base du paragraphe 216 ne peuplait pas
 `system32` non plus ; elle n'allait juste pas assez loin pour le montrer.
+
+## 224. kernel32 introuvable etait la consequence, pas la cause
+
+### La mesure qui tranche
+
+Sondes temporaires dans `find_dll_file`, comparant le processus qui reussit et celui qui
+echoue :
+
+```
+002c :  search -> c0000135 (bootstrap=1)   builtin_sans_fichier -> 0          succes
+0024 :  search -> c0000135 (bootstrap=0)   builtin_sans_fichier -> c0000135   echec
+```
+
+Un seul bit differe : `is_prefix_bootstrap`. C'est lui qui autorise `find_builtin_without_file`
+a fournir un module integre quand le prefixe est vide.
+
+### Pourquoi il differe
+
+`dlls/ntdll/unix/env.c` le dit sans ambiguite :
+
+```c
+set_env_var( ..., WINEBOOTSTRAPMODE, "1" );
+is_prefix_bootstrap = TRUE;
+run_wineboot( env, env_pos );          /* -> 002c */
+/* reload environment now that wineboot has run */
+is_prefix_bootstrap = !!bootstrap;      /* -> FALSE */
+load_main_exe( &nt_name, 0 );           /* -> 0024 */
+```
+
+Wine lance d'abord `wineboot` en fils, avec le drapeau, pour peupler `system32` ; puis il retire
+le drapeau et charge l'executable principal, qui s'attend a trouver un `system32` garni.
+
+Le fils (002c) charge bien `kernel32`, `kernelbase`, `rpcrt4` par le chemin integre -- **mais il
+ne termine pas**. C'est lui qu'on voyait tourner a 100 % au paragraphe 220, chaud dans
+`RtlEnterCriticalSection`, `call_seh_handlers` et `virtual_unwind`. Il ne peuple donc jamais
+`system32`, et le parent echoue ensuite faute de trouver `kernel32` sans le drapeau.
+
+### Ce que cela corrige dans le diagnostic
+
+Le paragraphe 223 presentait « kernel32 introuvable » comme le mur suivant. C'est faux : c'est un
+symptome. Le seul vrai blocage reste **le fils wineboot qui boucle**, deja identifie au
+paragraphe 220 et toujours ouvert. Deux paragraphes de fouille pour revenir au meme point, mais
+en sachant desormais que le reste de la chaine est sain.
+
+Les sondes ont ete retirees ; l'arbre est propre et la serie se reproduit.
