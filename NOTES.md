@@ -15597,3 +15597,47 @@ acquis    le mur x18 du paragraphe 144 n'existe plus
 reste     un site de lecture de x18 dans le chemin de retour d'appel systeme
           le fils wineboot boucle par intermittence et ne peuple pas system32
 ```
+
+## 226. Le site manquant : le retour du repartiteur d'appels systeme
+
+### Trouve par relecture, pas par fouille
+
+La liste des lectures de `x18` restantes cote unix tient en une vingtaine de sites. La plupart
+sont sures : `call_user_mode_callback` recoit le TEB dans `x4` et pose `x18` lui-meme ; les
+sauvegardes de contexte le lisent comme un registre parmi d'autres. Un seul ne l'etait pas :
+
+```c
+__ASM_GLOBAL_FUNC( __wine_syscall_dispatcher_return,
+                   "ldr w11, [x18, #0x380]\n\t" /* thread_data->syscall_trace */
+```
+
+C'est une fonction **separee**, atteinte apres l'appel systeme -- donc apres un retour du noyau,
+donc avec `x18` efface -- et sa toute premiere instruction lit `x18`. Le rechargement du
+paragraphe 221 ne couvrait que l'entree des deux repartiteurs ; celui-ci est un troisieme point
+d'entree, et je l'avais manque.
+
+### La mesure
+
+```
+avant : 19 226 244 lignes de handle_syscall_fault en 45 s, journal de 2,3 Go
+        166 666 fois la meme adresse fautive
+apres : 0 faute d'appel systeme, journal de 195 octets
+```
+
+La boucle du paragraphe 220 a disparu.
+
+### Ce qui reste, et ce n'est plus une faute
+
+Le fils `wineboot` charge maintenant 25 modules, tourne, puis **se detache proprement** --
+`ucrtbase`, `kernel32`, `kernelbase`, `ntdll`, chacun avec son `PROCESS_DETACH` qui rend 1. Un
+arret normal.
+
+Mais il ne peuple pas `system32` :
+
+```
+prefixe x86_64 qui marche :  782 fichiers
+prefixe arm64             :    0 fichier
+```
+
+Il sort donc sans avoir fait son travail. Ce n'est plus un plantage ni une boucle : c'est un
+chemin d'execution a comprendre dans `wineboot` lui-meme. La nature du probleme a change.
