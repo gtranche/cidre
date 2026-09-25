@@ -15548,3 +15548,52 @@ paragraphe 220 et toujours ouvert. Deux paragraphes de fouille pour revenir au m
 en sachant desormais que le reste de la chaine est sain.
 
 Les sondes ont ete retirees ; l'arbre est propre et la serie se reproduit.
+
+## 225. La boucle, nommee : une faute d'appel systeme avec x18 nul
+
+### Ce que la trace montre
+
+`WINEDEBUG=+seh` sur le fils `wineboot` qui tourne a 100 % produit **19 226 244 lignes en
+45 secondes**, toutes du meme type :
+
+```
+002c:trace:seh:handle_syscall_fault  x18=0000000000000000
+002c:trace:seh:handle_syscall_fault returning to user mode ip=0x6fffffcb9424 ret=c0000005
+002c:trace:seh:handle_syscall_fault code=c0000005 flags=0 addr=0x107220400 pc=0x107220400
+```
+
+Sur deux millions de lignes depouillees, une seule adresse fautive revient :
+
+```
+166666 fois  pc=0x107220400
+     1 fois  pc=0x1072202c8
+```
+
+Une faute dans un appel systeme, `x18` a zero, traitee, rendue au mode utilisateur avec
+`c0000005`, et reproduite a l'identique. C'est la boucle du paragraphe 220, et elle n'est pas une
+section critique orpheline : celle-ci n'en est que la consequence.
+
+### Ce que cela dit du correctif
+
+Le rechargement du paragraphe 221 couvre l'**entree** des repartiteurs. L'adresse fautive,
+`0x107220400`, est dans `ntdll.so` -- le cote unix -- mais ailleurs : le chemin de retour, ou le
+tremplin, continue de lire `x18` sans le recharger. Il reste donc au moins un site.
+
+### Une difficulte de methode
+
+La boucle est **intermittente**. Sur cinq lancements consecutifs, le fils sort parfois
+immediatement sur l'erreur `kernel32` du paragraphe 224, parfois boucle. L'activation de `+seh`
+semble favoriser la boucle, ce qui est coherent avec une course. Symboliser l'adresse demande de
+relever la base de `ntdll.so` **dans la meme execution** que la faute, par `vmmap` sur le
+processus vivant ; les bases changent a chaque lancement.
+
+### L'etat
+
+```
+acquis    le mur x18 du paragraphe 144 n'existe plus
+          NtCurrentTeb() en ligne, huit instructions, sans appel
+          le prefixe arm64 se cree, les services demarrent
+          libwow64fex.dll se construit sur macOS sans toucher au code de FEX
+reste     un site de lecture de x18 dans le chemin de retour d'appel systeme
+          le fils wineboot boucle par intermittence et ne peuple pas system32
+```
