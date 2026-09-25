@@ -15727,3 +15727,32 @@ fils sorti avec le code 1 -- alors que le meme `services.exe` lance a la main re
 difference tient a l'environnement ou au moment, pas au TEB : il n'y a plus aucune exception.
 
 Sondes retirees, serie verifiee.
+
+## 229. execv echoue en EFAULT : argv a 38 Gio
+
+Le fils spawnе par `wineboot` sort avec le code 1 parce que `exec_wineloader` rend la main :
+les deux `execv` echouent.
+
+```
+SONDE loader_exec a echoue : wineloader=.../lib/wine/aarch64-unix/wine errno=14 (Bad address)
+```
+
+`errno 14` est `EFAULT`, alors que le chemin est exact et le fichier executable. Ce n'est donc
+pas le programme qui est en cause mais les tableaux passes a `execv`. Sonde sur les pointeurs,
+les deux appels compares :
+
+```
+reussite  argv=0x102947f90  environ=0x102948000  argv[1]=0x102948200
+echec     argv=0x8edc58300  environ=0x100b08f50  argv[1]=0x8ed4045f0
+```
+
+Dans l'appel qui echoue, `argv` et ses chaines vivent vers **0x8ed00000000**, soit environ
+38 Gio -- une region que le noyau refuse de lire au moment de l'`exec`. Dans celui qui reussit,
+tout tient sous les 5 Gio.
+
+`build_argv` alloue par `malloc` dans le fils de `fork`. Que l'allocateur serve depuis une
+region aussi haute est propre a la disposition memoire que Wine impose sur arm64 : le
+paragraphe 216 relevait deja `try_map_free_area` balayant des centaines de plages depuis
+`0x100000000`. La piste est la, pas dans le TEB.
+
+Sondes retirees, serie verifiee.
