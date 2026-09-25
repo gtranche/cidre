@@ -15326,3 +15326,74 @@ acquis    plus aucune faute liee a x18 ; 655 -> 28 acces au registre
 reste     une faute a 0x378 sur un fil, puis un verrou orphelin qui boucle
           wineboot --init ne peuple pas system32
 ```
+
+## 221. L'assembleur lisait x18 aussi, et le prefixe se cree
+
+### La faute a 0x378, nommee
+
+Le compteur de programme de la faute tombait dans `ntdll.so` -- le cote **unix**, pas le PE.
+Symbolise :
+
+```
+__wine_unix_call_dispatcher + 4
+__wine_syscall_dispatcher + 4
+```
+
+Et l'instruction, dans le source :
+
+```asm
+"ldr x10, [x18, #0x378]\n\t" /* thread_data->syscall_frame */
+```
+
+`0x378` exactement. Les repartiteurs sont ecrits en assembleur et lisent le TEB directement dans
+`x18` ; la correction du paragraphe 219, qui ne touchait que `NtCurrentTeb()`, ne les couvrait
+pas. On ne corrige pas un registre en corrigeant le C qui l'entoure.
+
+### Le rechargement
+
+Un prologue commun relit le TEB dans le stockage local du fil, comme le fait `NtCurrentTeb()`,
+et ne touche a `x18` que si l'emplacement est renseigne :
+
+```asm
+mrs x10, tpidrro_el0
+and x10, x10, #0xfffffffffffffff8
+adrp x11, _cle_teb_globale@PAGE
+ldr w11, [x11, _cle_teb_globale@PAGEOFF]
+ldr x10, [x10, x11, lsl #3]
+cbz x10, 9f
+mov x18, x10
+9:
+```
+
+La cle est desormais creee a la premiere demande et non au chargement du ntdll PE : les premiers
+fils naissent avant, et n'auraient rien enregistre.
+
+### Le resultat
+
+```
+exceptions pendant wineboot --init : 0
+prefixe cree : system.reg, user.reg, userdef.reg, users/, windows/
+wineboot ne boucle plus -- il sort
+```
+
+Plus une seule faute, et le prefixe existe. Restait ce message :
+
+```
+wine: could not load kernel32.dll, status c0000135
+```
+
+Trompeur : la trace montre que `kernel32.dll` est **trouve, charge a 0x6FFFFFA50000, et toutes
+ses importations se resolvent** -- y compris `__wine_current_teb` et `__wine_teb_tsd_key`. Il est
+ensuite detache. L'echec est donc apres l'attachement, dans une dependance plus loin dans la
+chaine, et `c0000135` n'en dit pas le nom.
+
+### Ou en est le portage
+
+```
+acquis    aucune faute liee a x18, ni en C ni en assembleur
+          NtCurrentTeb() en ligne, huit instructions
+          le prefixe arm64 se cree
+reste     kernel32 s'attache puis se detache ; cause a nommer
+```
+
+C'est de loin le plus loin que ce portage soit alle. Le mur du paragraphe 144 n'existe plus.
