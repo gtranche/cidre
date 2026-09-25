@@ -15812,7 +15812,29 @@ Meme classe de probleme que dans Wine, mais dans du code produit a l'execution. 
 sites -- et ce sont des lectures, pas une allocation. La politique de FEX interdisant d'y ecrire
 du code, ce sera a l'utilisateur de trancher si une modification s'impose.
 
-### Consequence pour les jeux 32 bits
+### Correction : les jeux 32 bits ne sont pas la voie difficile
 
-ARM64EC emule du x86-64. DREDGE est un jeu i386 : il releverait de la variante WoW64, celle qui
-alloue `x18`. Les jeux 32 bits sont donc, la aussi, la voie difficile.
+J'avais ecrit que la variante WoW64, servant les invites i386, allouait `x18` et serait donc
+inutilisable. **C'est faux.** Le choix du pool se fait a l'execution, selon le mode de l'invite :
+
+```c
+if (EmitterCTX->Config.Is64BitMode()) {
+    GeneralRegisters = x64::RA;   /* contient r18 */
+} else {
+    GeneralRegisters = x32::RA;   /* ne le contient pas */
+}
+```
+
+Et `x32::RA` liste quatorze registres -- r20..r23, r12..r17, r29, r30, r24, r19 -- **sans
+r18**. La variante WoW64 sert des invites 32 bits, donc emprunte toujours ce pool.
+
+Les deux modules dont nous avons besoin sont donc propres de ce cote :
+
+```
+libwow64fex.dll    invites 32 bits    -> x32::RA, pas de r18
+libarm64ecfex.dll  invites x86-64     -> pool ARM64EC, pas de r18
+```
+
+Le seul pool qui alloue `r18` est `x64::RA`, emprunte par FEX hors ARM64EC pour des invites
+64 bits -- c'est-a-dire le cas Linux, pas le notre. Il ne reste, dans les deux cas, que les
+trois lectures de TEB ci-dessus.
