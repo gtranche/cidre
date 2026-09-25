@@ -15838,3 +15838,51 @@ libarm64ecfex.dll  invites x86-64     -> pool ARM64EC, pas de r18
 Le seul pool qui alloue `r18` est `x64::RA`, emprunte par FEX hors ARM64EC pour des invites
 64 bits -- c'est-a-dire le cas Linux, pas le notre. Il ne reste, dans les deux cas, que les
 trois lectures de TEB ci-dessus.
+
+## 231. Le W^X n'est pas un mur
+
+### Ce que macOS arm64 accepte, mesure
+
+`tests/wx_arm64.c`, trois voies eprouvees en ecrivant puis executant « mov x0,#42 ; ret » :
+
+```
+mmap RWX                     ECHEC (Permission denied)
+mmap RW puis mprotect RX     -> 42
+mmap MAP_JIT + write_protect -> 42
+```
+
+RWX en un seul coup est refuse. Mais **basculer** une page de RW vers RX fonctionne, et
+`MAP_JIT` assorti de `pthread_jit_write_protect_np` aussi. Un JIT est donc possible ; c'est la
+demande simultanee des trois droits qui ne l'est pas.
+
+### Wine sait deja faire
+
+`get_unix_prot` dans `dlls/ntdll/unix/virtual.c` :
+
+```c
+if (vprot & VPROT_EXEC) prot |= PROT_EXEC | PROT_READ;
+if (vprot & VPROT_WRITEWATCH) prot &= ~PROT_WRITE;
+```
+
+Quand une page est a la fois executable et inscriptible et que le mode est actif, Wine retire
+`PROT_WRITE` : il ne demande jamais RWX au noyau, leve une exception a l'ecriture et bascule.
+C'est exactement ce que macOS exige.
+
+Le mode s'active par processus, via
+`NtSetInformationProcess(ProcessManageWritesToExecutableMemory)` -- le mecanisme que Windows
+prevoit pour ses emulateurs.
+
+### Ou doit aller la correction
+
+FEX ne l'appelle pas : `ManageWritesToExecutableMemory` n'apparait nulle part dans son arbre. Il
+alloue donc en `PAGE_EXECUTE_READWRITE`, ce qui sur macOS se traduit par un `mmap` RWX, refuse.
+
+Deux issues, et la seconde est la bonne pour nous :
+
+1. faire appeler `NtSetInformationProcess` par FEX -- un appel, mais dans leur arbre, que leur
+   politique nous interdit d'ecrire ;
+2. **faire activer le mode par Wine** des que l'hote n'accepte pas RWX. C'est notre correctif,
+   dans notre arbre, et il profite a tout emulateur, pas seulement a FEX.
+
+Le risque que j'annoncais comme binaire au paragraphe 230 n'en est donc pas un : le JIT est
+possible sur macOS, et le chemin passe par du code qui nous appartient.
