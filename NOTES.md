@@ -15933,3 +15933,29 @@ failed to start L"\??\C:\windows\syswow64\rundll32.exe": c0000135
 
 Le second est attendu : rien n'emule encore le 32 bits. Le premier est un deplacement de TEB de
 plus, sur un fil ou le repli ne joue pas.
+
+## 233. Le support des invites x86 tue le processus
+
+Pour executer du code x86 il faut que Wine soit construit avec les architectures invitees. Trois
+constructions, memes sources, meme correctif 0068 :
+
+```
+--enable-archs=aarch64              wineboot -> 0    system32 : 781 fichiers
+--enable-archs=i386,x86_64,aarch64  wineboot -> 137  system32 : 0
+--enable-archs=x86_64,aarch64       wineboot -> 137  system32 : 0
+```
+
+`137` est `128 + 9` : le processus est **tue par SIGKILL**, sans produire une seule ligne, meme
+avec `+loaddll,+virtual`. Il meurt avant que la sortie de deboguage ne s'initialise. `wine
+--version` fonctionne dans les trois cas -- le chargeur demarre, c'est la mise en place de
+l'espace d'adressage qui echoue.
+
+L'i386 n'est pas en cause : retirer `i386-windows` de l'installation ne change rien, et la
+construction `x86_64,aarch64` seule echoue pareillement. Le `__PAGEZERO` du chargeur fait
+toujours 4 Gio, donc la piste du prealloueur est ecartee aussi.
+
+Reinstaller la construction `aarch64` seule redonne immediatement un prefixe qui se cree : la
+regression est bien dans le support des invites, pas ailleurs.
+
+C'est le blocage actuel pour faire tourner quoi que ce soit de x86. Il faut trouver quelle
+reservation d'espace d'adressage macOS refuse au point de tuer le processus.

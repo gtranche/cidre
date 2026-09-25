@@ -42,13 +42,13 @@ index 2c66313e..e2335f18 100644
 +@ extern -private -arch=arm64 __wine_teb_table
 +@ extern -arch=arm64 __wine_teb_tsd_key
 diff --git aa/dlls/ntdll/signal_arm64.c bb/dlls/ntdll/signal_arm64.c
-index e560718c..65703d30 100644
+index e560718c..de5ccd96 100644
 --- aa/dlls/ntdll/signal_arm64.c
 +++ bb/dlls/ntdll/signal_arm64.c
-@@ -893,3 +893,77 @@ __ASM_GLOBAL_FUNC( DbgUserBreakPoint, "brk #0xf000; ret"
+@@ -892,4 +892,80 @@ __ASM_GLOBAL_FUNC( DbgUserBreakPoint, "brk #0xf000; ret"
+                     "\n\tnop; nop; nop; nop; nop; nop; nop; nop"
                      "\n\tnop; nop; nop; nop; nop; nop" );
  
- #endif  /* __aarch64__ */
 +
 +
 +/***********************************************************************
@@ -123,6 +123,9 @@ index e560718c..65703d30 100644
 +     * NULL serait pire, car le code appelant ne le teste pas. */
 +    return (TEB *)__getReg(18);
 +}
++
++
+ #endif  /* __aarch64__ */
 diff --git aa/dlls/ntdll/unix/signal_arm64.c bb/dlls/ntdll/unix/signal_arm64.c
 index 65ec920e..d866c562 100644
 --- aa/dlls/ntdll/unix/signal_arm64.c
