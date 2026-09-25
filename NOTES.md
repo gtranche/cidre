@@ -15460,3 +15460,46 @@ Le module est construit, pas execute. Deux risques propres a macOS restent devan
 
 Et il faut un Wine arm64 qui demarre pour l'essayer : au paragraphe 221 il s'arrete encore sur
 kernel32.
+
+## 223. Le mur suivant : kernel32 introuvable, et ce n'est pas le chemin
+
+Une fois les fautes disparues, `wineboot --init` echoue proprement :
+
+```
+wine: could not load kernel32.dll, status c0000135
+```
+
+### Deux fausses pistes, ecartees par la mesure
+
+**« Le chemin de recherche est nul. »** La trace affiche bien
+`load_dll looking for L"kernel32.dll" in (null)`. Mais `dlls/ntdll/loader.c:4507` passe `NULL`
+**volontairement** : c'est la charge initiale, qui ne cherche que le repertoire systeme. Le
+message est normal.
+
+**« C'est le detour par start.exe. »** Lance depuis le repertoire du projet, Wine resolvait
+« wineboot » en `Z:\...\proton-ouvert\wineboot`, inexistant, et se rabattait sur `start.exe`.
+Lance depuis `/tmp`, l'echec est identique. Ce n'etait pas ca.
+
+### Ce que dit reellement la trace
+
+```
+find_builtin_dll looking for "start.exe" for file "C:\windows\system32\start.exe"
+build_module loaded "C:\windows\system32\start.exe"
+build_ntdll_module Loaded "C:\windows\system32\ntdll.dll"
+load_dll looking for "kernel32.dll" in (null)
+Failed to load module "kernel32.dll"; status=c0000135
+```
+
+`start.exe` et `ntdll.dll` passent par `find_builtin_dll` et se chargent. Pour `kernel32.dll`,
+**aucun `find_builtin_dll` n'apparait** : l'echec precede la recherche du module integre. Or le
+`system32` du prefixe est vide -- c'est justement `wineboot` qui doit le peupler -- et
+`kernel32.dll` est bien present dans `lib/wine/aarch64-windows/` avec les 996 autres.
+
+### Ce qui reste a etablir
+
+Pourquoi `start.exe` atteint le chemin « integre » et pas `kernel32.dll`. La reponse est dans
+`find_dll_file` et l'ordre de chargement, pas dans le TEB : ce mur-la n'a rien a voir avec
+`x18`, il etait simplement cache derriere.
+
+Rien ne dit non plus qu'il soit nouveau. La ligne de base du paragraphe 216 ne peuplait pas
+`system32` non plus ; elle n'allait juste pas assez loin pour le montrer.
