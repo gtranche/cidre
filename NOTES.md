@@ -15959,3 +15959,50 @@ regression est bien dans le support des invites, pas ailleurs.
 
 C'est le blocage actuel pour faire tourner quoi que ce soit de x86. Il faut trouver quelle
 reservation d'espace d'adressage macOS refuse au point de tuer le processus.
+
+## 234. Wine arm64 accepte les invites x86, et FEX est en place
+
+### Le SIGKILL : __PAGEZERO, encore
+
+Trois sondes dans `__wine_main` situent la mort **avant** la premiere ligne du processus
+re-execute. Comparaison des deux chargeurs :
+
+```
+--enable-archs=aarch64        loader/wine  __PAGEZERO vmsize 0x100000000  demarre
+--enable-archs=x86_64,aarch64 loader/wine  __PAGEZERO vmsize 0x1000       SIGKILL
+```
+
+Activer un invite x86 fait prendre a configure la branche qui retrecit `__PAGEZERO`, et le noyau
+arm64 tue le binaire avant dyld -- exactement ce que le correctif de l'arbre wine 10 documentait
+deja. Le garde-fou manquait dans wine11 ; il y est desormais, sur `HOST_ARCH`.
+
+Apres quoi :
+
+```
+--enable-archs=i386,arm64ec,aarch64   wineboot -> 0   system32 : 785 fichiers
+```
+
+### Deux ajustements pour ARM64EC
+
+Le premier essai d'invite x86-64 rendait `c00000bb` -- `STATUS_NOT_SUPPORTED` -- en chargeant le
+ntdll aarch64 : il faut un ntdll **ARM64EC**, donc `--enable-archs=arm64ec`.
+
+L'edition de liens a ensuite reclame `__wine_current_teb` et `__wine_teb_tsd_key` « (EC symbol) ».
+Deux corrections : les entrees du `.spec` passent en `-arch=arm64,arm64ec`, et les definitions
+quittent `signal_arm64.c` -- compile pour la seule aarch64 -- pour `thread.c`, compile partout,
+sous `#if defined(__aarch64__) || defined(__arm64ec__)`.
+
+### Ou on en est
+
+```
+wineboot --init            -> 0, 785 fichiers
+wine reg query             -> repond
+libarm64ecfex.dll          -> installe
+libwow64fex.dll            -> installe comme xtajit.dll
+programme x86-64           -> charge, puis
+                              err:seh:NtRaiseException Unhandled exception
+                              code c0000005 addr 0x6fffff9dde38
+```
+
+Le programme x86-64 n'est plus refuse : il est charge et l'emulation demarre, puis faute. C'est
+le prochain point a instruire.

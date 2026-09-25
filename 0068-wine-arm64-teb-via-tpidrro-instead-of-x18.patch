@@ -1,3 +1,26 @@
+diff --git aa/configure.ac bb/configure.ac
+index b415d1c0..1d067a80 100644
+--- aa/configure.ac
++++ bb/configure.ac
+@@ -981,7 +981,17 @@ case $host_os in
+     AC_SUBST(SECURITY_LIBS,"-framework Security -framework CoreFoundation")
+     AC_SUBST(SYSTEMCONFIGURATION_LIBS,"-framework SystemConfiguration")
+ 
+-    WINELOADER_LDFLAGS="-Wl,-segalign,0x1000,-pagezero_size,0x1000,-sectcreate,__TEXT,__info_plist,loader/wine_info.plist"
++    dnl macOS arm64 refuse un executable principal dont le __PAGEZERO a ete
++    dnl retreci : le noyau tue le processus avant que dyld ne s'execute. On garde
++    dnl donc la taille par defaut sur cette architecture. Mesure : avec
++    dnl __PAGEZERO a 0x1000 le chargeur sort sur SIGKILL sans une seule ligne ;
++    dnl avec 0x100000000 il demarre.
++    case $HOST_ARCH in
++      aarch64)
++        WINELOADER_LDFLAGS="-Wl,-sectcreate,__TEXT,__info_plist,loader/wine_info.plist" ;;
++      *)
++        WINELOADER_LDFLAGS="-Wl,-segalign,0x1000,-pagezero_size,0x1000,-sectcreate,__TEXT,__info_plist,loader/wine_info.plist" ;;
++    esac
+ 
+     case $HOST_ARCH in
+       i386) wine_use_preloader=yes ;;
 diff --git aa/include/winnt.h bb/include/winnt.h
 index 0cde7ab1..09d272c3 100644
 --- aa/include/winnt.h
@@ -31,25 +54,26 @@ index 0cde7ab1..09d272c3 100644
  register struct _TEB *__wine_current_teb __asm__("x18");
  static FORCEINLINE struct _TEB * WINAPI NtCurrentTeb(void)
 diff --git aa/dlls/ntdll/ntdll.spec bb/dlls/ntdll/ntdll.spec
-index 2c66313e..e2335f18 100644
+index 2c66313e..266aa758 100644
 --- aa/dlls/ntdll/ntdll.spec
 +++ bb/dlls/ntdll/ntdll.spec
 @@ -1783,3 +1783,6 @@
  @ cdecl wine_get_version()
  @ cdecl wine_get_build_id()
  @ cdecl wine_get_host_version(ptr ptr)
-+@ stdcall -arch=arm64 __wine_current_teb()
-+@ extern -private -arch=arm64 __wine_teb_table
-+@ extern -arch=arm64 __wine_teb_tsd_key
-diff --git aa/dlls/ntdll/signal_arm64.c bb/dlls/ntdll/signal_arm64.c
-index e560718c..de5ccd96 100644
---- aa/dlls/ntdll/signal_arm64.c
-+++ bb/dlls/ntdll/signal_arm64.c
-@@ -892,4 +892,80 @@ __ASM_GLOBAL_FUNC( DbgUserBreakPoint, "brk #0xf000; ret"
-                     "\n\tnop; nop; nop; nop; nop; nop; nop; nop"
-                     "\n\tnop; nop; nop; nop; nop; nop" );
- 
++@ stdcall -arch=arm64,arm64ec __wine_current_teb()
++@ extern -private -arch=arm64,arm64ec __wine_teb_table
++@ extern -arch=arm64,arm64ec __wine_teb_tsd_key
+diff --git aa/dlls/ntdll/thread.c bb/dlls/ntdll/thread.c
+index 9e3cd6e4..8f002f79 100644
+--- aa/dlls/ntdll/thread.c
++++ bb/dlls/ntdll/thread.c
+@@ -730,3 +730,80 @@ void WINAPI DECLSPEC_HOTPATCH RtlProcessFlsData( void *teb_fls_data, ULONG flags
+         RtlFreeHeap( GetProcessHeap(), 0, fls );
+     }
+ }
 +
++#if defined(__aarch64__) || defined(__arm64ec__)
 +
 +/***********************************************************************
 + *           Retrouver le TEB sans x18, sur macOS
@@ -124,8 +148,7 @@ index e560718c..de5ccd96 100644
 +    return (TEB *)__getReg(18);
 +}
 +
-+
- #endif  /* __aarch64__ */
++#endif /* __aarch64__ || __arm64ec__ */
 diff --git aa/dlls/ntdll/unix/signal_arm64.c bb/dlls/ntdll/unix/signal_arm64.c
 index 65ec920e..d866c562 100644
 --- aa/dlls/ntdll/unix/signal_arm64.c
