@@ -15695,3 +15695,35 @@ if (status && is_prefix_bootstrap && is_system_dir_path( attr->ObjectName, &info
 
 C'est ce chemin qu'il faut eprouver ensuite. Le probleme a de nouveau change de nature : ni
 faute, ni boucle, ni TEB -- la creation de processus.
+
+## 228. pthread_setspecific ecrit dans le fil appelant
+
+L'adresse fautive, symbolisee dans la meme execution que sa base :
+
+```
+__wine_syscall_dispatcher + 36
+__wine_unix_call_dispatcher + 36
+```
+
+Le prologue de rechargement fait 32 octets : `+36` est donc l'instruction **juste apres**, celle
+qui lit `[x18, #0x378]`. Le rechargement s'executait et ne trouvait rien -- `cbz x10, 9f` -- et
+laissait `x18` nul.
+
+La cause : j'avais place `enregistrer_teb` dans `init_teb`, qui s'execute sur le fil **parent**,
+pas sur celui qui vient de naitre. `pthread_setspecific` ecrit toujours dans le fil appelant.
+Chaque creation de fil ecrasait donc le creneau du parent avec le TEB de l'enfant, et l'enfant
+n'avait pas le sien.
+
+L'appel est revenu dans `init_syscall_frame`, qui s'execute sur le nouveau fil.
+
+```
+avant : services.exe sort avec le code 5, douze violations d'acces,
+        « invalid frame ... not in stack limits »
+apres : services.exe sort avec le code 0, aucune exception
+```
+
+`wineboot --init` echoue toujours -- `start_services_process` rend l'erreur 731, c'est-a-dire un
+fils sorti avec le code 1 -- alors que le meme `services.exe` lance a la main reussit. La
+difference tient a l'environnement ou au moment, pas au TEB : il n'y a plus aucune exception.
+
+Sondes retirees, serie verifiee.
