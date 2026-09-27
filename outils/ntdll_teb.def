@@ -3,3 +3,4 @@
 LIBRARY ntdll.dll
 EXPORTS
     __wine_teb_tsd_key DATA
+    __wine_wow64_guest_base DATA

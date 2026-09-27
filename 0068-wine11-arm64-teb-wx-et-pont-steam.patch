@@ -3771,13 +3771,14 @@ diff --git aa/dlls/lsteamclient/unixlib.h bb/dlls/lsteamclient/unixlib.h
 diff --git aa/dlls/ntdll/ntdll.spec bb/dlls/ntdll/ntdll.spec
 --- aa/dlls/ntdll/ntdll.spec
 +++ bb/dlls/ntdll/ntdll.spec
-@@ -1783,3 +1783,6 @@
+@@ -1783,3 +1783,7 @@
  @ cdecl wine_get_version()
  @ cdecl wine_get_build_id()
  @ cdecl wine_get_host_version(ptr ptr)
 +@ stdcall -arch=arm64,arm64ec __wine_current_teb()
 +@ extern -private -arch=arm64,arm64ec __wine_teb_table
 +@ extern -arch=arm64,arm64ec __wine_teb_tsd_key
++@ extern -arch=arm64,arm64ec __wine_wow64_guest_base
 diff --git aa/dlls/ntdll/signal_arm64.c bb/dlls/ntdll/signal_arm64.c
 --- aa/dlls/ntdll/signal_arm64.c
 +++ bb/dlls/ntdll/signal_arm64.c
@@ -3951,7 +3952,7 @@ diff --git aa/dlls/ntdll/signal_arm64ec.c bb/dlls/ntdll/signal_arm64ec.c
 diff --git aa/dlls/ntdll/thread.c bb/dlls/ntdll/thread.c
 --- aa/dlls/ntdll/thread.c
 +++ bb/dlls/ntdll/thread.c
-@@ -730,3 +730,80 @@
+@@ -730,3 +730,90 @@
          RtlFreeHeap( GetProcessHeap(), 0, fls );
      }
  }
@@ -4000,6 +4001,16 @@ diff --git aa/dlls/ntdll/thread.c bb/dlls/ntdll/thread.c
 + * vaut zero.
 + */
 +unsigned int __wine_teb_tsd_key = 0;
++
++/*
++ * Base de la fenetre de 4 Gio d'un invite 32 bits dans l'espace de l'hote.
++ *
++ * Zero = correspondance 1:1, ce que fait Windows. Sur macOS le noyau interdit
++ * toute adresse sous 4 Gio a un processus arm64 : la fenetre doit aller
++ * ailleurs, et l'emulateur rebase chaque adresse effective 32 bits. C'est
++ * l'hote qui decide, et le publie ici pour que l'emulateur la lise.
++ */
++ULONG64 __wine_wow64_guest_base = 0;
 +
 +/* __builtin_arm_rsr64 plutot qu'un bloc __asm__ : ce fichier est compile en
 + * mode MSVC, ou la syntaxe d'assembleur en ligne de GCC n'est pas disponible. */

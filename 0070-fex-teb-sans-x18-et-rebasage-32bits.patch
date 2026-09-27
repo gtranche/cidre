@@ -1,3 +1,113 @@
+--- aa/FEXCore/Source/Interface/Core/Addressing.h
++++ bb/FEXCore/Source/Interface/Core/Addressing.h
+@@ -5,6 +5,27 @@
+ #include <cstdint>
+ 
+ namespace FEXCore::IR {
++
++/*
++ * Base de la fenetre de 4 Gio de l'invite 32 bits dans l'espace de l'hote.
++ *
++ * Zero = correspondance 1:1, le cas de Linux et de Windows ARM64. Sur macOS le
++ * noyau interdit toute adresse sous 4 Gio a un processus arm64 -- ce n'est pas
++ * une reservation, c'est le plancher du vm_map de la tache. La fenetre de
++ * l'invite est donc placee ailleurs, et chaque adresse effective 32 bits est
++ * rebasee ici. « orr xN, xN, #0x100000000 » est un immediat logique valide, donc
++ * le cout est d'une instruction, souvent repliee dans le calcul d'adresse.
++ *
++ * L'hote qui la pose doit garantir que tout ce que l'invite peut voir tient
++ * dans [Guest32Base, Guest32Base + 4 Gio).
++ */
++extern uint64_t Guest32Base;
++
++/* Adresse hote correspondant a une adresse effective 32 bits de l'invite.
++ * « (a & 0xffffffff) | base » : la base n'ayant aucun bit sous 32, l'operation
++ * est idempotente, ce qui permet de l'appliquer a chaque entonnoir sans
++ * craindre un double rebasage. Rend Addr tel quel si Guest32Base est nul. */
++Ref RebaseGuest32(IREmitter* IREmit, Ref Addr);
+ class IREmitter;
+ 
+ struct AddressMode {
+--- aa/FEXCore/Source/Interface/Core/Addressing.cpp
++++ bb/FEXCore/Source/Interface/Core/Addressing.cpp
+@@ -7,6 +7,17 @@
+ 
+ namespace FEXCore::IR {
+ 
++uint64_t Guest32Base = 0;
++
++Ref RebaseGuest32(IREmitter* IREmit, Ref Addr) {
++  if (!Guest32Base) {
++    return Addr;
++  }
++  /* Les bits hauts sont effaces d'abord : un appelant peut avoir demande
++   * AllowUpperGarbage, et le « or » les prendrait pour de l'adresse. */
++  return IREmit->_Or(OpSize::i64Bit, IREmit->Constant(Guest32Base), IREmit->_Bfe(OpSize::i64Bit, 32, 0, Addr));
++}
++
+ Ref LoadEffectiveAddress(IREmitter* IREmit, const AddressMode& A, IR::OpSize GPRSize, bool AddSegmentBase, bool AllowUpperGarbage) {
+   Ref Tmp = A.Base;
+ 
+@@ -48,6 +59,10 @@
+     Tmp = Tmp ? IREmit->Add(GPRSize, Tmp, A.Segment) : A.Segment;
+   }
+ 
++  if (Guest32Base && GPRSize == OpSize::i32Bit) {
++    return RebaseGuest32(IREmit, Tmp ?: IREmit->Constant(0));
++  }
++
+   return Tmp ?: IREmit->Constant(0);
+ }
+ 
+--- aa/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
++++ bb/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+@@ -1510,6 +1510,13 @@
+ #undef OpcodeArgs
+ 
+   Ref AppendSegmentOffset(Ref Value, uint32_t Flags, uint32_t DefaultPrefix = 0, bool Override = false);
++
++  /* Pour les rares acces qui prennent un registre invite comme adresse sans
++   * passer par un entonnoir -- les instructions de chaine. */
++  [[nodiscard]]
++  Ref GuestAddr(Ref Addr) {
++    return GetGPROpSize() == OpSize::i32Bit ? IR::RebaseGuest32(this, Addr) : Addr;
++  }
+   Ref GetSegment(uint32_t Flags, uint32_t DefaultPrefix = FEXCore::X86Tables::DecodeFlags::FLAG_NO_PREFIX, bool Override = false);
+ 
+   void UpdatePrefixFromSegment(Ref Segment, uint32_t SegmentReg);
+--- aa/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
++++ bb/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+@@ -3304,13 +3304,13 @@
+     Ref RDI = MakeSegmentAddress(X86State::REG_RDI, 0, X86Tables::DecodeFlags::FLAG_ES_PREFIX, true);
+ 
+     if (CTX->IsMemcpyAtomicTSOEnabled()) {
+-      auto Src = _LoadMemGPRAutoTSO(Size, RSI, Size);
++      auto Src = _LoadMemGPRAutoTSO(Size, GuestAddr(RSI), Size);
+ 
+       // Store to memory where RDI points
+-      _StoreMemGPRAutoTSO(Size, RDI, Src, Size);
++      _StoreMemGPRAutoTSO(Size, GuestAddr(RDI), Src, Size);
+     } else {
+-      auto Src = _LoadMem(RegClass::GPR, Size, RSI, Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
+-      _StoreMem(RegClass::GPR, Size, Src, RDI, Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
++      auto Src = _LoadMem(RegClass::GPR, Size, GuestAddr(RSI), Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
++      _StoreMem(RegClass::GPR, Size, Src, GuestAddr(RDI), Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
+     }
+ 
+     RSI = OffsetByDir(RSI, IR::OpSizeToSize(Size));
+@@ -4113,6 +4113,12 @@
+   auto Segment = GetSegment(Flags, DefaultPrefix, Override);
+   if (Segment) {
+     Value = Add(std::max(OpSize::i32Bit, std::max(GetOpSize(Value), GetOpSize(Segment))), Value, Segment);
++  }
++
++  /* Deuxieme entonnoir d'adresse invite, avec LoadEffectiveAddress. Idempotent,
++   * donc sans risque quand les deux s'appliquent. */
++  if (GetGPROpSize() == OpSize::i32Bit) {
++    Value = IR::RebaseGuest32(this, Value);
+   }
+ 
+   return Value;
 --- aa/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.h
 +++ bb/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.h
 @@ -87,7 +87,17 @@
@@ -269,3 +379,28 @@
    InitSyscalls();
  
    FEX::Windows::InitCRTProcess();
+--- aa/Source/Windows/WOW64/Module.cpp
++++ bb/Source/Windows/WOW64/Module.cpp
+@@ -497,8 +497,22 @@
+     Wow64ProcessPendingCrossProcessItems();
+   }
+ };
++
++#ifdef FEX_TEB_SANS_X18
++namespace FEXCore::IR {
++extern uint64_t Guest32Base;
++}
++extern "C" __declspec(dllimport) unsigned __int64 __wine_wow64_guest_base;
++#endif
+ 
+ void BTCpuProcessInit() {
++#ifdef FEX_TEB_SANS_X18
++  /* macOS interdit toute adresse sous 4 Gio a un processus arm64. L'hote place
++   * donc la fenetre de l'invite ailleurs et nous dit ou : chaque adresse
++   * effective 32 bits est rebasee la. Zero = correspondance 1:1. */
++  FEXCore::IR::Guest32Base = __wine_wow64_guest_base;
++  LogMan::Msg::IFmt("base de la fenetre 32 bits : {:#x}", FEXCore::IR::Guest32Base);
++#endif
+   FEX::Windows::InitCRTProcess();
+   FEX::Windows::SetupThreadHandlers();
+   const auto ExecutablePath = FEX::Windows::GetExecutableFilePath();

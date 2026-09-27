@@ -16755,3 +16755,65 @@ apres
 DXVK ARM64EC relié avec cet objet : **zéro `x18`** dans `d3d11.dll` et `dxgi.dll`, et les deux
 sondes passent toujours. Il ne reste `x18` que dans `tlsdtor.o` de mingw — un `thread_local` à
 destructeur, non atteint par ce qu'on exécute.
+
+## 244. Invités 32 bits : la moitié FEX est faite, et elle est petite
+
+Le paragraphe 243 concluait que seule la translation d'adresses restait. Première moitié écrite :
+côté émulateur.
+
+### L'entonnoir est unique, et c'était la bonne nouvelle
+
+Pour un invité 32 bits, **tous** les chemins de `SelectAddressMode` sortent par
+`LoadEffectiveAddress` — le chemin « registre + registre » optimisé est réservé au 64 bits. Dans
+le frontal, il ne reste que **quatre** accès mémoire directs, et trois sont les instructions de
+chaîne qui prennent `RSI`/`RDI` bruts. Le second entonnoir est `AppendSegmentOffset`.
+
+Donc : deux entonnoirs et trois sites, pas cent trente.
+
+### Le rebasage est idempotent, ce qui rend la chose sûre
+
+```c
+Ref RebaseGuest32(IREmitter* IREmit, Ref Addr) {
+  if (!Guest32Base) return Addr;
+  return IREmit->_Or(i64Bit, Constant(Guest32Base), IREmit->_Bfe(i64Bit, 32, 0, Addr));
+}
+```
+
+La base n'ayant aucun bit sous 32, `(a & 0xffffffff) | base` appliqué deux fois donne le même
+résultat qu'une fois. On peut donc l'appliquer à chaque entonnoir sans tenir de comptabilité, et
+sans craindre qu'un chemin passe par les deux. Et `orr xN, xN, #0x100000000` est un **immédiat
+logique valide** en ARM64 : le coût est d'une instruction, souvent repliée dans le calcul
+d'adresse.
+
+Le `Bfe` d'abord est nécessaire : un appelant peut avoir demandé `AllowUpperGarbage`, et le `or`
+prendrait ces bits pour de l'adresse.
+
+### Qui décide de la base
+
+C'est l'hôte. Wine exporte `__wine_wow64_guest_base` de son ntdll, FEX la lit dans
+`BTCpuProcessInit`. Zéro = correspondance 1:1, donc **rien ne change tant que Wine ne déplace pas
+la fenêtre** — le 64 bits n'est pas touché du tout (`GPRSize` y vaut 64 bits, la condition est
+fausse, le code émis est identique).
+
+Non-régression mesurée, même boucle : 84,1 / 84,2 / 84,4 ms, contre 83,8 / 83,8 / 83,9 avant.
+Identique. Le triangle D3D11 passe toujours, `hello64.exe` répond toujours.
+
+### Ce qui reste : la moitié Wine, chiffrée
+
+182 conversions de pointeur (`ULongToPtr` / `PtrToUlong`), réparties ainsi :
+
+| fichier | sites |
+| --- | --- |
+| `dlls/wow64/syscall.c` | 33 |
+| `dlls/wow64win/user.c` | 31 |
+| `dlls/ntdll/unix/virtual.c` | 23 |
+| `dlls/wow64/wow64_private.h` | 21 |
+| `dlls/wow64/virtual.c` | 17 |
+| `dlls/wow64/process.c` | 16 |
+| le reste | 41 |
+
+Chacune doit être examinée : toutes ne sont pas des adresses, il y a des identifiants et des
+poignées mélangés, et se tromper donne un bogue silencieux. S'y ajoute le chargeur PE i386, qui
+doit placer l'image à `base + base_préférée` tout en présentant l'adresse basse à l'invité.
+
+C'est là que se trouve le vrai travail, et il n'est pas commencé.
