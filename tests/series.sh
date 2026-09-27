@@ -32,5 +32,5 @@ serie_vkd3d_proton() {
 
 serie_dxvk() {
    ls "$R"/0039-*.patch "$R"/0042-*.patch "$R"/0043-*.patch \
-      "$R"/0061-*.patch 2>/dev/null
+      "$R"/0061-*.patch "$R"/0071-*.patch 2>/dev/null
 }

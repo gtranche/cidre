@@ -1,0 +1,271 @@
+--- aa/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.h
++++ bb/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.h
+@@ -87,7 +87,17 @@
+ constexpr size_t CPU_AREA_EMULATOR_DATA_OFFSET = 0x30;
+ 
+ constexpr uint64_t EC_CODE_BITMAP_MAX_ADDRESS = 1ULL << 47;
++
++#ifdef FEX_TEB_SANS_X18
++// Darwin reserves x18 and zeroes it on every return to userspace, including on
++// plain preemption, so the ARM64EC convention of keeping the TEB there does not
++// survive. The TEB is reached through the thread pointer instead: TPIDRRO_EL0
++// holds pthread_self in its upper bits, and the host ntdll publishes the
++// thread-specific slot it stores the TEB in. This is the byte offset of that
++// slot, set once at process init.
++extern "C" uint64_t FEX_TEBSlotOffset;
+ #endif
++#endif
+ 
+ // Will force one single instruction block to be generated first if set when entering the JIT filling SRA.
+ // FillStaticRegs must preserve this
+@@ -119,6 +129,11 @@
+   };
+   void LoadConstant(ARMEmitter::Size s, ARMEmitter::Register Reg, uint64_t Constant, PadType Pad = PadType::NOPAD, int MaxBytes = 0);
+ 
++#if defined(ARCHITECTURE_arm64ec) && defined(FEX_TEB_SANS_X18)
++  // Loads the TEB into Dst without reading x18. Dst is both scratch and result.
++  void LoadTEB(ARMEmitter::XRegister Dst);
++#endif
++
+ protected:
+   FEXCore::Context::ContextImpl* EmitterCTX;
+ 
+--- aa/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.cpp
++++ bb/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.cpp
+@@ -73,21 +73,37 @@
+     ARMEmitter::Reg::r8, ARMEmitter::Reg::r16, ARMEmitter::Reg::r17,
+   };
+ 
++#ifdef FEX_TEB_SANS_X18
++  // Darwin reserves x18 and zeroes it asynchronously, so it cannot hold a value
++  // across any instruction boundary. Keep it out of the allocation pools.
++  constexpr std::array<ARMEmitter::Register, 6> RA = {
++    // All these callee saved
++    ARMEmitter::Reg::r20, ARMEmitter::Reg::r21, ARMEmitter::Reg::r22, ARMEmitter::Reg::r23,
++    ARMEmitter::Reg::r24, ARMEmitter::Reg::r30,
++  };
++#else
+   constexpr std::array<ARMEmitter::Register, 7> RA = {
+     // All these callee saved
+     ARMEmitter::Reg::r20, ARMEmitter::Reg::r21, ARMEmitter::Reg::r22, ARMEmitter::Reg::r23,
+     ARMEmitter::Reg::r24, ARMEmitter::Reg::r30, ARMEmitter::Reg::r18,
+   };
++#endif
+ 
+   constexpr unsigned RAPairs = 4;
+ 
+   // Dynamic GPRs
++#ifdef FEX_TEB_SANS_X18
++  constexpr std::array<ARMEmitter::Register, 1> PreserveAll_Dynamic = {
++    ARMEmitter::Reg::r30,
++  };
++#else
+   constexpr std::array<ARMEmitter::Register, 2> PreserveAll_Dynamic = {
+     ARMEmitter::Reg::r18,
+     ARMEmitter::Reg::r30,
+   };
++#endif
+ 
+-  constexpr std::array<ARMEmitter::Register, 2> NotPreserved_Dynamic = PreserveAll_Dynamic;
++  constexpr auto NotPreserved_Dynamic = PreserveAll_Dynamic;
+ 
+   // All are caller saved
+   constexpr std::array<ARMEmitter::VRegister, 16> SRAFPR = {
+@@ -416,7 +432,18 @@
+ 
+   // Unmapped register.
+   return FEXCore::X86State::X86Reg::REG_INVALID;
++}
++
++#if defined(ARCHITECTURE_arm64ec) && defined(FEX_TEB_SANS_X18)
++extern "C" uint64_t FEX_TEBSlotOffset = 0;
++
++void Arm64Emitter::LoadTEB(ARMEmitter::XRegister Dst) {
++  mrs(Dst, ARMEmitter::SystemRegister::TPIDRRO_EL0);
++  // The low three bits carry the CPU number, not part of the pointer.
++  and_(ARMEmitter::Size::i64Bit, Dst, Dst, ~7ULL);
++  ldr(Dst, Dst, FEX_TEBSlotOffset);
+ }
++#endif
+ 
+ void Arm64Emitter::LoadConstant(ARMEmitter::Size s, ARMEmitter::Register Reg, uint64_t Constant, PadType Pad, int MaxBytes) {
+   bool NOPPad = false;
+@@ -807,7 +834,12 @@
+ 
+ #ifdef ARCHITECTURE_arm64ec
+   // Load STATE in from the CPU area as x28 is not callee saved in the ARM64EC ABI.
++#ifdef FEX_TEB_SANS_X18
++  LoadTEB(TmpReg.X());
++  ldr(TmpReg.X(), TmpReg, TEB_CPU_AREA_OFFSET);
++#else
+   ldr(TmpReg.X(), ARMEmitter::Reg::r18, TEB_CPU_AREA_OFFSET);
++#endif
+   ldr(STATE, TmpReg, CPU_AREA_EMULATOR_DATA_OFFSET);
+ #endif
+ 
+--- aa/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
++++ bb/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+@@ -150,7 +150,12 @@
+   // Clobbers TMP1/2
+   // Check the EC code bitmap incase we need to exit the JIT to call into native code.
+   ARMEmitter::ForwardLabel l_NotECCode;
++#ifdef FEX_TEB_SANS_X18
++  LoadTEB(TMP1);
++  ldr(TMP1, TMP1, TEB_PEB_OFFSET);
++#else
+   ldr(TMP1, ARMEmitter::XReg::x18, TEB_PEB_OFFSET);
++#endif
+   ldr(TMP1, TMP1, PEB_EC_CODE_BITMAP_OFFSET);
+ 
+   lsr(ARMEmitter::Size::i64Bit, TMP2, RipReg, 18);
+@@ -258,7 +263,12 @@
+ #endif
+ 
+ #ifdef ARCHITECTURE_arm64ec
++#ifdef FEX_TEB_SANS_X18
++    LoadTEB(TMP2);
++    ldr(TMP2, TMP2, TEB_CPU_AREA_OFFSET);
++#else
+     ldr(TMP2, ARMEmitter::XReg::x18, TEB_CPU_AREA_OFFSET);
++#endif
+     LoadConstant(ARMEmitter::Size::i32Bit, TMP1, 1);
+     strb(TMP1.W(), TMP2, CPU_AREA_IN_SYSCALL_CALLBACK_OFFSET);
+ #endif
+@@ -266,7 +276,12 @@
+     Body();
+ 
+ #ifdef ARCHITECTURE_arm64ec
++#ifdef FEX_TEB_SANS_X18
++    LoadTEB(TMP2);
++    ldr(TMP2, TMP2, TEB_CPU_AREA_OFFSET);
++#else
+     ldr(TMP2, ARMEmitter::XReg::x18, TEB_CPU_AREA_OFFSET);
++#endif
+     strb(ARMEmitter::WReg::zr, TMP2, CPU_AREA_IN_SYSCALL_CALLBACK_OFFSET);
+ #endif
+ 
+--- aa/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
++++ bb/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
+@@ -366,7 +366,12 @@
+   }
+ 
+ #ifdef ARCHITECTURE_arm64ec
++#ifdef FEX_TEB_SANS_X18
++  LoadTEB(TMP2);
++  ldr(TMP2, TMP2, TEB_CPU_AREA_OFFSET);
++#else
+   ldr(TMP2, ARMEmitter::XReg::x18, TEB_CPU_AREA_OFFSET);
++#endif
+   LoadConstant(ARMEmitter::Size::i32Bit, TMP1, 1);
+   strb(TMP1.W(), TMP2, CPU_AREA_IN_SYSCALL_CALLBACK_OFFSET);
+ #endif
+@@ -379,7 +384,12 @@
+   }
+ 
+ #ifdef ARCHITECTURE_arm64ec
++#ifdef FEX_TEB_SANS_X18
++  LoadTEB(TMP2);
++  ldr(TMP2, TMP2, TEB_CPU_AREA_OFFSET);
++#else
+   ldr(TMP2, ARMEmitter::XReg::x18, TEB_CPU_AREA_OFFSET);
++#endif
+   strb(ARMEmitter::WReg::zr, TMP2, CPU_AREA_IN_SYSCALL_CALLBACK_OFFSET);
+ #endif
+ 
+--- aa/Source/Windows/ARM64EC/Module.S
++++ bb/Source/Windows/ARM64EC/Module.S
+@@ -1,6 +1,25 @@
+ .text
+ .balign 16
+ 
++#ifdef FEX_TEB_SANS_X18
++// Darwin reserves x18 and zeroes it on every return to userspace, including on
++// plain preemption, so the TEB cannot live there. TPIDRRO_EL0 holds pthread_self
++// in its upper bits; FEX_TEBSlotOffset is the byte offset of the thread-specific
++// slot the host ntdll stores the TEB in, resolved once at process init.
++// Result in \reg, \tmp is clobbered.
++.macro LOAD_TEB reg, tmp
++  mrs \tmp, tpidrro_el0
++  and \tmp, \tmp, #0xfffffffffffffff8
++  adrp \reg, FEX_TEBSlotOffset
++  ldr \reg, [\reg, #:lo12:FEX_TEBSlotOffset]
++  ldr \reg, [\tmp, \reg]
++.endm
++#else
++.macro LOAD_TEB reg, tmp
++  mov \reg, x18
++.endm
++#endif
++
+   // __os_arm64x_x64_jump in ARM64EC docs
+   // Expects target code address in x9
+ .globl DispatchJump
+@@ -16,7 +35,8 @@
+ 
+ check_target_ec:
+   // Check if target is in fact x86 code
+-  ldr x16, [x18, #0x60] // TEB->PEB
++  LOAD_TEB x16, x17
++  ldr x16, [x16, #0x60] // TEB->PEB
+   ldr x16, [x16, #0x368] // PEB->EcCodeBitMap
+   lsr x17, x9, #18
+   ldr x16, [x16, x17, lsl #3]
+@@ -32,7 +52,8 @@
+   str lr, [sp, #-8]! // Push return address to stack, this will be popped by the x86 RET instr.
+ 
+ enter_jit:
+-  ldr x17, [x18, #0x1788] // TEB->ChpeV2CpuAreaInfo
++  LOAD_TEB x17, x16
++  ldr x17, [x17, #0x1788] // TEB->ChpeV2CpuAreaInfo
+   mov w16, #1
+   strb w16, [x17, #0x0] // ChpeV2CpuAreaInfo->InSimulation
+   ldr x16, [x17, #0x40] // ChpeV2CpuAreaInfo->EmulatorData[2] - DispatcherLoopTopEnterEC
+@@ -41,12 +62,14 @@
+   // Invoked by KiUserEmulationDispatcher after e.g. an NtContinue to x86 code
+ .global BeginSimulation
+ BeginSimulation:
+-  ldr x17, [x18, #0x1788] // TEB->ChpeV2CpuAreaInfo
++  LOAD_TEB x17, x16
++  ldr x17, [x17, #0x1788] // TEB->ChpeV2CpuAreaInfo
+   ldr x16, [x17, #0x8] // ChpeV2CpuAreaInfo->EmulatorStackBase
+   mov sp, x16
+   ldr x0, [x17, #0x18] // ChpeV2CpuAreaInfo->ContextAmd64
+   bl "#SyncThreadContext"
+-  ldr x17, [x18, #0x1788] // TEB->ChpeV2CpuAreaInfo
++  LOAD_TEB x17, x16
++  ldr x17, [x17, #0x1788] // TEB->ChpeV2CpuAreaInfo
+   ldr x16, [x17, #0x48] // ChpeV2CpuAreaInfo->EmulatorData[3] - DispatcherLoopTopEnterECFillSRA
+   mov x11, #0 // Zero ENTRY_FILL_SRA_SINGLE_INST_REG to avoid single step
+   br x16 // DispatcherLoopTopEnterECFillSRA(SingleInst:x10, CPUArea:x17)
+@@ -59,7 +82,8 @@
+   mrs x17, fpcr
+   and x17, x17, #~6 // NEP + AH
+   msr fpcr, x17
+-  ldr x17, [x18, #0x1788] // TEB->ChpeV2CpuAreaInfo
++  LOAD_TEB x17, x16
++  ldr x17, [x17, #0x1788] // TEB->ChpeV2CpuAreaInfo
+   strb wzr, [x17, #0x0] // ChpeV2CpuAreaInfo->InSimulation
+   ldr x17, [x17, #0x20] // ChpeV2CpuAreaInfo->SuspendDoorbell
+   ldr w17, [x17]
+--- aa/Source/Windows/ARM64EC/Module.cpp
++++ bb/Source/Windows/ARM64EC/Module.cpp
+@@ -578,8 +578,19 @@
+   Context->EFlags = (Context->EFlags & ECValidEFlagsMask) | (StateEFlags & ~ECValidEFlagsMask);
+   Exception::LoadStateFromECContext(Thread, *Context);
+ }
++
++#ifdef FEX_TEB_SANS_X18
++// Defined in FEXCore's Arm64Emitter and read by Module.S; see Arm64Emitter.h.
++extern "C" uint64_t FEX_TEBSlotOffset;
++extern "C" __declspec(dllimport) unsigned int __wine_teb_tsd_key;
++#endif
+ 
+ NTSTATUS ProcessInit() {
++#ifdef FEX_TEB_SANS_X18
++  // Publish the thread-specific slot holding the TEB to the JIT and to Module.S,
++  // both of which cannot read x18 on Darwin. See Arm64Emitter.h.
++  FEX_TEBSlotOffset = 8ULL * __wine_teb_tsd_key;
++#endif
+   InitSyscalls();
+ 
+   FEX::Windows::InitCRTProcess();

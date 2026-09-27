@@ -16048,3 +16048,639 @@ info[1] = 0x60
 `0x60` est le deplacement du PEB dans le TEB : un fil lit `NtCurrentTeb()->Peb` avec un TEB nul.
 Un chemin de creation de fil du cote ARM64EC echappe encore a l'enregistrement -- meme famille
 que le paragraphe 228, autre chemin.
+
+## 236. Le thunk ARM64EC est réparé ; le mur suivant est `x18` dans FEX
+
+### Ce que lisait la faute du paragraphe 235
+
+Symbolisée, l'adresse `0x6ffff22dde38` tombe dans `#arm64x_check_call`, le thunk que l'ABI
+ARM64EC traverse **à chaque appel indirect** :
+
+```
+1800cde38: ldr	x16, [x18, #0x60]     <- faute, x18 = 0
+1800cde3c: lsr	x17, x11, #18
+1800cde40: ldr	x16, [x16, #0x368]    /* peb->EcCodeBitMap */
+```
+
+Wine définit ce thunk lui-même (`dlls/ntdll/signal_arm64ec.c`), donc il est réparable. Le
+fichier compte quatre lectures de `[x18, #0x60]`, et toutes les quatre ne cherchent que le
+**PEB**, qui est unique pour tout le processus.
+
+Deux chemins, selon le coût admissible :
+
+| site | fréquence | accès retenu |
+| --- | --- | --- |
+| `arm64x_check_call` | chaque appel indirect | variable globale `peb_arm64ec` |
+| `KiUserCallbackDispatcher` | rare | clé TSD (`TPIDRRO_EL0`) |
+| `KiUserExceptionDispatcher` | rare | clé TSD |
+| `DbgUiRemoteBreakin` | rare | clé TSD |
+
+La globale est posée dans `arm64ec_update_hybrid_metadata`, **avant** le `SET_FUNC` qui installe
+`arm64x_check_call` dans les métadonnées du module : l'ordre garantit qu'elle n'est jamais lue
+vide. Premier jet : elle n'était posée que dans `arm64ec_process_init`, qui n'est appelé que
+pour les processus chargeant l'émulateur ; les autres mouraient sur
+`user_callback_handler ignoring exception c0000005` puis
+`Unhandled page fault on read access to 0000000000000060`. Ces fautes ont disparu.
+
+### Où l'on arrive ensuite
+
+`hello64.exe` (PE x86_64) va maintenant plus loin : le thunk EC passe, `xtajit64.dll` (FEX)
+est chargé à `0x6ffff8320000`, et la première faute est ailleurs.
+
+```
+0148:trace:seh:dispatch_exception code=c0000005 flags=0 addr=00006FFFF84BD884
+0148:trace:seh:dispatch_exception  info[0]=0000000000000001   /* écriture */
+0148:trace:seh:dispatch_exception  info[1]=0000000000001488
+```
+
+RVA `0x19D884`, dans `libarm64ecfex.dll` :
+
+```
+000000018019d84c <TlsAlloc>:
+18019d87c: mov	x8, x18
+18019d880: add	x8, x8, w19, uxtw #3
+18019d884: str	xzr, [x8, #0x1480]    <- faute, TEB->TlsSlots[i]
+```
+
+`x18` est nul, donc l'écriture part à `0x1488`. Noter que la faute tombe sur le `str`, pas sur
+le `mov` : `x18` a été recopié deux instructions plus tôt. **Aucun rattrapage par signal n'est
+possible** — le tremplin du paragraphe 143 aurait dû agir avant le `mov`, qui ne faute pas.
+
+### L'inventaire, mesuré
+
+`llvm-objdump -d libarm64ecfex.dll` : **71 instructions** citent `x18`.
+
+| forme | nombre | origine |
+| --- | --- | --- |
+| `mov xN, x18` | 65 | `NtCurrentTeb()` en ligne |
+| `ldr x17, [x18, #0x1788]` | 4 | `TEB->ChpeV2CpuAreaInfo`, assembleur de FEX |
+| `ldr x9, [x18, #0x58]` | 2 | assembleur de FEX |
+| `ldr x16, [x18, #0x60]` | 1 | assembleur de FEX |
+
+Les 65 `mov` viennent d'**une seule ligne**, dans les en-têtes de la chaîne d'outils, pas dans
+FEX (`toolchain/llvm-mingw-.../generic-w64-mingw32/include/winnt.h`) :
+
+```c
+register struct _TEB *__mingw_current_teb __asm__("x18");
+FORCEINLINE struct _TEB *NtCurrentTeb(VOID) { return __mingw_current_teb; }
+```
+
+C'est le jumeau exact de la ligne de Wine corrigée au paragraphe 145. Le reste est dans les
+sources de FEX, et l'inventaire y est court — dix lignes :
+
+| fichier | lignes | nature |
+| --- | --- | --- |
+| `Source/Windows/ARM64EC/Module.S` | 19, 35, 44, 49, 62 | assembleur écrit à la main |
+| `FEXCore/.../Dispatcher/Dispatcher.cpp` | 153, 261, 269 | `ldr` **émis** par le JIT |
+| `FEXCore/.../JIT/MiscOps.cpp` | 369, 382 | `ldr` **émis** par le JIT |
+
+### Où ça bloque, et pourquoi ce n'est pas un blocage technique
+
+Les deux en-têtes de la chaîne d'outils ne sont pas du code FEX : on peut les corriger. Les dix
+lignes restantes sont dans FEX, et `third_party/FEX/CLAUDE.md` tient en une phrase : *« AI must
+not be used to generate code for contributions to this project. »* Aucune ligne de FEX n'a été
+modifiée jusqu'ici — seules des options cmake ont servi.
+
+La correction elle-même est courte et connue : remplacer la lecture de `x18` par
+`TPIDRRO_EL0 & ~7` indexé par la clé TSD, comme le fait déjà `NtCurrentTeb()` côté Wine. Dans
+`Module.S` les registres `x16`/`x17` sont libres aux quatre endroits ; dans le JIT, `TMP1`/`TMP2`
+le sont, et le numéro de clé est une constante du processus, donc inscriptible en immédiat dans
+le code généré.
+
+**Décision à prendre : qui écrit ces dix lignes.**
+
+### Suite du 236 : l'en-tête de la chaîne d'outils corrigé, 71 sites → 7
+
+Les 65 `mov xN, x18` venaient d'une ligne de `winnt.h` de llvm-mingw, **pas de FEX**. Corrigée
+(correctif 0069), derrière `__MINGW_TEB_SANS_X18` pour ne rien changer aux autres constructions :
+
+```c
+__declspec(dllimport) extern unsigned int __wine_teb_tsd_key;
+FORCEINLINE struct _TEB *NtCurrentTeb(VOID)
+{
+    unsigned __int64 base = __builtin_arm_rsr64( "tpidrro_el0" ) & ~(unsigned __int64)7;
+    return *(struct _TEB **)(base + 8 * (unsigned __int64)__wine_teb_tsd_key);
+}
+```
+
+`__wine_teb_tsd_key` est déjà exporté par le ntdll de Wine. Pour l'importer sans toucher au
+`Defs/ntdll.def` de FEX, une bibliothèque d'importation séparée
+(`outils/ntdll_teb.def`, `tests/construire_import_teb.sh`) est ajoutée **en option d'édition de
+liens** :
+
+```
+cmake . -DCMAKE_CXX_FLAGS=-D__MINGW_TEB_SANS_X18 \
+        -DCMAKE_C_FLAGS=-D__MINGW_TEB_SANS_X18 \
+        -DCMAKE_SHARED_LINKER_FLAGS="-static -Wl,--file-alignment=4096,/mllvm:-align-loops=1 \
+                                     .../outils/libntdll_teb_arm64ec.a"
+```
+
+Aucun fichier de FEX modifié. Nouveau `TlsAlloc` dans le binaire produit :
+
+```
+18019dbdc: mrs	x8, TPIDRRO_EL0
+```
+
+Décompte après reconstruction : **7 instructions citent encore `x18`**, contre 71.
+
+| adresse | fonction | instruction | source |
+| --- | --- | --- | --- |
+| `18011085c` | `check_target_ec` | `ldr x16, [x18, #0x60]` | `Module.S:19` |
+| `180110880` | `enter_jit` | `ldr x17, [x18, #0x1788]` | `Module.S:35` |
+| `180110894` | `BeginSimulation` | `ldr x17, [x18, #0x1788]` | `Module.S:44` |
+| `1801108a8` | `BeginSimulation` | `ldr x17, [x18, #0x1788]` | `Module.S:49` |
+| `1801108c4` | `ExitFunctionEC` | `ldr x17, [x18, #0x1788]` | `Module.S:62` |
+| `1801c1bc8` | `__cxa_get_globals` | `ldr x9, [x18, #0x58]` | libc++abi, `thread_local` |
+| `1801c1be8` | `__cxa_get_globals_fast` | `ldr x9, [x18, #0x58]` | libc++abi, `thread_local` |
+
+Les deux derniers ne sont pas de FEX non plus : c'est le modèle TLS Windows émis par clang
+(`TEB->ThreadLocalStoragePointer`), atteint seulement quand une exception C++ est levée. Aucun
+en-tête ne peut les corriger.
+
+### Le mur, maintenant nommé
+
+`hello64.exe` va jusqu'à l'assembleur de FEX, et la trace le dit mot pour mot :
+
+```
+0x006ffffb5a0880 xtajit64+0x110880: ldr x17, [x18, #0x1788]
+```
+
+C'est `enter_jit`, l'entrée du JIT. Restent donc **cinq lignes de `Module.S` et cinq `ldr`
+émis par le JIT** (`Dispatcher.cpp:153,261,269`, `MiscOps.cpp:369,382`). Dix lignes, dans FEX.
+
+Piège rencontré au passage : un `libarm64ecfex.dll` périmé traînait à côté de `xtajit64.dll`
+dans l'arbre Wine **et** dans le préfixe. La trace affichait `xtajit64.dll` tout en chargeant
+l'ancien, et deux constructions différentes ont fauté au même RVA — ce qui n'a aucun sens et
+m'a coûté un aller-retour. Supprimer les copies périmées avant toute mesure, comme pour les
+processus oubliés.
+
+## 237. Du x86_64 s'exécute sous FEX, sans Rosetta — et `x18` n'est plus le mur
+
+Suite directe du 236. Décision prise : FEX est corrigé sous forme de correctif appliqué chez
+nous, jamais poussé chez eux.
+
+### Ce qui restait, et par où
+
+| origine | sites | traitement |
+| --- | --- | --- |
+| `NtCurrentTeb()` des en-têtes llvm-mingw | 65 | correctif 0069 sur `winnt.h` |
+| `Module.S` de FEX | 5 | correctif 0070 |
+| `ldr` émis par le JIT (`Dispatcher.cpp`, `MiscOps.cpp`, `Arm64Emitter.cpp`) | 6 | correctif 0070 |
+| `r18` dans les pools d'allocation hors ARM64EC | 2 tableaux | correctif 0070 |
+| `__cxa_get_globals` de libc++abi | 2 | laissés : TLS Windows émis par clang, atteint seulement sur `throw` |
+| **`__wine_syscall_dispatcher`, `call_user_mode_callback` — côté unix de Wine** | 8 | correctif 0068 |
+
+### Le mécanisme, une fois pour toutes
+
+Le JIT et `Module.S` lisent désormais :
+
+```
+mrs x16, tpidrro_el0
+and x16, x16, #0xfffffffffffffff8
+ldr x17, [x16, #<8 * clé TSD>]
+```
+
+La clé est publiée par le ntdll de Wine (`__wine_teb_tsd_key`) et lue une fois dans
+`ProcessInit`. Pour l'importer sans toucher au `Defs/ntdll.def` de FEX, une bibliothèque
+d'importation à part (`outils/ntdll_teb.def`) est ajoutée en option d'édition de liens.
+
+### Le piège de fond : recharger `x18` ne suffit jamais
+
+Le correctif 0068 rechargeait `x18` à l'entrée des répartiteurs. Mesuré, ça ne tient pas :
+
+```
+2c208: ldr x7, [x18, #0x378]   <- passe
+2c20c: sub x1, sp, #0x330
+2c210: str x1, [x18, #0x378]   <- faute, x18 = 0
+```
+
+Deux instructions d'écart, aucun appel système entre les deux. Le noyau efface `x18` de façon
+asynchrone, donc **aucune valeur ne peut y séjourner, même une instruction**. Les répartiteurs
+relisent maintenant le TEB dans un registre banal juste avant chaque usage (`LIRE_TEB`), et
+`call_user_mode_callback` garde simplement le TEB dans `x4`, où l'appelant le lui donne.
+
+Corollaire : le tremplin du paragraphe 143 est neutralisé. Il ne servait plus qu'à écraser `x16`
+et à détourner `PC` — et il fautait lui-même sur son propre `ldr x18, [sp]`.
+
+### Le résultat
+
+`hello64.exe`, PE x86_64, sous Wine arm64 natif. `sample` sur le processus :
+
+```
+442 __wine_syscall_dispatcher (in ntdll.so)
+  388 NtProtectVirtualMemory -> set_protection -> set_vprot -> mprotect_exec
+969 ??? [0x6fffff9ba52c]
+  95 ??? [0x6ffff725e2d4]   <- code émis par le JIT
+```
+
+Les adresses `0x6ffff72xxxxx` sont les blocs produits par FEX : **du x86_64 s'exécute**, sans
+Rosetta, sur une pile entièrement arm64. Plus aucune faute `x18` dans la trace (sonde
+`SONDE_FAUTE_BASSE` sur toute faute sous `0x10000` : zéro).
+
+### Les deux obstacles suivants, nommés
+
+1. **Le W^X coûte tout le temps CPU.** 388 échantillons sur 442 sont dans `mprotect_exec`.
+   FEX demande `PAGE_EXECUTE_READWRITE`, macOS le refuse, notre repli retire `PROT_EXEC` — donc
+   chaque bloc émis repasse par une faute. Le remède est connu et mesuré (§231) : `MAP_JIT` +
+   `pthread_jit_write_protect_np` pour les pages demandées en RWX.
+2. **Les 4 premiers Gio.** `map_fixed_area out of memory for 0x400000-...` et
+   `couldn't map free area in range 0x110000-0x7fff0001` : les processus i386 du démarrage ne
+   trouvent pas leur espace bas, pris par `__PAGEZERO` et le binaire hôte. Obstacle déjà connu,
+   intact.
+
+### Piège de manipulation
+
+`make install` de Wine réécrit `xtajit64.dll` et `xtajit.dll` avec ses propres bouchons ; la
+trace dit alors `err:xtajit:ExitToX64 x64 emulation not implemented`. Et une copie périmée de
+`libarm64ecfex.dll` à côté avait fait fauter deux constructions différentes au même RVA.
+`tests/installer_fex.sh` repose FEX après chaque installation.
+
+## 238. Le W^X : la bascule sur faute, et `hello64.exe` répond
+
+### Ce que le paragraphe 237 laissait, mesuré
+
+Sonde sur `mprotect_exec`, `hello64.exe` pendant trois minutes :
+
+```
+SONDE_WX 23020000 appels, 23019838 demandes w+x, 23019837 retraits d'exec
+SONDE_WX origines : NtProtect=16939837 faute=0 autre=163
+```
+
+Puis les adresses :
+
+```
+NtProtect #2000000  base=0x7ffedded0000 size=1000 new=40 old=40
+NtProtect #16000000 base=0x7ffedded0000 size=1000 new=40 old=40
+```
+
+**Une seule page, 17 millions de fois, avec `new == old == PAGE_EXECUTE_READWRITE`.** C'était un
+enlisement, pas une lenteur : la comptabilité de Wine disait RWX, le noyau avait perdu
+`PROT_EXEC` à cause de notre repli, FEX exécutait, fautait, redemandait la même protection, et
+recommençait.
+
+### La bascule
+
+Ni `MAP_JIT` ni le mode `ManageWritesToExecutableMemory` du paragraphe 231 ne conviennent tels
+quels : `MAP_JIT` donne l'écriture **ou** l'exécution par fil (APRR), jamais les deux, et le
+second lève une exception que FEX n'attend pas. Ce qu'il faut est plus simple : donner à la page
+le droit qu'on vient de lui réclamer.
+
+Un bit de page libre (`VPROT_WX_EXEC`, `0x80`) dit lequel des deux elle détient :
+
+```c
+if (bascule_wx && (prot & PROT_WRITE) && (prot & PROT_EXEC))
+{
+    if (vprot & VPROT_WX_EXEC) prot &= ~PROT_WRITE;
+    else                       prot &= ~PROT_EXEC;
+}
+```
+
+et `virtual_handle_fault` bascule, dans un sens ou dans l'autre, quand la faute correspond
+exactement au droit manquant — plus une invalidation du cache d'instructions au passage vers
+l'exécution. `bascule_wx` n'est pas supposé : `virtual_init` demande une page RWX au noyau et
+regarde s'il la donne.
+
+Coût : deux fautes par alternance écriture/exécution, au lieu d'une boucle infinie.
+
+### Le résultat
+
+```
+$ wine c:\hello64.exe
+bonjour depuis x86_64 emule
+real 0.65 / 0.55 / 0.56
+```
+
+**Un PE x86_64 s'exécute et rend la main, en une demi-seconde, sur une pile entièrement arm64 :
+Wine arm64, FEX ARM64EC, macOS arm64. Aucun Rosetta.**
+
+### La taxe d'émulation, chiffrée
+
+`tests/banc_emul.c`, même source, 20 millions de tours d'un mélangeur 64 bits ; à gauche le PE
+x86_64 émulé par FEX sous notre Wine arm64, à droite le binaire macOS arm64 natif. Les deux
+rendent `h=89d7dace25138f6a`, ce qui valide la comparaison.
+
+| | essai 1 | essai 2 | essai 3 | médiane |
+| --- | --- | --- | --- | --- |
+| x86_64 sous FEX | 84,2 ms | 84,4 ms | 83,9 ms | **84,2 ms** |
+| arm64 natif | 80,9 ms | 80,7 ms | 80,7 ms | **80,7 ms** |
+
+**+4,3 %.** À comparer au ×2,04 de Rosetta sur le chemin CPU du pilote (§145). La précaution qui
+s'impose : c'est une boucle ALU serrée, sans appel système, sans pression mémoire et sans
+branchement imprévisible — le meilleur cas pour un JIT. Ce chiffre dit que le cœur du JIT de FEX
+est bon, pas que la pile entière coûtera 4 %.
+
+### Ce qui reste ouvert
+
+1. Les 4 premiers Gio : `virtual_alloc_first_teb` échoue encore dans les processus i386 du
+   démarrage (`__PAGEZERO`). Non touché.
+2. Un PE **arm64ec** produit par clang (`banc_ec.exe`) se bloque au démarrage sous notre Wine,
+   là où le PE x86_64 passe. Non élucidé.
+
+## 239. Vulkan, puis D3D11, sur la pile arm64 : ce qui passe et ce qui bloque
+
+### Le Wine arm64 n'avait pas Vulkan
+
+`configure:24932: libvulkan and libMoltenVK development files not found`. Le chargeur Vulkan
+arm64 et l'ICD KosmicKrisp arm64 existaient depuis le paragraphe 232, mais la construction du
+Wine ARM64EC ne les voyait pas. Reconfiguré avec `LDFLAGS=-L$R/prefix/lib
+CPPFLAGS=-I$R/prefix/include` : `checking for -lvulkan... libvulkan.1.dylib`.
+
+### Un PE x86_64 dessine, de bout en bout
+
+`build/bench_draw_pe.exe`, PE x86_64, 2000 tirages Vulkan. Chaîne complète : PE x86_64 → FEX
+ARM64EC → Wine arm64 → winevulkan → chargeur Vulkan arm64 → KosmicKrisp arm64 → Metal.
+
+| | essai 1 | essai 2 | essai 3 | médiane |
+| --- | --- | --- | --- | --- |
+| PE x86_64 émulé | 0,582 | 0,567 | 0,568 µs/tirage | **0,568** |
+| binaire arm64 natif (hôte) | 0,435 | 0,437 | 0,436 µs/tirage | **0,436** |
+
+**+30 %**, et ce chiffre porte l'émulation **et** la couche de conversion de winevulkan, pas
+seulement le JIT. À comparer au ×2,04 de Rosetta sur le même genre de chemin (§145).
+
+### DXVK compile pour ARM, après une ligne
+
+`dxvk_pipemanager.cpp` construit une clé vide :
+
+```c
+m_shaderLibraries.emplace(std::piecewise_construct, std::tuple(), std::tuple(m_device, this, key));
+```
+
+Le libc++ de la chaîne d'outils instancie alors `tuple_element<0, tuple<>>` et refuse. On passe
+`std::tuple(key)` — `key` vient d'être construite par défaut deux lignes plus haut, donc même
+valeur (correctif 0071). Avec ça, DXVK sort `d3d11.dll`, `dxgi.dll` et `d3d9.dll` en **aarch64**
+et en **arm64ec**.
+
+### Le DXVK ARM64EC ne charge pas : le CRT de mingw lit `x18`
+
+```
+SONDE pc=... addr=0x8 : [f9400519]
+ECHEC: d3d11.dll introuvable
+```
+
+`ldr x25, [x8, #0x8]`, précédé de `mov x8, x18` : c'est `NtCurrentTeb()->Tib.StackBase` dans
+`_CRT_INIT`. Trois sites, tous dans **`dllcrt2.o`**, un objet **déjà compilé** livré avec
+llvm-mingw — le correctif 0069 sur l'en-tête ne peut rien pour lui. La source est
+`mingw-w64-crt/crt/crtdll.c`, 219 lignes, deux `NtCurrentTeb()` ; il faudra recompiler cet objet
+avec l'en-tête corrigé. FEX y échappe parce qu'il fournit sa propre initialisation de CRT.
+
+### Le DXVK x86_64, lui, tourne
+
+En attendant, le DXVK x86_64 émulé par FEX : Wine arm64 ne le distingue pas d'un jeu.
+
+```
+info:  DXVK: v2.7.1+
+info:  Vulkan: Found vkGetInstanceProcAddr in winevulkan.dll
+info:  Found device: Apple M1 Max (KosmicKrisp 26.2.99)
+info:  D3D11InternalCreateDevice: Using feature level D3D_FEATURE_LEVEL_11_0
+```
+
+221 lignes d'initialisation : le périphérique D3D11 est créé, les extensions et les types de
+mémoire énumérés. **Un D3D11 x86_64 parle à KosmicKrisp arm64.**
+
+Puis, avec les fils de compilation par défaut, tout se bloque sans consommer de CPU
+(`NtWaitForAlertByThreadId` partout). Avec `dxvk.numCompilerThreads = 1` l'initialisation va au
+bout, et l'arrêt devient une faute nette :
+
+```
+err:seh:call_seh_handlers invalid frame 7ffe94078c18 (0000000109C48000-0000000109D40000)
+err:seh:NtRaiseException Exception frame is not in stack limits => unable to dispatch exception.
+```
+
+L'`EstablisherFrame` est sur la pile **x64 émulée** (`0x7ffe...`), les bornes vérifiées sont
+celles de la pile **ARM64EC native** (`0x109c...`). C'est la conversion d'exception entre les
+deux mondes ARM64EC qui ne recolle pas. Prochain chantier.
+
+## 240. La bascule W^X par page est fausse à plusieurs fils, et APRR le prouve
+
+### Le symptôme
+
+Avec DXVK, `probe_d3d11.exe` échoue de trois façons différentes d'une exécution à l'autre :
+blocage sans CPU, `invalid frame`, ou faute d'exécution à une adresse variable. Le
+non-déterminisme est l'indice.
+
+La sonde `SONDE_EC` (toute faute d'abort d'instruction, avec le bit de la carte de code EC) :
+
+```
+SONDE_EC faute d'execution pc=0x7ffeabe70004 addr=0x7ffeabe70004 carte=0x7ffefdef0000 bit=1
+SONDE_EC faute d'execution pc=0x7ffeabe700a4 ...
+SONDE_EC faute d'execution pc=0x7ffeabe71364 ...
+```
+
+Des dizaines de fautes d'exécution sur des pages **marquées code EC**, à des adresses qui
+avancent : ce sont les pages de code émises par FEX, rendues non exécutables.
+
+### Pourquoi c'était faux dès le départ
+
+La bascule du paragraphe 238 donne à la page l'écriture **ou** l'exécution. L'état est celui de
+la **page**, donc du processus entier. Dès que deux fils travaillent — et FEX compile sur un fil
+pendant qu'un autre exécute — le fil qui écrit rend la page non exécutable pour tous les autres.
+Le compte de fautes explose et l'ordonnancement décide du résultat. Cela explique aussi pourquoi
+`dxvk.numCompilerThreads = 1` allait nettement plus loin.
+
+macOS offre le mécanisme qu'il faut, et il est **par fil** : APRR, exposé par `MAP_JIT` et
+`pthread_jit_write_protect_np`.
+
+### Les quatre mesures qui fixent la conception
+
+`tests/wx_map_jit.c` :
+
+```
+reservation PROT_NONE      ok
+MAP_JIT en MAP_FIXED       Invalid argument
+MAP_JIT sans adresse       ok
+ecriture puis execution    -> 42
+mprotect RWX sur MAP_JIT   Permission denied
+execution apres mprotect   -> 42
+en parallele : 6062150 ecritures, 6052480 executions
+```
+
+| | résultat |
+| --- | --- |
+| `MAP_JIT` **avec** `MAP_FIXED` | **refusé** (`EINVAL`) — on ne choisit pas l'adresse |
+| `MAP_JIT` sans adresse | accordé |
+| écrire puis exécuter sur un fil, avec la bascule APRR | marche |
+| `mprotect` RWX sur une région `MAP_JIT` | refusé, **sans casser la région** |
+| **un fil écrit et un autre exécute la même page, en même temps** | **6,06 M écritures et 6,05 M exécutions en 200 ms** |
+
+La dernière ligne est la réponse : APRR est par fil, les deux fils ne se gênent pas du tout. La
+bascule par page ne pourra jamais faire ça.
+
+### Ce que ça impose à Wine
+
+1. Les pages demandées en **exécution + écriture** doivent être allouées par un `mmap MAP_JIT`,
+   donc **à une adresse choisie par le noyau** — Wine ne peut pas les placer dans son espace
+   réservé comme le reste. Il faudra les enregistrer comme vues « système ».
+2. Le gestionnaire de faute ne change plus la protection de la page : il bascule l'état **du
+   fil** (`pthread_jit_write_protect_np`) selon le type de faute, et reprend.
+3. `mprotect` sur ces vues devient un non-événement à avaler sans erreur.
+
+Le correctif 0068 tel qu'il est reste utile pour un seul fil — `hello64.exe` et le banc Vulkan
+passent — mais il est faux dès qu'un émulateur compile en parallèle. C'est le prochain chantier,
+et il est maintenant entièrement spécifié.
+
+## 241. Un jeu Steam x86_64 tourne sur la pile entièrement arm64
+
+### La correction : `MAP_JIT`, et la bascule passe du côté du fil
+
+Le paragraphe 240 avait tout spécifié. Écrit :
+
+| | avant (bascule par page) | après (`MAP_JIT` + APRR) |
+| --- | --- | --- |
+| `get_unix_prot` | retire l'écriture **ou** l'exécution selon un bit de page | une page `VPROT_JIT` porte les trois droits |
+| `mprotect_range` | rebascule la page à chaque faute | ne touche jamais une page `MAP_JIT` |
+| faute d'écriture / d'exécution | change la protection de la **page** | `pthread_jit_write_protect_np` sur le **fil** |
+| allocation | espace réservé de Wine | `mmap MAP_JIT`, adresse choisie par le noyau, sur-allouée puis rognée |
+
+Trois pièges rencontrés, tous mesurés :
+
+1. **L'invalidation du cache d'instructions à chaque bascule coûtait tout.** `sample` :
+   1370 échantillons sur 1422 dans `sys_icache_invalidate`. Retirée : l'émulateur fait la sienne
+   après avoir émis son code.
+2. **`is_vprot_exec_write()` est vrai pour `VPROT_WRITECOPY`**, donc les *images PE* partaient
+   en `MAP_JIT` — d'où une tempête de bascules sur du code natif. La condition exclut désormais
+   `VPROT_WRITECOPY` et les drapeaux `SEC_*`.
+3. Le premier jet gardait l'alignement 64 Ko de Windows par chance ; `MAP_JIT` refuse
+   `MAP_FIXED`, donc on sur-alloue et on rend le surplus (`unmap_extra_space`).
+
+### Ce qui passe maintenant
+
+```
+$ wine c:\hello64.exe                 bonjour depuis x86_64 emule      0,58 s
+$ wine c:\banc_x64.exe 20000000       83,8 ms   (natif arm64 : 80,7 ms)
+$ wine c:\bench_draw_pe.exe           0,562 us/tirage  (natif arm64 : 0,436)
+$ wine c:\probe_d3d11.exe             RESULTAT: le GPU a execute l'effacement, la valeur revient juste
+$ wine c:\probe_d3d11_draw.exe        RESULTAT: le triangle est rasterise, interpolation comprise
+```
+
+`probe_d3d11_draw` compile du HLSL, le fait traduire en SPIR-V par DXVK puis en Metal par
+KosmicKrisp, rasterise un triangle et relit les pixels — **80, 90, 85 au centre, 0 au coin**.
+
+### Le pont Steam, porté sur arm64
+
+Le correctif 0067 vivait dans l'arbre x86_64. Porté tel quel dans `wine11` : le
+`steamclient.dylib` du client Steam macOS est un binaire universel avec **une tranche arm64**
+(`lipo -archs` : `x86_64 arm64`), donc l'unixlib le charge nativement. Aucun changement de code
+n'a été nécessaire — `appel_vtable` passe ses sept arguments dans `x0`-`x6` comme il les passait
+dans `rdi`-`r9`.
+
+### Le jeu
+
+`Surviving Mars` (`MarsSteam.exe`, PE x86_64, D3D11) :
+
+```
+info:  DXVK: Using 10 compiler threads
+info:  Presenter: Actual swapchain properties:
+info:    Format:       VK_FORMAT_B8G8R8A8_UNORM
+info:    Buffer size:  1728x1117
+info:    Image count:  3
+Setting breakpad minidump AppID = 464920
+SteamInternal_SetMinidumpSteamID:  Caching Steam ID:  76561198043440982
+```
+
+Le jeu a récupéré **le vrai identifiant Steam du compte connecté**, à travers le pont, depuis le
+client macOS natif. Et il rend :
+
+| | |
+| --- | --- |
+| occupation GPU (`ioreg`, AGXAccelerator) | 4 à 10 %, soutenue |
+| mémoire allouée au GPU | 2,29 Gio |
+| CPU | ~45 % d'un cœur |
+| durée observée | **48 heures sans incident** (laissé tourner par inadvertance : 2 j, 49 h de CPU) |
+
+**Chaîne complète, sans un octet de Rosetta :** jeu Windows x86_64 → FEX ARM64EC → Wine arm64 →
+DXVK → winevulkan → chargeur Vulkan arm64 → KosmicKrisp arm64 → Metal → GPU Apple.
+
+### Ce qui reste
+
+Le lancement est scripté : `tests/etape2_pile_arm64ec.sh` pose l'environnement,
+`tests/preparer_pont_steam_arm64.sh` installe le pont et le registre,
+`tests/lancer_jeu_steam_arm64.sh` enchaîne le faux client et le jeu.
+
+Piège : sans processus vivant sur `ActiveProcess\pid`, `steam_api64.dll` ne charge même pas le
+pont. Le jeu tourne quand même — fenêtre, chaîne d'échange, rendu — puis se ferme sans rien dire
+au bout de quatre minutes. La trace disait `[API loaded no]` et zéro ligne `lsteamclient`.
+
+- Les jeux **i386** restent hors de portée : `DREDGE` et `Dead Cells` sont 32 bits, et les
+  quatre premiers Gio sont pris par `__PAGEZERO` et le binaire hôte.
+- Le DXVK **ARM64EC** ne charge toujours pas (`dllcrt2.o` de mingw lit `x18`, §239) ; c'est le
+  DXVK x86_64 émulé qui travaille ici.
+
+## 242. Les polices, puis le dernier `x18` : DXVK tourne en ARM64EC natif
+
+### Les polices : un `configure`, et un piège d'architecture
+
+Wine était construit `--without-freetype` : aucun texte à l'écran. Reconfiguré,
+`checking for -lfreetype... libfreetype.6.dylib`. Mais à l'exécution, toujours
+*« Wine cannot find the FreeType font library »*. La raison :
+
+```
+lipo -archs /usr/local/lib/libfreetype.6.dylib   -> x86_64
+lipo -archs /opt/homebrew/lib/libfreetype.6.dylib -> arm64
+```
+
+`dlopen` du soname nu trouvait d'abord la tranche **x86_64** de la pile Rosetta. Le dossier
+`wine/vklib-arm64`, déjà en tête de `DYLD_LIBRARY_PATH`, sert maintenant à présenter les bonnes
+tranches arm64.
+
+Sans fontconfig — absent de cette machine — Wine ne scanne que son propre dossier.
+`tests/installer_polices_macos.sh` y lie les 370 polices de macOS et vide le cache du préfixe :
+**505 polices enregistrées**, dont Arial, Courier New, Times New Roman, Georgia, Verdana.
+
+### Le dernier `x18` : un objet ARM64EC caché dans l'objet aarch64
+
+Les objets de démarrage de mingw (`crt1/crt1u/crt2/crt2u/dllcrt1/dllcrt2`) sont livrés **déjà
+compilés** : le correctif 0069 sur `winnt.h` ne peut rien pour eux. Recompiler depuis les sources
+amont ne marche pas — la version livrée n'est ni v14 ni master (`__main` contre
+`__mingw_dll_do_global_ctors`, absent des bibliothèques livrées).
+
+Ils ne lisent `x18` que pour **un jeton d'identité de fil** :
+
+```c
+void *fiberid = ((PNT_TIB)NtCurrentTeb ())->StackBase;
+while ((lock_free = InterlockedCompareExchangePointer (&lock, fiberid, NULL)))
+   if (lock_free == fiberid) ...
+```
+
+`fiberid` n'est jamais déréférencé : il sert de valeur unique et non nulle dans un verrou.
+`TPIDRRO_EL0` a exactement ces deux propriétés, et lui survit aux retours du noyau. D'où un
+correctif binaire, instruction pour instruction, sans relocation
+(`tests/corriger_crt_mingw.py`) :
+
+```
+mov  x8, x18          ->   mrs  x8, tpidrro_el0
+ldr  xD, [x8, #0x8]   ->   mov  xD, x8
+```
+
+Premier jet : 10 sites, et le binaire produit contenait toujours `mov x8, x18`. Le nœud est là —
+un objet aarch64 de llvm-mingw porte une section **`.obj.arm64ec`** : un objet COFF complet, la
+variante ARM64EC du même code, que l'éditeur de liens extrait pour une cible arm64ec. C'est
+*celle-là* que reçoivent DXVK et les exécutables ARM64EC. Les noms de section de plus de huit
+caractères vivent dans la table des chaînes, ce qui masquait aussi la moitié des `.text$#...`.
+Avec la récursion : **20 sites**, et zéro `x18` dans les binaires produits.
+
+### Ce que ça débloque
+
+| | avant | après |
+| --- | --- | --- |
+| exécutable **ARM64EC** produit par clang | se bloquait au démarrage (§239, point resté inexpliqué) | **tourne** : 20 M tours en **82,4 ms** |
+| **DXVK ARM64EC** | `ECHEC: d3d11.dll introuvable` | **charge et rend** |
+
+Repères pour la même boucle : 80,7 ms en natif macOS arm64, **82,4 ms en ARM64EC natif**,
+83,8 ms en x86_64 émulé par FEX.
+
+Avec le DXVK **ARM64EC natif** en place — la couche D3D11 n'est donc plus émulée :
+
+```
+RESULTAT: le GPU a execute l'effacement, la valeur revient juste
+RESULTAT: le triangle est rasterise, interpolation des couleurs comprise
+```
+
+et `Surviving Mars` tourne, GPU à 99 %.
+
+### Ce qui reste `x18`, et pourquoi on n'y touche pas
+
+`__cxa_get_globals` de libc++abi et `tlsdtor.o` de mingw lisent `[x18, #0x58]`, le vrai
+`ThreadLocalStoragePointer`. Ce n'est pas un jeton, c'est un pointeur : la substitution d'une
+instruction ne s'applique pas. Atteints seulement sur une exception C++ levée, et sur un
+`thread_local` à destructeur. Notés, pas corrigés.

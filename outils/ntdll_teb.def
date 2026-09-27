@@ -1,0 +1,5 @@
+; Bibliotheque d'importation minimale : la cle TSD qui porte le TEB quand x18
+; n'est pas disponible. Elle s'ajoute au ntdll_ex.a de FEX, qu'on ne touche pas.
+LIBRARY ntdll.dll
+EXPORTS
+    __wine_teb_tsd_key DATA

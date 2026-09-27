@@ -1,0 +1,17 @@
+diff --git aa/src/dxvk/dxvk_pipemanager.cpp bb/src/dxvk/dxvk_pipemanager.cpp
+--- aa/src/dxvk/dxvk_pipemanager.cpp
++++ bb/src/dxvk/dxvk_pipemanager.cpp
+@@ -392,9 +392,12 @@
+     std::lock_guard<dxvk::mutex> lock(m_mutex);
+     DxvkShaderPipelineLibraryKey key;
+ 
++    /* La cle vide passait par tuple_element<0, tuple<>> dans le libc++ de la
++     * chaine d'outils, qui la refuse. On passe la cle, deja construite par
++     * defaut juste au-dessus : meme valeur, une instanciation en moins. */
+     auto iter = m_shaderLibraries.emplace(
+       std::piecewise_construct,
+-      std::tuple(),
++      std::tuple(key),
+       std::tuple(m_device, this, key));
+     return &iter.first->second;
+   }

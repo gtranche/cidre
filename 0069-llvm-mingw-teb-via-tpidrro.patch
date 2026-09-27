@@ -1,0 +1,22 @@
+--- /tmp/winnt.h.orig	2026-09-25 13:12:22
++++ toolchain/llvm-mingw-20260908-ucrt-macos-universal/generic-w64-mingw32/include/winnt.h	2026-09-25 13:12:22
+@@ -10392,7 +10392,18 @@
+     PVOID GetCurrentFiber(VOID);
+     PVOID GetFiberData(VOID);
+ 
+-#if defined (__aarch64__) || defined(__arm64ec__)
++#if (defined (__aarch64__) || defined(__arm64ec__)) && defined(__MINGW_TEB_SANS_X18)
++    /* macOS reserve x18 et le remet a zero a chaque retour du noyau, y compris
++     * sur une preemption : l'ABI Windows ARM64 n'y survit pas. Le TEB passe par
++     * un emplacement de donnees propre au fil, indexe par une cle publiee par
++     * le ntdll de Wine. TPIDRRO_EL0 porte pthread_self dans ses bits hauts. */
++    __declspec(dllimport) extern unsigned int __wine_teb_tsd_key;
++    FORCEINLINE struct _TEB *NtCurrentTeb(VOID)
++    {
++        unsigned __int64 base = __builtin_arm_rsr64( "tpidrro_el0" ) & ~(unsigned __int64)7;
++        return *(struct _TEB **)(base + 8 * (unsigned __int64)__wine_teb_tsd_key);
++    }
++#elif defined (__aarch64__) || defined(__arm64ec__)
+     register struct _TEB *__mingw_current_teb __asm__("x18");
+     FORCEINLINE struct _TEB *NtCurrentTeb(VOID)
+     {

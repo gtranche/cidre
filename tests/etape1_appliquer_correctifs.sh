@@ -78,6 +78,38 @@ appliquer wine11 $(serie_wine11)
 appliquer vkd3d-proton $(serie_vkd3d_proton)
 appliquer dxvk $(serie_dxvk)
 
+# La chaine d'outils n'est pas un arbre amont suivi par git : le correctif 0069
+# remplace l'acces au TEB par x18 dans winnt.h de llvm-mingw, sans quoi tout
+# binaire ARM64EC construit ici faute sur macOS. Idempotent.
+TC="$R/toolchain/llvm-mingw-20260908-ucrt-macos-universal/generic-w64-mingw32/include/winnt.h"
+if [ -f "$TC" ]; then
+   echo "== toolchain =="
+   if grep -q __MINGW_TEB_SANS_X18 "$TC"; then
+      echo "   0069 deja applique"
+   elif patch "$TC" -p0 --silent < "$R"/0069-*.patch; then
+      echo "   1 correctif applique"
+   else
+      echo "   ECHEC sur 0069" >&2; exit 1
+   fi
+   sh "$R/tests/construire_import_teb.sh" arm64ec >/dev/null
+   sh "$R/tests/construire_import_teb.sh" aarch64 >/dev/null
+   # Les objets de demarrage sont livres deja compiles : l'en-tete ne les couvre
+   # pas. Voir NOTES paragraphe 242. Idempotent.
+   python3 "$R/tests/corriger_crt_mingw.py" >/dev/null
+fi
+
+# FEX : meme raison, et le correctif reste chez nous. Voir NOTES paragraphe 237.
+if [ -d "$R/third_party/FEX" ]; then
+   echo "== FEX =="
+   if grep -q FEX_TEB_SANS_X18 "$R/third_party/FEX/Source/Windows/ARM64EC/Module.S"; then
+      echo "   0070 deja applique"
+   elif patch -d "$R/third_party/FEX" -p1 --silent < "$R"/0070-*.patch; then
+      echo "   1 correctif applique"
+   else
+      echo "   ECHEC sur 0070" >&2; exit 1
+   fi
+fi
+
 echo
 echo "Les trois arbres sont patches. Enchainer sur :"
 echo "   $R/tests/etape2_construire_pile.sh"

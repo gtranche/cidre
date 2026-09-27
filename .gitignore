@@ -23,3 +23,6 @@ cube.bmp
 vkd3d-proton.cache
 vkd3d-proton.cache.write
 prefix-wine-arm64-tramp/
+
+# Bibliotheques d'importation regenerees par tests/construire_import_teb.sh
+outils/*.a
