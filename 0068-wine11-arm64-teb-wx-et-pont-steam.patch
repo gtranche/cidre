@@ -4193,7 +4193,7 @@ diff --git aa/dlls/ntdll/unix/signal_arm64.c bb/dlls/ntdll/unix/signal_arm64.c
 + * que le moindre code PE ne s'execute.
 + */
 +#define TEB_TABLE_TAILLE 1024
- 
++
 +struct entree_teb
 +{
 +    ULONG_PTR cle;
@@ -4238,7 +4238,7 @@ diff --git aa/dlls/ntdll/unix/signal_arm64.c bb/dlls/ntdll/unix/signal_arm64.c
 +    /* Enregistrer un TEB nul est pire que ne rien enregistrer : la table le
 +     * rendrait ensuite tel quel, au lieu de laisser le repli jouer. */
 +    if (!teb) return;
-+
+ 
 +    creer_cle_teb();
 +    /* L'acces direct d'abord : c'est lui que le code PE empruntera. */
 +    if (cle_teb_prete) pthread_setspecific( cle_teb, teb );
@@ -4266,18 +4266,18 @@ diff --git aa/dlls/ntdll/unix/signal_arm64.c bb/dlls/ntdll/unix/signal_arm64.c
  extern void x18_resume_trampoline(void);
  __ASM_GLOBAL_FUNC( x18_resume_trampoline,
                     "ldr x18, [sp]\n\t"
-@@ -348,6 +429,11 @@
- {
+@@ -349,6 +430,11 @@
      ULONG_PTR sp = SP_sig( sigcontext );
      ULONG_PTR *stack;
-+
+ 
 +    /* Plus personne ne lit x18 : ni le code PE, ni les repartiteurs unix. Le
 +     * tremplin ne servirait plus qu'a ecraser x16 et a detourner PC, et il
 +     * fautait lui-meme sur « ldr x18, [sp] ». On le neutralise. */
 +    return;
- 
++
      if (!teb) return;
      if (sp <= (ULONG_PTR)teb->DeallocationStack || sp > (ULONG_PTR)teb->Tib.StackBase) return;
+     stack = (ULONG_PTR *)sp - 2;
 @@ -949,25 +1035,25 @@
                     "stp d12, d13, [x29, #0x80]\n\t"
                     "stp d14, d15, [x29, #0x90]\n\t"
@@ -4310,7 +4310,7 @@ diff --git aa/dlls/ntdll/unix/signal_arm64.c bb/dlls/ntdll/unix/signal_arm64.c
                     "mov x20, x0\n\t"              /* user_sp */
                     "mov x21, x3\n\t"              /* func */
                     "mov sp, x1\n\t"
-@@ -1180,6 +1266,40 @@
+@@ -1180,6 +1266,42 @@
      CONTEXT context;
      EXCEPTION_RECORD rec = { .ExceptionAddress = (void *)PC_sig(sigcontext) };
      DWORD64 esr = get_fault_esr( sigcontext );
@@ -4333,7 +4333,9 @@ diff --git aa/dlls/ntdll/unix/signal_arm64.c bb/dlls/ntdll/unix/signal_arm64.c
 +#ifdef SONDE_FAUTE_BASSE
 +    {
 +        static int reste = 6;
-+        if ((ULONG_PTR)siginfo->si_addr < 0x10000 && reste-- > 0)
++        ULONG_PTR a = (ULONG_PTR)siginfo->si_addr;
++        /* adresses d'invite non rebasees : au-dessus de la zone DOS, sous 4 Gio */
++        if (a >= 0x10000 && a < 0x100000000ull && reste-- > 0)
 +        {
 +            const unsigned int *pc = (const unsigned int *)PC_sig(sigcontext);
 +            Dl_info info;
@@ -4351,7 +4353,7 @@ diff --git aa/dlls/ntdll/unix/signal_arm64.c bb/dlls/ntdll/unix/signal_arm64.c
  
      switch (ESR_ELx_EC(esr))
      {
-@@ -1672,6 +1792,13 @@
+@@ -1672,6 +1794,13 @@
      CONTEXT *ctx, context = { CONTEXT_ALL };
      I386_CONTEXT *i386_context;
      ARM_CONTEXT *arm_context;
@@ -4365,11 +4367,10 @@ diff --git aa/dlls/ntdll/unix/signal_arm64.c bb/dlls/ntdll/unix/signal_arm64.c
  
      context.X0  = (DWORD64)entry;
      context.X1  = (DWORD64)arg;
-@@ -1770,10 +1897,54 @@
- 
+@@ -1771,9 +1900,53 @@
  /***********************************************************************
   *           __wine_syscall_dispatcher
-+ */
+  */
 +/*
 + * Recharger x18 a l'entree des repartiteurs.
 + *
@@ -4391,7 +4392,7 @@ diff --git aa/dlls/ntdll/unix/signal_arm64.c bb/dlls/ntdll/unix/signal_arm64.c
 + * deux instructions plus loin faute. Le seul remede est de ne jamais garder le
 + * TEB dans x18 : on le relit dans un registre banal juste avant chaque usage.
 + * \t est ecrase, \wt en est la vue 32 bits.
-  */
++ */
 +#define LIRE_TEB(r, t, wt) \
 +    "mrs " r ", tpidrro_el0\n\t" \
 +    "and " r ", " r ", #0xfffffffffffffff8\n\t" \
@@ -4421,7 +4422,7 @@ diff --git aa/dlls/ntdll/unix/signal_arm64.c bb/dlls/ntdll/unix/signal_arm64.c
                     "stp x18, x19, [x10, #0x90]\n\t"
                     "stp x20, x21, [x10, #0xa0]\n\t"
                     "stp x22, x23, [x10, #0xb0]\n\t"
-@@ -1826,7 +1997,8 @@
+@@ -1826,7 +1999,8 @@
                     __ASM_CFI_CFA_IS_AT2(x22, 0x98, 0x02) /* frame->syscall_cfa */
                     "and x20, x8, #0xfff\n\t"    /* syscall number */
                     "ubfx x21, x8, #12, #2\n\t"  /* syscall table number */
@@ -4431,7 +4432,7 @@ diff --git aa/dlls/ntdll/unix/signal_arm64.c bb/dlls/ntdll/unix/signal_arm64.c
                     "add x21, x16, x21, lsl #5\n\t"
                     "ldr x16, [x21, #16]\n\t"    /* table->ServiceLimit */
                     "cmp x20, x16\n\t"
-@@ -1844,7 +2016,8 @@
+@@ -1844,7 +2018,8 @@
                     "cbnz x9, 1b\n"
                     "2:\tldr x16, [x21]\n\t"     /* table->ServiceTable */
                     "ldr x23, [x16, x20, lsl 3]\n\t"
@@ -4441,7 +4442,7 @@ diff --git aa/dlls/ntdll/unix/signal_arm64.c bb/dlls/ntdll/unix/signal_arm64.c
                     "cbnz x11, " __ASM_LOCAL_LABEL("trace_syscall") "\n\t"
                     "blr x23\n\t"
                     "mov sp, x22\n"
-@@ -1933,8 +2106,13 @@
+@@ -1933,8 +2108,13 @@
                     "movk x0, #0x001c\n\t"
                     "b " __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return") )
  
@@ -4456,7 +4457,7 @@ diff --git aa/dlls/ntdll/unix/signal_arm64.c bb/dlls/ntdll/unix/signal_arm64.c
                     "cbnz x11, " __ASM_LOCAL_LABEL("trace_syscall_ret") "\n\t"
                     "b " __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return") )
  
-@@ -1944,7 +2122,9 @@
+@@ -1944,7 +2124,9 @@
   */
  __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
                     "hint 34\n\t" /* bti c */

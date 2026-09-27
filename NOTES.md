@@ -16908,3 +16908,37 @@ Une faute d'**exécution** à `0x7BDDDFD0` : un saut vers une adresse d'invité,
 le contrôle passe à une adresse non rebasée plutôt qu'au code traduit. Reste à trouver.
 
 Non-régression inchangée : `hello64` répond, le triangle D3D11 passe, **84,1 ms** en x86_64 émulé.
+
+### Suite du 245 : ce que la sonde a corrigé dans mon modèle
+
+Deux erreurs de ma part, toutes deux levées par la mesure.
+
+**Les adresses « dans une section de débogage ».** Je lisais `0x7BDDDFD0` comme tombant dans
+`.debug_loc`, donc comme un RIP corrompu. Faux : je calculais depuis la base *préférée* du ntdll
+32 bits (`0x7bc00000`) alors qu'il est relocalisé. Sonde dans `thread_init` :
+
+```
+base=400000000  eip=7bddeac0  esp=0014fd10
+thunk64=47bddeac0   ntdll32=47bd90000   ctx_ptr=40014FD24
+```
+
+Le ntdll 32 bits est à l'adresse d'invité `0x7bd90000`, `LdrInitializeThunk` à `0x7bddeac0` — soit
+exactement le RIP de départ. Tout est sain : la base est bien arrivée dans `wow64.dll`, le contexte
+initial est en adresses d'invité, et `ctx_ptr` est bien `base + 0x14fd24`. Les fautes que je voyais
+étaient du vrai progrès dans une vraie fonction.
+
+**La faute d'exécution n'est pas une faute hôte.** La sonde `SONDE_FAUTE_BASSE`, seuil relevé à
+4 Gio pour attraper toute adresse d'invité non rebasée, **ne se déclenche pas**. Donc
+`0x7BDDDFD0` n'est pas un `SIGSEGV` de l'hôte : c'est une exception **synthétisée par
+l'émulateur**, qui refuse de traduire là.
+
+J'ai supposé que `QueryExecutableRange` recevait une adresse d'invité et interrogeait des
+intervalles en adresses hôte, et j'ai traduit à cette frontière. **Ça a empiré** : 259 → 1497
+exceptions, et la faute est remontée jusqu'à l'entrée `0x7BDDEAC0`. Donc les intervalles sont déjà
+en adresses d'invité, et mon modèle de cette frontière était faux. Correctif annulé, état de 259
+exceptions rétabli.
+
+C'est la première fois dans ce portage qu'une hypothèse empire la mesure au lieu de la laisser
+inchangée. Utile : ça dit que le suivi d'invalidation vit dans le monde de l'invité, pas dans celui
+de l'hôte, et que la frontière à traduire est ailleurs — probablement là où Wine notifie FEX des
+changements de protection.
