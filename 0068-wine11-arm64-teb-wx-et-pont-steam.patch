@@ -4043,10 +4043,36 @@ diff --git aa/dlls/ntdll/thread.c bb/dlls/ntdll/thread.c
 +}
 +
 +#endif /* __aarch64__ || __arm64ec__ */
+diff --git aa/dlls/ntdll/unix/env.c bb/dlls/ntdll/unix/env.c
+--- aa/dlls/ntdll/unix/env.c
++++ bb/dlls/ntdll/unix/env.c
+@@ -1784,8 +1784,20 @@
+                    + ((params->RuntimeInfo.MaximumLength + 1) & ~1)
+                    + params->EnvironmentSize);
+ 
+-    status = NtAllocateVirtualMemory( NtCurrentProcess(), (void **)&wow64_params, limit_2g - 1, &size,
+-                                      MEM_COMMIT, PAGE_READWRITE );
++    /* Les parametres doivent etre visibles de l'invite, donc dans sa fenetre.
++     * « zero_bits » ne sait exprimer qu'un plafond ; quand la fenetre est
++     * deplacee il faut aussi un plancher, d'ou la forme etendue. */
++    if (user_space_wow_base)
++    {
++        MEM_ADDRESS_REQUIREMENTS req = { (void *)user_space_wow_base,
++                                        (void *)(user_space_wow_base + limit_2g - 1) };
++        MEM_EXTENDED_PARAMETER ext = { .Type = MemExtendedParameterAddressRequirements, .Pointer = &req };
++
++        status = NtAllocateVirtualMemoryEx( NtCurrentProcess(), (void **)&wow64_params, &size,
++                                           MEM_COMMIT, PAGE_READWRITE, &ext, 1 );
++    }
++    else status = NtAllocateVirtualMemory( NtCurrentProcess(), (void **)&wow64_params, limit_2g - 1, &size,
++                                          MEM_COMMIT, PAGE_READWRITE );
+     assert( !status );
+ 
+     wow64_params->AllocationSize  = size;
 diff --git aa/dlls/ntdll/unix/loader.c bb/dlls/ntdll/unix/loader.c
 --- aa/dlls/ntdll/unix/loader.c
 +++ bb/dlls/ntdll/unix/loader.c
-@@ -434,7 +434,48 @@
+@@ -434,8 +434,49 @@
  
      return ret;
  }
@@ -4075,7 +4101,7 @@ diff --git aa/dlls/ntdll/unix/loader.c bb/dlls/ntdll/unix/loader.c
  
 +    if (!environ) return environ;
 +    for (n = 0; environ[n]; n++) taille += sizeof(char *) + strlen( environ[n] ) + 1;
-+
+ 
 +    bloc = mmap( (void *)0x110000000, taille, PROT_READ | PROT_WRITE,
 +                 MAP_PRIVATE | MAP_ANON, -1, 0 );
 +    if (bloc == MAP_FAILED) return environ;
@@ -4092,9 +4118,10 @@ diff --git aa/dlls/ntdll/unix/loader.c bb/dlls/ntdll/unix/loader.c
 +    tab[n] = NULL;
 +    return tab;
 +}
- 
++
  static void preloader_exec( char **argv )
  {
+ #ifdef HAVE_WINE_PRELOADER
 @@ -452,7 +493,7 @@
      execv( argv[0], argv );
      free( argv[0] );
@@ -4104,18 +4131,19 @@ diff --git aa/dlls/ntdll/unix/loader.c bb/dlls/ntdll/unix/loader.c
  }
  
  /* exec the appropriate wine loader for the specified machine */
-@@ -1555,6 +1596,10 @@
+@@ -1555,6 +1596,11 @@
      void **p__wine_unix_call_dispatcher_arm64ec = NULL;
      unixlib_handle_t *p__wine_unixlib_handle;
      const IMAGE_EXPORT_DIRECTORY *exports;
 +#if defined(__aarch64__) && defined(__APPLE__)
 +    void *p__wine_teb_table;
 +    void *p__wine_teb_tsd_key;
++    void *p__wine_wow64_guest_base;
 +#endif
  
      exports = get_module_data_dir( module, IMAGE_DIRECTORY_ENTRY_EXPORT, NULL );
      assert( exports );
-@@ -1575,6 +1620,19 @@
+@@ -1575,6 +1621,23 @@
      GET_FUNC( __wine_syscall_dispatcher );
      GET_FUNC( __wine_unix_call_dispatcher );
      GET_FUNC( __wine_unixlib_handle );
@@ -4127,6 +4155,10 @@ diff --git aa/dlls/ntdll/unix/loader.c bb/dlls/ntdll/unix/loader.c
 +    teb_table = p__wine_teb_table;
 +    teb_tsd_key = p__wine_teb_tsd_key;
 +    creer_cle_teb();
++    /* La base de la fenetre 32 bits est decidee par le gestionnaire de memoire ;
++     * l'emulateur la lit ici pour rebaser les acces de l'invite. */
++    GET_FUNC( __wine_wow64_guest_base );
++    *(ULONG64 *)p__wine_wow64_guest_base = user_space_wow_base;
 +    /* Le fil courant a pu demarrer avant que l'adresse de la table ne soit
 +     * connue : son enregistrement n'aurait alors rien fait, et chaque acces au
 +     * TEB balaierait la table entiere pour ne rien trouver. On l'inscrit ici. */
@@ -4435,14 +4467,36 @@ diff --git aa/dlls/ntdll/unix/signal_arm64.c bb/dlls/ntdll/unix/signal_arm64.c
                     "stp x18, x19, [x10, #0x90]\n\t"
                     "stp x20, x21, [x10, #0xa0]\n\t"
                     "stp x22, x23, [x10, #0xb0]\n\t"
+diff --git aa/dlls/ntdll/unix/thread.c bb/dlls/ntdll/unix/thread.c
+--- aa/dlls/ntdll/unix/thread.c
++++ bb/dlls/ntdll/unix/thread.c
+@@ -1197,7 +1197,10 @@
+ 
+         /* 32-bit stack */
+         if (!limit || limit > user_space_wow_limit) limit = user_space_wow_limit;
+-        if ((status = virtual_alloc_thread_stack( &stack, 0, limit, reserve_size, commit_size, TRUE )))
++        /* Le plancher compte autant que le plafond : la pile de l'invite doit
++         * tenir dans sa fenetre, sinon il la verrait a une adresse tronquee qui
++         * ne lui appartient pas. */
++        if ((status = virtual_alloc_thread_stack( &stack, user_space_wow_base, limit, reserve_size, commit_size, TRUE )))
+             return status;
+         wow_teb->Tib.StackBase = PtrToUlong( stack.StackBase );
+         wow_teb->Tib.StackLimit = PtrToUlong( stack.StackLimit );
 diff --git aa/dlls/ntdll/unix/unix_private.h bb/dlls/ntdll/unix/unix_private.h
 --- aa/dlls/ntdll/unix/unix_private.h
 +++ bb/dlls/ntdll/unix/unix_private.h
-@@ -738,5 +738,13 @@
- }
+@@ -75,6 +75,7 @@
+ 
+ extern WOW_PEB *wow_peb;
+ extern ULONG_PTR user_space_wow_limit;
++extern ULONG_PTR user_space_wow_base;
+ extern void *main_module;
+ extern SECTION_IMAGE_INFORMATION main_image_info;
+ 
+@@ -739,4 +740,12 @@
  
  #endif  /* defined(__i386__) || defined(__x86_64__) */
-+
+ 
 +#if defined(__aarch64__) && defined(__APPLE__)
 +struct entree_teb;
 +extern struct entree_teb *teb_table;
@@ -4450,7 +4504,7 @@ diff --git aa/dlls/ntdll/unix/unix_private.h bb/dlls/ntdll/unix/unix_private.h
 +extern void creer_cle_teb(void);
 +extern void enregistrer_teb( TEB *teb );
 +#endif
- 
++
  #endif /* __NTDLL_UNIX_PRIVATE_H */
 diff --git aa/dlls/ntdll/unix/virtual.c bb/dlls/ntdll/unix/virtual.c
 --- aa/dlls/ntdll/unix/virtual.c
@@ -4463,7 +4517,30 @@ diff --git aa/dlls/ntdll/unix/virtual.c bb/dlls/ntdll/unix/virtual.c
  /* per-mapping protection flags */
  #define VPROT_ARM64EC          0x0100  /* view may contain ARM64EC code */
  #define VPROT_SYSTEM           0x0200  /* system view (underlying mmap not under our control) */
-@@ -237,6 +238,7 @@
+@@ -198,6 +199,22 @@
+ static struct file_view *arm64ec_view;
+ 
+ ULONG_PTR user_space_wow_limit = 0;
++
++/*
++ * Base de la fenetre de 4 Gio d'un invite 32 bits dans l'espace de l'hote.
++ *
++ * Zero = correspondance 1:1, ce que fait Windows et ce que permet Linux. Sur
++ * macOS arm64 le noyau interdit toute adresse sous 4 Gio a un processus natif :
++ * mesure, la premiere region d'une tache est au-dela de 4 Gio et
++ * mach_vm_deallocate ne libere rien -- c'est le plancher du vm_map, pas une
++ * reservation. La fenetre de l'invite va donc plus haut, et l'emulateur rebase
++ * chaque adresse effective (voir __wine_wow64_guest_base).
++ *
++ * Invariant : l'invite voit A, l'hote utilise user_space_wow_base + A. Le sens
++ * hote -> invite est deja juste sans rien changer, puisque tronquer a 32 bits
++ * revient a soustraire la base ; c'est le sens inverse qui demande du travail.
++ */
++ULONG_PTR user_space_wow_base = 0;
+ struct _KUSER_SHARED_DATA *user_shared_data = (void *)0x17ffe0000ull;
+ 
+ /* TEB allocation blocks */
+@@ -237,6 +254,7 @@
  static void *preload_reserve_end;
  static BOOL force_exec_prot;  /* whether to force PROT_EXEC on all PROT_READ mmaps */
  static BOOL enable_write_exceptions;  /* raise exception on writes to executable memory */
@@ -4471,7 +4548,30 @@ diff --git aa/dlls/ntdll/unix/virtual.c bb/dlls/ntdll/unix/virtual.c
  
  struct range_entry
  {
-@@ -1375,6 +1377,11 @@
+@@ -768,6 +786,22 @@
+ static ULONG_PTR get_wow_user_space_limit(void)
+ {
+ #ifdef _WIN64
++    /* Rendue a l'invite, donc exprimee dans ses adresses a lui. */
++    return (user_space_wow_limit - user_space_wow_base) & ~granularity_mask;
++#endif
++    return (ULONG_PTR)user_space_limit;
++}
++
++
++/***********************************************************************
++ *           get_wow_host_space_limit
++ *
++ * La meme, mais en adresses de l'hote : pour placer de la memoire, pas pour
++ * repondre a l'invite.
++ */
++static ULONG_PTR get_wow_host_space_limit(void)
++{
++#ifdef _WIN64
+     return user_space_wow_limit & ~granularity_mask;
+ #endif
+     return (ULONG_PTR)user_space_limit;
+@@ -1375,6 +1409,11 @@
          if (vprot & VPROT_WRITECOPY) prot |= PROT_WRITE | PROT_READ;
          if (vprot & VPROT_EXEC) prot |= PROT_EXEC | PROT_READ;
          if (vprot & VPROT_WRITEWATCH) prot &= ~PROT_WRITE;
@@ -4483,7 +4583,7 @@ diff --git aa/dlls/ntdll/unix/virtual.c bb/dlls/ntdll/unix/virtual.c
      }
      if (!prot) prot = PROT_NONE;
      return prot;
-@@ -1970,6 +1977,7 @@
+@@ -1970,6 +2009,7 @@
   *
   * Wrapper for mprotect, adds PROT_EXEC if forced by force_exec_prot
   */
@@ -4491,7 +4591,7 @@ diff --git aa/dlls/ntdll/unix/virtual.c bb/dlls/ntdll/unix/virtual.c
  static inline int mprotect_exec( void *base, size_t size, int unix_prot )
  {
      if (force_exec_prot && (unix_prot & PROT_READ) && !(unix_prot & PROT_EXEC))
-@@ -1980,7 +1988,22 @@
+@@ -1980,7 +2020,22 @@
          if (!(unix_prot & PROT_WRITE)) return -1;
      }
  
@@ -4515,16 +4615,16 @@ diff --git aa/dlls/ntdll/unix/virtual.c bb/dlls/ntdll/unix/virtual.c
  }
  
  
-@@ -1997,6 +2020,8 @@
-     BYTE vprot;
+@@ -1998,6 +2053,8 @@
  
      size = ROUND_SIZE( base, size, host_page_mask );
-+
-+    if (get_host_page_vprot( addr ) & VPROT_JIT) return 0;
  
++    if (get_host_page_vprot( addr ) & VPROT_JIT) return 0;
++
      vprot = get_host_page_vprot( addr );
      prot = get_unix_prot( (vprot & ~clear) | set );
-@@ -2021,6 +2046,8 @@
+     for (count = i = 1; i < size / host_page_size; i++, count++)
+@@ -2021,6 +2078,8 @@
   */
  static BOOL set_vprot( struct file_view *view, void *base, size_t size, BYTE vprot )
  {
@@ -4533,10 +4633,35 @@ diff --git aa/dlls/ntdll/unix/virtual.c bb/dlls/ntdll/unix/virtual.c
      if (!use_kernel_writewatch && view->protect & VPROT_WRITEWATCH)
      {
          /* each page may need different protections depending on write watch flag */
-@@ -2300,6 +2327,36 @@
+@@ -2296,9 +2355,60 @@
+         void *end = min( user_space_limit, host_addr_space_limit );
+         size_t host_size = ROUND_SIZE( 0, size, host_page_mask );
+         size_t unmap_size, view_size = host_size + align_mask + 1;
++
++        /*
++         * Bornes exprimees dans les adresses de l'invite 32 bits.
++         *
++         * Six appelants passent une limite venue de « zero_bits », qui ne sait
++         * dire qu'un plafond : 0x7fffffff pour « sous 2 Gio ». Quand la fenetre
++         * de l'invite est deplacee, il faut aussi un plancher, et les corriger
++         * un par un reviendrait a passer partout la forme etendue. On traduit
++         * donc ici, une fois.
++         *
++         * Le critere : un plafond sous la base de la fenetre. Un appelant 64
++         * bits ne demande jamais ca -- il passe zero, ou user_space_limit. Et
++         * s'il le faisait, l'espace sous la fenetre est de toute facon pris par
++         * le binaire hote et les bibliotheques du systeme : l'allocation
++         * echouerait au lieu d'etre deplacee.
++         */
++        if (user_space_wow_base && limit_high && limit_high < user_space_wow_base)
++        {
++            limit_low  = user_space_wow_base + limit_low;
++            limit_high = user_space_wow_base + limit_high;
++        }
+ 
          if (limit_low && (void *)limit_low > start) start = (void *)limit_low;
          if (limit_high && (void *)limit_high < end) end = (char *)limit_high + 1;
- 
++
 +#ifdef MAP_JIT
 +        /*
 +         * Ecriture et execution ensemble : seul MAP_JIT les accorde sur macOS,
@@ -4566,11 +4691,45 @@ diff --git aa/dlls/ntdll/unix/virtual.c bb/dlls/ntdll/unix/virtual.c
 +            WARN( "MAP_JIT indisponible pour %p octets, repli sans execution\n", (void *)size );
 +        }
 +#endif
-+
+ 
          if ((ptr = map_reserved_area( start, end, host_size, top_down, unix_prot, align_mask )))
          {
-             TRACE( "got mem in reserved area %p-%p\n", ptr, (char *)ptr + size );
-@@ -3685,6 +3742,16 @@
+@@ -3358,9 +3468,15 @@
+     BOOL top_down = (image_info->image_charact & IMAGE_FILE_DLL) &&
+                     (image_info->image_flags & IMAGE_FLAGS_ImageDynamicallyRelocated);
+ 
+-    limit_low = max( limit_low, (ULONG_PTR)address_space_start );  /* make sure the DOS area remains free */
+-    if (!limit_high) limit_high = (ULONG_PTR)user_space_limit;
++    /* Une image 32 bits porte une base preferee sous 4 Gio -- 0x400000 pour un
++     * executable. Quand la fenetre de l'invite est deplacee, elle va a
++     * base + preferee, et l'emulateur rebase les acces : l'invite continue de
++     * voir 0x400000. */
++    const ULONG_PTR decalage = is_machine_64bit( image_info->machine ) ? 0 : user_space_wow_base;
+ 
++    limit_low = max( limit_low, decalage + (ULONG_PTR)address_space_start );  /* make sure the DOS area remains free */
++    if (!limit_high) limit_high = decalage ? get_wow_host_space_limit() : (ULONG_PTR)user_space_limit;
++
+     /* first try the specified base */
+ 
+     if (image_info->map_addr)
+@@ -3373,6 +3489,7 @@
+         base = wine_server_get_ptr( image_info->base );
+         if ((ULONG_PTR)base != image_info->base) base = NULL;
+     }
++    if (base) base = (char *)base + decalage;
+     if (base)
+     {
+         status = map_view( view_ret, base, size, alloc_type, vprot, limit_low, limit_high, 0 );
+@@ -3389,7 +3506,7 @@
+     else
+     {
+         start = limit_low;
+-        end = min( limit_high, get_wow_user_space_limit() );
++        end = min( limit_high, get_wow_host_space_limit() );
+     }
+     if (start < end && (start != limit_low || end != limit_high))
+     {
+@@ -3685,7 +3802,27 @@
      host_page_size = sysconf( _SC_PAGESIZE );
      host_page_mask = host_page_size - 1;
      TRACE( "host page size: %uk\n", (UINT)host_page_size / 1024 );
@@ -4584,13 +4743,76 @@ diff --git aa/dlls/ntdll/unix/virtual.c bb/dlls/ntdll/unix/virtual.c
 +        else munmap( p, host_page_size );
 +        TRACE( "ecriture+execution simultanees : %s\n", bascule_wx ? "refusees" : "accordees" );
 +    }
++
++#ifdef __APPLE__
++    /* Le noyau interdit toute adresse sous 4 Gio a un processus arm64 natif :
++     * la fenetre d'un invite 32 bits va donc au-dela. Pas a 4 Gio exactement,
++     * ou macOS charge le binaire hote -- mesure : « map_fixed_area out of memory
++     * for 0x100400000 ». A 16 Gio l'espace est libre. La base doit rester un
++     * multiple de 4 Gio pour que le rebasage de l'emulateur soit un simple
++     * « orr » d'un bit haut. */
++    user_space_wow_base = 4 * limit_4g;
  #endif
++#endif
  
  #ifdef _WIN64
-@@ -4720,6 +4787,24 @@
+     host_addr_space_limit = get_host_addr_space_limit();
+@@ -3849,7 +3986,8 @@
+ 
+     if (!pe_mapping) return STATUS_INVALID_PARAMETER;
+ 
+-    if (!is_machine_64bit( pe_mapping->image.machine )) limit_high = (limit_2g - 1) & ~granularity_mask;
++    if (!is_machine_64bit( pe_mapping->image.machine ))
++        limit_high = (user_space_wow_base + limit_2g - 1) & ~granularity_mask;
+     main_module = NULL;
+ 
+     /* check if we can replace that mapping with the builtin */
+@@ -4093,11 +4231,11 @@
+         }
+         else if (main_image_info.ImageCharacteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE)
+         {
+-            user_space_wow_limit = limit_4g - 1;
++            user_space_wow_limit = user_space_wow_base + limit_4g - 1;
+             /* reserve space for top-down allocations; some apps break if the entire high 2G is available */
+-            reserve_area( (void *)0xfff00000, (void *)0xffff0000 );
++            reserve_area( (void *)(user_space_wow_base + 0xfff00000), (void *)(user_space_wow_base + 0xffff0000) );
+         }
+-        else user_space_wow_limit = limit_2g - 1;
++        else user_space_wow_limit = user_space_wow_base + limit_2g - 1;
+     }
+     else
+     {
+@@ -4151,7 +4289,11 @@
+     if (is_wow64()) teb_block_size += ROUND_SIZE( 0, sizeof(WOW_TEB), page_mask );
+     teb_block_size += page_size;  /* for debug info */
+ 
+-    if (user_space_wow_limit) limit_high = user_space_wow_limit & ~granularity_mask;
++    if (user_space_wow_limit)
++    {
++        limit_low  = user_space_wow_base;
++        limit_high = user_space_wow_limit & ~granularity_mask;
++    }
+     else if (use_aslr()) limit_low = limit_4g;
+ 
+     status = map_view( &view, NULL, 16 * teb_block_size, 0,
+@@ -4202,7 +4344,11 @@
+             struct file_view *view;
+             ULONG_PTR limit_low = 0, limit_high = 0;
+ 
+-            if (user_space_wow_limit) limit_high = user_space_wow_limit & ~granularity_mask;
++            if (user_space_wow_limit)
++            {
++                limit_low  = user_space_wow_base;
++                limit_high = user_space_wow_limit & ~granularity_mask;
++            }
+             else if (use_aslr()) limit_low = limit_4g;
+ 
+             if ((status = map_view( &view, NULL, 32 * teb_block_size, 0,
+@@ -4719,6 +4865,24 @@
+             ret = STATUS_GUARD_PAGE_VIOLATION;
          }
          else ret = grow_thread_stack( data, page, &stack_info );
-     }
++    }
 +    else if ((vprot & VPROT_JIT) &&
 +             (err == EXCEPTION_WRITE_FAULT || err == EXCEPTION_EXECUTE_FAULT))
 +    {
@@ -4608,10 +4830,151 @@ diff --git aa/dlls/ntdll/unix/virtual.c bb/dlls/ntdll/unix/virtual.c
 +         * coutait tout le temps CPU -- 1370 echantillons sur 1422 dans
 +         * sys_icache_invalidate. */
 +        ret = STATUS_SUCCESS;
-+    }
+     }
      else if (err == EXCEPTION_WRITE_FAULT)
      {
-         if (vprot & VPROT_WRITEWATCH)
+diff --git aa/dlls/wow64/syscall.c bb/dlls/wow64/syscall.c
+--- aa/dlls/wow64/syscall.c
++++ bb/dlls/wow64/syscall.c
+@@ -39,7 +39,16 @@
+ ULONG_PTR args_alignment = 0;
+ ULONG_PTR highest_user_address = 0x7ffeffff;
+ ULONG_PTR default_zero_bits = 0x7fffffff;
++ULONG64 guest_base = 0;
+ 
++/* Variable exportee par le ntdll : c'est lui qui decide de la fenetre.
++ * Elle n'existe que sur les cibles ou la question se pose. */
++#ifdef __aarch64__
++extern __declspec(dllimport) ULONG64 __wine_wow64_guest_base;
++#else
++static const ULONG64 __wine_wow64_guest_base = 0;
++#endif
++
+ typedef NTSTATUS (WINAPI *syscall_thunk)( UINT *args );
+ 
+ static const syscall_thunk syscall_thunks[] =
+@@ -240,7 +249,7 @@
+             RtlGetExtendedContextLength( flags, &context_length );
+ 
+             esp = LOWORD(ctx.SegSs) != ss32_sel ? NtCurrentTeb32()->SystemReserved1[0] : ctx.Esp;
+-            stack = (struct exc_stack_layout32 *)ULongToPtr( (esp - offsetof(struct exc_stack_layout32, context) - context_length) & ~3 );
++            stack = (struct exc_stack_layout32 *)ptr_32to64( (esp - offsetof(struct exc_stack_layout32, context) - context_length) & ~3 );
+             stack->rec_ptr     = PtrToUlong( &stack->rec );
+             stack->context_ptr = PtrToUlong( &stack->context );
+             stack->rec         = *rec;
+@@ -996,6 +1005,10 @@
+     NtQuerySystemInformation( SystemEmulationBasicInformation, &info, sizeof(info), NULL );
+     highest_user_address = (ULONG_PTR)info.HighestUserAddress;
+     default_zero_bits = (ULONG_PTR)info.HighestUserAddress | 0x7fffffff;
++
++    /* Publiee par le gestionnaire de memoire du ntdll. Zero = 1:1. */
++    guest_base = __wine_wow64_guest_base;
++    TRACE( "fenetre de l'invite a %s\n", wine_dbgstr_longlong( guest_base ) );
+     NtQueryInformationProcess( GetCurrentProcess(), ProcessWow64Information, &peb32, sizeof(peb32), NULL );
+     wow64info = (WOW64INFO *)(peb32 + 1);
+     wow64info->NativeSystemPageSize = 0x1000;
+@@ -1081,7 +1094,7 @@
+             ULONG *stack;
+ 
+             pBTCpuGetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx );
+-            ctx_ptr = (I386_CONTEXT *)ULongToPtr( ctx.Esp ) - 1;
++            ctx_ptr = (I386_CONTEXT *)ptr_32to64( ctx.Esp ) - 1;
+             *ctx_ptr = ctx;
+             stack = (ULONG *)ctx_ptr;
+             *(--stack) = 0;
+diff --git aa/dlls/wow64/virtual.c bb/dlls/wow64/virtual.c
+--- aa/dlls/wow64/virtual.c
++++ bb/dlls/wow64/virtual.c
+@@ -117,14 +117,14 @@
+     {
+         if (req32->LowestStartingAddress > highest_user_address) return STATUS_INVALID_PARAMETER;
+         if (req32->HighestEndingAddress > highest_user_address) return STATUS_INVALID_PARAMETER;
+-        req->LowestStartingAddress = ULongToPtr( req32->LowestStartingAddress );
+-        req->HighestEndingAddress  = ULongToPtr( req32->HighestEndingAddress );
++        req->LowestStartingAddress = (void *)(ULONG_PTR)(guest_base + req32->LowestStartingAddress);
++        req->HighestEndingAddress  = (void *)(ULONG_PTR)(guest_base + req32->HighestEndingAddress);
+         req->Alignment             = req32->Alignment;
+     }
+     else if (set_limit)
+     {
+-        req->LowestStartingAddress = NULL;
+-        req->HighestEndingAddress  = (void *)highest_user_address;
++        req->LowestStartingAddress = (void *)(ULONG_PTR)guest_base;
++        req->HighestEndingAddress  = (void *)(ULONG_PTR)(guest_base + highest_user_address);
+         req->Alignment             = 0;
+ 
+         params[i].Type = MemExtendedParameterAddressRequirements;
+@@ -161,7 +161,18 @@
+                                                       addr, size, 3, type, protect, 0 );
+     else if (pBTCpuNotifyMemoryAlloc) pBTCpuNotifyMemoryAlloc( addr, size, type, protect, FALSE, 0 );
+ 
+-    status = NtAllocateVirtualMemory( process, &addr, get_zero_bits( zero_bits ), &size, type, protect );
++    if (guest_base)
++    {
++        /* « zero_bits » ne dit qu'un plafond. Avec une fenetre deplacee il faut
++         * aussi un plancher, sinon l'allocation part hors de la fenetre et
++         * l'invite en verrait une adresse tronquee qui ne lui appartient pas. */
++        MEM_ADDRESS_REQUIREMENTS req = { (void *)(ULONG_PTR)guest_base,
++                                        (void *)(ULONG_PTR)(guest_base + get_zero_bits( zero_bits )) };
++        MEM_EXTENDED_PARAMETER ext = { .Type = MemExtendedParameterAddressRequirements, .Pointer = &req };
++
++        status = NtAllocateVirtualMemoryEx( process, &addr, &size, type, protect, &ext, 1 );
++    }
++    else status = NtAllocateVirtualMemory( process, &addr, get_zero_bits( zero_bits ), &size, type, protect );
+ 
+     if (!is_current) send_cross_process_notification( process, CrossProcessPostVirtualAlloc,
+                                                       addr, size, 3, type, protect, status );
+diff --git aa/dlls/wow64/wow64_private.h bb/dlls/wow64/wow64_private.h
+--- aa/dlls/wow64/wow64_private.h
++++ bb/dlls/wow64/wow64_private.h
+@@ -37,6 +37,26 @@
+ extern ULONG_PTR args_alignment;
+ extern ULONG_PTR highest_user_address;
+ extern ULONG_PTR default_zero_bits;
++
++/*
++ * Base de la fenetre de 4 Gio de l'invite dans l'espace de l'hote.
++ *
++ * Zero = correspondance 1:1. Sur macOS arm64 le noyau interdit toute adresse
++ * sous 4 Gio a un processus natif, donc la fenetre va plus haut et l'emulateur
++ * rebase les acces. Ici, c'est la couche de traduction des appels systeme qui
++ * doit suivre : l'invite dit A, l'hote entend guest_base + A.
++ *
++ * Le sens retour ne demande rien -- tronquer a 32 bits soustrait la base, la
++ * base etant un multiple de 4 Gio.
++ */
++extern ULONG64 guest_base;
++
++/* Adresse hote d'une adresse d'invite. Zero reste zero : c'est « pas de
++ * pointeur », pas l'adresse zero. */
++static inline void *ptr_32to64( ULONG addr )
++{
++    return addr ? (void *)(ULONG_PTR)(guest_base + addr) : NULL;
++}
+ extern SYSTEM_DLL_INIT_BLOCK *pLdrSystemDllInitBlock;
+ 
+ extern void     (WINAPI *pBTCpuFlushInstructionCache2)( const void *, SIZE_T );
+@@ -79,7 +99,10 @@
+ 
+ static inline ULONG get_ulong( UINT **args ) { return *(*args)++; }
+ static inline HANDLE get_handle( UINT **args ) { return LongToHandle( *(*args)++ ); }
+-static inline void *get_ptr( UINT **args ) { return ULongToPtr( *(*args)++ ); }
++/* Tout pointeur qu'un invite 32 bits passe est une adresse de sa fenetre : le
++ * rebasage se fait donc ici, une fois pour toutes les fonctions traduites. Les
++ * poignees passent par ULongToHandle et ne sont pas concernees. */
++static inline void *get_ptr( UINT **args ) { return ptr_32to64( *(*args)++ ); }
+ 
+ static inline ULONG64 get_ulong64( UINT **args )
+ {
+@@ -99,7 +122,7 @@
+ static inline void **addr_32to64( void **addr, ULONG *addr32 )
+ {
+     if (!addr32) return NULL;
+-    *addr = ULongToPtr( *addr32 );
++    *addr = ptr_32to64( *addr32 );
+     return addr;
+ }
+ 
 diff --git aa/include/winnt.h bb/include/winnt.h
 --- aa/include/winnt.h
 +++ bb/include/winnt.h

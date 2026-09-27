@@ -16817,3 +16817,68 @@ poignées mélangés, et se tromper donne un bogue silencieux. S'y ajoute le cha
 doit placer l'image à `base + base_préférée` tout en présentant l'adresse basse à l'invité.
 
 C'est là que se trouve le vrai travail, et il n'est pas commencé.
+
+## 245. Invités 32 bits : la moitié Wine, et l'invité exécute ses instructions
+
+Suite du paragraphe 244. Fenêtre à **16 Gio**, pas 4 : à 4 Gio exactement macOS charge le binaire
+hôte, et la trace le disait — `map_fixed_area out of memory for 0x100400000`. La base doit rester
+un multiple de 4 Gio pour que le rebasage de l'émulateur soit un simple `orr` d'un bit haut.
+
+### L'invariant, et pourquoi la moitié du travail n'existe pas
+
+L'invité voit `A`, l'hôte utilise `user_space_wow_base + A`. Le sens **hôte → invité** ne demande
+rien : tronquer à 32 bits *est* la soustraction de la base, la base étant un multiple de 4 Gio.
+D'où 86 conversions à examiner et non 182 — et en pratique bien moins, parce qu'elles passent par
+des entonnoirs.
+
+### Les entonnoirs, côté Wine
+
+| endroit | ce qu'il fait |
+| --- | --- |
+| `get_ptr()` de `wow64_private.h` | **tous** les pointeurs qu'un invité passe à un appel système |
+| `addr_32to64()` | les pointeurs de sortie |
+| `map_image_view()` | l'image PE 32 bits va à `base + base_préférée` |
+| `map_view()` | traduit les bornes exprimées en adresses d'invité |
+
+Le dernier mérite un mot. Six appelants passent une limite venue de `zero_bits`, qui ne sait dire
+qu'un plafond : `0x7fffffff` pour « sous 2 Gio ». Avec une fenêtre déplacée il faut aussi un
+plancher, et les corriger un par un revenait à passer partout la forme étendue de
+`NtAllocateVirtualMemory`. On traduit donc une fois, dans `map_view` : **un plafond sous la base
+de la fenêtre ne peut être qu'une limite d'invité**. Un appelant 64 bits ne demande jamais ça — il
+passe zéro, ou `user_space_limit` ; et s'il le faisait, l'espace sous la fenêtre est de toute
+façon pris par le binaire hôte et les bibliothèques du système, donc l'allocation échouerait au
+lieu d'être déplacée.
+
+Sites individuels trouvés par la boucle des fautes, chacun nommé par la trace :
+
+| faute | site |
+| --- | --- |
+| `build_wow64_parameters` assertion | `env.c` : les paramètres de l'invité doivent être dans sa fenêtre |
+| `memcpy` depuis `thread_init+0x130` | `syscall.c` : le contexte i386 initial écrit sur la pile de l'invité |
+| `call_user_exception_dispatcher+0x2c8` | `syscall.c` : la trame d'exception de l'invité |
+| `map_free_area ... 0x110000-0x80000000` | les six `zero_bits`, réglés par l'entonnoir de `map_view` |
+
+### Côté FEX, deux chemins de plus
+
+Le rebasage du paragraphe 244 couvrait les **données**. Il en restait deux :
+
+1. **Les tremplins d'appel système.** FEX les alloue « dans les 2 premiers Gio » pour que l'invité
+   puisse y sauter. Vu de l'invité : ils doivent aller dans la fenêtre. Et `BTCpuGetBopCode` les
+   rend à Wine, qui les inscrit dans le ntdll 32 bits — donc en adresses d'invité, pas d'hôte.
+2. **La lecture du code.** `Core.cpp` prend le RIP de l'invité comme pointeur hôte pour *lire les
+   instructions à traduire*. C'est un chemin distinct de celui des adresses de données, et c'est
+   lui qui donnait `faute d'exécution à 0x7BDDEAC0` — l'adresse du ntdll 32 bits de Wine.
+
+### Où l'on en est
+
+L'invité **exécute ses instructions** : la faute d'exécution à `0x7BDDEAC0` est devenue une faute
+d'écriture à `0x14FD0C` au RIP `0x7BDDEAC2` — l'instruction précédente a tourné. Ce qui reste est
+une écriture vers la pile de l'invité depuis le code C++ de FEX lui-même (`pc` dans `xtajit.dll`,
+pas dans le code émis), probablement la synchronisation de contexte. Une boucle de 1497
+exceptions, donc un site chaud et unique à trouver.
+
+### Non-régression
+
+Le 64 bits n'est pas touché. `hello64.exe` répond, `probe_d3d11` et `probe_d3d11_draw` passent,
+et les deux bancs donnent **84,0 ms** en x86_64 émulé et **80,7 ms** en ARM64EC natif — mêmes
+chiffres qu'avant.

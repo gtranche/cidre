@@ -59,6 +59,52 @@
    return Tmp ?: IREmit->Constant(0);
  }
  
+--- aa/FEXCore/Source/Interface/Core/Core.cpp
++++ bb/FEXCore/Source/Interface/Core/Core.cpp
+@@ -77,8 +77,16 @@
+ #include <unordered_map>
+ #include <utility>
+ #include <xxhash.h>
++#include "Interface/Core/Addressing.h"
+ 
+ namespace FEXCore::Context {
++
++/* La lecture du code de l'invite est un chemin a part : les adresses de donnees
++ * sont rebasees dans l'emetteur d'IR, mais le RIP sert ici de pointeur hote pour
++ * *lire les instructions*. Voir IR::Guest32Base. */
++static inline const uint8_t* GuestCodePtr(uint64_t GuestRIP) {
++  return reinterpret_cast<const uint8_t*>(GuestRIP + FEXCore::IR::Guest32Base);
++}
+ ContextImpl::ContextImpl(const FEXCore::HostFeatures& Features)
+   : HostFeatures {Features}
+   , CPUID {this}
+@@ -515,7 +523,7 @@
+ }
+ 
+ bool ContextImpl::CheckIfBlockIsCacheable(FEXCore::Core::InternalThreadState& Thread, uint64_t GuestRIP, uint64_t MaxInst) {
+-  return Thread.FrontendDecoder->CheckIfCacheable(Thread, reinterpret_cast<const uint8_t*>(GuestRIP), GuestRIP, MaxInst);
++  return Thread.FrontendDecoder->CheckIfCacheable(Thread, GuestCodePtr(GuestRIP), GuestRIP, MaxInst);
+ }
+ 
+ ContextImpl::GenerateIRResult
+@@ -543,7 +551,7 @@
+   }
+ 
+   if (!HasCustomIR) {
+-    const auto* GuestCode = reinterpret_cast<const uint8_t*>(GuestRIP);
++    const auto* GuestCode = GuestCodePtr(GuestRIP);
+ 
+     Thread->FrontendDecoder->DecodeLoop(GuestCode);
+ 
+@@ -642,7 +650,7 @@
+         }
+ 
+         if (Config.SMCChecks == FEXCore::Config::CONFIG_SMC_FULL || Block.ForceFullSMCDetection) {
+-          auto ExistingCodePtr = reinterpret_cast<uint8_t*>(Block.Entry + BlockInstructionsLength);
++          auto ExistingCodePtr = const_cast<uint8_t*>(GuestCodePtr(Block.Entry + BlockInstructionsLength));
+           auto InstAddressReg = Thread->OpDispatcher->_EntrypointOffset(GPRSize, InstAddress - GuestRIP);
+ 
+           auto Value = FEXCore::Utils::crc32(ExistingCodePtr, DecodedInfo->InstSize);
 --- aa/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
 +++ bb/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
 @@ -1510,6 +1510,13 @@
@@ -381,10 +427,10 @@
    FEX::Windows::InitCRTProcess();
 --- aa/Source/Windows/WOW64/Module.cpp
 +++ bb/Source/Windows/WOW64/Module.cpp
-@@ -497,8 +497,22 @@
-     Wow64ProcessPendingCrossProcessItems();
-   }
- };
+@@ -62,6 +62,13 @@
+ #include <winternl.h>
+ #include <wine/debug.h>
+ #include <wine/unixlib.h>
 +
 +#ifdef FEX_TEB_SANS_X18
 +namespace FEXCore::IR {
@@ -393,6 +439,31 @@
 +extern "C" __declspec(dllimport) unsigned __int64 __wine_wow64_guest_base;
 +#endif
  
+ struct TLS {
+   enum class Slot : size_t {
+@@ -430,7 +437,7 @@
+     uint64_t ReturnRSP = Frame->State.gregs[FEXCore::X86State::REG_RSP] + 4;                 // Stack pointer after popping return address
+     uint64_t ReturnRAX = 0;
+ 
+-    if (Frame->State.rip == (uint64_t)BridgeInstrs::UnixCall) {
++    if (Frame->State.rip + FEXCore::IR::Guest32Base == (uint64_t)BridgeInstrs::UnixCall) {
+       struct StackLayout {
+         unixlib_handle_t Handle;
+         UINT32 ID;
+@@ -445,7 +452,7 @@
+       ReturnRAX = static_cast<uint64_t>(WineUnixCall(StackArgs->Handle, StackArgs->ID, ULongToPtr(StackArgs->Args)));
+       Context::LockJITContext();
+       Frame->State.gregs[FEXCore::X86State::REG_RAX] = ReturnRAX;
+-    } else if (Frame->State.rip == (uint64_t)BridgeInstrs::Syscall) {
++    } else if (Frame->State.rip + FEXCore::IR::Guest32Base == (uint64_t)BridgeInstrs::Syscall) {
+       const uint64_t EntryRAX = Frame->State.gregs[FEXCore::X86State::REG_RAX];
+ 
+       Frame->State.gregs[FEXCore::X86State::REG_RSP] = ReturnRSP;
+@@ -498,7 +505,15 @@
+   }
+ };
+ 
++
  void BTCpuProcessInit() {
 +#ifdef FEX_TEB_SANS_X18
 +  /* macOS interdit toute adresse sous 4 Gio a un processus arm64. L'hote place
@@ -404,3 +475,42 @@
    FEX::Windows::InitCRTProcess();
    FEX::Windows::SetupThreadHandlers();
    const auto ExecutablePath = FEX::Windows::GetExecutableFilePath();
+@@ -550,7 +565,20 @@
+   // Allocate the syscall/unixcall trampolines in the lower 2GB of the address space
+   SIZE_T Size = 4;
+   void* Addr = nullptr;
+-  NtAllocateVirtualMemory(NtCurrentProcess(), &Addr, (1U << 31) - 1, &Size, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
++#ifdef FEX_TEB_SANS_X18
++  if (FEXCore::IR::Guest32Base) {
++    /* « les 2 premiers Gio » est vu de l'invite : quand sa fenetre est deplacee,
++     * le tremplin doit y aller aussi, sans quoi l'invite ne peut pas y sauter.
++     * zero_bits ne dit qu'un plafond, d'ou la forme etendue. */
++    MEM_ADDRESS_REQUIREMENTS Req {reinterpret_cast<void*>(FEXCore::IR::Guest32Base),
++                                  reinterpret_cast<void*>(FEXCore::IR::Guest32Base + (1ULL << 31) - 1), 0};
++    MEM_EXTENDED_PARAMETER Ext {};
++    Ext.Type = MemExtendedParameterAddressRequirements;
++    Ext.Pointer = &Req;
++    NtAllocateVirtualMemoryEx(NtCurrentProcess(), &Addr, &Size, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE, &Ext, 1);
++  } else
++#endif
++    NtAllocateVirtualMemory(NtCurrentProcess(), &Addr, (1U << 31) - 1, &Size, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+   InvalidationTracker->HandleMemoryProtectionNotification(reinterpret_cast<uint64_t>(Addr), Size, PAGE_EXECUTE);
+   *reinterpret_cast<uint32_t*>(Addr) = 0x2ecd2ecd;
+   BridgeInstrs::Syscall = Addr;
+@@ -671,12 +699,14 @@
+   }
+ }
+ 
++/* Ces deux-la sont rendues a Wine, qui les inscrit dans le ntdll 32 bits : donc
++ * en adresses de l'invite, pas de l'hote. */
+ void* BTCpuGetBopCode() {
+-  return BridgeInstrs::Syscall;
++  return reinterpret_cast<void*>(reinterpret_cast<uint64_t>(BridgeInstrs::Syscall) - FEXCore::IR::Guest32Base);
+ }
+ 
+ void* __wine_get_unix_opcode() {
+-  return BridgeInstrs::UnixCall;
++  return reinterpret_cast<void*>(reinterpret_cast<uint64_t>(BridgeInstrs::UnixCall) - FEXCore::IR::Guest32Base);
+ }
+ 
+ NTSTATUS BTCpuGetContext(HANDLE Thread, HANDLE Process, void* Unknown, WOW64_CONTEXT* Context) {
