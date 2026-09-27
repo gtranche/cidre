@@ -16684,3 +16684,74 @@ et `Surviving Mars` tourne, GPU à 99 %.
 `ThreadLocalStoragePointer`. Ce n'est pas un jeton, c'est un pointeur : la substitution d'une
 instruction ne s'applique pas. Atteints seulement sur une exception C++ levée, et sur un
 `thread_local` à destructeur. Notés, pas corrigés.
+
+## 243. Les i386 : le plancher est celui du `vm_map`, et le dernier `x18` tombe
+
+### `__PAGEZERO` : remesuré sur macOS 26.5.2, et vu d'un autre angle
+
+Les mesures du paragraphe 139 datent d'une version antérieure. Refaites :
+
+| `__PAGEZERO` demandé | obtenu | résultat |
+| --- | --- | --- |
+| défaut | 4 Gio | s'exécute ; `mmap 0x400000` et `mmap 0x7ffe0000` → `ENOMEM` |
+| `0x100000` | 1 Mio | **SIGKILL** (137) |
+| `0x10000` | 64 Kio | **SIGKILL** |
+| `-segalign,0x4000,-pagezero_size,0x4000` | — | lien refusé |
+
+La politique tient. Mais un angle nouveau, plus net : `mach_vm_region_recurse` depuis l'adresse 0
+rend comme **première région** `0x1001b8000`. Il n'y a donc *aucune* région sous 4 Gio —
+`__PAGEZERO` n'est pas une réservation qu'on pourrait libérer, c'est le **plancher du `vm_map` de
+la tâche**. Conséquence mesurée :
+
+```
+mach_vm_deallocate(0x1000, ~4Gio) -> 0 ((os/kern) successful)
+  apres deallocate       mmap 0x400000 -> ENOMEM
+munmap(0x1000, ~4Gio)   -> EINVAL
+```
+
+Le `deallocate` réussit **sans rien libérer**, et `mmap` échoue toujours. Il n'y a rien à
+contourner.
+
+Donc un invité i386 en correspondance 1:1 est impossible, définitivement. La seule voie est la
+**translation d'adresses** : la fenêtre 4 Gio de l'invité placée au-dessus de 4 Gio, chaque accès
+mémoire du JIT rebasé, et chaque pointeur que Wine présente à l'invité converti. Côté FEX ce
+serait contenu (l'adresse effective 32 bits est formée en un endroit) ; côté Wine c'est le cœur
+de WoW64. Ce n'est pas un chantier de session, et je ne l'ouvre pas à moitié.
+
+Au passage, le coût de l'i386 aujourd'hui est nul : un préfixe se crée en **5,97 s** (les
+démarrages de plusieurs minutes étaient l'enlisement W^X du paragraphe 240, pas l'i386), et
+`syswow64` reste vide. L'i386 ne ralentit rien, il ne marche simplement pas.
+
+### Le dernier `x18` : une exception C++ bloquait le processus
+
+`__cxa_get_globals` de libc++abi lit `[x18, #0x58]`, le `ThreadLocalStoragePointer` — c'est la
+traduction par clang d'un `thread_local`. Ce n'est pas un jeton mais un vrai pointeur : la
+substitution d'une instruction du paragraphe 242 ne s'applique pas.
+
+Mesure, sur un programme de six lignes en ARM64EC :
+
+| lien | résultat |
+| --- | --- |
+| dynamique | `libc++.dll` et `libunwind.dll` absents — rien à voir avec `x18` |
+| **statique** (comme DXVK) | **se bloque** au `throw`, indéfiniment |
+
+DXVK est lié statiquement : chaque `throw` de `DxvkError` était un blocage en attente.
+
+`outils/cxa_globals_sans_x18.c` fournit les deux fonctions en TLS Win32 — que notre Wine sert
+sans passer par `x18` — et gagne à l'édition de liens contre libc++abi. Piège rencontré : les
+`TlsGetValue`/`TlsSetValue` *en ligne* de mingw repassent par le TEB, donc l'objet doit être
+compilé sans que ces macros s'appliquent ; ici le compilateur a émis les appels, mais c'est à
+surveiller. La disposition de `__cxa_eh_globals` vient de l'ABI Itanium, avec deux champs de
+marge à zéro par prudence.
+
+```
+$ wine c:\thr4_ec.exe
+avant le try
+avant throw
+attrape 42
+apres
+```
+
+DXVK ARM64EC relié avec cet objet : **zéro `x18`** dans `d3d11.dll` et `dxgi.dll`, et les deux
+sondes passent toujours. Il ne reste `x18` que dans `tlsdtor.o` de mingw — un `thread_local` à
+destructeur, non atteint par ce qu'on exécute.
