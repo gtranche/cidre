@@ -16882,3 +16882,29 @@ exceptions, donc un site chaud et unique à trouver.
 Le 64 bits n'est pas touché. `hello64.exe` répond, `probe_d3d11` et `probe_d3d11_draw` passent,
 et les deux bancs donnent **84,0 ms** en x86_64 émulé et **80,7 ms** en ARM64EC natif — mêmes
 chiffres qu'avant.
+
+### Suite du 245 : la pile de l'invité, et les `REP`
+
+Trois chemins de plus, tous trouvés par la boucle des fautes, et le compte d'exceptions mesure
+l'avancée : **1497 → 1102 → 259**.
+
+**`Push` / `Pop`.** Ils ont leur propre opération IR, qui n'emprunte pas l'entonnoir d'adresse :
+le magasin est *pré-indexé* et le registre porte à la fois l'adresse et la nouvelle valeur du SP.
+Le rebaser corromprait le SP, qui doit rester une adresse d'invité. L'abaissement JIT calcule donc
+le SP d'abord, l'adresse hôte dans un temporaire, et écrit sans indexation. Idem pour les
+variantes par paires (`stp`/`ldp`).
+
+Effet mesuré : le RIP de l'invité est passé de `0x7BDDEAC2` à `0x7BDE2D23`, soit 17 Kio plus loin
+dans le ntdll 32 bits.
+
+**`REP MOVS` / `REP STOS`.** Ce sont les opérations `MemCpy` / `MemSet`, et il n'existe pas de
+chemin lent : elles *sont* l'implémentation. Leurs boucles prennent les registres de l'invité comme
+adresses. On rebase les adresses d'entrée ; le retour n'a besoin de rien, puisqu'il est rangé dans
+`RSI`/`RDI` sur 32 bits, ce qui retire la base.
+
+### Ce qui reste
+
+Une faute d'**exécution** à `0x7BDDDFD0` : un saut vers une adresse d'invité, donc un endroit où
+le contrôle passe à une adresse non rebasée plutôt qu'au code traduit. Reste à trouver.
+
+Non-régression inchangée : `hello64` répond, le triangle D3D11 passe, **84,1 ms** en x86_64 émulé.
