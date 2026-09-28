@@ -53,7 +53,7 @@
 +@ cdecl SondeInterfaceNative(ptr)
 --- /dev/null
 +++ bb/dlls/lsteamclient/main.c
-@@ -0,0 +1,540 @@
+@@ -0,0 +1,586 @@
 +/*
 + * Cote PE du pont Steamworks : ce que le steam_api du jeu appelle.
 + */
@@ -83,11 +83,55 @@
 +
 +static void *envelopper( UINT64 natif, const char *nom );
 +
++/*
++ * Traduire un pointeur de l'invite vers l'espace de l'hote.
++ *
++ * L'unixlib vit chez l'hote et dereference ce qu'on lui passe. En 64 bits les
++ * deux espaces se confondent et ceci est l'identite. En 32 bits sur macOS la
++ * fenetre de l'invite est deplacee -- le noyau lui interdit les adresses sous
++ * 4 Gio -- et ntdll publie la base a laquelle elle a ete posee.
++ */
++#ifndef _WIN64
++extern __declspec(dllimport) ULONG64 __wine_wow64_guest_base;
++
++static inline UINT64 vers_hote( const void *p )
++{
++    return p ? (UINT64)(ULONG_PTR)p + __wine_wow64_guest_base : 0;
++}
++
++/*
++ * Un mot d'argument : entier ou pointeur ?
++ *
++ * La table mesuree donne le nombre de mots empiles, pas leur nature -- celle-ci
++ * n'est publiee que dans le SDK Steamworks, qu'on ne veut pas. On interroge
++ * donc l'adresse : un mot qui designe de la memoire lisible de l'invite est
++ * traite comme un pointeur, les autres passent tels quels.
++ *
++ * Deux garde-fous :
++ *   - sous 0x110000 vit la zone DOS, que l'invite libere au demarrage : jamais
++ *     une adresse valide, et c'est la que tombent les poignees Steam
++ *     (HSteamPipe, HSteamUser) et la plupart des identifiants d'application ;
++ *   - IsBadReadPtr lit sous garde, sans appel systeme.
++ *
++ * Reste un risque, borne et assume : un entier au-dela de 0x110000 qui
++ * tomberait sur une page engagee serait traduit a tort. La trace le dit.
++ */
++static UINT64 mot_vers_hote( UINT32 mot )
++{
++    if (mot < 0x110000) return mot;
++    if (IsBadReadPtr( (const void *)(ULONG_PTR)mot, 1 )) return mot;
++    TRACE( "mot %#x pris pour un pointeur\n", (unsigned)mot );
++    return vers_hote( (const void *)(ULONG_PTR)mot );
++}
++#else
++static inline UINT64 vers_hote( const void *p ) { return (UINT64)(ULONG_PTR)p; }
++#endif
++
 +/* Ce que le steam_api du jeu appelle en premier. L'interface rendue doit etre
 + * un objet PE : rendre l'objet natif ferait entrer le jeu en ABI System V. */
 +void * CDECL CreateInterface( const char *version, int *err )
 +{
-+    struct create_interface_params params = { (ULONG_PTR)version, (ULONG_PTR)err, 0 };
++    struct create_interface_params params = { vers_hote( version ), vers_hote( err ), 0 };
 +    void *objet;
 +
 +    if (WINE_UNIX_CALL( unix_create_interface, &params )) return NULL;
@@ -393,7 +437,7 @@
 +    dest[0] = &params.a; dest[1] = &params.b; dest[2] = &params.c;
 +    dest[3] = &params.d; dest[4] = &params.e; dest[5] = &params.f;
 +    for (i = debut; i < mots && i - debut < 6; i++)
-+        *dest[i - debut] = args[i];
++        *dest[i - debut] = mot_vers_hote( args[i] );
 +
 +    if (WINE_UNIX_CALL( unix_appel_vtable, &params )) return 0;
 +
@@ -500,7 +544,7 @@
 +void * CDECL SondeInterfaceGenerique( void *client, int user, int pipe, const char *version )
 +{
 +    struct objet_pe *objet = client;
-+    struct generic_interface_params params = { objet ? objet->natif : 0, user, pipe, (ULONG_PTR)version, 0 };
++    struct generic_interface_params params = { objet ? objet->natif : 0, user, pipe, vers_hote( version ), 0 };
 +
 +    if (!objet) return NULL;
 +    if (WINE_UNIX_CALL( unix_get_generic_interface, &params )) return NULL;
@@ -572,7 +616,7 @@
 +    /* La charge utile est recopiee ici : les rappels Steamworks sont tires
 +     * depuis le fil du jeu, un par un, et consommes avant le suivant. */
 +    static unsigned char charge[8192];
-+    struct get_callback_params params = { pipe, sizeof(charge), (ULONG_PTR)charge };
++    struct get_callback_params params = { pipe, sizeof(charge), vers_hote( charge ) };
 +
 +    if (!msg) return FALSE;
 +    if (WINE_UNIX_CALL( unix_get_callback, &params )) return FALSE;
@@ -580,7 +624,9 @@
 +
 +    msg->m_hSteamUser = params.msg.user;
 +    msg->m_iCallback  = params.msg.callback;
-+    msg->m_pubParam   = (unsigned char *)(ULONG_PTR)params.msg.param;
++    /* Le cote unix a recopie la charge dans notre tampon et rend son adresse
++     * telle qu'il l'a recue, donc celle de l'hote : le jeu attend la sienne. */
++    msg->m_pubParam   = params.msg.param ? charge : NULL;
 +    msg->m_cubParam   = params.msg.taille;
 +    if (call) *call = params.call;
 +
@@ -3760,6 +3806,55 @@
 +};
 +
 +#endif
+--- aa/dlls/ntdll/locale.c
++++ bb/dlls/ntdll/locale.c
+@@ -105,6 +105,24 @@ static PEB64 *get_peb64( void )
+     return (PEB64 *)(UINT_PTR)teb64->Peb;
+ }
+ 
++/*
++ * Une adresse de l'invite rangee dans le PEB 64 bits, que l'hote lira.
++ *
++ * Tronquer suffit dans l'autre sens -- la base de la fenetre est un multiple de
++ * 4 Gio -- mais pas ici : l'hote deref erence ce qu'il y trouve. Sur les cibles
++ * ou les deux espaces se confondent, la base vaut zero.
++ */
++static ULONG64 vers_hote( const void *p )
++{
++#if defined(__i386__) || defined(__arm__)
++    extern NTSYSAPI ULONG64 __wine_wow64_guest_base;
++
++    return p ? (ULONG64)(ULONG_PTR)p + __wine_wow64_guest_base : 0;
++#else
++    return PtrToUlong( p );
++#endif
++}
++
+ static void append_ui_language( USHORT *langs, ULONG *len, USHORT idx )
+ {
+     for (UINT i = 0; i < *len; i++) if (langs[i] == idx) return;
+@@ -366,18 +384,18 @@ void locale_init(void)
+ 
+     NtGetNlsSectionPtr( 10, 0, NULL, &case_ptr, &size );
+     NtCurrentTeb()->Peb->UnicodeCaseTableData = case_ptr;
+-    if (peb64) peb64->UnicodeCaseTableData = PtrToUlong( case_ptr );
++    if (peb64) peb64->UnicodeCaseTableData = vers_hote( case_ptr );
+     if (ansi_cp != CP_UTF8)
+     {
+         NtGetNlsSectionPtr( 11, ansi_cp, NULL, &ansi_ptr, &size );
+         NtCurrentTeb()->Peb->AnsiCodePageData = ansi_ptr;
+-        if (peb64) peb64->AnsiCodePageData = PtrToUlong( ansi_ptr );
++        if (peb64) peb64->AnsiCodePageData = vers_hote( ansi_ptr );
+     }
+     if (oem_cp != CP_UTF8)
+     {
+         NtGetNlsSectionPtr( 11, oem_cp, NULL, &oem_ptr, &size );
+         NtCurrentTeb()->Peb->OemCodePageData = oem_ptr;
+-        if (peb64) peb64->OemCodePageData = PtrToUlong( oem_ptr );
++        if (peb64) peb64->OemCodePageData = vers_hote( oem_ptr );
+     }
+     RtlInitNlsTables( ansi_ptr, oem_ptr, case_ptr, &nls_info );
+     NlsAnsiCodePage     = nls_info.AnsiTableInfo.CodePage;
 --- aa/dlls/ntdll/ntdll.spec
 +++ bb/dlls/ntdll/ntdll.spec
 @@ -1783,3 +1783,7 @@
@@ -3769,7 +3864,7 @@
 +@ stdcall -arch=arm64,arm64ec __wine_current_teb()
 +@ extern -private -arch=arm64,arm64ec __wine_teb_table
 +@ extern -arch=arm64,arm64ec __wine_teb_tsd_key
-+@ extern -arch=arm64,arm64ec __wine_wow64_guest_base
++@ extern -arch=i386,arm64,arm64ec __wine_wow64_guest_base
 --- aa/dlls/ntdll/signal_arm64.c
 +++ bb/dlls/ntdll/signal_arm64.c
 @@ -56,6 +56,19 @@ ALL_SYSCALLS
@@ -3940,10 +4035,26 @@
           "bl \"#DbgBreakPoint\"\n"
 --- aa/dlls/ntdll/thread.c
 +++ bb/dlls/ntdll/thread.c
-@@ -730,3 +730,90 @@ void WINAPI DECLSPEC_HOTPATCH RtlProcessFlsData( void *teb_fls_data, ULONG flags
+@@ -730,3 +730,96 @@ void WINAPI DECLSPEC_HOTPATCH RtlProcessFlsData( void *teb_fls_data, ULONG flags
          RtlFreeHeap( GetProcessHeap(), 0, fls );
      }
  }
++
++#if defined(__aarch64__) || defined(__arm64ec__) || defined(__i386__)
++/*
++ * Base de la fenetre de 4 Gio d'un invite 32 bits dans l'espace de l'hote.
++ *
++ * Zero = correspondance 1:1, ce que fait Windows. Sur macOS le noyau interdit
++ * toute adresse sous 4 Gio a un processus arm64 : la fenetre doit aller
++ * ailleurs, et l'emulateur rebase chaque adresse effective 32 bits. C'est
++ * l'hote qui decide, et le publie ici.
++ *
++ * L'invite lui-meme en a besoin : un module PE 32 bits qui passe un pointeur a
++ * une bibliotheque unix -- le pont Steam -- doit le traduire, puisque l'autre
++ * cote vit dans l'espace de l'hote.
++ */
++ULONG64 __wine_wow64_guest_base = 0;
++#endif
 +
 +#if defined(__aarch64__) || defined(__arm64ec__)
 +
@@ -3989,16 +4100,6 @@
 + * vaut zero.
 + */
 +unsigned int __wine_teb_tsd_key = 0;
-+
-+/*
-+ * Base de la fenetre de 4 Gio d'un invite 32 bits dans l'espace de l'hote.
-+ *
-+ * Zero = correspondance 1:1, ce que fait Windows. Sur macOS le noyau interdit
-+ * toute adresse sous 4 Gio a un processus arm64 : la fenetre doit aller
-+ * ailleurs, et l'emulateur rebase chaque adresse effective 32 bits. C'est
-+ * l'hote qui decide, et le publie ici pour que l'emulateur la lise.
-+ */
-+ULONG64 __wine_wow64_guest_base = 0;
 +
 +/* __builtin_arm_rsr64 plutot qu'un bloc __asm__ : ce fichier est compile en
 + * mode MSVC, ou la syntaxe d'assembleur en ligne de GCC n'est pas disponible. */
@@ -4173,6 +4274,21 @@
      if (is_arm64ec())
      {
          GET_FUNC( __wine_unix_call_dispatcher_arm64ec );
+@@ -1626,6 +1689,14 @@ static void load_ntdll_wow64_functions( HMODULE module )
+     }
+ #endif
+ 
++    /* La fenetre de l'invite : le ntdll 32 bits la publie a son tour, pour les
++     * modules PE de l'invite qui parlent a une bibliotheque unix. */
++    {
++        ULONG64 *base = (ULONG64 *)find_named_export( module, exports, "__wine_wow64_guest_base" );
++
++        if (base) *base = user_space_wow_base;
++    }
++
+     /* also set the 32-bit LdrSystemDllInitBlock */
+     memcpy( (void *)(ULONG_PTR)pLdrSystemDllInitBlock->pLdrSystemDllInitBlock,
+             pLdrSystemDllInitBlock, sizeof(*pLdrSystemDllInitBlock) );
 --- aa/dlls/ntdll/unix/process.c
 +++ bb/dlls/ntdll/unix/process.c
 @@ -540,14 +540,14 @@ NTSTATUS wow64_wine_spawnvp( void *args )
@@ -5585,6 +5701,132 @@
 -    out->DefaultDacl = ULongToPtr( in->DefaultDacl );
 +    out->DefaultDacl = ptr_32to64( in->DefaultDacl );
      return out;
+ }
+ 
+--- aa/dlls/wow64win/gdi.c
++++ bb/dlls/wow64win/gdi.c
+@@ -785,7 +785,7 @@ NTSTATUS WINAPI wow64_NtGdiDdDDICreateKeyedMutex2( UINT *args )
+     desc.InitialValue = desc32->InitialValue;
+     desc.hSharedHandle = desc32->hSharedHandle;
+     desc.hKeyedMutex = desc32->hKeyedMutex;
+-    desc.pPrivateRuntimeData = ULongToPtr( desc32->pPrivateRuntimeData );
++    desc.pPrivateRuntimeData = ptr_32to64( desc32->pPrivateRuntimeData );
+     desc.PrivateRuntimeDataSize = desc32->PrivateRuntimeDataSize;
+     desc.Flags = desc32->Flags;
+     status = NtGdiDdDDICreateKeyedMutex2( &desc );
+@@ -827,7 +827,7 @@ NTSTATUS WINAPI wow64_NtGdiDdDDIDestroyAllocation( UINT *args )
+ 
+     desc.hDevice = desc32->hDevice;
+     desc.hResource = desc32->hResource;
+-    desc.phAllocationList = ULongToPtr( desc32->phAllocationList );
++    desc.phAllocationList = ptr_32to64( desc32->phAllocationList );
+     desc.AllocationCount = desc32->AllocationCount;
+     return NtGdiDdDDIDestroyAllocation( &desc );
+ }
+@@ -846,7 +846,7 @@ NTSTATUS WINAPI wow64_NtGdiDdDDIDestroyAllocation2( UINT *args )
+ 
+     desc.hDevice = desc32->hDevice;
+     desc.hResource = desc32->hResource;
+-    desc.phAllocationList = ULongToPtr( desc32->phAllocationList );
++    desc.phAllocationList = ptr_32to64( desc32->phAllocationList );
+     desc.AllocationCount = desc32->AllocationCount;
+     desc.Flags = desc32->Flags;
+     return NtGdiDdDDIDestroyAllocation2( &desc );
+--- aa/dlls/wow64win/syscall.c
++++ bb/dlls/wow64win/syscall.c
+@@ -68,10 +68,20 @@ const SYSTEM_SERVICE_TABLE sdwhwin32 =
+ };
+ 
+ 
++#ifdef __aarch64__
++extern __declspec(dllimport) ULONG64 __wine_wow64_guest_base;
++#endif
++
++/* Voir wow64win_private.h : la fenetre de l'invite, que ntdll publie. */
++ULONG64 guest_base = 0;
++
+ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, void *reserved )
+ {
+     if (reason != DLL_PROCESS_ATTACH) return TRUE;
+     LdrDisableThreadCalloutsForDll( inst );
+     NtCurrentTeb()->Peb->KernelCallbackTable = user_callbacks;
++#ifdef __aarch64__
++    guest_base = __wine_wow64_guest_base;
++#endif
+     return TRUE;
+ }
+--- aa/dlls/wow64win/wow64win_private.h
++++ bb/dlls/wow64win/wow64win_private.h
+@@ -47,14 +47,32 @@ typedef struct
+     ULONG SecurityQualityOfService;
+ } OBJECT_ATTRIBUTES32;
+ 
++/*
++ * Base de la fenetre de l'invite 32 bits dans l'espace de l'hote.
++ *
++ * Zero partout sauf sur macOS arm64, ou le noyau interdit a l'hote toute
++ * adresse sous 4 Gio : la fenetre de l'invite est posee ailleurs et ntdll
++ * publie sa base. Tout pointeur qui traverse cette frontiere doit etre
++ * traduit, sans quoi l'hote deref erence une adresse qui n'est pas la sienne.
++ *
++ * Le sens inverse ne demande rien : tronquer a 32 bits *est* la soustraction
++ * de la base, celle-ci etant un multiple de 4 Gio.
++ */
++extern ULONG64 guest_base;
++
++static inline void *ptr_32to64( ULONG addr )
++{
++    return addr ? (void *)(ULONG_PTR)(guest_base + addr) : NULL;
++}
++
+ static inline ULONG get_ulong( UINT **args ) { return *(*args)++; }
+ static inline HANDLE get_handle( UINT **args ) { return LongToHandle( *(*args)++ ); }
+-static inline void *get_ptr( UINT **args ) { return ULongToPtr( *(*args)++ ); }
++static inline void *get_ptr( UINT **args ) { return ptr_32to64( *(*args)++ ); }
+ 
+ static inline void **addr_32to64( void **addr, ULONG *addr32 )
+ {
+     if (!addr32) return NULL;
+-    *addr = ULongToPtr( *addr32 );
++    *addr = ptr_32to64( *addr32 );
+     return addr;
+ }
+ 
+@@ -80,7 +98,7 @@ static inline UNICODE_STRING *unicode_str_32to64( UNICODE_STRING *str, const UNI
+     if (!str32) return NULL;
+     str->Length = str32->Length;
+     str->MaximumLength = str32->MaximumLength;
+-    str->Buffer = ULongToPtr( str32->Buffer );
++    str->Buffer = ptr_32to64( str32->Buffer );
+     return str;
+ }
+ 
+@@ -102,10 +120,10 @@ static inline SECURITY_DESCRIPTOR *secdesc_32to64( SECURITY_DESCRIPTOR *out, con
+     }
+     else
+     {
+-        out->Owner = ULongToPtr( sd->Owner );
+-        out->Group = ULongToPtr( sd->Group );
+-        if (sd->Control & SE_SACL_PRESENT) out->Sacl = ULongToPtr( sd->Sacl );
+-        if (sd->Control & SE_DACL_PRESENT) out->Dacl = ULongToPtr( sd->Dacl );
++        out->Owner = ptr_32to64( sd->Owner );
++        out->Group = ptr_32to64( sd->Group );
++        if (sd->Control & SE_SACL_PRESENT) out->Sacl = ptr_32to64( sd->Sacl );
++        if (sd->Control & SE_DACL_PRESENT) out->Dacl = ptr_32to64( sd->Dacl );
+     }
+     return out;
+ }
+@@ -119,9 +137,9 @@ static inline OBJECT_ATTRIBUTES *objattr_32to64( struct object_attr64 *out, cons
+     out->attr.Length = sizeof(out->attr);
+     out->attr.RootDirectory = LongToHandle( in->RootDirectory );
+     out->attr.Attributes = in->Attributes;
+-    out->attr.ObjectName = unicode_str_32to64( &out->str, ULongToPtr( in->ObjectName ));
+-    out->attr.SecurityQualityOfService = ULongToPtr( in->SecurityQualityOfService );
+-    out->attr.SecurityDescriptor = secdesc_32to64( &out->sd, ULongToPtr( in->SecurityDescriptor ));
++    out->attr.ObjectName = unicode_str_32to64( &out->str, ptr_32to64( in->ObjectName ));
++    out->attr.SecurityQualityOfService = ptr_32to64( in->SecurityQualityOfService );
++    out->attr.SecurityDescriptor = secdesc_32to64( &out->sd, ptr_32to64( in->SecurityDescriptor ));
+     return &out->attr;
  }
  
 --- aa/include/winnt.h

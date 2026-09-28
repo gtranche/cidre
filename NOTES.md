@@ -17145,3 +17145,103 @@ le factice existe déjà — la boucle est fermée. En attendant, `tests/peupler
 factices d'un préfixe qui en a. Il manquait `cryptbase.dll` dans le jeu copié, sans quoi le renvoi
 `advapi32!SystemFunction036 -> cryptbase.SystemFunction036` échoue et le chargement du jeu s'arrête
 sur `STATUS_DLL_NOT_FOUND`.
+
+## 248. Le pont Steam en 32 bits, et le chemin GDI de l'invite
+
+### Brancher les thunks32
+
+Les thunks `__thiscall` et leur table étaient déjà écrits (paragraphe 244) ; il leur manquait la
+seule chose qui compte ici : **traduire les pointeurs**. Le côté PE du pont range des adresses dans
+des structures que l'unixlib déréférence, et l'unixlib vit chez l'hôte.
+
+`ntdll` publie désormais `__wine_wow64_guest_base` pour l'**i386** aussi — la variable existait déjà
+pour arm64/arm64ec, il a suffi d'élargir la garde et de la renseigner depuis
+`load_ntdll_wow64_functions`. Le pont s'en sert pour `CreateInterface`, l'interface générique et le
+tampon de rappel.
+
+Reste le cas dur : les arguments d'un appel de méthode Steamworks. La table mesurée donne le nombre
+de mots empilés, **pas leur nature**, et celle-ci n'est publiée que dans le SDK. On interroge donc
+l'adresse elle-même :
+
+```c
+static UINT64 mot_vers_hote( UINT32 mot )
+{
+    if (mot < 0x110000) return mot;                       /* zone DOS liberee */
+    if (IsBadReadPtr( (const void *)(ULONG_PTR)mot, 1 )) return mot;
+    return vers_hote( (const void *)(ULONG_PTR)mot );
+}
+```
+
+Deux garde-fous : sous `0x110000` vit la zone DOS, que l'invité libère au démarrage — c'est là que
+tombent `HSteamPipe`, `HSteamUser` et la plupart des identifiants d'application ; et `IsBadReadPtr`
+lit sous garde, sans appel système. Le risque restant est borné et assumé : un entier au-delà de
+`0x110000` qui tomberait sur une page engagée serait traduit à tort.
+
+Résultat : `CreateInterface("SteamClient017")` et `("SteamClient014")` rendent des objets enveloppés
+au lieu de `No SteamClient014`.
+
+### wow64win avait sa propre copie des convertisseurs
+
+`dlls/wow64win/wow64win_private.h` redéfinit `get_ptr`, `addr_32to64`, `unicode_str_32to64`,
+`secdesc_32to64` et `objattr_32to64` — dix `ULongToPtr` que la correction de `dlls/wow64` n'avait
+pas touchés. Tout appel win32u d'un invité 32 bits passait donc des adresses d'invité à l'hôte.
+
+### La table GDI partagée : trois lectures, trois mondes
+
+Le `gdi32` de l'invité lit la table des poignées GDI ainsi :
+
+```
+fs:0x18            -> TEB32
+TEB32 + 0xf70      -> GdiBatchCount, l'adresse du TEB 64 bits
+TEB64 + 0x60       -> Peb
+PEB64 + 0xf8       -> GdiSharedHandleTable
+```
+
+Chaque lecture est un `movl` de 32 bits sur un champ de 64 : la troncature *est* la conversion vers
+l'invité, donc tout marche **à condition que la mémoire visée soit dans la fenêtre**. Un petit
+programme i386 (`tests/h32gdi.c`) affiche les trois valeurs avant de s'en servir, ce qui a montré la
+chaîne saine et `PEB64->Gdi` à zéro : `init_gdi_shared` n'avait pas tourné.
+
+Il n'avait pas tourné parce que `font_init` mourait avant, sur une lecture à l'adresse d'invité
+`0x290002`. La cause : le `ntdll` 32 bits publie les tables NLS dans le PEB 64 bits par
+
+```c
+peb64->AnsiCodePageData = PtrToUlong( ansi_ptr );
+```
+
+— tronquer suffit quand les deux espaces se confondent, pas ici. L'hôte déréférençait une adresse
+d'invité. Trois champs à corriger : `UnicodeCaseTableData`, `AnsiCodePageData`, `OemCodePageData`.
+
+Avec ça :
+
+```
+pinceau de reserve = 01900024
+GetObject = 12, style 0, couleur 000000
+GetDC(NULL) = 0801005E, largeur 1728
+i386 GDI : ok
+```
+
+### Le piège qui a coûté une heure : `cp` sur une bibliothèque mappée
+
+Réinstaller un `.so` de Wine par `cp` par-dessus l'ancien fait **tuer par SIGKILL** les processus
+suivants qui le chargent : macOS valide la signature page par page, et les pages déjà en cache ne
+correspondent plus au nouveau contenu. Le symptôme est un `rc=137` sans une ligne de trace, y
+compris pour un programme qui marchait une minute plus tôt. Remplacer par un `mv` — le renommage
+est atomique et donne un inode neuf :
+
+```
+cp x.so dest/x.so.neuf && mv -f dest/x.so.neuf dest/x.so
+```
+
+### Où Dead Cells s'arrête maintenant
+
+Le jeu passe `SteamAPI_Init`, crée sa fenêtre, et bute sur une assertion de Wine :
+
+```
+err:system:user_check_not_lock BUG: holding USER lock
+```
+
+Le verrou USER est tenu au moment d'un rappel vers l'invité. C'est le prochain fil.
+
+Non-régression après tout ça : `h32` écrit sa ligne, `h32gdi` aussi, `hello64` tourne, `banc_x64`
+donne **84,4 ms** pour 20 millions de tours, `probe_d3d11_draw` rastérise son triangle.

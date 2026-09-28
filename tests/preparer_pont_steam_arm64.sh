@@ -14,6 +14,11 @@ DOS='C:\Program Files (x86)\Steam'
 
 mkdir -p "$PFX/drive_c/Program Files (x86)/Steam"
 cp -f "$B/aarch64-windows/lsteamclient.dll" "$PFX/drive_c/windows/system32/lsteamclient.dll"
+# Un jeu 32 bits voit « system32 » comme « syswow64 » : il lui faut la version
+# i386 du pont, au meme nom et au meme endroit de son point de vue.
+if [ -f "$B/i386-windows/lsteamclient.dll" ] && [ -d "$PFX/drive_c/windows/syswow64" ]; then
+   cp -f "$B/i386-windows/lsteamclient.dll" "$PFX/drive_c/windows/syswow64/lsteamclient.dll"
+fi
 cp -f "$R/build/faux_steam.exe" "$PFX/drive_c/faux_steam.exe"
 
 reg() { WINEPREFIX="$PFX" WINEDEBUG=-all "$WINE" reg add "$1" /v "$2" /t "$3" /d "$4" /f >/dev/null 2>&1; }
