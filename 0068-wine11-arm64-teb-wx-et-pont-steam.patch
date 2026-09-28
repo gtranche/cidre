@@ -5215,7 +5215,20 @@
              ctx.Eip = (ULONG_PTR)pKiRaiseUserExceptionDispatcher;
              pBTCpuSetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx );
          }
-@@ -996,6 +1005,10 @@ static DWORD WINAPI process_init( RTL_RUN_ONCE *once, void *param, void **contex
+@@ -672,6 +681,12 @@ NTSTATUS WINAPI wow64_NtContinueEx( UINT *args )
+     void *context = get_ptr( &args );
+     KCONTINUE_ARGUMENT *cont_args = get_ptr( &args );
+ 
++    /* Ce parametre est soit un pointeur, soit un petit entier -- 0 ou 1 pour
++     * « teste les alertes ». Le test se fait donc dans l'espace de l'invite :
++     * rebase, un petit entier devient une adresse enorme, le « > 0xff » plus bas
++     * le prend pour un pointeur et le deference. */
++    if (PtrToUlong( cont_args ) <= 0xff) cont_args = (KCONTINUE_ARGUMENT *)(ULONG_PTR)PtrToUlong( cont_args );
++
+     NTSTATUS status = get_context_return_value( context );
+     struct user_apc_frame *frame = NtCurrentTeb()->TlsSlots[WOW64_TLS_APCLIST];
+     BOOL alertable;
+@@ -996,6 +1011,10 @@ static DWORD WINAPI process_init( RTL_RUN_ONCE *once, void *param, void **contex
      NtQuerySystemInformation( SystemEmulationBasicInformation, &info, sizeof(info), NULL );
      highest_user_address = (ULONG_PTR)info.HighestUserAddress;
      default_zero_bits = (ULONG_PTR)info.HighestUserAddress | 0x7fffffff;
@@ -5226,7 +5239,7 @@
      NtQueryInformationProcess( GetCurrentProcess(), ProcessWow64Information, &peb32, sizeof(peb32), NULL );
      wow64info = (WOW64INFO *)(peb32 + 1);
      wow64info->NativeSystemPageSize = 0x1000;
-@@ -1081,7 +1094,7 @@ static void thread_init(void)
+@@ -1081,7 +1100,7 @@ static void thread_init(void)
              ULONG *stack;
  
              pBTCpuGetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx );
@@ -5235,7 +5248,7 @@
              *ctx_ptr = ctx;
              stack = (ULONG *)ctx_ptr;
              *(--stack) = 0;
-@@ -1333,7 +1346,7 @@ void WINAPI Wow64ApcRoutine( ULONG_PTR arg1, ULONG_PTR arg2, ULONG_PTR arg3, CON
+@@ -1333,7 +1352,7 @@ void WINAPI Wow64ApcRoutine( ULONG_PTR arg1, ULONG_PTR arg2, ULONG_PTR arg3, CON
  
              pBTCpuGetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx );
  
@@ -5244,7 +5257,7 @@
              stack->func      = arg1 >> 32;
              stack->arg1      = arg1;
              stack->arg2      = arg2;
-@@ -1427,7 +1440,7 @@ NTSTATUS WINAPI Wow64KiUserCallbackDispatcher( ULONG id, void *args, ULONG len,
+@@ -1427,7 +1446,7 @@ NTSTATUS WINAPI Wow64KiUserCallbackDispatcher( ULONG id, void *args, ULONG len,
              pBTCpuGetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx );
              orig_ctx = ctx;
  

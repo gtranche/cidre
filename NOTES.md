@@ -16943,12 +16943,11 @@ inchangée. Utile : ça dit que le suivi d'invalidation vit dans le monde de l'i
 de l'hôte, et que la frontière à traduire est ailleurs — probablement là où Wine notifie FEX des
 changements de protection.
 
-## 246. Invités 32 bits : les deux mondes d'adresses, et où l'invité s'arrête
+## 246. Invités 32 bits : les deux mondes d’adresses, et un programme i386 qui tourne
 
-Suite du paragraphe 245. L'invité i386 charge maintenant `ntdll`, `kernel32`, `kernelbase` et
-`ucrtbase`, exécute leurs `DllMain`, atteint l'initialisation du CRT et écrit ses propres messages
-de trace. Il ne va pas jusqu'à `main`. Voici ce qui a été trouvé, dans l'ordre où la boucle des
-fautes les a rendus.
+Suite du paragraphe 245. **Un programme x86 32 bits s'exécute de bout en bout** :
+`bonjour depuis i386, somme=10` en 0,89 s. Douze corrections, toutes de la même famille — deux
+mondes d'adresses qui se mélangeaient — dans l'ordre où la boucle des fautes les a rendues.
 
 ### Le suivi d'exécutabilité de FEX vit chez l'invité, ses appels chez l'hôte
 
@@ -17062,12 +17061,29 @@ make aarch64_CFLAGS="-g -O2 -DWINE_TEB_SANS_X18" arm64ec_CFLAGS="-g -O2 -DWINE_T
 | modules 32 bits chargés | `ntdll` seul | `ntdll`, `kernel32`, `kernelbase`, `ucrtbase` |
 | trace de l'invité | muette | lisible |
 
-L'invité s'arrête sur une lecture à l'adresse d'invité `5` pendant l'initialisation du CRT, suivie
-d'un saut à `0xC0000005` — la valeur d'un statut utilisée comme adresse de code. C'est le prochain
-fil à tirer.
+### Le dernier : un petit entier pris pour un pointeur
+
+La lecture à l'adresse d'invité `5` ne venait pas de l'invité : le PC fautif était
+`wow64.dll+0x1b418`, dans `wow64_NtContinueEx`. Ce paramètre-là accepte **soit** un pointeur
+`KCONTINUE_ARGUMENT`, **soit** un petit entier — 0 ou 1 pour « teste les alertes ». Wine les
+distingue par `(UINT_PTR)cont_args > 0xff`. Rebasé, `1` devient `0x400000001`, le test passe du
+mauvais côté et le pointeur est déréférencé. La faute remontait ensuite à l'invité, dont
+`KiUserExceptionDispatcher` reprenait sur un contexte incohérent : d'où le saut à `0xC0000005`, la
+valeur du statut.
+
+La correction tient en une ligne — ramener la valeur chez l'invité avant le test — et c'était la
+dernière :
+
+```
+bonjour depuis i386, somme=10
+```
+
+**0,89 s, 0,91 s, 0,89 s** sur trois lancements. Un programme x86 32 bits s'exécute de bout en bout
+sur la pile entièrement arm64 : PE i386 → FEX wow64 → Wine arm64 → macOS. Aucune trace de Rosetta
+nulle part.
 
 Non-régression du chemin 64 bits, après tous ces changements : `hello64.exe` écrit
-`bonjour depuis x86_64 emule`, `banc_x64` donne **84,0 ms** pour 20 millions de tours (83,8–84,4 ms
+`bonjour depuis x86_64 emule`, `banc_x64` donne **83,8 ms** pour 20 millions de tours (83,8–84,4 ms
 mesurés au paragraphe 241), et `probe_d3d11_draw` rasterise toujours son triangle.
 
 ### Ce qui reste à faire proprement
