@@ -4683,9 +4683,17 @@
              else
 --- aa/dlls/ntdll/unix/thread.c
 +++ bb/dlls/ntdll/unix/thread.c
-@@ -1197,7 +1197,10 @@
+@@ -1196,8 +1196,18 @@
+         teb->DeallocationStack = stack.DeallocationStack;
  
          /* 32-bit stack */
++        /* Ce plafond vient de zero_bits, c'est-a-dire de l'invite : il compte a
++         * partir de zero dans sa fenetre, alors que le plancher ci-dessous est
++         * une adresse de l'hote. Les comparer sans rebaser donne un intervalle
++         * a l'envers -- plancher 16 Gio, plafond 2 Gio -- et la creation du fil
++         * echoue sur STATUS_INVALID_PARAMETER, ce que le jeu voit comme un
++         * CreateThread qui rend NULL avec l'erreur 87. */
++        if (limit && limit < limit_4g) limit += user_space_wow_base;
          if (!limit || limit > user_space_wow_limit) limit = user_space_wow_limit;
 -        if ((status = virtual_alloc_thread_stack( &stack, 0, limit, reserve_size, commit_size, TRUE )))
 +        /* Le plancher compte autant que le plafond : la pile de l'invite doit
@@ -4757,7 +4765,7 @@
  /* per-mapping protection flags */
  #define VPROT_ARM64EC          0x0100  /* view may contain ARM64EC code */
  #define VPROT_SYSTEM           0x0200  /* system view (underlying mmap not under our control) */
-@@ -198,6 +199,22 @@
+@@ -198,8 +199,41 @@
  static struct file_view *arm64ec_view;
  
  ULONG_PTR user_space_wow_limit = 0;
@@ -4779,8 +4787,27 @@
 +ULONG_PTR user_space_wow_base = 0;
  struct _KUSER_SHARED_DATA *user_shared_data = (void *)0x17ffe0000ull;
  
++/***********************************************************************
++ *           __wine_wow64_host_base
++ *
++ * Le pendant de __wine_wow64_guest_base pour les bibliotheques unix. Celles
++ * qui portent elles-memes leurs relais wow64 -- opengl32 en tete, dont les
++ * thunks sont engendres du cote unix et non dans wow64win.dll -- recoivent des
++ * adresses d'invite et doivent les rebaser avant de les deref erencer. Le
++ * symbole est exporte par ntdll.so, comme wine_server_call.
++ *
++ * Rend zero hors wow64, de sorte que l'appelant n'ait pas a distinguer.
++ */
++NTSYSAPI ULONG_PTR CDECL __wine_wow64_host_base(void);
++NTSYSAPI ULONG_PTR CDECL __wine_wow64_host_base(void)
++{
++    return user_space_wow_base;
++}
++
  /* TEB allocation blocks */
-@@ -237,6 +254,7 @@
+ static void *teb_block;
+ static void **next_free_teb;
+@@ -237,6 +271,7 @@
  static void *preload_reserve_end;
  static BOOL force_exec_prot;  /* whether to force PROT_EXEC on all PROT_READ mmaps */
  static BOOL enable_write_exceptions;  /* raise exception on writes to executable memory */
@@ -4788,10 +4815,12 @@
  
  struct range_entry
  {
-@@ -768,6 +786,22 @@
+@@ -766,6 +801,22 @@
+  *           get_wow_user_space_limit
+  */
  static ULONG_PTR get_wow_user_space_limit(void)
- {
- #ifdef _WIN64
++{
++#ifdef _WIN64
 +    /* Rendue a l'invite, donc exprimee dans ses adresses a lui. */
 +    return (user_space_wow_limit - user_space_wow_base) & ~granularity_mask;
 +#endif
@@ -4806,12 +4835,10 @@
 + * repondre a l'invite.
 + */
 +static ULONG_PTR get_wow_host_space_limit(void)
-+{
-+#ifdef _WIN64
+ {
+ #ifdef _WIN64
      return user_space_wow_limit & ~granularity_mask;
- #endif
-     return (ULONG_PTR)user_space_limit;
-@@ -1375,6 +1409,11 @@
+@@ -1375,6 +1426,11 @@
          if (vprot & VPROT_WRITECOPY) prot |= PROT_WRITE | PROT_READ;
          if (vprot & VPROT_EXEC) prot |= PROT_EXEC | PROT_READ;
          if (vprot & VPROT_WRITEWATCH) prot &= ~PROT_WRITE;
@@ -4823,7 +4850,7 @@
      }
      if (!prot) prot = PROT_NONE;
      return prot;
-@@ -1970,6 +2009,7 @@
+@@ -1970,6 +2026,7 @@
   *
   * Wrapper for mprotect, adds PROT_EXEC if forced by force_exec_prot
   */
@@ -4831,7 +4858,7 @@
  static inline int mprotect_exec( void *base, size_t size, int unix_prot )
  {
      if (force_exec_prot && (unix_prot & PROT_READ) && !(unix_prot & PROT_EXEC))
-@@ -1980,7 +2020,22 @@
+@@ -1980,7 +2037,22 @@
          if (!(unix_prot & PROT_WRITE)) return -1;
      }
  
@@ -4855,7 +4882,7 @@
  }
  
  
-@@ -1998,6 +2053,8 @@
+@@ -1998,6 +2070,8 @@
  
      size = ROUND_SIZE( base, size, host_page_mask );
  
@@ -4864,7 +4891,7 @@
      vprot = get_host_page_vprot( addr );
      prot = get_unix_prot( (vprot & ~clear) | set );
      for (count = i = 1; i < size / host_page_size; i++, count++)
-@@ -2021,6 +2078,8 @@
+@@ -2021,6 +2095,8 @@
   */
  static BOOL set_vprot( struct file_view *view, void *base, size_t size, BYTE vprot )
  {
@@ -4873,10 +4900,11 @@
      if (!use_kernel_writewatch && view->protect & VPROT_WRITEWATCH)
      {
          /* each page may need different protections depending on write watch flag */
-@@ -2297,9 +2356,60 @@
+@@ -2296,10 +2372,61 @@
+         void *end = min( user_space_limit, host_addr_space_limit );
          size_t host_size = ROUND_SIZE( 0, size, host_page_mask );
          size_t unmap_size, view_size = host_size + align_mask + 1;
- 
++
 +        /*
 +         * Bornes exprimees dans les adresses de l'invite 32 bits.
 +         *
@@ -4897,7 +4925,7 @@
 +            limit_low  = user_space_wow_base + limit_low;
 +            limit_high = user_space_wow_base + limit_high;
 +        }
-+
+ 
          if (limit_low && (void *)limit_low > start) start = (void *)limit_low;
          if (limit_high && (void *)limit_high < end) end = (char *)limit_high + 1;
  
@@ -4934,7 +4962,7 @@
          if ((ptr = map_reserved_area( start, end, host_size, top_down, unix_prot, align_mask )))
          {
              TRACE( "got mem in reserved area %p-%p\n", ptr, (char *)ptr + size );
-@@ -3358,8 +3468,22 @@
+@@ -3358,9 +3485,23 @@
      BOOL top_down = (image_info->image_charact & IMAGE_FILE_DLL) &&
                      (image_info->image_flags & IMAGE_FLAGS_ImageDynamicallyRelocated);
  
@@ -4945,7 +4973,7 @@
 +     * base + preferee, et l'emulateur rebase les acces : l'invite continue de
 +     * voir 0x400000. */
 +    const ULONG_PTR decalage = is_machine_64bit( image_info->machine ) ? 0 : user_space_wow_base;
-+
+ 
 +    /* Les bornes recues viennent souvent de « zero_bits », donc de l'espace de
 +     * l'invite ; il faut les traduire avant de les melanger a des adresses
 +     * d'hote, sinon le plancher depasse le plafond. */
@@ -4956,10 +4984,11 @@
 +    }
 +    limit_low = max( limit_low, decalage + (ULONG_PTR)address_space_start );  /* make sure the DOS area remains free */
 +    if (!limit_high) limit_high = decalage ? get_wow_host_space_limit() : (ULONG_PTR)user_space_limit;
- 
++
      /* first try the specified base */
  
-@@ -3373,6 +3497,7 @@
+     if (image_info->map_addr)
+@@ -3373,6 +3514,7 @@
          base = wine_server_get_ptr( image_info->base );
          if ((ULONG_PTR)base != image_info->base) base = NULL;
      }
@@ -4967,7 +4996,7 @@
      if (base)
      {
          status = map_view( view_ret, base, size, alloc_type, vprot, limit_low, limit_high, 0 );
-@@ -3389,7 +3514,7 @@
+@@ -3389,7 +3531,7 @@
      else
      {
          start = limit_low;
@@ -4976,7 +5005,7 @@
      }
      if (start < end && (start != limit_low || end != limit_high))
      {
-@@ -3685,7 +3810,27 @@
+@@ -3685,7 +3827,27 @@
      host_page_size = sysconf( _SC_PAGESIZE );
      host_page_mask = host_page_size - 1;
      TRACE( "host page size: %uk\n", (UINT)host_page_size / 1024 );
@@ -5004,7 +5033,7 @@
  
  #ifdef _WIN64
      host_addr_space_limit = get_host_addr_space_limit();
-@@ -3849,7 +3994,8 @@
+@@ -3849,7 +4011,8 @@
  
      if (!pe_mapping) return STATUS_INVALID_PARAMETER;
  
@@ -5014,7 +5043,7 @@
      main_module = NULL;
  
      /* check if we can replace that mapping with the builtin */
-@@ -4093,11 +4239,11 @@
+@@ -4093,11 +4256,11 @@
          }
          else if (main_image_info.ImageCharacteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE)
          {
@@ -5029,12 +5058,10 @@
      }
      else
      {
-@@ -4123,6 +4269,16 @@
-     {
-         ERR( "wine: failed to map the shared user data: %08x\n", status );
+@@ -4125,6 +4288,16 @@
          exit(1);
-+    }
-+
+     }
+ 
 +    if (user_space_wow_base)
 +    {
 +        /* L'invite 32 bits lit KUSER_SHARED_DATA a une adresse fixe, 0x7ffe0000,
@@ -5043,10 +5070,12 @@
 +        status = map_view( &view, (char *)user_space_wow_base + 0x7ffe0000, page_size, 0,
 +                           VPROT_READ | VPROT_COMMITTED, 0, 0, 0 );
 +        if (status) ERR( "wine: KUSER_SHARED_DATA de l'invite non reservee : %08x\n", status );
-     }
- 
++    }
++
      status = map_view( &view, NULL, signal_stack_mask + 1 + kernel_stack_size, MEM_TOP_DOWN,
-@@ -4151,7 +4307,13 @@
+                        VPROT_READ | VPROT_WRITE | VPROT_COMMITTED, limit_4g, 0, 0 );
+     assert( !status );
+@@ -4151,7 +4324,13 @@
      if (is_wow64()) teb_block_size += ROUND_SIZE( 0, sizeof(WOW_TEB), page_mask );
      teb_block_size += page_size;  /* for debug info */
  
@@ -5061,7 +5090,7 @@
      else if (use_aslr()) limit_low = limit_4g;
  
      status = map_view( &view, NULL, 16 * teb_block_size, 0,
-@@ -4202,7 +4364,13 @@
+@@ -4202,7 +4381,13 @@
              struct file_view *view;
              ULONG_PTR limit_low = 0, limit_high = 0;
  
@@ -5076,7 +5105,7 @@
              else if (use_aslr()) limit_low = limit_4g;
  
              if ((status = map_view( &view, NULL, 32 * teb_block_size, 0,
-@@ -4279,7 +4447,7 @@
+@@ -4279,7 +4464,7 @@
          NtFreeVirtualMemory( GetCurrentProcess(), (void **)&teb->ChpeV2CpuAreaInfo, &size, MEM_RELEASE );
      }
  #endif
@@ -5085,7 +5114,7 @@
      {
          size = 0;
          NtFreeVirtualMemory( GetCurrentProcess(), &ptr, &size, MEM_RELEASE );
-@@ -4475,7 +4643,7 @@
+@@ -4475,7 +4660,7 @@
              if (wow_teb)
              {
                  if (wow_teb->TlsExpansionSlots)
@@ -5094,7 +5123,7 @@
              }
              else
  #endif
-@@ -4562,6 +4730,13 @@
+@@ -4562,6 +4747,13 @@
          ERR( "failed to remap the process USD: %d\n", res );
          exit(1);
      }
@@ -5108,7 +5137,7 @@
      if (needs_close) close( fd );
      NtClose( section );
  }
-@@ -4646,9 +4821,13 @@
+@@ -4646,9 +4838,13 @@
      if ((char *)ptr > stack->start && (char *)ptr <= stack->end) return TRUE;
  
      if (!(wow_teb = get_wow_teb( teb ))) return FALSE;
@@ -5125,11 +5154,10 @@
      stack->guaranteed = max( wow_teb->GuaranteedStackBytes, min_guaranteed );
      stack->is_wow = TRUE;
      return ((char *)ptr > stack->start && (char *)ptr <= stack->end);
-@@ -4719,6 +4898,24 @@
-             ret = STATUS_GUARD_PAGE_VIOLATION;
+@@ -4720,6 +4916,24 @@
          }
          else ret = grow_thread_stack( data, page, &stack_info );
-+    }
+     }
 +    else if ((vprot & VPROT_JIT) &&
 +             (err == EXCEPTION_WRITE_FAULT || err == EXCEPTION_EXECUTE_FAULT))
 +    {
@@ -5147,10 +5175,11 @@
 +         * coutait tout le temps CPU -- 1370 echantillons sur 1422 dans
 +         * sys_icache_invalidate. */
 +        ret = STATUS_SUCCESS;
-     }
++    }
      else if (err == EXCEPTION_WRITE_FAULT)
      {
-@@ -6360,6 +6557,7 @@
+         if (vprot & VPROT_WRITEWATCH)
+@@ -6360,6 +6574,7 @@
      unsigned int res;
      SIZE_T mask = granularity_mask;
      LARGE_INTEGER offset;
@@ -5158,7 +5187,7 @@
  
      offset.QuadPart = offset_ptr ? offset_ptr->QuadPart : 0;
  
-@@ -6371,9 +6569,15 @@
+@@ -6371,9 +6586,15 @@
          return STATUS_INVALID_PARAMETER_4;
  
      /* If both addr_ptr and zero_bits are passed, they have match */
@@ -5176,6 +5205,498 @@
          return STATUS_INVALID_PARAMETER_4;
  
      if (!is_win64 && !is_wow64())
+--- aa/dlls/opengl32/unix_private.h
++++ bb/dlls/opengl32/unix_private.h
+@@ -65,19 +65,41 @@
+ 
+ #ifdef _WIN64
+ 
++/*
++ * L'invite 32 bits ne vit pas a la meme adresse que l'hote : il voit A, l'hote
++ * utilise base + A. Contrairement a win32u, dont les relais wow64 sont dans
++ * wow64win.dll, opengl32 porte les siens du cote unix -- c'est donc ici qu'il
++ * faut traduire. La base vient de ntdll.so, qui l'exporte comme
++ * wine_server_call ; hors wow64 elle vaut zero et tout ceci est l'identite.
++ */
++NTSYSAPI ULONG_PTR CDECL __wine_wow64_host_base(void);
++
++static inline ULONG_PTR base_invite(void)
++{
++    static ULONG_PTR base = (ULONG_PTR)-1;
++
++    if (base == (ULONG_PTR)-1) base = __wine_wow64_host_base();
++    return base;
++}
++
++static inline void *ptr_32to64( ULONG addr )
++{
++    return addr ? (void *)(base_invite() + addr) : NULL;
++}
++
+ static inline void *copy_wow64_ptr32s( UINT_PTR address, ULONG count )
+ {
+-    ULONG *ptrs = (ULONG *)address;
++    ULONG *ptrs = ptr_32to64( (ULONG)address );
+     void **tmp;
+ 
+     if (!ptrs || !(tmp = calloc( count, sizeof(*tmp) ))) return NULL;
+-    while (count--) tmp[count] = ULongToPtr(ptrs[count]);
++    while (count--) tmp[count] = ptr_32to64(ptrs[count]);
+     return tmp;
+ }
+ 
+ static inline TEB *get_teb64( ULONG teb32 )
+ {
+-    TEB32 *teb32_ptr = ULongToPtr( teb32 );
++    TEB32 *teb32_ptr = ptr_32to64( teb32 );
+     return (TEB *)((char *)teb32_ptr + teb32_ptr->WowTebOffset);
+ }
+ 
+--- aa/dlls/opengl32/unix_wgl.c
++++ bb/dlls/opengl32/unix_wgl.c
+@@ -1242,7 +1242,7 @@
+ 
+ NTSTATUS return_wow64_string( const void *str, PTR32 *wow64_str )
+ {
+-    struct opengl_wow64_str *ret = CONTAINING_RECORD( UlongToPtr( *wow64_str ), struct opengl_wow64_str, ptr );
++    struct opengl_wow64_str *ret = CONTAINING_RECORD( ptr_32to64( *wow64_str ), struct opengl_wow64_str, ptr );
+     SIZE_T max = ret->len;
+ 
+     if (!str)
+@@ -1567,6 +1567,10 @@
+ 
+     buffer->host_ptr = ptr;
+     if (!offset && !length) length = buffer->size;
++    /* L'invite ne peut lire directement que ce qui tient dans ses 32 bits. Chez
++     * nous la fenetre de l'invite est au-dela de 4 Gio et un tampon rendu par
++     * le pilote n'y tombe jamais : le test echoue toujours, et la copie plus
++     * bas est le seul chemin. C'est correct, seulement pas gratuit. */
+     if (ULongToPtr(PtrToUlong(ptr)) == ptr) /* we're lucky */
+     {
+         buffer->map_ptr = ptr;
+@@ -1881,8 +1885,8 @@
+     struct get_pixel_formats_params params =
+     {
+         .teb = get_teb64(params32->teb),
+-        .hdc = ULongToPtr(params32->hdc),
+-        .formats = ULongToPtr(params32->formats),
++        .hdc = ULongToPtr(params32->hdc),   /* une poignee, pas une adresse */
++        .formats = ptr_32to64(params32->formats),
+         .max_formats = params32->max_formats,
+     };
+     NTSTATUS status;
+--- aa/dlls/win32u/vulkan.c
++++ bb/dlls/win32u/vulkan.c
+@@ -65,6 +65,25 @@
+     return zero_bits != 0;
+ }
+ 
++/*
++ * L'invite 32 bits ne peut designer qu'une adresse de sa fenetre. Amont teste
++ * « tient dans 32 bits », ce qui revient au meme tant que la fenetre commence a
++ * zero ; ici elle est a 16 Gio, et ce test rejetterait toutes les projections
++ * valides -- DXVK voyait VK_ERROR_OUT_OF_HOST_MEMORY sur chaque vkMapMemory.
++ *
++ * Hors wow64 la base vaut zero et on retombe sur le test d'amont.
++ */
++NTSYSAPI ULONG_PTR CDECL __wine_wow64_host_base(void);
++
++static BOOL visible_par_invite32( const void *ptr )
++{
++    ULONG_PTR base = __wine_wow64_host_base();
++    ULONG_PTR addr = (ULONG_PTR)ptr;
++
++    if (!(addr >> 32)) return TRUE;
++    return base && addr >= base && addr - base < (1ull << 32);
++}
++
+ struct mempool
+ {
+     struct mempool *next;
+@@ -1175,7 +1194,7 @@
+     }
+ 
+ #ifdef _WIN64
+-    if (NtCurrentTeb()->WowTebOffset && res == VK_SUCCESS && (UINT_PTR)*data >> 32)
++    if (NtCurrentTeb()->WowTebOffset && res == VK_SUCCESS && !visible_par_invite32( *data ))
+     {
+         FIXME( "returned mapping %p does not fit 32-bit pointer\n", *data );
+         device->p_vkUnmapMemory( device->host.device, memory->obj.host.device_memory );
+--- aa/dlls/winecoreaudio.drv/coreaudio.c
++++ bb/dlls/winecoreaudio.drv/coreaudio.c
+@@ -2008,7 +2008,7 @@
+     struct get_endpoint_ids_params params =
+     {
+         .flow = params32->flow,
+-        .endpoints = ULongToPtr(params32->endpoints),
++        .endpoints = wow64_host_ptr(params32->endpoints),
+         .size = params32->size
+     };
+     unix_get_endpoint_ids(&params);
+@@ -2037,16 +2037,16 @@
+     } *params32 = args;
+     struct create_stream_params params =
+     {
+-        .name = ULongToPtr(params32->name),
+-        .device = ULongToPtr(params32->device),
++        .name = wow64_host_ptr(params32->name),
++        .device = wow64_host_ptr(params32->device),
+         .flow = params32->flow,
+         .share = params32->share,
+         .flags = params32->flags,
+         .duration = params32->duration,
+         .period = params32->period,
+-        .fmt = ULongToPtr(params32->fmt),
+-        .channel_count = ULongToPtr(params32->channel_count),
+-        .stream = ULongToPtr(params32->stream)
++        .fmt = wow64_host_ptr(params32->fmt),
++        .channel_count = wow64_host_ptr(params32->channel_count),
++        .stream = wow64_host_ptr(params32->stream)
+     };
+     unix_create_stream(&params);
+     params32->result = params.result;
+@@ -2087,7 +2087,7 @@
+     };
+     unix_get_render_buffer(&params);
+     params32->result = params.result;
+-    *(unsigned int *)ULongToPtr(params32->data) = PtrToUlong(data);
++    *(unsigned int *)wow64_host_ptr(params32->data) = PtrToUlong(data);
+     return STATUS_SUCCESS;
+ }
+ 
+@@ -2108,14 +2108,14 @@
+     {
+         .stream = params32->stream,
+         .data = &data,
+-        .frames = ULongToPtr(params32->frames),
+-        .flags = ULongToPtr(params32->flags),
+-        .devpos = ULongToPtr(params32->devpos),
+-        .qpcpos = ULongToPtr(params32->qpcpos)
++        .frames = wow64_host_ptr(params32->frames),
++        .flags = wow64_host_ptr(params32->flags),
++        .devpos = wow64_host_ptr(params32->devpos),
++        .qpcpos = wow64_host_ptr(params32->qpcpos)
+     };
+     unix_get_capture_buffer(&params);
+     params32->result = params.result;
+-    *(unsigned int *)ULongToPtr(params32->data) = PtrToUlong(data);
++    *(unsigned int *)wow64_host_ptr(params32->data) = PtrToUlong(data);
+     return STATUS_SUCCESS;
+ };
+ 
+@@ -2131,10 +2131,10 @@
+     } *params32 = args;
+     struct is_format_supported_params params =
+     {
+-        .device = ULongToPtr(params32->device),
++        .device = wow64_host_ptr(params32->device),
+         .flow = params32->flow,
+         .share = params32->share,
+-        .fmt_in = ULongToPtr(params32->fmt_in),
++        .fmt_in = wow64_host_ptr(params32->fmt_in),
+     };
+     unix_is_format_supported(&params);
+     params32->result = params.result;
+@@ -2152,9 +2152,9 @@
+     } *params32 = args;
+     struct get_mix_format_params params =
+     {
+-        .device = ULongToPtr(params32->device),
++        .device = wow64_host_ptr(params32->device),
+         .flow = params32->flow,
+-        .fmt = ULongToPtr(params32->fmt)
++        .fmt = wow64_host_ptr(params32->fmt)
+     };
+     unix_get_mix_format(&params);
+     params32->result = params.result;
+@@ -2173,10 +2173,10 @@
+     } *params32 = args;
+     struct get_device_period_params params =
+     {
+-        .device = ULongToPtr(params32->device),
++        .device = wow64_host_ptr(params32->device),
+         .flow = params32->flow,
+-        .def_period = ULongToPtr(params32->def_period),
+-        .min_period = ULongToPtr(params32->min_period),
++        .def_period = wow64_host_ptr(params32->def_period),
++        .min_period = wow64_host_ptr(params32->min_period),
+     };
+     unix_get_device_period(&params);
+     params32->result = params.result;
+@@ -2194,7 +2194,7 @@
+     struct get_buffer_size_params params =
+     {
+         .stream = params32->stream,
+-        .frames = ULongToPtr(params32->frames)
++        .frames = wow64_host_ptr(params32->frames)
+     };
+     unix_get_buffer_size(&params);
+     params32->result = params.result;
+@@ -2212,7 +2212,7 @@
+     struct get_latency_params params =
+     {
+         .stream = params32->stream,
+-        .latency = ULongToPtr(params32->latency)
++        .latency = wow64_host_ptr(params32->latency)
+     };
+     unix_get_latency(&params);
+     params32->result = params.result;
+@@ -2230,7 +2230,7 @@
+     struct get_current_padding_params params =
+     {
+         .stream = params32->stream,
+-        .padding = ULongToPtr(params32->padding)
++        .padding = wow64_host_ptr(params32->padding)
+     };
+     unix_get_current_padding(&params);
+     params32->result = params.result;
+@@ -2248,7 +2248,7 @@
+     struct get_next_packet_size_params params =
+     {
+         .stream = params32->stream,
+-        .frames = ULongToPtr(params32->frames)
++        .frames = wow64_host_ptr(params32->frames)
+     };
+     unix_get_next_packet_size(&params);
+     params32->result = params.result;
+@@ -2269,8 +2269,8 @@
+     {
+         .stream = params32->stream,
+         .device = params32->device,
+-        .pos = ULongToPtr(params32->pos),
+-        .qpctime = ULongToPtr(params32->qpctime)
++        .pos = wow64_host_ptr(params32->pos),
++        .qpctime = wow64_host_ptr(params32->qpctime)
+     };
+     unix_get_position(&params);
+     params32->result = params.result;
+@@ -2288,7 +2288,7 @@
+     struct get_frequency_params params =
+     {
+         .stream = params32->stream,
+-        .freq = ULongToPtr(params32->freq)
++        .freq = wow64_host_ptr(params32->freq)
+     };
+     unix_get_frequency(&params);
+     params32->result = params.result;
+@@ -2308,8 +2308,8 @@
+     {
+         .stream = params32->stream,
+         .master_volume = params32->master_volume,
+-        .volumes = ULongToPtr(params32->volumes),
+-        .session_volumes = ULongToPtr(params32->session_volumes),
++        .volumes = wow64_host_ptr(params32->volumes),
++        .session_volumes = wow64_host_ptr(params32->session_volumes),
+     };
+     return unix_set_volumes(&params);
+ }
+@@ -2359,19 +2359,19 @@
+     PROPVARIANT value;
+     struct get_prop_value_params params =
+     {
+-        .device = ULongToPtr(params32->device),
++        .device = wow64_host_ptr(params32->device),
+         .flow = params32->flow,
+-        .guid = ULongToPtr(params32->guid),
+-        .prop = ULongToPtr(params32->prop),
++        .guid = wow64_host_ptr(params32->guid),
++        .prop = wow64_host_ptr(params32->prop),
+         .value = &value,
+-        .buffer = ULongToPtr(params32->buffer),
+-        .buffer_size = ULongToPtr(params32->buffer_size)
++        .buffer = wow64_host_ptr(params32->buffer),
++        .buffer_size = wow64_host_ptr(params32->buffer_size)
+     };
+     unix_get_prop_value(&params);
+     params32->result = params.result;
+     if (SUCCEEDED(params.result))
+     {
+-        value32 = UlongToPtr(params32->value);
++        value32 = wow64_host_ptr(params32->value);
+         value32->vt = value.vt;
+         switch (value.vt)
+         {
+--- aa/dlls/winecoreaudio.drv/coremidi.c
++++ bb/dlls/winecoreaudio.drv/coremidi.c
+@@ -1275,7 +1275,7 @@
+     } *params32 = args;
+     struct midi_init_params params =
+     {
+-        .err = ULongToPtr(params32->err)
++        .err = wow64_host_ptr(params32->err)
+     };
+     return unix_midi_init(&params);
+ }
+@@ -1372,7 +1372,7 @@
+         PTR32 err;
+         PTR32 notify;
+     } *params32 = args;
+-    struct notify_context32 *notify32 = ULongToPtr(params32->notify);
++    struct notify_context32 *notify32 = wow64_host_ptr(params32->notify);
+     struct midi_open_desc32 *desc32;
+     struct midi_hdr32 *hdr32;
+     struct notify_context notify;
+@@ -1385,7 +1385,7 @@
+         .user = params32->user,
+         .param_1 = params32->param_1,
+         .param_2 = params32->param_2,
+-        .err = ULongToPtr(params32->err),
++        .err = wow64_host_ptr(params32->err),
+         .notify = &notify
+     };
+     notify32->send_notify = FALSE;
+@@ -1393,9 +1393,9 @@
+     switch (params32->msg)
+     {
+     case MODM_OPEN:
+-        desc32 = ULongToPtr(params32->param_1);
++        desc32 = wow64_host_ptr(params32->param_1);
+ 
+-        open_desc.hMidi = ULongToPtr(desc32->hMidi);
++        open_desc.hMidi = ULongToHandle(desc32->hMidi);
+         open_desc.dwCallback = desc32->dwCallback;
+         open_desc.dwInstance = desc32->dwInstance;
+         open_desc.dnDevNode = desc32->dnDevNode;
+@@ -1407,10 +1407,10 @@
+         break;
+ 
+     case MODM_LONGDATA:
+-        hdr32 = ULongToPtr(params32->param_1);
++        hdr32 = wow64_host_ptr(params32->param_1);
+ 
+         memset(&hdr, 0, sizeof(hdr));
+-        hdr.lpData = ULongToPtr(hdr32->lpData);
++        hdr.lpData = wow64_host_ptr(hdr32->lpData);
+         hdr.dwBufferLength = hdr32->dwBufferLength;
+         hdr.dwFlags = hdr32->dwFlags;
+ 
+@@ -1419,13 +1419,13 @@
+         break;
+ 
+     case MODM_PREPARE: /* prepare and unprepare are easier to handle explicitly */
+-        hdr32 = ULongToPtr(params32->param_1);
++        hdr32 = wow64_host_ptr(params32->param_1);
+ 
+         *params.err = wow64_midi_out_prepare(params32->dev_id, hdr32, params32->param_2);
+         return STATUS_SUCCESS;
+ 
+     case MODM_UNPREPARE:
+-        hdr32 = ULongToPtr(params32->param_1);
++        hdr32 = wow64_host_ptr(params32->param_1);
+ 
+         *params.err = wow64_midi_out_unprepare(params32->dev_id, hdr32, params32->param_2);
+         return STATUS_SUCCESS;
+@@ -1436,7 +1436,7 @@
+     switch (params32->msg)
+     {
+     case MODM_LONGDATA:
+-        hdr32 = ULongToPtr(params32->param_1);
++        hdr32 = wow64_host_ptr(params32->param_1);
+ 
+         hdr32->dwFlags = hdr.dwFlags;
+         break;
+@@ -1496,7 +1496,7 @@
+         PTR32 err;
+         PTR32 notify;
+     } *params32 = args;
+-    struct notify_context32 *notify32 = ULongToPtr(params32->notify);
++    struct notify_context32 *notify32 = wow64_host_ptr(params32->notify);
+     struct midi_open_desc32 *desc32;
+     struct midi_hdr32 *hdr32;
+     struct notify_context notify;
+@@ -1509,7 +1509,7 @@
+         .user = params32->user,
+         .param_1 = params32->param_1,
+         .param_2 = params32->param_2,
+-        .err = ULongToPtr(params32->err),
++        .err = wow64_host_ptr(params32->err),
+         .notify = &notify
+     };
+     notify32->send_notify = FALSE;
+@@ -1517,9 +1517,9 @@
+     switch (params32->msg)
+     {
+     case MIDM_OPEN:
+-        desc32 = ULongToPtr(params32->param_1);
++        desc32 = wow64_host_ptr(params32->param_1);
+ 
+-        open_desc.hMidi = ULongToPtr(desc32->hMidi);
++        open_desc.hMidi = ULongToHandle(desc32->hMidi);
+         open_desc.dwCallback = desc32->dwCallback;
+         open_desc.dwInstance = desc32->dwInstance;
+         open_desc.dnDevNode = desc32->dnDevNode;
+@@ -1531,10 +1531,10 @@
+         break;
+ 
+     case MIDM_ADDBUFFER:
+-        hdr32 = ULongToPtr(params32->param_1);
++        hdr32 = wow64_host_ptr(params32->param_1);
+ 
+         hdr = calloc(1, sizeof(*hdr));
+-        hdr->lpData = ULongToPtr(hdr32->lpData);
++        hdr->lpData = wow64_host_ptr(hdr32->lpData);
+         hdr->dwBufferLength = hdr32->dwBufferLength;
+         hdr->dwFlags = hdr32->dwFlags;
+         hdr->dwReserved[7] = params32->param_1; /* keep hdr32 for MIM_LONGDATA notification */
+@@ -1544,13 +1544,13 @@
+         break;
+ 
+     case MIDM_PREPARE: /* prepare and unprepare are easier to handle explicitly */
+-        hdr32 = ULongToPtr(params32->param_1);
++        hdr32 = wow64_host_ptr(params32->param_1);
+ 
+         *params.err = wow64_midi_in_prepare(params32->dev_id, hdr32, params32->param_2);
+         return STATUS_SUCCESS;
+ 
+     case MIDM_UNPREPARE:
+-        hdr32 = ULongToPtr(params32->param_1);
++        hdr32 = wow64_host_ptr(params32->param_1);
+ 
+         *params.err = wow64_midi_in_unprepare(params32->dev_id, hdr32, params32->param_2);
+         return STATUS_SUCCESS;
+@@ -1561,7 +1561,7 @@
+     switch (params32->msg)
+     {
+     case MIDM_ADDBUFFER:
+-        hdr32 = ULongToPtr(params32->param_1);
++        hdr32 = wow64_host_ptr(params32->param_1);
+ 
+         if (!*params.err)
+         {
+@@ -1582,7 +1582,7 @@
+         {
+             hdr = (MIDIHDR *)notify.param_1;
+             notify32->param_1 = hdr->dwReserved[7];
+-            hdr32 = ULongToPtr(notify32->param_1);
++            hdr32 = wow64_host_ptr(notify32->param_1);
+             hdr32->dwBytesRecorded = hdr->dwBytesRecorded;
+             hdr32->dwFlags = hdr->dwFlags;
+             free(hdr);
+@@ -1598,13 +1598,13 @@
+         PTR32 quit;
+         PTR32 notify;
+     } *params32 = args;
+-    struct notify_context32 *notify32 = ULongToPtr(params32->notify);
++    struct notify_context32 *notify32 = wow64_host_ptr(params32->notify);
+     struct midi_hdr32 *hdr32;
+     struct notify_context notify;
+     MIDIHDR *hdr;
+     struct midi_notify_wait_params params =
+     {
+-        .quit = ULongToPtr(params32->quit),
++        .quit = wow64_host_ptr(params32->quit),
+         .notify = &notify
+     };
+     notify32->send_notify = FALSE;
+@@ -1619,7 +1619,7 @@
+         {
+             hdr = (MIDIHDR *)notify.param_1;
+             notify32->param_1 = hdr->dwReserved[7];
+-            hdr32 = ULongToPtr(notify32->param_1);
++            hdr32 = wow64_host_ptr(notify32->param_1);
+             hdr32->dwBytesRecorded = hdr->dwBytesRecorded;
+             hdr32->dwFlags = hdr->dwFlags;
+             free(hdr);
 --- aa/dlls/winemac.drv/dllmain.c
 +++ bb/dlls/winemac.drv/dllmain.c
 @@ -368,6 +368,21 @@
@@ -5270,6 +5791,91 @@
      UINT64 app_icon_callback;
      UINT64 app_quit_request_callback;
  };
+--- aa/dlls/winevulkan/vulkan.c
++++ bb/dlls/winevulkan/vulkan.c
+@@ -471,7 +471,7 @@
+ VkResult wine_vkCreateCommandPool(VkDevice client_device, const VkCommandPoolCreateInfo *info, const VkAllocationCallbacks *allocator,
+                                   VkCommandPool *client_command_pool_ptr)
+ {
+-    struct vk_command_pool *client_command_pool = command_pool_from_handle(*client_command_pool_ptr);
++    struct vk_command_pool *client_command_pool = vk_client_ptr(*client_command_pool_ptr);
+     struct vulkan_device *device = vulkan_device_from_handle(client_device);
+     struct vulkan_instance *instance = device->physical_device->instance;
+     VkCommandPool host_command_pool;
+--- aa/dlls/winevulkan/vulkan_private.h
++++ bb/dlls/winevulkan/vulkan_private.h
+@@ -27,6 +27,60 @@
+ 
+ #include "wine/rbtree.h"
+ 
++/*
++ * L'invite 32 bits voit A la ou l'hote utilise base + A. winevulkan porte ses
++ * relais wow64 du cote unix, comme opengl32 : c'est donc ici qu'il faut
++ * traduire, et non dans wow64win.dll.
++ *
++ * On le fait en redefinissant UlongToPtr plutot qu'en reecrivant les 2137
++ * appels engendres, parce que dans ce module ils convertissent *tous* une
++ * adresse de l'invite -- y compris les poignees VkDevice, VkQueue et
++ * VkCommandBuffer, qui ne sont pas des entiers opaques mais des objets PE dont
++ * l'hote lit le champ unix_handle (voir vulkan_device_from_handle). La
++ * redefinition vient apres toutes les inclusions, et ne vaut que du cote unix.
++ *
++ * Hors wow64 la base vaut zero et tout ceci est l'identite.
++ */
++NTSYSAPI ULONG_PTR CDECL __wine_wow64_host_base(void);
++
++static inline ULONG_PTR vk_base_invite(void)
++{
++    static ULONG_PTR base = (ULONG_PTR)-1;
++
++    if (base == (ULONG_PTR)-1) base = __wine_wow64_host_base();
++    return base;
++}
++
++static inline void *vk_ptr_32to64( ULONG addr )
++{
++    return addr ? (void *)(vk_base_invite() + addr) : NULL;
++}
++
++#undef UlongToPtr
++#define UlongToPtr(a) vk_ptr_32to64( (ULONG)(ULONG_PTR)(a) )
++
++/*
++ * VkCommandPool n'est pas une poignee « dispatchable » : Vulkan la transporte
++ * comme un entier de 64 bits, meme en 32 bits, et elle ne passe donc par aucun
++ * UlongToPtr. Sa valeur est pourtant l'adresse d'un objet PE de l'invite, que
++ * l'hote deref erence -- il faut la rebaser a la main.
++ *
++ * Hors wow64 la base vaut zero et la poignee porte deja une adresse complete de
++ * 64 bits : la tronquer serait une faute, d'ou les deux chemins.
++ */
++static inline void *vk_client_ptr( UINT64 handle )
++{
++    ULONG_PTR base = vk_base_invite();
++
++    if (!handle) return NULL;
++    /* La base peut etre installee alors que l'appelant du moment est un invite
++     * 64 bits : ne rebaser que ce qui tient dans 32 bits, c'est-a-dire ce qui
++     * vient vraiment de la fenetre. */
++    if (base && !(handle >> 32)) return (void *)(base + (ULONG)handle);
++    return (void *)(UINT_PTR)handle;
++}
++
++
+ extern const struct vulkan_funcs *vk_funcs;
+ 
+ struct wine_instance
+@@ -47,8 +101,8 @@
+ 
+ static inline struct wine_cmd_pool *wine_cmd_pool_from_handle(VkCommandPool handle)
+ {
+-    struct vulkan_client_object *client = &command_pool_from_handle(handle)->obj;
+-    return (struct wine_cmd_pool *)(UINT_PTR)client->unix_handle;
++    struct vk_command_pool *pool = vk_client_ptr( handle );
++    return (struct wine_cmd_pool *)(UINT_PTR)pool->obj.unix_handle;
+ }
+ 
+ BOOL wine_vk_is_type_wrapped(VkObjectType type);
 --- aa/dlls/wow64/file.c
 +++ bb/dlls/wow64/file.c
 @@ -546,8 +546,9 @@
@@ -6780,6 +7386,44 @@
      return &out->attr;
  }
  
+--- aa/include/wine/unixlib.h
++++ bb/include/wine/unixlib.h
+@@ -38,6 +38,35 @@
+ extern DECLSPEC_EXPORT const unixlib_entry_t __wine_unix_call_funcs[];
+ extern DECLSPEC_EXPORT const unixlib_entry_t __wine_unix_call_wow64_funcs[];
+ 
++/*
++ * La fenetre de l'invite 32 bits.
++ *
++ * L'invite voit A la ou l'hote utilise base + A. Les bibliotheques unix qui
++ * portent elles-memes leurs relais wow64 -- opengl32, winevulkan, les pilotes
++ * audio -- recoivent des adresses d'invite et doivent les traduire avant de
++ * les deref erencer. ntdll.so publie la base, comme wine_server_call.
++ *
++ * Attention : la base est installee des qu'un processus peut heberger un
++ * invite 32 bits, meme quand l'appelant du moment n'en est pas un. Ne rebaser
++ * que ce qui vient vraiment de la fenetre, c'est-a-dire ce qui tient dans
++ * 32 bits.
++ */
++NTSYSAPI ULONG_PTR CDECL __wine_wow64_host_base(void);
++
++static inline ULONG_PTR wow64_host_base(void)
++{
++    static ULONG_PTR base = (ULONG_PTR)-1;
++
++    if (base == (ULONG_PTR)-1) base = __wine_wow64_host_base();
++    return base;
++}
++
++/* Une adresse de 32 bits vue par l'invite, rendue dans le monde de l'hote. */
++static inline void *wow64_host_ptr( ULONG addr )
++{
++    return addr ? (void *)(wow64_host_base() + addr) : NULL;
++}
++
+ /* some useful private helpers from ntdll */
+ 
+ #ifdef __WINESRC__
 --- aa/include/winnt.h
 +++ bb/include/winnt.h
 @@ -2596,6 +2596,27 @@

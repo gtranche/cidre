@@ -17,13 +17,11 @@ static BOOL CALLBACK racine(HWND h, LPARAM p)
 {
     char classe[128] = "", texte[512] = "";
     DWORD pid = 0;
-    if (!IsWindowVisible(h))
-        return TRUE;
     GetClassNameA(h, classe, sizeof(classe));
     GetWindowTextA(h, texte, sizeof(texte));
     GetWindowThreadProcessId(h, &pid);
-    printf("fenetre pid=%lu classe=%-20s titre=\"%s\"\n",
-           (unsigned long)pid, classe, texte);
+    printf("fenetre pid=%lu %s classe=%-20s titre=\"%s\"\n",
+           (unsigned long)pid, IsWindowVisible(h) ? "visible" : "cachee ", classe, texte);
     EnumChildWindows(h, enfant, 0);
     (void)p;
     return TRUE;

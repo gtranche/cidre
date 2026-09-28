@@ -17454,3 +17454,119 @@ déchiffrement du client Steam. Un jeu sans `.bind` serait un bien meilleur suje
 
 Non-régression : `banc_x64` à **83,7 ms** pour 20 millions de tours (bande §241 : 83,8–84,4 ms),
 `probe_d3d11_draw` rastérise, `h32`, `h32gdi`, `h32win` et `hello64` passent.
+
+## 251. Un jeu 32 bits sans DRM : DREDGE ouvre sa fenêtre
+
+`deadcells.exe` portait une section `.bind` : impossible de savoir si le portage tenait ou si
+c'était le DRM qui refusait. Un balayage des jeux installés donne le bon sujet :
+
+```
+=== DREDGE
+   Intel 80386 bind=0  DREDGE.exe
+```
+
+Unity 2021.3, i386, DXVK, pas d'enveloppe. Cinq blocages se sont succédé, chacun d'une famille
+différente, et chacun a demandé une mesure avant un correctif.
+
+### 1. `opengl32` ne se charge pas
+
+```
+warn:opengl:DllMain Failed to initialize thread, status 0xc0000005
+err:module:loader_init "OPENGL32.dll" failed to initialize, aborting
+```
+
+`opengl32` porte ses relais wow64 **du côté unix** — contrairement à win32u, dont les relais sont
+dans `wow64win.dll`. `get_teb64()` y faisait `ULongToPtr(teb32)` : l'hôte déréférençait une adresse
+d'invité. Pour le réparer il fallait d'abord que la base soit **lisible depuis une bibliothèque
+unix**, ce qui n'existait pas : `ntdll.so` exporte maintenant `__wine_wow64_host_base()`, comme il
+exporte `wine_server_call`, et `include/wine/unixlib.h` en fait `wow64_host_ptr()`.
+
+Un piège au passage : la base est installée dès qu'un processus *peut* héberger un invité 32 bits,
+même quand l'appelant du moment n'en est pas un. Rebaser sans condition a cassé la sonde D3D11
+64 bits. La règle est donc : **ne rebaser que ce qui tient dans 32 bits.**
+
+### 2. `CreateThread` échoue avec l'erreur 87
+
+Le jeu restait à un seul fil, bloqué sur `NtWaitForSingleObject` : Unity attendait des ouvriers qui
+n'existaient pas. `tests/h32fil.c`, dix lignes, dit tout de suite :
+
+```
+CreateThread = 00000000 id=0 err=87
+```
+
+Dans `init_thread_stack`, la pile 32 bits est demandée entre un plancher — `user_space_wow_base`,
+16 Gio, une adresse de l'hôte — et un plafond venu de `zero_bits`, c'est-à-dire de l'invité :
+0x7fffffff. Intervalle à l'envers, `STATUS_INVALID_PARAMETER`. Le plafond se rebase comme le reste.
+
+### 3. Les 2137 `UlongToPtr` de winevulkan
+
+`vkCreateInstance` échouait, puis `vkGetPhysicalDeviceFeatures2` fautait. Même structure
+qu'`opengl32`, en plus gros. Ici le tri est différent : **toutes** les conversions sont des
+pointeurs d'invité, y compris les poignées `VkDevice`, `VkQueue` et `VkCommandBuffer`, qui ne sont
+pas des entiers opaques mais des objets PE dont l'hôte lit le champ `unix_handle`. On redéfinit
+donc `UlongToPtr` pour ce module, avec le commentaire qui le justifie, plutôt que de réécrire
+2137 appels engendrés — et la redéfinition doit venir **avant** `find_next_struct32`, sinon cette
+fonction-là garde l'identité (une heure perdue là-dessus).
+
+`VkCommandPool` fait exception dans l'autre sens : non « dispatchable », donc transportée comme un
+entier de 64 bits, elle ne passe par aucun `UlongToPtr` et se rebase à la main.
+
+### 4. `vkMapMemory` : « tient dans 32 bits » n'est pas la bonne question
+
+```
+err:   Failed to map Vulkan memory: VK_ERROR_OUT_OF_HOST_MEMORY
+```
+
+`win32u/vulkan.c` vérifiait `(UINT_PTR)*data >> 32` avant de rendre la projection à l'invité. La
+règle juste n'est pas « tient dans 32 bits » mais « est dans la fenêtre de l'invité » — chez nous
+elle commence à 16 Gio, et le test d'amont rejetait toutes les projections valides.
+
+### 5. `lea` laissait la base de l'hôte dans le registre
+
+Le plus intéressant. Le décodeur refusait de traduire à `7B24EE90`, une adresse pourtant au milieu
+du `.text` d'UnityPlayer.dll. Une sonde dans `CheckRangeExecutable` a donné la clé :
+
+```
+SONDE refus decodeur : recu 87B24EE90, interroge 47B24EE90, base 400000000
+```
+
+**La base comptée deux fois.** Cinq lignes suffisent à le reproduire (`tests/h32lea.c`) :
+
+```c
+__asm__ volatile ( "leal (%1), %%eax\n\t"
+                   "call *%%eax" : "=a"(r) : "r"(p) );
+```
+
+`lea` demande une adresse effective sans accéder à la mémoire ; notre rebasage la lui donnait dans
+le monde de l'hôte. Tant que le programme n'en fait qu'une adresse, cela ne se voit pas — le
+rebasage est idempotent, puisqu'il combine la base avec les 32 bits de poids faible. Mais
+« lea ; call \*eax » met alors base + cible dans EIP, et le décodeur lit base + base + cible.
+
+`LoadSourceOptions` porte désormais `AdresseInvite`, que `LEA` seul positionne : les autres
+appelants de ce chemin — `XADD`, `SGDT`, `SIDT`, `PREFETCH` — veulent bien un pointeur de l'hôte.
+
+Une tentative intermédiaire — tronquer le RIP à 32 bits dans `ExitFunction`, ce qui est pourtant la
+sémantique exacte du mode 32 bits — a bloqué l'invité dès `h32.exe` : le JIT reconnaît une
+constante pour lier les blocs statiquement, et l'envelopper dans un `Bfe` casse cette liaison.
+Annulée.
+
+### Où DREDGE en est
+
+```
+fenetre pid=248 classe=UnityWndClass  titre="DREDGE"
+```
+
+52 fils : le système de tâches d'Unity, `UnityGfxDeviceWorker`, `Loading.AsyncRead`,
+`AssetGarbageCollectorHelper`, et les trois fils de DXVK (`dxvk-submit`, `dxvk-queue`, `dxvk-cs`).
+Le pilote audio a demandé le même traitement que les autres (57 conversions dans
+`winecoreaudio.drv`) avant que la fenêtre n'apparaisse. Elle reste cachée pour l'instant, le jeu
+tournant à 100 % d'un cœur : c'est le prochain fil.
+
+### Un rappel qui a coûté trois mesures
+
+`banc_x64` donnait 86 ms au lieu de 84. Ce n'était pas le correctif : un `h32.exe` oublié tournait
+à 100 % depuis un essai précédent. Voir [[feedback_gpu_bench_stale_processes]] — la règle vaut
+aussi pour les bancs CPU. Après nettoyage : **84,2 — 84,7 ms**, dans la bande du §241.
+
+Non-régression : `h32`, `h32gdi`, `h32win`, `h32fil`, `h32seh`, `h32lea`, `hello64`,
+`probe_d3d11_draw` (« le triangle est rastérisé »).
