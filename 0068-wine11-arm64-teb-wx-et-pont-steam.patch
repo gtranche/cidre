@@ -4033,6 +4033,37 @@
           "ldrb w0, [x0, 0x02]\n\t"   /* peb->BeingDebugged */
           "cbz w0, 1f\n\t"
           "bl \"#DbgBreakPoint\"\n"
+--- aa/dlls/ntdll/sync.c
++++ bb/dlls/ntdll/sync.c
+@@ -906,6 +906,28 @@
+ 
+     spin_unlock( &queue->lock );
+ 
++#ifdef SONDE_GEL
++    /* Le pendant cote invite : sur quelle adresse dort-on, que vaut-elle, et
++     * notre entree est-elle encore dans la file. */
++    if (!timeout)
++    {
++        LARGE_INTEGER tranche = { .QuadPart = -80000000ll };
++        static LONG dits;
++
++        for (;;)
++        {
++            ret = NtWaitForAlertByThreadId( NULL, &tranche );
++            if (ret != STATUS_TIMEOUT) break;
++            if (InterlockedIncrement( &dits ) <= 40)
++                ERR( "SONDE gel : fil %04lx (inscrit %04lx) dort sur %p depuis 8 s, valeur=%08lx attendue=%08lx"
++                     " taille=%u en file=%d\n", GetCurrentThreadId(), entry.tid, addr,
++                     size == 4 ? *(const ULONG *)addr : (size == 2 ? *(const USHORT *)addr : *(const UCHAR *)addr),
++                     size == 4 ? *(const ULONG *)cmp : (size == 2 ? *(const USHORT *)cmp : *(const UCHAR *)cmp),
++                     (unsigned)size, entry.addr != NULL );
++        }
++    }
++    else
++#endif
+     ret = NtWaitForAlertByThreadId( NULL, timeout );
+ 
+     /* We may have already been removed by a call to RtlWakeAddressSingle() or RtlWakeAddressAll(). */
 --- aa/dlls/ntdll/thread.c
 +++ bb/dlls/ntdll/thread.c
 @@ -730,3 +730,96 @@
@@ -4727,6 +4758,72 @@
                  params.count = params32->count;
              }
              else
+--- aa/dlls/ntdll/unix/sync.c
++++ bb/dlls/ntdll/unix/sync.c
+@@ -3411,6 +3411,19 @@
+ 
+ #define TID_ALERT_BLOCK_SIZE (65536 / sizeof(union tid_alert_entry))
+ static union tid_alert_entry *tid_alert_blocks[4096];
++
++#ifdef SONDE_GEL
++/* Compter les alertes envoyees a chaque fil : si le compteur a bouge pendant
++ * qu'il dormait et qu'il dort toujours, l'alerte s'est perdue entre les deux. */
++#define SONDE_TIDS 4096
++static LONG sonde_envois[SONDE_TIDS];
++
++static unsigned int sonde_indice( ULONG tid )
++{
++    unsigned int i = tid >> 2;
++    return i < SONDE_TIDS ? i : 0;
++}
++#endif
+ 
+ static unsigned int handle_to_index( HANDLE handle, unsigned int *block_idx )
+ {
+@@ -3527,6 +3540,9 @@
+ 
+     if (!entry) return STATUS_INVALID_CID;
+ 
++#ifdef SONDE_GEL
++    InterlockedIncrement( &sonde_envois[sonde_indice( HandleToULong( tid ) )] );
++#endif
+ #ifdef USE_FUTEX
+     {
+         LONG *futex = &entry->futex;
+@@ -3594,6 +3610,10 @@
+         LONG *futex = &entry->futex;
+         ULONGLONG end;
+         int ret;
++#ifdef SONDE_GEL
++        const ULONG sonde_tid = get_thread_data()->tid;
++        const LONG sonde_avant = sonde_envois[sonde_indice( sonde_tid )];
++#endif
+ 
+         if (timeout)
+         {
+@@ -3617,7 +3637,21 @@
+             else
+                 ret = futex_wait( futex, 0, NULL );
+ 
+-            if (ret == -1 && errno == ETIMEDOUT) return STATUS_TIMEOUT;
++            if (ret == -1 && errno == ETIMEDOUT)
++            {
++#ifdef SONDE_GEL
++                {
++                    LONG apres = sonde_envois[sonde_indice( sonde_tid )];
++                    static LONG dits;
++
++                    if (apres != sonde_avant && InterlockedIncrement( &dits ) <= 20)
++                        ERR( "SONDE gel : fil %04x, %ld alertes comptees pendant l'attente mais"
++                             " drapeau=%ld -- l'alerte n'est pas arrivee jusqu'ici\n",
++                             (int)sonde_tid, (long)(apres - sonde_avant), (long)*futex );
++                }
++#endif
++                return STATUS_TIMEOUT;
++            }
+         }
+         return STATUS_ALERTED;
+     }
 --- aa/dlls/ntdll/unix/thread.c
 +++ bb/dlls/ntdll/unix/thread.c
 @@ -1196,8 +1196,18 @@

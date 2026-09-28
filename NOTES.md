@@ -18225,3 +18225,71 @@ Non-régression : vingt-huit programmes i386 et x86_64 passent, `probe_d3d11_dra
 `banc_x64` donne **86,0 — 87,0 ms**. C'est au-dessus de la bande du §241, mais la mesure A/B le
 disculpe : sans le correctif, la même machine donne **86,1 — 87,3 ms**. L'écart vient de l'état de
 la machine, pas du changement.
+
+## 260. Le second gel : un réveil perdu, cette fois prouvé
+
+Le §259 laissait un second gel, plus précoce et sans erreur mémoire. La comparaison des traces DXVK
+le situe au mot près — l'exécution gelée s'arrête ici :
+
+```
+info:  DXGI: VK_FORMAT_A8_UNORM_KHR -> VK_FORMAT_R8_UNORM
+                                          <-- plus rien
+```
+
+et la saine continue par `MakeWindowAssociation`, puis `Presenter: Actual swapchain properties`.
+Le gel tombe donc entre la fin de la création du périphérique D3D11 et la création de la chaîne
+d'échange.
+
+### La sonde qui oppose deux états
+
+Un cliché de piles dit « en attente » et rien de plus, et les sondes d'attente parlent aussi dans
+les exécutions saines : trente-deux fils y dorment plus de huit secondes, dont douze sur le même
+sémaphore de file de travaux. J'ai failli lire un interblocage dans le fonctionnement normal.
+
+Ce qui tranche, c'est de **faire dire deux choses contradictoires à la même mesure**. Le dormeur de
+`RtlWaitOnAddress` connaît trois faits : l'adresse qu'il surveille, la valeur qui le maintient
+endormi, et si son entrée est encore dans la file. Or celui qui réveille **retire l'entrée avant
+d'alerter**. Une entrée absente pendant qu'on dort encore n'a qu'une lecture possible.
+
+```
+fil 01e8 dort sur 0A5532C2 depuis 8 s, valeur=00000000 attendue=00000001 taille=2 en file=0
+```
+
+Taille 2 : `RtlAcquireSRWLockExclusive`, qui surveille le champ `owners` d'un verrou SRW. La valeur
+vaut 0 alors qu'il faudrait 1 pour continuer d'attendre — **le verrou est libre**. L'entrée a été
+retirée — **le réveil a bien été envoyé**. Et il dort depuis quarante-cinq secondes. Le fil voisin
+`01e4` attend le verrou suivant avec `en file=1` : lui attend légitimement celui qui ne repartira
+jamais.
+
+Le dormeur se réveille toutes les huit secondes (le découpage de la sonde) et relit le drapeau
+d'alerte à chaque tour. S'il avait été posé, il repartirait. **Le drapeau n'a donc jamais été
+posé** : l'alerte n'a pas atteint la fonction hôte, ou l'a atteinte pour un autre fil.
+
+### Ce qui est écarté
+
+| soupçon | mesure |
+|---|---|
+| mauvais routage du numéro de fil | `inscrit == fil` sur quinze exécutions, des milliers de lignes |
+| le chemin de la chaîne d'échange lui-même | `h32swap` : 60 créations/destructions fenêtre + D3D11 + chaîne, aucun blocage |
+| la pile graphique | aucune image de Metal, Vulkan ou KosmicKrisp dans les clichés gelés |
+| le fil principal de Cocoa | boucle d'événements normale, identique à une exécution saine |
+| une boîte de dialogue en attente de clic | une seule fenêtre, `UnityWndClass` |
+
+### L'effet d'observation, chiffré
+
+| | gel |
+|---|---|
+| sans sonde | 2 sur 10 |
+| avec le découpage à huit secondes | **0 sur 15** |
+
+Le découpage ajoute un appel système toutes les huit secondes par fil endormi, et ça suffit à
+masquer la course. C'est la troisième fois de la journée que l'instrumentation fait disparaître le
+symptôme (§258, §259) ; il faut le prévoir et garder une mesure de référence sans sonde.
+
+### Ce qui reste
+
+Deux compteurs sont en place pour la prochaine prise, et ils couvrent tout le chemin restant :
+côté hôte, le nombre d'alertes comptées pour ce fil pendant son attente, comparé à son drapeau. Si
+le compteur a bougé et que le drapeau est resté à zéro, la perte est entre
+`NtAlertThreadByThreadId` et le drapeau ; s'il n'a pas bougé, l'alerte n'est jamais partie, et il
+faut remonter dans le pont wow64.
