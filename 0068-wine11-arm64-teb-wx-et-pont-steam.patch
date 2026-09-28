@@ -1,6 +1,6 @@
 --- aa/configure.ac
 +++ bb/configure.ac
-@@ -981,7 +981,17 @@ case $host_os in
+@@ -981,7 +981,17 @@
      AC_SUBST(SECURITY_LIBS,"-framework Security -framework CoreFoundation")
      AC_SUBST(SYSTEMCONFIGURATION_LIBS,"-framework SystemConfiguration")
  
@@ -19,7 +19,7 @@
  
      case $HOST_ARCH in
        i386) wine_use_preloader=yes ;;
-@@ -2889,6 +2899,7 @@ WINE_CONFIG_MAKEFILE(dlls/loadperf)
+@@ -2889,6 +2899,7 @@
  WINE_CONFIG_MAKEFILE(dlls/localspl)
  WINE_CONFIG_MAKEFILE(dlls/localspl/tests)
  WINE_CONFIG_MAKEFILE(dlls/localui)
@@ -27,7 +27,7 @@
  WINE_CONFIG_MAKEFILE(dlls/localui/tests)
  WINE_CONFIG_MAKEFILE(dlls/lz32)
  WINE_CONFIG_MAKEFILE(dlls/lz32/tests)
---- /dev/null
+--- aa/dlls/lsteamclient/Makefile.in
 +++ bb/dlls/lsteamclient/Makefile.in
 @@ -0,0 +1,6 @@
 +MODULE  = lsteamclient.dll
@@ -36,7 +36,7 @@
 +SOURCES = \
 +	main.c \
 +	unix.c
---- /dev/null
+--- aa/dlls/lsteamclient/lsteamclient.spec
 +++ bb/dlls/lsteamclient/lsteamclient.spec
 @@ -0,0 +1,12 @@
 +@ cdecl CreateInterface(str ptr)
@@ -51,7 +51,7 @@
 +@ cdecl Steam_FreeLastCallback(long)
 +@ cdecl SondeInterfaceGenerique(ptr long long str)
 +@ cdecl SondeInterfaceNative(ptr)
---- /dev/null
+--- aa/dlls/lsteamclient/main.c
 +++ bb/dlls/lsteamclient/main.c
 @@ -0,0 +1,586 @@
 +/*
@@ -640,7 +640,7 @@
 +
 +    WINE_UNIX_CALL( unix_free_last_callback, &params );
 +}
---- /dev/null
+--- aa/dlls/lsteamclient/signatures32.h
 +++ bb/dlls/lsteamclient/signatures32.h
 @@ -0,0 +1,895 @@
 +/* Engendre par tests/engendrer_i386.py -- ne pas editer a la main.
@@ -1538,7 +1538,7 @@
 +    { "ISteamVideo", 0, 1, 0, "GetVideoURL" },
 +    { "ISteamVideo", 1, 1, 0, "IsBroadcasting" },
 +};
---- /dev/null
+--- aa/dlls/lsteamclient/thunks32.h
 +++ bb/dlls/lsteamclient/thunks32.h
 @@ -0,0 +1,1786 @@
 +/* Engendre par tests/engendrer_i386.py -- ne pas editer a la main. */
@@ -3327,7 +3327,7 @@
 +};
 +
 +#endif /* _WIN64 */
---- /dev/null
+--- aa/dlls/lsteamclient/unix.c
 +++ bb/dlls/lsteamclient/unix.c
 @@ -0,0 +1,338 @@
 +/*
@@ -3668,7 +3668,7 @@
 +};
 +
 +C_ASSERT( ARRAYSIZE(__wine_unix_call_wow64_funcs) == unix_funcs_count );
---- /dev/null
+--- aa/dlls/lsteamclient/unixlib.h
 +++ bb/dlls/lsteamclient/unixlib.h
 @@ -0,0 +1,135 @@
 +/*
@@ -3808,10 +3808,12 @@
 +#endif
 --- aa/dlls/ntdll/locale.c
 +++ bb/dlls/ntdll/locale.c
-@@ -105,6 +105,24 @@ static PEB64 *get_peb64( void )
-     return (PEB64 *)(UINT_PTR)teb64->Peb;
- }
+@@ -103,6 +103,24 @@
  
+     if (!teb64) return NULL;
+     return (PEB64 *)(UINT_PTR)teb64->Peb;
++}
++
 +/*
 + * Une adresse de l'invite rangee dans le PEB 64 bits, que l'hote lira.
 + *
@@ -3828,12 +3830,10 @@
 +#else
 +    return PtrToUlong( p );
 +#endif
-+}
-+
+ }
+ 
  static void append_ui_language( USHORT *langs, ULONG *len, USHORT idx )
- {
-     for (UINT i = 0; i < *len; i++) if (langs[i] == idx) return;
-@@ -366,18 +384,18 @@ void locale_init(void)
+@@ -366,18 +384,18 @@
  
      NtGetNlsSectionPtr( 10, 0, NULL, &case_ptr, &size );
      NtCurrentTeb()->Peb->UnicodeCaseTableData = case_ptr;
@@ -3867,7 +3867,7 @@
 +@ extern -arch=i386,arm64,arm64ec __wine_wow64_guest_base
 --- aa/dlls/ntdll/signal_arm64.c
 +++ bb/dlls/ntdll/signal_arm64.c
-@@ -56,6 +56,19 @@ ALL_SYSCALLS
+@@ -56,6 +56,19 @@
  __ASM_GLOBAL_FUNC( __chkstk, "ret")
  
  
@@ -3887,7 +3887,7 @@
  /***********************************************************************
   *		RtlCaptureContext (NTDLL.@)
   */
-@@ -363,7 +376,7 @@ __ASM_GLOBAL_FUNC( KiUserCallbackDispatcher,
+@@ -363,7 +376,7 @@
                     ".seh_handler user_callback_handler, @except\n\t"
                     "ldr x0, [sp]\n\t"             /* args */
                     "ldp w1, w2, [sp, #0x08]\n\t"  /* len, id */
@@ -3896,7 +3896,7 @@
                     "ldr x3, [x3, 0x58]\n\t"       /* peb->KernelCallbackTable */
                     "ldr x15, [x3, x2, lsl #3]\n\t"
                     "blr x15\n\t"
-@@ -764,7 +777,7 @@ __ASM_GLOBAL_FUNC( RtlRaiseException,
+@@ -764,7 +777,7 @@
                     "ldr w2, [x1]\n\t"            /* context->ContextFlags */
                     "orr w2, w2, #0x20000000\n\t" /* CONTEXT_UNWOUND_TO_CALL */
                     "str w2, [x1]\n\t"
@@ -3905,7 +3905,7 @@
                     "ldrb w2, [x3, #2]\n\t"       /* peb->BeingDebugged */
                     "cbnz w2, 1f\n\t"
                     "bl dispatch_exception\n"
-@@ -868,7 +881,7 @@ __ASM_GLOBAL_FUNC( DbgUiRemoteBreakin,
+@@ -868,7 +881,7 @@
                     ".seh_save_fplr_x 16\n\t"
                     ".seh_endprologue\n\t"
                     ".seh_handler DbgUiRemoteBreakin_handler, @except\n\t"
@@ -3916,7 +3916,7 @@
                     "bl DbgBreakPoint\n"
 --- aa/dlls/ntdll/signal_arm64ec.c
 +++ bb/dlls/ntdll/signal_arm64ec.c
-@@ -180,6 +180,31 @@ static void *arm64ec_redirect_ptr( HMODULE module, void *ptr, const IMAGE_ARM64E
+@@ -180,6 +180,31 @@
      return ptr;
  }
  
@@ -3948,7 +3948,7 @@
  static void arm64x_check_call(void);
  
  /*******************************************************************
-@@ -231,6 +256,9 @@ NTSTATUS arm64ec_process_init( HMODULE module )
+@@ -231,6 +256,9 @@
      }
      if (!status && pThreadInit) status = pThreadInit();
      leave_syscall_callback();
@@ -3958,18 +3958,18 @@
      __os_arm64x_check_call = arm64x_check_call;
      __os_arm64x_check_icall = arm64x_check_call;
      __os_arm64x_check_icall_cfg = arm64x_check_call;
-@@ -290,6 +318,10 @@ void arm64ec_update_hybrid_metadata( void *module, IMAGE_NT_HEADERS *nt,
+@@ -289,6 +317,10 @@
+ {
      DWORD i, protect_old;
      const IMAGE_SECTION_HEADER *sec = IMAGE_FIRST_SECTION( nt );
- 
++
 +#ifdef WINE_TEB_SANS_X18
 +    if (!peb_arm64ec) peb_arm64ec = NtCurrentTeb()->Peb;
 +#endif
-+
+ 
      /* assume that all pointers are in the same section */
  
-     for (i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++)
-@@ -1185,8 +1217,11 @@ NTSTATUS call_seh_handlers( EXCEPTION_RECORD *rec, CONTEXT *orig_context )
+@@ -1185,8 +1217,11 @@
  
          if (!is_valid_arm64ec_frame( dispatch.EstablisherFrame ))
          {
@@ -3983,7 +3983,7 @@
              rec->ExceptionFlags |= EXCEPTION_STACK_INVALID;
              break;
          }
-@@ -1372,7 +1407,7 @@ __ASM_GLOBAL_FUNC( "#KiUserCallbackDispatcher",
+@@ -1372,7 +1407,7 @@
                     ".seh_handler user_callback_handler, @except\n\t"
                     "ldr x0, [sp]\n\t"             /* args */
                     "ldp w1, w2, [sp, #0x08]\n\t"  /* len, id */
@@ -3992,7 +3992,7 @@
                     "ldr x3, [x3, 0x58]\n\t"       /* peb->KernelCallbackTable */
                     "ldr x15, [x3, x2, lsl #3]\n\t"
                     "blr x15\n\t"
-@@ -1683,8 +1718,11 @@ void WINAPI RtlUnwindEx( PVOID end_frame, PVOID target_ip, EXCEPTION_RECORD *rec
+@@ -1683,8 +1718,11 @@
  
          if (!is_valid_arm64ec_frame( dispatch.EstablisherFrame ))
          {
@@ -4006,7 +4006,7 @@
              rec->ExceptionFlags |= EXCEPTION_STACK_INVALID;
              break;
          }
-@@ -1898,7 +1936,7 @@ static void __attribute__((naked)) arm64x_check_call(void)
+@@ -1898,7 +1936,7 @@
      asm( ".seh_proc \"#arm64x_check_call\"\n\t"
           ".seh_endprologue\n\t"
           /* check for EC code */
@@ -4015,7 +4015,7 @@
           "lsr x17, x11, #18\n\t"            /* dest / page_size / 64 */
           "ldr x16, [x16, #0x368]\n\t"       /* peb->EcCodeBitMap */
           "lsr x9, x11, #12\n\t"             /* dest / page_size */
-@@ -2058,7 +2096,7 @@ void __attribute((naked)) RtlRaiseException( EXCEPTION_RECORD *rec )
+@@ -2058,7 +2096,7 @@
           "add x1, sp, #0x20\n\t"       /* context pointer */
           "ldr x2, [x1, #0xf8]\n\t"     /* ctx->Rip */
           "str x2, [x0, #0x10]\n\t"     /* rec->ExceptionAddress */
@@ -4024,7 +4024,7 @@
           "ldrb w2, [x3, #2]\n\t"       /* peb->BeingDebugged */
           "cbnz w2, 1f\n\t"
           "bl \"#dispatch_exception\"\n"
-@@ -2162,7 +2200,7 @@ void __attribute__((naked)) DbgUiRemoteBreakin( void *arg )
+@@ -2162,7 +2200,7 @@
           ".seh_save_fplr_x 16\n\t"
           ".seh_endprologue\n\t"
           ".seh_handler DbgUiRemoteBreakin_handler, @except\n\t"
@@ -4035,7 +4035,7 @@
           "bl \"#DbgBreakPoint\"\n"
 --- aa/dlls/ntdll/thread.c
 +++ bb/dlls/ntdll/thread.c
-@@ -730,3 +730,96 @@ void WINAPI DECLSPEC_HOTPATCH RtlProcessFlsData( void *teb_fls_data, ULONG flags
+@@ -730,3 +730,96 @@
          RtlFreeHeap( GetProcessHeap(), 0, fls );
      }
  }
@@ -4134,7 +4134,7 @@
 +#endif /* __aarch64__ || __arm64ec__ */
 --- aa/dlls/ntdll/unix/cdrom.c
 +++ bb/dlls/ntdll/unix/cdrom.c
-@@ -1782,7 +1782,7 @@ static NTSTATUS CDROM_ScsiPassThroughDirect32(int fd, const SCSI_PASS_THROUGH_DI
+@@ -1782,7 +1782,7 @@
      pkt->DataIn = in_pkt32->DataIn;
      pkt->DataTransferLength = in_pkt32->DataTransferLength;
      pkt->TimeOutValue = in_pkt32->TimeOutValue;
@@ -4145,7 +4145,7 @@
  
 --- aa/dlls/ntdll/unix/debug.c
 +++ bb/dlls/ntdll/unix/debug.c
-@@ -290,7 +290,7 @@ NTSTATUS wow64_wine_dbg_write( void *args )
+@@ -290,7 +290,7 @@
          unsigned int len;
      } const *params32 = args;
  
@@ -4156,7 +4156,7 @@
  
 --- aa/dlls/ntdll/unix/env.c
 +++ bb/dlls/ntdll/unix/env.c
-@@ -1784,8 +1784,20 @@ static void *build_wow64_parameters( const RTL_USER_PROCESS_PARAMETERS *params )
+@@ -1784,8 +1784,20 @@
                     + ((params->RuntimeInfo.MaximumLength + 1) & ~1)
                     + params->EnvironmentSize);
  
@@ -4181,10 +4181,12 @@
      wow64_params->AllocationSize  = size;
 --- aa/dlls/ntdll/unix/loader.c
 +++ bb/dlls/ntdll/unix/loader.c
-@@ -436,6 +436,47 @@ char *get_alternate_wineloader( WORD machine )
+@@ -434,8 +434,49 @@
+ 
+     return ret;
  }
- 
- 
++
++
 +/*
 + * Recopier l'environnement en memoire basse avant d'executer.
 + *
@@ -4205,10 +4207,10 @@
 +    size_t taille = sizeof(char *), n = 0;
 +    char *bloc, **tab;
 +    unsigned int i;
-+
+ 
 +    if (!environ) return environ;
 +    for (n = 0; environ[n]; n++) taille += sizeof(char *) + strlen( environ[n] ) + 1;
-+
+ 
 +    bloc = mmap( (void *)0x110000000, taille, PROT_READ | PROT_WRITE,
 +                 MAP_PRIVATE | MAP_ANON, -1, 0 );
 +    if (bloc == MAP_FAILED) return environ;
@@ -4229,7 +4231,7 @@
  static void preloader_exec( char **argv )
  {
  #ifdef HAVE_WINE_PRELOADER
-@@ -452,7 +493,7 @@ static void preloader_exec( char **argv )
+@@ -452,7 +493,7 @@
      execv( argv[0], argv );
      free( argv[0] );
  #endif
@@ -4238,7 +4240,7 @@
  }
  
  /* exec the appropriate wine loader for the specified machine */
-@@ -1555,6 +1596,11 @@ static void load_ntdll_functions( HMODULE module )
+@@ -1555,6 +1596,11 @@
      void **p__wine_unix_call_dispatcher_arm64ec = NULL;
      unixlib_handle_t *p__wine_unixlib_handle;
      const IMAGE_EXPORT_DIRECTORY *exports;
@@ -4250,7 +4252,7 @@
  
      exports = get_module_data_dir( module, IMAGE_DIRECTORY_ENTRY_EXPORT, NULL );
      assert( exports );
-@@ -1575,6 +1621,23 @@ static void load_ntdll_functions( HMODULE module )
+@@ -1575,6 +1621,23 @@
      GET_FUNC( __wine_syscall_dispatcher );
      GET_FUNC( __wine_unix_call_dispatcher );
      GET_FUNC( __wine_unixlib_handle );
@@ -4274,7 +4276,7 @@
      if (is_arm64ec())
      {
          GET_FUNC( __wine_unix_call_dispatcher_arm64ec );
-@@ -1626,6 +1689,14 @@ static void load_ntdll_wow64_functions( HMODULE module )
+@@ -1626,6 +1689,14 @@
      }
  #endif
  
@@ -4291,7 +4293,7 @@
              pLdrSystemDllInitBlock, sizeof(*pLdrSystemDllInitBlock) );
 --- aa/dlls/ntdll/unix/process.c
 +++ bb/dlls/ntdll/unix/process.c
-@@ -540,14 +540,14 @@ NTSTATUS wow64_wine_spawnvp( void *args )
+@@ -540,14 +540,14 @@
          int   wait;
      } const *params32 = args;
  
@@ -4310,7 +4312,7 @@
      free( argv );
 --- aa/dlls/ntdll/unix/server.c
 +++ bb/dlls/ntdll/unix/server.c
-@@ -2007,10 +2007,10 @@ NTSTATUS wow64_wine_server_call( void *args )
+@@ -2007,10 +2007,10 @@
      req.data_count = req32->data_count;
      for (i = 0; i < req.data_count; i++)
      {
@@ -4323,7 +4325,7 @@
      status = wine_server_call( &req );
      req32->u.reply = req.u.reply;
      return status;
-@@ -2029,7 +2029,7 @@ NTSTATUS wow64_wine_server_fd_to_handle( void *args )
+@@ -2029,7 +2029,7 @@
          ULONG        handle;
      } const *params32 = args;
  
@@ -4332,7 +4334,7 @@
      HANDLE handle;
      NTSTATUS ret;
  
-@@ -2052,7 +2052,7 @@ NTSTATUS wow64_wine_server_handle_to_fd( void *args )
+@@ -2052,7 +2052,7 @@
      } const *params32 = args;
  
      return wine_server_handle_to_fd( ULongToHandle( params32->handle ), params32->access,
@@ -4351,10 +4353,11 @@
  #include <stdarg.h>
  #include <stdio.h>
  #include <sys/types.h>
-@@ -337,6 +338,86 @@ static void save_context( CONTEXT *context, const ucontext_t *sigcontext )
+@@ -336,7 +337,87 @@
+ #ifdef __APPLE__
  
  #define X18_RESUME_SIZE 16
- 
++
 +/*
 + * La table cle -> TEB, logee dans les donnees du ntdll PE.
 + *
@@ -4410,7 +4413,7 @@
 +    /* Enregistrer un TEB nul est pire que ne rien enregistrer : la table le
 +     * rendrait ensuite tel quel, au lieu de laisser le repli jouer. */
 +    if (!teb) return;
-+
+ 
 +    creer_cle_teb();
 +    /* L'acces direct d'abord : c'est lui que le code PE empruntera. */
 +    if (cle_teb_prete) pthread_setspecific( cle_teb, teb );
@@ -4438,7 +4441,7 @@
  extern void x18_resume_trampoline(void);
  __ASM_GLOBAL_FUNC( x18_resume_trampoline,
                     "ldr x18, [sp]\n\t"
-@@ -349,6 +430,11 @@ static void resume_with_x18( ucontext_t *sigcontext, TEB *teb )
+@@ -349,6 +430,11 @@
      ULONG_PTR sp = SP_sig( sigcontext );
      ULONG_PTR *stack;
  
@@ -4450,7 +4453,7 @@
      if (!teb) return;
      if (sp <= (ULONG_PTR)teb->DeallocationStack || sp > (ULONG_PTR)teb->Tib.StackBase) return;
      stack = (ULONG_PTR *)sp - 2;
-@@ -949,25 +1035,25 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
+@@ -949,25 +1035,25 @@
                     "stp d12, d13, [x29, #0x80]\n\t"
                     "stp d14, d15, [x29, #0x90]\n\t"
                     "stp x1, x2, [x29, #0xa0]\n\t" /* ret_ptr, ret_len */
@@ -4482,10 +4485,11 @@
                     "mov x20, x0\n\t"              /* user_sp */
                     "mov x21, x3\n\t"              /* func */
                     "mov sp, x1\n\t"
-@@ -1181,6 +1267,42 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
+@@ -1180,6 +1266,42 @@
+     CONTEXT context;
      EXCEPTION_RECORD rec = { .ExceptionAddress = (void *)PC_sig(sigcontext) };
      DWORD64 esr = get_fault_esr( sigcontext );
- 
++
 +#ifdef SONDE_EC
 +    if (ESR_ELx_EC(esr) == ESR_ELx_EC_IABT_LOW || ESR_ELx_EC(esr) == ESR_ELx_EC_IABT_CUR)
 +    {
@@ -4521,25 +4525,24 @@
 +        }
 +    }
 +#endif
-+
+ 
      switch (ESR_ELx_EC(esr))
      {
-     case ESR_ELx_EC_IABT_LOW:
-@@ -1673,6 +1795,13 @@ void init_syscall_frame( LPTHREAD_START_ROUTINE entry, void *arg, TEB *teb )
+@@ -1672,6 +1794,13 @@
+     CONTEXT *ctx, context = { CONTEXT_ALL };
      I386_CONTEXT *i386_context;
      ARM_CONTEXT *arm_context;
- 
++
 +    /* Ici et nulle part ailleurs : pthread_setspecific ecrit dans le fil
 +     * appelant. init_syscall_frame s'execute sur le fil qui vient de naitre,
 +     * alors que init_teb s'execute sur son parent -- y enregistrer polluait le
 +     * creneau du parent et laissait le nouveau fil sans le sien, d'ou un x18
 +     * nul dans les repartiteurs. */
 +    enregistrer_teb( teb );
-+
+ 
      context.X0  = (DWORD64)entry;
      context.X1  = (DWORD64)arg;
-     context.X18 = (DWORD64)teb;
-@@ -1771,9 +1900,53 @@ __ASM_GLOBAL_FUNC( signal_start_thread,
+@@ -1771,9 +1900,53 @@
  /***********************************************************************
   *           __wine_syscall_dispatcher
   */
@@ -4594,7 +4597,7 @@
                     "stp x18, x19, [x10, #0x90]\n\t"
                     "stp x20, x21, [x10, #0xa0]\n\t"
                     "stp x22, x23, [x10, #0xb0]\n\t"
-@@ -1826,7 +1999,8 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+@@ -1826,7 +1999,8 @@
                     __ASM_CFI_CFA_IS_AT2(x22, 0x98, 0x02) /* frame->syscall_cfa */
                     "and x20, x8, #0xfff\n\t"    /* syscall number */
                     "ubfx x21, x8, #12, #2\n\t"  /* syscall table number */
@@ -4604,7 +4607,7 @@
                     "add x21, x16, x21, lsl #5\n\t"
                     "ldr x16, [x21, #16]\n\t"    /* table->ServiceLimit */
                     "cmp x20, x16\n\t"
-@@ -1844,7 +2018,8 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+@@ -1844,7 +2018,8 @@
                     "cbnz x9, 1b\n"
                     "2:\tldr x16, [x21]\n\t"     /* table->ServiceTable */
                     "ldr x23, [x16, x20, lsl 3]\n\t"
@@ -4614,7 +4617,7 @@
                     "cbnz x11, " __ASM_LOCAL_LABEL("trace_syscall") "\n\t"
                     "blr x23\n\t"
                     "mov sp, x22\n"
-@@ -1933,8 +2108,13 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+@@ -1933,8 +2108,13 @@
                     "movk x0, #0x001c\n\t"
                     "b " __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return") )
  
@@ -4629,7 +4632,7 @@
                     "cbnz x11, " __ASM_LOCAL_LABEL("trace_syscall_ret") "\n\t"
                     "b " __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return") )
  
-@@ -1944,7 +2124,9 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher_return,
+@@ -1944,7 +2124,9 @@
   */
  __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
                     "hint 34\n\t" /* bti c */
@@ -4642,7 +4645,7 @@
                     "stp x22, x23, [x10, #0xb0]\n\t"
 --- aa/dlls/ntdll/unix/socket.c
 +++ bb/dlls/ntdll/unix/socket.c
-@@ -531,7 +531,7 @@ static size_t cmsg_align_32( size_t len )
+@@ -531,7 +531,7 @@
   * true for all messages */
  static int wow64_translate_control( const WSABUF *control64, struct afd_wsabuf_32 *control32 )
  {
@@ -4651,7 +4654,7 @@
      const ULONG max_len = control32->len;
      const char *ptr64 = control64->buf;
      char *ptr32 = buf32;
-@@ -993,7 +993,7 @@ static NTSTATUS sock_ioctl_recv( HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
+@@ -993,7 +993,7 @@
  
          for (i = 0; i < count; ++i)
          {
@@ -4660,7 +4663,7 @@
              async->iov[i].iov_len = buffers[i].len;
          }
      }
-@@ -1311,7 +1311,7 @@ static NTSTATUS sock_ioctl_send( HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
+@@ -1311,7 +1311,7 @@
  
          for (i = 0; i < count; ++i)
          {
@@ -4669,7 +4672,7 @@
              async->iov[i].iov_len = buffers[i].len;
          }
      }
-@@ -1724,7 +1724,7 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+@@ -1724,7 +1724,7 @@
  
                  params.recv_flags = params32->recv_flags;
                  params.msg_flags = params32->msg_flags;
@@ -4680,7 +4683,7 @@
              else
 --- aa/dlls/ntdll/unix/thread.c
 +++ bb/dlls/ntdll/unix/thread.c
-@@ -1197,7 +1197,10 @@ NTSTATUS init_thread_stack( TEB *teb, ULONG_PTR limit, SIZE_T reserve_size, SIZE
+@@ -1197,7 +1197,10 @@
  
          /* 32-bit stack */
          if (!limit || limit > user_space_wow_limit) limit = user_space_wow_limit;
@@ -4694,7 +4697,7 @@
          wow_teb->Tib.StackLimit = PtrToUlong( stack.StackLimit );
 --- aa/dlls/ntdll/unix/unix_private.h
 +++ bb/dlls/ntdll/unix/unix_private.h
-@@ -75,6 +75,7 @@ static inline TEB64 *get_teb64( TEB *teb ) { return teb ? (TEB64 *)(ULONG_PTR)te
+@@ -75,6 +75,7 @@
  
  extern WOW_PEB *wow_peb;
  extern ULONG_PTR user_space_wow_limit;
@@ -4702,18 +4705,20 @@
  extern void *main_module;
  extern SECTION_IMAGE_INFORMATION main_image_info;
  
-@@ -634,11 +635,25 @@ static inline void init_unicode_string( UNICODE_STRING *str, const WCHAR *data )
+@@ -632,13 +633,27 @@
+     str->Length = wcslen(data) * sizeof(WCHAR);
+     str->MaximumLength = str->Length + sizeof(WCHAR);
      str->Buffer = (WCHAR *)data;
- }
- 
++}
++
 +/* Une adresse vue par l'invite 32 bits. Sa fenetre pouvant etre deplacee dans
 + * l'espace de l'hote, la convertir demande la base ; zero reste zero, c'est le
 + * pointeur nul. Identite quand les deux mondes se confondent. */
 +static inline void *ptr_wow32( ULONG addr )
 +{
 +    return addr ? (char *)(ULONG_PTR)addr + user_space_wow_base : NULL;
-+}
-+
+ }
+ 
  static inline NTSTATUS map_section( HANDLE mapping, void **ptr, SIZE_T *size, ULONG protect )
  {
 +    /* « zero_bits » ne sait dire qu'un plafond. On l'exprime dans l'espace de
@@ -4729,7 +4734,7 @@
                                 0, NULL, size, ViewShare, 0, protect );
  }
  
-@@ -739,4 +754,12 @@ static inline int is_gdt_sel( WORD sel )
+@@ -739,4 +754,12 @@
  
  #endif  /* defined(__i386__) || defined(__x86_64__) */
  
@@ -4744,7 +4749,7 @@
  #endif /* __NTDLL_UNIX_PRIVATE_H */
 --- aa/dlls/ntdll/unix/virtual.c
 +++ bb/dlls/ntdll/unix/virtual.c
-@@ -138,6 +138,7 @@ struct file_view
+@@ -138,6 +138,7 @@
  #define VPROT_GUARD      0x10
  #define VPROT_COMMITTED  0x20
  #define VPROT_WRITEWATCH 0x40
@@ -4752,7 +4757,7 @@
  /* per-mapping protection flags */
  #define VPROT_ARM64EC          0x0100  /* view may contain ARM64EC code */
  #define VPROT_SYSTEM           0x0200  /* system view (underlying mmap not under our control) */
-@@ -198,6 +199,22 @@ static void *host_addr_space_limit;  /* top of the host virtual address space */
+@@ -198,6 +199,22 @@
  static struct file_view *arm64ec_view;
  
  ULONG_PTR user_space_wow_limit = 0;
@@ -4775,7 +4780,7 @@
  struct _KUSER_SHARED_DATA *user_shared_data = (void *)0x17ffe0000ull;
  
  /* TEB allocation blocks */
-@@ -237,6 +254,7 @@ static void *preload_reserve_start;
+@@ -237,6 +254,7 @@
  static void *preload_reserve_end;
  static BOOL force_exec_prot;  /* whether to force PROT_EXEC on all PROT_READ mmaps */
  static BOOL enable_write_exceptions;  /* raise exception on writes to executable memory */
@@ -4783,11 +4788,10 @@
  
  struct range_entry
  {
-@@ -767,6 +785,22 @@ static void mmap_init( const struct preload_info *preload_info )
-  */
+@@ -768,6 +786,22 @@
  static ULONG_PTR get_wow_user_space_limit(void)
  {
-+#ifdef _WIN64
+ #ifdef _WIN64
 +    /* Rendue a l'invite, donc exprimee dans ses adresses a lui. */
 +    return (user_space_wow_limit - user_space_wow_base) & ~granularity_mask;
 +#endif
@@ -4803,10 +4807,11 @@
 + */
 +static ULONG_PTR get_wow_host_space_limit(void)
 +{
- #ifdef _WIN64
++#ifdef _WIN64
      return user_space_wow_limit & ~granularity_mask;
  #endif
-@@ -1375,6 +1409,11 @@ static int get_unix_prot( BYTE vprot )
+     return (ULONG_PTR)user_space_limit;
+@@ -1375,6 +1409,11 @@
          if (vprot & VPROT_WRITECOPY) prot |= PROT_WRITE | PROT_READ;
          if (vprot & VPROT_EXEC) prot |= PROT_EXEC | PROT_READ;
          if (vprot & VPROT_WRITEWATCH) prot &= ~PROT_WRITE;
@@ -4818,7 +4823,7 @@
      }
      if (!prot) prot = PROT_NONE;
      return prot;
-@@ -1970,6 +2009,7 @@ static NTSTATUS get_vprot_flags( DWORD protect, unsigned int *vprot, BOOL image
+@@ -1970,6 +2009,7 @@
   *
   * Wrapper for mprotect, adds PROT_EXEC if forced by force_exec_prot
   */
@@ -4826,7 +4831,7 @@
  static inline int mprotect_exec( void *base, size_t size, int unix_prot )
  {
      if (force_exec_prot && (unix_prot & PROT_READ) && !(unix_prot & PROT_EXEC))
-@@ -1980,7 +2020,22 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
+@@ -1980,7 +2020,22 @@
          if (!(unix_prot & PROT_WRITE)) return -1;
      }
  
@@ -4850,7 +4855,7 @@
  }
  
  
-@@ -1998,6 +2053,8 @@ static int mprotect_range( void *base, size_t size, BYTE set, BYTE clear )
+@@ -1998,6 +2053,8 @@
  
      size = ROUND_SIZE( base, size, host_page_mask );
  
@@ -4859,7 +4864,7 @@
      vprot = get_host_page_vprot( addr );
      prot = get_unix_prot( (vprot & ~clear) | set );
      for (count = i = 1; i < size / host_page_size; i++, count++)
-@@ -2021,6 +2078,8 @@ static int mprotect_range( void *base, size_t size, BYTE set, BYTE clear )
+@@ -2021,6 +2078,8 @@
   */
  static BOOL set_vprot( struct file_view *view, void *base, size_t size, BYTE vprot )
  {
@@ -4868,7 +4873,7 @@
      if (!use_kernel_writewatch && view->protect & VPROT_WRITEWATCH)
      {
          /* each page may need different protections depending on write watch flag */
-@@ -2297,9 +2356,60 @@ static NTSTATUS map_view( struct file_view **view_ret, void *base, size_t size,
+@@ -2297,9 +2356,60 @@
          size_t host_size = ROUND_SIZE( 0, size, host_page_mask );
          size_t unmap_size, view_size = host_size + align_mask + 1;
  
@@ -4929,7 +4934,7 @@
          if ((ptr = map_reserved_area( start, end, host_size, top_down, unix_prot, align_mask )))
          {
              TRACE( "got mem in reserved area %p-%p\n", ptr, (char *)ptr + size );
-@@ -3358,8 +3468,22 @@ static NTSTATUS map_image_view( struct file_view **view_ret, struct pe_image_inf
+@@ -3358,8 +3468,22 @@
      BOOL top_down = (image_info->image_charact & IMAGE_FILE_DLL) &&
                      (image_info->image_flags & IMAGE_FLAGS_ImageDynamicallyRelocated);
  
@@ -4954,7 +4959,7 @@
  
      /* first try the specified base */
  
-@@ -3373,6 +3497,7 @@ static NTSTATUS map_image_view( struct file_view **view_ret, struct pe_image_inf
+@@ -3373,6 +3497,7 @@
          base = wine_server_get_ptr( image_info->base );
          if ((ULONG_PTR)base != image_info->base) base = NULL;
      }
@@ -4962,7 +4967,7 @@
      if (base)
      {
          status = map_view( view_ret, base, size, alloc_type, vprot, limit_low, limit_high, 0 );
-@@ -3389,7 +3514,7 @@ static NTSTATUS map_image_view( struct file_view **view_ret, struct pe_image_inf
+@@ -3389,7 +3514,7 @@
      else
      {
          start = limit_low;
@@ -4971,7 +4976,7 @@
      }
      if (start < end && (start != limit_low || end != limit_high))
      {
-@@ -3685,6 +3810,26 @@ void virtual_init(void)
+@@ -3685,7 +3810,27 @@
      host_page_size = sysconf( _SC_PAGESIZE );
      host_page_mask = host_page_size - 1;
      TRACE( "host page size: %uk\n", (UINT)host_page_size / 1024 );
@@ -4994,11 +4999,12 @@
 +     * multiple de 4 Gio pour que le rebasage de l'emulateur soit un simple
 +     * « orr » d'un bit haut. */
 +    user_space_wow_base = 4 * limit_4g;
-+#endif
  #endif
++#endif
  
  #ifdef _WIN64
-@@ -3849,7 +3994,8 @@ NTSTATUS virtual_map_main_module( HANDLE mapping, USHORT machine )
+     host_addr_space_limit = get_host_addr_space_limit();
+@@ -3849,7 +3994,8 @@
  
      if (!pe_mapping) return STATUS_INVALID_PARAMETER;
  
@@ -5008,7 +5014,7 @@
      main_module = NULL;
  
      /* check if we can replace that mapping with the builtin */
-@@ -4093,11 +4239,11 @@ static void set_large_address_space(void)
+@@ -4093,11 +4239,11 @@
          }
          else if (main_image_info.ImageCharacteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE)
          {
@@ -5023,10 +5029,12 @@
      }
      else
      {
-@@ -4125,6 +4271,16 @@ struct thread_data *virtual_alloc_first_thread_data(void)
+@@ -4123,6 +4269,16 @@
+     {
+         ERR( "wine: failed to map the shared user data: %08x\n", status );
          exit(1);
-     }
- 
++    }
++
 +    if (user_space_wow_base)
 +    {
 +        /* L'invite 32 bits lit KUSER_SHARED_DATA a une adresse fixe, 0x7ffe0000,
@@ -5035,12 +5043,10 @@
 +        status = map_view( &view, (char *)user_space_wow_base + 0x7ffe0000, page_size, 0,
 +                           VPROT_READ | VPROT_COMMITTED, 0, 0, 0 );
 +        if (status) ERR( "wine: KUSER_SHARED_DATA de l'invite non reservee : %08x\n", status );
-+    }
-+
+     }
+ 
      status = map_view( &view, NULL, signal_stack_mask + 1 + kernel_stack_size, MEM_TOP_DOWN,
-                        VPROT_READ | VPROT_WRITE | VPROT_COMMITTED, limit_4g, 0, 0 );
-     assert( !status );
-@@ -4151,7 +4307,13 @@ void virtual_alloc_first_teb(void)
+@@ -4151,7 +4307,13 @@
      if (is_wow64()) teb_block_size += ROUND_SIZE( 0, sizeof(WOW_TEB), page_mask );
      teb_block_size += page_size;  /* for debug info */
  
@@ -5055,7 +5061,7 @@
      else if (use_aslr()) limit_low = limit_4g;
  
      status = map_view( &view, NULL, 16 * teb_block_size, 0,
-@@ -4202,7 +4364,13 @@ NTSTATUS virtual_alloc_teb( struct thread_data *data )
+@@ -4202,7 +4364,13 @@
              struct file_view *view;
              ULONG_PTR limit_low = 0, limit_high = 0;
  
@@ -5070,7 +5076,7 @@
              else if (use_aslr()) limit_low = limit_4g;
  
              if ((status = map_view( &view, NULL, 32 * teb_block_size, 0,
-@@ -4279,7 +4447,7 @@ void virtual_free_thread_data( struct thread_data *data )
+@@ -4279,7 +4447,7 @@
          NtFreeVirtualMemory( GetCurrentProcess(), (void **)&teb->ChpeV2CpuAreaInfo, &size, MEM_RELEASE );
      }
  #endif
@@ -5079,7 +5085,7 @@
      {
          size = 0;
          NtFreeVirtualMemory( GetCurrentProcess(), &ptr, &size, MEM_RELEASE );
-@@ -4475,7 +4643,7 @@ NTSTATUS virtual_clear_tls_index( ULONG index )
+@@ -4475,7 +4643,7 @@
              if (wow_teb)
              {
                  if (wow_teb->TlsExpansionSlots)
@@ -5088,7 +5094,7 @@
              }
              else
  #endif
-@@ -4562,6 +4730,13 @@ void virtual_map_user_shared_data(void)
+@@ -4562,6 +4730,13 @@
          ERR( "failed to remap the process USD: %d\n", res );
          exit(1);
      }
@@ -5102,7 +5108,7 @@
      if (needs_close) close( fd );
      NtClose( section );
  }
-@@ -4646,9 +4821,13 @@ static BOOL is_inside_thread_stack( struct thread_data *data, void *ptr, struct
+@@ -4646,9 +4821,13 @@
      if ((char *)ptr > stack->start && (char *)ptr <= stack->end) return TRUE;
  
      if (!(wow_teb = get_wow_teb( teb ))) return FALSE;
@@ -5119,10 +5125,11 @@
      stack->guaranteed = max( wow_teb->GuaranteedStackBytes, min_guaranteed );
      stack->is_wow = TRUE;
      return ((char *)ptr > stack->start && (char *)ptr <= stack->end);
-@@ -4720,6 +4899,24 @@ NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec,
+@@ -4719,6 +4898,24 @@
+             ret = STATUS_GUARD_PAGE_VIOLATION;
          }
          else ret = grow_thread_stack( data, page, &stack_info );
-     }
++    }
 +    else if ((vprot & VPROT_JIT) &&
 +             (err == EXCEPTION_WRITE_FAULT || err == EXCEPTION_EXECUTE_FAULT))
 +    {
@@ -5140,11 +5147,10 @@
 +         * coutait tout le temps CPU -- 1370 echantillons sur 1422 dans
 +         * sys_icache_invalidate. */
 +        ret = STATUS_SUCCESS;
-+    }
+     }
      else if (err == EXCEPTION_WRITE_FAULT)
      {
-         if (vprot & VPROT_WRITEWATCH)
-@@ -6360,6 +6557,7 @@ NTSTATUS WINAPI NtMapViewOfSection( HANDLE handle, HANDLE process, PVOID *addr_p
+@@ -6360,6 +6557,7 @@
      unsigned int res;
      SIZE_T mask = granularity_mask;
      LARGE_INTEGER offset;
@@ -5152,7 +5158,7 @@
  
      offset.QuadPart = offset_ptr ? offset_ptr->QuadPart : 0;
  
-@@ -6371,9 +6569,15 @@ NTSTATUS WINAPI NtMapViewOfSection( HANDLE handle, HANDLE process, PVOID *addr_p
+@@ -6371,9 +6569,15 @@
          return STATUS_INVALID_PARAMETER_4;
  
      /* If both addr_ptr and zero_bits are passed, they have match */
@@ -5170,9 +5176,103 @@
          return STATUS_INVALID_PARAMETER_4;
  
      if (!is_win64 && !is_wow64())
+--- aa/dlls/winemac.drv/dllmain.c
++++ bb/dlls/winemac.drv/dllmain.c
+@@ -368,6 +368,21 @@
+     return NtCallbackReturn(entries, count * sizeof(entries[0]), 0);
+ }
+ 
++
++/*
++ * L'unixlib vit chez l'hote et deref erence ce qu'on lui passe. En 32 bits sur
++ * macOS la fenetre de l'invite est posee ailleurs ; ntdll publie sa base.
++ * Identite partout ailleurs.
++ */
++#ifndef _WIN64
++extern __declspec(dllimport) ULONG64 __wine_wow64_guest_base;
++static UINT64 vers_hote(const void *p)
++{
++    return p ? (UINT64)(ULONG_PTR)p + __wine_wow64_guest_base : 0;
++}
++#else
++static UINT64 vers_hote(const void *p) { return (UINT64)(ULONG_PTR)p; }
++#endif
+ 
+ static BOOL process_attach(void)
+ {
+@@ -395,8 +410,13 @@
+     if (__wine_init_unix_call()) return FALSE;
+ 
+     for (str = strings; str->id; str++)
+-        str->len = LoadStringW(macdrv_module, str->id, (WCHAR *)&str->str, 0);
+-    params.strings = strings;
++    {
++        WCHAR *res = NULL;
++
++        str->len = LoadStringW(macdrv_module, str->id, (WCHAR *)&res, 0);
++        str->str = vers_hote(res);
++    }
++    params.strings = vers_hote(strings);
+     params.app_icon_callback = (UINT_PTR)macdrv_app_icon;
+     params.app_quit_request_callback = (UINT_PTR)macdrv_app_quit_request;
+ 
+--- aa/dlls/winemac.drv/macdrv_main.c
++++ bb/dlls/winemac.drv/macdrv_main.c
+@@ -440,7 +440,7 @@
+ 
+     init_win_context();
+     setup_options();
+-    load_strings(params->strings);
++    load_strings(param_ptr(params->strings));
+ 
+     macdrv_err_on = ERR_ON(macdrv);
+     if (macdrv_start_cocoa_app(NtGetTickCount()))
+@@ -615,25 +615,11 @@
+ 
+ #ifdef _WIN64
+ 
+-static NTSTATUS wow64_init(void *arg)
+-{
+-    struct
+-    {
+-        ULONG strings;
+-        UINT64 app_icon_callback;
+-        UINT64 app_quit_request_callback;
+-    } *params32 = arg;
+-    struct init_params params;
+-
+-    params.strings = UlongToPtr(params32->strings);
+-    params.app_icon_callback = params32->app_icon_callback;
+-    params.app_quit_request_callback = params32->app_quit_request_callback;
+-    return macdrv_init(&params);
+-}
+-
++/* Les structures d'arguments sont toutes en largeur fixe : rien a convertir,
++ * les deux tables coincident. */
+ const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
+ {
+-    wow64_init,
++    macdrv_init,
+     macdrv_quit_result,
+ };
+ 
+--- aa/dlls/winemac.drv/unixlib.h
++++ bb/dlls/winemac.drv/unixlib.h
+@@ -38,7 +38,10 @@
+ 
+ struct init_params
+ {
+-    struct localized_string *strings;
++    /* Largeur fixe, comme le reste : la fenetre d'un invite 32 bits pouvant
++     * etre deplacee, le cote PE y met une adresse de l'hote, qu'un pointeur de
++     * 32 bits ne pourrait pas contenir. */
++    UINT64 strings;   /* struct localized_string * */
+     UINT64 app_icon_callback;
+     UINT64 app_quit_request_callback;
+ };
 --- aa/dlls/wow64/file.c
 +++ bb/dlls/wow64/file.c
-@@ -546,8 +546,9 @@ NTSTATUS WINAPI wow64_NtQueryAttributesFile( UINT *args )
+@@ -546,8 +546,9 @@
      FILE_BASIC_INFORMATION *info = get_ptr( &args );
  
      struct object_attr64 attr;
@@ -5185,7 +5285,7 @@
  
 --- aa/dlls/wow64/process.c
 +++ bb/dlls/wow64/process.c
-@@ -71,7 +71,7 @@ static RTL_USER_PROCESS_PARAMETERS *process_params_32to64( RTL_USER_PROCESS_PARA
+@@ -71,7 +71,7 @@
                                        unicode_str_32to64( &dllpath, &params32->DllPath ),
                                        unicode_str_32to64( &curdir, &params32->CurrentDirectory.DosPath ),
                                        unicode_str_32to64( &cmdline, &params32->CommandLine ),
@@ -5194,7 +5294,7 @@
                                        unicode_str_32to64( &title, &params32->WindowTitle ),
                                        unicode_str_32to64( &desktop, &params32->Desktop ),
                                        unicode_str_32to64( &shell, &params32->ShellInfo ),
-@@ -95,7 +95,7 @@ static RTL_USER_PROCESS_PARAMETERS *process_params_32to64( RTL_USER_PROCESS_PARA
+@@ -95,7 +95,7 @@
      ret->dwFlags               = params32->dwFlags;
      ret->wShowWindow           = params32->wShowWindow;
      ret->EnvironmentVersion    = params32->EnvironmentVersion;
@@ -5203,7 +5303,7 @@
      ret->ProcessGroupId        = params32->ProcessGroupId;
      ret->LoaderThreads         = params32->LoaderThreads;
      *params = ret;
-@@ -180,7 +180,7 @@ static PS_ATTRIBUTE_LIST *ps_attributes_32to64( PS_ATTRIBUTE_LIST **attr, const
+@@ -180,7 +180,7 @@
                  ret->Attributes[i].ValuePtr = Wow64AllocateTemp( ret->Attributes[i].Size );
                  for (j = 0; j < handles_count; j++)
                      ((HANDLE *)ret->Attributes[i].ValuePtr)[j] =
@@ -5212,7 +5312,7 @@
              }
              break;
          case PS_ATTRIBUTE_PARENT_PROCESS:
-@@ -236,9 +236,9 @@ static void put_ps_attributes( PS_ATTRIBUTE_LIST32 *attr32, const PS_ATTRIBUTE_L
+@@ -236,9 +236,9 @@
              CLIENT_ID32 id32;
              ULONG size = min( attr32->Attributes[i].Size, sizeof(id32) );
              put_client_id( &id32, attr->Attributes[i].ValuePtr );
@@ -5224,7 +5324,7 @@
              break;
          }
          case PS_ATTRIBUTE_IMAGE_INFO:
-@@ -246,9 +246,9 @@ static void put_ps_attributes( PS_ATTRIBUTE_LIST32 *attr32, const PS_ATTRIBUTE_L
+@@ -246,9 +246,9 @@
              SECTION_IMAGE_INFORMATION32 info32;
              ULONG size = min( attr32->Attributes[i].Size, sizeof(info32) );
              put_section_image_info( &info32, attr->Attributes[i].ValuePtr );
@@ -5236,7 +5336,7 @@
              break;
          }
          case PS_ATTRIBUTE_TEB_ADDRESS:
-@@ -256,9 +256,9 @@ static void put_ps_attributes( PS_ATTRIBUTE_LIST32 *attr32, const PS_ATTRIBUTE_L
+@@ -256,9 +256,9 @@
              TEB **teb = attr->Attributes[i].ValuePtr;
              ULONG teb32 = PtrToUlong( *teb ) + 0x2000;
              ULONG size = min( attr->Attributes[i].Size, sizeof(teb32) );
@@ -5250,7 +5350,7 @@
          }
 --- aa/dlls/wow64/security.c
 +++ bb/dlls/wow64/security.c
-@@ -41,7 +41,7 @@ static TOKEN_GROUPS *token_groups_32to64( const TOKEN_GROUPS32 *groups32 )
+@@ -41,7 +41,7 @@
      groups->GroupCount = groups32->GroupCount;
      for (i = 0; i < groups->GroupCount; i++)
      {
@@ -5259,7 +5359,7 @@
          groups->Groups[i].Attributes = groups32->Groups[i].Attributes;
      }
      return groups;
-@@ -52,7 +52,7 @@ static inline OBJECT_TYPE_LIST *objtypelist_32to64( OBJECT_TYPE_LIST *list, cons
+@@ -52,7 +52,7 @@
      if (!list32) return NULL;
      list->Level      = list32->Level;
      list->Sbz        = list32->Sbz;
@@ -5268,7 +5368,7 @@
      return list;
  }
  
-@@ -586,7 +586,7 @@ NTSTATUS WINAPI wow64_NtSetInformationToken( UINT *args )
+@@ -586,7 +586,7 @@
              TOKEN_MANDATORY_LABEL32 *label32 = ptr;
              TOKEN_MANDATORY_LABEL label;
  
@@ -5277,7 +5377,7 @@
              label.Label.Attributes = label32->Label.Attributes;
              return NtSetInformationToken( handle, class, &label, sizeof(label) );
          }
-@@ -599,7 +599,7 @@ NTSTATUS WINAPI wow64_NtSetInformationToken( UINT *args )
+@@ -599,7 +599,7 @@
          if (len >= sizeof(TOKEN_DEFAULT_DACL32))
          {
              TOKEN_DEFAULT_DACL32 *dacl32 = ptr;
@@ -5288,12 +5388,12 @@
          }
 --- aa/dlls/wow64/syscall.c
 +++ bb/dlls/wow64/syscall.c
-@@ -39,6 +39,15 @@ USHORT current_machine = 0;
+@@ -39,7 +39,16 @@
  ULONG_PTR args_alignment = 0;
  ULONG_PTR highest_user_address = 0x7ffeffff;
  ULONG_PTR default_zero_bits = 0x7fffffff;
 +ULONG64 guest_base = 0;
-+
+ 
 +/* Variable exportee par le ntdll : c'est lui qui decide de la fenetre.
 + * Elle n'existe que sur les cibles ou la question se pose. */
 +#ifdef __aarch64__
@@ -5301,10 +5401,11 @@
 +#else
 +static const ULONG64 __wine_wow64_guest_base = 0;
 +#endif
- 
++
  typedef NTSTATUS (WINAPI *syscall_thunk)( UINT *args );
  
-@@ -155,7 +164,7 @@ static EXCEPTION_RECORD *exception_record_32to64( const EXCEPTION_RECORD32 *rec3
+ static const syscall_thunk syscall_thunks[] =
+@@ -155,7 +164,7 @@
      rec = Wow64AllocateTemp( sizeof(*rec) );
      rec->ExceptionCode = rec32->ExceptionCode;
      rec->ExceptionFlags = rec32->ExceptionFlags;
@@ -5313,7 +5414,7 @@
      rec->ExceptionAddress = ULongToPtr( rec32->ExceptionAddress );
      rec->NumberParameters = rec32->NumberParameters;
      for (i = 0; i < EXCEPTION_MAXIMUM_PARAMETERS; i++)
-@@ -240,7 +249,7 @@ static void __attribute__((used)) call_user_exception_dispatcher( EXCEPTION_RECO
+@@ -240,7 +249,7 @@
              RtlGetExtendedContextLength( flags, &context_length );
  
              esp = LOWORD(ctx.SegSs) != ss32_sel ? NtCurrentTeb32()->SystemReserved1[0] : ctx.Esp;
@@ -5322,7 +5423,7 @@
              stack->rec_ptr     = PtrToUlong( &stack->rec );
              stack->context_ptr = PtrToUlong( &stack->context );
              stack->rec         = *rec;
-@@ -310,7 +319,7 @@ static void __attribute__((used)) call_raise_user_exception_dispatcher( ULONG co
+@@ -310,7 +319,7 @@
              ctx.ContextFlags = CONTEXT_I386_CONTROL;
              pBTCpuGetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx );
              ctx.Esp -= sizeof(ULONG);
@@ -5331,7 +5432,7 @@
              ctx.Eip = (ULONG_PTR)pKiRaiseUserExceptionDispatcher;
              pBTCpuSetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx );
          }
-@@ -672,6 +681,12 @@ NTSTATUS WINAPI wow64_NtContinueEx( UINT *args )
+@@ -672,6 +681,12 @@
      void *context = get_ptr( &args );
      KCONTINUE_ARGUMENT *cont_args = get_ptr( &args );
  
@@ -5344,7 +5445,7 @@
      NTSTATUS status = get_context_return_value( context );
      struct user_apc_frame *frame = NtCurrentTeb()->TlsSlots[WOW64_TLS_APCLIST];
      BOOL alertable;
-@@ -996,6 +1011,10 @@ static DWORD WINAPI process_init( RTL_RUN_ONCE *once, void *param, void **contex
+@@ -996,6 +1011,10 @@
      NtQuerySystemInformation( SystemEmulationBasicInformation, &info, sizeof(info), NULL );
      highest_user_address = (ULONG_PTR)info.HighestUserAddress;
      default_zero_bits = (ULONG_PTR)info.HighestUserAddress | 0x7fffffff;
@@ -5355,7 +5456,7 @@
      NtQueryInformationProcess( GetCurrentProcess(), ProcessWow64Information, &peb32, sizeof(peb32), NULL );
      wow64info = (WOW64INFO *)(peb32 + 1);
      wow64info->NativeSystemPageSize = 0x1000;
-@@ -1081,7 +1100,7 @@ static void thread_init(void)
+@@ -1081,7 +1100,7 @@
              ULONG *stack;
  
              pBTCpuGetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx );
@@ -5364,7 +5465,7 @@
              *ctx_ptr = ctx;
              stack = (ULONG *)ctx_ptr;
              *(--stack) = 0;
-@@ -1333,7 +1352,7 @@ void WINAPI Wow64ApcRoutine( ULONG_PTR arg1, ULONG_PTR arg2, ULONG_PTR arg3, CON
+@@ -1333,7 +1352,7 @@
  
              pBTCpuGetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx );
  
@@ -5373,7 +5474,7 @@
              stack->func      = arg1 >> 32;
              stack->arg1      = arg1;
              stack->arg2      = arg2;
-@@ -1427,7 +1446,7 @@ NTSTATUS WINAPI Wow64KiUserCallbackDispatcher( ULONG id, void *args, ULONG len,
+@@ -1427,7 +1446,7 @@
              pBTCpuGetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx );
              orig_ctx = ctx;
  
@@ -5384,7 +5485,7 @@
              stack->args = PtrToUlong( stack->args_data );
 --- aa/dlls/wow64/virtual.c
 +++ bb/dlls/wow64/virtual.c
-@@ -70,7 +70,7 @@ static MEMORY_RANGE_ENTRY *memory_range_entry_array_32to64( const MEMORY_RANGE_E
+@@ -70,7 +70,7 @@
  
      for (i = 0; i < count; i++)
      {
@@ -5393,7 +5494,7 @@
          addresses[i].NumberOfBytes = addresses32[i].NumberOfBytes;
      }
  
-@@ -98,7 +98,7 @@ static NTSTATUS mem_extended_parameters_32to64( MEM_EXTENDED_PARAMETER **ret_par
+@@ -98,7 +98,7 @@
          switch (params[i].Type)
          {
          case MemExtendedParameterAddressRequirements:
@@ -5402,7 +5503,7 @@
              params[i].Pointer = req;
              break;
          case MemExtendedParameterAttributeFlags:
-@@ -117,14 +117,14 @@ static NTSTATUS mem_extended_parameters_32to64( MEM_EXTENDED_PARAMETER **ret_par
+@@ -117,14 +117,14 @@
      {
          if (req32->LowestStartingAddress > highest_user_address) return STATUS_INVALID_PARAMETER;
          if (req32->HighestEndingAddress > highest_user_address) return STATUS_INVALID_PARAMETER;
@@ -5421,7 +5522,7 @@
          req->Alignment             = 0;
  
          params[i].Type = MemExtendedParameterAddressRequirements;
-@@ -148,7 +148,7 @@ NTSTATUS WINAPI wow64_NtAllocateVirtualMemory( UINT *args )
+@@ -148,7 +148,7 @@
      ULONG type = get_ulong( &args );
      ULONG protect = get_ulong( &args );
  
@@ -5430,7 +5531,7 @@
      SIZE_T size = *size32;
      BOOL is_current = RtlIsCurrentProcess( process );
      NTSTATUS status;
-@@ -161,6 +161,9 @@ NTSTATUS WINAPI wow64_NtAllocateVirtualMemory( UINT *args )
+@@ -161,6 +161,9 @@
                                                        addr, size, 3, type, protect, 0 );
      else if (pBTCpuNotifyMemoryAlloc) pBTCpuNotifyMemoryAlloc( addr, size, type, protect, FALSE, 0 );
  
@@ -5440,7 +5541,7 @@
      status = NtAllocateVirtualMemory( process, &addr, get_zero_bits( zero_bits ), &size, type, protect );
  
      if (!is_current) send_cross_process_notification( process, CrossProcessPostVirtualAlloc,
-@@ -189,7 +192,7 @@ NTSTATUS WINAPI wow64_NtAllocateVirtualMemoryEx( UINT *args )
+@@ -189,7 +192,7 @@
      MEM_EXTENDED_PARAMETER32 *params32 = get_ptr( &args );
      ULONG count = get_ulong( &args );
  
@@ -5449,7 +5550,7 @@
      SIZE_T size = *size32;
      NTSTATUS status;
      MEM_EXTENDED_PARAMETER *params64;
-@@ -318,7 +321,7 @@ NTSTATUS WINAPI wow64_NtFreeVirtualMemory( UINT *args )
+@@ -318,7 +321,7 @@
      ULONG *size32 = get_ptr( &args );
      ULONG type = get_ulong( &args );
  
@@ -5458,7 +5559,7 @@
      SIZE_T size = *size32;
      BOOL is_current = RtlIsCurrentProcess( process );
      NTSTATUS status;
-@@ -485,7 +488,7 @@ NTSTATUS WINAPI wow64_NtMapViewOfSection( UINT *args )
+@@ -485,7 +488,7 @@
          if (*addr32 > highest_user_address) return STATUS_INVALID_PARAMETER;
          if (size32 && *addr32 + (SIZE_T)*size32 > highest_user_address + 1) return STATUS_CONFLICTING_ADDRESSES;
      }
@@ -5467,7 +5568,7 @@
      status = NtMapViewOfSection( handle, process, addr_32to64( &addr, addr32 ), get_zero_bits( zero_bits ),
                                   commit, offset, size_32to64( &size, size32 ), inherit, alloc, protect );
      if (NT_SUCCESS(status))
-@@ -529,7 +532,7 @@ NTSTATUS WINAPI wow64_NtMapViewOfSectionEx( UINT *args )
+@@ -529,7 +532,7 @@
      }
      if ((status = mem_extended_parameters_32to64( &params64, params32, &count, set_limit ))) return status;
  
@@ -5476,7 +5577,7 @@
      status = NtMapViewOfSectionEx( handle, process, addr_32to64( &addr, addr32 ), offset,
                                     size_32to64( &size, size32 ), alloc, protect, params64, count );
      if (NT_SUCCESS(status))
-@@ -553,7 +556,7 @@ NTSTATUS WINAPI wow64_NtProtectVirtualMemory( UINT *args )
+@@ -553,7 +556,7 @@
      ULONG new_prot = get_ulong( &args );
      ULONG *old_prot = get_ptr( &args );
  
@@ -5485,7 +5586,7 @@
      SIZE_T size = *size32;
      BOOL is_current = RtlIsCurrentProcess( process );
      NTSTATUS status;
-@@ -592,12 +595,15 @@ NTSTATUS WINAPI wow64_NtQueryVirtualMemory( UINT *args )
+@@ -592,12 +595,15 @@
      SIZE_T res_len = 0;
      NTSTATUS status;
  
@@ -5502,7 +5603,7 @@
              status = STATUS_INVALID_PARAMETER;
          else
          {
-@@ -613,8 +619,8 @@ NTSTATUS WINAPI wow64_NtQueryVirtualMemory( UINT *args )
+@@ -613,8 +619,8 @@
                  info32->State = info.State;
                  info32->Protect = info.Protect;
                  info32->Type = info.Type;
@@ -5513,7 +5614,7 @@
              }
          }
          res_len = sizeof(MEMORY_BASIC_INFORMATION32);
-@@ -642,7 +648,7 @@ NTSTATUS WINAPI wow64_NtQueryVirtualMemory( UINT *args )
+@@ -642,7 +648,7 @@
      {
          if (len < sizeof(MEMORY_REGION_INFORMATION32))
              status = STATUS_INFO_LENGTH_MISMATCH;
@@ -5522,7 +5623,7 @@
              status = STATUS_INVALID_PARAMETER;
          else
          {
-@@ -658,8 +664,8 @@ NTSTATUS WINAPI wow64_NtQueryVirtualMemory( UINT *args )
+@@ -658,8 +664,8 @@
                  info32->CommitSize = info.CommitSize;
                  info32->PartitionId = info.PartitionId;
                  info32->NodePreference = info.NodePreference;
@@ -5533,7 +5634,7 @@
              }
          }
          res_len = sizeof(MEMORY_REGION_INFORMATION32);
-@@ -675,7 +681,7 @@ NTSTATUS WINAPI wow64_NtQueryVirtualMemory( UINT *args )
+@@ -675,7 +681,7 @@
          if (len < sizeof(*info32)) return STATUS_INFO_LENGTH_MISMATCH;
  
          info = Wow64AllocateTemp( count * sizeof(*info) );
@@ -5542,7 +5643,7 @@
          if (!(status = NtQueryVirtualMemory( handle, addr, class, info, count * sizeof(*info), &res_len )))
          {
              count = res_len / sizeof(*info);
-@@ -689,7 +695,7 @@ NTSTATUS WINAPI wow64_NtQueryVirtualMemory( UINT *args )
+@@ -689,7 +695,7 @@
      {
          if (len < sizeof(MEMORY_IMAGE_INFORMATION32)) return STATUS_INFO_LENGTH_MISMATCH;
  
@@ -5553,7 +5654,7 @@
              MEMORY_IMAGE_INFORMATION info;
 --- aa/dlls/wow64/wow64_private.h
 +++ bb/dlls/wow64/wow64_private.h
-@@ -37,6 +37,42 @@ extern USHORT current_machine;
+@@ -37,6 +37,42 @@
  extern ULONG_PTR args_alignment;
  extern ULONG_PTR highest_user_address;
  extern ULONG_PTR default_zero_bits;
@@ -5596,7 +5697,7 @@
  extern SYSTEM_DLL_INIT_BLOCK *pLdrSystemDllInitBlock;
  
  extern void     (WINAPI *pBTCpuFlushInstructionCache2)( const void *, SIZE_T );
-@@ -79,7 +115,10 @@ static inline TEB32 *NtCurrentTeb32(void)
+@@ -79,7 +115,10 @@
  
  static inline ULONG get_ulong( UINT **args ) { return *(*args)++; }
  static inline HANDLE get_handle( UINT **args ) { return LongToHandle( *(*args)++ ); }
@@ -5608,7 +5709,7 @@
  
  static inline ULONG64 get_ulong64( UINT **args )
  {
-@@ -99,7 +138,7 @@ static inline ULONG_PTR get_zero_bits( ULONG_PTR zero_bits )
+@@ -99,7 +138,7 @@
  static inline void **addr_32to64( void **addr, ULONG *addr32 )
  {
      if (!addr32) return NULL;
@@ -5617,7 +5718,7 @@
      return addr;
  }
  
-@@ -133,7 +172,7 @@ static inline UNICODE_STRING *unicode_str_32to64( UNICODE_STRING *str, const UNI
+@@ -133,7 +172,7 @@
      if (!str32) return NULL;
      str->Length = str32->Length;
      str->MaximumLength = str32->MaximumLength;
@@ -5626,7 +5727,7 @@
      return str;
  }
  
-@@ -163,10 +202,10 @@ static inline SECURITY_DESCRIPTOR *secdesc_32to64( SECURITY_DESCRIPTOR *out, con
+@@ -163,10 +202,10 @@
      }
      else
      {
@@ -5641,7 +5742,7 @@
      }
      return out;
  }
-@@ -180,9 +219,9 @@ static inline OBJECT_ATTRIBUTES *objattr_32to64( struct object_attr64 *out, cons
+@@ -180,9 +219,9 @@
      out->attr.Length = sizeof(out->attr);
      out->attr.RootDirectory = LongToHandle( in->RootDirectory );
      out->attr.Attributes = in->Attributes;
@@ -5654,7 +5755,7 @@
      return &out->attr;
  }
  
-@@ -276,7 +315,7 @@ static inline ALPC_MESSAGE_ATTRIBUTES *alpc_port_message_attributes_32to64( ALPC
+@@ -276,7 +315,7 @@
          to_attr->ContextHandle = UlongToHandle( from_attr->ContextHandle );
          if (from_attr->QoSPointer)
          {
@@ -5663,7 +5764,7 @@
              SECURITY_QUALITY_OF_SERVICE *qos = Wow64AllocateTemp( sizeof(*qos) );
  
              to_attr->QoS = qos;
-@@ -405,7 +444,7 @@ static inline ALPC_MESSAGE_ATTRIBUTES32 *alpc_port_message_attributes_64to32( AL
+@@ -405,7 +444,7 @@
          to_attr->ContextHandle = HandleToUlong( from_attr->ContextHandle );
          if (to_attr->QoSPointer && from_attr->QoS)
          {
@@ -5672,7 +5773,7 @@
              qos32->ImpersonationLevel = from_attr->QoS->ImpersonationLevel;
              qos32->ContextTrackingMode = from_attr->QoS->ContextTrackingMode;
              qos32->EffectiveOnly = from_attr->QoS->EffectiveOnly;
-@@ -490,26 +529,26 @@ static inline ALPC_MESSAGE_ATTRIBUTES32 *alpc_port_message_attributes_64to32( AL
+@@ -490,26 +529,26 @@
  
  static inline TOKEN_USER *token_user_32to64( TOKEN_USER *out, const TOKEN_USER32 *in )
  {
@@ -5705,7 +5806,118 @@
  
 --- aa/dlls/wow64win/gdi.c
 +++ bb/dlls/wow64win/gdi.c
-@@ -785,7 +785,7 @@ NTSTATUS WINAPI wow64_NtGdiDdDDICreateKeyedMutex2( UINT *args )
+@@ -531,16 +531,16 @@
+     desc.hDevice = desc32->hDevice;
+     desc.hResource = desc32->hResource;
+     desc.hGlobalShare = desc32->hGlobalShare;
+-    desc.pPrivateRuntimeData = UlongToPtr( desc32->pPrivateRuntimeData );
++    desc.pPrivateRuntimeData = ptr_32to64( desc32->pPrivateRuntimeData );
+     desc.PrivateRuntimeDataSize = desc32->PrivateRuntimeDataSize;
+     if (!desc32->Flags.StandardAllocation)
+     {
+-        desc.pPrivateDriverData = UlongToPtr( desc32->pPrivateDriverData );
++        desc.pPrivateDriverData = ptr_32to64( desc32->pPrivateDriverData );
+         desc.PrivateDriverDataSize = desc32->PrivateDriverDataSize;
+     }
+     else
+     {
+-        standard32 = UlongToPtr( desc32->pStandardAllocation );
++        standard32 = ptr_32to64( desc32->pStandardAllocation );
+         standard.Type = standard32->Type;
+         standard.ExistingHeapData.Size = standard32->ExistingHeapData.Size;
+         standard.Flags = standard32->Flags;
+@@ -549,7 +549,7 @@
+         desc.PrivateDriverDataSize = desc32->PrivateDriverDataSize;
+     }
+     desc.NumAllocations = desc32->NumAllocations;
+-    allocs32 = UlongToPtr( desc32->pAllocationInfo );
++    allocs32 = ptr_32to64( desc32->pAllocationInfo );
+     desc.pAllocationInfo = NULL;
+     if (desc32->pAllocationInfo && desc32->NumAllocations)
+     {
+@@ -559,8 +559,8 @@
+         for (i = 0; i < desc32->NumAllocations; i++)
+         {
+             desc.pAllocationInfo[i].hAllocation = allocs32->hAllocation;
+-            desc.pAllocationInfo[i].pSystemMem = UlongToPtr( allocs32->pSystemMem );
+-            desc.pAllocationInfo[i].pPrivateDriverData = UlongToPtr( allocs32->pPrivateDriverData );
++            desc.pAllocationInfo[i].pSystemMem = ptr_32to64( allocs32->pSystemMem );
++            desc.pAllocationInfo[i].pPrivateDriverData = ptr_32to64( allocs32->pPrivateDriverData );
+             desc.pAllocationInfo[i].PrivateDriverDataSize = allocs32->PrivateDriverDataSize;
+             desc.pAllocationInfo[i].VidPnSourceId = allocs32->VidPnSourceId;
+             desc.pAllocationInfo[i].Flags.Value = allocs32->Flags.Value;
+@@ -640,16 +640,16 @@
+     desc.hDevice = desc32->hDevice;
+     desc.hResource = desc32->hResource;
+     desc.hGlobalShare = desc32->hGlobalShare;
+-    desc.pPrivateRuntimeData = UlongToPtr( desc32->pPrivateRuntimeData );
++    desc.pPrivateRuntimeData = ptr_32to64( desc32->pPrivateRuntimeData );
+     desc.PrivateRuntimeDataSize = desc32->PrivateRuntimeDataSize;
+     if (!desc32->Flags.StandardAllocation)
+     {
+-        desc.pPrivateDriverData = UlongToPtr( desc32->pPrivateDriverData );
++        desc.pPrivateDriverData = ptr_32to64( desc32->pPrivateDriverData );
+         desc.PrivateDriverDataSize = desc32->PrivateDriverDataSize;
+     }
+     else
+     {
+-        standard32 = UlongToPtr( desc32->pStandardAllocation );
++        standard32 = ptr_32to64( desc32->pStandardAllocation );
+         standard.Type = standard32->Type;
+         standard.ExistingHeapData.Size = standard32->ExistingHeapData.Size;
+         standard.Flags = standard32->Flags;
+@@ -658,7 +658,7 @@
+         desc.PrivateDriverDataSize = desc32->PrivateDriverDataSize;
+     }
+     desc.NumAllocations = desc32->NumAllocations;
+-    allocs32 = UlongToPtr( desc32->pAllocationInfo2 );
++    allocs32 = ptr_32to64( desc32->pAllocationInfo2 );
+     desc.pAllocationInfo2 = NULL;
+     if (desc32->pAllocationInfo2 && desc32->NumAllocations)
+     {
+@@ -668,8 +668,8 @@
+         for (i = 0; i < desc32->NumAllocations; i++)
+         {
+             desc.pAllocationInfo2[i].hAllocation = allocs32->hAllocation;
+-            desc.pAllocationInfo2[i].pSystemMem = UlongToPtr( allocs32->pSystemMem );
+-            desc.pAllocationInfo2[i].pPrivateDriverData = UlongToPtr( allocs32->pPrivateDriverData );
++            desc.pAllocationInfo2[i].pSystemMem = ptr_32to64( allocs32->pSystemMem );
++            desc.pAllocationInfo2[i].pPrivateDriverData = ptr_32to64( allocs32->pPrivateDriverData );
+             desc.pAllocationInfo2[i].PrivateDriverDataSize = allocs32->PrivateDriverDataSize;
+             desc.pAllocationInfo2[i].VidPnSourceId = allocs32->VidPnSourceId;
+             desc.pAllocationInfo2[i].Flags.Value = allocs32->Flags.Value;
+@@ -709,13 +709,13 @@
+     NTSTATUS status;
+ 
+     if (!desc32) return STATUS_INVALID_PARAMETER;
+-    desc.pMemory = UlongToPtr( desc32->pMemory );
++    desc.pMemory = ptr_32to64( desc32->pMemory );
+     desc.Format = desc32->Format;
+     desc.Width = desc32->Width;
+     desc.Height = desc32->Height;
+     desc.Pitch = desc32->Pitch;
+     desc.hDeviceDc = UlongToHandle( desc32->hDeviceDc );
+-    desc.pColorTable = UlongToPtr( desc32->pColorTable );
++    desc.pColorTable = ptr_32to64( desc32->pColorTable );
+     desc.hDc = UlongToHandle( desc32->hDc );
+     desc.hBitmap = UlongToHandle( desc32->hBitmap );
+ 
+@@ -749,11 +749,11 @@
+     desc.hAdapter = desc32->hAdapter;
+     desc.hDevice = desc32->hDevice;
+     desc.Flags = desc32->Flags;
+-    desc.pCommandBuffer = UlongToPtr( desc32->pCommandBuffer );
++    desc.pCommandBuffer = ptr_32to64( desc32->pCommandBuffer );
+     desc.CommandBufferSize = desc32->CommandBufferSize;
+-    desc.pAllocationList = UlongToPtr( desc32->pAllocationList );
++    desc.pAllocationList = ptr_32to64( desc32->pAllocationList );
+     desc.AllocationListSize = desc32->AllocationListSize;
+-    desc.pPatchLocationList = UlongToPtr( desc32->pPatchLocationList );
++    desc.pPatchLocationList = ptr_32to64( desc32->pPatchLocationList );
+     desc.PatchLocationListSize = desc32->PatchLocationListSize;
+     if (!(status = NtGdiDdDDICreateDevice( &desc )))
+         desc32->hDevice = desc.hDevice;
+@@ -785,7 +785,7 @@
      desc.InitialValue = desc32->InitialValue;
      desc.hSharedHandle = desc32->hSharedHandle;
      desc.hKeyedMutex = desc32->hKeyedMutex;
@@ -5714,7 +5926,7 @@
      desc.PrivateRuntimeDataSize = desc32->PrivateRuntimeDataSize;
      desc.Flags = desc32->Flags;
      status = NtGdiDdDDICreateKeyedMutex2( &desc );
-@@ -827,7 +827,7 @@ NTSTATUS WINAPI wow64_NtGdiDdDDIDestroyAllocation( UINT *args )
+@@ -827,7 +827,7 @@
  
      desc.hDevice = desc32->hDevice;
      desc.hResource = desc32->hResource;
@@ -5723,7 +5935,7 @@
      desc.AllocationCount = desc32->AllocationCount;
      return NtGdiDdDDIDestroyAllocation( &desc );
  }
-@@ -846,7 +846,7 @@ NTSTATUS WINAPI wow64_NtGdiDdDDIDestroyAllocation2( UINT *args )
+@@ -846,7 +846,7 @@
  
      desc.hDevice = desc32->hDevice;
      desc.hResource = desc32->hResource;
@@ -5732,9 +5944,248 @@
      desc.AllocationCount = desc32->AllocationCount;
      desc.Flags = desc32->Flags;
      return NtGdiDdDDIDestroyAllocation2( &desc );
+@@ -907,7 +907,7 @@
+     if (!desc32) return STATUS_INVALID_PARAMETER;
+ 
+     desc.NumAdapters = desc32->NumAdapters;
+-    desc.pAdapters = UlongToPtr( desc32->pAdapters );
++    desc.pAdapters = ptr_32to64( desc32->pAdapters );
+ 
+     status = NtGdiDdDDIEnumAdapters2( &desc );
+ 
+@@ -935,7 +935,7 @@
+     desc.hDevice = desc32->hDevice;
+     desc.Type = desc32->Type;
+     desc.Flags = desc32->Flags;
+-    desc.pPrivateDriverData = UlongToPtr( desc32->pPrivateDriverData );
++    desc.pPrivateDriverData = ptr_32to64( desc32->pPrivateDriverData );
+     desc.PrivateDriverDataSize = desc32->PrivateDriverDataSize;
+     desc.hContext = desc32->hContext;
+ 
+@@ -954,7 +954,7 @@
+     NTSTATUS status;
+ 
+     if (!desc32) return STATUS_INVALID_PARAMETER;
+-    desc.pDeviceName = UlongToPtr( desc32->pDeviceName );
++    desc.pDeviceName = ptr_32to64( desc32->pDeviceName );
+     desc.hAdapter = desc32->hAdapter;
+     desc.AdapterLuid = desc32->AdapterLuid;
+ 
+@@ -1021,7 +1021,7 @@
+ 
+     desc.hSharedHandle = desc32->hSharedHandle;
+     desc.hKeyedMutex = desc32->hKeyedMutex;
+-    desc.pPrivateRuntimeData = UlongToPtr( desc32->pPrivateRuntimeData );
++    desc.pPrivateRuntimeData = ptr_32to64( desc32->pPrivateRuntimeData );
+     desc.PrivateRuntimeDataSize = desc32->PrivateRuntimeDataSize;
+     status = NtGdiDdDDIOpenKeyedMutex2( &desc );
+     desc32->hKeyedMutex = desc.hKeyedMutex;
+@@ -1042,7 +1042,7 @@
+ 
+     desc.hNtHandle = UlongToHandle( desc32->hNtHandle );
+     desc.hKeyedMutex = desc32->hKeyedMutex;
+-    desc.pPrivateRuntimeData = UlongToPtr( desc32->pPrivateRuntimeData );
++    desc.pPrivateRuntimeData = ptr_32to64( desc32->pPrivateRuntimeData );
+     desc.PrivateRuntimeDataSize = desc32->PrivateRuntimeDataSize;
+     status = NtGdiDdDDIOpenKeyedMutexFromNtHandle( &desc );
+     desc32->hKeyedMutex = desc.hKeyedMutex;
+@@ -1062,7 +1062,7 @@
+     NTSTATUS status;
+ 
+     desc.dwDesiredAccess = desc32->dwDesiredAccess;
+-    desc.pObjAttrib = objattr_32to64( &attr, UlongToPtr( desc32->pObjAttrib ) );
++    desc.pObjAttrib = objattr_32to64( &attr, ptr_32to64( desc32->pObjAttrib ) );
+     desc.hNtHandle = UlongToHandle( desc32->hNtHandle );
+     status = NtGdiDdDDIOpenNtHandleFromName( &desc );
+     desc32->hNtHandle = HandleToUlong( desc.hNtHandle );
+@@ -1098,7 +1098,7 @@
+     desc.hDevice = desc32->hDevice;
+     desc.hGlobalShare = desc32->hGlobalShare;
+     desc.NumAllocations = desc32->NumAllocations;
+-    allocs32 = UlongToPtr( desc32->pOpenAllocationInfo );
++    allocs32 = ptr_32to64( desc32->pOpenAllocationInfo );
+     desc.pOpenAllocationInfo = NULL;
+     if (desc32->pOpenAllocationInfo && desc32->NumAllocations)
+     {
+@@ -1108,16 +1108,16 @@
+         for (i = 0; i < desc32->NumAllocations; i++)
+         {
+             desc.pOpenAllocationInfo[i].hAllocation = allocs32->hAllocation;
+-            desc.pOpenAllocationInfo[i].pPrivateDriverData = UlongToPtr( allocs32->pPrivateDriverData );
++            desc.pOpenAllocationInfo[i].pPrivateDriverData = ptr_32to64( allocs32->pPrivateDriverData );
+             desc.pOpenAllocationInfo[i].PrivateDriverDataSize = allocs32->PrivateDriverDataSize;
+         }
+     }
+     desc.PrivateRuntimeDataSize = desc32->PrivateRuntimeDataSize;
+-    desc.pPrivateRuntimeData = UlongToPtr( desc32->pPrivateRuntimeData );
++    desc.pPrivateRuntimeData = ptr_32to64( desc32->pPrivateRuntimeData );
+     desc.ResourcePrivateDriverDataSize = desc32->ResourcePrivateDriverDataSize;
+-    desc.pResourcePrivateDriverData = UlongToPtr( desc32->pResourcePrivateDriverData );
++    desc.pResourcePrivateDriverData = ptr_32to64( desc32->pResourcePrivateDriverData );
+     desc.TotalPrivateDriverDataBufferSize = desc32->TotalPrivateDriverDataBufferSize;
+-    desc.pTotalPrivateDriverDataBuffer = UlongToPtr( desc32->pTotalPrivateDriverDataBuffer );
++    desc.pTotalPrivateDriverDataBuffer = ptr_32to64( desc32->pTotalPrivateDriverDataBuffer );
+     desc.hResource = desc32->hResource;
+ 
+     status = NtGdiDdDDIOpenResource( &desc );
+@@ -1162,7 +1162,7 @@
+     desc.hDevice = desc32->hDevice;
+     desc.hGlobalShare = desc32->hGlobalShare;
+     desc.NumAllocations = desc32->NumAllocations;
+-    allocs32 = UlongToPtr( desc32->pOpenAllocationInfo2 );
++    allocs32 = ptr_32to64( desc32->pOpenAllocationInfo2 );
+     desc.pOpenAllocationInfo2 = NULL;
+     if (desc32->pOpenAllocationInfo2 && desc32->NumAllocations)
+     {
+@@ -1172,17 +1172,17 @@
+         for (i = 0; i < desc32->NumAllocations; i++)
+         {
+             desc.pOpenAllocationInfo2[i].hAllocation = allocs32->hAllocation;
+-            desc.pOpenAllocationInfo2[i].pPrivateDriverData = UlongToPtr( allocs32->pPrivateDriverData );
++            desc.pOpenAllocationInfo2[i].pPrivateDriverData = ptr_32to64( allocs32->pPrivateDriverData );
+             desc.pOpenAllocationInfo2[i].PrivateDriverDataSize = allocs32->PrivateDriverDataSize;
+             desc.pOpenAllocationInfo2[i].GpuVirtualAddress = allocs32->GpuVirtualAddress;
+         }
+     }
+     desc.PrivateRuntimeDataSize = desc32->PrivateRuntimeDataSize;
+-    desc.pPrivateRuntimeData = UlongToPtr( desc32->pPrivateRuntimeData );
++    desc.pPrivateRuntimeData = ptr_32to64( desc32->pPrivateRuntimeData );
+     desc.ResourcePrivateDriverDataSize = desc32->ResourcePrivateDriverDataSize;
+-    desc.pResourcePrivateDriverData = UlongToPtr( desc32->pResourcePrivateDriverData );
++    desc.pResourcePrivateDriverData = ptr_32to64( desc32->pResourcePrivateDriverData );
+     desc.TotalPrivateDriverDataBufferSize = desc32->TotalPrivateDriverDataBufferSize;
+-    desc.pTotalPrivateDriverDataBuffer = UlongToPtr( desc32->pTotalPrivateDriverDataBuffer );
++    desc.pTotalPrivateDriverDataBuffer = ptr_32to64( desc32->pTotalPrivateDriverDataBuffer );
+     desc.hResource = desc32->hResource;
+ 
+     status = NtGdiDdDDIOpenResource2( &desc );
+@@ -1232,7 +1232,7 @@
+     desc.hDevice = desc32->hDevice;
+     desc.hNtHandle = UlongToHandle( desc32->hNtHandle );
+     desc.NumAllocations = desc32->NumAllocations;
+-    allocs32 = UlongToPtr( desc32->pOpenAllocationInfo2 );
++    allocs32 = ptr_32to64( desc32->pOpenAllocationInfo2 );
+     desc.pOpenAllocationInfo2 = NULL;
+     if (desc32->pOpenAllocationInfo2 && desc32->NumAllocations)
+     {
+@@ -1242,18 +1242,18 @@
+         for (i = 0; i < desc32->NumAllocations; i++)
+         {
+             desc.pOpenAllocationInfo2[i].hAllocation = allocs32->hAllocation;
+-            desc.pOpenAllocationInfo2[i].pPrivateDriverData = UlongToPtr( allocs32->pPrivateDriverData );
++            desc.pOpenAllocationInfo2[i].pPrivateDriverData = ptr_32to64( allocs32->pPrivateDriverData );
+             desc.pOpenAllocationInfo2[i].PrivateDriverDataSize = allocs32->PrivateDriverDataSize;
+             desc.pOpenAllocationInfo2[i].GpuVirtualAddress = allocs32->GpuVirtualAddress;
+         }
+     }
+     desc.PrivateRuntimeDataSize = desc32->PrivateRuntimeDataSize;
+-    desc.pPrivateRuntimeData = UlongToPtr( desc32->pPrivateRuntimeData );
++    desc.pPrivateRuntimeData = ptr_32to64( desc32->pPrivateRuntimeData );
+     desc.ResourcePrivateDriverDataSize = desc32->ResourcePrivateDriverDataSize;
+-    desc.pResourcePrivateDriverData = UlongToPtr( desc32->pResourcePrivateDriverData );
++    desc.pResourcePrivateDriverData = ptr_32to64( desc32->pResourcePrivateDriverData );
+     desc.TotalPrivateDriverDataBufferSize = desc32->TotalPrivateDriverDataBufferSize;
+-    desc.pTotalPrivateDriverDataBuffer = UlongToPtr( desc32->pTotalPrivateDriverDataBuffer );
+-    desc.pKeyedMutexPrivateRuntimeData = UlongToPtr( desc32->pKeyedMutexPrivateRuntimeData );
++    desc.pTotalPrivateDriverDataBuffer = ptr_32to64( desc32->pTotalPrivateDriverDataBuffer );
++    desc.pKeyedMutexPrivateRuntimeData = ptr_32to64( desc32->pKeyedMutexPrivateRuntimeData );
+     desc.KeyedMutexPrivateRuntimeDataSize = desc32->KeyedMutexPrivateRuntimeDataSize;
+     desc.hResource = desc32->hResource;
+     desc.hKeyedMutex = desc32->hKeyedMutex;
+@@ -1319,7 +1319,7 @@
+     desc.Flags = desc32->Flags;
+     desc.hSyncObject = desc32->hSyncObject;
+     desc.MonitoredFence.EngineAffinity = desc32->MonitoredFence.EngineAffinity;
+-    desc.MonitoredFence.FenceValueCPUVirtualAddress = UlongToPtr( desc32->MonitoredFence.FenceValueCPUVirtualAddress );
++    desc.MonitoredFence.FenceValueCPUVirtualAddress = ptr_32to64( desc32->MonitoredFence.FenceValueCPUVirtualAddress );
+     desc.MonitoredFence.FenceValueGPUVirtualAddress = desc32->MonitoredFence.FenceValueGPUVirtualAddress;
+ 
+     status = NtGdiDdDDIOpenSyncObjectFromNtHandle2( &desc );
+@@ -1342,7 +1342,7 @@
+     NTSTATUS status;
+ 
+     desc.dwDesiredAccess = desc32->dwDesiredAccess;
+-    desc.pObjAttrib = objattr_32to64( &attr, UlongToPtr( desc32->pObjAttrib ) );
++    desc.pObjAttrib = objattr_32to64( &attr, ptr_32to64( desc32->pObjAttrib ) );
+     desc.hNtHandle = UlongToHandle( desc32->hNtHandle );
+     status = NtGdiDdDDIOpenSyncObjectNtHandleFromName( &desc );
+     desc32->hNtHandle = HandleToUlong( desc.hNtHandle );
+@@ -1370,7 +1370,7 @@
+ 
+     desc.hAdapter = desc32->hAdapter;
+     desc.Type = desc32->Type;
+-    desc.pPrivateDriverData = UlongToPtr( desc32->pPrivateDriverData );
++    desc.pPrivateDriverData = ptr_32to64( desc32->pPrivateDriverData );
+     desc.PrivateDriverDataSize = desc32->PrivateDriverDataSize;
+ 
+     return NtGdiDdDDIQueryAdapterInfo( &desc );
+@@ -1393,7 +1393,7 @@
+ 
+     desc.hDevice = desc32->hDevice;
+     desc.hGlobalShare = desc32->hGlobalShare;
+-    desc.pPrivateRuntimeData = UlongToPtr( desc32->pPrivateRuntimeData );
++    desc.pPrivateRuntimeData = ptr_32to64( desc32->pPrivateRuntimeData );
+     desc.PrivateRuntimeDataSize = desc32->PrivateRuntimeDataSize;
+     desc.TotalPrivateDriverDataSize = desc32->TotalPrivateDriverDataSize;
+     desc.ResourcePrivateDriverDataSize = desc32->ResourcePrivateDriverDataSize;
+@@ -1423,7 +1423,7 @@
+ 
+     desc.hDevice = desc32->hDevice;
+     desc.hNtHandle = UlongToHandle( desc32->hNtHandle );
+-    desc.pPrivateRuntimeData = UlongToPtr( desc32->pPrivateRuntimeData );
++    desc.pPrivateRuntimeData = ptr_32to64( desc32->pPrivateRuntimeData );
+     desc.PrivateRuntimeDataSize = desc32->PrivateRuntimeDataSize;
+     desc.TotalPrivateDriverDataSize = desc32->TotalPrivateDriverDataSize;
+     desc.ResourcePrivateDriverDataSize = desc32->ResourcePrivateDriverDataSize;
+@@ -1529,8 +1529,8 @@
+ 
+     if (!desc32) return STATUS_INVALID_PARAMETER;
+     desc.hDevice = desc32->hDevice;
+-    desc.pType = UlongToPtr( desc32->pType );
+-    desc.pVidPnSourceId = UlongToPtr( desc32->pVidPnSourceId );
++    desc.pType = ptr_32to64( desc32->pType );
++    desc.pVidPnSourceId = ptr_32to64( desc32->pVidPnSourceId );
+     desc.VidPnSourceCount = desc32->VidPnSourceCount;
+ 
+     return NtGdiDdDDISetVidPnSourceOwner( &desc );
+@@ -1568,8 +1568,8 @@
+     if (!desc32) return STATUS_INVALID_PARAMETER;
+     desc.hDevice = desc32->hDevice;
+     desc.ObjectCount = desc32->ObjectCount;
+-    desc.ObjectHandleArray = UlongToPtr( desc32->ObjectHandleArray );
+-    desc.FenceValueArray = UlongToPtr( desc32->FenceValueArray );
++    desc.ObjectHandleArray = ptr_32to64( desc32->ObjectHandleArray );
++    desc.FenceValueArray = ptr_32to64( desc32->FenceValueArray );
+     desc.Flags = desc32->Flags;
+ 
+     return NtGdiDdDDISignalSynchronizationObjectFromCpu( &desc );
+@@ -1591,8 +1591,8 @@
+     if (!desc32) return STATUS_INVALID_PARAMETER;
+     desc.hDevice = desc32->hDevice;
+     desc.ObjectCount = desc32->ObjectCount;
+-    desc.ObjectHandleArray = UlongToPtr( desc32->ObjectHandleArray );
+-    desc.FenceValueArray = UlongToPtr( desc32->FenceValueArray );
++    desc.ObjectHandleArray = ptr_32to64( desc32->ObjectHandleArray );
++    desc.FenceValueArray = ptr_32to64( desc32->FenceValueArray );
+     desc.hAsyncEvent = UlongToHandle( desc32->hAsyncEvent );
+     desc.Flags = desc32->Flags;
+ 
+@@ -2929,9 +2929,9 @@
+ 
+     DOCINFOW doc;
+     doc.cbSize = sizeof(doc);
+-    doc.lpszDocName = UlongToPtr( doc32->lpszDocName );
+-    doc.lpszOutput = UlongToPtr( doc32->lpszOutput );
+-    doc.lpszDatatype = UlongToPtr( doc32->lpszDatatype );
++    doc.lpszDocName = ptr_32to64( doc32->lpszDocName );
++    doc.lpszOutput = ptr_32to64( doc32->lpszOutput );
++    doc.lpszDatatype = ptr_32to64( doc32->lpszDatatype );
+     doc.fwType = doc32->fwType;
+ 
+     return NtGdiStartDoc( hdc, &doc, banding, job );
 --- aa/dlls/wow64win/syscall.c
 +++ bb/dlls/wow64win/syscall.c
-@@ -68,10 +68,20 @@ const SYSTEM_SERVICE_TABLE sdwhwin32 =
+@@ -68,10 +68,20 @@
  };
  
  
@@ -5755,9 +6206,469 @@
 +#endif
      return TRUE;
  }
+--- aa/dlls/wow64win/user.c
++++ bb/dlls/wow64win/user.c
+@@ -501,8 +501,10 @@
+     to->x              = from->x;
+     to->style          = from->style;
+     to->dwExStyle      = from->dwExStyle;
+-    to->lpszName       = UlongToPtr( from->lpszName );
+-    to->lpszClass      = UlongToPtr( from->lpszClass );
++    /* win32u lit ces deux chaines ; lpCreateParams et hInstance, non : ce sont
++     * des valeurs que l'invite retrouvera telles quelles. */
++    to->lpszName       = ptr_32to64( from->lpszName );
++    to->lpszClass      = ptr_32to64( from->lpszClass );
+ }
+ 
+ static void createstruct_64to32( const CREATESTRUCTW *from, CREATESTRUCT32 *to )
+@@ -1683,11 +1685,11 @@
+             {
+                 int bar;
+                 ULONG info;
+-            } *info32 = UlongToPtr( param );
++            } *info32 = ptr_32to64( param );
+             struct get_scroll_info_params info;
+ 
+             info.bar = info32->bar;
+-            info.info = UlongToPtr( info32->info );
++            info.info = ptr_32to64( info32->info );
+             return NtUserCallHwndParam( hwnd, (UINT_PTR)&info, code );
+         }
+ 
+@@ -1697,10 +1699,10 @@
+             {
+                 ULONG rect;
+                 UINT dpi;
+-            } *params32 = UlongToPtr( param );
++            } *params32 = ptr_32to64( param );
+             struct get_window_rects_params params;
+ 
+-            params.rect = UlongToPtr( params32->rect );
++            params.rect = ptr_32to64( params32->rect );
+             params.dpi = params32->dpi;
+             return NtUserCallHwndParam( hwnd, (UINT_PTR)&params, code );
+         }
+@@ -1711,10 +1713,10 @@
+             {
+                 ULONG rect;
+                 UINT dpi;
+-            } *params32 = UlongToPtr( param );
++            } *params32 = ptr_32to64( param );
+             struct get_window_rects_params params;
+ 
+-            params.rect = UlongToPtr( params32->rect );
++            params.rect = ptr_32to64( params32->rect );
+             params.dpi = params32->dpi;
+             return NtUserCallHwndParam( hwnd, (UINT_PTR)&params, code );
+         }
+@@ -1727,11 +1729,11 @@
+                 ULONG points;
+                 UINT count;
+                 UINT dpi;
+-            } *params32 = UlongToPtr( param );
++            } *params32 = ptr_32to64( param );
+             struct map_window_points_params params;
+ 
+             params.hwnd_to = LongToHandle( params32->hwnd_to );
+-            params.points = UlongToPtr( params32->points );
++            params.points = ptr_32to64( params32->points );
+             params.count = params32->count;
+             params.dpi = params32->dpi;
+             return NtUserCallHwndParam( hwnd, (UINT_PTR)&params, code );
+@@ -1744,11 +1746,11 @@
+                 UINT flags;
+                 ULONG input;
+                 ULONG lparam;
+-            } *params32 = UlongToPtr( param );
++            } *params32 = ptr_32to64( param );
+             struct send_hardware_input_params params;
+ 
+             params.flags = params32->flags;
+-            params.input = UlongToPtr( params32->input );
++            params.input = ptr_32to64( params32->input );
+             params.lparam = params32->lparam;
+             return NtUserCallHwndParam( hwnd, (UINT_PTR)&params, code );
+         }
+@@ -1792,6 +1794,17 @@
+     ULONG_PTR arg = get_ulong( &args );
+     ULONG code = get_ulong( &args );
+ 
++    switch (code)
++    {
++    /* Ces codes-la passent un tampon que win32u remplit ; les autres passent un
++     * entier ou une poignee, qu'il ne faut surtout pas rebaser. */
++    case NtUserCallOneParam_GetPrimaryMonitorRect:
++    case NtUserCallOneParam_GetVirtualScreenRect:
++    case NtUserCallOneParam_GetAsyncKeyboardState:
++    case NtUserCallOneParam_D3DKMTOpenAdapterFromGdiDisplayName:
++        return NtUserCallOneParam( (UINT_PTR)ptr_32to64( arg ), code );
++    }
++
+     return NtUserCallOneParam( arg, code );
+ }
+ 
+@@ -1805,7 +1818,7 @@
+     {
+     case NtUserCallTwoParam_GetMenuInfo:
+         {
+-            MENUINFO32 *info32 = UlongToPtr( arg2 );
++            MENUINFO32 *info32 = ptr_32to64( arg2 );
+             MENUINFO info;
+ 
+             if (!info32 || info32->cbSize != sizeof(*info32))
+@@ -1825,6 +1838,22 @@
+             return TRUE;
+         }
+ 
++    /* arg2 designe un tampon de l'invite ; arg1 reste une poignee. */
++    case NtUserCallTwoParam_GetMonitorInfo:
++    case NtUserCallTwoParam_SetIMECompositionRect:
++        return NtUserCallTwoParam( arg1, (UINT_PTR)ptr_32to64( arg2 ), code );
++
++    /* Ici c'est arg1 qui est le tampon. */
++    case NtUserCallTwoParam_MonitorFromRect:
++    case NtUserCallTwoParam_GetVirtualScreenRect:
++        return NtUserCallTwoParam( (UINT_PTR)ptr_32to64( arg1 ), arg2, code );
++
++    /* Les deux : le rectangle a ajuster et la structure de parametres, dont la
++     * disposition est deja la meme des deux cotes. */
++    case NtUserCallTwoParam_AdjustWindowRect:
++        return NtUserCallTwoParam( (UINT_PTR)ptr_32to64( arg1 ),
++                                   (UINT_PTR)ptr_32to64( arg2 ), code );
++
+     default:
+         return NtUserCallTwoParam( arg1, arg2, code );
+     }
+@@ -1978,10 +2007,12 @@
+     int height = get_ulong( &args );
+     HWND parent = get_handle( &args );
+     HMENU menu = get_handle( &args );
+-    HINSTANCE instance = get_ptr( &args );
+-    void *params = get_ptr( &args );
++    HINSTANCE instance = get_guest_ptr( &args );
++    void *params = get_guest_ptr( &args );
+     DWORD flags = get_ulong( &args );
+-    HINSTANCE client_instance = get_ptr( &args );
++    HINSTANCE client_instance = get_guest_ptr( &args );
++    /* win32u lit cette chaine ; le rappel vers l'invite la tronquera, ce qui la
++     * ramene chez lui. */
+     const WCHAR *class = get_ptr( &args );
+     BOOL ansi = get_ulong( &args );
+ 
+@@ -2379,7 +2410,7 @@
+ 
+ NTSTATUS WINAPI wow64_NtUserGetClassInfoEx( UINT *args )
+ {
+-    HINSTANCE instance = get_ptr( &args );
++    HINSTANCE instance = get_guest_ptr( &args );
+     UNICODE_STRING32 *name32 = get_ptr( &args );
+     WNDCLASSEXW32 *wc32 = get_ptr( &args );
+     ULONG *menu_name32 = get_ptr( &args );
+@@ -2443,7 +2474,7 @@
+     struct get_clipboard_params params;
+     HANDLE ret;
+ 
+-    params.data = UlongToPtr( params32->data );
++    params.data = ptr_32to64( params32->data );
+     params.size = params32->size;
+     params.data_size = params32->data_size;
+     params.data_only = params32->data_only;
+@@ -3402,7 +3433,7 @@
+     const ntuser_client_func_ptr *procsA = get_ptr( &args );
+     const ntuser_client_func_ptr *procsW = get_ptr( &args );
+     const ntuser_client_func_ptr *workers = get_ptr( &args );
+-    HINSTANCE user_module = get_ptr( &args );
++    HINSTANCE user_module = get_guest_ptr( &args );
+ 
+     return NtUserInitializeClientPfnArrays( procsA, procsW, workers, user_module );
+ }
+@@ -3531,13 +3562,33 @@
+ {
+     LRESULT ret = 0;
+ 
++    /*
++     * Les messages dont la structure differe entre 32 et 64 bits sont convertis
++     * un par un plus bas. Ceux-ci ont la meme disposition -- il ne leur manque
++     * que l'adresse, puisque la fenetre de l'invite est ailleurs chez l'hote.
++     */
+     switch (msg)
+     {
++    case WM_GETMINMAXINFO:
++    case WM_SETTEXT:
++    case WM_GETTEXT:
++    case WM_ASKCBFORMATNAME:
++    case WM_SIZING:
++    case WM_MOVING:
++    case WM_STYLECHANGING:
++    case WM_STYLECHANGED:
++    case WM_GETDLGCODE:
++        lparam = (LPARAM)ptr_32to64( lparam );
++        break;
++    }
++
++    switch (msg)
++    {
+     case WM_NCCREATE:
+     case WM_CREATE:
+         if (lparam)
+         {
+-            CREATESTRUCT32 *cs32 = (void *)lparam;
++            CREATESTRUCT32 *cs32 = ptr_32to64( lparam );
+             CREATESTRUCTW cs;
+ 
+             createstruct_32to64( cs32, &cs );
+@@ -3558,11 +3609,11 @@
+ 
+     case WM_MDICREATE:
+         {
+-            MDICREATESTRUCT32 *cs32 = (void *)lparam;
++            MDICREATESTRUCT32 *cs32 = ptr_32to64( lparam );
+             MDICREATESTRUCTW cs;
+ 
+-            cs.szClass = UlongToPtr( cs32->szClass );
+-            cs.szTitle = UlongToPtr( cs32->szTitle );
++            cs.szClass = ptr_32to64( cs32->szClass );
++            cs.szTitle = ptr_32to64( cs32->szTitle );
+             cs.hOwner = LongToHandle( cs32->hOwner );
+             cs.x = cs32->x;
+             cs.y = cs32->y;
+@@ -3577,7 +3628,7 @@
+     case WM_WINDOWPOSCHANGING:
+     case WM_WINDOWPOSCHANGED:
+         {
+-            WINDOWPOS32 *winpos32 = (void *)lparam;
++            WINDOWPOS32 *winpos32 = ptr_32to64( lparam );
+             WINDOWPOS winpos;
+ 
+             winpos_32to64( &winpos, winpos32 );
+@@ -3589,7 +3640,7 @@
+     case WM_NCCALCSIZE:
+         if (wparam)
+         {
+-            NCCALCSIZE_PARAMS32 *params32 = (void *)lparam;
++            NCCALCSIZE_PARAMS32 *params32 = ptr_32to64( lparam );
+             NCCALCSIZE_PARAMS params;
+             WINDOWPOS winpos;
+ 
+@@ -3597,19 +3648,21 @@
+             params.rgrc[1] = params32->rgrc[1];
+             params.rgrc[2] = params32->rgrc[2];
+             params.lppos = &winpos;
+-            winpos_32to64( &winpos, UlongToPtr( params32->lppos ));
++            winpos_32to64( &winpos, ptr_32to64( params32->lppos ));
+             ret = NtUserMessageCall( hwnd, msg, wparam, (LPARAM)&params, result_info, type, ansi );
+             params32->rgrc[0] = params.rgrc[0];
+             params32->rgrc[1] = params.rgrc[1];
+             params32->rgrc[2] = params.rgrc[2];
+-            winpos_64to32( &winpos, UlongToPtr( params32->lppos ));
++            winpos_64to32( &winpos, ptr_32to64( params32->lppos ));
+             return ret;
+         }
+-        return NtUserMessageCall( hwnd, msg, wparam, lparam, result_info, type, ansi );
++        /* wparam nul : lparam designe un simple RECT */
++        return NtUserMessageCall( hwnd, msg, wparam, (LPARAM)ptr_32to64( lparam ),
++                                  result_info, type, ansi );
+ 
+     case WM_COMPAREITEM:
+         {
+-            COMPAREITEMSTRUCT32 *cis32 = (void *)lparam;
++            COMPAREITEMSTRUCT32 *cis32 = ptr_32to64( lparam );
+             COMPAREITEMSTRUCT cis;
+ 
+             cis.CtlType    = cis32->CtlType;
+@@ -3625,7 +3678,7 @@
+ 
+     case WM_DELETEITEM:
+         {
+-            DELETEITEMSTRUCT32 *dis32 = (void *)lparam;
++            DELETEITEMSTRUCT32 *dis32 = ptr_32to64( lparam );
+             DELETEITEMSTRUCT dis;
+ 
+             dis.CtlType  = dis32->CtlType;
+@@ -3638,7 +3691,7 @@
+ 
+     case WM_MEASUREITEM:
+         {
+-            MEASUREITEMSTRUCT32 *mis32 = (void *)lparam;
++            MEASUREITEMSTRUCT32 *mis32 = ptr_32to64( lparam );
+             MEASUREITEMSTRUCT mis;
+ 
+             mis.CtlType    = mis32->CtlType;
+@@ -3659,7 +3712,7 @@
+ 
+     case WM_DRAWITEM:
+         {
+-            DRAWITEMSTRUCT32 *dis32 = (void *)lparam;
++            DRAWITEMSTRUCT32 *dis32 = ptr_32to64( lparam );
+             DRAWITEMSTRUCT dis;
+ 
+             dis.CtlType       = dis32->CtlType;
+@@ -3679,18 +3732,18 @@
+ 
+     case WM_COPYDATA:
+         {
+-            COPYDATASTRUCT32 *cds32 = (void *)lparam;
++            COPYDATASTRUCT32 *cds32 = ptr_32to64( lparam );
+             COPYDATASTRUCT cds;
+ 
+             cds.dwData = cds32->dwData;
+             cds.cbData = cds32->cbData;
+-            cds.lpData = UlongToPtr( cds32->lpData );
++            cds.lpData = ptr_32to64( cds32->lpData );
+             return NtUserMessageCall( hwnd, msg, wparam, (LPARAM)&cds, result_info, type, ansi );
+         }
+ 
+     case WM_HELP:
+         {
+-            HELPINFO32 *hi32 = (void *)lparam;
++            HELPINFO32 *hi32 = ptr_32to64( lparam );
+             HELPINFO hi64;
+ 
+             hi64.cbSize       = sizeof(hi64);
+@@ -3705,7 +3758,7 @@
+     case WM_GETDLGCODE:
+         if (lparam)
+         {
+-            MSG32 *msg32 = (MSG32 *)lparam;
++            MSG32 *msg32 = ptr_32to64( lparam );
+             MSG msg64;
+ 
+             return NtUserMessageCall( hwnd, msg, wparam, (LPARAM)msg_32to64( &msg64, msg32 ),
+@@ -3715,7 +3768,7 @@
+ 
+     case WM_NEXTMENU:
+         {
+-            MDINEXTMENU32 *next32 = (void *)lparam;
++            MDINEXTMENU32 *next32 = ptr_32to64( lparam );
+             MDINEXTMENU next;
+ 
+             next.hmenuIn   = LongToHandle( next32->hmenuIn );
+@@ -3857,9 +3910,9 @@
+             struct ime_driver_call_params params;
+             if (msg == WINE_IME_POST_UPDATE) ERR( "Unexpected WINE_IME_POST_UPDATE message\n" );
+             params.himc = UlongToPtr( params32->himc );
+-            params.state = UlongToPtr( params32->state );
+-            params.compstr = UlongToPtr( params32->compstr );
+-            params.key_consumed = UlongToPtr( params32->key_consumed );
++            params.state = ptr_32to64( params32->state );
++            params.compstr = ptr_32to64( params32->compstr );
++            params.key_consumed = ptr_32to64( params32->key_consumed );
+             return NtUserMessageCall( hwnd, msg, wparam, lparam, &params, type, ansi );
+         }
+ 
+@@ -3938,7 +3991,7 @@
+             } *params32 = result_info;
+             struct post_dde_message_call_params params;
+ 
+-            params.ptr = UlongToPtr(params32->ptr);
++            params.ptr = ptr_32to64(params32->ptr);
+             params.size = params32->size;
+             params.dest_tid = params32->dest_tid;
+             return NtUserMessageCall( hwnd, msg, wparam, lparam, &params, type, ansi );
+@@ -4442,7 +4495,7 @@
+     } *params32 = get_ptr( &args );
+ 
+     struct set_clipboard_params params;
+-    params.data       = UlongToPtr( params32->data );
++    params.data       = ptr_32to64( params32->data );
+     params.size       = params32->size;
+     params.cache_only = params32->cache_only;
+     params.seqno      = params32->seqno;
+@@ -4488,7 +4541,7 @@
+         ULONG alpha;
+         ULONG mask;
+         POINT hotspot;
+-    } *frames32 = UlongToPtr( desc32->frames );
++    } *frames32 = ptr_32to64( desc32->frames );
+ 
+     UNICODE_STRING module, res_name;
+     struct cursoricon_desc desc;
+@@ -4500,9 +4553,9 @@
+     desc.num_steps = desc32->num_steps;
+     desc.num_frames = desc32->num_frames;
+     desc.delay = desc32->delay;
+-    desc.frame_seq = UlongToPtr( desc32->frame_seq );
+-    desc.frame_rates = UlongToPtr( desc32->frame_rates );
+-    desc.rsrc = UlongToPtr( desc32->rsrc );
++    desc.frame_seq = ptr_32to64( desc32->frame_seq );
++    desc.frame_rates = ptr_32to64( desc32->frame_rates );
++    desc.rsrc = ptr_32to64( desc32->rsrc );
+ 
+     for (i = 0; i < num_frames; i++)
+     {
+@@ -4722,9 +4775,9 @@
+ {
+     DWORD event_min = get_ulong( &args );
+     DWORD event_max = get_ulong( &args );
+-    HMODULE inst = get_ptr( &args );
++    HMODULE inst = get_guest_ptr( &args );
+     UNICODE_STRING32 *module32 = get_ptr( &args );
+-    WINEVENTPROC proc = get_ptr(&args );
++    WINEVENTPROC proc = get_guest_ptr( &args );
+     DWORD pid = get_ulong( &args );
+     DWORD tid = get_ulong( &args );
+     DWORD flags = get_ulong( &args );
+@@ -4821,11 +4874,11 @@
+ 
+ NTSTATUS WINAPI wow64_NtUserSetWindowsHookEx( UINT *args )
+ {
+-    HINSTANCE inst = get_ptr( &args );
++    HINSTANCE inst = get_guest_ptr( &args );
+     UNICODE_STRING32 *module32 = get_ptr( &args );
+     DWORD tid = get_ulong( &args );
+     INT id = get_ulong( &args );
+-    HOOKPROC proc = get_ptr( &args );
++    HOOKPROC proc = get_guest_ptr( &args );
+     BOOL ansi = get_ulong( &args );
+     UNICODE_STRING module;
+     HHOOK ret;
+@@ -5057,7 +5110,14 @@
+             info.hbmpChecked = UlongToHandle( info32->hbmpChecked );
+             info.hbmpUnchecked = UlongToHandle( info32->hbmpUnchecked );
+             info.dwItemData = info32->dwItemData;
+-            info.dwTypeData = UlongToPtr( info32->dwTypeData );
++            /* dwTypeData ne porte une chaine que pour un element textuel ;
++             * sinon c'est une donnee opaque, qui doit rester telle quelle. */
++            if ((info32->fMask & MIIM_STRING) ||
++                ((info32->fMask & MIIM_TYPE) &&
++                 !(info32->fType & (MFT_BITMAP | MFT_OWNERDRAW | MFT_SEPARATOR))))
++                info.dwTypeData = ptr_32to64( info32->dwTypeData );
++            else
++                info.dwTypeData = UlongToPtr( info32->dwTypeData );
+             info.cch = info32->cch;
+             info.hbmpItem = UlongToHandle( info32->hbmpItem );
+             break;
+@@ -5066,7 +5126,8 @@
+             break;
+         case NtUserGetMenuItemInfoA:
+         case NtUserGetMenuItemInfoW:
+-            info.dwTypeData = UlongToPtr( info32->dwTypeData );
++            /* tampon fourni par l'invite, que l'hote remplit */
++            info.dwTypeData = ptr_32to64( info32->dwTypeData );
+             info.cch = info32->cch;
+             break;
+         }
+@@ -5089,7 +5150,7 @@
+                 info32->hbmpItem = HandleToUlong( info.hbmpItem );
+             if (info.fMask & (MIIM_TYPE | MIIM_STRING))
+             {
+-                info32->dwTypeData = (UINT_PTR)info.dwTypeData;
++                info32->dwTypeData = PtrToUlong( info.dwTypeData );
+                 info32->cch = info.cch;
+             }
+             if (info.fMask & MIIM_STATE) info32->fState = info.fState;
+@@ -5207,7 +5268,7 @@
+ NTSTATUS WINAPI wow64_NtUserUnregisterClass( UINT *args )
+ {
+     UNICODE_STRING32 *name32 = get_ptr( &args );
+-    HINSTANCE instance = get_ptr( &args );
++    HINSTANCE instance = get_guest_ptr( &args );
+     ULONG *menu_name32 = get_ptr( &args );
+ 
+     struct client_menu_name *menu_name;
 --- aa/dlls/wow64win/wow64win_private.h
 +++ bb/dlls/wow64win/wow64win_private.h
-@@ -47,14 +47,32 @@ typedef struct
+@@ -47,14 +47,43 @@
      ULONG SecurityQualityOfService;
  } OBJECT_ATTRIBUTES32;
  
@@ -5784,6 +6695,17 @@
 -static inline void *get_ptr( UINT **args ) { return ULongToPtr( *(*args)++ ); }
 +static inline void *get_ptr( UINT **args ) { return ptr_32to64( *(*args)++ ); }
  
++/*
++ * Une valeur que l'hote ne deref erence pas : poignee de module, parametre qui
++ * sera rendu tel quel a un rappel de l'invite, chaine que seul l'invite relira.
++ * Elle reste dans le monde de l'invite.
++ *
++ * S'y tromper ne fait pas une faute mais une comparaison qui echoue : une
++ * classe enregistree avec une HINSTANCE et cherchee avec une autre n'existe
++ * plus, et CreateWindowEx rend ERROR_CLASS_DOES_NOT_EXIST.
++ */
++static inline void *get_guest_ptr( UINT **args ) { return ULongToPtr( *(*args)++ ); }
++
  static inline void **addr_32to64( void **addr, ULONG *addr32 )
  {
      if (!addr32) return NULL;
@@ -5792,7 +6714,7 @@
      return addr;
  }
  
-@@ -80,7 +98,7 @@ static inline UNICODE_STRING *unicode_str_32to64( UNICODE_STRING *str, const UNI
+@@ -80,7 +109,7 @@
      if (!str32) return NULL;
      str->Length = str32->Length;
      str->MaximumLength = str32->MaximumLength;
@@ -5801,7 +6723,7 @@
      return str;
  }
  
-@@ -102,10 +120,10 @@ static inline SECURITY_DESCRIPTOR *secdesc_32to64( SECURITY_DESCRIPTOR *out, con
+@@ -102,10 +131,10 @@
      }
      else
      {
@@ -5816,7 +6738,7 @@
      }
      return out;
  }
-@@ -119,9 +137,9 @@ static inline OBJECT_ATTRIBUTES *objattr_32to64( struct object_attr64 *out, cons
+@@ -119,9 +148,9 @@
      out->attr.Length = sizeof(out->attr);
      out->attr.RootDirectory = LongToHandle( in->RootDirectory );
      out->attr.Attributes = in->Attributes;
@@ -5831,7 +6753,7 @@
  
 --- aa/include/winnt.h
 +++ bb/include/winnt.h
-@@ -2596,6 +2596,27 @@ static FORCEINLINE struct _TEB * WINAPI NtCurrentTeb(void)
+@@ -2596,6 +2596,27 @@
  {
      return (struct _TEB *)__readfsdword( 0x18 );
  }

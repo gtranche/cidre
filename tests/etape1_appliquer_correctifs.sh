@@ -75,6 +75,9 @@ if git -C "$R/src/wine" diff --name-only | grep -qx "configure.ac"; then
    (cd "$R/src/wine" && autoconf -f >/dev/null 2>&1; rm -rf configure~ autom4te.cache)
 fi
 appliquer wine11 $(serie_wine11)
+if git -C "$R/src/wine11" diff --name-only | grep -qx "configure.ac"; then
+   (cd "$R/src/wine11" && autoconf -f >/dev/null 2>&1; rm -rf configure~ autom4te.cache)
+fi
 appliquer vkd3d-proton $(serie_vkd3d_proton)
 appliquer dxvk $(serie_dxvk)
 

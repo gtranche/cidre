@@ -17245,3 +17245,135 @@ Le verrou USER est tenu au moment d'un rappel vers l'invité. C'est le prochain 
 
 Non-régression après tout ça : `h32` écrit sa ligne, `h32gdi` aussi, `hello64` tourne, `banc_x64`
 donne **84,4 ms** pour 20 millions de tours, `probe_d3d11_draw` rastérise son triangle.
+
+## 249. Le verrou USER, la géométrie nulle, et un jeu 32 bits qui affiche une fenêtre
+
+### L'assertion n'était pas un problème de verrou
+
+`err:system:user_check_not_lock BUG: holding USER lock` laissait croire à un verrou mal rendu. En
+instrumentant `user_lock`/`user_unlock` pour tracer qui tenait quoi, la réponse est venue de
+l'autre côté : personne ne tenait le verrou trop longtemps, c'est une **faute** qui sautait
+par-dessus le `user_unlock`.
+
+Deux causes, toutes deux du même genre — un pointeur de l'invité 32 bits passé tel quel à l'hôte :
+
+1. `set_menu_item_info` déréférençait `MENUITEMINFOW.dwTypeData` sans le rebaser. `WS_SYSMENU`
+   construit le menu système à la création de la fenêtre, donc toute fenêtre ordinaire passait là.
+   Le champ ne porte une chaîne que pour un élément textuel ; sinon c'est une donnée opaque. D'où
+   un rebasage conditionnel sur `MIIM_STRING` / `MFT_*`.
+2. La classe était enregistrée avec une `HINSTANCE` rebasée et cherchée avec l'originale, ou
+   l'inverse : `CreateWindowEx` rendait `ERROR_CLASS_DOES_NOT_EXIST`. `get_guest_ptr()` sépare
+   maintenant les deux cas, et le commentaire au-dessus dit pourquoi : **se tromper de monde sur
+   une valeur opaque ne fait pas une faute, mais une comparaison qui échoue.**
+
+Les sondes ont toutes été retirées ensuite ; `win32u.so` et `ntdll.so` réinstallés par `mv`.
+
+### La fenêtre existait mais n'avait aucune géométrie
+
+`tests/h32win.c` créait une fenêtre demandée en `10,10 320x240` et rendait :
+
+```
+CreateWindowEx = 0001006C (1400)
+client = 0x0
+fenetre = 0,0 0x0
+```
+
+`GetClientRect` et `GetWindowRect` réussissaient l'un comme l'autre. Le réflexe était de suspecter
+le thunk `wow64_NtUserCreateWindowEx` ; la mesure a dit autre chose. Le même programme recompilé en
+x86_64 (`tests/h64win.c`, dix lignes de `sed`) donnait :
+
+```
+client = 32855x0
+fenetre = 10,10 32863x32778
+```
+
+Faux aussi, et **le x86_64 ne passe pas par wow64**. Donc deux bogues distincts, et le premier
+n'avait rien à voir avec les 32 bits.
+
+#### Bogue 1 : le préfixe était empoisonné
+
+```
+SM_CXFRAME=4 SM_CYCAPTION=32770
+```
+
+32770, c'est `iCaptionHeight + 1` avec `iCaptionHeight = 32769 = 0x8001`. Et 0x8001, c'est
+`2 + 0x7FFF` : `normalize_nonclientmetrics()` fait `max(valeur, 2 + tm.tmHeight)`, et une exécution
+ancienne — du temps où `font_init` mourait sur les pointeurs NLS du PEB64 — avait obtenu
+`tmHeight = 32767`. Wine a ensuite **réécrit ce résultat dans le registre** :
+
+```
+[Control Panel\\Desktop\\WindowMetrics]
+"CaptionHeight"="32769"
+"MenuHeight"="32769"
+"SmCaptionHeight"="32769"
+```
+
+Le code était réparé depuis longtemps ; l'état, non. Remis aux valeurs d'origine en twips (`-270`,
+`-270`, `-225`), et le x86_64 rend enfin `fenetre = 10,10 320x240`, `client = 312x213`.
+
+La leçon : **un préfixe survit aux corrections du code.** Une exécution cassée peut y graver son
+résultat, et un binaire réparé continue de paraître cassé. Vérifier le registre avant le code.
+
+#### Bogue 2 : `UlongToPtr` partout dans wow64win
+
+Restait le 32 bits, toujours à zéro. Une sonde des métriques a découpé le problème :
+
+```
+SM_CXSCREEN=1728 SM_CYSCREEN=1117         <- bon
+bureau = 4199552,917504 -4199544x-55308   <- faux
+AdjustWindowRectEx = -1073741819           <- 0xC0000005, donc une faute
+```
+
+Ce qui marche prend un entier, ce qui échoue prend un `RECT *`. La cause est structurelle :
+**wow64win amont n'a aucune conversion de pointeurs**, parce que chez lui l'invité et l'hôte
+partagent les mêmes adresses. Chaque `UlongToPtr` y est donc un bogue latent dans notre monde, où
+l'hôte voit `base + A`. Il y en avait 87 : 34 dans `user.c`, 53 dans `gdi.c`.
+
+Le tri s'est fait valeur par valeur, et il n'est pas mécanique :
+
+- **rebasés** : les tampons que win32u lit ou remplit — les `RECT` de `GetWindowRect` /
+  `GetClientRect`, `SCROLLINFO`, les points de `MapWindowPoints`, `INPUT`, `MENUINFO`, les données
+  du presse-papiers, les descripteurs D3DKMT (les 53 de `gdi.c` en bloc), les chaînes de `DOCINFO` ;
+- **laissés dans le monde de l'invité** : `lpCreateParams`, `hInstance`, `lpfnWndProc`, le
+  `callback` de `SendMessageCallback`, `hwndTarget` — tout ce que l'hôte ne fait que stocker,
+  comparer, ou rendre tel quel à un rappel.
+
+Et les trois répartiteurs `NtUserCallOneParam` / `TwoParam` / `HwndParam`, qui passaient leurs
+arguments bruts, ont désormais un `switch` par code : `GetPrimaryMonitorRect`,
+`GetVirtualScreenRect`, `GetAsyncKeyboardState`, `MonitorFromRect`, `GetMonitorInfo`,
+`SetIMECompositionRect`, `AdjustWindowRect`. `GetDialogProc` reste brut — c'est une procédure de
+l'invité. C'était là qu'`AdjustWindowRectEx` fautait.
+
+Après quoi les deux mondes rendent exactement la même chose :
+
+```
+client = 312x213
+fenetre = 10,10 320x240
+```
+
+### Dead Cells affiche une fenêtre
+
+`deadcells.exe` est un PE32 i386. Il charge maintenant toute la pile, passe `SteamAPI_Init`, et
+**crée une vraie fenêtre**, visible côté macOS comme un processus `wine` au premier plan. Le
+contenu est une boîte de dialogue de Steam :
+
+```
+fenetre pid=248 classe=#32770  titre="Steam Error"
+    enfant  classe=Static  texte="Application load error 3:0000065432"
+```
+
+Plus une seule exception, plus un seul appel non implémenté en soixante secondes. Ce qui reste est
+la vérification de propriété de Steam, c'est-à-dire le pont `lsteamclient` — un autre sujet que le
+portage 32 bits.
+
+Non-régression : `h32` écrit sa ligne, `h32gdi` aussi, `h32win` rend sa géométrie, `hello64`
+tourne, `banc_x64` donne **84,0 ms** pour 20 millions de tours (bande §241 : 83,8–84,4 ms),
+`probe_d3d11_draw` rastérise son triangle.
+
+### Un détail de mesure, pour mémoire
+
+`AdjustWindowRectEx` semblait rendre un rectangle inchangé dans les deux mondes. C'était la sonde :
+l'appel était le premier argument d'un `printf` dont les suivants lisaient le rectangle, et
+l'ordre d'évaluation des arguments n'est pas spécifié — clang lit de droite à gauche, donc le
+rectangle était lu **avant** l'appel. Une mesure fausse ressemble à un bogue ; celle-ci a failli
+coûter une demi-heure.
