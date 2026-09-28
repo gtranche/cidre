@@ -17570,3 +17570,58 @@ aussi pour les bancs CPU. Après nettoyage : **84,2 — 84,7 ms**, dans la bande
 
 Non-régression : `h32`, `h32gdi`, `h32win`, `h32fil`, `h32seh`, `h32lea`, `hello64`,
 `probe_d3d11_draw` (« le triangle est rastérisé »).
+
+## 252. Le préfixe se réamorce enfin, et où DREDGE bute encore
+
+### `wineboot -u` peuple syswow64, et les inscriptions COM 32 bits avec
+
+Unity s'arrêtait en silence sur :
+
+```
+err:ole:com_get_class_object no class object {bcde0395-e52f-467c-8e3d-c4579291692e}
+```
+
+C'est `MMDeviceEnumerator`, l'énumérateur audio. La CLSID est pourtant bien dans `system.reg` —
+sous `Software\Classes\CLSID`. Mais un processus 32 bits, lui, lit
+`Software\Classes\Wow6432Node\CLSID` : la redirection de registre WoW64. Cette clé existait, vide.
+
+La cause est ancienne et notée depuis §247 : la passe 32 bits de `wineboot --init` ne s'était
+jamais exécutée, faute d'invité 32 bits en état de marche. Elle marche maintenant. Un simple
+`wineboot -u` sur le préfixe existant :
+
+- écrit les inscriptions COM 32 bits (`Wow6432Node\CLSID`) ;
+- peuple `syswow64` — **858 fichiers**, là où `tests/peupler_syswow64.sh` en copiait une poignée à
+  la main.
+
+`tests/h32audio.c` le vérifie : `CoCreateInstance(MMDeviceEnumerator) = 00000000`. Le contournement
+manuel n'a plus lieu d'être.
+
+**La leçon :** un préfixe amorcé par une pile incomplète le reste. Quand la pile progresse, il faut
+le réamorcer — le code réparé ne répare pas l'état.
+
+### Ce qui reste
+
+DREDGE charge Unity, DXVK, l'audio, crée sa fenêtre `UnityWndClass`, tourne avec 52 fils. Il meurt
+ensuite sur une lecture à une adresse **entièrement libre** :
+
+```
+SONDE region 9E1A4000 : base=9E1A4000 alloc=00000000 taille=61d5c000 etat=10000(MEM_FREE) prot=1
+```
+
+L'adresse change d'une exécution à l'autre — 0x16234000, 0x7E184000, 0x7C994000, 0x9E1A4000 — mais
+ses seize bits de poids faible valent **toujours 0x4000**. Neuf fois sur neuf : ce n'est pas un
+hasard, c'est une construction. 0x4000, c'est aussi la taille de page de macOS.
+
+Deux fausses pistes écartées en chemin, qui valent d'être notées :
+
+- **L'EIP rapporté ne désigne pas l'instruction fautive.** Il tombe chaque fois sur un `ret`, ce
+  qui laissait croire à un ESP corrompu. La sonde de contexte dans `call_user_exception_dispatcher`
+  a montré un ESP parfaitement sain : FEX reconstruit le RIP au dernier point connu du bloc, pas à
+  l'instruction. Ne pas désassembler autour d'un EIP reconstruit sans le vérifier.
+- **La pile hôte des fils wow64 ne fait que 256 Kio** et déborde pour de vrai — `stack overflow
+  16 bytes` avec `FEX_SMCCHECKS=full`. La quadrupler ne change rien à ce bogue-ci ; la
+  modification a donc été annulée, mais l'observation reste.
+
+Non-régression : `banc_x64` à **83,8 ms** (trois mesures identiques, bas de la bande §241),
+`probe_d3d11_draw` rastérise, et les dix programmes i386 passent — `h32`, `h32gdi`, `h32win`,
+`h32fil`, `h32seh`, `h32lea`, `h32cxx`, `h32pile`, `h32croi`, `h32audio`.
