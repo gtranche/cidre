@@ -17960,3 +17960,69 @@ prochain fil.
 
 Non-régression : vingt-trois programmes i386 passent, `probe_d3d11_draw` rastérise, `banc_x64`
 donne **83,8 ms** trois fois de suite — le bas exact de la bande §241.
+
+## 257. Le pointeur aberrant de Mono : deux familles, et une seule est un bogue
+
+Remonter demandait d'abord de savoir **où** la faute tombe vraiment. Trois pistes ont dû être
+écartées avant d'y arriver, et elles valent d'être notées parce qu'elles reviennent sans cesse :
+
+- **Le RIP de l'invité n'est pas celui de l'instruction fautive.** Il tombait sur le `ret $8` d'un
+  bouchon d'appel système ; le dump du code et de la pile le confirme — un `ret` lit `[esp]`, et
+  `esp` était parfaitement valide. Inutile de désassembler autour d'un RIP reconstruit.
+- **`eax = 0x101` n'était pas un numéro d'appel système** mais `STATUS_ALERTED`, la valeur de
+  retour. Le fil venait d'être alerté ; c'est ce qui mettait le doigt sur le chemin des APC.
+- **L'adresse rapportée à l'invité était tronquée à 32 bits.** `EXCEPTION_RECORD32` ne porte que
+  des `ULONG` ; la vraie cible tient sur 64 bits, et c'est elle qui parle.
+
+Une sonde dans le gestionnaire de signal de l'hôte, filtrée sur les adresses hors de la fenêtre de
+l'invité, donne enfin l'instruction exacte :
+
+```
+SONDE haute addr=0x7fffbcefb008 pc=0x6ffff9296cd4 instr=8b081137 f94006e8 eb02011f
+```
+
+soit `add x23, x9, x8, lsl #4` puis `ldr x8, [x23, #8]` — et le symbole, dans `xtajit.dll`, est
+**`FEXCore::LookupCache::FindBlock`**.
+
+### Ce qui n'est pas un bogue
+
+Le cache de recherche de FEX est une table de 152 Mio **réservée et engagée à la demande** : FEX
+note l'intervalle par `MarkOvercommitRange`, et son gestionnaire de faute engage la page. Une sonde
+le confirme :
+
+```
+SONDE surengagement : 7fffbcefb008 DANS [7fffb46f0000,7fffbdef0000)
+```
+
+Sur une exécution entière, six fautes de cette famille, toutes rattrapées, aucune exception rendue
+à l'invité. **Les adresses en `0x7fff_xxxxxxxx` sont le fonctionnement normal de FEX.** Une demi-
+journée de suspicion pour un mécanisme qui marche : la leçon est de vérifier qu'une anomalie
+apparente n'est pas un mécanisme normal avant de la poursuivre.
+
+### Ce qui en est un
+
+En comparant les deux chemins qui combinent la base de la fenêtre avec une adresse, le contraste
+saute aux yeux. Du côté de l'IR, `RebaseGuest32` efface les bits hauts d'abord, **avec la raison
+écrite à côté** :
+
+```c
+/* Les bits hauts sont effaces d'abord : un appelant peut avoir demande
+ * AllowUpperGarbage, et le « or » les prendrait pour de l'adresse. */
+return IREmit->_Or(i64Bit, Constant(Guest32Base), IREmit->_Bfe(i64Bit, 32, 0, Addr));
+```
+
+Les chemins rapides du JIT, eux, ne le faisaient pas tous. `Push` et `PushTwo` s'en tirent par
+accident — leur `sub` est en 32 bits, ce qui efface les bits hauts sur ARM. `Pop` et sa variante
+par paire combinaient le registre d'adresse **tel quel**. Deux instructions de plus, et la règle
+est la même partout.
+
+### Ce qui reste
+
+Il subsiste une seconde famille d'adresses, en `0x7ff3_xxxxxxxx`, que le suivi de surengagement ne
+connaît pas et qui arrive donc jusqu'à l'invité — c'est elle qui amorce la cascade du §256. Trois
+exécutions donnent le même compte : trois exceptions rendues à l'invité, un déclenchement du
+garde-fou, zéro débordement. Le pointeur n'appartient à aucun intervalle de FEX ; d'où il vient
+reste à établir.
+
+Non-régression : vingt-deux programmes i386 passent, `probe_d3d11_draw` rastérise, `banc_x64` donne
+**83,8 — 83,9 ms**, dans la bande du §241.

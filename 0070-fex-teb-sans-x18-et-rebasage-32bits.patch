@@ -313,11 +313,10 @@
  
  namespace FEXCore::CPU {
  
-@@ -1471,6 +1472,36 @@
-   auto Src = GetReg(Op->Value);
+@@ -1472,6 +1473,36 @@
    const auto AddrSrc = GetReg(Op->Addr);
    const auto Dst = GetReg(Node);
-+
+ 
 +  if (FEXCore::IR::Guest32Base) {
 +    /*
 +     * Fenetre de l'invite deplacee. Le magasin pre-indexe ne convient pas ici :
@@ -347,14 +346,14 @@
 +    }
 +    return;
 +  }
- 
++
    bool NeedsMoveAfterwards = false;
    if (Dst != AddrSrc) {
-@@ -1556,6 +1587,18 @@
-   auto Src1 = GetReg(Op->Value1);
+     if (Dst == Src) {
+@@ -1557,6 +1588,18 @@
    auto Src2 = GetReg(Op->Value2);
    const auto Dst = GetReg(Op->Addr);
-+
+ 
 +  if (FEXCore::IR::Guest32Base) {
 +    /* Meme raison que Push : le registre est a la fois l'adresse et le SP. */
 +    sub(ARMEmitter::Size::i32Bit, Dst, Dst, 2 * ValueSize);
@@ -366,16 +365,26 @@
 +    }
 +    return;
 +  }
- 
++
    switch (ValueSize) {
    case 4: {
-@@ -1581,6 +1624,20 @@
+     stp<ARMEmitter::IndexType::PRE>(Src1.W(), Src2.W(), Dst, -2 * ValueSize);
+@@ -1581,6 +1624,29 @@
  
    LOGMAN_THROW_A_FMT(Dst != Addr, "Invalid");
  
 +  if (FEXCore::IR::Guest32Base) {
-+    /* Meme raison que pour Push : le registre d'adresse est aussi le SP. */
-+    orr(ARMEmitter::Size::i64Bit, TMP2, Addr.X(), FEXCore::IR::Guest32Base);
++    /*
++     * Meme raison que pour Push : le registre d'adresse est aussi le SP.
++     *
++     * Et il faut effacer les bits hauts avant de combiner la base. Du cote de
++     * l'IR, RebaseGuest32 le fait deja, et pour une raison precise : un
++     * appelant a pu demander AllowUpperGarbage, et le registre 64 bits porte
++     * alors les restes de ce qu'il contenait. Ici le « orr » les gardait, et
++     * l'acces partait vers 0x7fff_xxxxxxxx au lieu de base + adresse.
++     */
++    mov(ARMEmitter::Size::i32Bit, TMP2, Addr);
++    orr(ARMEmitter::Size::i64Bit, TMP2, TMP2, FEXCore::IR::Guest32Base);
 +    switch (Size) {
 +    case 1: ldrb(Dst.W(), TMP2, 0); break;
 +    case 2: ldrh(Dst.W(), TMP2, 0); break;
@@ -390,13 +399,15 @@
    switch (Size) {
    case 1: {
      ldrb<ARMEmitter::IndexType::POST>(Dst.W(), Addr, Size);
-@@ -1618,6 +1675,17 @@
+@@ -1618,6 +1684,19 @@
    }
  
    LOGMAN_THROW_A_FMT(Dst1 != Addr && Dst2 != Addr, "Invalid");
 +
 +  if (FEXCore::IR::Guest32Base) {
-+    orr(ARMEmitter::Size::i64Bit, TMP2, Addr.X(), FEXCore::IR::Guest32Base);
++    /* Effacer les bits hauts avant de combiner la base : voir LoadMem. */
++    mov(ARMEmitter::Size::i32Bit, TMP2, Addr);
++    orr(ARMEmitter::Size::i64Bit, TMP2, TMP2, FEXCore::IR::Guest32Base);
 +    switch (Size) {
 +    case 4: ldp<ARMEmitter::IndexType::OFFSET>(Dst1.W(), Dst2.W(), TMP2, 0); break;
 +    case 8: ldp<ARMEmitter::IndexType::OFFSET>(Dst1.X(), Dst2.X(), TMP2, 0); break;
@@ -916,10 +927,11 @@
  #include "Common/ImageTracker.h"
  #include "Common/InvalidationTracker.h"
  #include "Common/Threads.h"
-@@ -63,6 +64,16 @@
+@@ -62,6 +63,16 @@
+ #include <winternl.h>
  #include <wine/debug.h>
  #include <wine/unixlib.h>
- 
++
 +#ifdef FEX_TEB_SANS_X18
 +namespace FEXCore::IR {
 +extern uint64_t Guest32Base;
@@ -929,10 +941,9 @@
 +using FEX::Windows::ToGuest32;
 +using FEX::Windows::ToHost32;
 +#endif
-+
+ 
  struct TLS {
    enum class Slot : size_t {
-     ENTRY_CONTEXT = WOW64_TLS_MAX_NUMBER - 1,
 @@ -188,10 +199,15 @@
  }
  
@@ -1051,7 +1062,15 @@
  }
  
  NTSTATUS BTCpuGetContext(HANDLE Thread, HANDLE Process, void* Unknown, WOW64_CONTEXT* Context) {
-@@ -810,17 +851,17 @@
+@@ -730,7 +771,6 @@
+ 
+   if (Exception->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
+     const auto FaultAddress = static_cast<uint64_t>(Exception->ExceptionInformation[1]);
+-
+     if (FEX::Windows::CallRetStack::HandleAccessViolation(Thread, FaultAddress, Context->X25)) {
+       return true;
+     }
+@@ -810,17 +850,17 @@
  
  void BTCpuFlushInstructionCache2(const void* Address, SIZE_T Size) {
    std::scoped_lock Lock(ThreadCreationMutex);
@@ -1072,7 +1091,7 @@
  }
  
  void BTCpuNotifyMemoryAlloc(void* Address, SIZE_T Size, ULONG Type, ULONG Prot, BOOL After, ULONG Status) {
-@@ -829,7 +870,7 @@
+@@ -829,7 +869,7 @@
    } else {
      // MEM_RESET(_UNDO) ignores the passed permissions
      if (!Status && !(Type & (MEM_RESET | MEM_RESET_UNDO))) {
@@ -1081,7 +1100,7 @@
      }
      ThreadCreationMutex.unlock();
    }
-@@ -840,7 +881,7 @@
+@@ -840,7 +880,7 @@
      ThreadCreationMutex.lock();
    } else {
      if (!Status) {
@@ -1090,7 +1109,7 @@
      }
      ThreadCreationMutex.unlock();
    }
-@@ -851,7 +892,7 @@
+@@ -851,7 +891,7 @@
      ThreadCreationMutex.lock();
    } else {
      if (!Status) {
@@ -1099,7 +1118,7 @@
      }
      ThreadCreationMutex.unlock();
    }
-@@ -866,7 +907,7 @@
+@@ -866,7 +906,7 @@
  void BTCpuNotifyUnmapViewOfSection(void* Address, BOOL After, ULONG Status) {
    if (!After) {
      ThreadCreationMutex.lock();
@@ -1108,7 +1127,7 @@
      if (Size) {
        HandleImageUnmap(Start, Size);
      }
-@@ -884,7 +925,7 @@
+@@ -884,7 +924,7 @@
    // See arm64ec `BTCpu64NotifyReadFile` for why this like this.
    if (After && Status == STATUS_SUCCESS) {
      std::scoped_lock Lock(ThreadCreationMutex);
