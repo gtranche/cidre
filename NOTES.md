@@ -16942,3 +16942,137 @@ C'est la première fois dans ce portage qu'une hypothèse empire la mesure au li
 inchangée. Utile : ça dit que le suivi d'invalidation vit dans le monde de l'invité, pas dans celui
 de l'hôte, et que la frontière à traduire est ailleurs — probablement là où Wine notifie FEX des
 changements de protection.
+
+## 246. Invités 32 bits : les deux mondes d'adresses, et où l'invité s'arrête
+
+Suite du paragraphe 245. L'invité i386 charge maintenant `ntdll`, `kernel32`, `kernelbase` et
+`ucrtbase`, exécute leurs `DllMain`, atteint l'initialisation du CRT et écrit ses propres messages
+de trace. Il ne va pas jusqu'à `main`. Voici ce qui a été trouvé, dans l'ordre où la boucle des
+fautes les a rendus.
+
+### Le suivi d'exécutabilité de FEX vit chez l'invité, ses appels chez l'hôte
+
+`InvalidationTracker` répond à une seule question : « ai-je le droit de traduire ici ». FEXCore la
+pose avec le RIP de l'invité, donc les intervalles sont indexés **en adresses d'invité**. Mais la
+même classe appelle `VirtualQuery`, `NtProtectVirtualMemory` et `RtlImageNtHeader`, qui ne
+connaissent que l'hôte. Les deux mondes dans une seule classe : chaque site a dû être classé.
+
+L'expérience qui a tranché — trois mesures, même programme :
+
+| intervalles | exceptions émulées |
+| --- | --- |
+| indexés hôte | 1497, faute dès le point d'entrée |
+| moitié hôte, moitié invité | 259 |
+| indexés invité, conversion aux appels Windows | 0 |
+
+`Source/Windows/Common/Guest32.h` porte les quatre conversions (`ToGuest32`, `ToHost32`,
+`HostPtr32`, `InGuest32Window`) ; elles sont l'identité quand `Guest32Base` est nul, donc le chemin
+ARM64EC et Linux ne changent pas d'un octet.
+
+Conséquence : Wine redonne aux rappels `BTCpu*` des adresses d'**hôte** — c'est ce qu'il a, et ce
+dont il a besoin lui-même pour ses propres appels. Les treize `ptr_64to32` posés la veille dans
+`dlls/wow64/virtual.c` ont été retirés : la conversion appartient à FEX, qui seul connaît la base.
+
+### Le décodeur demandait l'exécutabilité avec le pointeur de lecture
+
+`Decoder::PeekByte` calcule `InstStream.InstStream + offset` — le pointeur avec lequel il *lit*,
+donc une adresse d'hôte — et le passe à `CheckRangeExecutable`. En amont tout est en adresses
+d'invité : `EntryPoint`, `RIPToDecode`, `DecodeInst->PC`, les cibles de branchement. Une seule
+soustraction au sommet de `CheckRangeExecutable` suffit, et le cache de plage
+(`ExecutableRangeBase/End`) reste dans le monde de l'invité.
+
+### `lea` rebasé, et la base atterrit dans le RIP
+
+Le plus long à trouver. `LoadSource_WithOpSize` a une branche « donne-moi l'adresse comme valeur »,
+prise quand l'opérande n'est pas à charger. Elle sert au `lea`, mais aussi à **l'opérande registre
+d'un saut indirect** : pour `call *%edx`, `A.Base` est la valeur de `edx` et rien d'autre. Rebaser
+là revient à écrire `base | edx` dans le RIP — et le RIP est lu sur 64 bits, contrairement aux
+registres de l'invité, tronqués à chaque écriture. La sonde le montrait sans ambiguïté :
+
+```
+SONDE compile rip=47BDDDFD0 rax=400000018 rdx=47BDDDFD0 rsp=14FB74
+```
+
+`rdx` porte la base, `rsp` non. `LoadEffectiveAddress` prend donc un paramètre `RebaseGuest`, faux
+pour ce seul site — `IsOperandMem(Operand, true)`.
+
+### Le TEB de l'invité dans sa zone DOS
+
+Les blocs de TEB d'un processus wow64 vont dans la fenêtre pour que le code 32 bits les voie. Avec
+`limit_low = user_space_wow_base` tout court, ils atterrissaient à l'adresse d'invité `0x20000` —
+dans la zone DOS, que l'invité **libère** au démarrage. Le TEB disparaissait, et le premier
+`data->teb->ChpeV2CpuAreaInfo` de `setup_raise_exception` faisait une faute dans le gestionnaire de
+signal, qui refaisait une faute : 100 % de CPU, zéro progression. `vmmap` a donné la réponse en une
+ligne — rien entre `0x400030000` et `0x400040000`. Le plancher est désormais
+`user_space_wow_base + address_space_start`.
+
+### Zéro n'est pas zéro
+
+`InvalidateAlignedInterval` traite une base nulle comme « tout l'espace », convention Windows. Après
+rebasage, l'adresse d'invité `0` est aussi `0` : la libération de la zone DOS effaçait les
+intervalles exécutables de **toutes** les images déjà chargées, et le premier saut suivant donnait
+`NoExec instruction in entry block`. La taille distingue les deux cas — le sentinel arrive avec une
+taille nulle.
+
+### Les bornes se comparent chez l'invité, les pointeurs se déréférencent chez l'hôte
+
+Trois familles de sites, toutes trouvées par la valeur de retour d'un appel système :
+
+| symptôme | cause |
+| --- | --- |
+| `NtQueryVirtualMemory -> c000000d` | `(ULONG_PTR)addr > highest_user_address` sur une adresse déjà rebasée |
+| `NtMapViewOfSection -> c000000d` | `map_image_view` mélangeait un plancher rebasé et un plafond d'invité |
+| `NtMapViewOfSection -> c000000d` | `zero_bits` de `map_section` valait `user_space_wow_limit`, déjà en adresses d'hôte : la section NLS tombait hors de la fenêtre et l'invité n'en voyait qu'une adresse tronquée |
+| `NtQueryAttributesFile -> c0000005` | `ULongToPtr` sur les pointeurs imbriqués d'`OBJECT_ATTRIBUTES32` |
+
+Pour la dernière : quatorze sites dans `wow64_private.h` (`UNICODE_STRING::Buffer`, les quatre
+champs d'un descripteur de sécurité, `ObjectName`, `SecurityQualityOfService`, …) et vingt dans les
+`.c` du même répertoire. `get_ptr()` ne couvre que le premier niveau ; tout ce qui est *dans* une
+structure de l'invité reste à convertir.
+
+### KUSER_SHARED_DATA, et les convertisseurs d'appels unix
+
+Deux pages fixes de plus :
+
+- L'invité lit `KUSER_SHARED_DATA` à `0x7ffe0000`, adresse que macOS interdit à l'hôte — d'où son
+  déplacement à `0x17ffe0000` (paragraphe 48). Il faut la remapper **aussi** à
+  `user_space_wow_base + 0x7ffe0000` : le même `fd` partagé, deux `mmap`.
+- `wow64_wine_dbg_write` et ses voisins de `dlls/ntdll/unix/` convertissent les paramètres 32 bits
+  d'un appel unix. `ULongToPtr(params32->str)` donnait un pointeur d'invité à `write(2, …)`, qui
+  répondait `-1` : **l'invité ne pouvait pas tracer**, ce qui a coûté plusieurs heures d'aveuglement.
+  Avec `ptr_wow32()`, `write` rend 71 et l'invité parle.
+
+### Le piège de construction
+
+`make` tout court reconstruit sans `-DWINE_TEB_SANS_X18` : `NtCurrentTeb()` repasse par `x18`, et
+`wow64.dll` se met à faire `mov x14, x18 ; ldr x24, [x14, #0x28]`. La faute est propre — lecture à
+`0x28` — mais la cause est invisible si on ne relie pas les deux. Toute reconstruction de cet arbre
+passe par :
+
+```
+make aarch64_CFLAGS="-g -O2 -DWINE_TEB_SANS_X18" arm64ec_CFLAGS="-g -O2 -DWINE_TEB_SANS_X18" install
+```
+
+### Ce que ça donne, et où ça s'arrête
+
+| mesure | avant | après |
+| --- | --- | --- |
+| blocs traduits par l'invité | 0 (faute au point d'entrée) | 1923 |
+| appels système de l'invité | 2 | 148 puis plus |
+| modules 32 bits chargés | `ntdll` seul | `ntdll`, `kernel32`, `kernelbase`, `ucrtbase` |
+| trace de l'invité | muette | lisible |
+
+L'invité s'arrête sur une lecture à l'adresse d'invité `5` pendant l'initialisation du CRT, suivie
+d'un saut à `0xC0000005` — la valeur d'un statut utilisée comme adresse de code. C'est le prochain
+fil à tirer.
+
+Non-régression du chemin 64 bits, après tous ces changements : `hello64.exe` écrit
+`bonjour depuis x86_64 emule`, `banc_x64` donne **84,0 ms** pour 20 millions de tours (83,8–84,4 ms
+mesurés au paragraphe 241), et `probe_d3d11_draw` rasterise toujours son triangle.
+
+### Ce qui reste à faire proprement
+
+`wineboot --init` ne peuple pas `syswow64` : le peuplement demande un `rundll32` 32 bits, qui
+demande… `syswow64`. Wine s'en sort sur x86_64 ; ici la création de préfixe rend la main sans avoir
+lancé la passe `Wow64Install`. Pour tester, les DLL factices i386 ont été copiées depuis
+`wine/pfx-wow64`. À reprendre.

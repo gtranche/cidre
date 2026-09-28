@@ -1,9 +1,10 @@
 --- aa/FEXCore/Source/Interface/Core/Addressing.cpp
 +++ bb/FEXCore/Source/Interface/Core/Addressing.cpp
-@@ -7,6 +7,17 @@
+@@ -7,7 +7,19 @@
  
  namespace FEXCore::IR {
  
+-Ref LoadEffectiveAddress(IREmitter* IREmit, const AddressMode& A, IR::OpSize GPRSize, bool AddSegmentBase, bool AllowUpperGarbage) {
 +uint64_t Guest32Base = 0;
 +
 +Ref RebaseGuest32(IREmitter* IREmit, Ref Addr) {
@@ -15,14 +16,16 @@
 +  return IREmit->_Or(OpSize::i64Bit, IREmit->Constant(Guest32Base), IREmit->_Bfe(OpSize::i64Bit, 32, 0, Addr));
 +}
 +
- Ref LoadEffectiveAddress(IREmitter* IREmit, const AddressMode& A, IR::OpSize GPRSize, bool AddSegmentBase, bool AllowUpperGarbage) {
++Ref LoadEffectiveAddress(IREmitter* IREmit, const AddressMode& A, IR::OpSize GPRSize, bool AddSegmentBase, bool AllowUpperGarbage,
++                         bool RebaseGuest) {
    Ref Tmp = A.Base;
  
-@@ -48,6 +59,10 @@
+   if (A.Offset) {
+@@ -48,6 +60,10 @@ Ref LoadEffectiveAddress(IREmitter* IREmit, const AddressMode& A, IR::OpSize GPR
      Tmp = Tmp ? IREmit->Add(GPRSize, Tmp, A.Segment) : A.Segment;
    }
  
-+  if (Guest32Base && GPRSize == OpSize::i32Bit) {
++  if (Guest32Base && RebaseGuest && GPRSize == OpSize::i32Bit) {
 +    return RebaseGuest32(IREmit, Tmp ?: IREmit->Constant(0));
 +  }
 +
@@ -59,9 +62,22 @@
  class IREmitter;
  
  struct AddressMode {
+@@ -21,7 +42,11 @@ struct AddressMode {
+   bool NonTSO;
+ };
+ 
+-Ref LoadEffectiveAddress(IREmitter* IREmit, const AddressMode& A, IR::OpSize GPRSize, bool AddSegmentBase, bool AllowUpperGarbage = false);
++/* RebaseGuest : mettre false quand le resultat n'est pas une adresse mais une
++ * valeur -- l'operande registre d'un saut indirect, par exemple. Le rebasage
++ * mettrait alors la base dans le RIP, qui est lu sur 64 bits. */
++Ref LoadEffectiveAddress(IREmitter* IREmit, const AddressMode& A, IR::OpSize GPRSize, bool AddSegmentBase, bool AllowUpperGarbage = false,
++                         bool RebaseGuest = true);
+ AddressMode SelectAddressMode(IREmitter* IREmit, const AddressMode& A, IR::OpSize GPRSize, bool HostSupportsTSOImm9, bool AtomicTSO,
+                               bool Vector, IR::OpSize AccessSize);
+ 
 --- aa/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.cpp
 +++ bb/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.cpp
-@@ -73,21 +73,37 @@
+@@ -73,21 +73,37 @@ namespace x64 {
      ARMEmitter::Reg::r8, ARMEmitter::Reg::r16, ARMEmitter::Reg::r17,
    };
  
@@ -100,12 +116,10 @@
  
    // All are caller saved
    constexpr std::array<ARMEmitter::VRegister, 16> SRAFPR = {
-@@ -416,7 +432,18 @@
- 
-   // Unmapped register.
+@@ -418,6 +434,17 @@ FEXCore::X86State::X86Reg Arm64Emitter::GetX86RegRelationToARMReg(ARMEmitter::Re
    return FEXCore::X86State::X86Reg::REG_INVALID;
-+}
-+
+ }
+ 
 +#if defined(ARCHITECTURE_arm64ec) && defined(FEX_TEB_SANS_X18)
 +extern "C" uint64_t FEX_TEBSlotOffset = 0;
 +
@@ -114,12 +128,13 @@
 +  // The low three bits carry the CPU number, not part of the pointer.
 +  and_(ARMEmitter::Size::i64Bit, Dst, Dst, ~7ULL);
 +  ldr(Dst, Dst, FEX_TEBSlotOffset);
- }
++}
 +#endif
- 
++
  void Arm64Emitter::LoadConstant(ARMEmitter::Size s, ARMEmitter::Register Reg, uint64_t Constant, PadType Pad, int MaxBytes) {
    bool NOPPad = false;
-@@ -807,7 +834,12 @@
+   if (Pad == PadType::DOPAD) {
+@@ -807,7 +834,12 @@ void Arm64Emitter::FillStaticRegs(FillStaticRegOptions Options) {
  
  #ifdef ARCHITECTURE_arm64ec
    // Load STATE in from the CPU area as x28 is not callee saved in the ARM64EC ABI.
@@ -134,7 +149,7 @@
  
 --- aa/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.h
 +++ bb/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.h
-@@ -87,7 +87,17 @@
+@@ -87,6 +87,16 @@ constexpr size_t CPU_AREA_EMULATOR_STACK_BASE_OFFSET = 0x8;
  constexpr size_t CPU_AREA_EMULATOR_DATA_OFFSET = 0x30;
  
  constexpr uint64_t EC_CODE_BITMAP_MAX_ADDRESS = 1ULL << 47;
@@ -147,12 +162,11 @@
 +// thread-specific slot it stores the TEB in. This is the byte offset of that
 +// slot, set once at process init.
 +extern "C" uint64_t FEX_TEBSlotOffset;
- #endif
 +#endif
+ #endif
  
  // Will force one single instruction block to be generated first if set when entering the JIT filling SRA.
- // FillStaticRegs must preserve this
-@@ -119,6 +129,11 @@
+@@ -119,6 +129,11 @@ public:
    };
    void LoadConstant(ARMEmitter::Size s, ARMEmitter::Register Reg, uint64_t Constant, PadType Pad = PadType::NOPAD, int MaxBytes = 0);
  
@@ -166,7 +180,7 @@
  
 --- aa/FEXCore/Source/Interface/Core/Core.cpp
 +++ bb/FEXCore/Source/Interface/Core/Core.cpp
-@@ -77,8 +77,16 @@
+@@ -77,8 +77,16 @@ $end_info$
  #include <unordered_map>
  #include <utility>
  #include <xxhash.h>
@@ -183,7 +197,7 @@
  ContextImpl::ContextImpl(const FEXCore::HostFeatures& Features)
    : HostFeatures {Features}
    , CPUID {this}
-@@ -515,7 +523,7 @@
+@@ -515,7 +523,7 @@ static void IRDumper(FEXCore::Core::InternalThreadState* Thread, IR::IREmitter*
  }
  
  bool ContextImpl::CheckIfBlockIsCacheable(FEXCore::Core::InternalThreadState& Thread, uint64_t GuestRIP, uint64_t MaxInst) {
@@ -192,7 +206,7 @@
  }
  
  ContextImpl::GenerateIRResult
-@@ -543,7 +551,7 @@
+@@ -543,7 +551,7 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
    }
  
    if (!HasCustomIR) {
@@ -201,7 +215,7 @@
  
      Thread->FrontendDecoder->DecodeLoop(GuestCode);
  
-@@ -642,7 +650,7 @@
+@@ -642,7 +650,7 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
          }
  
          if (Config.SMCChecks == FEXCore::Config::CONFIG_SMC_FULL || Block.ForceFullSMCDetection) {
@@ -212,7 +226,7 @@
            auto Value = FEXCore::Utils::crc32(ExistingCodePtr, DecodedInfo->InstSize);
 --- aa/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
 +++ bb/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
-@@ -150,7 +150,12 @@
+@@ -150,7 +150,12 @@ void Dispatcher::EmitDispatcher() {
    // Clobbers TMP1/2
    // Check the EC code bitmap incase we need to exit the JIT to call into native code.
    ARMEmitter::ForwardLabel l_NotECCode;
@@ -225,7 +239,7 @@
    ldr(TMP1, TMP1, PEB_EC_CODE_BITMAP_OFFSET);
  
    lsr(ARMEmitter::Size::i64Bit, TMP2, RipReg, 18);
-@@ -258,7 +263,12 @@
+@@ -258,7 +263,12 @@ void Dispatcher::EmitDispatcher() {
  #endif
  
  #ifdef ARCHITECTURE_arm64ec
@@ -238,7 +252,7 @@
      LoadConstant(ARMEmitter::Size::i32Bit, TMP1, 1);
      strb(TMP1.W(), TMP2, CPU_AREA_IN_SYSCALL_CALLBACK_OFFSET);
  #endif
-@@ -266,7 +276,12 @@
+@@ -266,7 +276,12 @@ void Dispatcher::EmitDispatcher() {
      Body();
  
  #ifdef ARCHITECTURE_arm64ec
@@ -251,9 +265,31 @@
      strb(ARMEmitter::WReg::zr, TMP2, CPU_AREA_IN_SYSCALL_CALLBACK_OFFSET);
  #endif
  
+--- aa/FEXCore/Source/Interface/Core/Frontend.cpp
++++ bb/FEXCore/Source/Interface/Core/Frontend.cpp
+@@ -7,6 +7,7 @@ $end_info$
+ */
+ 
+ #include "Interface/Context/Context.h"
++#include "Interface/Core/Addressing.h"
+ #include "Interface/Core/Frontend.h"
+ #include "Interface/Core/OpcodeDispatcher.h"
+ #include "Interface/Core/X86Tables/X86Tables.h"
+@@ -89,6 +90,11 @@ Decoder::Decoder(FEXCore::Core::InternalThreadState* Thread)
+ }
+ 
+ bool Decoder::CheckRangeExecutable(uint64_t Address, uint64_t Size) {
++  /* Les appelants passent le pointeur de lecture, c'est-a-dire une adresse de
++   * l'hote ; l'executabilite, elle, se demande en adresses d'invite. Les deux
++   * se confondent partout sauf quand la fenetre 32 bits est deplacee. */
++  Address -= FEXCore::IR::Guest32Base;
++
+   // Check for wraparound
+   if (Address + Size < Address) {
+     return false;
 --- aa/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
 +++ bb/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
-@@ -14,6 +14,7 @@
+@@ -14,6 +14,7 @@ $end_info$
  #include "Interface/IR/RegisterAllocationData.h"
  #include <FEXCore/Utils/CompilerDefs.h>
  #include <FEXCore/Utils/MathUtils.h>
@@ -261,11 +297,10 @@
  
  namespace FEXCore::CPU {
  
-@@ -1471,6 +1472,25 @@
-   auto Src = GetReg(Op->Value);
+@@ -1472,6 +1473,25 @@ DEF_OP(Push) {
    const auto AddrSrc = GetReg(Op->Addr);
    const auto Dst = GetReg(Node);
-+
+ 
 +  if (FEXCore::IR::Guest32Base) {
 +    /*
 +     * Fenetre de l'invite deplacee. Le magasin pre-indexe ne convient pas ici :
@@ -284,10 +319,11 @@
 +    }
 +    return;
 +  }
- 
++
    bool NeedsMoveAfterwards = false;
    if (Dst != AddrSrc) {
-@@ -1557,6 +1577,18 @@
+     if (Dst == Src) {
+@@ -1557,6 +1577,18 @@ DEF_OP(PushTwo) {
    auto Src2 = GetReg(Op->Value2);
    const auto Dst = GetReg(Op->Addr);
  
@@ -306,11 +342,10 @@
    switch (ValueSize) {
    case 4: {
      stp<ARMEmitter::IndexType::PRE>(Src1.W(), Src2.W(), Dst, -2 * ValueSize);
-@@ -1580,6 +1612,20 @@
-   const auto Dst = GetReg(Op->OutValue);
+@@ -1581,6 +1613,20 @@ DEF_OP(Pop) {
  
    LOGMAN_THROW_A_FMT(Dst != Addr, "Invalid");
-+
+ 
 +  if (FEXCore::IR::Guest32Base) {
 +    /* Meme raison que pour Push : le registre d'adresse est aussi le SP. */
 +    orr(ARMEmitter::Size::i64Bit, TMP2, Addr.X(), FEXCore::IR::Guest32Base);
@@ -324,10 +359,11 @@
 +    add(ARMEmitter::Size::i32Bit, Addr, Addr, Size);
 +    return;
 +  }
- 
++
    switch (Size) {
    case 1: {
-@@ -1618,6 +1664,17 @@
+     ldrb<ARMEmitter::IndexType::POST>(Dst.W(), Addr, Size);
+@@ -1618,6 +1664,17 @@ DEF_OP(PopTwo) {
    }
  
    LOGMAN_THROW_A_FMT(Dst1 != Addr && Dst2 != Addr, "Invalid");
@@ -347,7 +383,7 @@
    switch (Size) {
 --- aa/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
 +++ bb/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
-@@ -366,7 +366,12 @@
+@@ -366,7 +366,12 @@ DEF_OP(MonoBackpatcherWrite) {
    }
  
  #ifdef ARCHITECTURE_arm64ec
@@ -360,7 +396,7 @@
    LoadConstant(ARMEmitter::Size::i32Bit, TMP1, 1);
    strb(TMP1.W(), TMP2, CPU_AREA_IN_SYSCALL_CALLBACK_OFFSET);
  #endif
-@@ -379,7 +384,12 @@
+@@ -379,7 +384,12 @@ DEF_OP(MonoBackpatcherWrite) {
    }
  
  #ifdef ARCHITECTURE_arm64ec
@@ -375,7 +411,7 @@
  
 --- aa/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
 +++ bb/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
-@@ -3252,7 +3252,7 @@
+@@ -3252,7 +3252,7 @@ void OpDispatchBuilder::STOSOp(OpcodeArgs) {
  
      Ref Counter = LoadGPRRegister(X86State::REG_RCX);
  
@@ -384,7 +420,7 @@
      StoreGPRRegister(X86State::REG_RCX, Constant(0));
      StoreGPRRegister(X86State::REG_RDI, Result);
    }
-@@ -3286,7 +3286,7 @@
+@@ -3286,7 +3286,7 @@ void OpDispatchBuilder::MOVSOp(OpcodeArgs) {
  
      Ref Result_Src = _AllocateGPR(false);
      Ref Result_Dst = _AllocateGPR(false);
@@ -393,7 +429,7 @@
  
      if (DstSegment) {
        Result_Dst = Sub(OpSize::i64Bit, Result_Dst, DstSegment);
-@@ -3304,13 +3304,13 @@
+@@ -3304,13 +3304,13 @@ void OpDispatchBuilder::MOVSOp(OpcodeArgs) {
      Ref RDI = MakeSegmentAddress(X86State::REG_RDI, 0, X86Tables::DecodeFlags::FLAG_ES_PREFIX, true);
  
      if (CTX->IsMemcpyAtomicTSOEnabled()) {
@@ -411,22 +447,33 @@
      }
  
      RSI = OffsetByDir(RSI, IR::OpSizeToSize(Size));
-@@ -4113,6 +4113,12 @@
-   auto Segment = GetSegment(Flags, DefaultPrefix, Override);
-   if (Segment) {
+@@ -4115,6 +4115,12 @@ Ref OpDispatchBuilder::AppendSegmentOffset(Ref Value, uint32_t Flags, uint32_t D
      Value = Add(std::max(OpSize::i32Bit, std::max(GetOpSize(Value), GetOpSize(Segment))), Value, Segment);
-+  }
-+
+   }
+ 
 +  /* Deuxieme entonnoir d'adresse invite, avec LoadEffectiveAddress. Idempotent,
 +   * donc sans risque quand les deux s'appliquent. */
 +  if (GetGPROpSize() == OpSize::i32Bit) {
 +    Value = IR::RebaseGuest32(this, Value);
++  }
++
+   return Value;
+ }
+ 
+@@ -4489,7 +4495,9 @@ Ref OpDispatchBuilder::LoadSource_WithOpSize(RegClass Class, const X86Tables::De
+       Result = _LoadMemAutoTSO(Class, OpSize, A, Align == OpSize::iInvalid ? OpSize : Align);
+     }
+   } else {
+-    Result = LoadEffectiveAddress(this, A, GetGPROpSize(), false, AllowUpperGarbage);
++    /* Une operande registre n'est pas une adresse : « call *%edx » demande ici la
++     * valeur de edx, et la rebaser la ferait passer telle quelle dans le RIP. */
++    Result = LoadEffectiveAddress(this, A, GetGPROpSize(), false, AllowUpperGarbage, IsOperandMem(Operand, true));
    }
  
-   return Value;
+   if constexpr (Context::BLOCK_DEBUGGING) {
 --- aa/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
 +++ bb/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
-@@ -1510,6 +1510,13 @@
+@@ -1510,6 +1510,13 @@ private:
  #undef OpcodeArgs
  
    Ref AppendSegmentOffset(Ref Value, uint32_t Flags, uint32_t DefaultPrefix = 0, bool Override = false);
@@ -468,7 +515,7 @@
    // __os_arm64x_x64_jump in ARM64EC docs
    // Expects target code address in x9
  .globl DispatchJump
-@@ -16,7 +35,8 @@
+@@ -16,7 +35,8 @@ RetToEntryThunk:
  
  check_target_ec:
    // Check if target is in fact x86 code
@@ -478,7 +525,7 @@
    ldr x16, [x16, #0x368] // PEB->EcCodeBitMap
    lsr x17, x9, #18
    ldr x16, [x16, x17, lsl #3]
-@@ -32,7 +52,8 @@
+@@ -32,7 +52,8 @@ ExitToX64:
    str lr, [sp, #-8]! // Push return address to stack, this will be popped by the x86 RET instr.
  
  enter_jit:
@@ -488,7 +535,7 @@
    mov w16, #1
    strb w16, [x17, #0x0] // ChpeV2CpuAreaInfo->InSimulation
    ldr x16, [x17, #0x40] // ChpeV2CpuAreaInfo->EmulatorData[2] - DispatcherLoopTopEnterEC
-@@ -41,12 +62,14 @@
+@@ -41,12 +62,14 @@ enter_jit:
    // Invoked by KiUserEmulationDispatcher after e.g. an NtContinue to x86 code
  .global BeginSimulation
  BeginSimulation:
@@ -505,7 +552,7 @@
    ldr x16, [x17, #0x48] // ChpeV2CpuAreaInfo->EmulatorData[3] - DispatcherLoopTopEnterECFillSRA
    mov x11, #0 // Zero ENTRY_FILL_SRA_SINGLE_INST_REG to avoid single step
    br x16 // DispatcherLoopTopEnterECFillSRA(SingleInst:x10, CPUArea:x17)
-@@ -59,7 +82,8 @@
+@@ -59,7 +82,8 @@ ExitFunctionEC:
    mrs x17, fpcr
    and x17, x17, #~6 // NEP + AH
    msr fpcr, x17
@@ -517,17 +564,16 @@
    ldr w17, [x17]
 --- aa/Source/Windows/ARM64EC/Module.cpp
 +++ bb/Source/Windows/ARM64EC/Module.cpp
-@@ -578,8 +578,19 @@
-   Context->EFlags = (Context->EFlags & ECValidEFlagsMask) | (StateEFlags & ~ECValidEFlagsMask);
+@@ -579,7 +579,18 @@ extern "C" void SyncThreadContext(CONTEXT* Context) {
    Exception::LoadStateFromECContext(Thread, *Context);
  }
-+
+ 
 +#ifdef FEX_TEB_SANS_X18
 +// Defined in FEXCore's Arm64Emitter and read by Module.S; see Arm64Emitter.h.
 +extern "C" uint64_t FEX_TEBSlotOffset;
 +extern "C" __declspec(dllimport) unsigned int __wine_teb_tsd_key;
 +#endif
- 
++
  NTSTATUS ProcessInit() {
 +#ifdef FEX_TEB_SANS_X18
 +  // Publish the thread-specific slot holding the TEB to the JIT and to Module.S,
@@ -537,23 +583,314 @@
    InitSyscalls();
  
    FEX::Windows::InitCRTProcess();
+--- /dev/null
++++ bb/Source/Windows/Common/Guest32.h
+@@ -0,0 +1,40 @@
++// SPDX-License-Identifier: MIT
++#pragma once
++
++#include <cstdint>
++
++/*
++ * macOS refuse a un processus arm64 toute adresse sous 4 Gio (__PAGEZERO est
++ * le plancher du vm_map, pas une reservation qu'on puisse rendre). La fenetre
++ * 32 bits de l'invite est donc posee ailleurs dans l'espace de l'hote, et deux
++ * mondes cohabitent : FEXCore raisonne en adresses d'invite (RIP, intervalles
++ * executables, caches de code), Windows en adresses d'hote
++ * (NtProtectVirtualMemory, RtlImageNtHeader, VirtualQuery).
++ *
++ * Guest32Base vaut zero partout ailleurs, ou les deux mondes se confondent et
++ * ou toutes les conversions ci-dessous sont l'identite.
++ */
++namespace FEXCore::IR {
++extern uint64_t Guest32Base;
++}
++
++namespace FEX::Windows {
++// Zero reste zero : c'est le pointeur nul, pas une adresse.
++static inline uint64_t ToGuest32(uint64_t HostAddress) {
++  return HostAddress ? HostAddress - FEXCore::IR::Guest32Base : 0;
++}
++
++static inline uint64_t ToHost32(uint64_t GuestAddress) {
++  return GuestAddress ? GuestAddress + FEXCore::IR::Guest32Base : 0;
++}
++
++static inline void* HostPtr32(uint64_t GuestAddress) {
++  return reinterpret_cast<void*>(GuestAddress + FEXCore::IR::Guest32Base);
++}
++
++// Une adresse d'hote appartient-elle a la fenetre de l'invite ?
++static inline bool InGuest32Window(uint64_t HostAddress) {
++  return !FEXCore::IR::Guest32Base ||
++         (HostAddress >= FEXCore::IR::Guest32Base && HostAddress - FEXCore::IR::Guest32Base < 0x100000000ULL);
++}
++} // namespace FEX::Windows
+--- aa/Source/Windows/Common/ImageTracker.cpp
++++ bb/Source/Windows/Common/ImageTracker.cpp
+@@ -25,6 +25,7 @@
+ #include "Handle.h"
+ #include "Module.h"
+ #include "Priv.h"
++#include "Guest32.h"
+ #include "ImageTracker.h"
+ 
+ namespace FEX::Windows {
+@@ -54,20 +55,22 @@ static void LoadImageVolatileMetadata(fextl::set<uint64_t>& VolatileInstructions
+     return;
+   }
+ 
+-  const auto* VolatileMetadata = reinterpret_cast<IMAGE_VOLATILE_METADATA*>(LoadConfig->VolatileMetadataPointer);
++  /* Les VA inscrites dans une image 32 bits sont tronquees a 32 bits par le
++   * chargeur : ce sont des adresses d'invite. Les lire demande l'hote. */
++  const auto* VolatileMetadata = reinterpret_cast<IMAGE_VOLATILE_METADATA*>(ToHost32(LoadConfig->VolatileMetadataPointer));
+   if (!VolatileMetadata || Address + VolatileMetadata->VolatileAccessTable + VolatileMetadata->VolatileAccessTableSize >= EndAddress ||
+       Address + VolatileMetadata->VolatileInfoRangeTable + VolatileMetadata->VolatileInfoRangeTableSize >= EndAddress) {
+     return;
+   }
+ 
+-  const auto* VolatileAccessTableBegin = reinterpret_cast<IMAGE_VOLATILE_RVA_METADATA*>(Address + VolatileMetadata->VolatileAccessTable);
++  const auto* VolatileAccessTableBegin = reinterpret_cast<IMAGE_VOLATILE_RVA_METADATA*>(ToHost32(Address) + VolatileMetadata->VolatileAccessTable);
+   const auto* VolatileAccessTableEnd =
+     VolatileAccessTableBegin + (VolatileMetadata->VolatileAccessTableSize / sizeof(IMAGE_VOLATILE_RVA_METADATA));
+   for (auto It = VolatileAccessTableBegin; It != VolatileAccessTableEnd; It++) {
+     VolatileInstructions.emplace(Address + It->Rva);
+   }
+ 
+-  const auto* VolatileInfoRangeTableBegin = reinterpret_cast<IMAGE_VOLATILE_RANGE_METADATA*>(Address + VolatileMetadata->VolatileInfoRangeTable);
++  const auto* VolatileInfoRangeTableBegin = reinterpret_cast<IMAGE_VOLATILE_RANGE_METADATA*>(ToHost32(Address) + VolatileMetadata->VolatileInfoRangeTable);
+   const auto* VolatileInfoRangeTableEnd =
+     VolatileInfoRangeTableBegin + (VolatileMetadata->VolatileInfoRangeTableSize / sizeof(IMAGE_VOLATILE_RANGE_METADATA));
+   for (auto It = VolatileInfoRangeTableBegin; It != VolatileInfoRangeTableEnd; It++) {
+@@ -127,13 +130,16 @@ ImageTracker::MappedImageInfo::MappedImageInfo(std::string_view Path, uint64_t A
+ FEXCore::ExecutableFileSectionInfo ImageTracker::HandleImageMap(std::string_view Path, uint64_t Address, bool MainImage) {
+   std::scoped_lock Lock(CTX.GetCodeInvalidationMutex());
+   const fextl::string ModuleName {BaseName(Path)};
+-  const auto Module = reinterpret_cast<HMODULE>(Address);
++  /* Address est dans le monde de l'invite, comme tout ce que ce suivi indexe.
++   * Lire l'image elle-meme demande en revanche l'adresse de l'hote. */
++  const uint64_t HostAddress = ToHost32(Address);
++  const auto Module = reinterpret_cast<HMODULE>(HostAddress);
+   auto* Nt = reinterpret_cast<ArchImageNtHeaders*>(RtlImageNtHeader(Module));
+   MappedImageInfo* ImageInfo = nullptr;
+   {
+     auto Relocations = [&]() {
+       if (IsGeneratingCache) {
+-        return LoadImageRelocations(Nt, Address);
++        return LoadImageRelocations(Nt, HostAddress);
+       }
+       return fextl::robin_map<uint32_t, FEXCore::GuestRelocationType> {};
+     }();
+--- aa/Source/Windows/Common/InvalidationTracker.cpp
++++ bb/Source/Windows/Common/InvalidationTracker.cpp
+@@ -6,7 +6,9 @@
+ #include <FEXCore/Core/Context.h>
+ #include <FEXCore/Config/Config.h>
+ #include <FEXCore/Debug/InternalThreadState.h>
++#include "Guest32.h"
+ #include "InvalidationTracker.h"
++#include <limits>
+ #include <windef.h>
+ #include <winternl.h>
+ 
+@@ -18,12 +20,16 @@ InvalidationTracker::InvalidationTracker(FEXCore::Context::Context& CTX, const s
+   SMCDetectionDisabled = (SMCChecks == FEXCore::Config::CONFIG_SMC_NONE);
+ 
+   MEMORY_BASIC_INFORMATION Info;
+-  uint64_t Address = 0;
++  /* Le recensement parcourt l'espace de l'hote ; quand la fenetre de l'invite
++   * est deplacee, seule cette fenetre nous concerne. */
++  uint64_t Address = FEXCore::IR::Guest32Base;
++  const uint64_t WindowEnd = FEXCore::IR::Guest32Base ? FEXCore::IR::Guest32Base + 0x100000000ULL :
++                                                        std::numeric_limits<uint64_t>::max();
+ 
+-  while (VirtualQuery(reinterpret_cast<LPCVOID>(Address), &Info, sizeof(Info))) {
++  while (Address < WindowEnd && VirtualQuery(reinterpret_cast<LPCVOID>(Address), &Info, sizeof(Info))) {
+     uint64_t BaseAddress = reinterpret_cast<uint64_t>(Info.BaseAddress);
+     if (Info.State == MEM_COMMIT) {
+-      HandleMemoryProtectionNotification(BaseAddress, Info.RegionSize, Info.Protect);
++      HandleMemoryProtectionNotification(ToGuest32(BaseAddress), Info.RegionSize, Info.Protect);
+     }
+ 
+     Address = BaseAddress + Info.RegionSize;
+@@ -100,10 +106,12 @@ void InvalidationTracker::HandleProcessExecuteFlagsChange(ULONG Flags) {
+     DEPPromotedIntervals.Clear();
+ 
+     MEMORY_BASIC_INFORMATION Info;
+-    uint64_t Address = 0;
++    uint64_t Address = FEXCore::IR::Guest32Base;
++    const uint64_t WindowEnd = FEXCore::IR::Guest32Base ? FEXCore::IR::Guest32Base + 0x100000000ULL :
++                                                          std::numeric_limits<uint64_t>::max();
+ 
+-    while (VirtualQuery(reinterpret_cast<LPCVOID>(Address), &Info, sizeof(Info))) {
+-      uint64_t BaseAddress = reinterpret_cast<uint64_t>(Info.BaseAddress);
++    while (Address < WindowEnd && VirtualQuery(reinterpret_cast<LPCVOID>(Address), &Info, sizeof(Info))) {
++      uint64_t BaseAddress = ToGuest32(reinterpret_cast<uint64_t>(Info.BaseAddress));
+       if (Info.State == MEM_COMMIT && ProtIsReadable(Info.Protect) && !ProtHasExec(Info.Protect)) {
+         const auto AlignedBase = BaseAddress & FEXCore::Utils::FEX_PAGE_MASK;
+         const auto AlignedSize = (BaseAddress - AlignedBase + Info.RegionSize + FEXCore::Utils::FEX_PAGE_SIZE - 1) & FEXCore::Utils::FEX_PAGE_MASK;
+@@ -116,7 +124,7 @@ void InvalidationTracker::HandleProcessExecuteFlagsChange(ULONG Flags) {
+         DEPPromotedIntervals.Insert(ProtInterval);
+       }
+ 
+-      Address = BaseAddress + Info.RegionSize;
++      Address = ToHost32(BaseAddress) + Info.RegionSize;
+     }
+   } else {
+     for (const auto& Interval : DEPPromotedIntervals) {
+@@ -132,7 +140,8 @@ void InvalidationTracker::HandleProcessExecuteFlagsChange(ULONG Flags) {
+ }
+ 
+ void InvalidationTracker::HandleImageMap(std::string_view Name, uint64_t Address) {
+-  auto* Nt = RtlImageNtHeader(reinterpret_cast<HMODULE>(Address));
++  /* Address est une adresse d'invite ; lire l'en-tete PE demande celle de l'hote. */
++  auto* Nt = RtlImageNtHeader(reinterpret_cast<HMODULE>(HostPtr32(Address)));
+   auto* SectionsBegin = IMAGE_FIRST_SECTION(Nt);
+   auto* SectionsEnd = SectionsBegin + Nt->FileHeader.NumberOfSections;
+   uint64_t LastExecutableSectionEnd = 0;
+@@ -170,16 +179,15 @@ void InvalidationTracker::HandleImageMap(std::string_view Name, uint64_t Address
+ 
+ InvalidationTracker::InvalidateContainingSectionResult InvalidationTracker::InvalidateContainingSection(uint64_t Address, bool Free) {
+   MEMORY_BASIC_INFORMATION Info;
+-  if (NtQueryVirtualMemory(NtCurrentProcess(), reinterpret_cast<void*>(Address), MemoryBasicInformation, &Info, sizeof(Info), nullptr)) {
++  if (NtQueryVirtualMemory(NtCurrentProcess(), HostPtr32(Address), MemoryBasicInformation, &Info, sizeof(Info), nullptr)) {
+     return {Address, 0};
+   }
+ 
+-  const auto SectionBase = reinterpret_cast<uint64_t>(Info.AllocationBase);
+-  auto SectionSize = reinterpret_cast<uint64_t>(Info.BaseAddress) + Info.RegionSize - SectionBase;
++  const auto SectionBase = ToGuest32(reinterpret_cast<uint64_t>(Info.AllocationBase));
++  auto SectionSize = ToGuest32(reinterpret_cast<uint64_t>(Info.BaseAddress)) + Info.RegionSize - SectionBase;
+ 
+-  while (!NtQueryVirtualMemory(NtCurrentProcess(), reinterpret_cast<void*>(SectionBase + SectionSize), MemoryBasicInformation, &Info,
+-                               sizeof(Info), nullptr) &&
+-         reinterpret_cast<uint64_t>(Info.AllocationBase) == SectionBase) {
++  while (!NtQueryVirtualMemory(NtCurrentProcess(), HostPtr32(SectionBase + SectionSize), MemoryBasicInformation, &Info, sizeof(Info), nullptr) &&
++         ToGuest32(reinterpret_cast<uint64_t>(Info.AllocationBase)) == SectionBase) {
+     SectionSize += Info.RegionSize;
+   }
+ 
+@@ -195,9 +203,14 @@ InvalidationTracker::InvalidateContainingSectionResult InvalidationTracker::Inva
+ }
+ 
+ void InvalidationTracker::InvalidateAlignedInterval(uint64_t Address, uint64_t Size, bool Free) {
+-  if (!Address) {
+-    // Match the Windows behaviour when passed a NULL base address.
+-    Size = std::numeric_limits<uint64_t>::max();
++  if (!Address && !Size) {
++    /* Match the Windows behaviour when passed a NULL base address.
++     * La taille nulle distingue ce sentinel d'une liberation reelle a l'adresse
++     * zero de l'invite -- qui existe : la zone DOS est liberee au demarrage, et
++     * la confondre avec « tout l'espace » effacait les intervalles executables
++     * de toutes les images deja chargees. Rebase, « tout » se borne d'ailleurs a
++     * la fenetre de l'invite. */
++    Size = FEXCore::IR::Guest32Base ? 0x100000000ULL : std::numeric_limits<uint64_t>::max();
+   }
+ 
+   const auto AlignedBase = Address & FEXCore::Utils::FEX_PAGE_MASK;
+@@ -217,6 +230,13 @@ void InvalidationTracker::ReprotectRWXIntervals(uint64_t Address, uint64_t Size)
+ }
+ 
+ bool InvalidationTracker::HandleRWXAccessViolation(FEXCore::Core::InternalThreadState* Thread, uint64_t HostPc, uint64_t FaultAddress) {
++  /* L'adresse fautive sort d'une exception de l'hote ; les intervalles sont
++   * indexes par l'invite. Hors de la fenetre, ce n'est pas notre affaire. */
++  if (!InGuest32Window(FaultAddress)) {
++    return false;
++  }
++  FaultAddress = ToGuest32(FaultAddress);
++
+   const auto [NeedsInvalidate, UntrapProt] = [&](uint64_t Address) -> std::pair<bool, ULONG> {
+     std::shared_lock Lock(IntervalsLock);
+     if (!RWXIntervals.Query(Address).Enclosed) {
+@@ -234,7 +254,7 @@ bool InvalidationTracker::HandleRWXAccessViolation(FEXCore::Core::InternalThread
+ 
+       // Invalidate, then unprotect the faulting page with the compilation lock held to ensure that any racing invalidations are not dropped.
+       ULONG TmpProt;
+-      void* TmpAddress = reinterpret_cast<void*>(FaultAddress);
++      void* TmpAddress = HostPtr32(FaultAddress);
+       SIZE_T TmpSize = 1;
+       NtProtectVirtualMemory(NtCurrentProcess(), &TmpAddress, &TmpSize, UntrapProt, &TmpProt);
+     }
+@@ -278,7 +298,7 @@ void InvalidationTracker::DetectMonoBackpatcherBlock(FEXCore::Core::InternalThre
+   }
+ 
+   static constexpr uint8_t XChgOp = 0x87;
+-  if (*reinterpret_cast<uint8_t*>(RIP) != XChgOp && *reinterpret_cast<uint8_t*>(RIP + 1) != XChgOp) {
++  if (*static_cast<uint8_t*>(HostPtr32(RIP)) != XChgOp && *static_cast<uint8_t*>(HostPtr32(RIP + 1)) != XChgOp) {
+     return;
+   }
+ 
+@@ -302,7 +322,7 @@ void InvalidationTracker::DisableSMCDetection() {
+   do {
+     Query = RWXIntervals.Query(Address);
+     if (Query.Enclosed) {
+-      void* TmpAddress = reinterpret_cast<void*>(Address);
++      void* TmpAddress = HostPtr32(Address);
+       SIZE_T TmpSize = static_cast<SIZE_T>(Query.Size);
+       ULONG TmpProt;
+       NtProtectVirtualMemory(NtCurrentProcess(), &TmpAddress, &TmpSize, GetUntrapProt(Address), &TmpProt);
+@@ -360,7 +380,7 @@ bool InvalidationTracker::ProtectRWXIntervalsInternal(uint64_t Address, uint64_t
+         }
+         HitRWXInterval = true;
+       }
+-      void* TmpAddress = reinterpret_cast<void*>(Address);
++      void* TmpAddress = HostPtr32(Address);
+       SIZE_T TmpSize = static_cast<SIZE_T>(std::min(End, Address + Query.Size) - Address);
+       ULONG TmpProt;
+       NtProtectVirtualMemory(NtCurrentProcess(), &TmpAddress, &TmpSize, ForWriteLocked ? GetUntrapProt(Address) : GetTrapProt(Address), &TmpProt);
 --- aa/Source/Windows/WOW64/Module.cpp
 +++ bb/Source/Windows/WOW64/Module.cpp
-@@ -62,6 +62,13 @@
- #include <winternl.h>
+@@ -37,6 +37,7 @@ $end_info$
+ #include "Common/Config.h"
+ #include "Common/Exception.h"
+ #include "Common/TSOHandlerConfig.h"
++#include "Common/Guest32.h"
+ #include "Common/ImageTracker.h"
+ #include "Common/InvalidationTracker.h"
+ #include "Common/Threads.h"
+@@ -63,6 +64,16 @@ $end_info$
  #include <wine/debug.h>
  #include <wine/unixlib.h>
-+
+ 
 +#ifdef FEX_TEB_SANS_X18
 +namespace FEXCore::IR {
 +extern uint64_t Guest32Base;
 +}
 +extern "C" __declspec(dllimport) unsigned __int64 __wine_wow64_guest_base;
++
++using FEX::Windows::ToGuest32;
++using FEX::Windows::ToHost32;
 +#endif
- 
++
  struct TLS {
    enum class Slot : size_t {
-@@ -430,7 +437,7 @@
+     ENTRY_CONTEXT = WOW64_TLS_MAX_NUMBER - 1,
+@@ -188,10 +199,15 @@ bool IsAddressInJit(uint64_t Address) {
+ }
+ 
+ void HandleImageMap(uint64_t Address, bool MainImage = false) {
++  /* Deux mondes dans la meme fonction : Wine repond aux adresses de l'hote, les
++   * suivis sont indexes par celles de l'invite. */
+   fextl::string ModulePath = FEX::Windows::GetSectionFilePath(Address);
+   fextl::string ModuleName = fextl::string {FEX::Windows::BaseName(ModulePath)};
+-  InvalidationTracker->HandleImageMap(ModuleName, Address);
+-  ImageTracker->HandleImageMap(ModulePath, Address, MainImage);
++  /* Les deux suivis sont indexes par les adresses de l'invite : c'est avec
++   * elles que FEXCore demande « ai-je le droit de traduire ici ». Wine, lui,
++   * nous donne des adresses d'hote. */
++  InvalidationTracker->HandleImageMap(ModuleName, ToGuest32(Address));
++  ImageTracker->HandleImageMap(ModulePath, ToGuest32(Address), MainImage);
+ }
+ 
+ void HandleImageUnmap(uint64_t Address, uint64_t Size) {
+@@ -426,26 +442,28 @@ public:
+   WowSyscallHandler() = default;
+ 
+   static void HandleSyscallImpl(FEXCore::Core::CpuStateFrame* Frame) {
+-    const uint64_t ReturnRIP = *(uint32_t*)(Frame->State.gregs[FEXCore::X86State::REG_RSP]); // Return address from the stack
++    /* La pile de l'invite se lit a travers la fenetre : ses registres portent des
++     * adresses d'invite, les pointeurs de l'hote demandent la base. */
++    const uint64_t ReturnRIP = *(uint32_t*)ToHost32(Frame->State.gregs[FEXCore::X86State::REG_RSP]); // Return address from the stack
      uint64_t ReturnRSP = Frame->State.gregs[FEXCore::X86State::REG_RSP] + 4;                 // Stack pointer after popping return address
      uint64_t ReturnRAX = 0;
  
@@ -562,8 +899,17 @@
        struct StackLayout {
          unixlib_handle_t Handle;
          UINT32 ID;
-@@ -445,7 +452,7 @@
-       ReturnRAX = static_cast<uint64_t>(WineUnixCall(StackArgs->Handle, StackArgs->ID, ULongToPtr(StackArgs->Args)));
+         ULONG32 Args;
+-      }* StackArgs = reinterpret_cast<StackLayout*>(ReturnRSP);
++      }* StackArgs = reinterpret_cast<StackLayout*>(ToHost32(ReturnRSP));
+ 
+       Frame->State.gregs[FEXCore::X86State::REG_RSP] = ReturnRSP + sizeof(StackLayout);
+       Frame->State.rip = ReturnRIP;
+ 
+       Context::FlushThreadStateContext();
+       Context::UnlockJITContext();
+-      ReturnRAX = static_cast<uint64_t>(WineUnixCall(StackArgs->Handle, StackArgs->ID, ULongToPtr(StackArgs->Args)));
++      ReturnRAX = static_cast<uint64_t>(WineUnixCall(StackArgs->Handle, StackArgs->ID, reinterpret_cast<void*>(ToHost32(StackArgs->Args))));
        Context::LockJITContext();
        Frame->State.gregs[FEXCore::X86State::REG_RAX] = ReturnRAX;
 -    } else if (Frame->State.rip == (uint64_t)BridgeInstrs::Syscall) {
@@ -571,7 +917,16 @@
        const uint64_t EntryRAX = Frame->State.gregs[FEXCore::X86State::REG_RAX];
  
        Frame->State.gregs[FEXCore::X86State::REG_RSP] = ReturnRSP;
-@@ -498,7 +505,15 @@
+@@ -454,7 +472,7 @@ public:
+       Context::FlushThreadStateContext();
+       Context::UnlockJITContext();
+       Wow64ProcessPendingCrossProcessItems();
+-      ReturnRAX = static_cast<uint64_t>(Wow64SystemServiceEx(static_cast<UINT>(EntryRAX), reinterpret_cast<UINT*>(ReturnRSP + 4)));
++      ReturnRAX = static_cast<uint64_t>(Wow64SystemServiceEx(static_cast<UINT>(EntryRAX), reinterpret_cast<UINT*>(ToHost32(ReturnRSP + 4))));
+       Context::LockJITContext();
+       Frame->State.gregs[FEXCore::X86State::REG_RAX] = ReturnRAX;
+     }
+@@ -498,7 +516,15 @@ public:
    }
  };
  
@@ -587,11 +942,12 @@
    FEX::Windows::InitCRTProcess();
    FEX::Windows::SetupThreadHandlers();
    const auto ExecutablePath = FEX::Windows::GetExecutableFilePath();
-@@ -550,7 +565,20 @@
+@@ -550,8 +576,21 @@ void BTCpuProcessInit() {
    // Allocate the syscall/unixcall trampolines in the lower 2GB of the address space
    SIZE_T Size = 4;
    void* Addr = nullptr;
 -  NtAllocateVirtualMemory(NtCurrentProcess(), &Addr, (1U << 31) - 1, &Size, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+-  InvalidationTracker->HandleMemoryProtectionNotification(reinterpret_cast<uint64_t>(Addr), Size, PAGE_EXECUTE);
 +#ifdef FEX_TEB_SANS_X18
 +  if (FEXCore::IR::Guest32Base) {
 +    /* « les 2 premiers Gio » est vu de l'invite : quand sa fenetre est deplacee,
@@ -606,10 +962,11 @@
 +  } else
 +#endif
 +    NtAllocateVirtualMemory(NtCurrentProcess(), &Addr, (1U << 31) - 1, &Size, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
-   InvalidationTracker->HandleMemoryProtectionNotification(reinterpret_cast<uint64_t>(Addr), Size, PAGE_EXECUTE);
++  InvalidationTracker->HandleMemoryProtectionNotification(ToGuest32(reinterpret_cast<uint64_t>(Addr)), Size, PAGE_EXECUTE);
    *reinterpret_cast<uint32_t*>(Addr) = 0x2ecd2ecd;
    BridgeInstrs::Syscall = Addr;
-@@ -671,12 +699,14 @@
+   BridgeInstrs::UnixCall = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(Addr) + 2);
+@@ -671,12 +710,14 @@ void BTCpuThreadTerm(HANDLE Thread, LONG ExitCode) {
    }
  }
  
@@ -626,3 +983,69 @@
  }
  
  NTSTATUS BTCpuGetContext(HANDLE Thread, HANDLE Process, void* Unknown, WOW64_CONTEXT* Context) {
+@@ -810,17 +851,17 @@ NTSTATUS BTCpuResetToConsistentState(EXCEPTION_POINTERS* Ptrs) {
+ 
+ void BTCpuFlushInstructionCache2(const void* Address, SIZE_T Size) {
+   std::scoped_lock Lock(ThreadCreationMutex);
+-  InvalidationTracker->InvalidateAlignedInterval(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), false);
++  InvalidationTracker->InvalidateAlignedInterval(ToGuest32(reinterpret_cast<uint64_t>(Address)), static_cast<uint64_t>(Size), false);
+ }
+ 
+ void BTCpuFlushInstructionCacheHeavy(const void* Address, SIZE_T Size) {
+   std::scoped_lock Lock(ThreadCreationMutex);
+-  InvalidationTracker->InvalidateAlignedInterval(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), false);
++  InvalidationTracker->InvalidateAlignedInterval(ToGuest32(reinterpret_cast<uint64_t>(Address)), static_cast<uint64_t>(Size), false);
+ }
+ 
+ void BTCpuNotifyMemoryDirty(void* Address, SIZE_T Size) {
+   std::scoped_lock Lock(ThreadCreationMutex);
+-  InvalidationTracker->InvalidateAlignedInterval(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), false);
++  InvalidationTracker->InvalidateAlignedInterval(ToGuest32(reinterpret_cast<uint64_t>(Address)), static_cast<uint64_t>(Size), false);
+ }
+ 
+ void BTCpuNotifyMemoryAlloc(void* Address, SIZE_T Size, ULONG Type, ULONG Prot, BOOL After, ULONG Status) {
+@@ -829,7 +870,7 @@ void BTCpuNotifyMemoryAlloc(void* Address, SIZE_T Size, ULONG Type, ULONG Prot,
+   } else {
+     // MEM_RESET(_UNDO) ignores the passed permissions
+     if (!Status && !(Type & (MEM_RESET | MEM_RESET_UNDO))) {
+-      InvalidationTracker->HandleMemoryProtectionNotification(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), Prot);
++      InvalidationTracker->HandleMemoryProtectionNotification(ToGuest32(reinterpret_cast<uint64_t>(Address)), static_cast<uint64_t>(Size), Prot);
+     }
+     ThreadCreationMutex.unlock();
+   }
+@@ -840,7 +881,7 @@ void BTCpuNotifyMemoryProtect(void* Address, SIZE_T Size, ULONG NewProt, BOOL Af
+     ThreadCreationMutex.lock();
+   } else {
+     if (!Status) {
+-      InvalidationTracker->HandleMemoryProtectionNotification(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), NewProt);
++      InvalidationTracker->HandleMemoryProtectionNotification(ToGuest32(reinterpret_cast<uint64_t>(Address)), static_cast<uint64_t>(Size), NewProt);
+     }
+     ThreadCreationMutex.unlock();
+   }
+@@ -851,7 +892,7 @@ void BTCpuNotifyMemoryFree(void* Address, SIZE_T Size, ULONG FreeType, BOOL Afte
+     ThreadCreationMutex.lock();
+   } else {
+     if (!Status) {
+-      InvalidationTracker->InvalidateAlignedInterval(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), true);
++      InvalidationTracker->InvalidateAlignedInterval(ToGuest32(reinterpret_cast<uint64_t>(Address)), static_cast<uint64_t>(Size), true);
+     }
+     ThreadCreationMutex.unlock();
+   }
+@@ -866,7 +907,7 @@ NTSTATUS BTCpuNotifyMapViewOfSection(void* Unk1, void* Address, void* Unk2, SIZE
+ void BTCpuNotifyUnmapViewOfSection(void* Address, BOOL After, ULONG Status) {
+   if (!After) {
+     ThreadCreationMutex.lock();
+-    auto [Start, Size] = InvalidationTracker->InvalidateContainingSection(reinterpret_cast<uint64_t>(Address), true);
++    auto [Start, Size] = InvalidationTracker->InvalidateContainingSection(ToGuest32(reinterpret_cast<uint64_t>(Address)), true);
+     if (Size) {
+       HandleImageUnmap(Start, Size);
+     }
+@@ -884,7 +925,7 @@ void BTCpuNotifyReadFile(HANDLE Handle, void* Address, SIZE_T Size, BOOL After,
+   // See arm64ec `BTCpu64NotifyReadFile` for why this like this.
+   if (After && Status == STATUS_SUCCESS) {
+     std::scoped_lock Lock(ThreadCreationMutex);
+-    InvalidationTracker->InvalidateAlignedInterval(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), false);
++    InvalidationTracker->InvalidateAlignedInterval(ToGuest32(reinterpret_cast<uint64_t>(Address)), static_cast<uint64_t>(Size), false);
+   }
+ }
+ 
