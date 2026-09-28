@@ -18116,3 +18116,112 @@ DREDGE, sans aucune sonde, cent secondes par exécution :
 Non-régression : vingt-trois programmes i386 et x86_64 passent, `probe_d3d11_draw` rastérise,
 `banc_x64` donne **84,7 — 85,9 ms**, haut de la bande du §241 — la machine portait une charge
 moyenne de 10 pendant la mesure.
+
+## 259. Le gel de DREDGE : `mach_vm_map` ne dit pas « occupé » comme Linux
+
+Deux cents lignes par exécution, dans **toutes** les traces depuis le début, que j'avais classées
+« bruit connu » :
+
+```
+err:virtual:try_map_free_area mmap() error Cannot allocate memory, range 0x100000000-0x100110000
+```
+
+C'était la panne, pas du bruit.
+
+### Ce qui se passait
+
+`try_map_free_area` balaie les adresses candidates et ne poursuit son balayage que sur un seul
+code d'erreur :
+
+```c
+if (anon_mmap_tryfixed( start, size, unix_prot, 0 ) != MAP_FAILED) return start;
+if (errno != EEXIST) { ERR( "mmap() error ..." ); return NULL; }   /* abandon total */
+```
+
+`EEXIST` veut dire ici « cette adresse ne convient pas, essaie la suivante ». Du côté macOS, la
+traduction se faisait ainsi :
+
+```c
+errno = (ret == KERN_NO_SPACE ? EEXIST : ENOMEM);
+```
+
+Une sonde sur le code rendu montre qu'il y en a **deux**, pas un :
+
+```
+SONDE mach_vm_map : 0x100000000 taille 00110000 -> 1 ((os/kern) invalid address)
+SONDE mach_vm_map : 0x104a20000 taille 00110000 -> 3 ((os/kern) no space available)
+```
+
+À `0x104a20000`, Mach rend `KERN_NO_SPACE` : le balayage avance, case par case, et trouve. Mais à
+`0x100000000` — la première adresse au-dessus de la page zéro de 4 Gio, là où macOS installe
+l'exécutable — il rend **`KERN_INVALID_ADDRESS`**, que le code traduisait en `ENOMEM`. Wine
+abandonnait alors la recherche entière et rendait `STATUS_NO_MEMORY` **alors qu'il restait des
+gigaoctets libres**.
+
+Le correctif tient sur une ligne : pour le balayage, les deux codes disent la même chose.
+
+```c
+errno = (ret == KERN_NO_SPACE || ret == KERN_INVALID_ADDRESS) ? EEXIST : ENOMEM;
+```
+
+### Comment ça se voyait
+
+Unity mourait à court de mémoire sur une demande de 13 Mio, son gestionnaire de plantage restait
+coincé faute de débogueur, et le processus survivait sans rien faire :
+
+```
+Could not allocate memory: System out of memory!
+Crash!!!   ERROR: Error while initializing dbghelp.dll
+wine: Unhandled exception 0x80000003 -- starting debugger...
+err:seh:start_debugger Couldn't start debugger
+```
+
+C'est ça, le « gel » : pas un verrou, un plantage dont le rapport ne sort jamais.
+
+| | `try_map_free_area` | gel |
+|---|---|---|
+| avant | ~200 par exécution | 2 sur 10 |
+| après | **0** | 0 sur 12 |
+
+### Deux fausses pistes, et pourquoi
+
+**Le réveil perdu.** Le message `err:sync:RtlpWaitForCriticalSection ... blocked by 0000` m'a
+occupé longtemps. La capture montrait `LockSemaphore=1` — le drapeau de réveil déjà posé — et j'y
+ai lu un réveil perdu. Une épreuve dédiée (`h32bord`, l'alerte qui arrive au bord du délai) a
+tranché : **aucun effet mesurable**, 220/204/234 courses sans le correctif contre 126/244/290
+avec. Ma première paire laissait croire à 43 % de moins ; c'était du bruit, et j'avais eu tort de
+l'annoncer. L'explication simple tient : le propriétaire tenait le verrou depuis cinq secondes et
+l'a relâché juste avant l'expiration. Le message de Wine ne dit rien de plus que « ce verrou a été
+tenu longtemps ».
+
+Cinq mécanismes écartés en chemin, chacun par une mesure, et chacun laisse un test derrière lui :
+
+| soupçon | épreuve | verdict |
+|---|---|---|
+| atomiques non alignés | `h32atom` : `lock inc`/`cmpxchg`/`cmpxchg8b` à cheval | 800000/800000, exact |
+| le futex lui-même | `h32futex` : va-et-vient, sections, condition, SRW | 3 210 000 tours |
+| suspension pendant l'attente | harcèlement `SuspendThread` | 400 000 tours |
+| routage par numéro de fil | `h32alerte` : 257 fils s'alertent eux-mêmes | 0 injoignable |
+| ordre mémoire TSO du x86 | `h32tso` : doublages d'écriture et de lecture | 0 sur 1 939 418 |
+| verrous sous réécriture de code | `h32smc` : Mono rustine pendant la dispute | 1 600 000 exact |
+
+**La mauvaise branche.** Pire : j'ai instrumenté pendant des heures la branche `HAVE_KQUEUE` de
+`NtWaitForAlertByThreadId`. Sur macOS, `sync.c` définit aussi `USE_FUTEX` (`os_sync_wait_on_address`),
+et la kqueue est du code mort. Mes sondes n'ont jamais rien imprimé, et j'en ai conclu « l'alerte
+n'atteint pas l'hôte » — conclusion tirée d'un silence qui ne voulait rien dire. **Vérifier qu'une
+sonde parle avant de lire son silence.**
+
+### Ce qui reste
+
+Un second gel subsiste, plus précoce et sans la moindre erreur mémoire : sur trois exécutions
+finales, deux tournent à 100 % d'un cœur pendant deux minutes et demie, la troisième s'arrête
+après cinq secondes de calcul, juste après `<RI> Input initialized.` dans le journal d'Unity. Le
+cliché montre tous les fils endormis et un fil de l'invité qui tourne sur `Sleep` — mais la sonde
+posée dans le relais wow64 de `NtDelayExecution` montre que **ce tournoiement est normal** : huit
+fils de travail d'Unity font la même chose dans les exécutions saines, tous à `eip=7bddd27c`,
+`delai=0`.
+
+Non-régression : vingt-huit programmes i386 et x86_64 passent, `probe_d3d11_draw` rastérise,
+`banc_x64` donne **86,0 — 87,0 ms**. C'est au-dessus de la bande du §241, mais la mesure A/B le
+disculpe : sans le correctif, la même machine donne **86,1 — 87,3 ms**. L'écart vient de l'état de
+la machine, pas du changement.
