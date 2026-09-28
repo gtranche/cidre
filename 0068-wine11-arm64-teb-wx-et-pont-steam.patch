@@ -4683,23 +4683,7 @@
              else
 --- aa/dlls/ntdll/unix/thread.c
 +++ bb/dlls/ntdll/unix/thread.c
-@@ -1186,7 +1186,14 @@
-             ((get_machine_context_size( main_image_info.Machine ) + 7) & ~7) + sizeof(ULONG64);
- 
-         /* 64-bit stack */
--        if ((status = virtual_alloc_thread_stack( &stack, limit_4g, 0, 0x40000, 0x40000, TRUE ))) return status;
-+        /* Amont reserve 256 Kio. Cette pile-la porte le JIT de FEX en plus du
-+         * noyau de Wine, et macOS aligne ses pages sur 16 Kio : DREDGE la fait
-+         * deborder pour de vrai, et le message ne ressemble pas a sa cause --
-+         * « stack overflow 16 bytes » depuis virtual_setup_exception, au moment
-+         * ou il n'y a plus la place d'empiler le cadre d'exception. On reserve
-+         * donc quatre Mio ; l'engagement reste a 256 Kio, la reservation ne
-+         * coutant que de l'espace d'adressage. */
-+        if ((status = virtual_alloc_thread_stack( &stack, limit_4g, 0, 0x400000, 0x40000, TRUE ))) return status;
-         cpu = (WOW64_CPURESERVED *)(((ULONG_PTR)stack.StackBase - cpusize) & ~15);
-         cpu->Machine = main_image_info.Machine;
- 
-@@ -1196,8 +1203,18 @@
+@@ -1196,8 +1196,18 @@
          teb->DeallocationStack = stack.DeallocationStack;
  
          /* 32-bit stack */
@@ -6015,12 +5999,12 @@
          }
 --- aa/dlls/wow64/syscall.c
 +++ bb/dlls/wow64/syscall.c
-@@ -39,6 +39,15 @@
+@@ -39,7 +39,16 @@
  ULONG_PTR args_alignment = 0;
  ULONG_PTR highest_user_address = 0x7ffeffff;
  ULONG_PTR default_zero_bits = 0x7fffffff;
 +ULONG64 guest_base = 0;
-+
+ 
 +/* Variable exportee par le ntdll : c'est lui qui decide de la fenetre.
 + * Elle n'existe que sur les cibles ou la question se pose. */
 +#ifdef __aarch64__
@@ -6028,9 +6012,10 @@
 +#else
 +static const ULONG64 __wine_wow64_guest_base = 0;
 +#endif
- 
++
  typedef NTSTATUS (WINAPI *syscall_thunk)( UINT *args );
  
+ static const syscall_thunk syscall_thunks[] =
 @@ -155,7 +164,7 @@
      rec = Wow64AllocateTemp( sizeof(*rec) );
      rec->ExceptionCode = rec32->ExceptionCode;
@@ -6040,16 +6025,41 @@
      rec->ExceptionAddress = ULongToPtr( rec32->ExceptionAddress );
      rec->NumberParameters = rec32->NumberParameters;
      for (i = 0; i < EXCEPTION_MAXIMUM_PARAMETERS; i++)
-@@ -240,7 +249,7 @@
+@@ -240,7 +249,32 @@
              RtlGetExtendedContextLength( flags, &context_length );
  
              esp = LOWORD(ctx.SegSs) != ss32_sel ? NtCurrentTeb32()->SystemReserved1[0] : ctx.Esp;
 -            stack = (struct exc_stack_layout32 *)ULongToPtr( (esp - offsetof(struct exc_stack_layout32, context) - context_length) & ~3 );
++            /*
++             * Garde-fou : la pile hote qui touche le fond.
++             *
++             * Chaque exception rendue a l'invite laisse derriere elle le cadre
++             * 64 bits qui l'a dispatchee -- il ne se deroule qu'au NtContinue
++             * de l'invite. Si le gestionnaire de l'invite refaute au meme
++             * endroit, rien ne se deroule jamais. Mesure sur DREDGE : 0x1FA0
++             * octets de pile hote par tour, et la pile cede au bout de cent
++             * vingt-huit tours -- dans un memcpy de call_seh_handlers, a un Mio
++             * de la cause, ce qui ne dit rien a personne.
++             *
++             * On s'arrete donc pendant qu'il reste de quoi le dire.
++             */
++            {
++                ULONG_PTR sp = (ULONG_PTR)&stack;
++                ULONG_PTR fond = (ULONG_PTR)NtCurrentTeb()->DeallocationStack;
++
++                if (sp < fond + 0x10000)
++                {
++                    ERR( "pile hote au fond en dispatchant une exception : code=%08lx eip=%08lx"
++                         " esp=%08lx -- le gestionnaire de l'invite refaute sans avancer,"
++                         " le fil est arrete\n", rec->ExceptionCode, ctx.Eip, ctx.Esp );
++                    NtTerminateThread( GetCurrentThread(), rec->ExceptionCode );
++                }
++            }
 +            stack = (struct exc_stack_layout32 *)ptr_32to64( (esp - offsetof(struct exc_stack_layout32, context) - context_length) & ~3 );
              stack->rec_ptr     = PtrToUlong( &stack->rec );
              stack->context_ptr = PtrToUlong( &stack->context );
              stack->rec         = *rec;
-@@ -257,7 +266,6 @@
+@@ -257,7 +291,6 @@
              ctx.EFlags &= ~(0x100|0x400|0x40000);
              ctx.ContextFlags = CONTEXT_I386_CONTROL;
              pBTCpuSetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx );
@@ -6057,7 +6067,7 @@
              TRACE( "exception %08lx dispatcher %08lx stack %08lx eip %08lx\n",
                     rec->ExceptionCode, ctx.Eip, ctx.Esp, stack->context.Eip );
          }
-@@ -310,7 +318,7 @@
+@@ -310,7 +343,7 @@
              ctx.ContextFlags = CONTEXT_I386_CONTROL;
              pBTCpuGetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx );
              ctx.Esp -= sizeof(ULONG);
@@ -6066,7 +6076,7 @@
              ctx.Eip = (ULONG_PTR)pKiRaiseUserExceptionDispatcher;
              pBTCpuSetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx );
          }
-@@ -671,6 +679,12 @@
+@@ -671,6 +704,12 @@
  {
      void *context = get_ptr( &args );
      KCONTINUE_ARGUMENT *cont_args = get_ptr( &args );
@@ -6079,7 +6089,7 @@
  
      NTSTATUS status = get_context_return_value( context );
      struct user_apc_frame *frame = NtCurrentTeb()->TlsSlots[WOW64_TLS_APCLIST];
-@@ -996,6 +1010,10 @@
+@@ -996,6 +1035,10 @@
      NtQuerySystemInformation( SystemEmulationBasicInformation, &info, sizeof(info), NULL );
      highest_user_address = (ULONG_PTR)info.HighestUserAddress;
      default_zero_bits = (ULONG_PTR)info.HighestUserAddress | 0x7fffffff;
@@ -6090,7 +6100,7 @@
      NtQueryInformationProcess( GetCurrentProcess(), ProcessWow64Information, &peb32, sizeof(peb32), NULL );
      wow64info = (WOW64INFO *)(peb32 + 1);
      wow64info->NativeSystemPageSize = 0x1000;
-@@ -1081,7 +1099,7 @@
+@@ -1081,7 +1124,7 @@
              ULONG *stack;
  
              pBTCpuGetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx );
@@ -6099,7 +6109,7 @@
              *ctx_ptr = ctx;
              stack = (ULONG *)ctx_ptr;
              *(--stack) = 0;
-@@ -1333,7 +1351,7 @@
+@@ -1333,7 +1376,7 @@
  
              pBTCpuGetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx );
  
@@ -6108,7 +6118,7 @@
              stack->func      = arg1 >> 32;
              stack->arg1      = arg1;
              stack->arg2      = arg2;
-@@ -1427,7 +1445,7 @@
+@@ -1427,7 +1470,7 @@
              pBTCpuGetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx );
              orig_ctx = ctx;
  

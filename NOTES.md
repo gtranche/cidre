@@ -17873,3 +17873,90 @@ Non-régression : vingt-deux programmes i386 passent, `probe_d3d11_draw` rastér
 **84,8 — 85,4 ms** — légèrement au-dessus de la bande §241, mais la machine portait
 `PerfPowerServices` à 55 % pendant la mesure, et ce banc passe par `arm64ecfex`, que ce correctif ne
 touche pas.
+
+## 256. Le débordement de pile hôte : une récursion, pas une pile trop courte
+
+Le message était :
+
+```
+err:virtual:virtual_setup_exception stack overflow 16 bytes addr 0x6ffff9fe9e44
+    stack 0x300003ff0 (0x300000000-0x300004000-0x3000ffd20)
+```
+
+Premier réflexe : agrandir. C'était faux, et la mesure le dit tout de suite — passée de 256 Kio à
+4 Mio, la pile est **consommée en entier** de la même façon. Elle consomme tout ce qu'on lui donne :
+c'est une récursion.
+
+### La mécanique
+
+Une sonde dans `setup_raise_exception`, déclenchée quand le pointeur de pile approche du fond,
+donne un motif d'une régularité sans équivoque :
+
+```
+SONDE fond code=c0000005 pc=6ffff9fe9e44 lr=6ffff9fe9d90 sp=1219bfbe0 reste=7fbe0
+SONDE fond code=c0000005 pc=6ffff9fe9e44 lr=6ffff9fe9d90 sp=1219bec40 reste=7ec40
+SONDE fond code=c0000005 pc=6ffff9fe9e44 lr=6ffff9fe9d90 sp=1219bdca0 reste=7dca0
+```
+
+Même PC, et **0x1FA0 octets de pile hôte par tour**. Le PC est `wow64.dll+0x19E44`, et le
+désassemblage tombe sur notre propre ligne, dans `call_user_exception_dispatcher` :
+
+```asm
+ldr  x9, [x10, #0x2e0]      ; guest_base
+add  x22, x9, x8            ; ptr_32to64( esp - 0x58 - context_length )
+stp  w8, w9, [x22]          ; stack->rec_ptr = ... ; stack->context_ptr = ...
+```
+
+C'est l'écriture du cadre d'exception **sur la pile de l'invité**. Une seconde sonde dit pourquoi
+elle faute :
+
+```
+code=c0000005 eip=7bdde020 esp=00018078 adr=00017d38 pile=[00018000,00110000)
+```
+
+`eip = 7bdde020`, c'est `KiUserExceptionDispatcher+8` du ntdll 32 bits : l'instruction `call` qui
+n'arrive même plus à empiler son adresse de retour. La pile de l'invité est épuisée. wow64 écrit
+donc le cadre **sous** la limite, cette écriture faute, et cette faute revient exactement ici.
+
+Chaque tour coûte 0x1FA0 octets d'hôte et 1680 d'invité. La pile hôte cède la première, au bout de
+cent vingt-huit tours, **dans un `memcpy` appelé par `call_seh_handlers`** — à un Mio de sa cause,
+et le message ne dit rien à personne.
+
+Pourquoi la pile hôte ne se déroule-t-elle pas ? Parce que chaque exception rendue à l'invité
+laisse derrière elle le cadre 64 bits qui l'a dispatchée : il ne se déroule qu'au `NtContinue` de
+l'invité, et celui-là ne vient jamais.
+
+### Le garde-fou
+
+On ne peut pas rendre la main à un invité dont la pile est pleine. Mais on peut s'arrêter pendant
+qu'il reste de quoi le dire. `call_user_exception_dispatcher` vérifie donc ce qui reste de la pile
+**hôte** — un critère sans stockage, qui ne se déclenche que quand la mort est à huit tours :
+
+```
+err:wow: pile hote au fond en dispatchant une exception : code=c0000005 eip=7bdde020
+         esp=0a7d4074 -- le gestionnaire de l'invite refaute sans avancer, le fil est arrete
+```
+
+Sur trois exécutions de DREDGE : **zéro débordement**, un message par exécution, et le jeu continue.
+
+Deux impasses en chemin, notées :
+
+- **Agrandir la pile hôte** de 256 Kio à 4 Mio ne fait que retarder ; annulé, d'autant que le
+  plancher de `virtual_alloc_thread_stack` est déjà d'un Mio.
+- **Un `static __thread` dans `wow64.dll`** pour compter les tours : cette DLL est chargée avant le
+  chargeur ordinaire, et son TLS statique n'est pas en place — `h32seh` s'est mis à tuer ses fils.
+  Le critère « pile hôte restante » n'a besoin d'aucun stockage.
+
+### Ce qui amorce la récursion
+
+En remontant plus haut, la première faute de la série est une **écriture à une adresse libre**,
+toujours la même dans une exécution donnée, différente d'une exécution à l'autre — `0xb2adfff0`,
+`0xdcbc22c0` — depuis du code de `mono-2.0-bdwgc.dll`. Le gestionnaire de Mono refaute au même
+endroit, et c'est cette boucle-là qui vide d'abord la pile de l'invité.
+
+Le pointeur n'a jamais été alloué par l'invité. Sa valeur ressemble à une **adresse d'hôte
+tronquée** — la même famille que les bogues des §251 à §255 — mais ce n'est pas démontré. C'est le
+prochain fil.
+
+Non-régression : vingt-trois programmes i386 passent, `probe_d3d11_draw` rastérise, `banc_x64`
+donne **83,8 ms** trois fois de suite — le bas exact de la bande §241.
