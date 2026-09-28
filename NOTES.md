@@ -17092,3 +17092,56 @@ mesurés au paragraphe 241), et `probe_d3d11_draw` rasterise toujours son triang
 demande… `syswow64`. Wine s'en sort sur x86_64 ; ici la création de préfixe rend la main sans avoir
 lancé la passe `Wow64Install`. Pour tester, les DLL factices i386 ont été copiées depuis
 `wine/pfx-wow64`. À reprendre.
+
+## 247. Un jeu 32 bits : toute la pile se charge, le pont Steam s'arrête
+
+`Dead Cells` est un PE **i386** (`deadcells.exe`, `IMAGE_FILE_MACHINE_I386`). Premier vrai jeu 32
+bits essayé sur la pile.
+
+### Ce qui se charge
+
+Le processus invité charge, dans l'ordre : `ntdll`, `kernel32`, `kernelbase`, `ucrtbase`, `user32`,
+`gdi32`, `win32u`, `advapi32`, `sechost`, `cryptbase`, `rpcrt4`, `combase`, `coml2`, `ole32`,
+`shlwapi`, `shell32`, **et `lsteamclient`** — notre pont Steam, dans sa version i386. Le
+`syswow64/d3d11.dll` du préfixe est un DXVK i386 (17 Mo), hérité du travail x86_64 : le jeu a donc
+de quoi faire du D3D11.
+
+Et il parle :
+
+```
+[S_API] SteamAPI_Init(): Loaded 'C:\windows\system32\lsteamclient.dll' OK.
+[S_API] SteamAPI_Init(): No SteamClient014
+```
+
+Puis il sort proprement, code 0. `SteamAPI_Init` échoue, donc le jeu s'arrête — même comportement
+qu'en x86_64 avant que le pont ne réponde (paragraphe 199).
+
+### Pourquoi `CreateInterface` rend NULL
+
+La trace de `lsteamclient` montre l'unixlib chargée (`steamclient.dylib charge, CreateInterface a
+0x1121757e0`) mais **aucune trace de `CreateInterface`** : l'appel unix a échoué avant.
+
+Les structures d'arguments de l'unixlib sont en largeur fixe — ce n'est pas le problème. Le
+problème est le contenu : côté PE 32 bits,
+
+```c
+struct create_interface_params params = { (ULONG_PTR)version, (ULONG_PTR)err, 0 };
+```
+
+met une adresse **d'invité** dans un champ que le côté unix déréférence comme une adresse d'hôte.
+Le `steamclient.dylib` natif lit alors n'importe où. Même famille de bogue que tout le paragraphe
+246, mais dans notre propre pont, et cette fois la conversion ne peut pas être mécanique : un
+appel Steamworks générique passe des entiers et des pointeurs dans les mêmes emplacements. C'est
+exactement à quoi servent les `signatures32.h` et `thunks32.h` de Proton, déjà présents dans
+l'arbre et pas encore branchés.
+
+### Le trou d'amorçage de `syswow64`
+
+`wineboot --init` lance bien la passe 32 bits (`start_rundll32 machine 14c starting
+C:\windows\syswow64\rundll32.exe`) mais elle ne crée rien : `[FakeDllsWow64]` finit par `11,,*`, le
+joker qui devrait fabriquer les ~830 factices, et il ne fabrique rien ici. Le repli sur les modules
+intégrés ne joue que pendant l'amorçage, et un processus 32 bits ne peut charger `kernel32` que si
+le factice existe déjà — la boucle est fermée. En attendant, `tests/peupler_syswow64.sh` copie les
+factices d'un préfixe qui en a. Il manquait `cryptbase.dll` dans le jeu copié, sans quoi le renvoi
+`advapi32!SystemFunction036 -> cryptbase.SystemFunction036` échoue et le chargement du jeu s'arrête
+sur `STATUS_DLL_NOT_FOUND`.
