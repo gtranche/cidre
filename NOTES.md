@@ -17625,3 +17625,81 @@ Deux fausses pistes écartées en chemin, qui valent d'être notées :
 Non-régression : `banc_x64` à **83,8 ms** (trois mesures identiques, bas de la bande §241),
 `probe_d3d11_draw` rastérise, et les dix programmes i386 passent — `h32`, `h32gdi`, `h32win`,
 `h32fil`, `h32seh`, `h32lea`, `h32cxx`, `h32pile`, `h32croi`, `h32audio`.
+
+## 253. L'adresse en 0x4000 : Mono rustine, FEX ne le voit pas
+
+Le symptôme : une lecture à une adresse **entièrement libre**, différente à chaque exécution, mais
+dont les seize bits de poids faible valaient **toujours 0x4000**. Neuf fois sur neuf.
+
+### Ce que la mesure a éliminé
+
+- **La taille de page.** 0x4000, c'est la page de macOS — mais l'invité voit bien
+  `dwPageSize = 4096`, et `tests/h32page.c` montre qu'un engagement de 4 Kio dans un granule de
+  64 Kio laisse bien le reste réservé. La granularité fine marche.
+- **Le pointeur d'instruction x87.** Le sommet de pile de la première exception porte une image
+  `fnstenv` dont le FIP vaut zéro (`tests/h32fpu.c` le confirme : 0 au lieu de 0x00401490). C'est
+  une limite de **FEX amont** — `X87FNSTENV` y range une constante nulle dans « Instruction
+  Offset » — donc pas une régression du portage. Piste close, manque noté.
+- **Une allocation périmée.** En traçant les 1344 allocations et 417 libérations de l'invité : sa
+  plus haute adresse est 0x18570000, soit 400 Mio. La cible, elle, était à 3 Gio. Le pointeur
+  n'avait jamais été alloué : il était **calculé**.
+- **L'EIP rapporté.** Il tombait chaque fois sur un `ret`, ce qui faisait croire à un ESP corrompu.
+  Une sonde de contexte a montré un ESP parfaitement sain : FEX reconstruit le RIP au dernier point
+  connu du bloc.
+
+### Ce qui l'a trouvé
+
+La chaîne des cadres, relevée dans `call_user_exception_dispatcher`, est identique d'une exécution
+à l'autre et entièrement en **code engendré par Mono**, avec une seule trame native au fond —
+`mono-2.0-bdwgc.dll`. Un essai suffisait alors :
+
+```
+FEX_MONOHACKS=0   ->   la faute disparaît
+```
+
+Les « rustines Mono » de FEX détectent le bloc qui rustine les sites d'appel, **désactivent la
+détection d'écriture de code** et traitent ce bloc à part. Le traitement à part, c'est
+`MonoBackpatcherWrite` :
+
+```c
+*reinterpret_cast<uint32_t*>(Address) = Value;                    /* Address : hote  */
+CTX->SyscallHandler->InvalidateGuestCodeRange(Thread, Address, Size);   /* attend : invite */
+```
+
+L'écriture veut un pointeur de l'hôte, l'invalidation une adresse d'invité — les deux autres
+appelants d'`InvalidateGuestCodeRange` passent d'ailleurs un RIP. Sans la soustraction, Mono
+rustine son site d'appel et FEX continue d'exécuter **l'ancienne traduction** : le saut part vers
+l'ancienne cible, et la faute tombe très loin de sa cause. Et comme la détection d'écriture de code
+avait justement été désactivée, rien ne la rattrapait.
+
+Une ligne :
+
+```c
+CTX->SyscallHandler->InvalidateGuestCodeRange(Thread, Address - FEXCore::IR::Guest32Base, Size);
+```
+
+### Au passage : une allocation réussie rendue comme un échec
+
+En cherchant, `tests/h32noacc.c` a mis au jour autre chose : la **première**
+`VirtualAlloc(NULL, n, MEM_RESERVE, PAGE_NOACCESS)` de chaque invité 32 bits rendait NULL, avec
+`GetLastError()` à zéro. Elle réussissait pourtant — à l'adresse `0x400000000`, c'est-à-dire
+l'adresse **zéro de l'invité**, que la troncature rend indistinguable d'un échec.
+
+Le plancher passé à `map_view` valait `user_space_wow_base + 0`. Il vaut maintenant
+`user_space_wow_base + address_space_start` : la zone basse ne lui appartient pas de toute façon,
+`lpMinimumApplicationAddress` valant 0x10000. Les ramasse-miettes et les gestionnaires de code
+engendré réservent exactement ainsi, et ne vérifient pas toujours.
+
+### Où DREDGE en est
+
+La faute aléatoire a disparu. Il reste un échec **déterministe** — le même qu'avec
+`FEX_MONOHACKS=0`, donc le suivant dans la file et non un effet du correctif :
+
+```
+wine: Unhandled exception 0xc0000093 in thread f8 at address 7B822EF9
+```
+
+`STATUS_FLOAT_UNDERFLOW`, levé par l'invité lui-même via `RaiseException`. C'est le prochain fil.
+
+Non-régression : `banc_x64` à **84,2 — 84,7 ms** (bande §241), `probe_d3d11_draw` rastérise, et les
+douze programmes i386 passent — `h32fpu` rapportant, comme prévu, la limite d'amont.

@@ -226,6 +226,20 @@
            auto InstAddressReg = Thread->OpDispatcher->_EntrypointOffset(GPRSize, InstAddress - GuestRIP);
  
            auto Value = FEXCore::Utils::crc32(ExistingCodePtr, DecodedInfo->InstSize);
+@@ -1183,7 +1191,12 @@
+     }
+   }
+ 
+-  CTX->SyscallHandler->InvalidateGuestCodeRange(Thread, Address, Size);
++  /* Address sert d'abord a ecrire : c'est un pointeur de l'hote. L'invalidation,
++   * elle, s'exprime en adresses d'invite -- comme les deux autres appelants, qui
++   * passent un RIP. Sans la soustraction, Mono rustine son site d'appel et FEX
++   * continue d'executer l'ancienne traduction : le saut part vers l'ancienne
++   * cible, et la faute tombe loin de sa cause. */
++  CTX->SyscallHandler->InvalidateGuestCodeRange(Thread, Address - FEXCore::IR::Guest32Base, Size);
+ }
+ 
+ void ContextImpl::ConfigureAOTGen(FEXCore::Core::InternalThreadState* Thread, fextl::set<uint64_t>* ExternalBranches, uint64_t SectionMaxAddress) {
 --- aa/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
 +++ bb/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
 @@ -150,7 +150,12 @@
