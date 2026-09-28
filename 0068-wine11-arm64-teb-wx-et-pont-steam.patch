@@ -4683,7 +4683,23 @@
              else
 --- aa/dlls/ntdll/unix/thread.c
 +++ bb/dlls/ntdll/unix/thread.c
-@@ -1196,8 +1196,18 @@
+@@ -1186,7 +1186,14 @@
+             ((get_machine_context_size( main_image_info.Machine ) + 7) & ~7) + sizeof(ULONG64);
+ 
+         /* 64-bit stack */
+-        if ((status = virtual_alloc_thread_stack( &stack, limit_4g, 0, 0x40000, 0x40000, TRUE ))) return status;
++        /* Amont reserve 256 Kio. Cette pile-la porte le JIT de FEX en plus du
++         * noyau de Wine, et macOS aligne ses pages sur 16 Kio : DREDGE la fait
++         * deborder pour de vrai, et le message ne ressemble pas a sa cause --
++         * « stack overflow 16 bytes » depuis virtual_setup_exception, au moment
++         * ou il n'y a plus la place d'empiler le cadre d'exception. On reserve
++         * donc quatre Mio ; l'engagement reste a 256 Kio, la reservation ne
++         * coutant que de l'espace d'adressage. */
++        if ((status = virtual_alloc_thread_stack( &stack, limit_4g, 0, 0x400000, 0x40000, TRUE ))) return status;
+         cpu = (WOW64_CPURESERVED *)(((ULONG_PTR)stack.StackBase - cpusize) & ~15);
+         cpu->Machine = main_image_info.Machine;
+ 
+@@ -1196,8 +1203,18 @@
          teb->DeallocationStack = stack.DeallocationStack;
  
          /* 32-bit stack */
@@ -5999,12 +6015,12 @@
          }
 --- aa/dlls/wow64/syscall.c
 +++ bb/dlls/wow64/syscall.c
-@@ -39,7 +39,16 @@
+@@ -39,6 +39,15 @@
  ULONG_PTR args_alignment = 0;
  ULONG_PTR highest_user_address = 0x7ffeffff;
  ULONG_PTR default_zero_bits = 0x7fffffff;
 +ULONG64 guest_base = 0;
- 
++
 +/* Variable exportee par le ntdll : c'est lui qui decide de la fenetre.
 + * Elle n'existe que sur les cibles ou la question se pose. */
 +#ifdef __aarch64__
@@ -6012,10 +6028,9 @@
 +#else
 +static const ULONG64 __wine_wow64_guest_base = 0;
 +#endif
-+
+ 
  typedef NTSTATUS (WINAPI *syscall_thunk)( UINT *args );
  
- static const syscall_thunk syscall_thunks[] =
 @@ -155,7 +164,7 @@
      rec = Wow64AllocateTemp( sizeof(*rec) );
      rec->ExceptionCode = rec32->ExceptionCode;
@@ -6034,7 +6049,15 @@
              stack->rec_ptr     = PtrToUlong( &stack->rec );
              stack->context_ptr = PtrToUlong( &stack->context );
              stack->rec         = *rec;
-@@ -310,7 +319,7 @@
+@@ -257,7 +266,6 @@
+             ctx.EFlags &= ~(0x100|0x400|0x40000);
+             ctx.ContextFlags = CONTEXT_I386_CONTROL;
+             pBTCpuSetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx );
+-
+             TRACE( "exception %08lx dispatcher %08lx stack %08lx eip %08lx\n",
+                    rec->ExceptionCode, ctx.Eip, ctx.Esp, stack->context.Eip );
+         }
+@@ -310,7 +318,7 @@
              ctx.ContextFlags = CONTEXT_I386_CONTROL;
              pBTCpuGetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx );
              ctx.Esp -= sizeof(ULONG);
@@ -6043,20 +6066,20 @@
              ctx.Eip = (ULONG_PTR)pKiRaiseUserExceptionDispatcher;
              pBTCpuSetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx );
          }
-@@ -672,6 +681,12 @@
+@@ -671,6 +679,12 @@
+ {
      void *context = get_ptr( &args );
      KCONTINUE_ARGUMENT *cont_args = get_ptr( &args );
- 
++
 +    /* Ce parametre est soit un pointeur, soit un petit entier -- 0 ou 1 pour
 +     * « teste les alertes ». Le test se fait donc dans l'espace de l'invite :
 +     * rebase, un petit entier devient une adresse enorme, le « > 0xff » plus bas
 +     * le prend pour un pointeur et le deference. */
 +    if (PtrToUlong( cont_args ) <= 0xff) cont_args = (KCONTINUE_ARGUMENT *)(ULONG_PTR)PtrToUlong( cont_args );
-+
+ 
      NTSTATUS status = get_context_return_value( context );
      struct user_apc_frame *frame = NtCurrentTeb()->TlsSlots[WOW64_TLS_APCLIST];
-     BOOL alertable;
-@@ -996,6 +1011,10 @@
+@@ -996,6 +1010,10 @@
      NtQuerySystemInformation( SystemEmulationBasicInformation, &info, sizeof(info), NULL );
      highest_user_address = (ULONG_PTR)info.HighestUserAddress;
      default_zero_bits = (ULONG_PTR)info.HighestUserAddress | 0x7fffffff;
@@ -6067,7 +6090,7 @@
      NtQueryInformationProcess( GetCurrentProcess(), ProcessWow64Information, &peb32, sizeof(peb32), NULL );
      wow64info = (WOW64INFO *)(peb32 + 1);
      wow64info->NativeSystemPageSize = 0x1000;
-@@ -1081,7 +1100,7 @@
+@@ -1081,7 +1099,7 @@
              ULONG *stack;
  
              pBTCpuGetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx );
@@ -6076,7 +6099,7 @@
              *ctx_ptr = ctx;
              stack = (ULONG *)ctx_ptr;
              *(--stack) = 0;
-@@ -1333,7 +1352,7 @@
+@@ -1333,7 +1351,7 @@
  
              pBTCpuGetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx );
  
@@ -6085,7 +6108,7 @@
              stack->func      = arg1 >> 32;
              stack->arg1      = arg1;
              stack->arg2      = arg2;
-@@ -1427,7 +1446,7 @@
+@@ -1427,7 +1445,7 @@
              pBTCpuGetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx );
              orig_ctx = ctx;
  

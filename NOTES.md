@@ -17790,3 +17790,86 @@ appelle `atan2` avec des opérandes déjà fausses.
 
 Non-régression : `banc_x64` à **84,4 — 84,7 ms** (bande §241), `probe_d3d11_draw` rastérise, et les
 dix-sept programmes i386 passent.
+
+## 255. `push %esp` : une bizarrerie du 386, et DREDGE affiche ses images
+
+La chaîne complète, de la cause à l'effet, mérite d'être écrite en entier — c'est le genre de
+distance entre les deux qu'on ne devine pas.
+
+### La cause
+
+`PUSH ESP` empile la valeur d'ESP **avant** la décrémentation. C'est une bizarrerie documentée du
+386 (le 8086 faisait l'inverse), et FEX amont la respecte : son `DEF_OP(Push)` recopie la source
+dans un temporaire quand elle recouvre le registre de destination.
+
+Le chemin rapide que ce portage a ajouté pour la fenêtre d'invité déplacée l'avait oublié :
+
+```c
+sub(i32Bit, Dst, AddrSrc, ValueSize);          /* Dst = nouveau SP  */
+orr(i64Bit, TMP2, Dst.X(), Guest32Base);       /* adresse de l'hote */
+str(Src.W(), TMP2, 0);                          /* Src == Dst !      */
+```
+
+Quand `Src` et `Dst` sont le même registre — exactement `push %esp` — le `sub` écrase la valeur
+avant qu'elle ne soit écrite. `tests/h32pushsp.c` le montre en trois lignes :
+
+```
+push %esp : esp avant = 0034fee0, valeur empilee = 0034fedc, esp apres = 0034fee0
+```
+
+### L'effet, six étapes plus loin
+
+1. `RtlUnwind` se réserve de la place pour un `CONTEXT`, le fait remplir par `RtlCaptureContext`,
+   puis passe son adresse avec **`pushl %esp`**.
+2. La case empilée contient alors sa propre adresse : le contexte est lu **quatre octets trop
+   bas**. `ContextFlags` tombe sur le mot d'avant — qui est justement ce pointeur.
+3. Ce `ContextFlags` aberrant a le bit `CONTEXT_I386_EXTENDED_REGISTERS` allumé par hasard.
+4. `NtContinue` demande donc à `set_thread_wow64_context` de recopier l'aire FXSAVE… depuis de la
+   pile non initialisée. `RtlCaptureContext` ne remplit pas l'état x87 — c'est son contrat, que
+   `tests/h32capt.c` vérifie.
+5. FEX relit cette aire au retour dans l'invité : `State.FCW = XSave->ControlWord` — **0x002B**.
+   Toujours 0x2B, car c'est ce que la pile contenait là.
+6. 0x2B a les bits `UM` et `ZM` à zéro. Le CRT Microsoft d'UnityPlayer sauvegarde ce mot par
+   `fstcw` à l'entrée de `atan2`, en déduit que le sous-dépassement est **démasqué**, et lève
+   `STATUS_FLOAT_UNDERFLOW`. Personne ne le rattrape.
+
+Le symptôme était donc une exception flottante ; la cause, une instruction de pile.
+
+### Comment on y est arrivé
+
+En remontant, et seulement en remontant :
+
+- la chaîne des cadres au moment de la levée dit que c'est le CRT d'Unity ;
+- le désassemblage de l'appel à `RaiseException` donne la structure passée, dont `Enable = 0x0A` ;
+- le désassemblage de celui qui la remplit dit que `Enable` vient d'un mot de contrôle sauvegardé ;
+- le contexte de l'exception dit que le processeur, lui, a `CW = 0x133F`, tout masqué ;
+- `tests/h32cwexc.c` montre alors que `OutputDebugStringA` suffit à faire passer le mot de contrôle
+  de 0x133F à 0x002B — dix lignes, hors du jeu ;
+- une sonde dans `LoadStateFromWowContext` dit que c'est le contexte stocké qui porte 0x2B ;
+- une sonde dans `set_thread_wow64_context` dit que le `ContextFlags` reçu est **une adresse de
+  pile** ;
+- et la comparaison des champs — `Eip` qui lit `Ebp`, `Esp` qui lit `EFlags` — donne le décalage de
+  quatre octets, donc `push %esp`.
+
+### Où DREDGE en est
+
+```
+info:  Presenter: Actual swapchain properties:
+info:    Format:       VK_FORMAT_B8G8R8A8_UNORM
+info:    Buffer size:  1728x1117
+info:    Image count:  3
+warn:  DxgiSwapChain::GetFrameStatistics: Frame statistics may be inaccurate
+```
+
+Chaîne d'échange créée, images présentées, 65 fils, et le processus `wine` au premier plan de
+macOS. Un jeu Unity 32 bits tourne sur la pile entièrement libre : PE i386 → FEX → Wine arm64 →
+DXVK → winevulkan → KosmicKrisp → Metal.
+
+Reste un débordement de la pile **hôte** des fils wow64 : elle est passée de 256 Kio à 4 Mio, ce
+qui a fait tomber le nombre de débordements de trois à un, mais quatre Mio pleins veulent dire une
+récursion qui s'emballe, pas une pile trop courte. C'est le prochain fil.
+
+Non-régression : vingt-deux programmes i386 passent, `probe_d3d11_draw` rastérise, `banc_x64` donne
+**84,8 — 85,4 ms** — légèrement au-dessus de la bande §241, mais la machine portait
+`PerfPowerServices` à 55 % pendant la mesure, et ce banc passe par `arm64ecfex`, que ce correctif ne
+touche pas.

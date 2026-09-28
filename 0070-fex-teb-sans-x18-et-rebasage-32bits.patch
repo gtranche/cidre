@@ -313,7 +313,7 @@
  
  namespace FEXCore::CPU {
  
-@@ -1471,6 +1472,25 @@
+@@ -1471,6 +1472,36 @@
    auto Src = GetReg(Op->Value);
    const auto AddrSrc = GetReg(Op->Addr);
    const auto Dst = GetReg(Node);
@@ -325,6 +325,17 @@
 +     * celle-la doit rester une adresse d'invite. On calcule donc le SP d'abord,
 +     * l'adresse hote dans un temporaire, et on ecrit sans indexation.
 +     */
++    /*
++     * « push %esp » empile ESP tel qu'il etait *avant* la decrementation. Le
++     * meme registre porte alors la valeur a ecrire et le nouveau SP : calculer
++     * le SP d'abord l'ecraserait, et la pile recevrait une case qui contient sa
++     * propre adresse. RtlUnwind s'en sert pour passer l'adresse du contexte, et
++     * tout le contexte se retrouve decale de quatre octets.
++     */
++    if (Src == Dst) {
++      mov(TMP1, Src.X());
++      Src = TMP1;
++    }
 +    sub(ARMEmitter::Size::i32Bit, Dst, AddrSrc, ValueSize);
 +    orr(ARMEmitter::Size::i64Bit, TMP2, Dst.X(), FEXCore::IR::Guest32Base);
 +    switch (ValueSize) {
@@ -339,10 +350,11 @@
  
    bool NeedsMoveAfterwards = false;
    if (Dst != AddrSrc) {
-@@ -1557,6 +1577,18 @@
+@@ -1556,6 +1587,18 @@
+   auto Src1 = GetReg(Op->Value1);
    auto Src2 = GetReg(Op->Value2);
    const auto Dst = GetReg(Op->Addr);
- 
++
 +  if (FEXCore::IR::Guest32Base) {
 +    /* Meme raison que Push : le registre est a la fois l'adresse et le SP. */
 +    sub(ARMEmitter::Size::i32Bit, Dst, Dst, 2 * ValueSize);
@@ -354,15 +366,13 @@
 +    }
 +    return;
 +  }
-+
+ 
    switch (ValueSize) {
    case 4: {
-     stp<ARMEmitter::IndexType::PRE>(Src1.W(), Src2.W(), Dst, -2 * ValueSize);
-@@ -1580,6 +1612,20 @@
-   const auto Dst = GetReg(Op->OutValue);
+@@ -1581,6 +1624,20 @@
  
    LOGMAN_THROW_A_FMT(Dst != Addr, "Invalid");
-+
+ 
 +  if (FEXCore::IR::Guest32Base) {
 +    /* Meme raison que pour Push : le registre d'adresse est aussi le SP. */
 +    orr(ARMEmitter::Size::i64Bit, TMP2, Addr.X(), FEXCore::IR::Guest32Base);
@@ -376,10 +386,11 @@
 +    add(ARMEmitter::Size::i32Bit, Addr, Addr, Size);
 +    return;
 +  }
- 
++
    switch (Size) {
    case 1: {
-@@ -1618,6 +1664,17 @@
+     ldrb<ARMEmitter::IndexType::POST>(Dst.W(), Addr, Size);
+@@ -1618,6 +1675,17 @@
    }
  
    LOGMAN_THROW_A_FMT(Dst1 != Addr && Dst2 != Addr, "Invalid");
