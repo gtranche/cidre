@@ -17703,3 +17703,90 @@ wine: Unhandled exception 0xc0000093 in thread f8 at address 7B822EF9
 
 Non-régression : `banc_x64` à **84,2 — 84,7 ms** (bande §241), `probe_d3d11_draw` rastérise, et les
 douze programmes i386 passent — `h32fpu` rapportant, comme prévu, la limite d'amont.
+
+## 254. `STATUS_FLOAT_UNDERFLOW` : ce que la mesure a éliminé
+
+DREDGE meurt désormais toujours au même endroit :
+
+```
+wine: Unhandled exception 0xc0000093 in thread f8 at address 7B822EF9
+```
+
+### Qui lève, et pourquoi
+
+La chaîne des cadres relevée dans `call_user_exception_dispatcher` est entièrement dans
+UnityPlayer.dll — le CRT Microsoft lié statiquement :
+
+```
+UnityPlayer+121987C  -> RaiseException          (kernelbase+12EF9)
+UnityPlayer+1219644
+UnityPlayer+1223F49
+UnityPlayer+121AEDB
+UnityPlayer+1B2A7B                              <- le moteur
+<code JIT de Mono>
+```
+
+Le désassemblage donne l'appel exact :
+
+```asm
+lea  0x8(%ebp),%eax     ; &record
+push %eax
+push $1                 ; un argument
+push $0
+push %edi               ; = 0xC0000093
+call *0x112343d0        ; RaiseException
+```
+
+`ExceptionInformation[0]` pointe donc sur la structure que le CRT a remplie. En la dumpant :
+
+```
++0x00  0x208   RoundingMode=0, Precision=Double, Operation=16 (_FpCodeAtan2)
++0x04  0x03    Cause  : Inexact + Underflow
++0x08  0x0a    Enable : Underflow + ZeroDivide     <-- le coupable
++0x0c  0x10    Status : InvalidOperation
+```
+
+`Enable` est calculé bit à bit à partir d'un mot de contrôle x87 que le CRT relit dans un tampon
+(`movzwl (%eax),%ecx` sur `[ebx+0x10]`), en inversant chaque bit de masque. Le CRT croit donc le
+sous-dépassement **démasqué**, et lève.
+
+Or l'état réel du processeur au même instant, lu dans le contexte de l'exception :
+
+```
+CW=133f SW=0000 TW=ffff   (fxsave CW=133f SW=0000 MXCSR=00001f80)
+```
+
+`0x133F` : les six bits de masque sont tous à 1. **Tout est masqué.** Le CRT lit donc un mot qui ne
+vient pas du processeur — il faudrait `ZM=0` et `UM=0`, soit 0x29 ou 0x2B.
+
+### Ce qui a été éliminé
+
+Chaque mécanisme par lequel ce mot aurait pu se corrompre a été mesuré, et aucun n'est en cause.
+Les programmes restent dans `tests/` :
+
+| essai | ce qu'il prouve |
+|---|---|
+| `h32fcw` | `fldcw`/`fnstcw` et `ldmxcsr`/`stmxcsr` font l'aller-retour sur cinq valeurs, 0x133F comprise ; les masques sont tous posés au démarrage |
+| `h32env` | `fnstenv`/`fldenv` sont justes **dans les deux dispositions**, 14 et 28 octets |
+| `h32fsave` | `fnsave`/`frstor` et `fxsave`/`fxrstor` conservent CW, SW, TW et MXCSR |
+| `h32denorm` | aucun dénormal n'est mis à zéro — le mode « flush-to-zero » d'ARM ne fuit pas |
+| `h32fs0` | le SEH par la chaîne `FS:[0]`, que `h32seh` n'exerçait pas, appelle bien son gestionnaire et reprend |
+| `h32fpu` | seul manque trouvé : `fnstenv` rend un pointeur d'instruction nul — mais c'est le code d'amont (`X87FNSTENV` y range une constante nulle), donc hors de cause |
+
+Deux impasses également notées :
+
+- **Avaler l'exception ne suffit pas.** Rendre la main depuis `call_user_exception_dispatcher`
+  n'équivaut pas à « traitée » : l'invité déroule quand même son filtre de dernier recours.
+- **Le manque de drapeaux d'état.** FEX ne pose jamais les bits d'exception du mot d'état x87 ni du
+  MXCSR (`1e-300*1e-300` laisse `SW=0000`). C'est une limite connue d'amont ; elle expliquerait un
+  `Status` nul, pas un `Status` à `InvalidOperation`.
+
+### Ce qui reste à faire
+
+Trouver d'où `[ebx+0x10]` tire son mot de contrôle. `ebx` est un descripteur passé par la fonction
+mathématique (`UnityPlayer+121AEDB`) ; son champ `+0x10` pointe sur un `WORD`. Tant que ce tampon
+n'est pas identifié, on ne sait pas si c'est l'émulation qui l'a rempli de travers ou le moteur qui
+appelle `atan2` avec des opérandes déjà fausses.
+
+Non-régression : `banc_x64` à **84,4 — 84,7 ms** (bande §241), `probe_d3d11_draw` rastérise, et les
+dix-sept programmes i386 passent.
