@@ -303,6 +303,28 @@
    // Check for wraparound
    if (Address + Size < Address) {
      return false;
+--- aa/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ bb/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -913,14 +913,16 @@
+   CodeData.EntryPoints.clear();
+ 
+   // Fairly excessive buffer range to make sure we don't overflow
+-  // One page baseline, plus SSANodeMultipler bytes, plus another page for guard page.
+-  const uint32_t DesiredBufferRange = AlignUp(FEXCore::Utils::FEX_PAGE_SIZE * 2 + SSACount * SSANodeMultiplier, FEXCore::Utils::FEX_PAGE_SIZE);
++  // One page baseline, plus SSANodeMultipler bytes, plus a guard page at the end.
++  // La garde fait FEX_TAILLE_GARDE : voir TypeDefines.h, une page de 4 Kio ne leve pas ici.
++  const uint32_t DesiredBufferRange =
++    AlignUp(FEXCore::Utils::FEX_PAGE_SIZE + FEXCore::Utils::FEX_TAILLE_GARDE + SSACount * SSANodeMultiplier, FEXCore::Utils::FEX_TAILLE_GARDE);
+ 
+   // JIT output is first written to a temporary buffer and later relocated to the CodeBuffer.
+   // This minimizes lock contention of CodeBufferWriteMutex.
+   auto TempCodeBufferInfo = TempCodeBufferAllocator.ReownOrClaimBufferWithSize(DesiredBufferRange);
+   auto TempCodeBuffer = TempCodeBufferInfo.Ptr;
+-  const uint32_t UsableBufferRange = TempCodeBufferInfo.Size - FEXCore::Utils::FEX_PAGE_SIZE;
++  const uint32_t UsableBufferRange = TempCodeBufferInfo.Size - FEXCore::Utils::FEX_TAILLE_GARDE;
+ 
+   SetBuffer(TempCodeBuffer, UsableBufferRange);
+ 
 --- aa/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
 +++ bb/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
 @@ -14,6 +14,7 @@
@@ -565,6 +587,44 @@
    Ref GetSegment(uint32_t Flags, uint32_t DefaultPrefix = FEXCore::X86Tables::DecodeFlags::FLAG_NO_PREFIX, bool Override = false);
  
    void UpdatePrefixFromSegment(Ref Segment, uint32_t SegmentReg);
+--- aa/FEXCore/include/FEXCore/Utils/ThreadPoolAllocator.h
++++ bb/FEXCore/include/FEXCore/Utils/ThreadPoolAllocator.h
+@@ -420,8 +420,9 @@
+ private:
+   void* Alloc(size_t Size) override {
+     auto Ptr = FEXCore::Allocator::VirtualAlloc(Size);
+-    uintptr_t LastPageAddr = AlignDown(reinterpret_cast<uintptr_t>(Ptr) + Size - 1, FEXCore::Utils::FEX_PAGE_SIZE);
+-    if (!FEXCore::Allocator::VirtualProtect(reinterpret_cast<void*>(LastPageAddr), FEXCore::Utils::FEX_PAGE_SIZE,
++    // La garde fait FEX_TAILLE_GARDE : une page de 4 Kio ne leve pas sur un hote a pages de 16 Kio.
++    uintptr_t LastPageAddr = AlignDown(reinterpret_cast<uintptr_t>(Ptr) + Size - 1, FEXCore::Utils::FEX_TAILLE_GARDE);
++    if (!FEXCore::Allocator::VirtualProtect(reinterpret_cast<void*>(LastPageAddr), FEXCore::Utils::FEX_TAILLE_GARDE,
+                                             FEXCore::Allocator::ProtectOptions::None)) {
+       LogMan::Msg::EFmt("Failed to mprotect last page of code buffer.");
+     }
+--- aa/FEXCore/include/FEXCore/Utils/TypeDefines.h
++++ bb/FEXCore/include/FEXCore/Utils/TypeDefines.h
+@@ -9,4 +9,21 @@
+ constexpr size_t FEX_PAGE_SIZE = 4096;
+ constexpr size_t FEX_PAGE_SHIFT = 12;
+ constexpr size_t FEX_PAGE_MASK = ~(FEX_PAGE_SIZE - 1);
++
++/*
++ * Taille d'une page de garde -- c'est-a-dire d'une page dont on attend qu'elle
++ * *leve*, pas seulement qu'elle soit notee inaccessible.
++ *
++ * FEX_PAGE_SIZE est la page du x86, une convention interne : elle dit en quelles
++ * tranches FEX decoupe la memoire, pas ce que le materiel sait proteger. Sur
++ * Apple Silicon la page de l'hote fait 16 Kio, et une protection de 4 Kio n'y
++ * arrive pas : la comptabilite de Wine annonce bien PAGE_NOACCESS, et l'ecriture
++ * passe quand meme (tests/garde64.c le montre dans les deux sens -- garde
++ * reservee au milieu d'une zone engagee, et garde posee apres coup par
++ * VirtualProtect). Une garde trop petite ne garde rien, en silence.
++ *
++ * 64 Kio : la granularite d'allocation de Windows, multiple de toute taille de
++ * page plausible, et deja l'alignement des bases rendues par VirtualAlloc.
++ */
++constexpr size_t FEX_TAILLE_GARDE = 64 * 1024;
+ } // namespace FEXCore::Utils
 --- aa/Source/Windows/ARM64EC/Module.S
 +++ bb/Source/Windows/ARM64EC/Module.S
 @@ -1,6 +1,25 @@
@@ -662,6 +722,151 @@
    InitSyscalls();
  
    FEX::Windows::InitCRTProcess();
+--- aa/Source/Windows/Common/CallRetStack.h
++++ bb/Source/Windows/Common/CallRetStack.h
+@@ -13,41 +13,136 @@
+   uint64_t DefaultLocation;
+ };
+ 
++/*
++ * Taille des pages de garde qui encadrent la pile d'appels.
++ *
++ * FEX_PAGE_SIZE vaut 4 Kio, la page du x86. L'hote, lui, arme des pages de
++ * 16 Kio sur Apple Silicon : engager le milieu de la reservation rend
++ * accessibles les deux gardes de 4 Kio qui l'entourent, parce qu'elles
++ * partagent sa page materielle. La comptabilite de Wine continue de les
++ * annoncer reservees et sans acces -- et c'est ce qui trompe -- mais
++ * l'ecriture passe (tests/garde64.c le montre en sept lignes).
++ *
++ * Une garde plus petite que la page de l'hote ne garde donc rien : le pointeur
++ * de pile d'appels la traverse sans faute, sort de la reservation, et la faute
++ * ne tombe qu'un megaoctet plus bas -- hors des bornes que HandleAccessViolation
++ * reconnait, donc rendue a l'invite, ou son gestionnaire refaute sans avancer.
++ *
++ * On prend la granularite d'allocation de Windows, 64 Kio : multiple de toute
++ * taille de page plausible, et le milieu reste aligne dessus, donc l'engagement
++ * ne peut plus deborder sur les gardes.
++ */
++constexpr uint64_t TAILLE_GARDE = 0x10000;
++
+ CallRetStackInfo GetInfoThread(FEXCore::Core::InternalThreadState* Thread) {
+   uint64_t Base = reinterpret_cast<uint64_t>(Thread->CallRetStackBase);
+   // Leave some room from the base for the default location to allow for underflows without constant exceptions
+-  return {Base - FEXCore::Utils::FEX_PAGE_SIZE, Base + FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE + FEXCore::Utils::FEX_PAGE_SIZE,
++  return {Base - TAILLE_GARDE, Base + FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE + TAILLE_GARDE,
+           Base + FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE / 4};
+ }
+ 
++#ifdef SONDE_FAUTE_INVITE
++/*
++ * Ecrire pendant la course la change : une sonde bavarde fait disparaitre le
++ * symptome -- cinq executions propres avec les traces, quatre sur quatre sans.
++ * On enregistre donc en silence dans un anneau, et on ne parle qu'une fois,
++ * quand le pointeur est sorti de ses bornes : l'instant qui interesse.
++ */
++struct Evenement {
++  uint32_t Fil;
++  const char* Quoi;
++  uint64_t Adresse;
++  uint64_t Sp;
++  uint64_t Base;
++};
++
++constexpr size_t TAILLE_ANNEAU = 256;
++inline Evenement Anneau[TAILLE_ANNEAU] {};
++inline std::atomic<uint32_t> Curseur {0};
++inline std::atomic<bool> DejaVide {false};
++
++inline void Noter(const char* Quoi, uint64_t Adresse, uint64_t Sp, uint64_t Base) {
++  const uint32_t I = Curseur.fetch_add(1, std::memory_order_relaxed) % TAILLE_ANNEAU;
++  Anneau[I] = {GetCurrentThreadId(), Quoi, Adresse, Sp, Base};
++}
++
++inline void Vider(const char* Cause) {
++  if (DejaVide.exchange(true)) {
++    return;
++  }
++  const uint32_t Fin = Curseur.load(std::memory_order_relaxed);
++  const uint32_t Debut = Fin > TAILLE_ANNEAU ? Fin - TAILLE_ANNEAU : 0;
++  LogMan::Msg::EFmt("SONDE anneau ({}) : {} evenements", Cause, Fin - Debut);
++  for (uint32_t N = Debut; N < Fin; ++N) {
++    const auto& E = Anneau[N % TAILLE_ANNEAU];
++    LogMan::Msg::EFmt("  [{}] fil {:#x} {} adresse {:#x} sp {:#x} base {:#x} ecart_sp {}{:#x}", N, E.Fil,
++                      E.Quoi ? E.Quoi : "?", E.Adresse, E.Sp, E.Base, E.Sp < E.Base ? "-" : "+",
++                      E.Sp < E.Base ? E.Base - E.Sp : E.Sp - E.Base);
++  }
++}
++#endif
++
+ void InitializeThread(FEXCore::Core::InternalThreadState* Thread) {
+   // Allocate the call-ret stack with guard pages on both sides
+-  const void* CallRetStackAlloc = ::VirtualAlloc(nullptr, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE + 2 * FEXCore::Utils::FEX_PAGE_SIZE,
++  const void* CallRetStackAlloc = ::VirtualAlloc(nullptr, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE + 2 * TAILLE_GARDE,
+                                                  MEM_RESERVE | MEM_TOP_DOWN, PAGE_NOACCESS);
+ 
+   FEXCore::Allocator::VirtualName("FEXMem_CallRetStacks", CallRetStackAlloc,
+-                                  FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE + 2 * FEXCore::Utils::FEX_PAGE_SIZE);
+-  FEXCore::Allocator::VirtualTHPControl(CallRetStackAlloc, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE + 2 * FEXCore::Utils::FEX_PAGE_SIZE,
++                                  FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE + 2 * TAILLE_GARDE);
++  FEXCore::Allocator::VirtualTHPControl(CallRetStackAlloc, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE + 2 * TAILLE_GARDE,
+                                         FEXCore::Allocator::THPControl::Disable);
+ 
+-  Thread->CallRetStackBase = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(CallRetStackAlloc) + FEXCore::Utils::FEX_PAGE_SIZE);
++  Thread->CallRetStackBase = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(CallRetStackAlloc) + TAILLE_GARDE);
+   ::VirtualAlloc(Thread->CallRetStackBase, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE, MEM_COMMIT, PAGE_READWRITE);
+ 
+   Thread->CurrentFrame->State.callret_sp = GetInfoThread(Thread).DefaultLocation;
++#ifdef SONDE_FAUTE_INVITE
++  Noter("naissance", GetInfoThread(Thread).AllocationEnd, GetInfoThread(Thread).DefaultLocation,
++        GetInfoThread(Thread).AllocationBase);
++#endif
+ }
+ 
+ void DestroyThread(FEXCore::Core::InternalThreadState* Thread) {
+   auto CallRetStackInfo = GetInfoThread(Thread);
++#ifdef SONDE_FAUTE_INVITE
++  Noter("mort", CallRetStackInfo.AllocationEnd, Thread->CurrentFrame->State.callret_sp, CallRetStackInfo.AllocationBase);
++#endif
+   ::VirtualFree(reinterpret_cast<void*>(CallRetStackInfo.AllocationBase), 0, MEM_RELEASE);
+ }
+ 
++#ifdef SONDE_FAUTE_INVITE
++// Dit si le pointeur de pile d'appels est sorti de ses bornes, et ou on l'a vu.
++void Verifier(FEXCore::Core::InternalThreadState* Thread, const char* Ou) {
++  if (!Thread) {
++    return;
++  }
++  auto I = GetInfoThread(Thread);
++  const uint64_t Sp = Thread->CurrentFrame->State.callret_sp;
++  if (Sp >= I.AllocationBase + 0x10000 && Sp < I.AllocationEnd) {
++    return;
++  }
++  Noter(Ou, 0, Sp, I.AllocationBase);
++  if (Sp < I.AllocationBase || Sp >= I.AllocationEnd) {
++    Vider(Ou);
++  }
++}
++#endif
++
+ bool HandleAccessViolation(FEXCore::Core::InternalThreadState* Thread, uint64_t Address, uint64_t& CallRetSPReg) {
+   auto CallRetStackInfo = GetInfoThread(Thread);
+   if (Address >= CallRetStackInfo.AllocationBase && Address < CallRetStackInfo.AllocationEnd) {
+-    LogMan::Msg::DFmt("Call-ret stack inbalance: {:X}", Address);
++#ifdef SONDE_FAUTE_INVITE
++    Noter("rattrapage", Address, CallRetSPReg, CallRetStackInfo.AllocationBase);
++#endif
+     CallRetSPReg = CallRetStackInfo.DefaultLocation;
+     return true;
+   }
++#ifdef SONDE_FAUTE_INVITE
++  if (Address + 0x1000000 >= CallRetStackInfo.AllocationBase && Address < CallRetStackInfo.AllocationEnd) {
++    Noter("hors bornes", Address, CallRetSPReg, CallRetStackInfo.AllocationBase);
++    Vider("hors bornes");
++  }
++#endif
+   return false;
+ }
+ } // namespace FEX::Windows::CallRetStack
 --- aa/Source/Windows/Common/Guest32.h
 +++ bb/Source/Windows/Common/Guest32.h
 @@ -0,0 +1,40 @@
@@ -917,6 +1122,26 @@
        SIZE_T TmpSize = static_cast<SIZE_T>(std::min(End, Address + Query.Size) - Address);
        ULONG TmpProt;
        NtProtectVirtualMemory(NtCurrentProcess(), &TmpAddress, &TmpSize, ForWriteLocked ? GetUntrapProt(Address) : GetTrapProt(Address), &TmpProt);
+--- aa/Source/Windows/Common/JITGuardPage.h
++++ bb/Source/Windows/Common/JITGuardPage.h
+@@ -5,13 +5,13 @@
+ 
+ namespace FEX::Windows::JITGuardPage {
+ static constexpr bool IsAddressInJITGuardPage(uintptr_t GuardPage, uintptr_t Address) {
+-  return GuardPage != 0 && Address >= GuardPage && Address < GuardPage + FEXCore::Utils::FEX_PAGE_SIZE;
++  return GuardPage != 0 && Address >= GuardPage && Address < GuardPage + FEXCore::Utils::FEX_TAILLE_GARDE;
+ }
+ 
+ static_assert(!IsAddressInJITGuardPage(0, 0));
+-static_assert(IsAddressInJITGuardPage(0x1000, 0x1000));
+-static_assert(IsAddressInJITGuardPage(0x1000, 0x1fff));
+-static_assert(!IsAddressInJITGuardPage(0x1000, 0x2000));
++static_assert(IsAddressInJITGuardPage(0x10000, 0x10000));
++static_assert(IsAddressInJITGuardPage(0x10000, 0x1ffff));
++static_assert(!IsAddressInJITGuardPage(0x10000, 0x20000));
+ 
+ static inline bool HandleJITGuardPage(FEXCore::Core::InternalThreadState* Thread, void* Address, uint64_t* GPRs, __uint128_t* FPRs, uint64_t* PC) {
+   if (IsAddressInJITGuardPage(Thread->JITGuardPage, reinterpret_cast<uintptr_t>(Address))) {
 --- aa/Source/Windows/WOW64/Module.cpp
 +++ bb/Source/Windows/WOW64/Module.cpp
 @@ -37,6 +37,7 @@
@@ -927,11 +1152,10 @@
  #include "Common/ImageTracker.h"
  #include "Common/InvalidationTracker.h"
  #include "Common/Threads.h"
-@@ -62,6 +63,16 @@
- #include <winternl.h>
+@@ -63,6 +64,16 @@
  #include <wine/debug.h>
  #include <wine/unixlib.h>
-+
+ 
 +#ifdef FEX_TEB_SANS_X18
 +namespace FEXCore::IR {
 +extern uint64_t Guest32Base;
@@ -941,9 +1165,10 @@
 +using FEX::Windows::ToGuest32;
 +using FEX::Windows::ToHost32;
 +#endif
- 
++
  struct TLS {
    enum class Slot : size_t {
+     ENTRY_CONTEXT = WOW64_TLS_MAX_NUMBER - 1,
 @@ -188,10 +199,15 @@
  }
  
@@ -1062,7 +1287,30 @@
  }
  
  NTSTATUS BTCpuGetContext(HANDLE Thread, HANDLE Process, void* Unknown, WOW64_CONTEXT* Context) {
-@@ -730,7 +771,6 @@
+@@ -711,10 +752,16 @@
+   const auto TLS = GetTLS();
+   TLS.EntryContext() = entry_context;
+   TLS.CachedCallRetSp() = TLS.ThreadState()->CurrentFrame->State.callret_sp;
++#ifdef SONDE_FAUTE_INVITE
++  FEX::Windows::CallRetStack::Verifier(TLS.ThreadState(), "entree simulate");
++#endif
+ 
+   Context::LockJITContext();
+   CTX->ExecuteThread(TLS.ThreadState());
+   Context::UnlockJITContext();
++#ifdef SONDE_FAUTE_INVITE
++  FEX::Windows::CallRetStack::Verifier(TLS.ThreadState(), "sortie simulate");
++#endif
+ }
+ 
+ NTSTATUS BTCpuSuspendLocalThread(HANDLE Thread, ULONG* Count) {
+@@ -727,10 +774,12 @@
+   auto* Exception = Ptrs->ExceptionRecord;
+   auto Thread = GetTLS().ThreadState();
+   FEXCORE_PROFILE_ACCUMULATION(Thread, AccumulatedSignalTime);
++#ifdef SONDE_FAUTE_INVITE
++  FEX::Windows::CallRetStack::Verifier(Thread, "entree exception");
++#endif
  
    if (Exception->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
      const auto FaultAddress = static_cast<uint64_t>(Exception->ExceptionInformation[1]);
@@ -1070,7 +1318,36 @@
      if (FEX::Windows::CallRetStack::HandleAccessViolation(Thread, FaultAddress, Context->X25)) {
        return true;
      }
-@@ -810,17 +850,17 @@
+@@ -795,6 +844,28 @@
+   }
+   // wow64.dll will handle adjusting PC in the dispatched context after a breakpoint
+ 
++#ifdef SONDE_FAUTE_INVITE
++  if (GuestException.ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
++    FEX::Windows::CallRetStack::Vider("faute invite");
++    static std::atomic<int> Reste {6};
++    if (Reste.fetch_sub(1) > 0) {
++      const auto Cible = static_cast<uint64_t>(GuestException.ExceptionInformation[1]);
++      MEMORY_BASIC_INFORMATION Info {};
++      NTSTATUS St = NtQueryVirtualMemory(NtCurrentProcess(), reinterpret_cast<void*>(Cible), MemoryBasicInformation, &Info,
++                                         sizeof(Info), nullptr);
++      auto Pile = FEX::Windows::CallRetStack::GetInfoThread(Thread);
++      LogMan::Msg::EFmt("SONDE faute invite : cible {:#x} pc {:#x} eip {:#x} acces {:#x} | requete {:#x} "
++                        "alloc {:#x} base {:#x} taille {:#x} etat {:#x} prot {:#x} protalloc {:#x} | "
++                        "callret [{:#x},{:#x}) sp {:#x} x25 {:#x} etat {} fil {:#x}",
++                        Cible, Context->Pc, WowContext->Eip, static_cast<uint64_t>(GuestException.ExceptionInformation[0]),
++                        static_cast<uint32_t>(St), reinterpret_cast<uint64_t>(Info.AllocationBase),
++                        reinterpret_cast<uint64_t>(Info.BaseAddress), static_cast<uint64_t>(Info.RegionSize),
++                        Info.State, Info.Protect, Info.AllocationProtect, Pile.AllocationBase, Pile.AllocationEnd,
++                        Thread->CurrentFrame->State.callret_sp, Context->X25, static_cast<const void*>(Thread),
++                        GetCurrentThreadId());
++    }
++  }
++#endif
+   Context::UnlockJITContext();
+   NtRaiseException(&GuestException, GetTLS().EntryContext(), FirstChance);
+   return false;
+@@ -810,17 +881,17 @@
  
  void BTCpuFlushInstructionCache2(const void* Address, SIZE_T Size) {
    std::scoped_lock Lock(ThreadCreationMutex);
@@ -1091,7 +1368,7 @@
  }
  
  void BTCpuNotifyMemoryAlloc(void* Address, SIZE_T Size, ULONG Type, ULONG Prot, BOOL After, ULONG Status) {
-@@ -829,7 +869,7 @@
+@@ -829,7 +900,7 @@
    } else {
      // MEM_RESET(_UNDO) ignores the passed permissions
      if (!Status && !(Type & (MEM_RESET | MEM_RESET_UNDO))) {
@@ -1100,7 +1377,7 @@
      }
      ThreadCreationMutex.unlock();
    }
-@@ -840,7 +880,7 @@
+@@ -840,7 +911,7 @@
      ThreadCreationMutex.lock();
    } else {
      if (!Status) {
@@ -1109,7 +1386,7 @@
      }
      ThreadCreationMutex.unlock();
    }
-@@ -851,7 +891,7 @@
+@@ -851,7 +922,7 @@
      ThreadCreationMutex.lock();
    } else {
      if (!Status) {
@@ -1118,7 +1395,7 @@
      }
      ThreadCreationMutex.unlock();
    }
-@@ -866,7 +906,7 @@
+@@ -866,7 +937,7 @@
  void BTCpuNotifyUnmapViewOfSection(void* Address, BOOL After, ULONG Status) {
    if (!After) {
      ThreadCreationMutex.lock();
@@ -1127,7 +1404,7 @@
      if (Size) {
        HandleImageUnmap(Start, Size);
      }
-@@ -884,7 +924,7 @@
+@@ -884,7 +955,7 @@
    // See arm64ec `BTCpu64NotifyReadFile` for why this like this.
    if (After && Status == STATUS_SUCCESS) {
      std::scoped_lock Lock(ThreadCreationMutex);

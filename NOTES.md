@@ -18026,3 +18026,93 @@ reste à établir.
 
 Non-régression : vingt-deux programmes i386 passent, `probe_d3d11_draw` rastérise, `banc_x64` donne
 **83,8 — 83,9 ms**, dans la bande du §241.
+
+## 258. Le `x25` égaré : une garde plus petite que la page de l'hôte ne garde rien
+
+Le §257 laissait une adresse sans explication, en `0x7ff3_xxxxxxxx`, rendue à l'invité et suivie
+d'une cascade. Elle n'appartenait à rien de connu — ni à la fenêtre de l'invité, ni aux intervalles
+de surengagement de FEX. Une sonde posée juste avant `NtRaiseException`, là où l'exception devient
+visible de l'invité, dit enfin quoi :
+
+```
+cible 0x7ff3dcd97b60 acces=lecture eip 0x7bdddf8c | etat MEM_FREE
+callret [0x7ff3dcf10000,0x7ff3dd312000) sp 0x7ff3dcd97b60 x25 0x7ff3dcd97b60
+```
+
+Ce n'est pas un pointeur de Mono. C'est **`callret_sp`, la pile d'appels de FEX**, que le JIT tient
+dans `x25` : une pile fantôme de couples (RIP invité, PC hôte) qui sert de premier cache aux
+`ret`. Elle est **1,47 Mio sous la base de sa propre allocation**, dans de la mémoire jamais
+allouée. `eip 0x7bdddf8c` est le `ret $8` de `NtWaitForAlertByThreadId` — l'invité fait un `ret`,
+le JIT dépile à l'adresse que porte `x25`, et ça tombe dans le vide.
+
+`CallRetStack::HandleAccessViolation` ne reconnaît que les adresses **dans** les bornes du fil.
+Une fois `x25` sorti, plus rien ne rattrape : la faute part à l'invité, dont le gestionnaire
+refaute au même endroit, et le garde-fou du §256 finit par arrêter le fil.
+
+### La sonde faisait disparaître le symptôme
+
+Cinq exécutions de suite sans incident avec les traces, quatre sur quatre avec le garde-fou
+déclenché sans. La latence des `ERR` suffisait à masquer la course. Il a fallu enregistrer en
+silence dans un anneau et ne parler qu'une fois, à l'instant où le pointeur sort. L'anneau montre
+alors la traversée, sans un seul rattrapage entre les deux lignes :
+
+```
+[54] sp +0xdb0     <- dans la page de garde basse
+[55] sp +0xdb0
+[56] sp -0x2290    <- dehors
+```
+
+### La cause
+
+FEX encadre la pile d'appels de deux pages de garde de `FEX_PAGE_SIZE`, réservées en
+`PAGE_NOACCESS`. `FEX_PAGE_SIZE` vaut 4096 : c'est la page du x86, une convention interne qui dit
+en quelles tranches FEX découpe la mémoire — **pas ce que le matériel sait protéger**. Sur Apple
+Silicon la page de l'hôte fait 16 Kio. Engager le milieu de la réservation rend accessibles les
+deux gardes qui l'entourent, parce qu'elles partagent sa page matérielle.
+
+`tests/garde64.c` le montre hors de tout contexte, dans les deux sens :
+
+```
+=== gardes de 1000 octets ===
+garde basse : base 00007FFFFDED0000 taille 1000 etat 2000 prot 0
+garde basse   00007FFFFDED0FF0 : ECRITURE PASSEE SANS FAUTE
+garde haute   00007FFFFDEE1010 : ECRITURE PASSEE SANS FAUTE
+
+=== gardes de 10000 octets ===
+garde basse   00007FFFFDEAFFF0 : faute levee
+garde haute   00007FFFFDEC0010 : faute levee
+```
+
+**La comptabilité de Wine et le matériel ne disent pas la même chose** : `NtQueryVirtualMemory`
+annonce fidèlement `MEM_RESERVE` et `PAGE_NOACCESS`, et l'écriture passe quand même. C'est ce
+désaccord qui m'avait fait écarter l'hypothèse une première fois — j'avais interrogé Wine au lieu
+d'essayer d'écrire.
+
+Le reste suit : la pile d'appels dérive vers le bas (les rappels utilisateur reviennent par un
+appel système, donc leurs `call` ne se dépilent jamais), traverse la garde sans faute, sort de
+l'allocation, et ne fauterait qu'une fois tombée sur un trou — hors des bornes, donc trop tard.
+
+### La correction, et la même faute ailleurs
+
+Les gardes passent à 64 Kio, la granularité d'allocation de Windows : multiple de toute taille de
+page plausible, et déjà l'alignement des bases rendues par `VirtualAlloc`.
+
+En cherchant si l'erreur était unique, une deuxième occurrence : `PooledAllocatorVirtualWithGuard`
+pose la garde des tampons de code du JIT par un `VirtualProtect` de 4 Kio sur la dernière page.
+Même résultat — l'écriture passe. Le JIT qui déborde de son tampon écrasait donc silencieusement
+l'allocation suivante au lieu de déclencher la recompilation dans un tampon plus grand. Une
+constante partagée, `FEX_TAILLE_GARDE`, sert maintenant aux trois endroits qui doivent s'accorder :
+l'allocateur, le contrôle `IsAddressInJITGuardPage`, et le calcul de `UsableBufferRange`.
+
+### Mesure
+
+DREDGE, sans aucune sonde, cent secondes par exécution :
+
+| | garde-fou déclenché |
+|---|---|
+| avant | 4 sur 4 |
+| après | 7 sur 7 |
+
+Non-régression : vingt-trois programmes i386 et x86_64 passent, `probe_d3d11_draw` rastérise,
+`banc_x64` donne **84,7 — 85,9 ms**, haut de la bande du §241 — la machine portait une charge
+moyenne de 10 pendant la mesure.
