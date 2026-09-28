@@ -17377,3 +17377,80 @@ l'appel était le premier argument d'un `printf` dont les suivants lisaient le r
 l'ordre d'évaluation des arguments n'est pas spécifié — clang lit de droite à gauche, donc le
 rectangle était lu **avant** l'appel. Une mesure fausse ressemble à un bogue ; celle-ci a failli
 coûter une demi-heure.
+
+## 250. Trente et une fautes silencieuses, et la vraie raison du refus de Dead Cells
+
+### Des fautes que personne ne voyait
+
+`+seh` sur une exécution de Dead Cells donnait :
+
+```
+handle_syscall_fault code=c0000005 addr=0x1118a2c6c pc=0x1118a2c6c
+handle_syscall_fault returning to user mode ip=0x6ffffb1cac44 ret=c0000005
+```
+
+Trente et une fois. `handle_syscall_fault` attrape une faute survenue **pendant** un appel
+système : l'hôte déréférence, le noyau de Wine rattrape, et l'appel rend `c0000005` à l'invité, qui
+n'en dit rien. Rien dans `err+all`, rien dans le journal du jeu. Le chiffre `info[1]` désignait à
+chaque fois une adresse d'invité non rebasée (`0x10d1c4`, `0x10f198`, …).
+
+L'adresse de retour a suffi à nommer le coupable. `+loaddll` donne la base de `win32u.dll`
+(`0x6FFFFB1A0000`), la soustraction donne le RVA `0x2AC44`, et le désassemblage de la DLL installée
+tombe pile :
+
+```
+000000018002ac30 <NtUserCallHwndParam>:
+18002ac30: mov  x8, #0x1336
+...
+18002ac44: ret
+```
+
+C'était le `default:` de `wow64_NtUserCallHwndParam`. Treize codes y passent un tampon ;
+`ClientToScreen`, `ScreenToClient`, `GetChildRect`, `GetWindowInfo`, `GetWindowThread`,
+`ExposeWindowSurface`, `SetRawWindowPos`, `GetPrivateData`, `SetPrivateData` ont désormais leur
+`case`, et `GetPresentRect` rejoint `GetWindowRect` et `GetClientRect`. `SetDialogInfo` et
+`SetMDIClientInfo` restent bruts : ce qu'ils rangent, l'invité le relit tel quel.
+
+Après quoi : **zéro faute** sur la même exécution.
+
+La méthode vaut d'être notée : *base de module + RVA + désassemblage de la DLL installée* nomme
+l'appel système fautif en trois commandes, sans reconstruire quoi que ce soit.
+
+### Le pont 32 bits marche, et ce n'est pas lui qui bloque
+
+`tests/sonde_vtable32.c` appelle la table d'ISteamClient à la main, en `__thiscall` reproduit par
+un `fastcall` à deux paramètres registre :
+
+```
+CreateSteamPipe = 1
+ConnectToGlobalUser = 1
+GetISteamUser = 0005c6e0
+```
+
+Toute la séquence d'initialisation de Steamworks passe donc en 32 bits, jusqu'à une sous-interface
+enveloppée. (Au passage : les emplacements se lisent dans `signatures32.h`, pas dans l'intuition —
+`ConnectToGlobalUser` est le 2, pas le 3, et se tromper rend zéro sans rien tracer.)
+
+### Pourquoi Dead Cells refuse quand même
+
+Le jeu charge le pont, demande `SteamClient017` puis `SteamClient014`, **n'appelle aucune méthode**
+et affiche :
+
+```
+fenetre pid=256 classe=#32770  titre="Steam Error"
+    enfant  classe=Static  texte="Application load error 3:0000065432"
+```
+
+La chaîne n'existe dans aucun binaire du jeu — et l'en-tête dit pourquoi :
+
+```
+.bind 0002e608
+```
+
+Une section `.bind` de 190 Kio : `deadcells.exe` est emballé par le **DRM steamstub**. L'enveloppe
+se déchiffre avant tout appel Steamworks, et c'est elle qui refuse. Ce n'est donc ni le portage
+32 bits, ni le pont : c'est la vérification de propriété du DRM, qui réclame le billet de
+déchiffrement du client Steam. Un jeu sans `.bind` serait un bien meilleur sujet d'essai.
+
+Non-régression : `banc_x64` à **83,7 ms** pour 20 millions de tours (bande §241 : 83,8–84,4 ms),
+`probe_d3d11_draw` rastérise, `h32`, `h32gdi`, `h32win` et `hello64` passent.
