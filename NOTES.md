@@ -19492,4 +19492,15 @@ info: D3D11InternalCreateDevice: Using feature level D3D_FEATURE_LEVEL_11_0
 | DREDGE | se lance et joue |
 | Vermintide 2 | démarre, monte son périphérique D3D11 ; pas encore vu au menu |
 | Dead Cells | option posée ; son enveloppe reste le mur (§268) |
-| Surviving Mars | témoin, laissé sans option : échoue, comme prévu |
+| Surviving Mars | témoin, laissé sans option : échoue, comme prévu -- option posée depuis |
+
+### Remise en état
+
+Le verdict étant tombé, la configuration morte a été retirée : plus de `CompatToolMapping` dans
+`config.vdf`, et `compatibilitytools.d` supprimé du dossier de Steam. Vérifié : le fichier ne porte
+plus aucune trace de mes écritures, les seules différences avec la sauvegarde étant le cache de
+connexion que Steam réécrit lui-même (`LastPingTimestamp`, `dc`, `LastPingValue`).
+
+L'outil reste dans `outil-steam/` : il est correct, il respecte le contrat de Proton, et il servira
+tel quel le jour où le client macOS câblera ce chemin. Ce qui vit dans Steam, ce sont quatre lignes
+`LaunchOptions` dans `localconfig.vdf`, une par jeu Windows installé.
