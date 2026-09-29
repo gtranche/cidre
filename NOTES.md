@@ -19284,3 +19284,71 @@ qu'il ne peut pas charger, et il refuse de lancer -- le jeu ne démarre plus du 
 Cela ne coûte rien en pratique, puisque le jeu lancé directement s'effondre de toute façon dans sa
 CRT (§272), et que le mode solo passe par ce lancement direct. Mais c'est à retenir : un trou
 bouché ne rapproche pas toujours du but, et il faut mesurer les deux côtés avant de s'en réjouir.
+
+## 274. Le bouton « Jouer » de Steam, et l'arène nulle de Vermintide
+
+### Brancher la pile sur Steam
+
+Jusqu'ici tout se lançait à la main. `tests/lancer_depuis_steam.sh` se pose dans les **options de
+lancement** du jeu, dans Steam :
+
+```
+/chemin/vers/proton-ouvert/tests/lancer_depuis_steam.sh %command%
+```
+
+Steam remplace `%command%` par l'exécutable et ses arguments, et transmet son environnement --
+`SteamAppId`, `SteamGameId`, `SteamOverlayGameId`. Le script convertit le chemin POSIX en
+répertoire de travail, démarre le client de service s'il n'y en a pas déjà un, et passe la main à
+la pile. Rien n'est simulé : c'est le **vrai client Steam de macOS** qui répond derrière, par le
+pont `lsteamclient`.
+
+Éprouvé sur DREDGE, appelé exactement comme Steam l'appelle :
+
+```
+appels de methode traverses par le pont : 11 780
+appel_vtable emplacement 9 -> 17d73e     = 1562430, l'appid rendu par le vrai client
+DXVK : swapchain 1728x1117, presentation en cours
+```
+
+Le faux client ne sert qu'à une chose, et il faut le dire clairement : occuper
+`ActiveProcess\pid` dans le registre du préfixe, sans quoi `SteamAPI_Init` attend un client
+**Windows** qui n'existera jamais sur cette machine. Il ne répond à aucune question de fond ; tout
+ce qui compte -- identité, possession, appid -- vient du client natif.
+
+### Vermintide 2 : l'appelant, enfin
+
+Le §272 butait faute d'appelant. Le minidump que le jeu écrit lui-même en contient un morceau de
+pile, et sa liste de mémoire se lit sans outil :
+
+```
+rsp+0000 : 0x140356f15      <- l'appelant du memset
+rsp+0040 : 0x1403570cb
+rsp+0070 : 0x140339ff9
+rsp+00e0 : 0x140308ca1
+rsp+0190 : 0x140023214
+```
+
+En `0x140356ec0`, la fonction reçoit un pointeur dans `rcx`, calcule `rbx = rcx + 0x10 + alignement`
+et fait `memset(rbx, 0, 0x3c0)`. Avec `rcx = 0`, cela donne exactement `memset(0x10, 0, 960)`.
+
+D'où vient ce zéro ? De l'appelant, en `0x140357082` :
+
+```
+140357082: callq 0x14033a750      ; allocateur
+140357087: cmpq  $-1, %rax        ; l'echec est -1, pas zero
+14035708b: jne   1403570ba        ; -> on continue avec rax
+1403570c3: movq  %rax, %rcx
+1403570c6: callq 0x140356ec0      ; ... et zero passe
+```
+
+Et l'allocateur en `0x14033a750` est un allocateur **linéaire sur une arène pré-réservée** : il lit
+le curseur en `[obj+0x38]`, vérifie `[obj+0x48] + taille <= [obj+0x40]` (la limite), avance le
+curseur et **rend le curseur**. Il ne rend `-1` que si la limite est dépassée ou si le bit 1 de
+`[obj+0x98]` est posé.
+
+Donc : **le curseur de l'arène vaut zéro alors que sa limite ne le vaut pas.** L'arène a été
+déclarée mais jamais mise en place. C'est cohérent avec les `0xc800000` -- 200 Mio -- vus dans deux
+registres au moment de la faute, qui sont la taille de l'arène et non celle d'une allocation
+refusée : c'est pourquoi `WINEDEBUG=+virtual` ne montrait aucun refus au §272.
+
+Reste à trouver qui construit cette arène, et pourquoi sa base est nulle chez nous.
