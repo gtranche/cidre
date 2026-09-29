@@ -18361,3 +18361,58 @@ partir d'une nouvelle prise, pas d'un raisonnement.
 
 Non-régression : trente et un programmes i386 et x86_64 passent, `probe_d3d11_draw` rastérise,
 `banc_x64` donne **85,7 — 86,0 ms**.
+
+## 262. Dead Cells : ce n'est pas la pile, c'est l'enveloppe
+
+Second jeu 32 bits installé, et le §251 le soupçonnait sans pouvoir le prouver faute d'un point de
+comparaison. Maintenant que DREDGE tourne, la comparaison est faite.
+
+`deadcells.exe` affiche une fenêtre de classe `#32770` -- une boîte de dialogue -- titrée « Steam
+Error », et se fige à 0,97 s de processeur en attendant un clic. La trace `+relay` donne le texte
+exact : **`Application load error 3:0000065432`**.
+
+### Ce que l'enveloppe cherche
+
+Le pont Steam fonctionne pourtant. Avec `+lsteamclient` :
+
+```
+steamclient.dylib charge, CreateInterface a 0x1162857e0
+create_interface "SteamClient017" -> 0x1169e5ec8
+envelopper interface native 1169e5ec8 -> objet PE 01B51CC8
+create_interface "SteamClient014" -> ...
+```
+
+Le client Steam **natif macOS** répond, les interfaces sont enveloppées. Et le relais `__thiscall`
+32 bits, qui trace chaque appel de méthode, reste **muet** : le jeu n'appelle jamais rien sur ces
+interfaces. Le refus est donc ailleurs, et `+relay` le nomme :
+
+```
+OpenEventA("Local\SteamStart_SharedMemLock")
+OpenFileMappingA("Local\SteamStart_SharedMemFile")
+LoadLibraryA("user32.dll")  ->  MessageBoxA "Steam Error"
+```
+
+L'enveloppe SteamStub ne passe pas par les interfaces : elle cherche **deux objets nommés** que le
+vrai client Windows crée. `faux_steam` les crée désormais, et on va deux pas plus loin :
+
+```
+OpenFileMappingA(...)            -> 0000007c
+WaitForSingleObject(00000078, 5000) -> 0        (il prend le verrou)
+MapViewOfFile(0000007c, FILE_MAP_WRITE, 0,0,0) -> 01b90000
+                                                 puis refus
+```
+
+Il ouvre, il verrouille, il cartographie -- et il n'aime pas ce qu'il lit. Une page entière remplie
+du numéro du processus répété en mots de quatre octets ne le satisfait pas non plus : si un
+identifiant était attendu à un décalage inconnu, il l'aurait trouvé.
+
+### Ce que ça prouve, et où ça s'arrête
+
+Tout ce qui relève du portage marche : le code i386, le chargeur, les objets nommés partagés entre
+processus, le registre, et le pont jusqu'au client Steam natif. **Le seul obstacle est la
+protection du jeu.** Aller plus loin ne demande plus de travail sur Wine ou sur FEX mais d'émuler
+les structures internes de Steam -- un autre métier, et une décision à prendre plutôt qu'un bogue à
+corriger.
+
+`tests/faux_steam.c` garde les deux objets : ils sont nécessaires de toute façon, et la prochaine
+tentative repartira de là plutôt que de refaire le chemin.
