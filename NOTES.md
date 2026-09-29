@@ -19863,3 +19863,60 @@ le jeu envoie, où il l'envoie, et ce qu'il en échantillonne.
 Trois sondes restent : `probe_melange_a8`, `probe_bc4`, `probe_bc7_mode6`. Et dans DXVK, trois
 vidages derrière variables d'environnement -- textures, téléversements, sommets -- qui resserviront
 au premier défaut graphique suivant.
+
+## 284. Vermintide 2 : LuaJIT veut de la mémoire basse, et `__PAGEZERO` la lui refuse
+
+### Le jeu parle, une fois lancé du bon endroit
+
+Ma table de redirection lançait `binaries/vermintide2.exe` depuis `binaries/`, alors que les données
+du jeu sont à la **racine**. Corrigé, le jeu écrit enfin son journal -- et il dit tout :
+
+```
+STARTUP: setup_window
+[Window] Window => active
+STARTUP: make game
+<<Crash>> Access violation accessing address 0000000000000008 from 00006FFFF6B8B65F
+module : D:\work\engine\vermengine\tools\luajit\src\lua51.pdb
+```
+
+La fenêtre s'ouvre -- c'est le rectangle noir que l'on voyait -- puis `make game` meurt dans
+**LuaJIT**. Le désassemblage place la faute dans `lua_gc`, avec `rcx = 0` : le jeu appelle Lua avec
+un **état nul**. Sa création avait échoué, sans un mot.
+
+### Pourquoi elle échoue
+
+`WINEDEBUG=+virtual` montre le motif sans ambiguïté :
+
+```
+2715 allocations de 0x20000 octets
+6951 liberations
+```
+
+C'est la boucle de sondage de LuaJIT : il demande de la mémoire, regarde l'adresse qu'on lui rend,
+la rejette parce qu'elle est trop haute, et recommence. Il finit par abandonner.
+
+Le binaire est **LuaJIT 2.1.0-beta3**, une version sans GC64 : ses pointeurs de ramasse-miettes
+tiennent sur 32 bits, donc il lui faut de la mémoire **sous 4 Gio**. Toutes nos allocations
+atterrissent au-delà de 12 Gio.
+
+### La vraie racine, et elle n'est pas où je la croyais
+
+Le §275 notait « le noyau interdit toute adresse sous 4 Gio à un processus arm64 natif ». C'est
+vrai, mais ce n'est pas une loi du noyau : c'est `__PAGEZERO`, un segment fixé **à l'édition de
+liens** de l'exécutable.
+
+```
+segname __PAGEZERO
+ vmaddr 0x0000000000000000
+ vmsize 0x0000000100000000
+```
+
+Quatre gigaoctets réservés dans le chargeur `wine` lui-même. Un exécutable Mach-O 64 bits peut être
+lié avec `-pagezero_size 0x4000` et rendre tout cet espace disponible.
+
+C'est donc **actionnable**, et cela dépasse largement ce jeu : la fenêtre à 16 Gio des invités
+32 bits (§246) existe pour la même raison, et la correction du §275 -- traiter une base basse comme
+une préférence -- ne serait plus un pis-aller mais deviendrait inutile.
+
+La mesure suivante est nette : relier le chargeur avec un `__PAGEZERO` réduit, vérifier que les deux
+témoins passent toujours, et redemander à LuaJIT sa mémoire basse.

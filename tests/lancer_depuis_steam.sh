@@ -67,7 +67,12 @@ if [ -n "${SteamAppId:-}" ] && [ -f "$TABLE" ]; then
       while [ ! -f "$RACINE/$CIBLE" ] && [ "$RACINE" != "/" ]; do RACINE=$(dirname "$RACINE"); done
       if [ -f "$RACINE/$CIBLE" ]; then
          echo "    table  : $PROG remplace par $CIBLE" >>"$JOURNAL"
-         DOSSIER=$(dirname "$RACINE/$CIBLE"); PROG=$(basename "$CIBLE")
+         # Le repertoire courant reste la RACINE du jeu, pas celui de
+         # l'executable : c'est la que vivent ses donnees. Le lancer depuis
+         # binaries/ faisait echouer Vermintide 2 avant meme qu'il ouvre son
+         # journal -- symptome trompeur, puisqu'il plante de toute facon plus
+         # loin (§284).
+         DOSSIER=$RACINE; PROG=$CIBLE
          set --
       else
          echo "    table  : $CIBLE introuvable, on garde $PROG" >>"$JOURNAL"
