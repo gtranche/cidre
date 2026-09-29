@@ -96,6 +96,58 @@ int main(void)
                 fprintf(stderr, "faux steam : commande %lu du processus %lu, duplication impossible (%lu)\n",
                         commande, demandeur, GetLastError());
             if (proc) CloseHandle(proc);
+
+            /*
+             * Ce que la requete porte d'autre. Le code du stub, lu au §263,
+             * remplit encore +0xa0, +0xa4, +0xa8 et +0xac depuis son propre
+             * etat ; on ne sait pas ce que c'est, alors on le montre.
+             */
+            {
+                const DWORD *m = (const DWORD *)((const char *)vue + 0x90);
+                unsigned k;
+
+                fprintf(stderr, "faux steam : requete");
+                for (k = 0; k < 10; k++) fprintf(stderr, " +%02x=%08lx", 0x90 + k * 4, m[k]);
+                fprintf(stderr, "\n");
+            }
+            /*
+             * Ce que le vrai client fait ensuite : lancer l'application. Le
+             * stub s'efface en code 51 -- il l'annonce lui-meme en +0xa8 -- et
+             * compte sur Steam pour le relancer. La seconde instance doit se
+             * distinguer de la premiere ; l'hypothese testee ici est la
+             * filiation, le jeu lance par Steam ayant Steam pour parent.
+             *
+             * FAUX_STEAM_JEU donne le chemin. Un seul lancement, sinon les
+             * deux processus se relanceraient l'un l'autre sans fin.
+             */
+            {
+                static int deja;
+                char jeu[MAX_PATH] = { 0 };
+
+                if (!deja && GetEnvironmentVariableA("FAUX_STEAM_JEU", jeu, sizeof(jeu)) && *jeu)
+                {
+                    STARTUPINFOA si = { sizeof(si) };
+                    PROCESS_INFORMATION pi = { 0 };
+                    char cmd[MAX_PATH + 2], dossier[MAX_PATH], *barre;
+
+                    deja = 1;
+                    snprintf(cmd, sizeof(cmd), "\"%s\"", jeu);
+                    /* Le jeu cherche ses donnees a cote de lui : il lui faut
+                     * son propre dossier comme repertoire courant. */
+                    lstrcpynA(dossier, jeu, sizeof(dossier));
+                    if ((barre = strrchr(dossier, '\\'))) *barre = 0; else *dossier = 0;
+                    fprintf(stderr, "faux steam : jeu [%s] dossier [%s]\n", jeu, dossier);
+                    if (CreateProcessA(jeu, cmd, NULL, NULL, FALSE, 0, NULL,
+                                       *dossier ? dossier : NULL, &si, &pi))
+                    {
+                        fprintf(stderr, "faux steam : relance %s -> pid %lu\n", jeu, pi.dwProcessId);
+                        CloseHandle(pi.hThread);
+                        CloseHandle(pi.hProcess);
+                    }
+                    else
+                        fprintf(stderr, "faux steam : relance impossible (%lu)\n", GetLastError());
+                }
+            }
             fflush(stderr);
             req[0] = 0;
         }

@@ -18701,3 +18701,101 @@ Deux pièges rencontrés, notés pour la suite. `make` ne connaît pas la dépen
 nouveau : ajouter une entrée sans toucher `main.c` ne recompile rien, et l'on croit la table
 inopérante. Et le relais nomme l'objet racine « ISteamClient » mais une sous-interface par sa chaîne
 de version -- « SteamUser017 » -- donc la recherche accepte les deux formes, comme la table mesurée.
+
+## 267. Un processus 32 bits ne pouvait lancer personne
+
+La requête que le stub SteamStub dépose dans le segment partagé se lit maintenant en entier. Le
+faux client la vide mot par mot :
+
+```
++90=00000002  la version du protocole, celle que nous publions
++94=00000002  la commande
++98=0000013c  le pid du jeu
++9c=00000080  son evenement
++a0=0008fb6a  588650 -- le numero d'application de Dead Cells
++a4=c5ee116b  un jeton
++a8=00000033  51 -- le code de sortie qu'il annonce
++ac=01153220  une adresse dans sa propre section .bind
+```
+
+Cela confirme mot pour mot la lecture du §263, faite sur le désassemblage : le stub écrit
+`[vue+0xa0] = [obj+0x38]`, `[vue+0xa4] = [obj+0x44]`, `[vue+0xa8] = (char)[ebp-1]`,
+`[vue+0xac] = [obj+0x10] - 0xf0`. Il dit à Steam : « lance l'application 588650, voici mon pid et
+mon événement, je sortirai en 51 ». Puis il s'efface. Le vrai client relance alors le jeu, et c'est
+cette **seconde** instance qui joue.
+
+La seconde instance doit donc se distinguer de la première. Trois marqueurs ont déjà été mesurés et
+écartés (§263) : les variables `SteamClientLaunch` et `SteamEnv`, le nom `steamclient.dll`, le
+numéro d'application publié dans le segment. Il reste l'hypothèse la plus simple, celle que le vrai
+client réalise sans y penser : **la filiation**. Le jeu lancé par Steam a Steam pour parent.
+
+### Le faux client ne peut pas relancer le jeu
+
+Ajouter un `CreateProcess` au faux client -- sous `FAUX_STEAM_JEU`, une seule fois, pour ne pas
+faire boucler deux processus l'un sur l'autre -- donne :
+
+```
+faux steam : relance impossible (998)
+```
+
+998, `ERROR_NOACCESS`. Avant d'accuser le chemin ou le jeu, `tests/h32lancer.c` pose la question
+nue : un processus 32 bits peut-il en lancer un autre, quel qu'il soit ?
+
+```
+cmd.exe, ligne seule         -> ECHEC 998
+jeu, ligne seule             -> ECHEC 998
+jeu, ligne + dossier         -> ECHEC 998
+jeu, nomme + dossier         -> ECHEC 998
+```
+
+Rien. Pas même `cmd.exe`. Ce n'était pas le DRM : c'était notre portage, et c'était un trou béant
+qu'aucun test n'avait rencontré jusqu'ici parce qu'aucun test ne lançait de processus.
+
+### La faute, et pourquoi elle ne se voyait pas
+
+La trace donne une violation d'accès à l'adresse **0x198568**, en pleine fenêtre de l'invité, non
+rebasée -- attrapée par le `__TRY` de `Wow64SystemServiceEx`, d'où le `ERROR_NOACCESS` rendu à
+l'appelant. Le compteur ordinal tombe dans `get_file_redirect` de `wow64.dll`, appelée depuis
+`ps_attributes_32to64` :
+
+```c
+ret->Attributes[i].Value = attr32->Attributes[i].Value;   /* recopie brute */
+...
+case PS_ATTRIBUTE_IMAGE_NAME:
+    path.Buffer = ret->Attributes[i].ValuePtr;             /* ... puis deref */
+```
+
+L'amont a raison chez lui : sur Linux l'invité et l'hôte partagent leurs adresses, et la recopie
+brute suffit. Ici l'hôte doit ajouter les 16 Gio. La même remarque vaut pour
+`PS_ATTRIBUTE_GROUP_AFFINITY`, qui déréférence la même valeur. Le sens retour,
+`put_ps_attributes`, était déjà rebasé -- seul l'aller manquait.
+
+```c
+ret->Attributes[i].ValuePtr = ptr_32to64( attr32->Attributes[i].Value );
+```
+
+Après correction, les quatre lancements passent.
+
+### Le piège de construction, pour la deuxième fois
+
+Pour installer cette correction j'ai lancé `make install` tout court. Tout s'est effondré : plus un
+seul programme invité ne démarrait, arm64 comme i386, avec
+
+```
+err:virtual:virtual_setup_exception stack overflow 656 bytes
+```
+
+C’est exactement le piège noté au §246 : `make` nu reconstruit sans `-DWINE_TEB_SANS_X18`, et
+`NtCurrentTeb()` repasse par `x18`, que macOS efface. **145 objets PE** avaient été recompilés sans
+le drapeau. La faute ne ressemble en rien à sa cause, et j'avais pourtant la note sous les yeux.
+
+Le remède, mesuré : repérer les objets compilés dans la mauvaise fenêtre, les supprimer, et
+reconstruire avec les deux drapeaux.
+
+```
+find dlls programs \( -path "*aarch64-windows*" -o -path "*arm64ec*" \) -name "*.o" \
+     -newermt <debut> ! -newermt <fin> -delete
+make aarch64_CFLAGS="-g -O2 -DWINE_TEB_SANS_X18" arm64ec_CFLAGS="-g -O2 -DWINE_TEB_SANS_X18" install
+```
+
+Une leçon de plus : un `make install` dans cet arbre n'est jamais anodin.
