@@ -18587,3 +18587,55 @@ thunks qui journalisent -- c'est le mécanisme de découverte que le pont prévo
 Une ligne de la trace mérite d'être retenue pour la suite : `mot_vers_hote mot 0x4031a3 pris pour
 un pointeur`. Le relais décide **par heuristique** si un mot de 32 bits est un pointeur à rebaser.
 Un entier qui ressemble à une adresse serait rebasé à tort ; c'est le prochain endroit à éprouver.
+
+## 265. L'heuristique de rebasage : un risque qui grandit avec le jeu
+
+Le relais 32 → 64 du pont Steam doit décider, pour chaque mot de quatre octets passé à une méthode,
+s'il s'agit d'un pointeur à rebaser ou d'un entier à laisser tel quel :
+
+```c
+if (mot < 0x110000) return mot;                        /* trop bas : entier   */
+if (IsBadReadPtr( (const void *)mot, 1 )) return mot;  /* illisible : entier  */
+return vers_hote( (const void *)mot );                 /* sinon : pointeur    */
+```
+
+Le commentaire du code annonce « un risque, borné et assumé ». `tests/h32heuristique.c` le chiffre,
+et il n'est pas borné du tout.
+
+| | part lisible au-dessus de `0x110000` |
+|---|---|
+| le test lui-même, qui n'occupe presque rien | **0,75 %** |
+| après 704 Mio engagés, soit la taille d'un jeu | **35,14 %** |
+
+DREDGE occupe 723 Mio de sa fenêtre. À cette échelle, **plus d'un entier sur trois** au-dessus du
+seuil tombe sur une page engagée et part vers le client natif transformé en adresse hôte.
+
+La méprise est reproduite sur un appel inoffensif -- `BReleaseSteamPipe`, qui ne prend qu'un entier
+et refuse proprement un tuyau inexistant :
+
+```
+IsBadReadPtr(00400000) = 0
+mot_vers_hote mot 0x400000 pris pour un pointeur      <- rebase a tort
+IsBadReadPtr(7f000000) = 1
+                                                       <- laisse tel quel
+```
+
+### Ce que ça ne casse pas, et pourquoi
+
+L'erreur est à sens unique. L'inverse -- un vrai pointeur laissé tel quel parce que sa page semble
+illisible -- ne se produit pas en pratique : un jeu ne passe pas à une API l'adresse d'une page
+sans accès. Le pont ne risque donc pas de faire déréférencer une adresse d'invité par l'hôte ; il
+risque de transmettre des entiers faux, ce qui donne des résultats faux sans planter.
+
+Les valeurs concernées ne sont pas exotiques. Un `AppId_t` dépasse le seuil dès 1 114 112, et les
+applications récentes sont bien au-delà -- DREDGE porte le numéro 1 562 430.
+
+### Le seul remède est la connaissance des types
+
+La table mesurée donne, pour chaque méthode, son interface, son emplacement et son **nombre de
+mots**. Elle ne dit pas lesquels sont des pointeurs. Aucun raffinement de l'heuristique ne s'y
+substitue : l'alignement écarterait les chaînes de version, qui arrivent non alignées
+(`mot 0x4031a3`), et rien dans la valeur ne distingue un entier d'une adresse.
+
+Tant que les types manquent, le pont convient aux appels sans argument ou à arguments petits --
+ce que `h32pipe` éprouve -- et devient hasardeux dès qu'un entier dépasse le seuil.
