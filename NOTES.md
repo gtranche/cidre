@@ -20061,3 +20061,52 @@ deux murs, dont une authentification échouant en `10045`.
 
 Mais ce diagnostic-là datait d'avant TLS, d'avant Wine 11 arm64 et d'avant les corrections
 d'espace d'adressage. Le mur du DRM, lui, est tombé.
+
+## 288. Le client Steam Windows : un mur sur deux est tombé
+
+Le §287 avait satisfait la signature en fournissant le vrai `steamclient.dll`, et buté sur
+`CreateInterface` qui rend NULL faute de service derrière. Il fallait donc faire tourner le client
+Steam Windows dans le préfixe -- ce que le §191 avait manqué sur deux murs.
+
+### Le mur réseau est tombé
+
+Le §191 s'arrêtait sur `Failed to start auth session: Connection failed` et l'erreur `10045`.
+Aujourd'hui, le journal d'amorçage du client dit :
+
+```
+Downloading manifest: https://client-update.steamstatic.com/steam_client_win64
+Manifest download: finished
+Download skipped: ... installed version 1788652215
+```
+
+**Le client joint les serveurs de Valve en HTTPS.** Et la connexion au service passe :
+
+```
+Connectivity test (104.123.50.162:80): OK!
+Connectivity test: result=Connected
+```
+
+Plus aucun `10045` dans les journaux du client -- il n'en reste que dans celui de CEF, daté du
+24 septembre. C'est le TLS du §273 qui paie, et cela valide au passage que ce trou-là n'était pas
+une curiosité d'anti-triche mais un manque de fond.
+
+### Le mur du webhelper tient
+
+`steamwebhelper`, le composant CEF qui porte toute l'interface, ne tient pas. Sans drapeau, il ne
+démarre pas du tout :
+
+```
+src\steamUI\steamuisharedjscontroller.cpp (549) : Failed creating offscreen shared JS context
+```
+
+Avec `-no-cef-sandbox -cef-disable-gpu -cef-disable-gpu-compositing -cef-in-process-gpu
+-cef-single-process`, il **démarre** -- deux processus mesurés -- puis meurt, et la boîte
+« steamwebhelper ne répond pas » revient.
+
+C'est donc un progrès réel et mesurable : de « ne démarre pas » à « démarre et ne tient pas ».
+
+### Où cela laisse Dead Cells
+
+Le DRM est satisfait (§287). Il manque un client Steam qui vive assez longtemps pour servir ses
+interfaces. Le préfixe a été remis sur le pont -- `SteamClientDll` pointe de nouveau sur
+`steamclient.dll` -- pour que DREDGE et Surviving Mars continuent de marcher.
