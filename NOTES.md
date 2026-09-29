@@ -18562,3 +18562,28 @@ déplacer -- le troisième argument était lu au mauvais endroit.
 
 Des `typedef` en `__thiscall` font le même travail sans l'écueil, et le compilateur ne se trompe
 pas de pile. Écrire l'ABI à la main quand le compilateur la connaît ne rapporte rien.
+
+### §264 bis. L'interface du ticket, obtenue sans rien deviner
+
+`STEAMAPPTICKET_INTERFACE_VERSION001` n'a pas de `GetISteam*` dédié : elle passe par le
+passe-partout, emplacement 12, `GetISteamGenericInterface`, qui rend n'importe quelle interface
+d'après sa chaîne de version.
+
+```
+repartir32 ISteamClient emplacement 12 (3 mots)
+mot_vers_hote mot 0x4031a3 pris pour un pointeur
+appel_vtable emplacement 12 -> 90c486200
+envelopper interface native 90c486200 -> objet PE 0019F1A0
+```
+
+Le client natif rend un vrai `ISteamAppTicket`, le pont l'enveloppe, le jeu recevrait un objet PE.
+Toute la chaîne dont l'enveloppe du DRM a besoin est donc disponible.
+
+**Ses méthodes ne sont pas appelées.** `ISteamAppTicket` ne figure pas parmi les trente-quatre
+interfaces de la table mesurée ; ses emplacements seraient devinés, et deviner sur la session Steam
+vivante de l'utilisateur peut le déconnecter. C'est au jeu de les révéler en appelant à travers les
+thunks qui journalisent -- c'est le mécanisme de découverte que le pont prévoit déjà.
+
+Une ligne de la trace mérite d'être retenue pour la suite : `mot_vers_hote mot 0x4031a3 pris pour
+un pointeur`. Le relais décide **par heuristique** si un mot de 32 bits est un pointeur à rebaser.
+Un entier qui ressemble à une adresse serait rebasé à tort ; c'est le prochain endroit à éprouver.

@@ -85,6 +85,31 @@ int main(void)
         }
         fflush( stdout );
 
+        /*
+         * L'interface que reclame l'enveloppe du DRM. Elle n'a pas de
+         * GetISteam* dedie : elle passe par le passe-partout, emplacement 12,
+         * qui rend n'importe quelle interface d'apres sa chaine de version.
+         *
+         * On verifie qu'on l'obtient et qu'elle revient enveloppee. On
+         * n'appelle aucune de ses methodes : « ISteamAppTicket » ne figure pas
+         * dans la table mesuree du pont, donc ses emplacements seraient devines
+         * -- et c'est precisement ce que ce projet refuse de faire sur une
+         * session Steam vivante. C'est au jeu de les reveler, en appelant a
+         * travers les thunks qui journalisent.
+         */
+        {
+            void *billet = (void *)((methode3)table[12])( objet, utilisateur, tuyau,
+                                                          "STEAMAPPTICKET_INTERFACE_VERSION001" );
+
+            printf( "GetISteamGenericInterface(\"STEAMAPPTICKET...001\") -> %p\n", billet );
+            if (billet)
+            {
+                void **t = *(void ***)billet;
+                printf( "  table de methodes %p, emplacement 0 = %p (non appele)\n", t, t[0] );
+            }
+            fflush( stdout );
+        }
+
         rendu = ((methode1)table[1])( objet, tuyau );
         printf( "BReleaseSteamPipe     -> %u\n", rendu );
 
