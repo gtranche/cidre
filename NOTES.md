@@ -18346,11 +18346,17 @@ exécution qui étaient la panne, celui-ci annonçait une panne là où tout all
 
 | | gel, détecteur au temps processeur, sans sonde |
 |---|---|
-| vingt exécutions à froid | **0** |
+| première série de vingt | **0** |
+| seconde série de vingt, mêmes conditions | **0** |
+
+Quarante exécutions à froid, zéro gel. Binaires vérifiés avant chaque série -- aucune chaîne
+`SONDE` dans `ntdll.so`, le `ntdll.dll` i386, `wow64.dll` ni `xtajit.dll` : c'est le contrôle qui
+m'avait manqué la veille, quand j'ai lu le silence de sondes qui n'étaient pas compilées.
 
 Un seul gel authentique subsiste dans tout l'historique post-correctif (`final3` : 0,34 s de
-processeur en 20 s, arrêté juste après `<RI> Input initialized.`), soit environ une exécution sur
-vingt-trois. Il n'est pas caractérisé, et je n'ai plus d'hypothèse en réserve : la prochaine devra
+processeur en 20 s, arrêté juste après `<RI> Input initialized.`), soit une exécution sur
+soixante-trois. La série de quarante seule borne le taux à **7 % au plus** avec une confiance de
+95 %, et ne dit rien de plus bas -- quarante essais ne distinguent pas « rare » de « disparu ». Il n'est pas caractérisé, et je n'ai plus d'hypothèse en réserve : la prochaine devra
 partir d'une nouvelle prise, pas d'un raisonnement.
 
 Non-régression : trente et un programmes i386 et x86_64 passent, `probe_d3d11_draw` rastérise,
