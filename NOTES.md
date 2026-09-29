@@ -19715,3 +19715,36 @@ Le jeu envoie une donnée juste, dans un atlas effacé, à des emplacements just
 le pilote décode juste. **La corruption est donc entièrement en aval : dans le dessin.** Ce n'est
 plus une question de texture mais de géométrie, de coordonnées ou de mélange -- et c'est là qu'il
 faut regarder ensuite.
+
+## 281. Les coordonnées ne sont pas où on les cherche
+
+Le §280 ayant établi que la donnée est juste, restait le dessin. Un vidage des sommets a été posé
+dans DXVK, appelé depuis les quatre points d'entrée de dessin, déclenché **par le temps** --
+`PROTON_OUVERT_VIDER_SOMMETS_APRES` -- parce que compter les dessins ne marche pas : un menu
+statique n'en demande qu'une poignée, et les deux cents premiers sont ceux du chargement.
+
+Ce qu'on apprend, et c'est net :
+
+```
+4000 dessins captures, tous par Draw, pas de sommet 24 octets
+plage de toutes les valeurs : [-1, 1]
+valeurs hors NDC : aucune
+```
+
+**Le tampon de sommets ne contient qu'un quadrilatère unité.** Aucune coordonnée d'atlas n'y
+figure, ni en texels (604, 1188...) ni normalisée (604/2048...). Le tampon de constantes du nuanceur
+de sommets, ajouté au même vidage, n'en contient pas davantage.
+
+Ce moteur place donc ses quadrilatères autrement : un autre emplacement de constantes, un tampon
+structuré, ou des données par instance. La recherche à l'aveugle dans les valeurs ne mène nulle
+part -- il y en a trop.
+
+### Ce qu'il fallait faire d'abord
+
+Le bon discriminant n'est pas la valeur mais la **ressource liée** : le dessin du texte est celui
+dont le nuanceur de fragments a pour texture l'atlas 2048×2048. Filtrer là-dessus, puis tout vider
+pour ces dessins seulement, évite l'aiguille dans la botte de foin. C'est le prochain pas, et il
+rend inutile la pêche aux valeurs.
+
+Les outils restent : `PROTON_OUVERT_VIDER_SOMMETS` et son déclenchement par le temps servent tels
+quels, une fois le filtre posé.
