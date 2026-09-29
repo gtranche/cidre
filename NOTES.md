@@ -18901,3 +18901,82 @@ et la signature d'appel, eux, sont lus dans le code.
 
 La suite utile est donc celle que le §263 désignait déjà, et elle ne dépend pas du DRM : un jeu
 Steam **non protégé** pour éprouver le pont de bout en bout.
+
+## 269. Le pont éprouvé sur un jeu entier : DREDGE
+
+Le §268 fermait Dead Cells : son enveloppe exige un `steamclient.dll` signé par Valve, et aucune
+réimplémentation libre ne portera cette signature. Ce que le §263 désignait comme la suite utile
+restait entier -- éprouver le pont sur un jeu **non protégé**.
+
+### Le choix, mesuré et non supposé
+
+Quatre jeux sont installés. Le marqueur d'enveloppe SteamStub est la section `.bind` :
+
+| jeu | machine | `.bind` |
+| --- | --- | --- |
+| DREDGE | i386 | non |
+| Dead Cells (`deadcells.exe`, `deadcells_gl.exe`) | i386 | **oui** |
+| Surviving Mars | x86-64 | non |
+| Rocksmith 2014 | -- | pas d'exécutable Windows |
+
+DREDGE est i386 : c'est exactement le relais 32 bits, celui où tout le travail des §264 à §266
+s'est fait. Et notre pile le fait déjà tourner jusqu'au menu.
+
+### Ce que ça donne
+
+Le pont ne transmet plus une méthode de démonstration, il porte un jeu qui joue. Sur une exécution
+de deux minutes :
+
+```
+appels de methode a travers le pont : 32 783
+emplacements ISteamClient traverses : 28
+```
+
+DREDGE énumère presque tout `ISteamClient` au démarrage, puis s'installe dans une boucle par
+image : `SteamUtils010` emplacement 14, `SteamInput002` emplacement 2, `SteamController008`
+emplacement 2, trois traversées par image rendue.
+
+Et le trajet complet est prouvé par une valeur, pas par une absence d'erreur :
+
+```
+repartir32 SteamUtils010 emplacement 9 (0 mots)
+appel_vtable emplacement 9 -> 17d73e
+```
+
+`0x17d73e` = 1562430, le numéro d'application de DREDGE, rendu par le **vrai client Steam de
+macOS** à travers l'unixlib, le relais `__thiscall`, et remonté à un jeu i386. C'est la première
+fois qu'une valeur fait l'aller-retour complet.
+
+### La boucle d'apprentissage a tourné toute seule
+
+Au premier lancement, le pont a imprimé **40 lignes `PREUVE`** -- vingt emplacements d'`ISteamClient`
+dont les deux premiers mots sont désormais établis entiers, tous de la forme
+`GetISteamXxx(utilisateur, tuyau, version)`. Leur troisième mot est prouvé pointeur par le
+résultat : chacun a rendu une interface native valide, ce que le client natif ne peut faire
+qu'après avoir lu la chaîne de version.
+
+Reportées dans `types32.h`, puis relance :
+
+| | avant | après |
+| --- | --- | --- |
+| lignes `PREUVE` | 40 | **0** |
+| rebasages devinés | 28 | **8** |
+| `GetAppID` | 1562430 | 1562430 |
+
+Le jeu se comporte identiquement, et l'heuristique du §265 -- celle qui se trompe sur un entier sur
+trois au-dessus du seuil -- ne décide plus que huit fois sur 32 783 appels.
+
+### Les huit qui restent, et pourquoi on ne les inscrit pas
+
+```
+ISteamClient emplacement 22 (1 mot)   -> a rendu un pointeur natif
+ISteamClient emplacement 34 (1 mot)   -> a rendu zero
+STEAMAPPS_INTERFACE_VERSION008 emplacement 6 (1 mot, six fois)
+```
+
+Aucune `PREUVE` n'est tombée pour ces positions : leur mot était au-dessus du seuil, donc
+l'heuristique l'a pris pour un pointeur, et le jeu a continué. **Continuer n'est pas une preuve.**
+Les deux emplacements d'`ISteamClient` ressemblent à une pose de rappel -- un pointeur de fonction
+de l'invité, que transmettre tel quel à un client 64 bits serait d'ailleurs une faute à part
+entière. Les inscrire serait deviner, ce que ce fichier refuse ; ils restent à l'heuristique, qui
+continue de journaliser.
