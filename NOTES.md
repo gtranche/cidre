@@ -19594,3 +19594,24 @@ prochaine mesure : un bloc BC4 connu, échantillonné, comparé au décodage att
 Je ne peux pas regarder l'écran : `screencapture` échoue en « could not create image from display »
 faute d'autorisation d'enregistrement d'écran. Chaque A/B demande donc un aller-retour. Les sondes
 ci-dessus existent en partie pour s'en passer.
+
+### §278 bis. BC4 décode juste
+
+La sonde `tests/probe_bc4.c` pose un bloc BC4 dont elle connaît le contenu, échantillonne ses seize
+texels et les compare au décodage que la spécification impose -- en éprouvant les **deux** modes,
+car le second, celui qui ajoute 0 et 1 aux indices 6 et 7, est le cas particulier qu'un décodeur
+pressé oublie.
+
+```
+mode a huit valeurs  (rouge0 = 0xff, rouge1 = 0x00)   juste (0 ecarts sur 16)
+mode a six valeurs + 0 et 1 (0x40, 0xc0)              juste (0 ecarts sur 16)
+decodage BC4 : juste
+```
+
+Septième hypothèse morte. **Tout ce qui se mesure au niveau du pilote est correct** : les formats
+existent, le mélange de composantes est respecté, BC4 se décode juste. Le défaut n'est donc pas
+dans la lecture des textures.
+
+Ce qui reste à faire est d'arrêter de deviner et de regarder une image rendue : un vidage de la
+fenêtre présentée, dans `D3D11SwapChain`. C'est l'outil qui manque, et il servira aussi à
+Vermintide 2.
