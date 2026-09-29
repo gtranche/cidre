@@ -18524,3 +18524,41 @@ C'est là qu'est le travail utile, et il ne dépend pas du DRM : faire fonctionn
 `ConnectToGlobalUser`, puis `GetISteamUser` et `GetISteamUtils` jusqu'au client natif. Tout jeu
 Steam en a besoin, protégé ou non -- alors que deviner le marqueur qui évite SteamStart ne sert
 qu'à Dead Cells et n'est que de l'archéologie.
+
+## 264. Le pont Steam transmet enfin une méthode
+
+Le §263 bis désignait le travail utile : le relais `__thiscall` 32 bits n'avait jamais imprimé une
+ligne, donc le chemin de transmission des méthodes n'avait jamais servi. `tests/h32pipe.c`
+l'éprouve directement, sans passer par un jeu.
+
+```
+SteamClient017 : objet 0019D8F8
+table de methodes 00192A30, emplacement 0 = 7B511CE0
+CreateSteamPipe       -> 1
+ConnectToGlobalUser   -> 1
+GetISteamUser         -> 0019EAA8
+GetISteamUtils        -> 0019EDA8
+  ISteamUtils::GetAppID -> 588650
+  ISteamUser::BLoggedOn -> 1
+BReleaseSteamPipe     -> 1
+```
+
+Tout y est : le tuyau, l'utilisateur global, les deux sous-interfaces **enveloppées** au retour, et
+deux lectures qui traversent jusqu'au client Steam natif de macOS. `BLoggedOn` rend 1 parce que la
+session est ouverte, et `GetAppID` rend 588650 parce que c'est l'application demandée. Rien n'est
+simulé : le pont relaie, le client natif répond.
+
+Les emplacements ne sont pas devinés. La table mesurée du pont les nomme -- `ISteamClient` 5 =
+`GetISteamUser`, 9 = `GetISteamUtils`, `ISteamUtils` 9 = `GetAppID`, `ISteamUser` 1 = `BLoggedOn`.
+On s'en tient là : appeler un emplacement inconnu sur la session vivante de l'utilisateur peut le
+déconnecter, et ce n'est pas au test de le découvrir.
+
+### Une faute de page qui valait la leçon
+
+La première version appelait les méthodes en assembleur, « this » dans ECX et les arguments
+empilés. Elle plantait dans le pont, en lecture à l'adresse `0x160`. La faute n'était pas dans le
+pont : une contrainte `"g"` autorise un opérande **relatif à ESP**, et mes `pushl` venaient de le
+déplacer -- le troisième argument était lu au mauvais endroit.
+
+Des `typedef` en `__thiscall` font le même travail sans l'écueil, et le compilateur ne se trompe
+pas de pile. Écrire l'ABI à la main quand le compilateur la connaît ne rapporte rien.
