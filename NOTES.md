@@ -13564,7 +13564,9 @@ conversion mappe sur `WSAEOPNOTSUPP`. Non identifie.
 ### Sur l'anti-triche
 
 Le jeu tourne en ligne sur Steam Deck parce qu'Epic fournit un Easy Anti-Cheat **natif Linux**
-que Valve intègre à Proton. Il n'existe pas d'équivalent macOS. Le jeu en ligne est donc hors
+que Valve intègre à Proton. Il n'existe pas d'équivalent appelable depuis un jeu Windows traduit
+sur macOS -- le support macOS d'EAC existe, mais pour des jeux Mac natifs ; voir §271, qui corrige
+la formulation de ce paragraphe. Le jeu en ligne est donc hors
 d'atteinte, et aucun travail sur cette pile n'y changera rien. Reste le solo.
 
 ## 192. Le vérificateur de reconstruction ne vérifiait que Mesa
@@ -19052,3 +19054,86 @@ Aucun `err:` ni `fixme:` du pont sur toute l'exécution.
 Les deux moitiés du pont portent maintenant un jeu qui joue, sur le client Steam natif de macOS.
 Ce qui reste devant n'est plus le pont : c'est Easy Anti-Cheat, et les jeux dont l'enveloppe exige
 une signature Valve (§268).
+
+## 271. Easy Anti-Cheat : ce que la pile montre, et ce que ça ferme
+
+Le §191 affirmait qu'il n'existe pas d'Easy Anti-Cheat pour macOS. C'était faux, et il faut le
+corriger : Epic a étendu EAC à macOS et à Linux en 2022. Mais l'affirmation corrigée ne dit pas ce
+qu'on croirait, et la différence est tout le sujet.
+
+### Comment ça marche sous Proton, exactement
+
+Sous Proton, le jeu Windows ne fait pas tourner le client EAC Windows. Le dépôt du jeu embarque en
+plus une bibliothèque **native Linux** -- `easyanticheat_x64.so`, posée à côté de
+`EasyAntiCheat_x64.dll` -- et Proton relaie du monde Windows vers elle. C'est exactement la forme de
+notre pont Steam. Deux conditions, toutes les deux hors de notre portée :
+
+1. le développeur doit activer un module **Linux** dans le portail d'Epic ;
+2. le dépôt doit contenir le binaire natif de l'hôte.
+
+Et la documentation d'Epic nomme le cas d'échec sans ambiguïté :
+
+> « The player is launching the game on a platform where no client module has been activated, for
+> example using **Wine/Proton when no Linux module has been activated**. »
+
+Autrement dit, pour EAC, **Wine implique Linux**. Il n'y a pas de branche « Wine sur autre chose ».
+
+Le support macOS, lui, existe « for developers who maintain full native builds of their games for
+these platforms » : un `.app` natif, dont le fichier de configuration s'appelle `MyGame.app.eac`.
+C'est un chemin pour les jeux Mac natifs, pas un moteur d'exécution qu'un jeu Windows traduit
+pourrait appeler.
+
+### Ce que notre pile montre, mesuré
+
+`tests/h64eac.c`, invité x86-64, ne dissimule rien : il constate.
+
+```
+ntdll!wine_get_version      : present -> "11.18"
+ntdll!wine_get_host_version : "Darwin" "25.5.0"
+ntdll!wine_server_call      : present
+
+IsWow64Process2 : processus 0, machine native 0xaa64
+xtajit64.dll charge   : 00006FFFF8320000     (FEX)
+xtajit64se.dll charge : 0000000000000000
+```
+
+Deux murs, mesurés :
+
+- La pile s'annonce comme Wine au premier appel venu, et l'hôte qu'elle déclare est **Darwin**, pas
+  Linux. Le seul module qu'un amorceur EAC demanderait dans ce cas est le module Linux, qui ne peut
+  pas s'exécuter ici.
+- La machine native est **ARM64**. Epic écrit : « Anti-Cheat Client does not support the following
+  platforms: Linux ARM64 or virtual machines (VM). » La seule compatibilité ARM mentionnée concerne
+  `xtajit64se.dll`, l'émulateur x64 de Microsoft sur **Windows** sur ARM -- pas le nôtre.
+
+### Une supposition corrigée au passage
+
+Je m'attendais à ce que le troisième mur soit « Wine ne sait pas charger de pilote noyau ». C'est
+faux, et le premier essai le cachait : il visait un `.sys` inexistant et échouait en 1114, ce qui ne
+mesurait que son absence. Avec un pilote réel :
+
+```
+CreateService(SERVICE_KERNEL_DRIVER) : accepte
+StartService : demarre (0)
+```
+
+Wine accepte et démarre un service de pilote -- dans `winedevice.exe`, en espace utilisateur. Ce qui
+manque n'est pas le chargement, c'est le noyau.
+
+### Ce qu'on ne fera pas
+
+Faire taire `wine_get_version`, ou faire déclarer à la pile un hôte qu'elle n'a pas, ferait passer
+un anti-triche à côté de ce qu'il existe pour voir. Ce n'est pas de la compatibilité, c'est de
+l'évasion de détection, et ce projet n'en fera pas. Le travail légitime sur EAC est le relais vers
+un moteur natif -- celui que Proton fait -- et il n'y a pas de moteur natif à appeler ici.
+
+### Ce qui reste atteignable
+
+Le mode solo. Un jeu qui embarque EAC se lance par son amorceur ; ce qui compte alors est qu'il
+échoue proprement et laisse le jeu démarrer hors ligne. C'est mesurable, mais pas ici : **aucun des
+quatre jeux installés n'embarque EAC** -- aucun fichier `EasyAntiCheat*` dans toute la bibliothèque
+Steam. Il faudra un jeu protégé pour aller plus loin, et ce sera le premier pas le jour où il y en
+aura un.
+
+Sources : [Using the Anti-Cheat Interfaces](https://dev.epicgames.com/docs/epic-online-services/trust-and-safety/anti-cheat-interfaces/using-anti-cheat),
+[Epic Online Services launches Anti-Cheat support for Linux, Mac, and Steam Deck](https://onlineservices.epicgames.com/news/epic-online-services-launches-anti-cheat-support-for-linux-mac-and-steam-deck).
