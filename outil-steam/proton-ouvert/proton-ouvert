@@ -1,0 +1,51 @@
+#!/bin/sh
+# Outil de compatibilite Steam : « Proton ouvert ».
+#
+# Steam appelle ce programme a la place du jeu, avec un verbe puis la commande
+# du jeu :  proton-ouvert run <jeu.exe> [args...]
+#
+# C'est le meme contrat que Proton sous Linux. L'interet par rapport aux options
+# de lancement : Steam le choisit une fois pour toutes, par jeu ou par defaut,
+# et il fait telecharger les depots Windows -- from_oslist "windows" vers
+# to_oslist "macos". Plus rien a coller dans chaque jeu.
+#
+# Steam fournit l'environnement : SteamAppId, SteamGameId, et les chemins
+# STEAM_COMPAT_DATA_PATH / STEAM_COMPAT_CLIENT_INSTALL_PATH. Le jeu parle au
+# vrai client Steam de macOS a travers le pont lsteamclient ; rien n'est simule.
+set -e
+R=${PROTON_OUVERT_RACINE:-/Users/gtranche/Dev/proton-ouvert}
+export WINEPREFIX=${WINEPREFIX:-$R/wine/pfx-arm64ec}
+JOURNAL=$R/build/logs/steam-${SteamAppId:-inconnu}.log
+mkdir -p "$(dirname "$JOURNAL")"
+
+VERBE=$1; shift || true
+case $VERBE in
+   run|waitforexitandrun) ;;
+   getcompatpath|getnativepath) echo "$1"; exit 0 ;;
+   *) echo "verbe inconnu : $VERBE" >&2; exit 2 ;;
+esac
+
+[ $# -ge 1 ] || { echo "aucune commande de jeu" >&2; exit 2; }
+EXE=$1; shift
+case $EXE in
+   /*) DOSSIER=$(dirname "$EXE"); PROG=$(basename "$EXE") ;;
+   *)  DOSSIER=$(pwd);            PROG=$EXE ;;
+esac
+
+{
+   echo "=== $(date '+%F %T')  outil=proton-ouvert verbe=$VERBE appid=${SteamAppId:-?}"
+   echo "    jeu     : $PROG"
+   echo "    dossier : $DOSSIER"
+   echo "    args    : $*"
+} >>"$JOURNAL"
+
+# Le client de service n'existe que pour occuper ActiveProcess\pid dans le
+# registre du prefixe ; sans lui SteamAPI_Init attend un client Windows.
+if ! pgrep -f 'c:\\faux_steam.exe' >/dev/null 2>&1; then
+   WINEDEBUG=-all sh "$R/tests/etape2_pile_arm64ec.sh" 'c:\faux_steam.exe' >>"$JOURNAL" 2>&1 &
+   i=0
+   while [ $i -lt 60 ] && ! grep -q "inscrit" "$JOURNAL" 2>/dev/null; do sleep 1; i=$((i + 1)); done
+fi
+
+cd "$DOSSIER"
+exec sh "$R/tests/etape2_pile_arm64ec.sh" "$PROG" "$@" >>"$JOURNAL" 2>&1

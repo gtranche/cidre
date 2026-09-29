@@ -1,0 +1,13 @@
+"compatibilitytools"
+{
+  "compat_tools"
+  {
+    "proton_ouvert"
+    {
+      "install_path" "."
+      "display_name" "Proton ouvert"
+      "from_oslist"  "windows"
+      "to_oslist"    "macos"
+    }
+  }
+}

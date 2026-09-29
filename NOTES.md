@@ -19352,3 +19352,74 @@ registres au moment de la faute, qui sont la taille de l'arène et non celle d'u
 refusée : c'est pourquoi `WINEDEBUG=+virtual` ne montrait aucun refus au §272.
 
 Reste à trouver qui construit cette arène, et pourquoi sa base est nulle chez nous.
+
+## 275. L'arène de Vermintide 2 : une adresse que macOS ne donnera jamais
+
+Le §274 s'arrêtait sur un constructeur d'arène dont la base était nulle. L'import a été résolu dans
+la table du jeu :
+
+```
+140339fa8: movl  $0x4, %r9d          ; PAGE_READWRITE
+140339fae: movl  $0x2000, %r8d       ; MEM_RESERVE
+140339fb7: callq *0x1405af588        ; KERNEL32!VirtualAlloc
+140339fbd: movq  %rax, 0x30(%rbx)    ; la base
+140339fc4: movq  %rdi, 0x40(%rbx)    ; la limite -- posee quoi qu'il arrive
+140339fe5: movq  %rax, 0x38(%rbx)    ; le curseur = la base, meme nulle
+```
+
+Et la trace `+virtual` donne la demande, mot pour mot :
+
+```
+NtAllocateVirtualMemory  adresse 0x10000  taille 0x40000000  type 2000
+```
+
+**Un gigaoctet à l'adresse imposée 0x10000.** Sous Linux, c'est exactement `vm.mmap_min_addr` et la
+demande aboutit ; sous Windows aussi. Sur macOS, rien ne peut être mappé sous 4 Gio -- c'est
+`__PAGEZERO`, pas un conflit.
+
+### Le trou était plus large que le jeu
+
+`tests/h64bas.c` demande, et note ce qui est rendu. Avant :
+
+```
+0x10000 (ce que demande Vermintide 2)  -> NULL (487)
+0x1000000                              -> NULL (487)
+0x80000000                             -> NULL (487)
+laissee au systeme                     -> 0000000300000000
+```
+
+**Aucune adresse imposée n'aboutissait** pour un invité x86-64. Tout programme Windows qui réserve à
+une base choisie tombait dessus, pas seulement ce jeu.
+
+### La correction
+
+Dans `allocate_virtual_memory`, une base demandée entièrement sous 4 Gio est traitée comme une
+**préférence** : le système choisit. C'est plus proche de Windows que d'échouer, puisque là-bas la
+demande aboutit. Le traitement ne vaut que pour ce chemin-là : les images et `KUSER_SHARED_DATA`
+passent ailleurs, et une adresse basse y a un sens -- j'avais d'abord posé la correction dans
+`map_view`, ce qui aurait déplacé `KUSER_SHARED_DATA` de `0x7ffe0000`.
+
+Un second faux pas, noté parce qu'il se reproduira : j'avais gardé la correction derrière
+`!user_space_wow_base`, croyant que cette base ne valait que pour les invités 32 bits. Elle est
+posée pour **tout** processus sur macOS, et le garde-fou annulait la correction. Le bon critère est
+la plage elle-même : un invité 32 bits arrive déjà rebasé au-dessus de sa fenêtre, donc « sous
+4 Gio » ne désigne que des demandes d'invités 64 bits.
+
+Après :
+
+```
+0x10000    -> 0000000300000000
+0x1000000  -> 0000000300000000
+0x80000000 -> 0000000300000000
+```
+
+### Ce que ça donne
+
+Les trois témoins repassent -- `h32temps` (i386), `banc_x64` et `h64tls` (x86-64). Et Vermintide 2
+**franchit son démarrage** : plus de minidump, plus de `memset` à l'adresse 0x10, et DXVK monte son
+périphérique.
+
+```
+info: Driver : KosmicKrisp 26.2.99
+info: D3D11InternalCreateDevice: Using feature level D3D_FEATURE_LEVEL_11_0
+```
