@@ -18479,3 +18479,48 @@ Trois hypothèses essayées et écartées, une exécution chacune :
 Ce qui reste est donc bien défini : faire relancer le jeu par le faux client sur réception de la
 commande 2, et trouver ce qui distingue la seconde instance. Cela demande de reprendre le
 désassemblage en amont, là où le stub décide de demander le lancement plutôt que de continuer.
+
+### §263 bis. La carte des deux acteurs, et ce que le DRM veut vraiment
+
+Le désassemblage en amont donne la répartition des rôles, qui n'était pas évidente :
+
+| acteur | où | ce qu'il fait |
+|---|---|---|
+| le chargeur `.bind` | `0x01553000`, section de `deadcells.exe` (0x2e608 octets) | la poignée de main SteamStart, la boîte d'erreur |
+| `steamdrmp.dll` | déballé à `0x10000000` | charge `steamclient.dll`, crée les interfaces, lit le ticket |
+
+`steamdrmp.dll` a été identifié en le prélevant dans le processus vivant -- il suffit de couper le
+faux client pour que le jeu reprenne sa boîte et attende -- puis en lisant son nom dans sa table
+d'exports.
+
+Son code enchaîne sans difficulté :
+
+```
+10004f3c: GetProcAddress(hSteamClient, "CreateInterface")
+10004f4b: CreateInterface("SteamClient017", NULL)   -> range le resultat
+10004f6d: CreateInterface("SteamClient014", NULL)
+10004f7f: test eax, eax
+10004f81: jne  -> succes                              <- notre pont passe ici
+```
+
+Nos interfaces sont acceptées. Et les chaînes du module disent ce qu'il veut ensuite :
+
+```
+SteamUser017   SteamUtils007   STEAMAPPTICKET_INTERFACE_VERSION001
+steam://run/%u//   Could not determine Steam client install directory.
+```
+
+**Le contrôle réel est un ticket d'application** -- la vérification de possession, qui ne peut être
+répondue que par un vrai client Steam authentifié. C'est précisément ce que le pont est là pour
+transmettre.
+
+### Ce que ça désigne comme travail
+
+Le relais `__thiscall` 32 bits trace chaque appel de méthode. Sur toutes les exécutions de cette
+session, **il n'a jamais imprimé une seule ligne** : aucune méthode d'interface n'a jamais été
+appelée à travers le pont. Le chemin de transmission des méthodes n'a donc jamais servi.
+
+C'est là qu'est le travail utile, et il ne dépend pas du DRM : faire fonctionner `CreateSteamPipe`,
+`ConnectToGlobalUser`, puis `GetISteamUser` et `GetISteamUtils` jusqu'au client natif. Tout jeu
+Steam en a besoin, protégé ou non -- alors que deviner le marqueur qui évite SteamStart ne sert
+qu'à Dead Cells et n'est que de l'archéologie.
