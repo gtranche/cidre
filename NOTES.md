@@ -18714,14 +18714,14 @@ faux client la vide mot par mot :
 +9c=00000080  son evenement
 +a0=0008fb6a  588650 -- le numero d'application de Dead Cells
 +a4=c5ee116b  un jeton
-+a8=00000033  51 -- le code de sortie qu'il annonce
++a8=00000033  le caractere '3' -- son code d'echec, pas un code de sortie (voir §268)
 +ac=01153220  une adresse dans sa propre section .bind
 ```
 
 Cela confirme mot pour mot la lecture du §263, faite sur le désassemblage : le stub écrit
 `[vue+0xa0] = [obj+0x38]`, `[vue+0xa4] = [obj+0x44]`, `[vue+0xa8] = (char)[ebp-1]`,
 `[vue+0xac] = [obj+0x10] - 0xf0`. Il dit à Steam : « lance l'application 588650, voici mon pid et
-mon événement, je sortirai en 51 ». Puis il s'efface. Le vrai client relance alors le jeu, et c'est
+mon événement, et voici mon code d'échec ». Puis il s'efface en 51. Le vrai client relance alors le jeu, et c'est
 cette **seconde** instance qui joue.
 
 La seconde instance doit donc se distinguer de la première. Trois marqueurs ont déjà été mesurés et
@@ -18799,3 +18799,105 @@ make aarch64_CFLAGS="-g -O2 -DWINE_TEB_SANS_X18" arm64ec_CFLAGS="-g -O2 -DWINE_T
 ```
 
 Une leçon de plus : un `make install` dans cet arbre n'est jamais anodin.
+
+## 268. Ce que le DRM de Dead Cells exige : une signature Valve
+
+Le §267 refermait la piste de la filiation : l'instance relancée **par** le faux client, fille de
+celui-ci, redemande exactement la même chose. Quatre marqueurs supposés ont maintenant été mesurés
+et écartés. Il fallait donc arrêter de chercher le marqueur et lire le code.
+
+### La poignée de main n'est pas une étape, c'est un échec
+
+Le désassemblage du chargeur `.bind`, repris à partir d'une adresse de retour sûre que la trace
+`+relay` fournit, donne l'enchaînement :
+
+```
+0155506c: calll *[ebp-0x2e8]     ; le point d'entree de steamdrmp.dll
+01555072: movb  %al, -0x1(%ebp)  ; il rend un CARACTERE
+01555079: cmpl  $0x30, %ecx      ; '0' ?
+0155507c: je    01555088         ; oui -> on decharge et on saute au jeu
+0155507e: jmp   015553e5         ; non -> chemin d'echec ... qui contient SteamStart
+```
+
+Tout le protocole SteamStart que le §263 avait démonté est **le chemin d'échec**. Le stub construit
+son message « Application load error <code>:<nombre> », écrit le caractère à la place du `:`, puis
+demande à Steam de lancer l'application -- une réparation, pas une étape normale. Le `0x33` que la
+requête porte en `+0xa8` n'est donc pas un code de sortie : c'est le caractère `'3'`, le code
+d'échec, que le stub réutilise ensuite comme code de sortie.
+
+Sans le faux client, la boîte le dit mot pour mot :
+
+```
+user32.MessageBoxA(0, "Application load error 3:0000065432", "Steam Error", 0x10)
+```
+
+### Ce que `steamdrmp.dll` fait avant de rendre `'3'`
+
+La trace `+relay` du module déballé donne sa dernière séquence, et le désassemblage la nomme :
+
+```
+10002c9e: charge steamclient.dll, CreateInterface("SteamClient014")
+10002cc4: GetProcAddress(module, "CreateInterface")
+10002cde: calll 10002ab0          ; <- controle du module
+10002ce6: test al, al
+10002ce8: jne 10002cf6             ; passe -> le pont est utilise
+10002cef: movb $0x33, %al          ; echoue -> '3'
+```
+
+`10002ab0` retrouve le module par l'adresse de `CreateInterface`
+(`GetModuleHandleExA(FROM_ADDRESS)`), lit **son fichier sur le disque** en entier, et lui applique
+deux contrôles. Le second compare l'en-tête en mémoire au fichier, en s'autorisant `ImageBase` que
+le chargeur a forcément relocalisé. `tests/h32entete.c` refait cette comparaison sur notre pont :
+
+```
+e_lfanew = 0x78, comparaison sur 0x198 octets
+i386 en-tete : 0 octets differents
+```
+
+Elle passe. C'est le **premier** contrôle qui refuse, et il ne laisse aucune place au doute :
+
+```
+1000578d: cmpl $0x200, %edx          ; au moins 512 octets
+100057a1: cmpw $0x5a4d, (%esi)       ; MZ
+100057d1: cmpl $0x564c56, 0x40(%esi) ; "VLV" a l'offset 0x40   <- ici
+100057da: movl $0x2, %eax ; retl     ; sinon : refus
+100057e4: cmpl $0x1, 0x44(%esi)      ; version du bloc
+100057f5: cmpl 0x48(%esi), %edx      ; taille annoncee
+1000584a: ... 0x80 octets pris a 0x50, puis les tables T d'AES en 0x1001f9b0
+```
+
+Un bloc de signature Valve : le marqueur `VLV`, une version, une longueur, et 128 octets -- une
+signature RSA de 1024 bits -- vérifiés avec une clé publique portée par le module.
+
+À l'offset 0x40, notre pont porte :
+
+```
+00000040: 5769 6e65 2062 7569 6c74 696e 2044 4c4c  Wine builtin DLL
+```
+
+### Ce que cela règle, et ce que cela ferme
+
+C'est une réponse nette, et elle n'est pas de celles qu'on contourne : **Dead Cells exige un
+`steamclient.dll` signé par Valve.** Aucune réimplémentation libre ne peut porter cette signature,
+et en fabriquer une n'est pas un problème d'ingénierie mais de clé privée. Ce jeu-là restera donc
+hors d'atteinte tant qu'il chargera notre pont plutôt qu'un binaire de Valve.
+
+Ce n'est pas une impasse pour le projet. Le désassemblage montre que, le contrôle passé,
+`steamdrmp.dll` fait exactement ce que le pont sait déjà faire -- et il confirme au passage nos
+emplacements, mesurés et non devinés :
+
+| ce que steamdrmp appelle | emplacement | notre table |
+| --- | --- | --- |
+| `ISteamClient::CreateSteamPipe` | 0 | déjà mesuré |
+| `ISteamClient::BReleaseSteamPipe` | 1 (`*0x4`) | déjà mesuré |
+| `ISteamClient::ConnectToGlobalUser` | 2 (`*0x8`) | déjà mesuré |
+| `ISteamClient::GetISteamUtils(tuyau, "SteamUtils007")` | 9 (`*0x24`) | déjà mesuré |
+| `ISteamUtils` emplacement 2, sans argument, résultat comparé à 4 | 2 (`*0x8`) | nouveau |
+
+Le dernier -- un entier rendu sans argument, refusé s'il vaut 4 et que le bit 0x10 de `[obj+0x3c]`
+est absent -- se lit comme `GetConnectedUniverse` : le DRM refuse l'univers de développement. Cette
+identification-là vient de la disposition connue de l'interface, pas d'une mesure ; l'emplacement
+et la signature d'appel, eux, sont lus dans le code.
+
+La suite utile est donc celle que le §263 désignait déjà, et elle ne dépend pas du DRM : un jeu
+Steam **non protégé** pour éprouver le pont de bout en bout.
