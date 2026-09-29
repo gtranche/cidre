@@ -19212,3 +19212,75 @@ Deux chantiers distincts, tous deux hors anti-triche :
   -- un ELF, qui ne se chargera pas ici, et ce sera le dernier mot mesuré du §271.
 - **Le plantage de démarrage**, qui est de la compatibilité ordinaire. Le site est connu au mot
   près ; il manque l'appelant, que ni le relais ni le minidump ne donnent.
+
+## 273. TLS dans le préfixe, et le dernier mot d'Easy Anti-Cheat
+
+Le §272 laissait un trou nommé : notre Wine était bâti `--without-gnutls`, donc sans schannel, donc
+**aucun programme invité ne pouvait faire de HTTPS**. Ce n'est pas un détail d'anti-triche : c'est
+tout le réseau chiffré, pour tous les jeux.
+
+### La chaîne, dans notre dossier
+
+`tests/construire_gnutls.sh` construit GnuTLS et ses dépendances dans `prefix/`, jamais dans le
+système. L'ordre est impose par les dépendances : GMP, puis Nettle (qui fournit aussi Hogweed),
+puis libtasn1, puis GnuTLS. On construit GMP plutôt que d'emprunter celui de Homebrew, pour que la
+pile reste dans son dossier.
+
+```
+libgmp.10          arm64
+libnettle.8        arm64
+libhogweed.6       arm64
+libtasn1.6         arm64
+libgnutls.30       arm64
+```
+
+Un piège, une fois de plus de ma main : le script réduisait `PATH` à `/usr/bin:/bin:...` par
+propreté, ce qui en retirait `pkg-config` (il vient de Homebrew). Le `configure` de GnuTLS s'arrête
+alors sur « Libnettle 3.6 was not found » alors que Nettle est installé et correct. La faute ne
+nomme pas sa cause.
+
+Puis Wine, reconfiguré sans `--without-gnutls` :
+
+```
+checking for gnutls/gnutls.h... yes
+checking for -lgnutls... libgnutls.30.dylib
+checking for gnutls_cipher_init... yes
+```
+
+Reconstruction complète des trois architectures avec les deux drapeaux TEB, réinstallation du pont,
+et les deux témoins repassent -- `h32temps` (i386) et `banc_x64` (x86-64). Le message
+`err:secur32:SECUR32_initSchannelSP no schannel support` a disparu.
+
+### Ce que ça change, mesuré sur l'amorceur d'EAC
+
+Avant / après, sur le même jeu et la même commande :
+
+```
+avant : Connect result: SSL connect error (35) Response Code: 0
+        Could not reach the Easy Anti-Cheat CDN, launching with null client, result code: 505.
+        Launcher finished with: 301, 'Easy Anti-Cheat successfully loaded in-game'.
+
+apres : Connect result: No error (0) Response Code: 200
+        Starting Wine module mapping, Wine version: 11.18.
+        [Err!] Failed to map the anti-cheat module.
+        Launcher finished with: 206, 'Failed to load the anti-cheat module.'.
+```
+
+**HTTPS fonctionne** : Epic répond 200. C'est la preuve de bout en bout de la chaîne GnuTLS, sur un
+invité x86-64.
+
+Et c'est le dernier mot sur l'anti-triche, cette fois avec le mécanisme sous les yeux. EAC possède
+un chemin dédié -- « Starting Wine module mapping », et il reconnaît notre version de Wine. Il
+télécharge le module `linux64`, puisqu'il a décidé au §272 que Wine implique Linux. Puis il échoue
+à le charger. Aucune supposition n'était nécessaire : le module arrive, le chemin existe, et il ne
+peut pas s'exécuter ici.
+
+### Une ironie qu'il faut noter
+
+Boucher le trou TLS a rendu EAC **plus strict**. Tant qu'il ne joignait pas le CDN, il repartait en
+« null client » et lançait le jeu quand même ; maintenant qu'il le joint, il obtient un module
+qu'il ne peut pas charger, et il refuse de lancer -- le jeu ne démarre plus du tout par ce chemin.
+
+Cela ne coûte rien en pratique, puisque le jeu lancé directement s'effondre de toute façon dans sa
+CRT (§272), et que le mode solo passe par ce lancement direct. Mais c'est à retenir : un trou
+bouché ne rapproche pas toujours du but, et il faut mesurer les deux côtés avant de s'en réjouir.
