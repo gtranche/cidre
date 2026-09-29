@@ -20021,3 +20021,43 @@ Ce qui reste incertain est l'étape d'après : ce DLL est le vrai client, et il 
 service Steam. Le §191 avait buté là-dessus -- boucle de plantage du processus GPU de CEF, et
 `Failed to start auth session` sur l'erreur `10045`. Mais tout a changé depuis : Wine 11 arm64, TLS
 enfin présent, et les corrections d'espace d'adressage. Cela mérite une nouvelle mesure.
+
+## 287. Dead Cells : la signature est satisfaite, honnêtement
+
+Le §286 posait l'idée : ne pas fabriquer la signature Valve, fournir le **vrai fichier**. Le client
+Steam Windows déjà installé dans `wine/pfx-steam` porte un `steamclient.dll` **i386** -- la même
+machine que Dead Cells -- avec le bloc authentique.
+
+Copié dans le préfixe, et `SteamClientDll` du registre pointé dessus, le jeu le charge :
+
+```
+LoadLibraryExW(L"C:\Program Files (x86)\Steam\steamclient_valve.dll", 0, 8)  ret=100054ad
+```
+
+Et le code de sortie change :
+
+```
+avant : rc=51   soit 0x33, le caractere '3'
+apres : rc=53   soit 0x35, le caractere '5'
+```
+
+Le désassemblage du §268 nomme ces deux valeurs sans ambiguïté :
+
+```
+10002cef: movb $0x33, %al   ; le controle du module echoue -- la signature
+10002fe7: movb $0x35, %al   ; CreateInterface a rendu NULL
+```
+
+**Le contrôle de signature est passé.** Ce n'est pas un contournement : le fichier est celui de
+Valve, avec sa vraie signature, et le DRM la vérifie et l'accepte. C'était la seule façon honnête,
+et elle marche.
+
+### Le mur suivant, et il est d'une autre nature
+
+`'5'` veut dire que `CreateInterface` a rendu NULL. C'est attendu : ce DLL n'est pas un pont, c'est
+le **vrai client**, et il ne peut rien fabriquer sans le service Steam derrière lui. Il faut donc
+faire tourner le client Steam Windows dans le préfixe -- ce que le §191 avait tenté et manqué sur
+deux murs, dont une authentification échouant en `10045`.
+
+Mais ce diagnostic-là datait d'avant TLS, d'avant Wine 11 arm64 et d'avant les corrections
+d'espace d'adressage. Le mur du DRM, lui, est tombé.
