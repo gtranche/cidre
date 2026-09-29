@@ -19504,3 +19504,48 @@ connexion que Steam réécrit lui-même (`LastPingTimestamp`, `dc`, `LastPingVal
 L'outil reste dans `outil-steam/` : il est correct, il respecte le contrat de Proton, et il servira
 tel quel le jour où le client macOS câblera ce chemin. Ce qui vit dans Steam, ce sont quatre lignes
 `LaunchOptions` dans `localconfig.vdf`, une par jeu Windows installé.
+
+## 277. Quatre jeux par le bouton « Jouer », et un agent pour ne plus y penser
+
+### Ce que donne le clic
+
+| jeu | résultat |
+| --- | --- |
+| DREDGE | joue |
+| Surviving Mars | **se lance et joue**, texte abîmé (voir plus bas) |
+| Vermintide 2 | fenêtre noire, puis fermeture, après l'initialisation de DXVK |
+| Dead Cells | rien -- son enveloppe, §268, inchangée |
+
+Dead Cells est explicable sans rien ouvrir : le journal montre la poignée de main SteamStart et la
+sortie silencieuse. C'est le mur de la signature Valve, pas un défaut de la pile.
+
+### Le texte de Surviving Mars
+
+Les glyphes sortent troués de rectangles noirs. Le journal de DXVK donne la piste, et elle est nette :
+
+```
+info:    maintenance5                   : 1
+info:  DXGI: VK_FORMAT_A8_UNORM_KHR -> VK_FORMAT_R8_UNORM
+```
+
+L'extension est annoncée, mais le **format** `A8_UNORM` ne l'est pas : DXVK se rabat sur
+`R8_UNORM`. Un atlas de police en A8 lu comme R8 met la couverture dans le mauvais canal, ce qui
+produit exactement cette forme d'artefact. À éprouver avant d'affirmer : le remplacement demande un
+mélange de composantes, et il faut voir qui, de DXVK ou du pilote, ne le fait pas.
+
+### Plus de commande à taper
+
+`tests/brancher_jeux_steam.sh` pose les options de lancement de tous les jeux installés en une
+fois. `tests/installer_agent_steam.sh` en fait un agent de session, qui surveille `steamapps` et le
+fichier que Steam réécrit en quittant.
+
+On peut le déclencher sans précaution : il refuse d'écrire tant que Steam tourne, ne touche jamais
+une option de lancement personnelle, vérifie l'équilibre des accolades avant d'écrire, et ne fait
+rien quand tout est déjà en place. Mesure, agent déclenché pendant que Steam tournait :
+
+```
+Steam tourne : il reecrirait ce fichier en quittant. Fermez-le d'abord.
+```
+
+Rien n'est posé dans le système : l'agent vit dans `~/Library/LaunchAgents`, et
+`installer_agent_steam.sh --retirer` l'enlève.
