@@ -53,7 +53,7 @@
 +@ cdecl SondeInterfaceNative(ptr)
 --- aa/dlls/lsteamclient/main.c
 +++ bb/dlls/lsteamclient/main.c
-@@ -0,0 +1,586 @@
+@@ -0,0 +1,637 @@
 +/*
 + * Cote PE du pont Steamworks : ce que le steam_api du jeu appelle.
 + */
@@ -409,6 +409,30 @@
 +#endif /* _WIN64 */
 +
 +#include "thunks32.h"
++#include "types32.h"
++
++#ifndef _WIN64
++/*
++ * Ce que l'on sait de la position d'un argument : 'e', 'p' ou '?'.
++ * Voir types32.h pour la provenance de chaque entree.
++ */
++static char type_connu( const char *interface, unsigned emplacement, unsigned mot )
++{
++    unsigned i;
++
++    /*
++     * Le relais nomme l'objet racine « ISteamClient », mais une sous-interface
++     * par sa chaine de version -- « SteamUser017 ». On accepte les deux formes,
++     * comme le fait deja la table mesuree.
++     */
++    for (i = 0; i < NB_TYPES32; i++)
++        if (types32[i].emplacement == emplacement &&
++            (!strcmp( types32[i].interface, interface ) ||
++             meme_interface( types32[i].interface, interface )))
++            return mot < strlen( types32[i].mots ) ? types32[i].mots[mot] : '?';
++    return '?';
++}
++#endif
 +
 +#ifndef _WIN64
 +/*
@@ -437,7 +461,34 @@
 +    dest[0] = &params.a; dest[1] = &params.b; dest[2] = &params.c;
 +    dest[3] = &params.d; dest[4] = &params.e; dest[5] = &params.f;
 +    for (i = debut; i < mots && i - debut < 6; i++)
-+        *dest[i - debut] = mot_vers_hote( args[i] );
++    {
++        unsigned rang = i - debut;
++        char type = type_connu( ou, emplacement, rang );
++
++        switch (type)
++        {
++        case 'e':
++            /* Su : un entier. Ne jamais le rebaser, meme s'il ressemble a une
++             * adresse -- c'est tout l'interet de cette table. */
++            *dest[rang] = args[i];
++            break;
++        case 'p':
++            *dest[rang] = vers_hote( (const void *)(ULONG_PTR)args[i] );
++            break;
++        default:
++            /*
++             * Inconnu : on retombe sur l'heuristique. Et on en profite pour
++             * apprendre -- un mot sous le seuil ne peut pas etre un pointeur,
++             * donc cette position est un entier, definitivement. La ligne est
++             * faite pour etre recueillie et reportee dans types32.h.
++             */
++            if (args[i] && args[i] < 0x110000)
++                TRACE( "PREUVE %s %u mot %u entier (valeur %#x)\n", ou, emplacement, rang,
++                       (unsigned)args[i] );
++            *dest[rang] = mot_vers_hote( args[i] );
++            break;
++        }
++    }
 +
 +    if (WINE_UNIX_CALL( unix_appel_vtable, &params )) return 0;
 +
@@ -3327,6 +3378,73 @@
 +};
 +
 +#endif /* _WIN64 */
+--- aa/dlls/lsteamclient/types32.h
++++ bb/dlls/lsteamclient/types32.h
+@@ -0,0 +1,64 @@
++/*
++ * Ce que l'on sait des arguments, position par position.
++ *
++ * Le relais 32 -> 64 doit decider si un mot de quatre octets est un pointeur a
++ * rebaser. Il le devinait : en dessous de 0x110000 c'est un entier, au-dessus
++ * c'est un pointeur si la page est lisible. La mesure du §265 donne le prix de
++ * cette devinette -- 35 % de l'espace d'un jeu est lisible, donc plus d'un
++ * entier sur trois au-dessus du seuil part transforme en adresse.
++ *
++ * Ce fichier remplace la devinette par du su, la ou l'on sait. Il ne contient
++ * que des faits etablis, chacun avec sa provenance :
++ *
++ *   'e'  entier  -- PROUVE. Un mot inferieur a 0x110000 ne peut pas etre un
++ *                   pointeur ; une position qui a porte une petite valeur est
++ *                   donc un entier, definitivement.
++ *   'p'  pointeur -- prouve par la structure de l'appel : le tampon de retour
++ *                   cache, que la table mesuree signale deja, ou une chaine
++ *                   dont le pont a lu le contenu.
++ *   '?'  inconnu -- on retombe sur l'heuristique, et le pont journalise ce
++ *                   qu'il observe pour que la position finisse ici.
++ *
++ * Les positions sont comptees a partir du premier argument reel : le pointeur
++ * de retour cache, quand il existe, ne compte pas -- c'est le relais qui le
++ * retire avant de consulter cette table.
++ *
++ * Le pont imprime « PREUVE <interface> <emplacement> mot <n> entier » des
++ * qu'il observe une petite valeur a une position inconnue. Recueillir ces
++ * lignes et les ajouter ici est le seul moyen d'etendre la table sans deviner.
++ */
++
++struct types_steam
++{
++    const char *interface;
++    unsigned    emplacement;
++    const char *mots;       /* un caractere par argument reel */
++};
++
++static const struct types_steam types32[] =
++{
++    /*
++     * Releve par tests/h32pipe.c, qui appelle ces methodes sur la session
++     * Steam vivante et voit passer les valeurs.
++     */
++    { "ISteamClient",  1, "e"   },   /* BReleaseSteamPipe(tuyau)          tuyau = 1 */
++    { "ISteamClient",  2, "e"   },   /* ConnectToGlobalUser(tuyau)        tuyau = 1 */
++    { "ISteamClient",  5, "eep" },   /* GetISteamUser(utilisateur, tuyau, version) */
++    { "ISteamClient",  9, "ep"  },   /* GetISteamUtils(tuyau, version)    */
++    { "ISteamClient", 12, "eep" },   /* GetISteamGenericInterface(utilisateur, tuyau, version) */
++
++    /*
++     * Recueilli par la boucle d'apprentissage elle-meme. Le pont avait imprime,
++     * au premier appel :
++     *
++     *   PREUVE ISteamClient 15 mot 0 entier (valeur 0x1)
++     *   PREUVE ISteamClient 15 mot 1 entier (valeur 0x1)
++     *
++     * et devinait encore le troisieme. Celui-la est la chaine de version : le
++     * pont l'a transmise comme pointeur et le client natif a rendu une
++     * interface valide, ce qui l'etablit.
++     */
++    { "ISteamClient", 15, "eep" },   /* GetISteamApps(utilisateur, tuyau, version) */
++};
++
++#define NB_TYPES32 (sizeof(types32) / sizeof(types32[0]))
 --- aa/dlls/lsteamclient/unix.c
 +++ bb/dlls/lsteamclient/unix.c
 @@ -0,0 +1,338 @@

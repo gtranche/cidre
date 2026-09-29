@@ -18639,3 +18639,65 @@ substitue : l'alignement écarterait les chaînes de version, qui arrivent non a
 
 Tant que les types manquent, le pont convient aux appels sans argument ou à arguments petits --
 ce que `h32pipe` éprouve -- et devient hasardeux dès qu'un entier dépasse le seuil.
+
+## 266. Des types dans la table : remplacer la devinette par ce qui est prouvable
+
+Le §265 chiffrait le coût de l'heuristique -- 35 % de l'espace d'un jeu est lisible, donc plus d'un
+entier sur trois au-dessus du seuil part transformé en adresse. Reste à lui substituer du su.
+
+### D'où les types ne viennent pas
+
+Trois sources écartées, chacune vérifiée :
+
+- **le SDK Steamworks** : propriétaire, et le projet s'interdit de s'en servir depuis le début ;
+- **les enveloppes plates du `steam_api.dll` du jeu**, d'où vient la table mesurée : elles donnent
+  l'emplacement, le nombre de mots et le tampon de retour, mais se contentent de réempiler ce
+  qu'elles reçoivent -- aucun type ;
+- **le `steamclient.dylib` natif** : il aurait pu porter des symboles C++ mangés, dont le mangling
+  Itanium encode les types complets. Il est dépouillé -- trente-huit symboles exportés, aucun mangé.
+
+### D'où ils viennent
+
+D'un fait, pas d'une déduction : **un mot inférieur à `0x110000` ne peut pas être un pointeur**.
+Une position d'argument qui a porté ne serait-ce qu'une fois une petite valeur est donc un entier,
+définitivement, et pour toujours.
+
+`types32.h` recueille ces faits, un caractère par argument :
+
+```
+'e'  entier   -- prouve par une valeur observee sous le seuil
+'p'  pointeur -- prouve par la structure de l'appel, ou par une chaine
+                 transmise dont le client natif a rendu un resultat valide
+'?'  inconnu  -- on retombe sur l'heuristique, et le pont journalise
+```
+
+Le relais consulte la table avant de deviner. Et quand il doit deviner, il apprend :
+
+```
+PREUVE ISteamClient 15 mot 0 entier (valeur 0x1)
+PREUVE ISteamClient 15 mot 1 entier (valeur 0x1)
+```
+
+Ces deux lignes sont sorties du premier appel à `GetISteamApps`, dont aucune position n'était
+connue. Reportées dans `types32.h`, elles ne reviennent plus. La boucle est complète : observer,
+prouver, inscrire.
+
+### Ce que ça donne
+
+Sur le parcours de `tests/h32pipe.c` -- tuyau, utilisateur, `ISteamUser`, `ISteamUtils`,
+`ISteamAppTicket`, `ISteamApps` -- il ne reste **aucune devinette**. Et la méprise du §265 est
+éteinte là où elle comptait :
+
+```
+BReleaseSteamPipe(00400000)     avant : « mot 0x400000 pris pour un pointeur »
+                                apres : rien -- la position est sue entiere
+```
+
+La table ne couvre pour l'instant que six méthodes d'`ISteamClient`, celles que les tests
+traversent. Elle grandira au rythme des jeux qui passeront par le pont, sans que personne ait à
+deviner : c'est le même principe que la table mesurée, appliqué aux types.
+
+Deux pièges rencontrés, notés pour la suite. `make` ne connaît pas la dépendance vers un en-tête
+nouveau : ajouter une entrée sans toucher `main.c` ne recompile rien, et l'on croit la table
+inopérante. Et le relais nomme l'objet racine « ISteamClient » mais une sous-interface par sa chaîne
+de version -- « SteamUser017 » -- donc la recherche accepte les deux formes, comme la table mesurée.

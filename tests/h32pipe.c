@@ -110,6 +110,19 @@ int main(void)
             fflush( stdout );
         }
 
+        /*
+         * Une position encore inconnue, pour montrer l'apprentissage :
+         * GetISteamApps (emplacement 15) ne figure pas dans types32.h, donc le
+         * pont retombe sur l'heuristique -- et imprime une PREUVE pour chaque
+         * mot qui passe sous le seuil, puisqu'un tel mot ne peut pas etre un
+         * pointeur. Ces lignes sont faites pour etre reportees dans la table.
+         */
+        {
+            void *iapps = (void *)((methode3)table[15])( objet, utilisateur, tuyau, "STEAMAPPS_INTERFACE_VERSION008" );
+            printf( "GetISteamApps         -> %p\n", iapps );
+            fflush( stdout );
+        }
+
         rendu = ((methode1)table[1])( objet, tuyau );
         printf( "BReleaseSteamPipe     -> %u\n", rendu );
 
