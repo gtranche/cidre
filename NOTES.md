@@ -19748,3 +19748,50 @@ rend inutile la pêche aux valeurs.
 
 Les outils restent : `PROTON_OUVERT_VIDER_SOMMETS` et son déclenchement par le temps servent tels
 quels, une fois le filtre posé.
+
+## 282. Les coordonnées sont justes elles aussi : quelque chose peint par-dessus
+
+Le §281 cherchait des valeurs dans quatre mille dessins, ce qui ne pouvait pas marcher. Le bon
+discriminant est la **ressource liée** : `PROTON_OUVERT_VIDER_SOMMETS_ATLAS` donne le côté de
+l'atlas, et le vidage ne retient que les dessins dont le nuanceur de fragments le lie. Deux cents
+dessins au lieu de quatre mille, et tous pertinents.
+
+Deux fautes de ma part corrigées en chemin, toutes deux du même genre -- lire au mauvais endroit :
+
+- le vidage lisait le **début** du tampon de sommets, alors que chaque dessin commence à
+  `StartVertexLocation × pas`. Je ne voyais donc que le premier quadrilatère de l'image, toujours le
+  même, d'où la conclusion hâtive du §281 que le flux ne contenait qu'un quadrilatère unité ;
+- il ne lisait que les huit premiers sommets, alors qu'un dessin en porte jusqu'à trente.
+
+Corrigé, le format se lit : pas de 24 octets = `pos.xy`, **`u, v`**, un mot, une couleur.
+
+### Les coordonnées sont justes
+
+```
+uv(604, 96) 70x32  ecran 70.2 px  <->  televerse (604,96 72x32)   ecart (0, 0, -2, 0)
+uv(604,132) 34x32  ecran 34.1 px  <->  televerse (604,132 36x32)  ecart (0, 0, -2, 0)
+uv(680, 96) 44x32  ecran 44.2 px  <->  televerse (680,96 44x32)   ecart (0, 0,  0, 0)
+uv(728, 96) 83x32  ecran 83.3 px  <->  televerse (728,96 84x32)   ecart (0, 0, -1, 0)
+```
+
+Chaque quadrilatère de mot échantillonne exactement le rectangle où son mot a été posé. Les un ou
+deux texels d'écart en largeur sont le remplissage d'alignement des blocs BC7 : le mot fait 70, le
+téléversement 72. Et le rapport est **1:1 à l'écran** -- 70 texels dessinés sur 70,2 pixels.
+
+### Ce que l'ensemble établit
+
+| ce qui est vérifié | verdict |
+| --- | --- |
+| la donnée envoyée | juste (§280, atlas reconstruit et lu) |
+| l'emplacement des téléversements | juste, sans recouvrement, aligné |
+| le décodage BC7 mode 6 | juste (§280) |
+| le mélange de composantes | juste (§278) |
+| les coordonnées des quadrilatères | **juste** |
+
+Tout le chemin du texte est sain. Les pavés noirs ne peuvent donc pas venir du texte : **quelque
+chose d'autre est peint par-dessus**. Un élément d'interface -- séparateur, ombre, décoration --
+dessiné avec un mélange qui devrait le rendre invisible et qui sort opaque.
+
+C'est une piste d'une autre nature que les huit précédentes, et elle se cherche autrement : parmi
+les deux cents dessins capturés, ceux dont le quadrilatère couvre l'emplacement d'un pavé noir à
+l'écran, puis leur état de mélange.
