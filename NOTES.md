@@ -19137,3 +19137,78 @@ aura un.
 
 Sources : [Using the Anti-Cheat Interfaces](https://dev.epicgames.com/docs/epic-online-services/trust-and-safety/anti-cheat-interfaces/using-anti-cheat),
 [Epic Online Services launches Anti-Cheat support for Linux, Mac, and Steam Deck](https://onlineservices.epicgames.com/news/epic-online-services-launches-anti-cheat-support-for-linux-mac-and-steam-deck).
+
+## 272. Vermintide 2 : l'anti-triche n'est pas le mur
+
+Le §271 concluait sur pièces manquantes : aucun jeu protégé n'était installé. Vermintide 2 l'est
+maintenant -- 64 Gio, 43 Gio téléchargés -- et il répond à la question posée.
+
+### Ce que l'amorceur fait, mot pour mot
+
+`start_protected_game.exe` laisse son journal dans le préfixe, et il dit tout :
+
+```
+[EAC Bootstrapper] System name: 'linux64'.
+[EAC Bootstrapper] Loader initializing with bootstrapper version 1.9.3, architecture: x86-64.
+[Connection] Connecting to URL: https://modules-cdn.eac-prod.on.epicgames.com/modules/<produit>/<deploiement>/linux64
+[Connection] Connect result: SSL connect error (35) Response Code: 0
+Connection to the Content Distribution Network failed! Curl Code: 35!
+[Warn] Could not reach the Easy Anti-Cheat CDN, launching with null client, result code: 505.
+Launcher finished with: 301, 'Easy Anti-Cheat successfully loaded in-game'.
+```
+
+Trois faits, mesurés et non plus cités :
+
+1. **L'amorceur reconnaît Wine et se déclare `linux64`.** C'est le §271 confirmé de première main :
+   pour EAC, Wine implique Linux, quel que soit l'hôte réel. Il va chercher un module Linux depuis
+   macOS.
+2. **Il n'y arrive pas, et c'est notre faute.** `SSL connect error` : notre Wine est configuré
+   `--without-gnutls`, d'où `err:secur32:SECUR32_initSchannelSP no schannel support` à chaque
+   exécution. Aucun programme invité ne peut faire de HTTPS. C'est un trou réel, bien plus large
+   qu'EAC -- tout jeu en ligne le rencontre -- et il se bouche en construisant gnutls dans notre
+   propre `prefix/`, comme le reste des dépendances.
+3. **Il lance quand même le jeu**, en « null client ». L'anti-triche n'empêche donc pas le mode
+   solo : Epic le dit (« the game will not be prevented from running in offline, solo, or
+   unprotected modes ») et l'amorceur le fait.
+
+**L'anti-triche n'est pas le mur.** C'est le résultat de la mesure, et il est plutôt bon.
+
+### Le vrai mur, et deux hypothèses tuées
+
+Le jeu s'effondre au démarrage, avec ou sans amorceur, toujours au même endroit :
+
+```
+exception c0000005 a 0x140527a09, rip dans memset
+  rdi=0x10  rcx=0x3c0  rax=0  rbx=0x10  r12=r14=0xc800000  r15=0x14084ce40
+140527a09: f3 aa    rep stosb %al, %es:(%rdi)
+```
+
+C'est `memset(0x10, 0, 960)` : un pointeur nul plus seize. Le jeu écrit lui-même un minidump, dont
+le contexte confirme exactement le même état.
+
+Deux hypothèses naturelles, toutes deux mesurées et toutes deux fausses :
+
+| hypothèse | test | résultat |
+| --- | --- | --- |
+| une réservation de 200 Mio (`0xc800000`) a rendu nul | `WINEDEBUG=+virtual` sur le jeu | **aucune** allocation refusée |
+| le stockage par fil n'est pas en place | `tests/h64tls.c` | chaque fil a sa copie, initialisée |
+| les rappels TLS de l'image ne sont pas appelés | `tests/h64tlscb.c` | `PROCESS_ATTACH` 1, `THREAD_ATTACH` 1, `THREAD_DETACH` 1 |
+
+Le premier `h64tls.c` ne mesurait rien : clang a ignoré `__declspec(thread)` en silence
+(« unknown attribute 'thread' ignored ») et le test portait sur des globales ordinaires. Réécrit
+avec `__thread`, la section `.tls` apparaît et le test devient vrai. Une sonde qui ne parle pas ne
+prouve rien -- c'est la même leçon qu'au §260.
+
+Note de méthode : le relais `+relay` **ne trace pas** les appels d'un invité x86-64, seulement les
+attaches de DLL côté hôte. J'en avais conclu que la CRT du jeu faisait faute avant tout appel
+d'API ; c'était faux, et l'absence d'appels ne mesurait que l'absence de relais.
+
+### Ce qui reste
+
+Deux chantiers distincts, tous deux hors anti-triche :
+
+- **TLS** : construire gnutls dans `prefix/` et reconstruire Wine sans `--without-gnutls`. Cela
+  rend HTTPS aux invités, et permettra au passage de voir ce que le CDN d'EAC sert pour `linux64`
+  -- un ELF, qui ne se chargera pas ici, et ce sera le dernier mot mesuré du §271.
+- **Le plantage de démarrage**, qui est de la compatibilité ordinaire. Le site est connu au mot
+  près ; il manque l'appelant, que ni le relais ni le minidump ne donnent.
