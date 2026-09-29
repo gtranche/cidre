@@ -36,6 +36,16 @@ esac
    echo "    args    : $*"
 } >>"$JOURNAL"
 
+# Ce que Steam nous donne n'est pas forcement un binaire Windows : un jeu peut
+# avoir une version macOS native, et l'option de lancement peut etre posee sur
+# tous les jeux sans distinction. Si ce n'est pas un PE, on s'efface et on lance
+# tel quel -- le script doit etre inoffensif la ou il n'a rien a faire.
+if [ "$(head -c 2 "$DOSSIER/$PROG" 2>/dev/null)" != "MZ" ]; then
+   echo "    pas un binaire Windows : lance tel quel, sans la pile" >>"$JOURNAL"
+   cd "$DOSSIER"
+   exec "./$PROG" "$@"
+fi
+
 # Le client de service : un seul a la fois, reutilise s'il tourne deja.
 if ! pgrep -f 'c:\\faux_steam.exe' >/dev/null 2>&1; then
    WINEDEBUG=-all sh "$R/tests/etape2_pile_arm64ec.sh" 'c:\faux_steam.exe' >>"$JOURNAL" 2>&1 &
