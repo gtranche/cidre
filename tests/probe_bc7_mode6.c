@@ -260,6 +260,46 @@ int main(void)
       fautes += eprouver("extremites quelconques, parites 1 et 0", &s, attendu, img, bsrc, msrc, mdst, cb, pipe, pl, ds);
    }
 
+   {  /* Un bloc entierement nul : aucun bit de mode, donc un bloc reserve.
+       * Surviving Mars televerse exactement cela pour son glyphe d'espace --
+       * 256 octets de zeros en (644,132). Ce que le pilote en rend decide de
+       * l'apparence de chaque espace entre deux mots. */
+      memset(&s, 0, sizeof(s));
+      void *p; (void)p;
+      CHK(vkMapMemory(dev, msrc, 0, VK_WHOLE_SIZE, 0, (void **)&p));
+      memset(p, 0, 16); vkUnmapMemory(dev, msrc);
+
+      VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
+      CHK(vkBeginCommandBuffer(cb, &bi));
+      VkImageMemoryBarrier b = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+         .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+         .image = img, .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+         .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT };
+      vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+      VkBufferImageCopy c = { .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, .imageExtent = { 4, 4, 1 } };
+      vkCmdCopyBufferToImage(cb, bsrc, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+      b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+      vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+      vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
+      vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pl, 0, 1, &ds, 0, NULL);
+      vkCmdDispatch(cb, 1, 1, 1);
+      CHK(vkEndCommandBuffer(cb));
+      VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb };
+      CHK(vkQueueSubmit(file, 1, &si, VK_NULL_HANDLE));
+      CHK(vkQueueWaitIdle(file));
+
+      CHK(vkMapMemory(dev, mdst, 0, VK_WHOLE_SIZE, 0, (void **)&p));
+      const float *f = (const float *)p;
+      printf("bloc entierement nul (mode reserve) :\n");
+      printf("   rendu : (%.3f, %.3f, %.3f, %.3f)\n", f[0], f[1], f[2], f[3]);
+      printf("   %s\n\n", f[3] > 0.5 ? "NOIR OPAQUE -- tout espace devient un pave noir"
+                                       : "transparent -- un espace reste invisible");
+      vkUnmapMemory(dev, mdst);
+   }
+
    printf("decodage BC7 mode 6 : %s (%d ecarts)\n", fautes ? "FAUX" : "juste", fautes);
    return fautes ? 1 : 0;
 }

@@ -19795,3 +19795,71 @@ dessiné avec un mélange qui devrait le rendre invisible et qui sort opaque.
 C'est une piste d'une autre nature que les huit précédentes, et elle se cherche autrement : parmi
 les deux cents dessins capturés, ceux dont le quadrilatère couvre l'emplacement d'un pavé noir à
 l'écran, puis leur état de mélange.
+
+## 283. Le pavé noir : un bloc BC7 réservé, et ce que le matériel Apple en fait
+
+### Le dessin fautif
+
+Le §282 établissait que tout le chemin du texte est sain. Restait à trouver ce qui peint par-dessus.
+La capture d'écran donne les pavés au pixel près -- cinq, larges de 10 px, hauts de 40 -- et le
+vidage des sommets, une fois le filtre par ressource retiré, donne le coupable :
+
+```
+dessin 4 : mot uv(604,132) 34 px, puis un quadrilatere de 5,0 px en uv(644,132)
+dessin 5 : mot uv(680,132) 38 px, puis un quadrilatere de 5,0 px en uv(644,132)
+dessin 6 : deux quadrilateres de 5,0 px en uv(644,132)
+```
+
+Ce ne sont pas des décorations : ce sont les **espaces entre les mots**, et ils échantillonnent tous
+le même endroit de l'atlas.
+
+### Ce qu'il y a à cet endroit
+
+Le journal des téléversements répond :
+
+```
+BC7 50 en (644,132) 8x32 : 0 octets non nuls sur 256
+```
+
+Le glyphe d'espace est téléversé comme **256 octets de zéros**. Or un bloc BC7 dont les huit
+premiers bits sont nuls n'a **pas de bit de mode** : la spécification le dit réservé, et son
+décodage n'est pas défini.
+
+`tests/probe_bc7_mode6.c` demande au matériel ce qu'il en fait :
+
+```
+bloc entierement nul (mode reserve) :
+   rendu : (0.000, 0.000, 0.000, 1.000)
+   NOIR OPAQUE -- tout espace devient un pave noir
+```
+
+**Voilà le pavé.** Les cartes sur lesquelles le jeu a été écrit rendent du noir transparent ; le
+matériel Apple rend du noir opaque. Chaque espace devenait un rectangle noir.
+
+### La correction
+
+Dans DXVK, au moment où les données sont empaquetées pour le téléversement, un bloc BC7 entièrement
+nul est remplacé par le bloc de mode 6 aux extrémités et indices nuls -- le bit de mode posé, tout
+le reste à zéro -- qui rend `(0,0,0,0)`.
+
+Ce n'est pas arbitraire : la spécification laisse ce cas indéfini, et l'on choisit, parmi les
+comportements permis, celui des machines sur lesquelles le jeu a été écrit. La correction ne touche
+que des blocs qui n'ont aucune signification définie.
+
+```
+PARADOX MOD MANAGER    MOD EDITOR    OPTIONS    PARADOX ACCOUNT    QUIT
+```
+
+Plus un seul pavé.
+
+### Ce qu'il aura fallu
+
+Neuf hypothèses, toutes mesurées et huit d'entre elles fausses : le mélange côté DXVK, le mélange
+côté pilote, la couleur de bordure, l'alpha forcé à un, la mémoire mappée, un format BC substitué,
+le décodage BC4, le décodage BC7 mode 6, les coordonnées. Chacune éliminée par une mesure et non
+par un avis. La neuvième était la bonne, et elle ne se voyait qu'en regardant, dans l'ordre, ce que
+le jeu envoie, où il l'envoie, et ce qu'il en échantillonne.
+
+Trois sondes restent : `probe_melange_a8`, `probe_bc4`, `probe_bc7_mode6`. Et dans DXVK, trois
+vidages derrière variables d'environnement -- textures, téléversements, sommets -- qui resserviront
+au premier défaut graphique suivant.
