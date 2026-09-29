@@ -19920,3 +19920,51 @@ une préférence -- ne serait plus un pis-aller mais deviendrait inutile.
 
 La mesure suivante est nette : relier le chargeur avec un `__PAGEZERO` réduit, vérifier que les deux
 témoins passent toujours, et redemander à LuaJIT sa mémoire basse.
+
+## 285. `__PAGEZERO` : la règle exacte, et ce qu'elle ferme
+
+Le §284 désignait `__PAGEZERO` comme la vraie racine et le disait actionnable. Il ne l'est pas, et
+cette fois la règle est caractérisée au lieu d'être supposée.
+
+Un programme jetable, lié avec différentes tailles, qui se contente de démarrer puis d'essayer
+`mach_vm_map` à des adresses basses :
+
+| `-pagezero_size` demandé | `vmsize` obtenu | résultat |
+| --- | --- | --- |
+| 0x4000 | 0x4000 | **SIGKILL**, code 137 |
+| 0x1000000 | 0x1000000 | **SIGKILL** |
+| 0x10000000 | 0x10000000 | **SIGKILL** |
+| 0x40000000 | 0x40000000 | **SIGKILL** |
+| 0x80000000 | 0x80000000 | **SIGKILL** |
+| 0xf0000000 | 0xf0000000 | **SIGKILL** |
+| 0x100000000 | 0x100000000 | démarre |
+| 0x180000000 | **0x100000000** | démarre |
+| 0x200000000 | **0x100000000** | démarre |
+
+Deux faits, tous deux mesurés :
+
+1. **Toute valeur inférieure à 4 Gio est tuée** -- pas une ligne de sortie, le noyau frappe avant
+   `dyld`. Ce n'est donc pas une histoire d'alignement sur la page de 16 Kio, comme je l'avais
+   d'abord soupçonné en voyant que l'essai précédent employait 0x1000.
+2. **Toute valeur supérieure est ramenée à exactement 4 Gio** par l'éditeur de liens. Demander
+   8 Gio en donne 4 : on ne peut même pas déplacer le trou.
+
+Et avec un `__PAGEZERO` de 8 Gio -- ramené à 4 -- les adresses basses restent refusées, ce qui
+confirme qu'il n'y a pas de réglage caché.
+
+### Ce que cela ferme, et ce que cela justifie
+
+Les quatre premiers gigaoctets sont **inaccessibles à tout processus arm64 natif**, sans exception.
+Par conséquent :
+
+- **Vermintide 2 est hors d'atteinte tel qu'il est livré.** Son LuaJIT 2.1.0-beta3 sans GC64 exige
+  des pointeurs sur 32 bits ; aucune émulation qui partage l'espace d'adressage de l'hôte ne peut
+  les lui fournir. Ce n'est pas un défaut de la pile, et aucun travail sur la pile n'y changera
+  quoi que ce soit.
+- **La fenêtre à 16 Gio des invités 32 bits (§246) n'est pas un pis-aller** : c'est la seule
+  réponse possible, et elle est justifiée par cette mesure.
+- **La correction du §275** -- traiter une base imposée sous 4 Gio comme une préférence -- reste
+  nécessaire, et pour la bonne raison : ce que le programme demande n'existera jamais, alors autant
+  lui donner ce qui existe plutôt que rien. Elle a d'ailleurs déjà servi, sur ce même jeu.
+
+Le commentaire de `configure.ac` porte désormais la règle complète, pour qu'on ne recommence pas.
