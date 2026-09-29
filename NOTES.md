@@ -19968,3 +19968,56 @@ Par conséquent :
   lui donner ce qui existe plutôt que rien. Elle a d'ailleurs déjà servi, sur ce même jeu.
 
 Le commentaire de `configure.ac` porte désormais la règle complète, pour qu'on ne recommence pas.
+
+## 286. Chercher des solutions : ce qui est mesuré pour chacune des deux impasses
+
+### Vermintide 2 : le verdict est complet, et il n'est pas le nôtre
+
+Le §285 fermait la piste `__PAGEZERO`. Restait à établir que LuaJIT rejette bien **sur l'adresse**,
+plutôt que de le supposer. La trace le dit maintenant sans trou :
+
+```
+une allocation de 0x20000 rend 0x11ddd0000  (4,78 Gio)
+puis NtFreeVirtualMemory 0x11ddd0000 ... 8000   (MEM_RELEASE)
+829 adresses distinctes pour ces allocations, toutes au-dessus de 4 Gio
+l'adresse la plus basse rendue de toute l'execution : 0x1049b0000  (4,07 Gio)
+```
+
+Chaque sondage obtient une adresse trop haute et la rend. Aucune n'est jamais sous 4 Gio, parce
+qu'aucune ne peut l'être. Le jeu n'embarque qu'un seul moteur Lua -- `binaries/` et
+`binaries_dx12/` portent le même fichier de 617 984 octets -- donc pas d'autre version à essayer.
+
+**Une seule route existe, et elle est mesurée.** Un exécutable **x86-64** peut, lui, être lié avec
+un `__PAGEZERO` réduit, et le noyau l'accepte :
+
+```
+x86_64, __PAGEZERO vmsize 0x1000
+   0x400000  : accorde
+  0x1000000  : accorde
+```
+
+Autrement dit : une pile hébergée en x86-64 sous Rosetta donnerait à LuaJIT ce qu'il réclame. C'est
+précisément ce que ce projet a écarté, et je ne le rouvre pas -- je le note parce que c'est le seul
+chemin connu, et que le savoir vaut mieux que de le redécouvrir.
+
+### Dead Cells : la voie honnête existe et elle est à portée
+
+Le §268 concluait que l'enveloppe exige un `steamclient.dll` signé par Valve, et qu'aucune
+réimplémentation libre ne portera cette signature. C'est vrai -- mais on n'a pas besoin de la
+**fabriquer** : il suffit de fournir le **vrai fichier**.
+
+Le client Steam Windows est déjà installé dans `wine/pfx-steam`, et son `steamclient.dll` porte
+bien le bloc :
+
+```
+00000040: 564c 5600 0100 0000 0006 4601 54ce 986a  VLV.......F.T..j
+magie 0x40 : 0x564c56   version : 1   taille annoncee : 21366272
+```
+
+Il est de surcroît **i386**, comme Dead Cells. Le contrôle du §268 serait donc satisfait
+honnêtement, sans rien contourner.
+
+Ce qui reste incertain est l'étape d'après : ce DLL est le vrai client, et il voudra parler au
+service Steam. Le §191 avait buté là-dessus -- boucle de plantage du processus GPU de CEF, et
+`Failed to start auth session` sur l'erreur `10045`. Mais tout a changé depuis : Wine 11 arm64, TLS
+enfin présent, et les corrections d'espace d'adressage. Cela mérite une nouvelle mesure.
