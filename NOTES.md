@@ -19615,3 +19615,46 @@ dans la lecture des textures.
 Ce qui reste à faire est d'arrêter de deviner et de regarder une image rendue : un vidage de la
 fenêtre présentée, dans `D3D11SwapChain`. C'est l'outil qui manque, et il servira aussi à
 Vermintide 2.
+
+## 279. Le texte de Surviving Mars : enfin des yeux, et le défaut se lit
+
+L'autorisation d'enregistrement d'écran change tout : je peux regarder le jeu au lieu de demander.
+Et agrandie, la barre de menu dit précisément ce qui se passe :
+
+```
+PARADO▌( MO▌) MANAGER      MO▌) EDITOR      OPTIONS      PARADO▌( ACCOUNT      QUIT
+```
+
+Le `X` de PARADOX n'est pas **absent** : il est **décalé**. Un pavé noir, puis un fragment d'un
+autre glyphe. Et `MANAGER`, `OPTIONS`, `ACCOUNT`, `EDITOR` sont parfaits -- les mêmes lettres, au
+même corps, rendues justes ailleurs. Le défaut est donc **positionnel dans l'atlas**, pas propre à
+une lettre.
+
+### Où vit le texte
+
+Le journal des téléversements partiels, ajouté dans `D3D11CommonContext::UpdateImage`, trouve
+l'atlas : une texture **2048×2048 en BC7**, chargée en **seize tuiles de 512×512**.
+
+```
+2048x2048 fmt 97 en (1536,1536) taille 512x512  tranche offset 0 longueur 262144
+2048x2048 fmt 97 en (1536,1024) taille 512x512  tranche offset 0 longueur 262144
+...
+```
+
+Les seize offsets couvrent la grille sans trou ni recouvrement, et chaque tranche source fait
+exactement 262 144 octets -- soit 128 × 128 blocs de 16 octets, la taille juste d'une tuile BC7 de
+512×512. **La géométrie du téléversement est saine.**
+
+Deux fausses pistes écartées au passage : le seul téléversement non compressé du menu (398×244 en
+BGRA) n'est pas un libellé mais une forme d'interface, vidée et regardée ; et il n'existe aucun
+atlas de police téléversé glyphe par glyphe.
+
+### Ce qui reste
+
+Le texte vient d'un atlas **BC7**, et je n'ai éprouvé que **BC4** (§278 bis). BC7 a huit modes, et
+un décodeur se trompe rarement partout : il se trompe sur un mode. Des glyphes justes et d'autres
+décalés, dans le même atlas, ressemble beaucoup à cela.
+
+La mesure à faire est donc : prendre un bloc BC7 de l'atlas du jeu, l'échantillonner sur le
+processeur graphique, et le comparer à un décodage de référence sur le processeur. Elle demande un
+décodeur BC7 de référence -- c'est le seul vrai coût, et c'est le prochain pas.
