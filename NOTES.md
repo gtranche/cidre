@@ -18293,3 +18293,65 @@ côté hôte, le nombre d'alertes comptées pour ce fil pendant son attente, com
 le compteur a bougé et que le drapeau est resté à zéro, la perte est entre
 `NtAlertThreadByThreadId` et le drapeau ; s'il n'a pas bougé, l'alerte n'est jamais partie, et il
 faut remonter dans le pont wow64.
+
+## 261. Trois hypothèses tuées, un détecteur faux, et le vrai chiffre
+
+Le §260 annonçait un réveil perdu « prouvé ». Il ne l'était pas. Ce paragraphe défait ce que le
+précédent affirmait, parce que les erreurs y sont plus instructives que le résultat.
+
+### Le réveil perdu n'existait pas
+
+La sonde du §260 déclarait la contradiction sur un seul fait : l'entrée du dormeur avait disparu de
+la file alors qu'il dormait encore. Elle avait une fenêtre de faux positif que je n'avais pas vue —
+**celui qui réveille retire l'entrée, *puis* alerte**, et il y a quelques microsecondes entre les
+deux. Une tranche d'attente qui expire pile dans cet intervalle voit exactement la même chose qu'un
+réveil perdu.
+
+Cent millisecondes de grâce avant de crier, et il n'en reste **aucune**. Deux autres mesures
+disaient déjà la même chose, sans que je les écoute :
+
+- l'épreuve posée sur le fil coincé lui-même rend `joignable`, et le numéro inscrit dans la file
+  est le bon (`inscrit == fil`) ;
+- `NtAlertThreadByThreadId` rend `STATUS_SUCCESS` à chaque appel, sur toutes les exécutions --
+  vérifié en relevant un statut que l'amont jette.
+
+### Le détecteur de gel comptait des exécutions saines
+
+Pire, et plus utile à retenir. Il cherchait la ligne `Buffer size` dans la trace de DXVK. Un témoin
+sain prélevé au `sample` et comparé à une « gelée » donne le même cliché : mêmes fils, mêmes
+attentes, mêmes proportions, menu Unity chargé à 5687 objets, images rendues. Seule la trace
+s'était arrêtée quelques lignes plus tôt.
+
+**Un journal n'est pas un signe de vie.** Le temps processeur, lui, ne ment pas : deux relevés
+espacés, trois fois de suite figé. Tous les taux de gel annoncés avant ce paragraphe sont à jeter.
+
+Le témoin a écarté au passage deux pistes que j'aurais remontées : `kk_timeline_wait` sur un
+événement partagé Metal et les fils endormis sur leur sémaphore de file de travaux sont **le
+fonctionnement normal**, identiques des deux côtés.
+
+### Le message qui annonçait une panne inexistante
+
+`err:virtual: ... KUSER_SHARED_DATA de l'invite non reservee : c0000018` apparaissait dans le seul
+gel authentique. L'invité 32 bits lit son compteur de tics à `0x7ffe0000` sans appel système : une
+horloge figée expliquerait un jeu qui tourne en rond sur `Sleep` sans rien consommer. `h32temps`
+tranche en dix minutes -- trois réservations ratées sur vingt-cinq, et dans les trois cas la page
+est engagée, lisible, et **tout avance**.
+
+`STATUS_CONFLICTING_ADDRESSES` veut dire ici « déjà cartographiée » : notre `map_view` fait double
+emploi. Le message est désormais tu quand une vue lisible couvre l'adresse. Deux messages trompeurs
+en deux jours, et les deux fautes sont symétriques : le §259 ignorait deux cents `err:` par
+exécution qui étaient la panne, celui-ci annonçait une panne là où tout allait bien.
+
+### Le chiffre
+
+| | gel, détecteur au temps processeur, sans sonde |
+|---|---|
+| vingt exécutions à froid | **0** |
+
+Un seul gel authentique subsiste dans tout l'historique post-correctif (`final3` : 0,34 s de
+processeur en 20 s, arrêté juste après `<RI> Input initialized.`), soit environ une exécution sur
+vingt-trois. Il n'est pas caractérisé, et je n'ai plus d'hypothèse en réserve : la prochaine devra
+partir d'une nouvelle prise, pas d'un raisonnement.
+
+Non-régression : trente et un programmes i386 et x86_64 passent, `probe_d3d11_draw` rastérise,
+`banc_x64` donne **85,7 — 86,0 ms**.

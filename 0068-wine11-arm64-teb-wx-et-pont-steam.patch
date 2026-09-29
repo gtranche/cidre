@@ -4035,28 +4035,84 @@
           "bl \"#DbgBreakPoint\"\n"
 --- aa/dlls/ntdll/sync.c
 +++ bb/dlls/ntdll/sync.c
-@@ -906,6 +906,28 @@
+@@ -905,7 +905,84 @@
+     list_add_tail( &queue->queue, &entry.entry );
  
      spin_unlock( &queue->lock );
- 
++
 +#ifdef SONDE_GEL
-+    /* Le pendant cote invite : sur quelle adresse dort-on, que vaut-elle, et
-+     * notre entree est-elle encore dans la file. */
++    /*
++     * Sonde silencieuse. La precedente decoupait l'attente en tranches de huit
++     * secondes et disait chaque tranche : trente fils endormis, quelques lignes
++     * par seconde, et la course disparaissait -- zero gel sur quinze executions
++     * contre deux sur dix sans sonde.
++     *
++     * Ici on ne dit rien tant que tout va bien. On se reveille toutes les
++     * trente secondes pour verifier une seule chose : notre entree est-elle
++     * encore dans la file ? Celui qui reveille la retire *avant* d'alerter.
++     * Une entree absente pendant qu'on dort encore est une contradiction, et
++     * c'est le seul cas ou l'on parle. On repart alors comme si l'alerte etait
++     * arrivee -- un reveil surnumeraire est toujours permis, et cela dit aussi
++     * si ce reveil manquant suffisait a tout bloquer.
++     */
 +    if (!timeout)
 +    {
-+        LARGE_INTEGER tranche = { .QuadPart = -80000000ll };
++        LARGE_INTEGER tranche = { .QuadPart = -300000000ll };  /* trente secondes */
 +        static LONG dits;
 +
 +        for (;;)
 +        {
 +            ret = NtWaitForAlertByThreadId( NULL, &tranche );
 +            if (ret != STATUS_TIMEOUT) break;
-+            if (InterlockedIncrement( &dits ) <= 40)
-+                ERR( "SONDE gel : fil %04lx (inscrit %04lx) dort sur %p depuis 8 s, valeur=%08lx attendue=%08lx"
-+                     " taille=%u en file=%d\n", GetCurrentThreadId(), entry.tid, addr,
-+                     size == 4 ? *(const ULONG *)addr : (size == 2 ? *(const USHORT *)addr : *(const UCHAR *)addr),
-+                     size == 4 ? *(const ULONG *)cmp : (size == 2 ? *(const USHORT *)cmp : *(const UCHAR *)cmp),
-+                     (unsigned)size, entry.addr != NULL );
++            if (!entry.addr)
++            {
++                /*
++                 * Attention au faux positif : celui qui reveille retire
++                 * l'entree puis alerte, et entre les deux il y a quelques
++                 * microsecondes. Si notre tranche expire pile dans cet
++                 * intervalle, on voit une entree retiree sans alerte alors que
++                 * l'alerte arrive juste apres. On laisse donc cent
++                 * millisecondes a l'alerte avant de crier : c'est mille fois
++                 * l'intervalle en question, et rien du tout a l'echelle d'un
++                 * gel de quarante-cinq secondes.
++                 */
++                LARGE_INTEGER grace = { .QuadPart = -1000000ll };  /* cent ms */
++
++                if (NtWaitForAlertByThreadId( NULL, &grace ) == STATUS_ALERTED)
++                {
++                    ret = STATUS_ALERTED;
++                    break;
++                }
++                if (InterlockedIncrement( &dits ) <= 20)
++                    ERR( "SONDE gel : fil %04lx dort sur %p, entree retiree de la file donc"
++                         " reveil envoye et cent ms de grace ecoulees, valeur=%08lx attendue=%08lx"
++                         " taille=%u -- on repart\n",
++                         GetCurrentThreadId(), addr,
++                         size == 4 ? *(const ULONG *)addr : (size == 2 ? *(const USHORT *)addr : *(const UCHAR *)addr),
++                         size == 4 ? *(const ULONG *)cmp : (size == 2 ? *(const USHORT *)cmp : *(const UCHAR *)cmp),
++                         (unsigned)size );
++                /*
++                 * L'epreuve, sur le fil coince lui-meme et au moment ou il est
++                 * coince : il s'alerte avec son propre numero, puis attend sans
++                 * delai. L'alerte est retenue, donc la reponse doit etre
++                 * immediate. Une expiration veut dire que ce fil est injoignable
++                 * par le numero que la file a inscrit pour lui -- c'est-a-dire
++                 * que celui qui reveille et celui qui dort ne designent pas la
++                 * meme entree.
++                 */
++                {
++                    LARGE_INTEGER rien = { .QuadPart = 0 };
++                    NTSTATUS a = NtAlertThreadByThreadId( ULongToHandle( GetCurrentThreadId() ) );
++                    NTSTATUS b = NtWaitForAlertByThreadId( NULL, &rien );
+ 
++                    ERR( "SONDE gel : auto-alerte du fil %04lx (inscrit %04lx) : alerte=%08lx"
++                         " attente=%08lx (%s)\n", GetCurrentThreadId(), entry.tid,
++                         (unsigned long)a, (unsigned long)b,
++                         b == STATUS_ALERTED ? "joignable" : "INJOIGNABLE" );
++                }
++                ret = STATUS_ALERTED;
++                break;
++            }
 +        }
 +    }
 +    else
@@ -4064,6 +4120,83 @@
      ret = NtWaitForAlertByThreadId( NULL, timeout );
  
      /* We may have already been removed by a call to RtlWakeAddressSingle() or RtlWakeAddressAll(). */
+@@ -923,6 +1000,28 @@
+     return ret;
+ }
+ 
++/* Comme pour l'alerte simple : l'amont jette le statut, et un echec laisse tout
++ * un groupe de dormeurs retires de la file et jamais reveilles. Hors sonde, on
++ * garde l'appel nu de l'amont. */
++static void sonde_alerte_groupee( HANDLE *tids, unsigned int count, const void *addr )
++{
++#ifdef SONDE_GEL
++    NTSTATUS st = NtAlertMultipleThreadByThreadId( tids, count, NULL, NULL );
++
++    if (st)
++    {
++        static LONG dits;
++
++        if (InterlockedIncrement( &dits ) <= 20)
++            ERR( "SONDE gel : l'alerte groupee de %u fils pour %p a echoue, statut=%08lx --"
++                 " tous sont deja retires de la file\n", count, addr, (unsigned long)st );
++    }
++#else
++    NtAlertMultipleThreadByThreadId( tids, count, NULL, NULL );
++    (void)addr;
++#endif
++}
++
+ /***********************************************************************
+  *           RtlWakeAddressAll    (NTDLL.@)
+  */
+@@ -950,7 +1049,7 @@
+             list_remove( &entry->entry );
+             if (count == ARRAY_SIZE(tids))
+             {
+-                NtAlertMultipleThreadByThreadId( tids, count, NULL, NULL );
++                sonde_alerte_groupee( tids, count, addr );
+                 count = 0;
+             }
+             tids[count++] = (HANDLE)(ULONG_PTR)entry->tid;
+@@ -961,7 +1060,7 @@
+      * up scenario). */
+     spin_unlock( &queue->lock );
+     if (count)
+-        NtAlertMultipleThreadByThreadId( tids, count, NULL, NULL );
++        sonde_alerte_groupee( tids, count, addr );
+ }
+ 
+ /***********************************************************************
+@@ -1000,8 +1099,29 @@
+     }
+ 
+     spin_unlock( &queue->lock );
++
++#ifdef SONDE_GEL
++    /*
++     * Le statut est jete par l'amont. Or l'entree du dormeur vient d'etre
++     * retiree de la file : si l'alerte echoue, plus personne ne le reveillera
++     * jamais. On ne parle que sur echec, donc cela ne coute rien.
++     */
++    if (tid)
++    {
++        NTSTATUS st = NtAlertThreadByThreadId( (HANDLE)(DWORD_PTR)tid );
++
++        if (st)
++        {
++            static LONG dits;
+ 
++            if (InterlockedIncrement( &dits ) <= 20)
++                ERR( "SONDE gel : l'alerte du fil %04lx pour %p a echoue, statut=%08lx --"
++                     " il est deja retire de la file\n", tid, addr, st );
++        }
++    }
++#else
+     if (tid) NtAlertThreadByThreadId( (HANDLE)(DWORD_PTR)tid );
++#endif
+ }
+ 
+ /*************************************************************************
 --- aa/dlls/ntdll/thread.c
 +++ bb/dlls/ntdll/thread.c
 @@ -730,3 +730,96 @@
@@ -5081,10 +5214,11 @@
      if (!use_kernel_writewatch && view->protect & VPROT_WRITEWATCH)
      {
          /* each page may need different protections depending on write watch flag */
-@@ -2297,8 +2395,66 @@
+@@ -2296,10 +2394,68 @@
+         void *end = min( user_space_limit, host_addr_space_limit );
          size_t host_size = ROUND_SIZE( 0, size, host_page_mask );
          size_t unmap_size, view_size = host_size + align_mask + 1;
- 
++
 +        /*
 +         * Bornes exprimees dans les adresses de l'invite 32 bits.
 +         *
@@ -5112,10 +5246,10 @@
 +            limit_low  = user_space_wow_base + max( limit_low, (ULONG_PTR)address_space_start );
 +            limit_high = user_space_wow_base + limit_high;
 +        }
-+
+ 
          if (limit_low && (void *)limit_low > start) start = (void *)limit_low;
          if (limit_high && (void *)limit_high < end) end = (char *)limit_high + 1;
-+
+ 
 +#ifdef MAP_JIT
 +        /*
 +         * Ecriture et execution ensemble : seul MAP_JIT les accorde sur macOS,
@@ -5145,10 +5279,11 @@
 +            WARN( "MAP_JIT indisponible pour %p octets, repli sans execution\n", (void *)size );
 +        }
 +#endif
- 
++
          if ((ptr = map_reserved_area( start, end, host_size, top_down, unix_prot, align_mask )))
          {
-@@ -3358,8 +3514,22 @@
+             TRACE( "got mem in reserved area %p-%p\n", ptr, (char *)ptr + size );
+@@ -3358,9 +3514,23 @@
      BOOL top_down = (image_info->image_charact & IMAGE_FILE_DLL) &&
                      (image_info->image_flags & IMAGE_FLAGS_ImageDynamicallyRelocated);
  
@@ -5159,7 +5294,7 @@
 +     * base + preferee, et l'emulateur rebase les acces : l'invite continue de
 +     * voir 0x400000. */
 +    const ULONG_PTR decalage = is_machine_64bit( image_info->machine ) ? 0 : user_space_wow_base;
-+
+ 
 +    /* Les bornes recues viennent souvent de « zero_bits », donc de l'espace de
 +     * l'invite ; il faut les traduire avant de les melanger a des adresses
 +     * d'hote, sinon le plancher depasse le plafond. */
@@ -5170,9 +5305,10 @@
 +    }
 +    limit_low = max( limit_low, decalage + (ULONG_PTR)address_space_start );  /* make sure the DOS area remains free */
 +    if (!limit_high) limit_high = decalage ? get_wow_host_space_limit() : (ULONG_PTR)user_space_limit;
- 
++
      /* first try the specified base */
  
+     if (image_info->map_addr)
 @@ -3373,6 +3543,7 @@
          base = wine_server_get_ptr( image_info->base );
          if ((ULONG_PTR)base != image_info->base) base = NULL;
@@ -5190,7 +5326,7 @@
      }
      if (start < end && (start != limit_low || end != limit_high))
      {
-@@ -3685,7 +3856,27 @@
+@@ -3685,6 +3856,26 @@
      host_page_size = sysconf( _SC_PAGESIZE );
      host_page_mask = host_page_size - 1;
      TRACE( "host page size: %uk\n", (UINT)host_page_size / 1024 );
@@ -5213,11 +5349,10 @@
 +     * multiple de 4 Gio pour que le rebasage de l'emulateur soit un simple
 +     * « orr » d'un bit haut. */
 +    user_space_wow_base = 4 * limit_4g;
- #endif
 +#endif
+ #endif
  
  #ifdef _WIN64
-     host_addr_space_limit = get_host_addr_space_limit();
 @@ -3849,7 +4040,8 @@
  
      if (!pe_mapping) return STATUS_INVALID_PARAMETER;
@@ -5243,7 +5378,7 @@
      }
      else
      {
-@@ -4125,6 +4317,16 @@
+@@ -4125,6 +4317,31 @@
          exit(1);
      }
  
@@ -5252,15 +5387,30 @@
 +        /* L'invite 32 bits lit KUSER_SHARED_DATA a une adresse fixe, 0x7ffe0000,
 +         * que macOS interdit a l'hote : la page vit ailleurs pour lui. On la
 +         * reserve aussi la ou l'invite la cherche, dans sa fenetre. */
-+        status = map_view( &view, (char *)user_space_wow_base + 0x7ffe0000, page_size, 0,
-+                           VPROT_READ | VPROT_COMMITTED, 0, 0, 0 );
++        char *ou = (char *)user_space_wow_base + 0x7ffe0000;
++
++        status = map_view( &view, ou, page_size, 0, VPROT_READ | VPROT_COMMITTED, 0, 0, 0 );
++        /*
++         * « Adresses en conflit » veut dire ici que la page y est deja -- un
++         * chemin anterieur l'a posee, et notre reservation fait double emploi.
++         * Ce n'est pas une panne, et l'annoncer comme telle envoie le lecteur
++         * suivant sur une fausse piste : mesure faite, l'invite y lit bien son
++         * compteur de tics, qui avance. On ne se plaint que si la page manque
++         * vraiment.
++         */
++        if (status == STATUS_CONFLICTING_ADDRESSES)
++        {
++            struct file_view *deja = find_view( ou, page_size );
++
++            if (deja && (get_page_vprot( ou ) & VPROT_READ)) status = STATUS_SUCCESS;
++        }
 +        if (status) ERR( "wine: KUSER_SHARED_DATA de l'invite non reservee : %08x\n", status );
 +    }
 +
      status = map_view( &view, NULL, signal_stack_mask + 1 + kernel_stack_size, MEM_TOP_DOWN,
                         VPROT_READ | VPROT_WRITE | VPROT_COMMITTED, limit_4g, 0, 0 );
      assert( !status );
-@@ -4151,7 +4353,13 @@
+@@ -4151,7 +4368,13 @@
      if (is_wow64()) teb_block_size += ROUND_SIZE( 0, sizeof(WOW_TEB), page_mask );
      teb_block_size += page_size;  /* for debug info */
  
@@ -5275,7 +5425,7 @@
      else if (use_aslr()) limit_low = limit_4g;
  
      status = map_view( &view, NULL, 16 * teb_block_size, 0,
-@@ -4202,7 +4410,13 @@
+@@ -4202,7 +4425,13 @@
              struct file_view *view;
              ULONG_PTR limit_low = 0, limit_high = 0;
  
@@ -5290,7 +5440,7 @@
              else if (use_aslr()) limit_low = limit_4g;
  
              if ((status = map_view( &view, NULL, 32 * teb_block_size, 0,
-@@ -4279,7 +4493,7 @@
+@@ -4279,7 +4508,7 @@
          NtFreeVirtualMemory( GetCurrentProcess(), (void **)&teb->ChpeV2CpuAreaInfo, &size, MEM_RELEASE );
      }
  #endif
@@ -5299,7 +5449,7 @@
      {
          size = 0;
          NtFreeVirtualMemory( GetCurrentProcess(), &ptr, &size, MEM_RELEASE );
-@@ -4475,7 +4689,7 @@
+@@ -4475,7 +4704,7 @@
              if (wow_teb)
              {
                  if (wow_teb->TlsExpansionSlots)
@@ -5308,7 +5458,7 @@
              }
              else
  #endif
-@@ -4562,6 +4776,13 @@
+@@ -4562,6 +4791,13 @@
          ERR( "failed to remap the process USD: %d\n", res );
          exit(1);
      }
@@ -5322,7 +5472,7 @@
      if (needs_close) close( fd );
      NtClose( section );
  }
-@@ -4646,9 +4867,13 @@
+@@ -4646,9 +4882,13 @@
      if ((char *)ptr > stack->start && (char *)ptr <= stack->end) return TRUE;
  
      if (!(wow_teb = get_wow_teb( teb ))) return FALSE;
@@ -5339,11 +5489,10 @@
      stack->guaranteed = max( wow_teb->GuaranteedStackBytes, min_guaranteed );
      stack->is_wow = TRUE;
      return ((char *)ptr > stack->start && (char *)ptr <= stack->end);
-@@ -4719,6 +4944,24 @@
-             ret = STATUS_GUARD_PAGE_VIOLATION;
+@@ -4720,6 +4960,24 @@
          }
          else ret = grow_thread_stack( data, page, &stack_info );
-+    }
+     }
 +    else if ((vprot & VPROT_JIT) &&
 +             (err == EXCEPTION_WRITE_FAULT || err == EXCEPTION_EXECUTE_FAULT))
 +    {
@@ -5361,10 +5510,11 @@
 +         * coutait tout le temps CPU -- 1370 echantillons sur 1422 dans
 +         * sys_icache_invalidate. */
 +        ret = STATUS_SUCCESS;
-     }
++    }
      else if (err == EXCEPTION_WRITE_FAULT)
      {
-@@ -5275,8 +5518,44 @@
+         if (vprot & VPROT_WRITEWATCH)
+@@ -5275,8 +5533,44 @@
          *size_ptr = size;
      }
      else if (status == STATUS_NO_MEMORY)
@@ -5409,7 +5559,7 @@
      return status;
  }
  
-@@ -6360,6 +6639,7 @@
+@@ -6360,6 +6654,7 @@
      unsigned int res;
      SIZE_T mask = granularity_mask;
      LARGE_INTEGER offset;
@@ -5417,7 +5567,7 @@
  
      offset.QuadPart = offset_ptr ? offset_ptr->QuadPart : 0;
  
-@@ -6371,9 +6651,15 @@
+@@ -6371,9 +6666,15 @@
          return STATUS_INVALID_PARAMETER_4;
  
      /* If both addr_ptr and zero_bits are passed, they have match */
