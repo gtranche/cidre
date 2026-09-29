@@ -18416,3 +18416,66 @@ corriger.
 
 `tests/faux_steam.c` garde les deux objets : ils sont nécessaires de toute façon, et la prochaine
 tentative repartira de là plutôt que de refaire le chemin.
+
+## 263. La poignée de main SteamStart, lue dans le code du stub
+
+Le §262 s'arrêtait devant un segment de mémoire partagée dont le contenu attendu était inconnu.
+Deviner coûtait quatre-vingt-dix secondes par essai pour un espace immense. On a donc lu le code.
+
+### Comment on lit le code d'une enveloppe qui se déchiffre
+
+Le stub se déchiffre en mémoire, mais il **attend un clic** sur sa boîte d'erreur : sa mémoire est
+stable aussi longtemps qu'on veut. `tests/h32lire.c` ouvre le processus depuis le préfixe
+(`OpenProcess` + `ReadProcessMemory`) et vide la zone dans un fichier. L'adresse de retour du
+`MessageBoxA`, que la trace `+relay` donne (`ret=01555995`), situe le site d'appel au mot près.
+
+Le désassemblage se fait ensuite sans outil supplémentaire : `.incbin` dans un `.s`, assemblé en
+objet i386, puis `llvm-objdump`.
+
+### Le protocole, avec un code-lettre par échec
+
+```
+015556cd: WaitForSingleObject(verrou, 5000)          sinon 'G'
+015556f7: MapViewOfFile(segment, FILE_MAP_WRITE)     sinon 'H'
+01555730: cmp dword [vue+0x90], 2                    sinon 'I'   <- ici
+01555745: cmp dword [vue+0x94], 0                    sinon 'J'
+01555757: CreateEventA(NULL,0,0,NULL)
+          [vue+0x94] = 2      la commande
+          [vue+0x98] = GetCurrentProcessId()
+          [vue+0x9c] = l'evenement qu'il vient de creer
+015557e1: WaitForSingleObject(cet evenement, 5000)
+015557e7: le resultat decide : 0 -> on continue, sinon « Application load error 3 »
+```
+
+`+0x90` est une version de protocole que le client publie, `+0x94` la case où le jeu dépose sa
+demande. Notre page toute à zéro échouait sur le premier des deux.
+
+`tests/faux_steam.c` tient désormais le rôle du client : il publie `+0x90 = 2`, guette la commande,
+**duplique le handle d'événement depuis le processus demandeur** (`OpenProcess(PROCESS_DUP_HANDLE)`
+puis `DuplicateHandle`, puisqu'un handle n'a de sens que dans son processus) et le signale.
+
+```
+faux steam : commande 2 du processus 924, evenement 00000080 signale
+```
+
+**La boîte « Steam Error » a disparu.**
+
+### Où ça s'arrête, et pourquoi c'est net
+
+Le stub prend alors le chemin qui réussit et se termine **délibérément** :
+`NtTerminateProcess(self, 0x33)`, code 51. C'est son comportement prévu : la commande 2 veut dire
+« Steam, lance cette application », et il s'efface en attendant que Steam le fasse. Le vrai client
+relance le jeu, et cette seconde instance ne redemande pas -- il lui faut un marqueur que nous
+n'avons pas encore trouvé.
+
+Trois hypothèses essayées et écartées, une exécution chacune :
+
+| marqueur suppose | resultat |
+|---|---|
+| `SteamClientLaunch=1`, `SteamEnv=1` dans l'environnement | code 51 |
+| le pont installe sous le nom `steamclient.dll` plutot que `lsteamclient.dll`, registre suivi | code 51 |
+| le numero d'application publie dans le segment (liste des applications lancees) | code 51 |
+
+Ce qui reste est donc bien défini : faire relancer le jeu par le faux client sur réception de la
+commande 2, et trouver ce qui distingue la seconde instance. Cela demande de reprendre le
+désassemblage en amont, là où le stub décide de demander le lancement plutôt que de continuer.

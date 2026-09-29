@@ -39,22 +39,67 @@ int main(void)
     void *vue = segment ? MapViewOfFile(segment, FILE_MAP_ALL_ACCESS, 0, 0, 4096) : NULL;
 
     /*
-     * Le contenu attendu n'est pas documente. Premiere tentative, volontairement
-     * grossiere : remplir toute la page du numero du processus, repete en mots
-     * de quatre octets. Si l'enveloppe lit un identifiant a un decalage que l'on
-     * ignore, elle le trouvera quel qu'il soit. Si elle y cherche autre chose,
-     * le refus sera le meme et on aura elimine cette hypothese en une fois.
+     * L'etat que le client publie. Le code de l'enveloppe, lu en memoire, teste
+     * deux mots avant d'aller plus loin :
+     *
+     *   cmp dword [vue+0x90], 2    sinon il abandonne (lettre « I »)
+     *   cmp dword [vue+0x94], 0    la case de commande doit etre libre
+     *
+     * 0x90 est donc une version de protocole, et 0x94 la case ou il deposera
+     * sa demande.
      */
     if (vue)
     {
-        DWORD *mots = vue;
-        unsigned i;
+        memset(vue, 0, 4096);
+        *(DWORD *)((char *)vue + 0x90) = 2;
 
-        for (i = 0; i < 4096 / sizeof(*mots); i++) mots[i] = pid;
     }
     fprintf(stderr, "faux steam : pid %lu inscrit, verrou=%p segment=%p vue=%p\n",
             pid, verrou, segment, vue);
     fflush(stderr);
-    for (;;) Sleep(1000);
+
+    /*
+     * Tenir le role du client dans la poignee de main de SteamStart.
+     *
+     * L'enveloppe des jeux proteges n'attend pas une valeur dans le segment :
+     * elle y *ecrit* une requete, puis attend que le client la traite. Le code
+     * de deadcells.exe, lu en memoire pendant qu'il montrait sa boite d'erreur,
+     * dit exactement quoi :
+     *
+     *   vue+0x94 : la commande (2)
+     *   vue+0x98 : le numero du processus demandeur
+     *   vue+0x9c : un evenement, cree par lui, qu'il attend cinq secondes
+     *
+     * Le handle appartient a son processus ; il faut donc le dupliquer chez
+     * nous avant de le signaler -- ce que fait le vrai client. On remet ensuite
+     * la commande a zero pour accuser reception.
+     */
+    for (;;)
+    {
+        volatile DWORD *req = (DWORD *)((char *)vue + 0x94);
+
+        if (vue && req[0])
+        {
+            DWORD commande = req[0], demandeur = req[1], handle = req[2];
+            HANDLE proc = OpenProcess(PROCESS_DUP_HANDLE, FALSE, demandeur);
+            HANDLE chez_nous = NULL;
+
+            if (proc && DuplicateHandle(proc, (HANDLE)(ULONG_PTR)handle, GetCurrentProcess(),
+                                        &chez_nous, 0, FALSE, DUPLICATE_SAME_ACCESS))
+            {
+                SetEvent(chez_nous);
+                CloseHandle(chez_nous);
+                fprintf(stderr, "faux steam : commande %lu du processus %lu, evenement %p signale\n",
+                        commande, demandeur, (void *)(ULONG_PTR)handle);
+            }
+            else
+                fprintf(stderr, "faux steam : commande %lu du processus %lu, duplication impossible (%lu)\n",
+                        commande, demandeur, GetLastError());
+            if (proc) CloseHandle(proc);
+            fflush(stderr);
+            req[0] = 0;
+        }
+        Sleep(10);
+    }
     return 0;
 }
