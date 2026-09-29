@@ -43,5 +43,27 @@ if ! pgrep -f 'c:\\faux_steam.exe' >/dev/null 2>&1; then
    while [ $i -lt 60 ] && ! grep -q "inscrit" "$JOURNAL" 2>/dev/null; do sleep 1; i=$((i + 1)); done
 fi
 
+# Certains jeux font lancer par Steam un « lanceur » que la pile ne sait pas
+# faire tourner -- un binaire .NET, par exemple. outil-steam/jeux.conf note
+# alors l'executable que ce lanceur aurait demarre. Une ligne de donnees, pas
+# une exception dans le code.
+TABLE=$R/outil-steam/jeux.conf
+if [ -n "${SteamAppId:-}" ] && [ -f "$TABLE" ]; then
+   CIBLE=$(awk -v a="$SteamAppId" '$1==a {print $2; exit}' "$TABLE")
+   if [ -n "$CIBLE" ]; then
+      RACINE=$DOSSIER
+      # Le chemin de la table est relatif au dossier du jeu, pas a celui de
+      # l'executable que Steam a nomme : on remonte jusqu'a le trouver.
+      while [ ! -f "$RACINE/$CIBLE" ] && [ "$RACINE" != "/" ]; do RACINE=$(dirname "$RACINE"); done
+      if [ -f "$RACINE/$CIBLE" ]; then
+         echo "    table  : $PROG remplace par $CIBLE" >>"$JOURNAL"
+         DOSSIER=$(dirname "$RACINE/$CIBLE"); PROG=$(basename "$CIBLE")
+         set --
+      else
+         echo "    table  : $CIBLE introuvable, on garde $PROG" >>"$JOURNAL"
+      fi
+   fi
+fi
+
 cd "$DOSSIER"
 exec sh "$R/tests/etape2_pile_arm64ec.sh" "$PROG" "$@" >>"$JOURNAL" 2>&1

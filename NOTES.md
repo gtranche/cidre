@@ -19423,3 +19423,73 @@ périphérique.
 info: Driver : KosmicKrisp 26.2.99
 info: D3D11InternalCreateDevice: Using feature level D3D_FEATURE_LEVEL_11_0
 ```
+
+## 276. Le bouton « Jouer » : ce qui marche, et ce qui n'existe pas sur macOS
+
+### Les outils de compatibilité ne sont pas câblés sur macOS
+
+Le §274 avait trouvé toute la machinerie dans `steamclient.dylib` : `/compatibilitytools.d`,
+`GetCompatToolMappingPriority`, `from_oslist`/`to_oslist`, `platform_override`. L'outil a été
+construit, posé en vrai dossier, et la correspondance écrite dans `config.vdf`. Elle **survit** au
+redémarrage du client, donc elle est bien lue.
+
+Et pourtant, au clic :
+
+```
+Failed running GameID 1562430: "'.../DREDGE/DREDGE.exe'" (OS Error 0)
+```
+
+Steam lance le `.exe` **nu**, sans préfixe d'outil, et macOS refuse un binaire Windows. Aucun de
+ses journaux ne mentionne jamais un outil de compatibilité.
+
+L'essai témoin tranche la question : Surviving Mars, laissé avec la correspondance d'outil seule,
+échoue en `OS Error 0` ; DREDGE, avec une option de lancement, démarre. **La machinerie est dans le
+binaire mais pas câblée dans le client macOS.** Ce n'est donc pas la route ; les options de
+lancement le sont.
+
+### Ce qui marche
+
+`tests/lancer_depuis_steam.sh` dans les options de lancement, avec `%command%`. Steam le tient pour
+le jeu -- il le suit dans sa liste des processus -- et lui passe l'exécutable, ses arguments et son
+environnement.
+
+### Les jeux qui lancent un lanceur
+
+Vermintide 2 ne démarrait pas, et silencieusement : la pile met `WINEDEBUG=-all`. À la main, la
+raison est immédiate :
+
+```
+err:module:fixup_imports_ilonly mscoree.dll not found, IL-only binary L"Launcher.exe" cannot be loaded
+```
+
+Steam ne demande pas le jeu mais `launcher/launcher.exe`, un binaire .NET. Notre pile désactive
+`mscoree` à dessein, et ce lanceur ne sert qu'à choisir entre DX11 et DX12 avant de démarrer le jeu.
+
+Plutôt qu'une exception dans le code, une ligne de données -- `outil-steam/jeux.conf` :
+
+```
+552500   binaries/vermintide2.exe
+```
+
+Le script consulte la table, remonte jusqu'à la racine du jeu et démarre ce que le lanceur aurait
+démarré. Ce n'est pas un contournement : c'est ce que le lanceur aurait fait, noté parce qu'on ne
+peut pas le lui demander.
+
+Appelé exactement comme Steam l'appelle :
+
+```
+jeu     : launcher.exe
+table   : launcher.exe remplace par binaries/vermintide2.exe
+info: Game: vermintide2.exe
+info: Driver : KosmicKrisp 26.2.99
+info: D3D11InternalCreateDevice: Using feature level D3D_FEATURE_LEVEL_11_0
+```
+
+### Où on en est
+
+| jeu | par le bouton « Jouer » |
+| --- | --- |
+| DREDGE | se lance et joue |
+| Vermintide 2 | démarre, monte son périphérique D3D11 ; pas encore vu au menu |
+| Dead Cells | option posée ; son enveloppe reste le mur (§268) |
+| Surviving Mars | témoin, laissé sans option : échoue, comme prévu |
