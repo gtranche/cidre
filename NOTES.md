@@ -19549,3 +19549,48 @@ Steam tourne : il reecrirait ce fichier en quittant. Fermez-le d'abord.
 
 Rien n'est posé dans le système : l'agent vit dans `~/Library/LaunchAgents`, et
 `installer_agent_steam.sh --retirer` l'enlève.
+
+## 278. Le texte de Surviving Mars : six hypothèses tuées, et ce que le vidage apprend
+
+### Ce qui est écarté, mesuré et non supposé
+
+| hypothèse | comment elle est tombée |
+| --- | --- |
+| DXVK oublie le mélange au repli A8 → R8 | il le pose : `{ZERO, ZERO, ZERO, R}` |
+| le pilote ignore le mélange de la vue | `probe_melange_a8` : `0x80` → `(0, 0, 0, 0.502)`, **0 écart** |
+| couleur de bordure personnalisée | désactivée, texte identique |
+| l'alpha forcé à un dans le pilote | conditionné à la présentation seule |
+| mémoire mappée non initialisée | `dxvk.zeroMappedMemory = True`, texte identique |
+| un format BC absent, donc substitué | BC1, BC3, BC4, BC5, BC7 tous annoncés |
+
+`tests/probe_melange_a8.c` reste : il mesure le mélange de composantes et l'existence des formats,
+pour n'importe quel pilote.
+
+### Ce que le vidage apprend
+
+Deux sondes posées dans DXVK, inertes sans `PROTON_OUVERT_VIDER_TEXTURES` : l'une dans
+`D3D11Initializer::InitTexture`, passage obligé de toute donnée initiale, l'autre dans
+`D3D11ImmediateContext::UnmapImage`, pour ce qu'un jeu écrit dans une texture dynamique.
+
+Sur le menu de Surviving Mars, **1865 textures créées**, et l'inventaire est net :
+
+```
+ 374 BC1_TYPELESS      372 BC4_TYPELESS      372 BC3_TYPELESS      370 BC5_TYPELESS
+ 176 fmt 3   176 fmt 17   (1024x1024, usage 3 = STAGING, bind 0)
+  17 BC7      3 R8_TYPELESS (dynamiques, jamais televersees)      1 B8G8R8A8_TYPELESS
+```
+
+**Aucun atlas de police classique** -- pas une seule texture A8, R8_UNORM ou BGRA8 avec des
+données. Et les trois textures dynamiques à un canal ne sont jamais mappées : ce ne sont pas des
+masques de texte, mais des cibles de rendu.
+
+Le texte ne vient donc ni d'un atlas téléversé, ni d'un masque rastérisé par le processeur. Il sort
+des données compressées chargées du disque -- et **BC4, format à un canal, est exactement ce qu'on
+emploie pour une police**. Le pilote l'annonce ; reste à vérifier qu'il le décode juste. C'est la
+prochaine mesure : un bloc BC4 connu, échantillonné, comparé au décodage attendu.
+
+### Une limite de méthode, à dire
+
+Je ne peux pas regarder l'écran : `screencapture` échoue en « could not create image from display »
+faute d'autorisation d'enregistrement d'écran. Chaque A/B demande donc un aller-retour. Les sondes
+ci-dessus existent en partie pour s'en passer.
