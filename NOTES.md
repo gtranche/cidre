@@ -18980,3 +18980,75 @@ Les deux emplacements d'`ISteamClient` ressemblent à une pose de rappel -- un p
 de l'invité, que transmettre tel quel à un client 64 bits serait d'ailleurs une faute à part
 entière. Les inscrire serait deviner, ce que ce fichier refuse ; ils restent à l'heuristique, qui
 continue de journaliser.
+
+## 270. Le pont côté 64 bits : Surviving Mars
+
+DREDGE (§269) éprouvait le relais 32 bits. Surviving Mars est x86-64 : il passe par l'autre
+chemin, `repartir`, où les arguments font déjà huit octets et où la question des pointeurs
+rebasés ne se pose pas. Les deux moitiés du pont méritaient chacune leur jeu.
+
+### Un premier essai qui ne démarre pas, et ce qu'il révèle
+
+```
+wine: failed to load .../aarch64-windows/ntdll.dll error c00000bb
+```
+
+Pas seulement le jeu : **tout invité x86-64**, y compris `banc_x64.exe` qui tournait la veille.
+`c00000bb` est `STATUS_NOT_SUPPORTED`, et la cause était de ma main. Deux arbres de construction
+visent le même préfixe d'installation :
+
+| arbre | `--enable-archs` | ce qu'il installe |
+| --- | --- | --- |
+| `build/wine11-arm64` | `aarch64` | un `ntdll.dll` **ARM64** simple |
+| `build/wine11-arm64-ec` | `i386,arm64ec,aarch64` | un `ntdll.dll` **ARM64X** |
+
+Un invité x86-64 a besoin de l'ARM64X : c'est lui qui porte les vignettes ARM64EC par lesquelles du
+code x86-64 appelle du code natif. Mon `make install` du §267, lancé depuis le mauvais arbre, avait
+remplacé l'un par l'autre. L'invité i386 continuait de marcher -- ses modules PE ne sont pas
+construits par cet arbre-là, donc ils avaient survécu -- ce qui rendait la panne d'autant moins
+lisible. C'est le même piège que le §246 et le §267, sous une troisième forme : **dans cet arbre,
+ni `make` ni `make install` ne sont anodins, et l'arbre de référence est `wine11-arm64-ec`.**
+
+Réinstallation depuis le bon arbre, avec les deux drapeaux :
+
+```
+Format: COFF-ARM64X
+  Machine: IMAGE_FILE_MACHINE_ARM64X (0xA64E)
+```
+
+et les deux témoins repassent -- `h32temps` (i386) et `banc_x64` (x86-64).
+
+### Ce que le jeu fait traverser
+
+```
+appels de methode a travers le pont : 73 542
+interfaces : ISteamClient, ISteamUser021, ISteamUtils010, ISteamInput001,
+             ISteamController007, ISteamUserStats012, ISteamUGC014, ISteamApps008
+boucle par image : 30 traversées/s soutenues
+rendu : DXVK 2.7.1+ -> KosmicKrisp 26.2.99, D3D_FEATURE_LEVEL_11_1
+```
+
+Et les valeurs qui prouvent l'aller-retour, comme pour DREDGE :
+
+```
+repartir SteamUtils010 emplacement 9 ()        -> 71818   = 464920, l'appid de Surviving Mars
+repartir SteamUser021 emplacement 1  ()        -> 1       BLoggedOn
+repartir SteamUser021 emplacement 2  ()        -> un SteamID64 valide du compte connecté
+repartir ISteamClient emplacement 12 (0, 1, "SteamUtils010")
+```
+
+Aucun `err:` ni `fixme:` du pont sur toute l'exécution.
+
+### Où en est le pont
+
+| | DREDGE | Surviving Mars |
+| --- | --- | --- |
+| machine | i386 | x86-64 |
+| chemin | `repartir32` (relais `__thiscall`) | `repartir` |
+| appels traversés | 32 783 | 73 542 |
+| interfaces | 4 | 8 |
+| valeur prouvée | appid 1562430 | appid 464920, `BLoggedOn`, SteamID |
+
+Les deux moitiés du pont portent maintenant un jeu qui joue, sur le client Steam natif de macOS.
+Ce qui reste devant n'est plus le pont : c'est Easy Anti-Cheat, et les jeux dont l'enveloppe exige
+une signature Valve (§268).
