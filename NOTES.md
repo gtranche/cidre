@@ -19658,3 +19658,60 @@ décalés, dans le même atlas, ressemble beaucoup à cela.
 La mesure à faire est donc : prendre un bloc BC7 de l'atlas du jeu, l'échantillonner sur le
 processeur graphique, et le comparer à un décodage de référence sur le processeur. Elle demande un
 décodeur BC7 de référence -- c'est le seul vrai coût, et c'est le prochain pas.
+
+## 280. L'atlas est parfait : le défaut est dans le dessin, pas dans la donnée
+
+### Le mode que la police emploie
+
+Le §279 laissait BC7 en suspect. L'histogramme des modes, bloc par bloc, sur tout ce que le jeu
+téléverse, tranche : les illustrations emploient les modes 0, 1, 3, 5 et 7 ; les petits rectangles
+posés dans l'atlas -- la police -- sont **tous, sans exception, en mode 6**.
+
+```
+bc7-48-72x32-en604x96.bin    {6: 144}
+bc7-61-72x32-en1188x8.bin    {6: 144}
+bc7-63-4x28-en596x160.bin    {6: 7}
+```
+
+Un décodeur qui se tromperait sur ce seul mode casserait le texte et rien d'autre. `tests/probe_bc7_mode6.c`
+fabrique des blocs mode 6 à la main -- extrémités, bits de parité, les seize poids -- et compare au
+calcul de la spécification :
+
+```
+noir -> blanc, alpha plein                juste (0 ecarts sur 64 composantes)
+alpha 0 -> 1, couleur pleine              juste
+extremites quelconques, parites 1 et 0    juste
+decodage BC7 mode 6 : juste
+```
+
+Huitième hypothèse morte.
+
+### On regarde enfin la donnée elle-même
+
+Puisque le décodage de mode 6 est établi, on peut décoder **ce que le jeu envoie** et le regarder.
+Les trente-huit rectangles, replacés à leurs offsets et décodés, donnent ceci :
+
+```
+TUTORIAL  GAME  CHALLENGE  CREATIVE  MANAGER  EDITOR
+NEW       LOAD  MODE  MOD  PARADOX   OPTIONS  QUIT
+ACCOUNT   Please They want game?  Return Earth?  ...
+```
+
+**Parfait.** Et au passage, une découverte qui change la lecture de tout le reste : le jeu ne
+téléverse pas des glyphes mais des **mots entiers**, déjà composés. La couche couleur est un
+rectangle blanc uni, l'alpha porte les lettres -- un atlas de police irréprochable.
+
+Trois vérifications de plus, toutes vertes :
+
+| ce qui est vérifié | résultat |
+| --- | --- |
+| les rectangles se recouvrent-ils ? | **aucun** recouvrement, marges de 4 texels |
+| vont-ils dans la texture effacée ? | oui, la 2048×2048 qui a reçu seize tuiles de zéros |
+| les offsets sont-ils alignés sur les blocs ? | tous multiples de 4 |
+
+### Ce que cela établit
+
+Le jeu envoie une donnée juste, dans un atlas effacé, à des emplacements justes, dans un format que
+le pilote décode juste. **La corruption est donc entièrement en aval : dans le dessin.** Ce n'est
+plus une question de texture mais de géométrie, de coordonnées ou de mélange -- et c'est là qu'il
+faut regarder ensuite.
