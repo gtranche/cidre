@@ -20495,3 +20495,74 @@ dans `MemoryOps.cpp` applique aux acces 32 bits). Il faut : (1) faire allouer pa
 bits dans une fenetre bornee, (2) appliquer le rebasage aux acces **64 bits** dans le JIT. Risque :
 touche le chemin memoire le plus chaud, et du code qui marche pour les jeux 64 bits (Surviving Mars).
 Chantier reel, mais desormais justifie par la mesure : LuaJIT est franchissable.
+
+## 294. Rebasage 64 bits pour LuaJIT : fondation posee, deux problemes cernes (WIP)
+
+Approche retenue (choix utilisateur) : fenetre basse **ciblee et gatee**, pas de rebasage uniforme.
+L'invite 64 bits reste 1:1 partout sauf une fenetre < 4 Gio, translatee vers l'espace hote haut,
+active par `PROTON_OUVERT_LUAJIT`. Sans le drapeau : comportement identique (Dead Cells confirme).
+
+### Cote Wine (src/wine11, dlls/ntdll/unix/virtual.c + thread.c + loader.c + ntdll.spec)
+
+- `luajit_low_base` (32 Gio, multiple de 4 Gio) + helpers `host_from_luajit_low` /
+  `guest_from_luajit_low` (masque / orr, comme la fenetre 32 bits).
+- `virtual_init` : monte `luajit_low_base` si l'env est present, reserve la fenetre.
+- `allocate_virtual_memory` : une demande de base < 4 Gio (MEM_RESERVE) est servie depuis la
+  fenetre ; l'adresse INVITE rendue est sous 4 Gio.
+- `NtFreeVirtualMemory` / `NtProtectVirtualMemory` : conversions invite<->hote.
+- Export `__wine_luajit_low_base` (thread.c + ntdll.spec + loader.c), comme `__wine_wow64_guest_base`.
+
+### Cote FEX (third_party/FEX)
+
+- `FEXCore::IR::Guest64LowBase` + `RebaseGuest64Low` (conditionnel : addr < 4 Gio ? addr|base : addr)
+  dans Addressing.cpp ; applique dans `LoadEffectiveAddress` pour les ops 64 bits.
+- `SelectAddressMode` : chemin ScaledRegisterLoadstore (base brute) desactive quand la fenetre est
+  active, pour forcer le passage par LoadEffectiveAddress.
+- Monte depuis `__wine_luajit_low_base` dans ARM64EC/Module.cpp (l'emulateur x86-64 = xtajit64).
+- `Source/Windows/Defs/ntdll.def` : `__wine_luajit_low_base DATA` ajoute (sinon lien EC echoue).
+
+### Valide
+
+Avec le drapeau, Wine met l'arene de Vermintide 2 a une adresse invite basse (0x02840000). Le
+mecanisme d'allocation marche. Sans le drapeau, aucune regression.
+
+### Les deux problemes a finir (mesures sur la faute)
+
+1. **Fenetre non exclusive.** `reserve_area` la rend DISPONIBLE a Wine (l'inverse du besoin) : la
+   pile de l'invite atterrit a 32 Gio (rsp = 0x8_0023fc18), dans la fenetre. Il faut la rendre
+   exclusive aux allocations basses (ne pas la reserver comme zone ouverte, ou exclure la plage des
+   allocations ordinaires).
+2. **Couverture de rebasage incomplete.** La faute est un `rep stos` (memset de l'arene, rcx=0x3c0)
+   sur l'adresse basse 0x02840010, NON rebasee. Les load/store passent par Addressing.cpp, mais les
+   ops chaine, la pile (Push/Pop/PushTwo/PopTwo, deja traitees pour le 32 bits dans MemoryOps.cpp)
+   et les atomiques ont leur propre emission. Le 32 bits couvre 18 points (Addressing.cpp +
+   MemoryOps.cpp) ; il faut mirroir le 64 bits conditionnel a chacun.
+
+Tout est gate et sur a laisser en place. Reprendre par le probleme 1 (allocateur Wine), puis
+completer la couverture FEX point par point en s'appuyant sur les fautes.
+
+### §294 bis. Probleme 2 precise : les chemins « adresse brute »
+
+Diagnostic complet du rebasage manquant. Deux familles d'acces memoire dans FEX :
+
+- **Via AddressMode** (`_LoadMemAutoTSO(A)`, `_StoreMemAutoTSO(A)`) -> `SelectAddressMode` ->
+  `LoadEffectiveAddress` : **rebase deja** (mon changement Addressing.cpp).
+- **Via adresse brute** (`_StoreMemAutoTSO(RegClass, Size, Ref Addr, Value)`, idem load) -> emet
+  directement `_StoreMem`/`_LoadMem` avec l'adresse brute : **PAS de rebasage**.
+
+`STOSOp` (OpcodeDispatcher.cpp:3236/3238) prend le chemin brut : `Dest` = RDI, non rebase. D'ou la
+faute sur le `rep stos` (memset de l'arene basse). Les autres ops chaine (MOVS/SCAS/LODS) et divers
+acces directs font pareil.
+
+**Fix propre :** rebaser au point de convergence -- soit dans les surcharges « adresse brute »
+`_StoreMemAutoTSO(Ref)` / `_LoadMemAutoTSO(Ref)` (IR, mais attention au double-rebasage si un
+appelant passe deja une adresse rebasee par LoadEffectiveAddress), soit centralement a l'emission
+JIT de `DEF_OP(LoadMem)`/`DEF_OP(StoreMem)` dans MemoryOps.cpp (ARM, conditionnel cmp+csel, couvre
+tout d'un coup mais plus delicat). Verifier les appelants 64 bits avant de choisir.
+
+Probleme 1 (fenetre exclusive) : `reserve_area` retire cote Wine (non teste) -- la fenetre reste
+ciblee par l'allocateur bas sans etre preferee. A rebatir et tester avec le fix du probleme 2.
+
+Etat : fondation solide et gatee (sans le drapeau, aucun changement -- Dead Cells confirme). La
+completion est un effort focalise sur le chemin memoire du JIT ; a faire a froid, pas en fin de
+session.
