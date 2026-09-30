@@ -20642,3 +20642,14 @@ pas au funclet à travers FEX. Ce n'est NI LuaJIT, NI l'émulateur d'accès hôt
 présent aussi sans Steam (même cascade 0x48). La correction est dans la livraison de registres de
 l'entrée EC de FEX (`ExitToX64` -> SRA) ou le thunk de sortie du compilateur — chantier FEX
 profond, à mener à froid. Toute exception C++ du jeu bute là ; c'est le prochain vrai verrou.
+
+### §296 bis. Reproducteur minimal : le chemin de base est SAIN
+
+tests/repro_exception_cpp/ : exe x64 ABI MSVC sans CRT (clang msvc + lld-link, imports fabriques),
+throw/catch par reference + appel virtuel + lecture d'un membre a +0x48. Quatre variantes (simple,
+throw profond avec destructeurs, alloca/registre de trame, catch intermediaire) PASSENT toutes sur
+la pile arm64ec : &e valide, membre lu. Donc find_catch_handler -> call_catch_handler ->
+call_handler_x64 -> thunk -> FEX livre bien la trame ; l'hypothese « rdx perdu » est refutee pour
+ces cas. Le gel du jeu tient a une specificite restante a cerner avec le reproducteur : objet
+std::filesystem_error dont la vtable vit dans msvcp140 ARM64EC (appel virtuel x64->EC depuis le
+funclet), catch du type de base avec ajustement de this, ou metadonnees FH3 reelles de MSVC.
