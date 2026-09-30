@@ -1,0 +1,968 @@
+Generated-by: LLM
+
+--- aa/configure.ac
++++ bb/configure.ac
+@@ -983,9 +983,18 @@
+ 
+     dnl macOS arm64 refuse un executable principal dont le __PAGEZERO a ete
+     dnl retreci : le noyau tue le processus avant que dyld ne s'execute. On garde
+-    dnl donc la taille par defaut sur cette architecture. Mesure : avec
+-    dnl __PAGEZERO a 0x1000 le chargeur sort sur SIGKILL sans une seule ligne ;
+-    dnl avec 0x100000000 il demarre.
++    dnl donc la taille par defaut sur cette architecture.
++    dnl
++    dnl La regle a ete caracterisee au lieu d'etre supposee (NOTES 285). Toute
++    dnl valeur inferieure a 0x100000000 est tuee -- 0x4000, 0x1000000,
++    dnl 0x10000000, 0x40000000, 0x80000000, 0xf0000000 : SIGKILL, code 137, pas
++    dnl une ligne de sortie. Et toute valeur superieure est ramenee a exactement
++    dnl 0x100000000 par l'editeur de liens : demander 8 Gio en donne 4.
++    dnl
++    dnl Les quatre premiers gigaoctets sont donc inaccessibles a tout processus
++    dnl arm64 natif, sans exception ni reglage. C'est ce qui impose la fenetre
++    dnl des invites 32 bits, et ce qui met hors d'atteinte les programmes qui
++    dnl exigent de la memoire basse -- LuaJIT sans GC64, par exemple.
+     case $HOST_ARCH in
+       aarch64)
+         WINELOADER_LDFLAGS="-Wl,-sectcreate,__TEXT,__info_plist,loader/wine_info.plist" ;;
+--- aa/dlls/ntdll/loader.c
++++ bb/dlls/ntdll/loader.c
+@@ -2256,9 +2256,195 @@
+ done:
+     RtlFreeHeap( GetProcessHeap(), 0, protect_old );
+     return status;
++}
++
++
++/* ---------------------------------------------------------------------------
++ * Le pont Steam : des trampolines sur la DLL authentique de Valve.
++ *
++ * Source primaire : Proton, sous-module ValveSoftware/wine au commit 015230dc,
++ * dlls/ntdll/loader.c (build_module) et dlls/ntdll/unix/loader.c
++ * (steamclient_setup_trampolines).
++ *
++ * L'enveloppe SteamStub des jeux proteges *lit* le fichier que le registre
++ * designe, pour y verifier le bloc de signature « VLV » de Valve, puis charge
++ * ce meme fichier et lui demande CreateInterface. C'est mesure, pas suppose
++ * (§289, trace a +file) :
++ *
++ *   CreateFileW L"C:\windows\system32\steamclient.dll" GENERIC_READ
++ *
++ * Un seul fichier sert donc les deux roles, et aucune des deux configurations
++ * evidentes ne marche : le pont repond mais n'est pas signe (code 51) ; la DLL
++ * de Valve est signee mais n'a aucun client Windows derriere elle (code 53).
++ *
++ * Le fichier sur le disque reste la DLL authentique et intacte -- la signature
++ * est verifiee sur le vrai fichier, et elle passe -- puis ce sont ses exports
++ * *en memoire* qui sont detournes vers lsteamclient, qui relaie vers le client
++ * Steam natif de l'hote, celui ou l'utilisateur est deja connecte. Ce que le
++ * controle sert a etablir -- le jeu tourne via un vrai client Steam, sur un
++ * compte qui le possede -- reste donc vrai : c'est Valve qui verifie la
++ * propriete, en ligne, et rien ne demarre sans compte legitime. Les imports de
++ * la facade ne sont jamais resolus et son DllMain ne tourne pas, ce qui
++ * explique qu'elle n'ait besoin ni de tier0_s.dll ni de vstdlib_s.dll.
++ */
++static BOOL pont_steam_actif(void)
++{
++    static int actif = -1;
++
++    if (actif == -1)
++    {
++        UNICODE_STRING sans = RTL_CONSTANT_STRING( L"PROTON_OUVERT_SANS_PONT_STEAM" );
++        UNICODE_STRING val;
++
++        val.MaximumLength = 0;
++        actif = RtlQueryEnvironmentVariable_U( NULL, &sans, &val ) == STATUS_VARIABLE_NOT_FOUND;
++        if (!actif) ERR( "pont steamclient desactive par l'environnement\n" );
++    }
++    return actif;
++}
++
++static BOOL nom_de_base_est( const WCHAR *base, ULONG len, const WCHAR *attendu )
++{
++    ULONG n = wcslen( attendu );
++
++    return len == n && !wcsnicmp( base, attendu, n );
++}
++
++/* Resoudre un export nomme en adresse, sans suivre de renvoi et sans charger
++ * quoi que ce soit : find_named_export() ferait les deux, et on ne veut aucun
++ * effet de bord a cet instant du chargement. */
++static void *export_nomme_brut( HMODULE module, const IMAGE_EXPORT_DIRECTORY *exp, const char *nom )
++{
++    const DWORD *noms = get_rva( module, exp->AddressOfNames );
++    const WORD *ordinaux = get_rva( module, exp->AddressOfNameOrdinals );
++    const DWORD *fonctions = get_rva( module, exp->AddressOfFunctions );
++    DWORD i;
++
++    for (i = 0; i < exp->NumberOfNames; i++)
++    {
++        if (!noms[i]) continue;
++        if (strcmp( (const char *)get_rva( module, noms[i] ), nom )) continue;
++        if (ordinaux[i] >= exp->NumberOfFunctions || !fonctions[ordinaux[i]]) return NULL;
++        return get_rva( module, fonctions[ordinaux[i]] );
++    }
++    return NULL;
++}
++
++/* Le saut est ecrit dans le code de l'invite, donc dans son jeu d'instructions
++ * a lui -- jamais celui de ce ntdll : un invite i386 tourne sous wow64 avec un
++ * ntdll 32 bits, mais un invite x86-64 est charge par le ntdll ARM64X. On
++ * decide donc sur le Machine du module, pas sur _WIN64. */
++static BOOL ecrire_saut( const IMAGE_NT_HEADERS *nt, void *src, const void *cible )
++{
++    static const BYTE jmp_ax[] = { 0xff, 0xe0 };
++    BYTE *p = src;
++
++    if (nt->FileHeader.Machine == IMAGE_FILE_MACHINE_I386)
++    {
++        ULONG adr = (ULONG)(ULONG_PTR)cible;
++
++        p[0] = 0xb8;                            /* mov eax, imm32 */
++        memcpy( p + 1, &adr, sizeof(adr) );
++        memcpy( p + 1 + sizeof(adr), jmp_ax, sizeof(jmp_ax) );
++        return TRUE;
++    }
++    if (nt->FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64)
++    {
++        ULONG64 adr = (ULONG64)(ULONG_PTR)cible;
++
++        p[0] = 0x48; p[1] = 0xb8;               /* mov rax, imm64 */
++        memcpy( p + 2, &adr, sizeof(adr) );
++        memcpy( p + 2 + sizeof(adr), jmp_ax, sizeof(jmp_ax) );
++        return TRUE;
++    }
++    return FALSE;   /* la DLL de Valve n'est jamais arm64 : rien a faire */
++}
++
++/* Reinscrire l'ImageBase que porte le fichier. Le relogement l'a remplacee par
++ * la base effective, et Proton prend la peine de la relire depuis le disque
++ * pour le cas 32 bits : quelque chose la compare. On garde le geste. */
++static void restaurer_image_base( void *module, IMAGE_NT_HEADERS *nt, const UNICODE_STRING *nt_name )
++{
++    OBJECT_ATTRIBUTES attr;
++    IO_STATUS_BLOCK io;
++    LARGE_INTEGER pos;
++    ULONG vieux;
++    SIZE_T taille = 0x1000;
++    void *adr = module;
++    HANDLE fichier;
++
++    if (NtProtectVirtualMemory( NtCurrentProcess(), &adr, &taille, PAGE_READWRITE, &vieux )) return;
++
++    InitializeObjectAttributes( &attr, (UNICODE_STRING *)nt_name, OBJ_CASE_INSENSITIVE, 0, NULL );
++    if (!NtOpenFile( &fichier, GENERIC_READ | SYNCHRONIZE, &attr, &io,
++                     FILE_SHARE_READ | FILE_SHARE_DELETE,
++                     FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE ))
++    {
++        pos.QuadPart = (ULONG_PTR)&nt->OptionalHeader.ImageBase - (ULONG_PTR)module;
++        NtReadFile( fichier, 0, NULL, NULL, &io, &nt->OptionalHeader.ImageBase,
++                    sizeof(nt->OptionalHeader.ImageBase), &pos, NULL );
++        NtClose( fichier );
++        TRACE( "pont steam : ImageBase du fichier %#Ix\n", (ULONG_PTR)nt->OptionalHeader.ImageBase );
++    }
++    adr = module; taille = 0x1000;
++    NtProtectVirtualMemory( NtCurrentProcess(), &adr, &taille, vieux, &vieux );
+ }
++
++static void installer_trampolines_steam( void *module, HMODULE pont )
++{
++    IMAGE_NT_HEADERS *nt = RtlImageNtHeader( module );
++    IMAGE_NT_HEADERS *nt_pont = RtlImageNtHeader( pont );
++    const IMAGE_SECTION_HEADER *sec;
++    const IMAGE_EXPORT_DIRECTORY *exp, *exp_pont;
++    DWORD taille_exp, taille_exp_pont, i;
++    const DWORD *noms;
++    int poses = 0, vus = 0;
++
++    if (!nt || !nt_pont) return;
++    exp      = RtlImageDirectoryEntryToData( module, TRUE, IMAGE_DIRECTORY_ENTRY_EXPORT, &taille_exp );
++    exp_pont = RtlImageDirectoryEntryToData( pont,   TRUE, IMAGE_DIRECTORY_ENTRY_EXPORT, &taille_exp_pont );
++    if (!exp || !exp_pont) return;
++
++    /* .text doit devenir accessible en ecriture. On y ecrit avant que la
++     * moindre instruction du module ait tourne, donc aucun traducteur ne peut
++     * deja en avoir mis en cache une version perimee. */
++    sec = IMAGE_FIRST_SECTION( nt );
++    for (i = 0; i < nt->FileHeader.NumberOfSections; i++)
++    {
++        void *adr;
++        SIZE_T t;
++        ULONG vieux;
++
++        if (memcmp( sec[i].Name, ".text", 5 )) continue;
++        adr = get_rva( module, sec[i].VirtualAddress );
++        t = sec[i].Misc.VirtualSize;
++        NtProtectVirtualMemory( NtCurrentProcess(), &adr, &t, PAGE_EXECUTE_READWRITE, &vieux );
++    }
++
++    noms = get_rva( module, exp->AddressOfNames );
++    for (i = 0; i < exp->NumberOfNames; i++)
++    {
++        const char *nom;
++        void *src;
++        const void *cible;
+ 
++        if (!noms[i]) continue;
++        nom = get_rva( module, noms[i] );
++        vus++;
++        if (!(src = export_nomme_brut( module, exp, nom ))) continue;
++        if (!(cible = export_nomme_brut( pont, exp_pont, nom ))) continue;
++        if (ecrire_saut( nt, src, cible )) poses++;
++    }
+ 
++    /* Le point d'entree aussi : le DllMain de la facade ne doit pas tourner,
++     * c'est celui du pont qui compte. */
++    if (nt->OptionalHeader.AddressOfEntryPoint && nt_pont->OptionalHeader.AddressOfEntryPoint)
++        ecrire_saut( nt, get_rva( module, nt->OptionalHeader.AddressOfEntryPoint ),
++                     get_rva( pont, nt_pont->OptionalHeader.AddressOfEntryPoint ) );
++
++    ERR( "pont steam : %d exports detournes vers lsteamclient sur %d\n", poses, vus );
++}
++
+ /*************************************************************************
+  *		build_module
+  *
+@@ -2296,6 +2482,38 @@
+ 
+     update_load_config( *module );
+ 
++    if (pont_steam_actif() && !is_builtin)
++    {
++        const WCHAR *base = nt_name->Buffer, *t;
++        ULONG len;
++
++        if ((t = wcsrchr( base, '\\' ))) base = t + 1;
++        if ((t = wcsrchr( base, '/' ))) base = t + 1;
++        len = wcslen( base );
++        if (len > 4 && !wcsnicmp( base + len - 4, L".dll", 4 )) len -= 4;
++
++        if (nom_de_base_est( base, len, L"steamclient" ) ||
++            nom_de_base_est( base, len, L"steamclient64" ) ||
++            nom_de_base_est( base, len, L"gameoverlayrenderer" ) ||
++            nom_de_base_est( base, len, L"gameoverlayrenderer64" ))
++        {
++            UNICODE_STRING pont_us = RTL_CONSTANT_STRING( L"lsteamclient.dll" );
++            static HMODULE pont;
++
++            if (pont || LdrLoadDll( load_path, NULL, &pont_us, &pont ) == STATUS_SUCCESS)
++            {
++                installer_trampolines_steam( *module, pont );
++                if (nom_de_base_est( base, len, L"steamclient" ))
++                    restaurer_image_base( *module, nt, nt_name );
++                /* La facade ne doit pas etre initialisee : ni ses imports
++                 * (tier0_s, vstdlib_s) ni son DllMain. */
++                wm->ldr.Flags |= LDR_DONT_RESOLVE_REFS;
++                flags |= LDR_DONT_RESOLVE_REFS;
++            }
++            else ERR( "pont steam : lsteamclient.dll introuvable, la facade reste telle quelle\n" );
++        }
++    }
++
+     /* fixup imports */
+ 
+     if (!(flags & LDR_DONT_RESOLVE_REFS) &&
+--- aa/dlls/ntdll/unix/virtual.c
++++ bb/dlls/ntdll/unix/virtual.c
+@@ -5420,6 +5420,34 @@
+     /* Round parameters to a page boundary */
+ 
+     if (is_beyond_limit( 0, size, working_set_limit )) return STATUS_WORKING_SET_LIMIT_RANGE;
++
++#ifdef __APPLE__
++    /*
++     * Une base demandee entierement sous 4 Gio : le noyau de macOS n'en donnera
++     * jamais, quelle que soit l'occupation -- c'est __PAGEZERO, pas un conflit.
++     * Windows accorde la demande ; Linux aussi, ou 0x10000 est exactement
++     * mmap_min_addr.
++     *
++     * La refuser rend NULL a un programme qui, le plus souvent, ne propose
++     * qu'une base. Mesure a l'appui : Vermintide 2 demande
++     * VirtualAlloc(0x10000, 1 Gio, MEM_RESERVE), range ce qu'on lui rend, pose
++     * quand meme la limite de son arene, et ne teste l'echec que contre -1. Le
++     * zero traverse et finit en memset a l'adresse 0x10.
++     *
++     * On traite donc une telle base comme une preference : le systeme choisit.
++     * C'est plus proche de Windows que d'echouer, puisque la-bas la demande
++     * aboutit. Ce traitement ne vaut que pour les reservations demandees par
++     * l'invite : les images et KUSER_SHARED_DATA passent par d'autres chemins,
++     * ou une adresse basse a un sens.
++     */
++    /* Un invite 32 bits arrive deja rebase au-dessus de la base de sa fenetre,
++     * donc la plage ci-dessous ne designe que des demandes d'invites 64 bits. */
++    if (*ret && (char *)*ret + size <= (char *)limit_4g)
++    {
++        TRACE( "base %p demandee sous 4 Gio, inaccessible sur macOS : traitee en preference\n", *ret );
++        *ret = NULL;
++    }
++#endif
+ 
+     if (*ret)
+     {
+--- aa/dlls/wow64/process.c
++++ bb/dlls/wow64/process.c
+@@ -161,6 +161,16 @@
+                 OBJECT_ATTRIBUTES attr;
+                 UNICODE_STRING path;
+ 
++                /*
++                 * Le chemin de l'image est un pointeur de l'invite. La copie
++                 * brute ci-dessus le laisse tel quel, ce qui suffit quand les
++                 * deux mondes partagent leurs adresses ; ici il faut le
++                 * rebaser, sinon la couche 64 bits lit sous 4 Gio -- ou macOS
++                 * ne laisse rien mapper -- et la faute remonte a l'appelant en
++                 * ERROR_NOACCESS. Sans cela aucun processus 32 bits ne peut en
++                 * lancer un autre, pas meme cmd.exe.
++                 */
++                ret->Attributes[i].ValuePtr = ptr_32to64( attr32->Attributes[i].Value );
+                 path.Length = ret->Attributes[i].Size;
+                 path.Buffer = ret->Attributes[i].ValuePtr;
+                 InitializeObjectAttributes( &attr, &path, OBJ_CASE_INSENSITIVE, 0, 0 );
+@@ -203,7 +213,9 @@
+             break;
+         case PS_ATTRIBUTE_GROUP_AFFINITY:
+             {
+-                GROUP_AFFINITY32 *aff32 = ret->Attributes[i].ValuePtr;
++                /* Meme remarque que pour le chemin de l'image : la valeur
++                 * recopiee est une adresse d'invite. */
++                GROUP_AFFINITY32 *aff32 = ptr_32to64( attr32->Attributes[i].Value );
+                 GROUP_AFFINITY *aff64;
+                 ret->Attributes[i].Size     = sizeof(GROUP_AFFINITY);
+                 ret->Attributes[i].ValuePtr = Wow64AllocateTemp( ret->Attributes[i].Size );
+--- aa/dlls/wow64/sync.c
++++ bb/dlls/wow64/sync.c
+@@ -492,6 +492,31 @@
+     BOOLEAN alertable = get_ulong( &args );
+     const LARGE_INTEGER *timeout = get_ptr( &args );
+ 
++#ifdef SONDE_DORMEUR
++    /*
++     * Un fil de l'invite qui tourne en rond sur Sleep() attend quelque chose qui
++     * ne vient pas -- mais le cliche des piles ne dit pas quoi : tout ce que
++     * l'on voit est du code engendre par FEX. On compte donc les appels
++     * consecutifs, et au-dela d'un millier on demande a FEX ou en est l'invite.
++     */
++    {
++        /* Pas de variable par fil ici : wow64.dll se charge avant le chargeur
++         * ordinaire et son stockage local de fil n'est pas encore en place.
++         * Un compteur global suffit pour reperer celui qui tourne en rond. */
++        static LONG suite;
++        static LONG dits;
++
++        if (InterlockedIncrement( &suite ) % 2000 == 0 && InterlockedIncrement( &dits ) <= 16)
++        {
++            I386_CONTEXT *ctx = NULL;
++
++            RtlWow64GetCurrentCpuArea( NULL, (void **)&ctx, NULL );
++            ERR( "SONDE dormeur : fil %04lx, %lu Sleep d'affilee, eip=%08lx esp=%08lx delai=%s\n",
++                 GetCurrentThreadId(), (ULONG)suite, ctx ? ctx->Eip : 0, ctx ? ctx->Esp : 0,
++                 timeout ? wine_dbgstr_longlong( timeout->QuadPart ) : "infini" );
++        }
++    }
++#endif
+     return NtDelayExecution( alertable, timeout );
+ }
+ 
+--- aa/dlls/lsteamclient/main.c
++++ bb/dlls/lsteamclient/main.c
+@@ -184,12 +184,35 @@
+     {
+     case 5: case 6: case 8: case 9: case 10: case 11:
+     case 12: case 13: case 14: case 15: case 16: case 17: case 18:
++    /* Au-dela de 18, l'ancien code relayait sans envelopper, faute de carte.
++     * Dead Cells appelle 26 et 38 -- tous deux a trois arguments
++     * (hUser, hPipe, version), la signature d'un GetISteamXxx, et rendent un
++     * pointeur de la plage native des interfaces (0x75c9d0xxx / 0x9804xxxxx).
++     * Non enveloppes, ces pointeurs natifs de 64 bits arrivaient tronques au
++     * jeu 32 bits, qui plantait au premier appel de methode dessus. Mesure sur
++     * la trace, pas devine. */
++    case 26: case 38:
+         return TRUE;
+     default:
+         return FALSE;
+     }
+ }
+ 
++/* Les methodes qui rendent un char* : leur retour est un pointeur natif hote,
++ * a recopier en espace invite. Etabli sur les interfaces mesurees ; a etendre
++ * quand une methode de chaine encore inconnue est rencontree.
++ *
++ *   ISteamApps  4 = GetCurrentGameLanguage     -- Dead Cells l'appelle au
++ *                                                 premier tick de sa boucle
++ *   ISteamApps  5 = GetAvailableGameLanguages  -- meme type de retour
++ */
++static BOOL rend_chaine( const char *interface, unsigned emplacement )
++{
++    if (meme_interface( "ISteamApps", interface ) || !strcmp( interface, "ISteamApps" ))
++        return emplacement == 4 || emplacement == 5;
++    return FALSE;
++}
++
+ static const struct signature_steam *signature( const char *version, unsigned emplacement )
+ {
+     unsigned i;
+@@ -207,7 +230,7 @@
+                         UINT64 a, UINT64 b, UINT64 c, UINT64 d, UINT64 e, UINT64 f )
+ {
+     struct objet_pe *objet = self;
+-    struct appel_vtable_params params = { objet->natif, emplacement, 0, a, b, c, d, e, f, 0 };
++    struct appel_vtable_params params = { objet->natif, emplacement, 0, a, b, c, d, e, f, 0, 0, 0, 0 };
+     const char *ou = objet->nom[0] ? objet->nom : "ISteamClient";
+     const struct signature_steam *sig;
+ 
+@@ -393,10 +416,10 @@
+     struct objet_pe *objet = self;
+     const char *ou = objet->nom[0] ? objet->nom : "ISteamClient";
+     const struct signature_steam *sig = emplacement < NB_SIGNATURES ? objet->sigs[emplacement] : NULL;
+-    struct appel_vtable_params params = { objet->natif, emplacement, 0, 0, 0, 0, 0, 0, 0, 0 };
++    struct appel_vtable_params params = { objet->natif, emplacement, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+     unsigned tampon = sig ? sig->tampon : 0;
+     unsigned debut = tampon ? 1 : 0;   /* le pointeur cache occupe le premier mot */
+-    UINT64 *dest[6];
++    UINT64 *dest[9];
+     unsigned i;
+ 
+     TRACE( "%s emplacement %u (%u mots%s)\n", ou, emplacement, mots,
+@@ -404,7 +427,8 @@
+ 
+     dest[0] = &params.a; dest[1] = &params.b; dest[2] = &params.c;
+     dest[3] = &params.d; dest[4] = &params.e; dest[5] = &params.f;
+-    for (i = debut; i < mots && i - debut < 6; i++)
++    dest[6] = &params.g; dest[7] = &params.h; dest[8] = &params.i;
++    for (i = debut; i < mots && i - debut < 9; i++)
+     {
+         unsigned rang = i - debut;
+         char type = type_connu( ou, emplacement, rang );
+@@ -432,6 +456,20 @@
+             *dest[rang] = mot_vers_hote( args[i] );
+             break;
+         }
++    }
++
++    /* Retour de type chaine : fournir un tampon invite ou le cote hote
++     * recopiera la chaine native, et rendre son adresse invite. Un tampon par
++     * fil, valable jusqu'au prochain appel de chaine du meme fil -- exactement
++     * la duree de vie que Steamworks promet pour ces chaines. */
++    if (rend_chaine( ou, emplacement ))
++    {
++        static __thread char tampon_chaine[256];
++
++        params.chaine = 1;
++        params.tampon_chaine = vers_hote( tampon_chaine );
++        if (WINE_UNIX_CALL( unix_appel_vtable, &params )) return 0;
++        return params.ret ? (ULONG_PTR)tampon_chaine : 0;
+     }
+ 
+     if (WINE_UNIX_CALL( unix_appel_vtable, &params )) return 0;
+@@ -635,3 +673,240 @@
+ 
+     WINE_UNIX_CALL( unix_free_last_callback, &params );
+ }
++
++/* --- Exports plats manquants : couverture complete de la facade Valve ---
++ * Sans eux, les exports que lsteamclient ne fournit pas restent branches sur
++ * le code Valve non initialise (DllMain jamais execute) : un jeu qui en
++ * appelle un tombe dans du code mort. Ici, retour neutre et journal du nom,
++ * pour voir lesquels sont reellement sollicites. Cdecl (void) : l'appelant
++ * nettoie la pile, donc surete quel que soit le nombre d'arguments reels. */
++int CDECL Breakpad_SteamMiniDumpInit( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Breakpad_SteamMiniDumpInit\n" ); }
++    return 0;
++}
++
++int CDECL Breakpad_SteamSendMiniDump( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Breakpad_SteamSendMiniDump\n" ); }
++    return 0;
++}
++
++int CDECL Breakpad_SteamSetAppID( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Breakpad_SteamSetAppID\n" ); }
++    return 0;
++}
++
++int CDECL Breakpad_SteamSetSteamID( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Breakpad_SteamSetSteamID\n" ); }
++    return 0;
++}
++
++int CDECL Breakpad_SteamWriteMiniDumpSetComment( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Breakpad_SteamWriteMiniDumpSetComment\n" ); }
++    return 0;
++}
++
++int CDECL Breakpad_SteamWriteMiniDumpUsingExceptionInfoWithBuildId( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Breakpad_SteamWriteMiniDumpUsingExceptionInfoWithBuildId\n" ); }
++    return 0;
++}
++
++int CDECL Steam_BReleaseSteamPipe( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Steam_BReleaseSteamPipe\n" ); }
++    return 0;
++}
++
++int CDECL Steam_CreateGlobalUser( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Steam_CreateGlobalUser\n" ); }
++    return 0;
++}
++
++int CDECL Steam_CreateLocalUser( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Steam_CreateLocalUser\n" ); }
++    return 0;
++}
++
++int CDECL Steam_GSBLoggedOn( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Steam_GSBLoggedOn\n" ); }
++    return 0;
++}
++
++int CDECL Steam_GSBSecure( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Steam_GSBSecure\n" ); }
++    return 0;
++}
++
++int CDECL Steam_GSGetSteam2GetEncryptionKeyToSendToNewClient( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Steam_GSGetSteam2GetEncryptionKeyToSendToNewClient\n" ); }
++    return 0;
++}
++
++int CDECL Steam_GSGetSteamID( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Steam_GSGetSteamID\n" ); }
++    return 0;
++}
++
++int CDECL Steam_GSLogOff( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Steam_GSLogOff\n" ); }
++    return 0;
++}
++
++int CDECL Steam_GSLogOn( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Steam_GSLogOn\n" ); }
++    return 0;
++}
++
++int CDECL Steam_GSRemoveUserConnect( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Steam_GSRemoveUserConnect\n" ); }
++    return 0;
++}
++
++int CDECL Steam_GSSendSteam2UserConnect( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Steam_GSSendSteam2UserConnect\n" ); }
++    return 0;
++}
++
++int CDECL Steam_GSSendSteam3UserConnect( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Steam_GSSendSteam3UserConnect\n" ); }
++    return 0;
++}
++
++int CDECL Steam_GSSendUserDisconnect( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Steam_GSSendUserDisconnect\n" ); }
++    return 0;
++}
++
++int CDECL Steam_GSSendUserStatusResponse( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Steam_GSSendUserStatusResponse\n" ); }
++    return 0;
++}
++
++int CDECL Steam_GSSetServerType( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Steam_GSSetServerType\n" ); }
++    return 0;
++}
++
++int CDECL Steam_GSSetSpawnCount( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Steam_GSSetSpawnCount\n" ); }
++    return 0;
++}
++
++int CDECL Steam_GSUpdateStatus( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Steam_GSUpdateStatus\n" ); }
++    return 0;
++}
++
++int CDECL Steam_GetAPICallResult( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Steam_GetAPICallResult\n" ); }
++    return 0;
++}
++
++int CDECL Steam_GetGSHandle( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Steam_GetGSHandle\n" ); }
++    return 0;
++}
++
++int CDECL Steam_InitiateGameConnection( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Steam_InitiateGameConnection\n" ); }
++    return 0;
++}
++
++int CDECL Steam_IsKnownInterface( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Steam_IsKnownInterface\n" ); }
++    return 0;
++}
++
++int CDECL Steam_LogOff( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Steam_LogOff\n" ); }
++    return 0;
++}
++
++int CDECL Steam_LogOn( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Steam_LogOn\n" ); }
++    return 0;
++}
++
++int CDECL Steam_NotifyMissingInterface( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Steam_NotifyMissingInterface\n" ); }
++    return 0;
++}
++
++int CDECL Steam_ReleaseThreadLocalMemory( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Steam_ReleaseThreadLocalMemory\n" ); }
++    return 0;
++}
++
++int CDECL Steam_SetLocalIPBinding( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Steam_SetLocalIPBinding\n" ); }
++    return 0;
++}
++
++int CDECL Steam_TerminateGameConnection( void )
++{
++    static int dit;
++    if (!dit) { dit = 1; FIXME( "export plat sollicite : Steam_TerminateGameConnection\n" ); }
++    return 0;
++}
+--- aa/dlls/lsteamclient/signatures32.h
++++ bb/dlls/lsteamclient/signatures32.h
+@@ -16,6 +16,13 @@
+ 
+ static const struct signature_steam signatures[] =
+ {
++    /* Ajout manuel : STEAMAPPTICKET_INTERFACE_VERSION001, l'interface du
++     * ticket de possession que steamdrmp (DRM SteamStub) interroge. Absente
++     * du steam_api ayant servi a engendrer cette table, donc jamais relevee.
++     * Sa methode unique GetAppOwnershipTicketData prend 7 mots : appID,
++     * buffer, taille, puis quatre pointeurs de sortie. Sans cette ligne, le
++     * relais transmet 0 argument -> ticket vide -> le DRM refuse (code 54). */
++    { "ISteamAppTicket", 0, 7, 0, "GetAppOwnershipTicketData" },
+     { "ISteamClient", 1, 1, 0, "BReleaseSteamPipe" },
+     { "ISteamClient", 34, 1, 0, "sans_nom_34" },
+     { "ISteamAppList", 4, 1, 0, "GetAppBuildId" },
+--- aa/dlls/lsteamclient/types32.h
++++ bb/dlls/lsteamclient/types32.h
+@@ -48,6 +48,17 @@
+     { "ISteamClient", 12, "eep" },   /* GetISteamGenericInterface(utilisateur, tuyau, version) */
+ 
+     /*
++     * ISteamAppTicket::GetAppOwnershipTicketData -- la methode que steamdrmp
++     * (DRM SteamStub) appelle pour lire le ticket de possession. Les types
++     * sont deduits de sa signature Steamworks documentee et CONFIRMES par la
++     * trace : appID = 0x8fb6a (588650), taille = 0x400, et le buffer plus les
++     * pointeurs de sortie sont des adresses invite BASSES (0x10de08, 0x10e2xx)
++     * -- sous le seuil 0x110000, donc l'heuristique les prenait a tort pour
++     * des entiers et ne les rebasait pas. Le client natif ecrivait alors a
++     * des adresses invalides, le ticket restait vide, le DRM refusait (54). */
++    { "ISteamAppTicket", 0, "epepppp" },  /* appID, buffer, taille, *appId, *steamId, *signature, *tailleSig */
++
++    /*
+      * Recueilli par la boucle d'apprentissage elle-meme. Le pont avait imprime,
+      * au premier appel :
+      *
+@@ -59,6 +70,51 @@
+      * interface valide, ce qui l'etablit.
+      */
+     { "ISteamClient", 15, "eep" },   /* GetISteamApps(utilisateur, tuyau, version) */
++
++    /*
++     * Recolte de DREDGE (§269), le premier jeu non protege a traverser le pont.
++     * Au demarrage il enumere presque tout ISteamClient : vingt emplacements de
++     * plus, tous de la meme forme GetISteamXxx(utilisateur, tuyau, version).
++     *
++     * Les deux premiers mots sont PROUVES entiers -- le pont a imprime, pour
++     * chacun de ces emplacements :
++     *
++     *   PREUVE ISteamClient <n> mot 0 entier (valeur 0x1)
++     *   PREUVE ISteamClient <n> mot 1 entier (valeur 0x1)
++     *
++     * et le troisieme est prouve pointeur par le resultat : chacun de ces
++     * appels a rendu une interface native valide, ce que le client natif ne
++     * peut faire qu'apres avoir lu la chaine de version.
++     */
++    { "ISteamClient",  8, "eep" },
++    { "ISteamClient", 10, "eep" },
++    { "ISteamClient", 11, "eep" },
++    { "ISteamClient", 13, "eep" },
++    { "ISteamClient", 16, "eep" },
++    { "ISteamClient", 17, "eep" },
++    { "ISteamClient", 18, "eep" },
++    { "ISteamClient", 19, "eep" },
++    { "ISteamClient", 24, "eep" },
++    { "ISteamClient", 27, "eep" },
++    { "ISteamClient", 28, "eep" },
++    { "ISteamClient", 29, "eep" },
++    { "ISteamClient", 30, "eep" },
++    { "ISteamClient", 31, "eep" },
++    { "ISteamClient", 35, "eep" },
++    { "ISteamClient", 36, "eep" },
++    { "ISteamClient", 37, "eep" },
++    { "ISteamClient", 38, "eep" },
++    { "ISteamClient", 39, "eep" },
++    { "ISteamClient", 40, "eep" },
++
++    /*
++     * Deux positions volontairement absentes. Les emplacements 22 et 34
++     * prennent un mot chacun, et aucune PREUVE n'est tombee : leur valeur etait
++     * au-dessus du seuil, donc l'heuristique l'a prise pour un pointeur. Rien
++     * ne l'etablit, et l'emplacement 22 a rendu un pointeur natif la ou 34 a
++     * rendu zero -- ce qui ressemble a une pose de rappel. Les inscrire serait
++     * deviner ; on les laisse a l'heuristique, qui continue de journaliser.
++     */
+ };
+ 
+ #define NB_TYPES32 (sizeof(types32) / sizeof(types32[0]))
+--- aa/dlls/lsteamclient/unix.c
++++ bb/dlls/lsteamclient/unix.c
+@@ -287,15 +287,33 @@
+ {
+     struct appel_vtable_params *params = args;
+     typedef UINT64 (*methode_t)( void *iface, UINT64 a, UINT64 b, UINT64 c,
+-                                 UINT64 d, UINT64 e, UINT64 f );
++                                 UINT64 d, UINT64 e, UINT64 f, UINT64 g,
++                                 UINT64 h, UINT64 i );
+     methode_t *table;
+ 
+     if (!params->iface) return STATUS_INVALID_PARAMETER;
+ 
+     table = *(methode_t **)(ULONG_PTR)params->iface;
+-    params->ret = table[params->emplacement]( (void *)(ULONG_PTR)params->iface, params->a, params->b, params->c,
+-                                             params->d, params->e, params->f );
++    /* Passer neuf arguments meme quand la methode en prend moins est sans
++     * risque : l'ABI x86-64 est nettoyee par l'appelant, les mots en trop sont
++     * simplement ignores. */
++    params->ret = table[params->emplacement]( (void *)(ULONG_PTR)params->iface, params->a, params->b, params->c,
++                                             params->d, params->e, params->f, params->g, params->h, params->i );
+     TRACE( "emplacement %d -> %s\n", params->emplacement, wine_dbgstr_longlong(params->ret) );
++
++    /* Retour de type chaine : le natif a rendu un char* hote. Le recopier dans
++     * le tampon invite fourni par l'appelant ; c'est le seul cote ou l'adresse
++     * hote de 64 bits est lisible. Le cote invite rendra l'adresse du tampon. */
++    if (params->chaine && params->ret && params->tampon_chaine)
++    {
++        const char *src = (const char *)(ULONG_PTR)params->ret;
++        char *dst = (char *)(ULONG_PTR)params->tampon_chaine;
++        size_t n = strnlen( src, 255 );
++
++        memcpy( dst, src, n );
++        dst[n] = 0;
++        TRACE( "chaine \"%s\" recopiee dans le tampon invite\n", debugstr_a(dst) );
++    }
+     return STATUS_SUCCESS;
+ }
+ 
+--- aa/dlls/lsteamclient/unixlib.h
++++ bb/dlls/lsteamclient/unixlib.h
+@@ -90,8 +90,17 @@
+     UINT64 iface;
+     INT32  emplacement;
+     INT32  bourrage;
+-    UINT64 a, b, c, d, e, f;
++    /* Neuf arguments : certaines methodes mesurees en empilent jusqu'a neuf
++     * (GetAppOwnershipTicketData en prend sept). En passer moins tronquait
++     * l'appel natif, qui lisait ses derniers arguments dans du vide. */
++    UINT64 a, b, c, d, e, f, g, h, i;
+     UINT64 ret;
++    /* Retour de type chaine : la methode native rend un char* hote, que le
++     * cote hote (unix.c) recopie dans ce tampon invite -- un pointeur natif de
++     * 64 bits ne tient pas dans le retour d'un jeu 32 bits, et le jeu ne peut
++     * pas adresser l'espace hote de toute facon. */
++    INT32  chaine;
++    UINT64 tampon_chaine;
+ };
+ 
+ struct callback_msg
+--- aa/dlls/lsteamclient/lsteamclient.spec
++++ bb/dlls/lsteamclient/lsteamclient.spec
+@@ -10,3 +10,36 @@
+ @ cdecl Steam_FreeLastCallback(long)
+ @ cdecl SondeInterfaceGenerique(ptr long long str)
+ @ cdecl SondeInterfaceNative(ptr)
++@ cdecl Breakpad_SteamMiniDumpInit()
++@ cdecl Breakpad_SteamSendMiniDump()
++@ cdecl Breakpad_SteamSetAppID()
++@ cdecl Breakpad_SteamSetSteamID()
++@ cdecl Breakpad_SteamWriteMiniDumpSetComment()
++@ cdecl Breakpad_SteamWriteMiniDumpUsingExceptionInfoWithBuildId()
++@ cdecl Steam_BReleaseSteamPipe()
++@ cdecl Steam_CreateGlobalUser()
++@ cdecl Steam_CreateLocalUser()
++@ cdecl Steam_GSBLoggedOn()
++@ cdecl Steam_GSBSecure()
++@ cdecl Steam_GSGetSteam2GetEncryptionKeyToSendToNewClient()
++@ cdecl Steam_GSGetSteamID()
++@ cdecl Steam_GSLogOff()
++@ cdecl Steam_GSLogOn()
++@ cdecl Steam_GSRemoveUserConnect()
++@ cdecl Steam_GSSendSteam2UserConnect()
++@ cdecl Steam_GSSendSteam3UserConnect()
++@ cdecl Steam_GSSendUserDisconnect()
++@ cdecl Steam_GSSendUserStatusResponse()
++@ cdecl Steam_GSSetServerType()
++@ cdecl Steam_GSSetSpawnCount()
++@ cdecl Steam_GSUpdateStatus()
++@ cdecl Steam_GetAPICallResult()
++@ cdecl Steam_GetGSHandle()
++@ cdecl Steam_InitiateGameConnection()
++@ cdecl Steam_IsKnownInterface()
++@ cdecl Steam_LogOff()
++@ cdecl Steam_LogOn()
++@ cdecl Steam_NotifyMissingInterface()
++@ cdecl Steam_ReleaseThreadLocalMemory()
++@ cdecl Steam_SetLocalIPBinding()
++@ cdecl Steam_TerminateGameConnection()
+--- aa/dlls/winemac.drv/cocoa_window.m
++++ bb/dlls/winemac.drv/cocoa_window.m
+@@ -3687,6 +3687,7 @@
+ @protocol WineMetalSwapChain <NSObject>
+ 
+ - (CAMetalLayer*) layer;
++- (void) resize:(CGRect)bounds;
+ 
+ @end
+ 
+@@ -3727,6 +3728,12 @@
+     return (CAMetalLayer*)macdrv_view_get_metal_layer(metal_view);
+ }
+ 
++/* La couche de la vue suit deja le cadre de la vue (autoresizing) ; c'est le
++ * chemin offscreen qui a besoin d'un resize explicite. */
++- (void) resize:(CGRect)bounds
++{
++}
++
+ - (void) dealloc
+ {
+     if (metal_view) macdrv_view_release_metal_view(metal_view);
+@@ -3804,6 +3811,25 @@
+     return offscreen_layer;
+ }
+ 
++/* La couche offscreen est creee avec un cadre fixe et n'est jamais un
++ * sous-vue qui suivrait le redimensionnement de la fenetre. Sans ce resize,
++ * son bounds reste celui de la creation : le WSI Metal (qui publie
++ * currentExtent = bounds x contentsScale) annonce alors une surface trop
++ * petite quand la fenetre s'agrandit (passage en plein ecran), et l'image
++ * finit dans un coin. On reaccorde donc le bounds au cadre courant. */
++- (void) resize:(CGRect)bounds
++{
++    CAMetalLayer *layer = offscreen_layer;
++    CGRect mac = cgrect_mac_from_win(bounds);
++
++    OnMainThreadAsync(^{
++        [CATransaction begin];
++        [CATransaction setDisableActions:YES];
++        [layer setBounds:mac];
++        [CATransaction commit];
++    });
++}
++
+ - (void) dealloc
+ {
+     if (context_id) macdrv_release_remote_layer(hwnd, context_id);
+@@ -3838,6 +3864,11 @@
+     return [swapchain layer];
+ }
+ 
++void macdrv_swapchain_resize(id<WineMetalSwapChain> swapchain, CGRect bounds)
++{
++    [swapchain resize:bounds];
++}
++
+ void macdrv_destroy_swapchain(id<WineMetalSwapChain> swapchain)
+ {
+     [swapchain release];
+--- aa/dlls/winemac.drv/window.c
++++ bb/dlls/winemac.drv/window.c
+@@ -1111,6 +1111,11 @@
+     if (!(data = get_win_data(toplevel))) return;
+     macdrv_set_view_frame(surface->cocoa_view, cgrect_from_rect(client->monitor_rect));
+     macdrv_set_view_superview(surface->cocoa_view, toplevel == hwnd ? NULL : data->client_view, data->cocoa_window, NULL, NULL);
++    /* La couche Metal offscreen (chemin CAContext) ne suit pas la fenetre : la
++     * reaccorder ici au cadre courant, sinon sa surface Vulkan publie un
++     * currentExtent perime apres un redimensionnement (§291 quinquies). */
++    if (surface->metal_swapchain)
++        macdrv_swapchain_resize(surface->metal_swapchain, cgrect_from_rect(client->monitor_rect));
+     release_win_data(data);
+ }
+ 
+--- aa/dlls/winemac.drv/macdrv_cocoa.h
++++ bb/dlls/winemac.drv/macdrv_cocoa.h
+@@ -539,6 +539,7 @@
+ extern id_WineMetalSwapChain macdrv_create_view_swapchain(WineContentView *view);
+ extern id_WineMetalSwapChain macdrv_create_offscreen_swapchain(void* hwnd, CGRect bounds);
+ extern CAMetalLayer *macdrv_swapchain_get_layer(id_WineMetalSwapChain swapchain);
++extern void macdrv_swapchain_resize(id_WineMetalSwapChain swapchain, CGRect bounds);
+ extern void macdrv_destroy_swapchain(id_WineMetalSwapChain swapchain);
+ extern void macdrv_window_create_ca_layer_host_view(WineWindow *window, unsigned int context_id);
+ extern void macdrv_window_release_ca_layer_host_view(WineWindow *window, unsigned int context_id);

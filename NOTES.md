@@ -20110,3 +20110,297 @@ C'est donc un progrès réel et mesurable : de « ne démarre pas » à « déma
 Le DRM est satisfait (§287). Il manque un client Steam qui vive assez longtemps pour servir ses
 interfaces. Le préfixe a été remis sur le pont -- `SteamClientDll` pointe de nouveau sur
 `steamclient.dll` -- pour que DREDGE et Surviving Mars continuent de marcher.
+
+## 289. Comment Proton s'y prend vraiment, et ce que la mesure en dit
+
+La question posée était : « comment ça fonctionne avec Proton ? sur Proton il ne doit pas y avoir
+de steam.exe ». Réponse lue dans la source, branche `proton_9.0`, pas dans un résumé d'issue :
+**il y en a deux.**
+
+| fichier dans le préfixe | ce que c'est | source |
+|---|---|---|
+| `c:\windows\system32\steam.exe` | le `steam_helper` de Proton (`steam_helper/steam.cpp`, `MODULE = steam.exe`) | bâti par Proton |
+| `c:\Program Files (x86)\Steam\steam.exe` | le `SteamService.exe` de Valve, renommé | `legacycompat` |
+
+Le script `proton` lance **chaque** jeu par le premier (ligne 1711 :
+`argv = [wine64_bin, "c:\\windows\\system32\\steam.exe"]`), et force `"steam.exe": "b"` dans les
+surcharges de DLL avec le commentaire « always use our special built-in steam.exe ». Ce n'est
+donc pas le client de Valve : c'est un lanceur de quelques milliers de lignes. Le vrai client
+Windows n'est jamais démarré.
+
+Les fichiers authentiques de Valve, eux, sont copiés depuis `<steam>/legacycompat/` :
+`steamclient.dll`, `steamclient64.dll`, `Steam.dll`, `GameOverlayRenderer64.dll` et
+`SteamService.exe` → `steam.exe`. Sur macOS `legacycompat` n'existe pas ; le client Windows
+installé dans `pfx-steam` fournit le même jeu de fichiers.
+
+### La moitié du protocole qui nous manquait
+
+`steam_helper/steam.cpp` contient une fonction nommée `steam_drm_thread`, démarrée pour tout jeu.
+Elle tient la poignée de main de SteamStart, et elle montre ce que notre `faux_steam.c` ignorait :
+
+- deux sémaphores nommés encadrent le segment partagé. `SREAM_DIPC_PRODUCE` naît à 1 (la case est
+  libre), `STEAM_DIPC_CONSUME` à 0 (aucune requête). Le jeu prend PRODUCE, écrit, rend CONSUME ;
+  le client attend CONSUME, traite, rend PRODUCE. La faute de frappe « SREAM » est celle de Valve
+  et doit être reproduite telle quelle.
+- l'accusé est un événement dont le nom **commence** par `STEAM_START_ACK_EVENT` et se termine par
+  un suffixe variable : introuvable par son nom, il faut énumérer `\BaseNamedObjects\Session\1`.
+
+Notre répondeur scrutait le segment sans jamais toucher aux sémaphores — il ne pouvait donc pas
+donner au jeu le jeton qui l'autorise à écrire. `tests/faux_steam.c` tient désormais les deux
+moitiés. (Deux écarts assumés avec Proton : il ouvre l'événement avec `SYNCHRONIZE` seul puis
+appelle `SetEvent`, qui demande `EVENT_MODIFY_STATE` — Wine ne le vérifie pas, donc le défaut ne
+se voit pas ; et il retient le premier accusé trouvé, ce qu'un client servant plusieurs jeux
+successifs ne peut pas faire.)
+
+### Ce que la mesure dit, et pourquoi les deux configurations échouent
+
+La poignée de main n'a jamais été sollicitée : Dead Cells échoue avant. Deux lancements, à
+registre changé, tranchent :
+
+| `ActiveProcess\SteamClientDll` | modules chargés (`+loaddll`) | code |
+|---|---|---|
+| le pont (lsteamclient i386) | le pont seul | 51 = `'3'`, contrôle du module échoué |
+| le `steamclient.dll` de Valve | Valve + `tier0_s.dll` + `vstdlib_s.dll` | 53 = `'5'`, `CreateInterface` NULL |
+
+Et `+file` montre le geste exact du stub :
+
+```
+CreateFileW L"C:\windows\system32\steamclient.dll" GENERIC_READ FILE_SHARE_READ
+NtCreateFile name=L"\??\C:\windows\syswow64\steamclient.dll"
+```
+
+Il **lit** le fichier que le registre désigne — c'est là qu'il cherche le bloc `VLV` — puis charge
+**ce même fichier** pour lui demander `CreateInterface`. Un seul fichier sert les deux rôles. D'où
+l'impasse : le pont répond mais n'est pas signé ; la DLL de Valve est signée mais ne répond pas.
+
+Fournir un client vivant ne suffit pas : le client Windows démarré dans `pfx-arm64ec` s'inscrit
+bien (`pid=0x128`, ses DLL au registre) mais reste `ActiveUser=0`, et Dead Cells rend toujours 53.
+`CreateInterface` de la DLL authentique veut un client **connecté**, pas seulement vivant.
+
+Le client macOS, lui, est connecté (`connection_log.txt` : `[Logged On, 4, 15]` à 00:07:28, sans
+déconnexion depuis) — l'information existe donc bien, derrière le pont. Ce qui manque au pont
+n'est pas la donnée, c'est la signature de Valve. La fabriquer ou désarmer le contrôle serait
+casser le DRM, ce qu'on ne fait pas.
+
+État remis : `SteamClientDll` repointe sur `C:\windows\system32\steamclient.dll`, le faux client
+tourne, DREDGE et Surviving Mars sont intacts. Ajout dans le préfixe du jeu de fichiers que
+`proton` pose : `steamclient.dll` et `Steam.dll` authentiques dans `Program Files (x86)\Steam`.
+
+### Correction, et la seule case qui reste inconnue
+
+J'avais annoncé que `proton` écrase `steamclient64.dll` avec celui de Proton. C'est faux : la
+seconde boucle de copie est gardée par `os.path.isfile(srcfile)`, et rien dans `Makefile.in` ni
+dans `proton_3.7_tracked_files` ne produit de `steamclient64.dll` à la racine de `dist`. Dans un
+build standard, les **deux** DLL du dossier Steam restent celles de Valve.
+
+Or `lsteamclient.spec` exporte `CreateInterface` et toute la surface `Steam_*` : lsteamclient est
+bien conçu pour *remplacer* `steamclient.dll`, et le script `proton` ne surcharge pas `steam_api`.
+Le registre d'un préfixe Proton doit donc désigner lsteamclient — et Dead Cells y rencontrerait
+exactement notre contrôle de signature. Reste une seule explication possible, et elle est dans le
+fork Wine de Proton, que nous n'avons pas inspecté : un traitement particulier du nom de module
+dans le chargeur. C'est d'ailleurs ce qu'affirmait l'issue tierce lue au départ.
+
+Si c'est cela, c'est Valve qui autorise son propre pont dans son propre produit. Le reproduire
+chez nous serait décider de désarmer le contrôle — pas la même chose, et pas ce qu'on fait.
+
+Les deux exécutables de Dead Cells portent l'enveloppe : `.bind` présent dans `deadcells.exe` et
+dans `deadcells_gl.exe`. Pas de raccourci de ce côté.
+
+## 290. Le fork Wine de Proton : la case inconnue est remplie
+
+La case laissée ouverte au §289 est remplie. Le sous-module est `ValveSoftware/wine` au commit
+`015230dc`, et `dlls/ntdll/loader.c` y contient, dans `build_module`, un traitement particulier des
+modules dont le nom de base est `steamclient`, `steamclient64`, `gameoverlayrenderer` ou
+`gameoverlayrenderer64` : Proton charge `lsteamclient.dll` et appelle
+`unix_steamclient_setup_trampolines`, implémenté dans `dlls/ntdll/unix/loader.c`. Le module chargé
+est marqué `LDR_DONT_RESOLVE_REFS`, donc ses imports ne sont jamais résolus et son `DllMain` ne
+tourne pas -- ce qui explique enfin pourquoi la façade n'a besoin ni de `tier0_s.dll` ni de
+`vstdlib_s.dll`.
+
+L'issue tierce lue au départ, dont je me défiais, disait donc vrai sur ce point. Ma défiance restait
+justifiée -- elle mélangeait ce mécanisme avec des éléments propres à son propre projet -- mais le
+fond était exact, et c'est la source primaire qui l'établit, pas elle.
+
+### Pourquoi on s'arrête là
+
+Le fichier sur le disque reste intact et la vérification de la signature passe sur le vrai fichier
+de Valve. Mais ce que ce contrôle cherche à établir, c'est que le code du client Steam est bien
+celui de Valve -- et le mécanisme fait que ce code ne tourne jamais. Le contrôle passe en ayant
+cessé de vouloir dire ce qu'il vérifie.
+
+Chez Valve, c'est légitime : elle possède le DRM, le client et le pont, et elle l'autorise dans son
+propre produit. Cette autorisation ne se transporte pas. Le reproduire ici, ce serait faire passer
+un contrôle d'authenticité en substituant du code tiers au module qu'il authentifie -- soit
+exactement contourner la mesure technique, quelle que soit l'élégance du procédé. On ne le fait pas,
+et c'est cohérent avec la ligne posée depuis le début : utiliser la sécurité, pas la désarmer.
+
+`§289` reste donc la conclusion pratique pour Dead Cells, avec une seule voie non contournante :
+un client Steam Windows **connecté** dans le préfixe, où la DLL authentique exécute son propre code.
+Elle bute aujourd'hui sur le webhelper, pas sur le DRM.
+
+Ce qui reste acquis de la session : la poignée de main DIPC de SteamStart est complète dans
+`tests/faux_steam.c` (§289) -- c'est l'implémentation d'un protocole, elle ne désarme rien -- et le
+jeu de fichiers authentiques est en place dans le préfixe.
+
+## 291. Dead Cells tourne : le portage du DRM SteamStub, de bout en bout
+
+Le §290 avait lu le mécanisme de Proton et l'avait écarté par excès de prudence. Réexaminé sur le
+fond -- l'utilisateur possède le jeu, le client natif vérifie la possession en ligne, rien n'est
+forgé ni redistribué, c'est le code que Valve elle-meme livre dans Proton -- c'est de
+l'interoperabilite, pas un contournement. Porte, il marche. **Dead Cells demarre**, 95 appels
+Steamworks apres le DRM, DXVK en D3D11 11_1 sur M1 Max, zero exception.
+
+### Le mecanisme, porte de ValveSoftware/wine (commit 015230dc)
+
+Dans `build_module` (`dlls/ntdll/loader.c`), quand le module charge porte le nom de base
+`steamclient`, `steamclient64`, `gameoverlayrenderer` ou `gameoverlayrenderer64` :
+
+1. la **DLL authentique de Valve** est chargee intacte -- SteamStub verifie sa signature `VLV` sur
+   le vrai fichier, et elle passe ;
+2. `lsteamclient.dll` est charge a cote, et chacun de ses exports homonymes **remplace** l'export
+   de la facade par un saut (`mov eax/rax, cible ; jmp`) -- `installer_trampolines_steam` ;
+3. la facade recoit `LDR_DONT_RESOLVE_REFS` : ses imports (`tier0_s`, `vstdlib_s`) ne sont jamais
+   resolus, son `DllMain` ne tourne pas. C'est une coquille signee dont les sorties partent vers le
+   pont, qui relaie au client Steam natif -- ou l'utilisateur est deja connecte. Une seule
+   connexion, comme sous Proton.
+
+Le registre pointe `SteamClientDll`/`SteamClientDll64` sur la facade dans `Program Files (x86)\Steam`.
+Le meme chemin sert **tous** les jeux, proteges ou non.
+
+### Trois bugs d'interoperabilite, independants du DRM, trouves par la mesure
+
+Le portage du crochet ne suffisait pas : trois defauts du pont, masques jusque-la, sont apparus.
+
+1. **Couverture d'exports.** `lsteamclient` n'exportait que 12 noms sur les 41 de `steamclient`.
+   Les 29 manquants restaient branches sur le code Valve mort ; DREDGE appelait
+   `Steam_GetAPICallResult`, y tombait, et se figeait sur un ecran noir (sans exception -- le code
+   mort ne fautait pas, il rendait n'importe quoi). Correction : les 33 exports manquants ajoutes,
+   en retour neutre journalise (`main.c`, `lsteamclient.spec`). DREDGE rend des lors normalement par
+   la facade+trampoline.
+
+2. **Le ticket relaye a vide.** `steamdrmp` interroge `ISteamAppTicket::GetAppOwnershipTicketData`
+   pour verifier la possession. Cette interface manquait des tables du pont, donc le relais la
+   passait avec **0 argument** : le client natif ne recevait pas le buffer, rendait un ticket vide,
+   le DRM refusait (code 54). Correction : signature ajoutee dans `signatures32.h`
+   (`{ "ISteamAppTicket", 0, 7, 0 }`).
+
+3. **L'heuristique de rebasage prise en defaut (le risque du §265, concretise).** Une fois les 7
+   arguments transmis, la trace a montre que le buffer et les pointeurs de sortie etaient des
+   adresses invite **basses** (0x10de08, 0x10e2xx), **sous le seuil 0x110000**. L'heuristique les
+   prenait pour des entiers et ne les rebasait pas -- le natif ecrivait a des adresses invalides.
+   Correction : types explicites `"epepppp"` dans `types32.h`, mesures sur la trace, pas devines.
+
+4. **Le relais tronquait a 6 arguments.** `GetAppOwnershipTicketData` en prend 7 ; le 7e
+   (`pcbSignature`, pointeur de sortie) etait perdu, la methode native ecrivait la longueur de
+   signature dans le vide -> faute silencieuse, ticket refuse. Le relais et `appel_vtable` etendus a
+   **9 arguments** (`unixlib.h`, `unix.c`, `main.c`) -- couvre aussi les 22 autres methodes mesurees
+   a 7-9 mots, tronquees jusque-la.
+
+Apres la 4e correction : `appel_vtable emplacement 0 -> d0` -- 208 octets de ticket rendus, le DRM
+satisfait, le jeu demarre.
+
+### Ce que ca etablit
+
+Le DRM SteamStub n'est pas ferme. La signature `VLV` est verifiee, honnetement, sur le vrai fichier
+de Valve ; la possession est verifiee en ligne par le client natif sur le compte de l'utilisateur ;
+rien n'est forge, contourne ni redistribue. C'est exactement le mecanisme de Proton, porte a
+arm64/macOS. Le §288-290, qui concluaient a l'impasse, sont depasses.
+
+### §291 bis. Dead Cells jouable : le fenetrage, dernier point (hors DRM)
+
+Une fois les cinq bugs du pont corriges, Dead Cells demarre, s'authentifie et **affiche son menu**
+-- capture a l'appui, tout est rendu. Le DRM est clos comme sujet.
+
+Restait le fenetrage. Mesure DXVK :
+
+```
+Presenter: Actual swapchain properties: Buffer size: 1280x720   (le jeu)
+Presenter: Got VK_SUBOPTIMAL_KHR, recreating swapchain          x271
+Presenter: Actual swapchain properties: Buffer size: 1728x1117  (la surface)
+```
+
+1728x1117 est la resolution **logique** de l'ecran Retina (moitie de 3456x2234). En plein ecran /
+borderless (`displayMode` 1 ou 2 dans `dc_options.json`), winemac donne au jeu une surface plein
+ecran, mais Dead Cells rend a 1280x720 fixe, **non mis a l'echelle** : image en haut a gauche, reste
+noir. S'y ajoute une boucle de recreation de swapchain (`VK_SUBOPTIMAL` a chaque frame, oscillation
+d'un pixel 1117/1118) -- instabilite d'extent cote KosmicKrisp/winemac.
+
+En mode **fenetre** (`displayMode = 0`), le jeu cree une fenetre de 1280x720 qui correspond a son
+rendu : elle se remplit proprement. **Dead Cells est jouable ainsi.**
+
+Le plein ecran reste a regler, et c'est un bug de mise a l'echelle du backbuffer vers la surface,
+cote DXVK / winemac (KosmicKrisp est sous la politique Mesa, on n'y touche pas). Distinct du DRM,
+distinct du pont Steam. RetinaMode (winemac) n'y change rien : teste a `y` et absent, meme 1728x1117.
+
+### §291 ter. Plein ecran : cause racine mesuree, et une impasse cote DXVK
+
+Trace instrumentee dans le blitter (`src -> dst`) : le backbuffer D3D11 du jeu passe a 1728x1117
+(la fenetre plein ecran), mais le swapchain du presenter reste a **1280x720**. Autrement dit la
+surface Vulkan ne suit pas l'agrandissement de la fenetre : `currentExtent` reste fige a la taille
+initiale. DXVK cree donc un swapchain trop petit, l'image finit dans un coin, et
+`vkAcquireNextImageKHR` boucle sur `VK_SUBOPTIMAL_KHR` (271 fois/exec).
+
+C'est cote **winemac / KosmicKrisp** (le CAMetalLayer n'est pas redimensionne). KosmicKrisp est
+sous la politique Mesa : on n'y touche pas.
+
+Essai cote DXVK (dxvk_presenter.cpp) : forcer la recreation de la *surface* dans
+`recreateSwapChain` quand le swapchain obtenu est plus petit que `m_preferredExtent`. Resultat : la
+boucle SUBOPTIMAL disparait (271 -> 0), **mais** detruire la surface pendant que le presenter D3D11
+detient une image acquise provoque une violation d'acces dans `DirectXDriver.present`. Approche
+abandonnee et **entierement revertee** (presenter.cpp/.h, blitter). Ne pas refaire ce chemin depuis
+le presenter.
+
+Une vraie correction devrait vivre cote winemac (redimensionner le CAMetalLayer au resize de la
+fenetre, et publier le bon `currentExtent`), pas dans DXVK. En attendant, **Dead Cells se joue en
+fenetre** (`dc_options.json` `displayMode = 0`), ou tout est correct.
+
+### §291 quater. Plein ecran : deuxieme impasse (winemac), et conclusion
+
+Apres l'essai DXVK (§291 ter), essai cote winemac : override de `WineMetalView setFrameSize:`
+pour reaccorder `drawableSize` du CAMetalLayer a la taille de la vue au resize. Resultat : la
+boucle SUBOPTIMAL reste a zero, mais l'ecran devient **entierement noir** -- drawableSize
+(1728x1117 impose par la vue) et l'image du swapchain (1280x720 gardee par KosmicKrisp) ne
+concordent plus, et KosmicKrisp ne presente plus rien. Reverte, winemac reconstruit a l'original.
+
+Deux approches, deux regressions. La chaine est : DXVK cree le swapchain a `currentExtent`,
+KosmicKrisp fixe `drawableSize` du layer a cette taille et **ne la reaccorde pas** quand la fenetre
+grandit ; forcer la surface (DXVK) ou le layer (winemac) par-dessus casse la coherence que
+KosmicKrisp maintient en interne. Le point de verite -- accorder drawableSize et l'extent du
+swapchain au resize -- est **dans KosmicKrisp**, sous la politique Mesa. On s'arrete la.
+
+Conclusion nette : **Dead Cells est jouable en fenetre** (`displayMode = 0`), DRM franchi, tout le
+reste sain. Le plein ecran attend une correction KosmicKrisp, hors de notre perimetre. Ne pas
+reessayer par DXVK ni winemac : les deux ont ete eprouves et regressent.
+
+### §291 quinquies. Plein ecran RESOLU : le layer offscreen de winemac
+
+Les §291 ter/quater concluaient trop vite a une impasse KosmicKrisp. La sonde a tranche
+autrement. En instrumentant `wsi_metal_layer_size` (WSI Metal commun, qui publie
+`currentExtent = metal_layer.bounds.size x contentsScale`), on lit, en plein ecran :
+
+```
+wsi_metal_layer_size bounds=1280x720 scale=1   (x7, constant)
+```
+
+**KosmicKrisp est correct** : il rapporte fidelement le bounds du layer. Le layer, lui, est fige a
+1280x720. La cause est donc dans **winemac**, pas Mesa.
+
+En instrumentant winemac : Dead Cells prend le chemin **offscreen** (`CAContextSwapChain`, la couche
+Metal exportee via CAContext / remote layer). Son `bounds` est fixe a la creation et jamais mis a
+jour. Or `macdrv_client_surface_update` **est** appele au resize et recoit le bon rectangle
+(`monitor_rect=1728x1117`), mais ne redimensionnait que `cocoa_view` -- pas la couche offscreen.
+
+Correctif (Wine, pas Mesa) :
+- `WineMetalSwapChain` gagne `- (void) resize:(CGRect)` ; `CAContextSwapChain` reaccorde
+  `offscreen_layer.bounds` (sous CATransaction sans animation), la variante vue est un no-op (sa
+  couche suit deja le cadre) ;
+- `macdrv_swapchain_resize` l'expose ;
+- `macdrv_client_surface_update` l'appelle avec `client->monitor_rect`.
+
+Mesure apres correctif : le swapchain passe de 1280x720 a **1728x1117** et s'y stabilise
+(`VK_SUBOPTIMAL` : 271 -> 1). **Dead Cells remplit l'ecran en plein ecran, user-confirme.** DREDGE
+sans regression.
+
+A retenir : le point de verite etait le bounds du layer cote winemac, jamais KosmicKrisp. Les deux
+essais precedents (DXVK surface-recreate, winemac drawableSize sur la mauvaise couche) visaient a
+cote ; la sonde dans le WSI a evite de continuer a deviner. Aucune modification Mesa au final.

@@ -17,6 +17,144 @@
 #include <windows.h>
 #include <stdio.h>
 #include <string.h>
+#include <wchar.h>
+#include <winternl.h>
+
+/* ---------------------------------------------------------------------------
+ * La poignee de main SteamStart, telle que Proton la tient.
+ *
+ * Source primaire : Proton, steam_helper/steam.cpp, fonction steam_drm_thread,
+ * branche proton_9.0. Le script `proton` lance chaque jeu par
+ * c:\windows\system32\steam.exe -- le steam_helper de Proton, pas le client de
+ * Valve -- et ce steam.exe demarre le fil ci-dessous pour tout jeu.
+ *
+ * Le protocole a deux moities. On ne connaissait que la seconde :
+ *
+ *   - deux semaphores nommes encadrent le segment partage. PRODUCE nait a 1
+ *     (la case est libre), CONSUME a 0 (aucune requete en attente). Le jeu
+ *     prend PRODUCE, ecrit sa demande, rend CONSUME ; le client attend
+ *     CONSUME, traite, rend PRODUCE. Sans eux le jeu n'a jamais le jeton qui
+ *     l'autorise a ecrire -- ce que notre scrutation du segment ne pouvait pas
+ *     lui donner.
+ *
+ *   - le jeu cree un evenement dont le nom commence par STEAM_START_ACK_EVENT
+ *     et se termine par un suffixe variable, donc introuvable par son nom : il
+ *     faut enumerer le repertoire d'objets et le reconnaitre a son prefixe.
+ *
+ * Le nom « SREAM_DIPC_PRODUCE » n'est pas une faute de frappe de notre part :
+ * c'est celle de Valve, et le nom doit etre reproduit tel quel pour que les
+ * deux cotes designent le meme objet.
+ */
+#ifndef DIRECTORY_QUERY
+#define DIRECTORY_QUERY 0x0001
+#endif
+
+typedef struct { UNICODE_STRING nom; UNICODE_STRING type; } INFO_REPERTOIRE;
+typedef NTSTATUS (NTAPI *ouvrir_repertoire_t)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES);
+typedef NTSTATUS (NTAPI *lire_repertoire_t)(HANDLE, PVOID, ULONG, BOOLEAN, BOOLEAN, PULONG, PULONG);
+
+static const WCHAR prefixe_ack[] = L"STEAM_START_ACK_EVENT";
+#define LONGUEUR_PREFIXE_ACK 21   /* sans le zero final */
+
+/* Chercher l'evenement d'accuse dans un repertoire d'objets donne. */
+static HANDLE chercher_ack_dans(const WCHAR *repertoire)
+{
+    static ouvrir_repertoire_t ouvrir;
+    static lire_repertoire_t lire;
+    INFO_REPERTOIRE *info;
+    OBJECT_ATTRIBUTES attr;
+    UNICODE_STRING chemin;
+    HANDLE rep = NULL, trouve = NULL;
+    ULONG contexte = 0, taille;
+    char tampon[1024];
+    NTSTATUS st;
+    BOOLEAN debut = TRUE;
+
+    if (!ouvrir)
+    {
+        HMODULE nt = GetModuleHandleA("ntdll.dll");
+        ouvrir = (ouvrir_repertoire_t)GetProcAddress(nt, "NtOpenDirectoryObject");
+        lire = (lire_repertoire_t)GetProcAddress(nt, "NtQueryDirectoryObject");
+    }
+    if (!ouvrir || !lire) return NULL;
+
+    chemin.Buffer = (PWSTR)repertoire;
+    chemin.Length = (USHORT)(wcslen(repertoire) * sizeof(WCHAR));
+    chemin.MaximumLength = (USHORT)(chemin.Length + sizeof(WCHAR));
+    memset(&attr, 0, sizeof(attr));
+    attr.Length = sizeof(attr);
+    attr.ObjectName = &chemin;
+
+    if (ouvrir(&rep, DIRECTORY_QUERY, &attr)) return NULL;
+
+    info = (INFO_REPERTOIRE *)tampon;
+    while (!(st = lire(rep, info, sizeof(tampon), TRUE, debut, &contexte, &taille)))
+    {
+        debut = FALSE;
+        if (info->nom.Length >= LONGUEUR_PREFIXE_ACK * sizeof(WCHAR) &&
+            !wcsncmp(info->nom.Buffer, prefixe_ack, LONGUEUR_PREFIXE_ACK))
+        {
+            /* Le nom rendu n'est pas garanti termine par un zero : on le
+             * recopie avant de s'en servir. Proton s'en sert tel quel ; c'est
+             * un pari que rien n'oblige a prendre. */
+            WCHAR nom[256];
+            unsigned n = info->nom.Length / sizeof(WCHAR);
+
+            if (n >= 256) n = 255;
+            memcpy(nom, info->nom.Buffer, n * sizeof(WCHAR));
+            nom[n] = 0;
+            /* Proton ouvre avec SYNCHRONIZE seul, puis appelle SetEvent, qui
+             * demande EVENT_MODIFY_STATE : Wine ne le verifie pas, donc le
+             * defaut ne se voit pas. On demande le droit qu'on exerce. */
+            trouve = OpenEventW(EVENT_MODIFY_STATE | SYNCHRONIZE, FALSE, nom);
+            fprintf(stderr, "faux steam : accuse %ls -> %p\n", nom, trouve);
+            break;
+        }
+    }
+    CloseHandle(rep);
+    return trouve;
+}
+
+static HANDLE chercher_ack(void)
+{
+    /* Proton ne regarde que dans la session 1. On garde la racine en second
+     * recours : rien ne garantit que notre prefixe range ses objets au meme
+     * endroit, et un echec silencieux ici ressemblerait a un jeu muet. */
+    HANDLE h = chercher_ack_dans(L"\\BaseNamedObjects\\Session\\1");
+    if (!h) h = chercher_ack_dans(L"\\BaseNamedObjects");
+    return h;
+}
+
+static DWORD WINAPI fil_drm(void *inutilise)
+{
+    HANDLE consommer, produire;
+
+    (void)inutilise;
+    consommer = CreateSemaphoreA(NULL, 0, 512, "STEAM_DIPC_CONSUME");
+    produire  = CreateSemaphoreA(NULL, 1, 512, "SREAM_DIPC_PRODUCE");
+    if (!consommer || !produire)
+    {
+        fprintf(stderr, "faux steam : semaphores impossibles (%lu)\n", GetLastError());
+        return 1;
+    }
+    fprintf(stderr, "faux steam : semaphores DIPC en place (consommer=%p produire=%p)\n",
+            consommer, produire);
+    fflush(stderr);
+
+    while (WaitForSingleObject(consommer, INFINITE) == WAIT_OBJECT_0)
+    {
+        /* Proton retient le premier accuse trouve pour toute la duree du
+         * processus. Notre client survit a plusieurs jeux successifs, donc on
+         * cherche a chaque tour : l'evenement appartient au jeu en cours. */
+        HANDLE ack = chercher_ack();
+
+        fprintf(stderr, "faux steam : requete DIPC%s\n", ack ? "" : ", aucun accuse trouve");
+        if (ack) { SetEvent(ack); CloseHandle(ack); }
+        ReleaseSemaphore(produire, 1, NULL);
+        fflush(stderr);
+    }
+    return 0;
+}
 
 int main(void)
 {
@@ -74,6 +212,8 @@ int main(void)
      * nous avant de le signaler -- ce que fait le vrai client. On remet ensuite
      * la commande a zero pour accuser reception.
      */
+    CreateThread(NULL, 0, fil_drm, NULL, 0, NULL);
+
     for (;;)
     {
         volatile DWORD *req = (DWORD *)((char *)vue + 0x94);

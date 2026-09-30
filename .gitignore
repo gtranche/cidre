@@ -26,3 +26,6 @@ prefix-wine-arm64-tramp/
 
 # Bibliotheques d'importation regenerees par tests/construire_import_teb.sh
 outils/*.a
+
+# Config locale de l'outil (chemins absolus machine)
+.claude/
