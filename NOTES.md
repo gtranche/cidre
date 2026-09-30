@@ -20435,3 +20435,63 @@ Verdict : EAC online pour un jeu Windows sur cette pile est un mur **structurel*
 a porter. Distinct du DRM. Et Vermintide 2 en particulier bute d'abord sur LuaJIT, mur deja mesure.
 Pour eprouver EAC lui-meme il faudrait un jeu EAC qui tourne sur la pile (sans LuaJIT/pagezero) --
 mais le mur online resterait.
+
+### §292 bis. Correction : EAC-EOS n'est pas le vieux EAC, et le verdict change
+
+Le §292 (et §271) traitaient EAC comme « relais vers un module natif Linux, absent sur macOS ».
+C'est vrai du **vieux EAC** (driver noyau + `easyanticheat_x64.so`). Mais Vermintide 2 utilise
+**EAC-EOS** (Epic Online Services Anti-Cheat), ce que les symboles de `vermintide2.exe` disent
+sans ambiguite : `EOS_EAntiCheatClientMode`, `eos_eac_peer_message`, `eac_challenge_request`.
+
+EAC-EOS est **userspace et in-process** : pas de driver noyau, pas de `.so` natif. La DLL Windows
+`EasyAntiCheat_x64.dll` se charge dans le process du jeu et atteste aupres d'Epic par le protocole
+EOS. Sous Proton, un jeu EAC-EOS marche parce que cette **DLL Windows** tourne sous Wine et atteste
+-- il n'y a rien de natif Linux a relayer. Du point de vue d'EAC-EOS, « jeu Windows sous Wine sur
+macOS » et « ... sur Linux » se ressemblent ; si le jeu a active le support Wine (Vermintide 2 l'a,
+il tourne sur Steam Deck), la meme attestation pourrait passer sur notre pile. **Plausible, non
+teste.**
+
+Ce qui l'empeche ici : **LuaJIT plante avant qu'EAC-EOS s'initialise** (§292, mur pagezero). Donc
+Vermintide 2 ne peut pas servir a eprouver EAC-EOS. Il faut un jeu EAC-EOS **sans LuaJIT** qui
+tourne sur la pile ; alors on verra si la DLL EAC-EOS atteste sous Wine-macOS. Il n'y a pas de
+« client EAC a lancer dans le prefixe » comme le client Steam : EAC-EOS est une bibliotheque du
+jeu, pas un service separe.
+
+Distinction a retenir : vieux EAC (noyau + .so Linux) = hors d'atteinte ; **EAC-EOS (userspace) =
+piste ouverte, non fermee**, juste non testable sur Vermintide 2 a cause de LuaJIT.
+
+## 293. LuaJIT est franchissable : Rosetta le prouve, la voie native est tracée
+
+L'utilisateur : « ça marche avec Proton et CrossOver, donc on doit pouvoir le faire sans Rosetta ».
+Il a raison, et le diagnostic le confirme.
+
+### Pourquoi Rosetta y arrive et pas nous (mesure)
+
+macOS force `__PAGEZERO` a 4 Gio pour un process **arm64**, mais autorise un petit pagezero pour un
+process **x86-64** (mesure §286). Notre pile native est arm64 (Wine arm64 + FEX) : l'invite x86-64
+**partage** l'espace arm64 en 1:1 (`Addressing.cpp:63` n'applique le rebasage `Guest32Base` que pour
+les operations **32 bits**), donc il herite du pagezero. Rosetta fait tourner le jeu comme process
+x86-64 -> mémoire basse dispo -> LuaJIT satisfait.
+
+### Diagnostic : Vermintide 2 sur la pile x86-64/Rosetta existante
+
+`wine/wine10-wow64` (x86-64) + `prefix-x64` (KosmicKrisp x86-64) + `pfx-wow64`. Resultat :
+**Vermintide 2 passe LuaJIT** -- plus de crash NULL, il charge `lsteamclient.dll OK` par le pont,
+initialise DXGI. **La mémoire basse etait le seul mur LuaJIT, confirme.**
+
+Il se bloque ensuite plus loin (`RtlpWaitForCriticalSection ... blocked by 0000` = reveil perdu, +
+un stack overflow) -- mais c'est un **autre bug, propre a la vieille pile wine10-wow64**, qui n'a
+pas les correctifs de reveil/TEB de la pile arm64-ec moderne. EAC-EOS n'est donc pas encore atteint.
+
+### La voie native, tracee
+
+| pile | LuaJIT | reveil/TEB/etc. |
+|---|---|---|
+| Rosetta (wine10-wow64) | passe | vieux bugs |
+| arm64-ec moderne | mur | tous les correctifs |
+
+Cible : **arm64-ec moderne + rebasage 64 bits dans FEX**. Le patron existe (`Guest32Base`, un `ORR`
+dans `MemoryOps.cpp` applique aux acces 32 bits). Il faut : (1) faire allouer par Wine l'invite 64
+bits dans une fenetre bornee, (2) appliquer le rebasage aux acces **64 bits** dans le JIT. Risque :
+touche le chemin memoire le plus chaud, et du code qui marche pour les jeux 64 bits (Surviving Mars).
+Chantier reel, mais desormais justifie par la mesure : LuaJIT est franchissable.
