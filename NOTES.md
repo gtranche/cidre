@@ -20607,3 +20607,14 @@ avance le PC. C'est la solution generale ; sur Linux le probleme n'existe pas (l
 Reste (hors LuaJIT) : apres PostCreate Application, le jeu gele sur une « nested exception on
 signal stack » pendant un demarrage tres charge en SEH (IsBadStringPtr, callbacks Steam). Pas un
 probleme LuaJIT -- bring-up general du jeu, a investiguer a part.
+
+### §295 bis. Emulateur d'acces hote : garder le miroir engage
+
+Bug decouvert en poursuivant le gel : quand du code hote (IsBadStringPtr) sonde un pointeur bas
+INVALIDE, l'emulateur (§295) rebasait vers le miroir et le memcpy refautait DANS segv_handler ->
+« nested exception on signal stack » -> abandon du fil, gel du jeu. Mesure decisive : la faute
+imbriquee lisait 0x2002dad1658 = base | 0x2dad1658 (un miroir), pile sur la pile de signal.
+Correctif : `luajit_miroir_engage()` (lecture seule du bitmap vprot, donc sur pile de signal)
+verifie l'engagement avant tout acces ; sinon l'emulateur rend FALSE et la violation part vers le
+__except de l'invite. Lecon : un handler de signal ne doit jamais dereferencer une adresse dont il
+n'a pas prouve l'accessibilite -- sinon la faute imbriquee est fatale.

@@ -51,11 +51,10 @@ diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
 diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
 --- a/dlls/ntdll/unix/signal_arm64.c
 +++ b/dlls/ntdll/unix/signal_arm64.c
-@@ -1258,7 +1258,141 @@
-  *		segv_handler
+@@ -1259,6 +1259,149 @@
   *
   * Handler for SIGSEGV and related errors.
-+ */
+  */
 +#ifdef __APPLE__
 +/*
 + * Redirection d'un acces HOTE a un pointeur invite de la fenetre basse.
@@ -71,11 +70,20 @@ diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
 + * Couvre les formes qu'un compilateur C emet : registre a offset immediat
 + * (non signe, non echelonne, pre/post-indexe), a offset registre, et les paires
 + * (LDP/STP). Entier et SIMD.
-  */
++ */
 +static BOOL emuler_acces_fenetre_basse( ucontext_t *ctx, ULONG_PTR guest_addr )
 +{
 +    const UINT insn = *(const UINT *)PC_sig( ctx );
 +    const ULONG_PTR host = guest_addr | luajit_low_base;
++
++    /* Si le miroir n'est pas engage (pointeur bas invalide -- typiquement une
++     * sonde IsBadStringPtr sur un petit entier), ne pas le dereferencer : cela
++     * refauterait DANS le handler (exception imbriquee sur la pile de signal,
++     * abandon du fil). On rend FALSE et la violation part vers le __except de
++     * l'invite. Plage maximale d'un acces (paire Q) = 32 octets. */
++    if (!luajit_miroir_engage( (const void *)host, FALSE ) ||
++        !luajit_miroir_engage( (const void *)(host + 31), FALSE ))
++        return FALSE;
 +
 +    /* Rn : 31 = SP.  Rt : 31 = registre zero. */
 +    #define XN(n)      ((n) == 31 ? SP_sig(ctx) : REGn_sig((n), ctx))
@@ -193,7 +201,7 @@ diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
  static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
  {
      ucontext_t *sigcontext = _sigcontext;
-@@ -1266,6 +1400,21 @@
+@@ -1266,6 +1409,21 @@
      CONTEXT context;
      EXCEPTION_RECORD rec = { .ExceptionAddress = (void *)PC_sig(sigcontext) };
      DWORD64 esr = get_fault_esr( sigcontext );
@@ -218,11 +226,12 @@ diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
 diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
 --- a/dlls/ntdll/unix/unix_private.h
 +++ b/dlls/ntdll/unix/unix_private.h
-@@ -76,6 +76,7 @@
+@@ -76,6 +76,8 @@
  extern WOW_PEB *wow_peb;
  extern ULONG_PTR user_space_wow_limit;
  extern ULONG_PTR user_space_wow_base;
 +extern ULONG_PTR luajit_low_base;
++extern BOOL luajit_miroir_engage( const void *host, BOOL ecriture );
  extern void *main_module;
  extern SECTION_IMAGE_INFORMATION main_image_info;
  
@@ -279,7 +288,34 @@ diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
  /***********************************************************************
   *           __wine_wow64_host_base
   *
-@@ -3875,6 +3918,30 @@
+@@ -1203,6 +1246,26 @@
+ 
+ 
+ /***********************************************************************
++ *           luajit_miroir_engage
++ *
++ * Le miroir de la fenetre basse (adresse hote) est-il engage et accessible ?
++ * Lecture seule du bitmap vprot, donc sur pile de signal. Sert a l'emulateur
++ * d'acces hote (signal_arm64.c) : si le pointeur invite bas est invalide (page
++ * non engagee -- typiquement une sonde IsBadStringPtr), l'emulateur ne doit PAS
++ * dereferencer le miroir, sinon il refaute DANS le handler (exception imbriquee
++ * sur la pile de signal, abandon du fil). Il rend alors FALSE et la violation
++ * d'acces part normalement vers le __except de l'invite.
++ */
++BOOL luajit_miroir_engage( const void *host, BOOL ecriture )
++{
++    BYTE v = get_host_page_vprot( host );
++    if (!(v & VPROT_COMMITTED) || (v & VPROT_GUARD)) return FALSE;
++    if (ecriture) return (v & VPROT_WRITE) != 0;
++    return (v & (VPROT_READ | VPROT_WRITE | VPROT_EXEC)) != 0;
++}
++
++
++/***********************************************************************
+  *           get_vprot_range_size
+  *
+  * Return the size of the region with equal masked vprot byte.
+@@ -3875,6 +3938,30 @@
       * multiple de 4 Gio pour que le rebasage de l'emulateur soit un simple
       * « orr » d'un bit haut. */
      user_space_wow_base = 4 * limit_4g;
@@ -310,7 +346,7 @@ diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
  #endif
  #endif
  
-@@ -5412,6 +5479,7 @@
+@@ -5412,6 +5499,7 @@
      void *base;
      unsigned int vprot;
      BOOL is_dos_memory = FALSE;
@@ -318,7 +354,7 @@ diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
      struct file_view *view;
      sigset_t sigset;
      SIZE_T size = *size_ptr;
-@@ -5442,8 +5510,42 @@
+@@ -5442,8 +5530,42 @@
       */
      /* Un invite 32 bits arrive deja rebase au-dessus de la base de sa fenetre,
       * donc la plage ci-dessous ne designe que des demandes d'invites 64 bits. */
@@ -362,7 +398,7 @@ diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
          TRACE( "base %p demandee sous 4 Gio, inaccessible sur macOS : traitee en preference\n", *ret );
          *ret = NULL;
      }
-@@ -5557,7 +5659,8 @@
+@@ -5557,7 +5679,8 @@
  
      if (status == STATUS_SUCCESS)
      {
@@ -372,7 +408,7 @@ diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
          *size_ptr = size;
      }
      else if (status == STATUS_NO_MEMORY)
-@@ -5843,6 +5946,7 @@
+@@ -5843,6 +5966,7 @@
      /* Fix the parameters */
  
      if (size) size = ROUND_SIZE( addr, size, page_mask );
@@ -380,7 +416,7 @@ diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
      base = ROUND_ADDR( addr, page_mask );
  
      server_enter_uninterrupted_section( &virtual_mutex, &sigset );
-@@ -5887,7 +5991,7 @@
+@@ -5887,7 +6011,7 @@
  
      if (status == STATUS_SUCCESS)
      {
@@ -389,7 +425,7 @@ diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
          *size_ptr = size;
      }
      server_leave_uninterrupted_section( &virtual_mutex, &sigset );
-@@ -5943,6 +6047,7 @@
+@@ -5943,6 +6067,7 @@
      /* Fix the parameters */
  
      size = ROUND_SIZE( addr, size, page_mask );
@@ -397,7 +433,7 @@ diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
      base = ROUND_ADDR( addr, page_mask );
  
      server_enter_uninterrupted_section( &virtual_mutex, &sigset );
-@@ -5965,7 +6070,7 @@
+@@ -5965,7 +6090,7 @@
  
      if (status == STATUS_SUCCESS)
      {
