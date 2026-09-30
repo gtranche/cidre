@@ -20404,3 +20404,34 @@ sans regression.
 A retenir : le point de verite etait le bounds du layer cote winemac, jamais KosmicKrisp. Les deux
 essais precedents (DXVK surface-recreate, winemac drawableSize sur la mauvaise couche) visaient a
 cote ; la sonde dans le WSI a evite de continuer a deviner. Aucune modification Mesa au final.
+
+## 292. EAC / Vermintide 2 : ce que la reprise a confirme, avec données fraîches
+
+Reprise d'EAC sur Vermintide 2 (appid 552500, installe). Deux constats mesures cette session.
+
+1. **EAC n'est pas le blocage courant : LuaJIT l'est.** `vermintide2.exe` (x86-64) passe tout son
+   demarrage -- logging, global_random, PreCreate/PostCreate Application, tous ses plugins
+   (RazerChroma, cjson, lcurl, wwise...) -- puis **plante dans `lua51.dll`** (charge a
+   0x6ffff56f0000, faute a +0xb65f), avec un crash dump referencant `luajit/src/lua51.pdb`. Aucun
+   message EAC dans le journal du jeu. C'est le mur du §285-286, inchange : LuaJIT sans GC64 exige
+   des pointeurs < 4 Gio, refuses a tout process arm64 natif. Le mode solo (`settings_eac_disabled.ini`,
+   `eac = { enabled = false }`) ne change rien : le crash est en amont d'EAC.
+
+2. **Pas de module EAC natif a relayer.** Vermintide 2 sur cette install macOS n'embarque que du
+   Windows : `EasyAntiCheat_x64.dll`, `EasyAntiCheat_x86.dll`, plus l'installeur EOS. **Aucun**
+   `easyanticheat_x64.so` (Linux) ni `.dylib` (macOS). Sous Proton/Linux, Steam livre le depot Linux
+   avec le `.so` natif, et Proton relaie vers lui ; sur macOS il n'y a ni ce depot, ni noyau Linux
+   pour l'executer.
+
+### La difference structurelle avec le DRM
+
+Le DRM SteamStub etait soluble parce que sa **cible native existait** sur macOS -- le client Steam,
+vers lequel lsteamclient relaie. EAC n'a pas d'equivalent : le mecanisme Proton relaie vers un
+module **natif Linux**, et aucun module EAC macOS n'existe pour ces jeux Windows. Il n'y a rien vers
+quoi relayer. Fabriquer un faux verdict ou masquer Wine serait de l'evasion de detection -- hors
+perimetre, comme dit au §271.
+
+Verdict : EAC online pour un jeu Windows sur cette pile est un mur **structurel**, pas un mecanisme
+a porter. Distinct du DRM. Et Vermintide 2 en particulier bute d'abord sur LuaJIT, mur deja mesure.
+Pour eprouver EAC lui-meme il faudrait un jeu EAC qui tourne sur la pile (sans LuaJIT/pagezero) --
+mais le mur online resterait.
