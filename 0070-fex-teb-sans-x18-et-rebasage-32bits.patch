@@ -1,6 +1,8 @@
---- aa/FEXCore/Source/Interface/Core/Addressing.cpp
-+++ bb/FEXCore/Source/Interface/Core/Addressing.cpp
-@@ -7,7 +7,19 @@
+diff --git a/FEXCore/Source/Interface/Core/Addressing.cpp b/FEXCore/Source/Interface/Core/Addressing.cpp
+index 8848dcb..cb348e1 100644
+--- a/FEXCore/Source/Interface/Core/Addressing.cpp
++++ b/FEXCore/Source/Interface/Core/Addressing.cpp
+@@ -7,7 +7,28 @@
  
  namespace FEXCore::IR {
  
@@ -16,12 +18,21 @@
 +  return IREmit->_Or(OpSize::i64Bit, IREmit->Constant(Guest32Base), IREmit->_Bfe(OpSize::i64Bit, 32, 0, Addr));
 +}
 +
++/*
++ * Fenetre basse d'un invite 64 bits (LuaJIT sur macOS arm64). Le rebasage
++ * conditionnel (adresse < 4 Gio -> | base) est fait au niveau du JIT, au point
++ * de convergence des acces memoire (GenerateMemOperand), pour couvrir tous les
++ * chemins d'un coup -- y compris les acces par adresse brute (rep stos, etc.).
++ * Zero = invite 64 bits ordinaire.
++ */
++uint64_t Guest64LowBase = 0;
++
 +Ref LoadEffectiveAddress(IREmitter* IREmit, const AddressMode& A, IR::OpSize GPRSize, bool AddSegmentBase, bool AllowUpperGarbage,
 +                         bool RebaseGuest) {
    Ref Tmp = A.Base;
  
    if (A.Offset) {
-@@ -48,6 +60,10 @@
+@@ -48,6 +69,10 @@ Ref LoadEffectiveAddress(IREmitter* IREmit, const AddressMode& A, IR::OpSize GPR
      Tmp = Tmp ? IREmit->Add(GPRSize, Tmp, A.Segment) : A.Segment;
    }
  
@@ -32,9 +43,11 @@
    return Tmp ?: IREmit->Constant(0);
  }
  
---- aa/FEXCore/Source/Interface/Core/Addressing.h
-+++ bb/FEXCore/Source/Interface/Core/Addressing.h
-@@ -5,6 +5,27 @@
+diff --git a/FEXCore/Source/Interface/Core/Addressing.h b/FEXCore/Source/Interface/Core/Addressing.h
+index 89aa364..f0f2395 100644
+--- a/FEXCore/Source/Interface/Core/Addressing.h
++++ b/FEXCore/Source/Interface/Core/Addressing.h
+@@ -5,6 +5,28 @@
  #include <cstdint>
  
  namespace FEXCore::IR {
@@ -53,6 +66,7 @@
 + * dans [Guest32Base, Guest32Base + 4 Gio).
 + */
 +extern uint64_t Guest32Base;
++extern uint64_t Guest64LowBase;
 +
 +/* Adresse hote correspondant a une adresse effective 32 bits de l'invite.
 + * « (a & 0xffffffff) | base » : la base n'ayant aucun bit sous 32, l'operation
@@ -62,7 +76,7 @@
  class IREmitter;
  
  struct AddressMode {
-@@ -21,7 +42,11 @@
+@@ -21,7 +43,11 @@ struct AddressMode {
    bool NonTSO;
  };
  
@@ -75,9 +89,11 @@
  AddressMode SelectAddressMode(IREmitter* IREmit, const AddressMode& A, IR::OpSize GPRSize, bool HostSupportsTSOImm9, bool AtomicTSO,
                                bool Vector, IR::OpSize AccessSize);
  
---- aa/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.cpp
-+++ bb/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.cpp
-@@ -73,21 +73,37 @@
+diff --git a/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.cpp b/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.cpp
+index 3ebadb5..6ffa989 100644
+--- a/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.cpp
++++ b/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.cpp
+@@ -73,21 +73,37 @@ namespace x64 {
      ARMEmitter::Reg::r8, ARMEmitter::Reg::r16, ARMEmitter::Reg::r17,
    };
  
@@ -116,12 +132,10 @@
  
    // All are caller saved
    constexpr std::array<ARMEmitter::VRegister, 16> SRAFPR = {
-@@ -416,7 +432,18 @@
- 
-   // Unmapped register.
+@@ -418,6 +434,17 @@ FEXCore::X86State::X86Reg Arm64Emitter::GetX86RegRelationToARMReg(ARMEmitter::Re
    return FEXCore::X86State::X86Reg::REG_INVALID;
-+}
-+
+ }
+ 
 +#if defined(ARCHITECTURE_arm64ec) && defined(FEX_TEB_SANS_X18)
 +extern "C" uint64_t FEX_TEBSlotOffset = 0;
 +
@@ -130,12 +144,13 @@
 +  // The low three bits carry the CPU number, not part of the pointer.
 +  and_(ARMEmitter::Size::i64Bit, Dst, Dst, ~7ULL);
 +  ldr(Dst, Dst, FEX_TEBSlotOffset);
- }
++}
 +#endif
- 
++
  void Arm64Emitter::LoadConstant(ARMEmitter::Size s, ARMEmitter::Register Reg, uint64_t Constant, PadType Pad, int MaxBytes) {
    bool NOPPad = false;
-@@ -807,7 +834,12 @@
+   if (Pad == PadType::DOPAD) {
+@@ -807,7 +834,12 @@ void Arm64Emitter::FillStaticRegs(FillStaticRegOptions Options) {
  
  #ifdef ARCHITECTURE_arm64ec
    // Load STATE in from the CPU area as x28 is not callee saved in the ARM64EC ABI.
@@ -148,9 +163,11 @@
    ldr(STATE, TmpReg, CPU_AREA_EMULATOR_DATA_OFFSET);
  #endif
  
---- aa/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.h
-+++ bb/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.h
-@@ -87,7 +87,17 @@
+diff --git a/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.h b/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.h
+index 5ad6e7b..714758e 100644
+--- a/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.h
++++ b/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.h
+@@ -87,6 +87,16 @@ constexpr size_t CPU_AREA_EMULATOR_STACK_BASE_OFFSET = 0x8;
  constexpr size_t CPU_AREA_EMULATOR_DATA_OFFSET = 0x30;
  
  constexpr uint64_t EC_CODE_BITMAP_MAX_ADDRESS = 1ULL << 47;
@@ -163,12 +180,11 @@
 +// thread-specific slot it stores the TEB in. This is the byte offset of that
 +// slot, set once at process init.
 +extern "C" uint64_t FEX_TEBSlotOffset;
- #endif
 +#endif
+ #endif
  
  // Will force one single instruction block to be generated first if set when entering the JIT filling SRA.
- // FillStaticRegs must preserve this
-@@ -119,6 +129,11 @@
+@@ -119,6 +129,11 @@ public:
    };
    void LoadConstant(ARMEmitter::Size s, ARMEmitter::Register Reg, uint64_t Constant, PadType Pad = PadType::NOPAD, int MaxBytes = 0);
  
@@ -180,9 +196,11 @@
  protected:
    FEXCore::Context::ContextImpl* EmitterCTX;
  
---- aa/FEXCore/Source/Interface/Core/Core.cpp
-+++ bb/FEXCore/Source/Interface/Core/Core.cpp
-@@ -77,8 +77,16 @@
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+index 63280a4..6b4889e 100644
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -77,8 +77,16 @@ $end_info$
  #include <unordered_map>
  #include <utility>
  #include <xxhash.h>
@@ -199,7 +217,7 @@
  ContextImpl::ContextImpl(const FEXCore::HostFeatures& Features)
    : HostFeatures {Features}
    , CPUID {this}
-@@ -515,7 +523,7 @@
+@@ -515,7 +523,7 @@ static void IRDumper(FEXCore::Core::InternalThreadState* Thread, IR::IREmitter*
  }
  
  bool ContextImpl::CheckIfBlockIsCacheable(FEXCore::Core::InternalThreadState& Thread, uint64_t GuestRIP, uint64_t MaxInst) {
@@ -208,7 +226,7 @@
  }
  
  ContextImpl::GenerateIRResult
-@@ -543,7 +551,7 @@
+@@ -543,7 +551,7 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
    }
  
    if (!HasCustomIR) {
@@ -217,7 +235,7 @@
  
      Thread->FrontendDecoder->DecodeLoop(GuestCode);
  
-@@ -642,7 +650,7 @@
+@@ -642,7 +650,7 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
          }
  
          if (Config.SMCChecks == FEXCore::Config::CONFIG_SMC_FULL || Block.ForceFullSMCDetection) {
@@ -226,7 +244,7 @@
            auto InstAddressReg = Thread->OpDispatcher->_EntrypointOffset(GPRSize, InstAddress - GuestRIP);
  
            auto Value = FEXCore::Utils::crc32(ExistingCodePtr, DecodedInfo->InstSize);
-@@ -1183,7 +1191,12 @@
+@@ -1183,7 +1191,12 @@ void ContextImpl::MonoBackpatcherWrite(FEXCore::Core::CpuStateFrame* Frame, uint
      }
    }
  
@@ -240,9 +258,11 @@
  }
  
  void ContextImpl::ConfigureAOTGen(FEXCore::Core::InternalThreadState* Thread, fextl::set<uint64_t>* ExternalBranches, uint64_t SectionMaxAddress) {
---- aa/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
-+++ bb/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
-@@ -150,7 +150,12 @@
+diff --git a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+index 2f4babd..70f868e 100644
+--- a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+@@ -150,7 +150,12 @@ void Dispatcher::EmitDispatcher() {
    // Clobbers TMP1/2
    // Check the EC code bitmap incase we need to exit the JIT to call into native code.
    ARMEmitter::ForwardLabel l_NotECCode;
@@ -255,7 +275,7 @@
    ldr(TMP1, TMP1, PEB_EC_CODE_BITMAP_OFFSET);
  
    lsr(ARMEmitter::Size::i64Bit, TMP2, RipReg, 18);
-@@ -258,7 +263,12 @@
+@@ -258,7 +263,12 @@ void Dispatcher::EmitDispatcher() {
  #endif
  
  #ifdef ARCHITECTURE_arm64ec
@@ -268,7 +288,7 @@
      LoadConstant(ARMEmitter::Size::i32Bit, TMP1, 1);
      strb(TMP1.W(), TMP2, CPU_AREA_IN_SYSCALL_CALLBACK_OFFSET);
  #endif
-@@ -266,7 +276,12 @@
+@@ -266,7 +276,12 @@ void Dispatcher::EmitDispatcher() {
      Body();
  
  #ifdef ARCHITECTURE_arm64ec
@@ -281,9 +301,11 @@
      strb(ARMEmitter::WReg::zr, TMP2, CPU_AREA_IN_SYSCALL_CALLBACK_OFFSET);
  #endif
  
---- aa/FEXCore/Source/Interface/Core/Frontend.cpp
-+++ bb/FEXCore/Source/Interface/Core/Frontend.cpp
-@@ -7,6 +7,7 @@
+diff --git a/FEXCore/Source/Interface/Core/Frontend.cpp b/FEXCore/Source/Interface/Core/Frontend.cpp
+index 78d5f1a..d22cc4c 100644
+--- a/FEXCore/Source/Interface/Core/Frontend.cpp
++++ b/FEXCore/Source/Interface/Core/Frontend.cpp
+@@ -7,6 +7,7 @@ $end_info$
  */
  
  #include "Interface/Context/Context.h"
@@ -291,7 +313,7 @@
  #include "Interface/Core/Frontend.h"
  #include "Interface/Core/OpcodeDispatcher.h"
  #include "Interface/Core/X86Tables/X86Tables.h"
-@@ -89,6 +90,11 @@
+@@ -89,6 +90,11 @@ Decoder::Decoder(FEXCore::Core::InternalThreadState* Thread)
  }
  
  bool Decoder::CheckRangeExecutable(uint64_t Address, uint64_t Size) {
@@ -303,9 +325,11 @@
    // Check for wraparound
    if (Address + Size < Address) {
      return false;
---- aa/FEXCore/Source/Interface/Core/JIT/JIT.cpp
-+++ bb/FEXCore/Source/Interface/Core/JIT/JIT.cpp
-@@ -913,14 +913,16 @@
+diff --git a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+index ef7e332..78f3d50 100644
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -913,14 +913,16 @@ CPUBackend::CompiledCode Arm64JITCore::CompileCode(uint64_t Entry, uint64_t Size
    CodeData.EntryPoints.clear();
  
    // Fairly excessive buffer range to make sure we don't overflow
@@ -325,9 +349,26 @@
  
    SetBuffer(TempCodeBuffer, UsableBufferRange);
  
---- aa/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
-+++ bb/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
-@@ -14,6 +14,7 @@
+diff --git a/FEXCore/Source/Interface/Core/JIT/JITClass.h b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+index 7c60a27..efb7a48 100644
+--- a/FEXCore/Source/Interface/Core/JIT/JITClass.h
++++ b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+@@ -321,6 +321,10 @@ private:
+   }
+ 
+   [[nodiscard]]
++  ARMEmitter::Register RebaseGuestLow(ARMEmitter::Register Base);
++  ARMEmitter::Register GuestLowAddr(IR::OpSize AccessSize, ARMEmitter::Register Base, IR::OrderedNodeWrapper Offset,
++                                    IR::MemOffsetType OffsetType, uint8_t OffsetScale);
++  void RebaseGuestLowInPlace(ARMEmitter::Register Reg, ARMEmitter::Register Scratch);
+   ARMEmitter::ExtendedMemOperand GenerateMemOperand(IR::OpSize AccessSize, ARMEmitter::Register Base, IR::OrderedNodeWrapper Offset,
+                                                     IR::MemOffsetType OffsetType, uint8_t OffsetScale);
+ 
+diff --git a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+index 805a731..fc91da7 100644
+--- a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+@@ -14,6 +14,7 @@ $end_info$
  #include "Interface/IR/RegisterAllocationData.h"
  #include <FEXCore/Utils/CompilerDefs.h>
  #include <FEXCore/Utils/MathUtils.h>
@@ -335,7 +376,186 @@
  
  namespace FEXCore::CPU {
  
-@@ -1472,6 +1473,36 @@
+@@ -584,8 +585,94 @@ DEF_OP(ContextClear) {
+   }
+ }
+ 
++ARMEmitter::Register Arm64JITCore::RebaseGuestLow(ARMEmitter::Register Base) {
++  if (!FEXCore::IR::Guest64LowBase) {
++    return Base;
++  }
++  /*
++   * Sans branche ET sans toucher aux flags NZCV -- FEX y garde les flags x86
++   * entre operations, donc un csel/cmp ici les corromprait. On fabrique un
++   * masque tout-a-un / tout-a-zero par l'arithmetique :
++   *   hi     = Base >> 32                       (0 si adresse basse)
++   *   masque = asr(hi - 1, 63)                  (-1 si hi==0, 0 sinon)
++   *   ajout  = masque & Guest64LowBase          (base si bas, 0 sinon)
++   *   res    = Base | ajout
++   * Guest64LowBase est un seul bit (32 Gio) : immediats AND/ORR encodables, et
++   * « | » vaut « + » faute de chevauchement.
++   */
++  lsr(ARMEmitter::Size::i64Bit, TMP3, Base, 32);
++  sub(ARMEmitter::Size::i64Bit, TMP3, TMP3, 1);
++  asr(ARMEmitter::Size::i64Bit, TMP3, TMP3, 63);
++  and_(ARMEmitter::Size::i64Bit, TMP3, TMP3, FEXCore::IR::Guest64LowBase);
++  orr(ARMEmitter::Size::i64Bit, TMP4, Base, TMP3);
++  return TMP4;
++}
++
++/*
++ * Adresse effective invite COMPLETE (Base + offset*echelle) dans TMP4, puis
++ * rebasage de la fenetre basse. C'est le seul rebasage correct : sous x86 une
++ * meme adresse se decompose en base + index sans qu'aucun des deux ne soit a
++ * lui seul le pointeur (« movups xmm0,[rdx+rcx] » ou rdx=0x328ca3a8 est bas et
++ * rcx porte le reste). Rebaser la base seule puis ajouter l'index rebasait un
++ * pointeur haut par megarde. On materialise donc la somme avant de decider.
++ * Employe uniquement quand la fenetre est active (Guest64LowBase != 0).
++ */
++ARMEmitter::Register Arm64JITCore::GuestLowAddr(IR::OpSize AccessSize, ARMEmitter::Register Base,
++                                                IR::OrderedNodeWrapper Offset, IR::MemOffsetType OffsetType,
++                                                uint8_t OffsetScale) {
++  if (Offset.IsInvalid()) {
++    return RebaseGuestLow(Base);
++  }
++  uint64_t Const;
++  if (IsInlineConstant(Offset, &Const)) {
++    if (Const == 0) {
++      return RebaseGuestLow(Base);
++    }
++    LoadConstant(ARMEmitter::Size::i64Bit, TMP4, Const);
++    add(ARMEmitter::Size::i64Bit, TMP4, Base, TMP4);
++    return RebaseGuestLow(TMP4);
++  }
++  auto RegOffset = GetReg(Offset);
++  const auto Shift = FEXCore::ilog2(OffsetScale);
++  switch (OffsetType) {
++  case IR::MemOffsetType::SXTX:
++    add(ARMEmitter::Size::i64Bit, TMP4, Base, RegOffset, ARMEmitter::ExtendedType::SXTX, Shift); break;
++  case IR::MemOffsetType::UXTW:
++    add(ARMEmitter::Size::i64Bit, TMP4, Base, RegOffset, ARMEmitter::ExtendedType::UXTW, Shift); break;
++  case IR::MemOffsetType::SXTW:
++    add(ARMEmitter::Size::i64Bit, TMP4, Base, RegOffset, ARMEmitter::ExtendedType::SXTW, Shift); break;
++  default: LOGMAN_MSG_A_FMT("Unhandled GuestLowAddr OffsetType: {}", OffsetType); return RebaseGuestLow(Base);
++  }
++  return RebaseGuestLow(TMP4);
++}
++
++/*
++ * Rebasage sur place d'un registre d'adresse (Reg), avec un ecrasable Scratch.
++ * Pour les operations de chaine (rep stos/movs -> MemSet/MemCpy) qui parcourent
++ * une region contigue a partir d'une adresse tenue dans un registre : on rebase
++ * l'adresse de depart une fois, l'increment reste dans la fenetre. Silencieux
++ * quand la fenetre est inactive.
++ */
++void Arm64JITCore::RebaseGuestLowInPlace(ARMEmitter::Register Reg, ARMEmitter::Register Scratch) {
++  if (!FEXCore::IR::Guest64LowBase) {
++    return;
++  }
++  lsr(ARMEmitter::Size::i64Bit, Scratch, Reg, 32);
++  sub(ARMEmitter::Size::i64Bit, Scratch, Scratch, 1);
++  asr(ARMEmitter::Size::i64Bit, Scratch, Scratch, 63);
++  and_(ARMEmitter::Size::i64Bit, Scratch, Scratch, FEXCore::IR::Guest64LowBase);
++  orr(ARMEmitter::Size::i64Bit, Reg, Reg, Scratch);
++}
++
+ ARMEmitter::ExtendedMemOperand Arm64JITCore::GenerateMemOperand(
+   IR::OpSize AccessSize, ARMEmitter::Register Base, IR::OrderedNodeWrapper Offset, IR::MemOffsetType OffsetType, uint8_t OffsetScale) {
++  if (FEXCore::IR::Guest64LowBase) {
++    /* Fenetre basse active : on rebase l'adresse effective complete, jamais la
++     * base seule (cf. GuestLowAddr). Acces par registre unique, sans mode
++     * d'adressage compose. */
++    auto Addr = GuestLowAddr(AccessSize, Base, Offset, OffsetType, OffsetScale);
++    return ARMEmitter::ExtendedMemOperand(Addr.X(), ARMEmitter::IndexType::OFFSET, 0);
++  }
+   if (Offset.IsInvalid()) {
+     return ARMEmitter::ExtendedMemOperand(Base.X(), ARMEmitter::IndexType::OFFSET, 0);
+   } else {
+@@ -614,6 +701,9 @@ ARMEmitter::ExtendedMemOperand Arm64JITCore::GenerateMemOperand(
+ 
+ ARMEmitter::Register Arm64JITCore::ApplyMemOperand(IR::OpSize AccessSize, ARMEmitter::Register Base, ARMEmitter::Register Tmp,
+                                                    IR::OrderedNodeWrapper Offset, IR::MemOffsetType OffsetType, uint8_t OffsetScale) {
++  if (FEXCore::IR::Guest64LowBase) {
++    return GuestLowAddr(AccessSize, Base, Offset, OffsetType, OffsetScale);
++  }
+   if (Offset.IsInvalid()) {
+     return Base;
+   }
+@@ -652,6 +742,10 @@ ARMEmitter::Register Arm64JITCore::ApplyMemOperand(IR::OpSize AccessSize, ARMEmi
+ 
+ ARMEmitter::SVEMemOperand Arm64JITCore::GenerateSVEMemOperand(IR::OpSize AccessSize, ARMEmitter::Register Base, IR::OrderedNodeWrapper Offset,
+                                                               IR::MemOffsetType OffsetType, [[maybe_unused]] uint8_t OffsetScale) {
++  if (FEXCore::IR::Guest64LowBase) {
++    auto Addr = GuestLowAddr(AccessSize, Base, Offset, OffsetType, OffsetScale);
++    return ARMEmitter::SVEMemOperand(Addr.X(), 0);
++  }
+   if (Offset.IsInvalid()) {
+     return ARMEmitter::SVEMemOperand(Base.X(), 0);
+   }
+@@ -769,6 +863,11 @@ DEF_OP(LoadMemTSO) {
+   const auto OpSize = IROp->Size;
+ 
+   const auto MemReg = GetReg(Op->Addr);
++  /* Fenetre basse : les chemins GPR ci-dessous emploient l'adresse crue
++   * (stlur/ldapur/ldar...), hors GenerateMemOperand. On la rebase pour eux ;
++   * le repli vectoriel passe par GenerateMemOperand et se rebase seul. */
++  const auto Addr = (FEXCore::IR::Guest64LowBase && Op->Class == IR::RegClass::GPR)
++                      ? RebaseGuestLow(MemReg) : MemReg;
+ 
+   if (Op->Class == IR::RegClass::GPR) {
+     LOGMAN_THROW_A_FMT(Op->Offset.IsInvalid() || CTX->HostFeatures.SupportsTSOImm9, "unexpected offset");
+@@ -787,12 +886,12 @@ DEF_OP(LoadMemTSO) {
+     if (OpSize == IR::OpSize::i8Bit) {
+       // 8bit load is always aligned to natural alignment
+       const auto Dst = GetReg(Node);
+-      ldapurb(Dst, MemReg, Offset);
++      ldapurb(Dst, Addr, Offset);
+     } else {
+       switch (OpSize) {
+-      case IR::OpSize::i16Bit: ldapurh(Dst, MemReg, Offset); break;
+-      case IR::OpSize::i32Bit: ldapur(Dst.W(), MemReg, Offset); break;
+-      case IR::OpSize::i64Bit: ldapur(Dst.X(), MemReg, Offset); break;
++      case IR::OpSize::i16Bit: ldapurh(Dst, Addr, Offset); break;
++      case IR::OpSize::i32Bit: ldapur(Dst.W(), Addr, Offset); break;
++      case IR::OpSize::i64Bit: ldapur(Dst.X(), Addr, Offset); break;
+       default: LOGMAN_MSG_A_FMT("Unhandled LoadMemTSO size: {}", OpSize); break;
+       }
+       // Half-barrier once back-patched.
+@@ -802,12 +901,12 @@ DEF_OP(LoadMemTSO) {
+     const auto Dst = GetReg(Node);
+     if (OpSize == IR::OpSize::i8Bit) {
+       // 8bit load is always aligned to natural alignment
+-      ldaprb(Dst.W(), MemReg);
++      ldaprb(Dst.W(), Addr);
+     } else {
+       switch (OpSize) {
+-      case IR::OpSize::i16Bit: ldaprh(Dst.W(), MemReg); break;
+-      case IR::OpSize::i32Bit: ldapr(Dst.W(), MemReg); break;
+-      case IR::OpSize::i64Bit: ldapr(Dst.X(), MemReg); break;
++      case IR::OpSize::i16Bit: ldaprh(Dst.W(), Addr); break;
++      case IR::OpSize::i32Bit: ldapr(Dst.W(), Addr); break;
++      case IR::OpSize::i64Bit: ldapr(Dst.X(), Addr); break;
+       default: LOGMAN_MSG_A_FMT("Unhandled LoadMemTSO size: {}", OpSize); break;
+       }
+       // Half-barrier once back-patched.
+@@ -817,12 +916,12 @@ DEF_OP(LoadMemTSO) {
+     const auto Dst = GetReg(Node);
+     if (OpSize == IR::OpSize::i8Bit) {
+       // 8bit load is always aligned to natural alignment
+-      ldarb(Dst, MemReg);
++      ldarb(Dst, Addr);
+     } else {
+       switch (OpSize) {
+-      case IR::OpSize::i16Bit: ldarh(Dst, MemReg); break;
+-      case IR::OpSize::i32Bit: ldar(Dst.W(), MemReg); break;
+-      case IR::OpSize::i64Bit: ldar(Dst.X(), MemReg); break;
++      case IR::OpSize::i16Bit: ldarh(Dst, Addr); break;
++      case IR::OpSize::i32Bit: ldar(Dst.W(), Addr); break;
++      case IR::OpSize::i64Bit: ldar(Dst.X(), Addr); break;
+       default: LOGMAN_MSG_A_FMT("Unhandled LoadMemTSO size: {}", OpSize); break;
+       }
+       // Half-barrier once back-patched.
+@@ -1472,6 +1571,36 @@ DEF_OP(Push) {
    const auto AddrSrc = GetReg(Op->Addr);
    const auto Dst = GetReg(Node);
  
@@ -372,7 +592,7 @@
    bool NeedsMoveAfterwards = false;
    if (Dst != AddrSrc) {
      if (Dst == Src) {
-@@ -1557,6 +1588,18 @@
+@@ -1557,6 +1686,18 @@ DEF_OP(PushTwo) {
    auto Src2 = GetReg(Op->Value2);
    const auto Dst = GetReg(Op->Addr);
  
@@ -391,7 +611,7 @@
    switch (ValueSize) {
    case 4: {
      stp<ARMEmitter::IndexType::PRE>(Src1.W(), Src2.W(), Dst, -2 * ValueSize);
-@@ -1581,6 +1624,29 @@
+@@ -1581,6 +1722,29 @@ DEF_OP(Pop) {
  
    LOGMAN_THROW_A_FMT(Dst != Addr, "Invalid");
  
@@ -421,7 +641,7 @@
    switch (Size) {
    case 1: {
      ldrb<ARMEmitter::IndexType::POST>(Dst.W(), Addr, Size);
-@@ -1618,6 +1684,19 @@
+@@ -1618,6 +1782,19 @@ DEF_OP(PopTwo) {
    }
  
    LOGMAN_THROW_A_FMT(Dst1 != Addr && Dst2 != Addr, "Invalid");
@@ -441,9 +661,82 @@
    LOGMAN_THROW_A_FMT(Dst1 != Dst2, "Invalid");
  
    switch (Size) {
---- aa/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
-+++ bb/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
-@@ -366,7 +366,12 @@
+@@ -1780,6 +1957,11 @@ DEF_OP(StoreMemTSO) {
+   const auto OpSize = IROp->Size;
+ 
+   const auto MemReg = GetReg(Op->Addr);
++  /* Fenetre basse : les chemins GPR ci-dessous emploient l'adresse crue
++   * (stlur/ldapur/ldar...), hors GenerateMemOperand. On la rebase pour eux ;
++   * le repli vectoriel passe par GenerateMemOperand et se rebase seul. */
++  const auto Addr = (FEXCore::IR::Guest64LowBase && Op->Class == IR::RegClass::GPR)
++                      ? RebaseGuestLow(MemReg) : MemReg;
+ 
+   if (Op->Class == IR::RegClass::GPR) {
+     LOGMAN_THROW_A_FMT(Op->Offset.IsInvalid() || CTX->HostFeatures.SupportsTSOImm9, "unexpected offset");
+@@ -1797,14 +1979,14 @@ DEF_OP(StoreMemTSO) {
+ 
+     if (OpSize == IR::OpSize::i8Bit) {
+       // 8bit load is always aligned to natural alignment
+-      stlurb(Src, MemReg, Offset);
++      stlurb(Src, Addr, Offset);
+     } else {
+       // Half-barrier once back-patched.
+       nop();
+       switch (OpSize) {
+-      case IR::OpSize::i16Bit: stlurh(Src, MemReg, Offset); break;
+-      case IR::OpSize::i32Bit: stlur(Src.W(), MemReg, Offset); break;
+-      case IR::OpSize::i64Bit: stlur(Src.X(), MemReg, Offset); break;
++      case IR::OpSize::i16Bit: stlurh(Src, Addr, Offset); break;
++      case IR::OpSize::i32Bit: stlur(Src.W(), Addr, Offset); break;
++      case IR::OpSize::i64Bit: stlur(Src.X(), Addr, Offset); break;
+       default: LOGMAN_MSG_A_FMT("Unhandled StoreMemTSO size: {}", OpSize); break;
+       }
+     }
+@@ -1813,14 +1995,14 @@ DEF_OP(StoreMemTSO) {
+ 
+     if (OpSize == IR::OpSize::i8Bit) {
+       // 8bit load is always aligned to natural alignment
+-      stlrb(Src, MemReg);
++      stlrb(Src, Addr);
+     } else {
+       // Half-barrier once back-patched.
+       nop();
+       switch (OpSize) {
+-      case IR::OpSize::i16Bit: stlrh(Src, MemReg); break;
+-      case IR::OpSize::i32Bit: stlr(Src.W(), MemReg); break;
+-      case IR::OpSize::i64Bit: stlr(Src.X(), MemReg); break;
++      case IR::OpSize::i16Bit: stlrh(Src, Addr); break;
++      case IR::OpSize::i32Bit: stlr(Src.W(), Addr); break;
++      case IR::OpSize::i64Bit: stlr(Src.X(), Addr); break;
+       default: LOGMAN_MSG_A_FMT("Unhandled StoreMemTSO size: {}", OpSize); break;
+       }
+     }
+@@ -1882,6 +2064,9 @@ DEF_OP(MemSet) {
+     const auto Prefix = GetReg(Op->Prefix);
+     add(TMP2, Prefix.X(), MemReg.X());
+   }
++  /* Fenetre basse : rebaser l'adresse de depart. TMP4 (temp de valeur) est
++   * libre ici, avant la boucle. */
++  RebaseGuestLowInPlace(TMP2, TMP4);
+ 
+   if (!DirectionIsInline) {
+     // Backward or forwards implementation depends on flag
+@@ -2116,6 +2301,10 @@ DEF_OP(MemCpy) {
+   mov(TMP1, Length.X());
+   mov(TMP2, MemRegDest.X());
+   mov(TMP3, MemRegSrc.X());
++  /* Fenetre basse : rebaser dest et src. TMP4 (temp de valeur) n'est employe
++   * que dans la boucle qui suit ; on peut s'en servir d'ecrasable ici. */
++  RebaseGuestLowInPlace(TMP2, TMP4);
++  RebaseGuestLowInPlace(TMP3, TMP4);
+ 
+   // TMP1 = Length
+   // TMP2 = Dest
+diff --git a/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp b/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
+index 6e8df95..4e618f7 100644
+--- a/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
+@@ -366,7 +366,12 @@ DEF_OP(MonoBackpatcherWrite) {
    }
  
  #ifdef ARCHITECTURE_arm64ec
@@ -456,7 +749,7 @@
    LoadConstant(ARMEmitter::Size::i32Bit, TMP1, 1);
    strb(TMP1.W(), TMP2, CPU_AREA_IN_SYSCALL_CALLBACK_OFFSET);
  #endif
-@@ -379,7 +384,12 @@
+@@ -379,7 +384,12 @@ DEF_OP(MonoBackpatcherWrite) {
    }
  
  #ifdef ARCHITECTURE_arm64ec
@@ -469,9 +762,11 @@
    strb(ARMEmitter::WReg::zr, TMP2, CPU_AREA_IN_SYSCALL_CALLBACK_OFFSET);
  #endif
  
---- aa/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
-+++ bb/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
-@@ -94,7 +94,8 @@
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+index 8dc605c..22a2975 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+@@ -94,7 +94,8 @@ void OpDispatchBuilder::LEAOp(OpcodeArgs) {
      DstSize = OpAddr == X86Tables::DecodeFlags::FLAG_OPERAND_SIZE_LAST ? OpSize::i16Bit : OpSize::i32Bit;
    }
  
@@ -481,7 +776,7 @@
    StoreResultGPR_WithOpSize(Op, Op->Dest, Src, DstSize);
  }
  
-@@ -3252,7 +3253,7 @@
+@@ -3252,7 +3253,7 @@ void OpDispatchBuilder::STOSOp(OpcodeArgs) {
  
      Ref Counter = LoadGPRRegister(X86State::REG_RCX);
  
@@ -490,7 +785,7 @@
      StoreGPRRegister(X86State::REG_RCX, Constant(0));
      StoreGPRRegister(X86State::REG_RDI, Result);
    }
-@@ -3286,7 +3287,7 @@
+@@ -3286,7 +3287,7 @@ void OpDispatchBuilder::MOVSOp(OpcodeArgs) {
  
      Ref Result_Src = _AllocateGPR(false);
      Ref Result_Dst = _AllocateGPR(false);
@@ -499,7 +794,7 @@
  
      if (DstSegment) {
        Result_Dst = Sub(OpSize::i64Bit, Result_Dst, DstSegment);
-@@ -3304,13 +3305,13 @@
+@@ -3304,13 +3305,13 @@ void OpDispatchBuilder::MOVSOp(OpcodeArgs) {
      Ref RDI = MakeSegmentAddress(X86State::REG_RDI, 0, X86Tables::DecodeFlags::FLAG_ES_PREFIX, true);
  
      if (CTX->IsMemcpyAtomicTSOEnabled()) {
@@ -517,20 +812,20 @@
      }
  
      RSI = OffsetByDir(RSI, IR::OpSizeToSize(Size));
-@@ -4113,6 +4114,12 @@
-   auto Segment = GetSegment(Flags, DefaultPrefix, Override);
-   if (Segment) {
+@@ -4115,6 +4116,12 @@ Ref OpDispatchBuilder::AppendSegmentOffset(Ref Value, uint32_t Flags, uint32_t D
      Value = Add(std::max(OpSize::i32Bit, std::max(GetOpSize(Value), GetOpSize(Segment))), Value, Segment);
-+  }
-+
+   }
+ 
 +  /* Deuxieme entonnoir d'adresse invite, avec LoadEffectiveAddress. Idempotent,
 +   * donc sans risque quand les deux s'appliquent. */
 +  if (GetGPROpSize() == OpSize::i32Bit) {
 +    Value = IR::RebaseGuest32(this, Value);
-   }
- 
++  }
++
    return Value;
-@@ -4441,7 +4448,7 @@
+ }
+ 
+@@ -4441,7 +4448,7 @@ AddressMode OpDispatchBuilder::DecodeAddress(const X86Tables::DecodedOp& Op, con
  
  Ref OpDispatchBuilder::LoadSource_WithOpSize(RegClass Class, const X86Tables::DecodedOp& Op, const X86Tables::DecodedOperand& Operand,
                                               IR::OpSize OpSize, uint32_t Flags, const LoadSourceOptions& Options) {
@@ -539,7 +834,7 @@
    AddressMode A = DecodeAddress(Op, Operand, AccessType, true /* IsLoad */);
  
    Ref Result {};
-@@ -4489,7 +4496,12 @@
+@@ -4489,7 +4496,12 @@ Ref OpDispatchBuilder::LoadSource_WithOpSize(RegClass Class, const X86Tables::De
        Result = _LoadMemAutoTSO(Class, OpSize, A, Align == OpSize::iInvalid ? OpSize : Align);
      }
    } else {
@@ -553,9 +848,11 @@
    }
  
    if constexpr (Context::BLOCK_DEBUGGING) {
---- aa/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
-+++ bb/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
-@@ -112,6 +112,17 @@
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.h b/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+index 0190282..2904d2d 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+@@ -112,6 +112,17 @@ struct LoadSourceOptions {
    // or 56 bits depending on the operating mode).
    // If true, no zero-extension occurs.
    bool AllowUpperGarbage = false;
@@ -573,7 +870,7 @@
  };
  
  struct DispatchTableEntry {
-@@ -1510,6 +1521,13 @@
+@@ -1510,6 +1521,13 @@ private:
  #undef OpcodeArgs
  
    Ref AppendSegmentOffset(Ref Value, uint32_t Flags, uint32_t DefaultPrefix = 0, bool Override = false);
@@ -587,9 +884,11 @@
    Ref GetSegment(uint32_t Flags, uint32_t DefaultPrefix = FEXCore::X86Tables::DecodeFlags::FLAG_NO_PREFIX, bool Override = false);
  
    void UpdatePrefixFromSegment(Ref Segment, uint32_t SegmentReg);
---- aa/FEXCore/include/FEXCore/Utils/ThreadPoolAllocator.h
-+++ bb/FEXCore/include/FEXCore/Utils/ThreadPoolAllocator.h
-@@ -420,8 +420,9 @@
+diff --git a/FEXCore/include/FEXCore/Utils/ThreadPoolAllocator.h b/FEXCore/include/FEXCore/Utils/ThreadPoolAllocator.h
+index 69e410c..a49d97c 100644
+--- a/FEXCore/include/FEXCore/Utils/ThreadPoolAllocator.h
++++ b/FEXCore/include/FEXCore/Utils/ThreadPoolAllocator.h
+@@ -420,8 +420,9 @@ public:
  private:
    void* Alloc(size_t Size) override {
      auto Ptr = FEXCore::Allocator::VirtualAlloc(Size);
@@ -601,9 +900,11 @@
                                              FEXCore::Allocator::ProtectOptions::None)) {
        LogMan::Msg::EFmt("Failed to mprotect last page of code buffer.");
      }
---- aa/FEXCore/include/FEXCore/Utils/TypeDefines.h
-+++ bb/FEXCore/include/FEXCore/Utils/TypeDefines.h
-@@ -9,4 +9,21 @@
+diff --git a/FEXCore/include/FEXCore/Utils/TypeDefines.h b/FEXCore/include/FEXCore/Utils/TypeDefines.h
+index ec03ac6..c0127a8 100644
+--- a/FEXCore/include/FEXCore/Utils/TypeDefines.h
++++ b/FEXCore/include/FEXCore/Utils/TypeDefines.h
+@@ -9,4 +9,21 @@ namespace FEXCore::Utils {
  constexpr size_t FEX_PAGE_SIZE = 4096;
  constexpr size_t FEX_PAGE_SHIFT = 12;
  constexpr size_t FEX_PAGE_MASK = ~(FEX_PAGE_SIZE - 1);
@@ -625,8 +926,10 @@
 + */
 +constexpr size_t FEX_TAILLE_GARDE = 64 * 1024;
  } // namespace FEXCore::Utils
---- aa/Source/Windows/ARM64EC/Module.S
-+++ bb/Source/Windows/ARM64EC/Module.S
+diff --git a/Source/Windows/ARM64EC/Module.S b/Source/Windows/ARM64EC/Module.S
+index 4a59cf6..b6d4cde 100644
+--- a/Source/Windows/ARM64EC/Module.S
++++ b/Source/Windows/ARM64EC/Module.S
 @@ -1,6 +1,25 @@
  .text
  .balign 16
@@ -653,7 +956,7 @@
    // __os_arm64x_x64_jump in ARM64EC docs
    // Expects target code address in x9
  .globl DispatchJump
-@@ -16,7 +35,8 @@
+@@ -16,7 +35,8 @@ RetToEntryThunk:
  
  check_target_ec:
    // Check if target is in fact x86 code
@@ -663,7 +966,7 @@
    ldr x16, [x16, #0x368] // PEB->EcCodeBitMap
    lsr x17, x9, #18
    ldr x16, [x16, x17, lsl #3]
-@@ -32,7 +52,8 @@
+@@ -32,7 +52,8 @@ ExitToX64:
    str lr, [sp, #-8]! // Push return address to stack, this will be popped by the x86 RET instr.
  
  enter_jit:
@@ -673,7 +976,7 @@
    mov w16, #1
    strb w16, [x17, #0x0] // ChpeV2CpuAreaInfo->InSimulation
    ldr x16, [x17, #0x40] // ChpeV2CpuAreaInfo->EmulatorData[2] - DispatcherLoopTopEnterEC
-@@ -41,12 +62,14 @@
+@@ -41,12 +62,14 @@ enter_jit:
    // Invoked by KiUserEmulationDispatcher after e.g. an NtContinue to x86 code
  .global BeginSimulation
  BeginSimulation:
@@ -690,7 +993,7 @@
    ldr x16, [x17, #0x48] // ChpeV2CpuAreaInfo->EmulatorData[3] - DispatcherLoopTopEnterECFillSRA
    mov x11, #0 // Zero ENTRY_FILL_SRA_SINGLE_INST_REG to avoid single step
    br x16 // DispatcherLoopTopEnterECFillSRA(SingleInst:x10, CPUArea:x17)
-@@ -59,7 +82,8 @@
+@@ -59,7 +82,8 @@ ExitFunctionEC:
    mrs x17, fpcr
    and x17, x17, #~6 // NEP + AH
    msr fpcr, x17
@@ -700,31 +1003,42 @@
    strb wzr, [x17, #0x0] // ChpeV2CpuAreaInfo->InSimulation
    ldr x17, [x17, #0x20] // ChpeV2CpuAreaInfo->SuspendDoorbell
    ldr w17, [x17]
---- aa/Source/Windows/ARM64EC/Module.cpp
-+++ bb/Source/Windows/ARM64EC/Module.cpp
-@@ -578,8 +578,19 @@
-   Context->EFlags = (Context->EFlags & ECValidEFlagsMask) | (StateEFlags & ~ECValidEFlagsMask);
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+index 93a3ab0..d896005 100644
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -579,7 +579,26 @@ extern "C" void SyncThreadContext(CONTEXT* Context) {
    Exception::LoadStateFromECContext(Thread, *Context);
  }
-+
+ 
 +#ifdef FEX_TEB_SANS_X18
 +// Defined in FEXCore's Arm64Emitter and read by Module.S; see Arm64Emitter.h.
 +extern "C" uint64_t FEX_TEBSlotOffset;
 +extern "C" __declspec(dllimport) unsigned int __wine_teb_tsd_key;
++namespace FEXCore::IR { extern uint64_t Guest64LowBase; }
++extern "C" __declspec(dllimport) unsigned __int64 __wine_luajit_low_base;
 +#endif
- 
++
  NTSTATUS ProcessInit() {
 +#ifdef FEX_TEB_SANS_X18
 +  // Publish the thread-specific slot holding the TEB to the JIT and to Module.S,
 +  // both of which cannot read x18 on Darwin. See Arm64Emitter.h.
 +  FEX_TEBSlotOffset = 8ULL * __wine_teb_tsd_key;
++  /* Fenetre basse d'un invite 64 bits (LuaJIT sur macOS arm64) : rebasage
++   * conditionnel des seules adresses sous 4 Gio vers cette base. Zero =
++   * invite 64 bits ordinaire, aucune emission. */
++  FEXCore::IR::Guest64LowBase = __wine_luajit_low_base;
++  if (FEXCore::IR::Guest64LowBase)
++    LogMan::Msg::IFmt("base de la fenetre basse LuaJIT : {:#x}", FEXCore::IR::Guest64LowBase);
 +#endif
    InitSyscalls();
  
    FEX::Windows::InitCRTProcess();
---- aa/Source/Windows/Common/CallRetStack.h
-+++ bb/Source/Windows/Common/CallRetStack.h
-@@ -13,41 +13,136 @@
+diff --git a/Source/Windows/Common/CallRetStack.h b/Source/Windows/Common/CallRetStack.h
+index 215591b..6c963bf 100644
+--- a/Source/Windows/Common/CallRetStack.h
++++ b/Source/Windows/Common/CallRetStack.h
+@@ -13,41 +13,136 @@ struct CallRetStackInfo {
    uint64_t DefaultLocation;
  };
  
@@ -867,51 +1181,10 @@
    return false;
  }
  } // namespace FEX::Windows::CallRetStack
---- aa/Source/Windows/Common/Guest32.h
-+++ bb/Source/Windows/Common/Guest32.h
-@@ -0,0 +1,40 @@
-+// SPDX-License-Identifier: MIT
-+#pragma once
-+
-+#include <cstdint>
-+
-+/*
-+ * macOS refuse a un processus arm64 toute adresse sous 4 Gio (__PAGEZERO est
-+ * le plancher du vm_map, pas une reservation qu'on puisse rendre). La fenetre
-+ * 32 bits de l'invite est donc posee ailleurs dans l'espace de l'hote, et deux
-+ * mondes cohabitent : FEXCore raisonne en adresses d'invite (RIP, intervalles
-+ * executables, caches de code), Windows en adresses d'hote
-+ * (NtProtectVirtualMemory, RtlImageNtHeader, VirtualQuery).
-+ *
-+ * Guest32Base vaut zero partout ailleurs, ou les deux mondes se confondent et
-+ * ou toutes les conversions ci-dessous sont l'identite.
-+ */
-+namespace FEXCore::IR {
-+extern uint64_t Guest32Base;
-+}
-+
-+namespace FEX::Windows {
-+// Zero reste zero : c'est le pointeur nul, pas une adresse.
-+static inline uint64_t ToGuest32(uint64_t HostAddress) {
-+  return HostAddress ? HostAddress - FEXCore::IR::Guest32Base : 0;
-+}
-+
-+static inline uint64_t ToHost32(uint64_t GuestAddress) {
-+  return GuestAddress ? GuestAddress + FEXCore::IR::Guest32Base : 0;
-+}
-+
-+static inline void* HostPtr32(uint64_t GuestAddress) {
-+  return reinterpret_cast<void*>(GuestAddress + FEXCore::IR::Guest32Base);
-+}
-+
-+// Une adresse d'hote appartient-elle a la fenetre de l'invite ?
-+static inline bool InGuest32Window(uint64_t HostAddress) {
-+  return !FEXCore::IR::Guest32Base ||
-+         (HostAddress >= FEXCore::IR::Guest32Base && HostAddress - FEXCore::IR::Guest32Base < 0x100000000ULL);
-+}
-+} // namespace FEX::Windows
---- aa/Source/Windows/Common/ImageTracker.cpp
-+++ bb/Source/Windows/Common/ImageTracker.cpp
+diff --git a/Source/Windows/Common/ImageTracker.cpp b/Source/Windows/Common/ImageTracker.cpp
+index c459c44..9d9ac0b 100644
+--- a/Source/Windows/Common/ImageTracker.cpp
++++ b/Source/Windows/Common/ImageTracker.cpp
 @@ -25,6 +25,7 @@
  #include "Handle.h"
  #include "Module.h"
@@ -920,7 +1193,7 @@
  #include "ImageTracker.h"
  
  namespace FEX::Windows {
-@@ -54,20 +55,22 @@
+@@ -54,20 +55,22 @@ static void LoadImageVolatileMetadata(fextl::set<uint64_t>& VolatileInstructions
      return;
    }
  
@@ -946,7 +1219,7 @@
    const auto* VolatileInfoRangeTableEnd =
      VolatileInfoRangeTableBegin + (VolatileMetadata->VolatileInfoRangeTableSize / sizeof(IMAGE_VOLATILE_RANGE_METADATA));
    for (auto It = VolatileInfoRangeTableBegin; It != VolatileInfoRangeTableEnd; It++) {
-@@ -127,13 +130,16 @@
+@@ -127,13 +130,16 @@ ImageTracker::MappedImageInfo::MappedImageInfo(std::string_view Path, uint64_t A
  FEXCore::ExecutableFileSectionInfo ImageTracker::HandleImageMap(std::string_view Path, uint64_t Address, bool MainImage) {
    std::scoped_lock Lock(CTX.GetCodeInvalidationMutex());
    const fextl::string ModuleName {BaseName(Path)};
@@ -965,8 +1238,10 @@
        }
        return fextl::robin_map<uint32_t, FEXCore::GuestRelocationType> {};
      }();
---- aa/Source/Windows/Common/InvalidationTracker.cpp
-+++ bb/Source/Windows/Common/InvalidationTracker.cpp
+diff --git a/Source/Windows/Common/InvalidationTracker.cpp b/Source/Windows/Common/InvalidationTracker.cpp
+index 155403d..22a031e 100644
+--- a/Source/Windows/Common/InvalidationTracker.cpp
++++ b/Source/Windows/Common/InvalidationTracker.cpp
 @@ -6,7 +6,9 @@
  #include <FEXCore/Core/Context.h>
  #include <FEXCore/Config/Config.h>
@@ -977,7 +1252,7 @@
  #include <windef.h>
  #include <winternl.h>
  
-@@ -18,12 +20,16 @@
+@@ -18,12 +20,16 @@ InvalidationTracker::InvalidationTracker(FEXCore::Context::Context& CTX, const s
    SMCDetectionDisabled = (SMCChecks == FEXCore::Config::CONFIG_SMC_NONE);
  
    MEMORY_BASIC_INFORMATION Info;
@@ -997,7 +1272,7 @@
      }
  
      Address = BaseAddress + Info.RegionSize;
-@@ -100,10 +106,12 @@
+@@ -100,10 +106,12 @@ void InvalidationTracker::HandleProcessExecuteFlagsChange(ULONG Flags) {
      DEPPromotedIntervals.Clear();
  
      MEMORY_BASIC_INFORMATION Info;
@@ -1013,7 +1288,7 @@
        if (Info.State == MEM_COMMIT && ProtIsReadable(Info.Protect) && !ProtHasExec(Info.Protect)) {
          const auto AlignedBase = BaseAddress & FEXCore::Utils::FEX_PAGE_MASK;
          const auto AlignedSize = (BaseAddress - AlignedBase + Info.RegionSize + FEXCore::Utils::FEX_PAGE_SIZE - 1) & FEXCore::Utils::FEX_PAGE_MASK;
-@@ -116,7 +124,7 @@
+@@ -116,7 +124,7 @@ void InvalidationTracker::HandleProcessExecuteFlagsChange(ULONG Flags) {
          DEPPromotedIntervals.Insert(ProtInterval);
        }
  
@@ -1022,7 +1297,7 @@
      }
    } else {
      for (const auto& Interval : DEPPromotedIntervals) {
-@@ -132,7 +140,8 @@
+@@ -132,7 +140,8 @@ void InvalidationTracker::HandleProcessExecuteFlagsChange(ULONG Flags) {
  }
  
  void InvalidationTracker::HandleImageMap(std::string_view Name, uint64_t Address) {
@@ -1032,7 +1307,7 @@
    auto* SectionsBegin = IMAGE_FIRST_SECTION(Nt);
    auto* SectionsEnd = SectionsBegin + Nt->FileHeader.NumberOfSections;
    uint64_t LastExecutableSectionEnd = 0;
-@@ -170,16 +179,15 @@
+@@ -170,16 +179,15 @@ void InvalidationTracker::HandleImageMap(std::string_view Name, uint64_t Address
  
  InvalidationTracker::InvalidateContainingSectionResult InvalidationTracker::InvalidateContainingSection(uint64_t Address, bool Free) {
    MEMORY_BASIC_INFORMATION Info;
@@ -1054,7 +1329,7 @@
      SectionSize += Info.RegionSize;
    }
  
-@@ -195,9 +203,14 @@
+@@ -195,9 +203,14 @@ InvalidationTracker::InvalidateContainingSectionResult InvalidationTracker::Inva
  }
  
  void InvalidationTracker::InvalidateAlignedInterval(uint64_t Address, uint64_t Size, bool Free) {
@@ -1072,7 +1347,7 @@
    }
  
    const auto AlignedBase = Address & FEXCore::Utils::FEX_PAGE_MASK;
-@@ -217,6 +230,13 @@
+@@ -217,6 +230,13 @@ void InvalidationTracker::ReprotectRWXIntervals(uint64_t Address, uint64_t Size)
  }
  
  bool InvalidationTracker::HandleRWXAccessViolation(FEXCore::Core::InternalThreadState* Thread, uint64_t HostPc, uint64_t FaultAddress) {
@@ -1086,7 +1361,7 @@
    const auto [NeedsInvalidate, UntrapProt] = [&](uint64_t Address) -> std::pair<bool, ULONG> {
      std::shared_lock Lock(IntervalsLock);
      if (!RWXIntervals.Query(Address).Enclosed) {
-@@ -234,7 +254,7 @@
+@@ -234,7 +254,7 @@ bool InvalidationTracker::HandleRWXAccessViolation(FEXCore::Core::InternalThread
  
        // Invalidate, then unprotect the faulting page with the compilation lock held to ensure that any racing invalidations are not dropped.
        ULONG TmpProt;
@@ -1095,7 +1370,7 @@
        SIZE_T TmpSize = 1;
        NtProtectVirtualMemory(NtCurrentProcess(), &TmpAddress, &TmpSize, UntrapProt, &TmpProt);
      }
-@@ -278,7 +298,7 @@
+@@ -278,7 +298,7 @@ void InvalidationTracker::DetectMonoBackpatcherBlock(FEXCore::Core::InternalThre
    }
  
    static constexpr uint8_t XChgOp = 0x87;
@@ -1104,7 +1379,7 @@
      return;
    }
  
-@@ -302,7 +322,7 @@
+@@ -302,7 +322,7 @@ void InvalidationTracker::DisableSMCDetection() {
    do {
      Query = RWXIntervals.Query(Address);
      if (Query.Enclosed) {
@@ -1113,7 +1388,7 @@
        SIZE_T TmpSize = static_cast<SIZE_T>(Query.Size);
        ULONG TmpProt;
        NtProtectVirtualMemory(NtCurrentProcess(), &TmpAddress, &TmpSize, GetUntrapProt(Address), &TmpProt);
-@@ -360,7 +380,7 @@
+@@ -360,7 +380,7 @@ bool InvalidationTracker::ProtectRWXIntervalsInternal(uint64_t Address, uint64_t
          }
          HitRWXInterval = true;
        }
@@ -1122,8 +1397,10 @@
        SIZE_T TmpSize = static_cast<SIZE_T>(std::min(End, Address + Query.Size) - Address);
        ULONG TmpProt;
        NtProtectVirtualMemory(NtCurrentProcess(), &TmpAddress, &TmpSize, ForWriteLocked ? GetUntrapProt(Address) : GetTrapProt(Address), &TmpProt);
---- aa/Source/Windows/Common/JITGuardPage.h
-+++ bb/Source/Windows/Common/JITGuardPage.h
+diff --git a/Source/Windows/Common/JITGuardPage.h b/Source/Windows/Common/JITGuardPage.h
+index 007d498..97266f3 100644
+--- a/Source/Windows/Common/JITGuardPage.h
++++ b/Source/Windows/Common/JITGuardPage.h
 @@ -5,13 +5,13 @@
  
  namespace FEX::Windows::JITGuardPage {
@@ -1142,9 +1419,23 @@
  
  static inline bool HandleJITGuardPage(FEXCore::Core::InternalThreadState* Thread, void* Address, uint64_t* GPRs, __uint128_t* FPRs, uint64_t* PC) {
    if (IsAddressInJITGuardPage(Thread->JITGuardPage, reinterpret_cast<uintptr_t>(Address))) {
---- aa/Source/Windows/WOW64/Module.cpp
-+++ bb/Source/Windows/WOW64/Module.cpp
-@@ -37,6 +37,7 @@
+diff --git a/Source/Windows/Defs/ntdll.def b/Source/Windows/Defs/ntdll.def
+index 807d6a8..e3295d6 100644
+--- a/Source/Windows/Defs/ntdll.def
++++ b/Source/Windows/Defs/ntdll.def
+@@ -1378,6 +1378,7 @@ EXPORTS
+   __wine_syscall_dispatcher DATA PRIVATE
+   __wine_unix_call_dispatcher DATA PRIVATE
+   __wine_unixlib_handle DATA PRIVATE
++  __wine_luajit_low_base DATA
+   __wine_set_unix_env
+   __wine_dbg_write
+   __wine_dbg_get_channel_flags
+diff --git a/Source/Windows/WOW64/Module.cpp b/Source/Windows/WOW64/Module.cpp
+index 8eb1acb..332c559 100644
+--- a/Source/Windows/WOW64/Module.cpp
++++ b/Source/Windows/WOW64/Module.cpp
+@@ -37,6 +37,7 @@ $end_info$
  #include "Common/Config.h"
  #include "Common/Exception.h"
  #include "Common/TSOHandlerConfig.h"
@@ -1152,7 +1443,7 @@
  #include "Common/ImageTracker.h"
  #include "Common/InvalidationTracker.h"
  #include "Common/Threads.h"
-@@ -63,6 +64,16 @@
+@@ -63,6 +64,16 @@ $end_info$
  #include <wine/debug.h>
  #include <wine/unixlib.h>
  
@@ -1169,7 +1460,7 @@
  struct TLS {
    enum class Slot : size_t {
      ENTRY_CONTEXT = WOW64_TLS_MAX_NUMBER - 1,
-@@ -188,10 +199,15 @@
+@@ -188,10 +199,15 @@ bool IsAddressInJit(uint64_t Address) {
  }
  
  void HandleImageMap(uint64_t Address, bool MainImage = false) {
@@ -1187,7 +1478,7 @@
  }
  
  void HandleImageUnmap(uint64_t Address, uint64_t Size) {
-@@ -426,26 +442,28 @@
+@@ -426,26 +442,28 @@ public:
    WowSyscallHandler() = default;
  
    static void HandleSyscallImpl(FEXCore::Core::CpuStateFrame* Frame) {
@@ -1221,7 +1512,7 @@
        const uint64_t EntryRAX = Frame->State.gregs[FEXCore::X86State::REG_RAX];
  
        Frame->State.gregs[FEXCore::X86State::REG_RSP] = ReturnRSP;
-@@ -454,7 +472,7 @@
+@@ -454,7 +472,7 @@ public:
        Context::FlushThreadStateContext();
        Context::UnlockJITContext();
        Wow64ProcessPendingCrossProcessItems();
@@ -1230,7 +1521,7 @@
        Context::LockJITContext();
        Frame->State.gregs[FEXCore::X86State::REG_RAX] = ReturnRAX;
      }
-@@ -498,7 +516,15 @@
+@@ -498,7 +516,15 @@ public:
    }
  };
  
@@ -1246,7 +1537,7 @@
    FEX::Windows::InitCRTProcess();
    FEX::Windows::SetupThreadHandlers();
    const auto ExecutablePath = FEX::Windows::GetExecutableFilePath();
-@@ -550,8 +576,21 @@
+@@ -550,8 +576,21 @@ void BTCpuProcessInit() {
    // Allocate the syscall/unixcall trampolines in the lower 2GB of the address space
    SIZE_T Size = 4;
    void* Addr = nullptr;
@@ -1270,7 +1561,7 @@
    *reinterpret_cast<uint32_t*>(Addr) = 0x2ecd2ecd;
    BridgeInstrs::Syscall = Addr;
    BridgeInstrs::UnixCall = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(Addr) + 2);
-@@ -671,12 +710,14 @@
+@@ -671,12 +710,14 @@ void BTCpuThreadTerm(HANDLE Thread, LONG ExitCode) {
    }
  }
  
@@ -1287,7 +1578,7 @@
  }
  
  NTSTATUS BTCpuGetContext(HANDLE Thread, HANDLE Process, void* Unknown, WOW64_CONTEXT* Context) {
-@@ -711,10 +752,16 @@
+@@ -711,10 +752,16 @@ extern "C" void BTCpuSimulateImpl(CONTEXT* entry_context) {
    const auto TLS = GetTLS();
    TLS.EntryContext() = entry_context;
    TLS.CachedCallRetSp() = TLS.ThreadState()->CurrentFrame->State.callret_sp;
@@ -1304,7 +1595,7 @@
  }
  
  NTSTATUS BTCpuSuspendLocalThread(HANDLE Thread, ULONG* Count) {
-@@ -727,10 +774,12 @@
+@@ -727,10 +774,12 @@ bool BTCpuResetToConsistentStateImpl(EXCEPTION_POINTERS* Ptrs) {
    auto* Exception = Ptrs->ExceptionRecord;
    auto Thread = GetTLS().ThreadState();
    FEXCORE_PROFILE_ACCUMULATION(Thread, AccumulatedSignalTime);
@@ -1318,7 +1609,7 @@
      if (FEX::Windows::CallRetStack::HandleAccessViolation(Thread, FaultAddress, Context->X25)) {
        return true;
      }
-@@ -795,6 +844,28 @@
+@@ -795,6 +844,28 @@ bool BTCpuResetToConsistentStateImpl(EXCEPTION_POINTERS* Ptrs) {
    }
    // wow64.dll will handle adjusting PC in the dispatched context after a breakpoint
  
@@ -1347,7 +1638,7 @@
    Context::UnlockJITContext();
    NtRaiseException(&GuestException, GetTLS().EntryContext(), FirstChance);
    return false;
-@@ -810,17 +881,17 @@
+@@ -810,17 +881,17 @@ NTSTATUS BTCpuResetToConsistentState(EXCEPTION_POINTERS* Ptrs) {
  
  void BTCpuFlushInstructionCache2(const void* Address, SIZE_T Size) {
    std::scoped_lock Lock(ThreadCreationMutex);
@@ -1368,7 +1659,7 @@
  }
  
  void BTCpuNotifyMemoryAlloc(void* Address, SIZE_T Size, ULONG Type, ULONG Prot, BOOL After, ULONG Status) {
-@@ -829,7 +900,7 @@
+@@ -829,7 +900,7 @@ void BTCpuNotifyMemoryAlloc(void* Address, SIZE_T Size, ULONG Type, ULONG Prot,
    } else {
      // MEM_RESET(_UNDO) ignores the passed permissions
      if (!Status && !(Type & (MEM_RESET | MEM_RESET_UNDO))) {
@@ -1377,7 +1668,7 @@
      }
      ThreadCreationMutex.unlock();
    }
-@@ -840,7 +911,7 @@
+@@ -840,7 +911,7 @@ void BTCpuNotifyMemoryProtect(void* Address, SIZE_T Size, ULONG NewProt, BOOL Af
      ThreadCreationMutex.lock();
    } else {
      if (!Status) {
@@ -1386,7 +1677,7 @@
      }
      ThreadCreationMutex.unlock();
    }
-@@ -851,7 +922,7 @@
+@@ -851,7 +922,7 @@ void BTCpuNotifyMemoryFree(void* Address, SIZE_T Size, ULONG FreeType, BOOL Afte
      ThreadCreationMutex.lock();
    } else {
      if (!Status) {
@@ -1395,7 +1686,7 @@
      }
      ThreadCreationMutex.unlock();
    }
-@@ -866,7 +937,7 @@
+@@ -866,7 +937,7 @@ NTSTATUS BTCpuNotifyMapViewOfSection(void* Unk1, void* Address, void* Unk2, SIZE
  void BTCpuNotifyUnmapViewOfSection(void* Address, BOOL After, ULONG Status) {
    if (!After) {
      ThreadCreationMutex.lock();
@@ -1404,7 +1695,7 @@
      if (Size) {
        HandleImageUnmap(Start, Size);
      }
-@@ -884,7 +955,7 @@
+@@ -884,7 +955,7 @@ void BTCpuNotifyReadFile(HANDLE Handle, void* Address, SIZE_T Size, BOOL After,
    // See arm64ec `BTCpu64NotifyReadFile` for why this like this.
    if (After && Status == STATUS_SUCCESS) {
      std::scoped_lock Lock(ThreadCreationMutex);

@@ -1,0 +1,408 @@
+diff --git a/dlls/ntdll/ntdll.spec b/dlls/ntdll/ntdll.spec
+--- a/dlls/ntdll/ntdll.spec
++++ b/dlls/ntdll/ntdll.spec
+@@ -1787,3 +1787,4 @@
+ @ extern -private -arch=arm64,arm64ec __wine_teb_table
+ @ extern -arch=arm64,arm64ec __wine_teb_tsd_key
+ @ extern -arch=i386,arm64,arm64ec __wine_wow64_guest_base
++@ extern -arch=i386,arm64,arm64ec __wine_luajit_low_base
+diff --git a/dlls/ntdll/thread.c b/dlls/ntdll/thread.c
+--- a/dlls/ntdll/thread.c
++++ b/dlls/ntdll/thread.c
+@@ -745,6 +745,7 @@
+  * cote vit dans l'espace de l'hote.
+  */
+ ULONG64 __wine_wow64_guest_base = 0;
++ULONG64 __wine_luajit_low_base = 0;
+ #endif
+ 
+ #if defined(__aarch64__) || defined(__arm64ec__)
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -1600,6 +1600,7 @@
+     void *p__wine_teb_table;
+     void *p__wine_teb_tsd_key;
+     void *p__wine_wow64_guest_base;
++    void *p__wine_luajit_low_base;
+ #endif
+ 
+     exports = get_module_data_dir( module, IMAGE_DIRECTORY_ENTRY_EXPORT, NULL );
+@@ -1633,6 +1634,10 @@
+      * l'emulateur la lit ici pour rebaser les acces de l'invite. */
+     GET_FUNC( __wine_wow64_guest_base );
+     *(ULONG64 *)p__wine_wow64_guest_base = user_space_wow_base;
++    /* La base de la fenetre basse LuaJIT, meme mecanisme : l'emulateur rebase
++     * les acces dont l'adresse invite est sous 4 Gio. Zero = inactif. */
++    GET_FUNC( __wine_luajit_low_base );
++    *(ULONG64 *)p__wine_luajit_low_base = luajit_low_base;
+     /* Le fil courant a pu demarrer avant que l'adresse de la table ne soit
+      * connue : son enregistrement n'aurait alors rien fait, et chaque acces au
+      * TEB balaierait la table entiere pour ne rien trouver. On l'inscrit ici. */
+@@ -1695,6 +1700,8 @@
+         ULONG64 *base = (ULONG64 *)find_named_export( module, exports, "__wine_wow64_guest_base" );
+ 
+         if (base) *base = user_space_wow_base;
++        base = (ULONG64 *)find_named_export( module, exports, "__wine_luajit_low_base" );
++        if (base) *base = luajit_low_base;
+     }
+ 
+     /* also set the 32-bit LdrSystemDllInitBlock */
+diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
+--- a/dlls/ntdll/unix/signal_arm64.c
++++ b/dlls/ntdll/unix/signal_arm64.c
+@@ -1258,7 +1258,141 @@
+  *		segv_handler
+  *
+  * Handler for SIGSEGV and related errors.
++ */
++#ifdef __APPLE__
++/*
++ * Redirection d'un acces HOTE a un pointeur invite de la fenetre basse.
++ *
++ * Fenetre basse active (LuaJIT) : la donnee d'une adresse invite sous 4 Gio
++ * vit a son miroir hote (adresse | luajit_low_base). Le code invite est deja
++ * rebase par FEX -- une dereference invite de NULL fauterait a luajit_low_base,
++ * pas sous 4 Gio. Donc toute faute de DONNEE sous 4 Gio (au-dela de la zone DOS)
++ * vient du code hote ARM64EC de Wine, qui accede au pointeur en 1:1. On decode
++ * le load/store, on le rejoue vers le miroir, on applique le writeback eventuel
++ * et on avance le PC. Rend TRUE si emule.
++ *
++ * Couvre les formes qu'un compilateur C emet : registre a offset immediat
++ * (non signe, non echelonne, pre/post-indexe), a offset registre, et les paires
++ * (LDP/STP). Entier et SIMD.
+  */
++static BOOL emuler_acces_fenetre_basse( ucontext_t *ctx, ULONG_PTR guest_addr )
++{
++    const UINT insn = *(const UINT *)PC_sig( ctx );
++    const ULONG_PTR host = guest_addr | luajit_low_base;
++
++    /* Rn : 31 = SP.  Rt : 31 = registre zero. */
++    #define XN(n)      ((n) == 31 ? SP_sig(ctx) : REGn_sig((n), ctx))
++    #define SET_XN(n,v) do { if ((n) == 31) SP_sig(ctx) = (v); else REGn_sig((n), ctx) = (v); } while (0)
++    #define XT_READ(n) ((n) == 31 ? 0ull : REGn_sig((n), ctx))
++    #define XT_WRITE(n,v) do { if ((n) != 31) REGn_sig((n), ctx) = (v); } while (0)
++    #define VREG(n)    ((UINT64 *)&ctx->uc_mcontext->__ns.__v[(n)])
++
++    /* Charge nb octets depuis host, etend a 64 bits selon signe. */
++    #define CHARGE_ENTIER(nb, signe) ({                                   \
++        UINT64 _v = 0; memcpy( &_v, (void *)host, (nb) );                 \
++        if (signe) { UINT _b = (nb) * 8; _v = (UINT64)(((INT64)(_v << (64 - _b))) >> (64 - _b)); } \
++        _v; })
++
++    /* --- Paires : LDP/STP (opc 101 V idx L imm7 Rt2 Rn Rt) --- */
++    if ((insn & 0x3a000000u) == 0x28000000u)
++    {
++        UINT opc = insn >> 30;            /* 00=32b,01=(LDPSW/D),10=64b/Q */
++        UINT V   = (insn >> 26) & 1;
++        UINT idx = (insn >> 23) & 3;      /* 01 post, 10 offset, 11 pre */
++        UINT L   = (insn >> 22) & 1;
++        INT  imm7 = (INT)((insn >> 15) & 0x7f); if (imm7 & 0x40) imm7 -= 0x80;
++        UINT Rt2 = (insn >> 10) & 31;
++        UINT Rn  = (insn >> 5) & 31;
++        UINT Rt  = insn & 31;
++        UINT esz = V ? (4u << opc) : ((opc & 2) ? 8u : 4u);   /* octets par registre */
++        BOOL signe = (!V && opc == 1);                        /* LDPSW */
++        ULONG_PTR h2 = host + esz;
++        if (idx == 0) return FALSE;                           /* variante STGP/non geree */
++        if (L)
++        {
++            if (V) { UINT64 a[2]={0,0},b[2]={0,0}; memcpy(a,(void*)host,esz); memcpy(b,(void*)h2,esz);
++                     memcpy(VREG(Rt),a,16); memcpy(VREG(Rt2),b,16); }
++            else {
++                UINT64 v1=0,v2=0; memcpy(&v1,(void*)host,esz); memcpy(&v2,(void*)h2,esz);
++                if (signe){ v1=(UINT64)(((INT64)(v1<<32))>>32); v2=(UINT64)(((INT64)(v2<<32))>>32); }
++                XT_WRITE(Rt,v1); XT_WRITE(Rt2,v2);
++            }
++        }
++        else
++        {
++            if (V) { memcpy((void*)host,VREG(Rt),esz); memcpy((void*)h2,VREG(Rt2),esz); }
++            else { UINT64 v1=XT_READ(Rt),v2=XT_READ(Rt2); memcpy((void*)host,&v1,esz); memcpy((void*)h2,&v2,esz); }
++        }
++        if (idx == 1 || idx == 3) SET_XN( Rn, XN(Rn) + (INT64)imm7 * esz );   /* writeback pre/post */
++        PC_sig(ctx) += 4;
++        return TRUE;
++    }
++
++    /* --- Registre, offset immediat non signe : (size 111 V 01 opc imm12 Rn Rt) --- */
++    if ((insn & 0x3b000000u) == 0x39000000u)
++    {
++        UINT size = insn >> 30, V = (insn >> 26) & 1, opc = (insn >> 22) & 3;
++        UINT Rt = insn & 31;
++        if (V)
++        {
++            UINT vsz = ((opc & 2) && size == 0) ? 16u : (1u << size);
++            BOOL load = opc & 1;
++            if (load) { UINT64 t[2]={0,0}; memcpy(t,(void*)host,vsz); memcpy(VREG(Rt),t,16); }
++            else memcpy((void*)host, VREG(Rt), vsz);
++        }
++        else
++        {
++            if (size == 3 && opc == 2) { PC_sig(ctx) += 4; return TRUE; }   /* PRFM : rien */
++            UINT nb = 1u << size;
++            BOOL load = opc != 0;
++            BOOL signe = (opc == 2 || opc == 3);
++            if (load) XT_WRITE(Rt, CHARGE_ENTIER(nb, signe));
++            else { UINT64 v = XT_READ(Rt); memcpy((void*)host, &v, nb); }
++        }
++        PC_sig(ctx) += 4;
++        return TRUE;
++    }
++
++    /* --- Registre, non echelonne / pre / post / offset registre :
++     *     (size 111 V 00 opc ... Rn Rt), sous-type en bits 11:10 --- */
++    if ((insn & 0x3b200000u) == 0x38000000u ||       /* imm : unscaled/pre/post */
++        (insn & 0x3b200c00u) == 0x38200800u)         /* offset registre */
++    {
++        UINT size = insn >> 30, V = (insn >> 26) & 1, opc = (insn >> 22) & 3;
++        UINT Rn = (insn >> 5) & 31, Rt = insn & 31;
++        UINT sub = (insn >> 10) & 3;                 /* 00 unscaled,01 post,11 pre,10 reg-offset */
++        INT  imm9 = (INT)((insn >> 12) & 0x1ff); if (imm9 & 0x100) imm9 -= 0x200;
++        if (V)
++        {
++            UINT vsz = ((opc & 2) && size == 0) ? 16u : (1u << size);
++            BOOL load = opc & 1;
++            if (load) { UINT64 t[2]={0,0}; memcpy(t,(void*)host,vsz); memcpy(VREG(Rt),t,16); }
++            else memcpy((void*)host, VREG(Rt), vsz);
++        }
++        else
++        {
++            if (size == 3 && opc == 2) { PC_sig(ctx) += 4; return TRUE; }   /* PRFM unscaled */
++            UINT nb = 1u << size;
++            BOOL load = opc != 0;
++            BOOL signe = (opc == 2 || opc == 3);
++            if (load) XT_WRITE(Rt, CHARGE_ENTIER(nb, signe));
++            else { UINT64 v = XT_READ(Rt); memcpy((void*)host, &v, nb); }
++        }
++        if (sub == 1 || sub == 3) SET_XN( Rn, XN(Rn) + (INT64)imm9 );       /* writeback pre/post */
++        PC_sig(ctx) += 4;
++        return TRUE;
++    }
++
++    return FALSE;   /* forme non geree : laisser suivre le chemin normal */
++    #undef XN
++    #undef SET_XN
++    #undef XT_READ
++    #undef XT_WRITE
++    #undef VREG
++    #undef CHARGE_ENTIER
++}
++#endif /* __APPLE__ */
++
+ static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
+ {
+     ucontext_t *sigcontext = _sigcontext;
+@@ -1266,6 +1400,21 @@
+     CONTEXT context;
+     EXCEPTION_RECORD rec = { .ExceptionAddress = (void *)PC_sig(sigcontext) };
+     DWORD64 esr = get_fault_esr( sigcontext );
++
++#ifdef __APPLE__
++    /* Fenetre basse LuaJIT : un acces de donnee du code hote a un pointeur
++     * invite sous 4 Gio touche le miroir hote, pas l'adresse crue. On le
++     * redirige et on reprend sans lever d'exception invite. */
++    if (luajit_low_base)
++    {
++        UINT ec = ESR_ELx_EC( esr );
++        ULONG_PTR a = (ULONG_PTR)siginfo->si_addr;
++        if ((ec == ESR_ELx_EC_DABT_LOW || ec == ESR_ELx_EC_DABT_CUR) &&
++            a >= 0x10000 && a < 0x100000000ull &&
++            emuler_acces_fenetre_basse( sigcontext, a ))
++            return;
++    }
++#endif
+ #ifdef SONDE_HAUTE
+     ULONG_PTR sonde_addr = 0;
+ #endif
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -76,6 +76,7 @@
+ extern WOW_PEB *wow_peb;
+ extern ULONG_PTR user_space_wow_limit;
+ extern ULONG_PTR user_space_wow_base;
++extern ULONG_PTR luajit_low_base;
+ extern void *main_module;
+ extern SECTION_IMAGE_INFORMATION main_image_info;
+ 
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -218,6 +218,49 @@
+ ULONG_PTR user_space_wow_base = 0;
+ struct _KUSER_SHARED_DATA *user_shared_data = (void *)0x17ffe0000ull;
+ 
++/*
++ * Fenetre basse d'un invite 64 bits (macOS arm64 uniquement).
++ *
++ * Un invite 64 bits est en 1:1 avec l'hote : ses adresses sont celles de
++ * l'hote. Mais l'hote arm64 ne peut rien poser sous 4 Gio (__PAGEZERO), donc
++ * un invite qui exige des adresses sous 4 Gio -- LuaJIT sans GC64, qui stocke
++ * des pointeurs sur 32 bits -- ne peut pas fonctionner en 1:1.
++ *
++ * On lui reserve alors une fenetre de 4 Gio ailleurs dans l'espace de l'hote
++ * (luajit_low_base, multiple de 4 Gio), et on lui rend, pour ses reservations
++ * basses, des adresses INVITE sous 4 Gio. L'emulateur (FEX) rebase chaque
++ * acces dont l'adresse invite est sous 4 Gio : hote = invite | luajit_low_base.
++ * Le reste de l'invite 64 bits garde le 1:1 (adresses hautes, non touchees).
++ *
++ * Comme pour la fenetre 32 bits, la base est un multiple de 4 Gio : tronquer a
++ * 32 bits revient a soustraire la base, donc les conversions sont un masque et
++ * un « orr ». Zero = inactif (invite 64 bits ordinaire). Active par la variable
++ * d'environnement PROTON_OUVERT_LUAJIT.
++ */
++ULONG_PTR luajit_low_base = 0;
++
++/* Une adresse invite sous 4 Gio designe-t-elle la fenetre basse ? Zero reste
++ * zero (pointeur nul), et hors fenetre active tout est 1:1. */
++static inline int in_luajit_low_window( ULONG_PTR guest )
++{
++    return luajit_low_base && guest && guest < 0x100000000ull;
++}
++
++/* Adresse invite -> adresse hote, pour une reference qui peut viser la fenetre
++ * basse. Les adresses hautes (>= 4 Gio) et le zero passent inchangees. */
++static inline ULONG_PTR host_from_luajit_low( ULONG_PTR guest )
++{
++    return in_luajit_low_window( guest ) ? (guest | luajit_low_base) : guest;
++}
++
++/* Adresse hote -> adresse invite : une adresse dans la fenetre est rendue sous
++ * 4 Gio (masque), les autres inchangees. */
++static inline ULONG_PTR guest_from_luajit_low( ULONG_PTR host )
++{
++    return (luajit_low_base && host >= luajit_low_base && host < luajit_low_base + 0x100000000ull)
++        ? (host & 0xffffffffull) : host;
++}
++
+ /***********************************************************************
+  *           __wine_wow64_host_base
+  *
+@@ -3875,6 +3918,30 @@
+      * multiple de 4 Gio pour que le rebasage de l'emulateur soit un simple
+      * « orr » d'un bit haut. */
+     user_space_wow_base = 4 * limit_4g;
++
++    /* Fenetre basse d'un invite 64 bits (LuaJIT). Le miroir hote des adresses
++     * invite sous 4 Gio. Posee tres haut -- 2 Tio, soit le bit 41 : au-dessus
++     * de l'empreinte 1:1 de l'invite (l'exe a 5 Gio, DXVK et ses textures sous
++     * la centaine de gigaoctets) et sous les bibliotheques hotes (vers 7 Tio,
++     * 0x6ffff...). A 32 Gio la fenetre tombait en plein dans les allocations
++     * 1:1 de l'invite : « map_free_area couldn't map free area in range
++     * 0x800000000-0x900000000 » -- elles l'occupaient deja. Un SEUL bit haut,
++     * pour que « orr »/« and » du rebasage aient un immediat logique valide, et
++     * pour que « invite | base » n'empiete jamais sur l'adresse basse. On ne la
++     * reserve PAS (reserve_area la rendrait preferee, §294) : seules les
++     * allocations basses la visent, via limit_low/high dans
++     * allocate_virtual_memory. Active seulement a la demande. */
++    if (getenv( "PROTON_OUVERT_LUAJIT" ))
++    {
++        luajit_low_base = 512 * limit_4g;
++        /* Ne PAS reserver la fenetre comme zone ouverte : reserve_area la
++         * rendrait PREFEREE par l'allocateur, et la pile de l'invite y
++         * tomberait (collision, §294). On la laisse en espace libre que seules
++         * les allocations basses ciblent (via limit_low/high dans
++         * allocate_virtual_memory) ; les allocations ordinaires ne la visent
++         * pas. */
++        TRACE( "fenetre basse LuaJIT a %#lx (4 Gio)\n", luajit_low_base );
++    }
+ #endif
+ #endif
+ 
+@@ -5412,6 +5479,7 @@
+     void *base;
+     unsigned int vprot;
+     BOOL is_dos_memory = FALSE;
++    BOOL low_window_request = FALSE;
+     struct file_view *view;
+     sigset_t sigset;
+     SIZE_T size = *size_ptr;
+@@ -5442,8 +5510,42 @@
+      */
+     /* Un invite 32 bits arrive deja rebase au-dessus de la base de sa fenetre,
+      * donc la plage ci-dessous ne designe que des demandes d'invites 64 bits. */
+-    if (*ret && (char *)*ret + size <= (char *)limit_4g)
++    if (luajit_low_base && *ret && (char *)*ret + size <= (char *)limit_4g)
+     {
++        if (type & MEM_RESERVE)
++        {
++            /* Un invite 64 bits qui exige une adresse basse (LuaJIT) : on le
++             * sert depuis la fenetre basse -- allouee dans l'espace hote a
++             * luajit_low_base, mais rendue comme adresse invite sous 4 Gio.
++             * L'emulateur rebasera chaque acces. On saute la premiere page de
++             * 64 Kio : y placer une allocation rendrait l'adresse invite 0x0,
++             * que l'invite lit comme un echec (NULL) ; c'est aussi
++             * lpMinimumApplicationAddress. La fenetre couvre [0x10000, 4 Gio). */
++            ERR( "SONDE LUAJIT: reserve base=%p size=%08lx -> fenetre basse\n", *ret, size );
++            limit_low = luajit_low_base + 0x10000;
++            limit_high = luajit_low_base + limit_4g - 1;
++            low_window_request = TRUE;
++            *ret = NULL;
++        }
++        else
++        {
++            /* MEM_COMMIT / MEM_RESET sur une reservation deja dans la fenetre :
++             * l'invite passe une adresse basse, mais la vue vit a son miroir
++             * hote. On traduit avant find_view, sinon l'engagement echoue
++             * (STATUS_NOT_MAPPED_VIEW) et la page reste inaccessible -- c'est
++             * ce qui faisait planter le « rep stosb » d'initialisation de
++             * l'arene. On reconvertira l'adresse rendue a la sortie. */
++            ERR( "SONDE LUAJIT: commit/reset base=%p size=%08lx -> hote %p\n",
++                 *ret, size, (void *)host_from_luajit_low( (ULONG_PTR)*ret ) );
++            *ret = (void *)host_from_luajit_low( (ULONG_PTR)*ret );
++            low_window_request = TRUE;
++        }
++    }
++    else if (*ret && (char *)*ret + size <= (char *)limit_4g)
++    {
++        /* Base sous 4 Gio sans fenetre basse active : le noyau de macOS ne la
++         * donnera jamais (__PAGEZERO). On la traite en preference, au plus
++         * proche de Windows ou la demande aboutit. */
+         TRACE( "base %p demandee sous 4 Gio, inaccessible sur macOS : traitee en preference\n", *ret );
+         *ret = NULL;
+     }
+@@ -5557,7 +5659,8 @@
+ 
+     if (status == STATUS_SUCCESS)
+     {
+-        *ret = base;
++        *ret = low_window_request ? (void *)guest_from_luajit_low( (ULONG_PTR)base ) : base;
++        if (low_window_request) ERR( "SONDE LUAJIT: hote=%p -> invite=%p size=%08lx\n", base, *ret, size );
+         *size_ptr = size;
+     }
+     else if (status == STATUS_NO_MEMORY)
+@@ -5843,6 +5946,7 @@
+     /* Fix the parameters */
+ 
+     if (size) size = ROUND_SIZE( addr, size, page_mask );
++    addr = (void *)host_from_luajit_low( (ULONG_PTR)addr );  /* fenetre basse LuaJIT */
+     base = ROUND_ADDR( addr, page_mask );
+ 
+     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
+@@ -5887,7 +5991,7 @@
+ 
+     if (status == STATUS_SUCCESS)
+     {
+-        *addr_ptr = base;
++        *addr_ptr = (void *)guest_from_luajit_low( (ULONG_PTR)base );
+         *size_ptr = size;
+     }
+     server_leave_uninterrupted_section( &virtual_mutex, &sigset );
+@@ -5943,6 +6047,7 @@
+     /* Fix the parameters */
+ 
+     size = ROUND_SIZE( addr, size, page_mask );
++    addr = (void *)host_from_luajit_low( (ULONG_PTR)addr );  /* fenetre basse LuaJIT */
+     base = ROUND_ADDR( addr, page_mask );
+ 
+     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
+@@ -5965,7 +6070,7 @@
+ 
+     if (status == STATUS_SUCCESS)
+     {
+-        *addr_ptr = base;
++        *addr_ptr = (void *)guest_from_luajit_low( (ULONG_PTR)base );
+         *size_ptr = size;
+         *old_prot = old;
+     }

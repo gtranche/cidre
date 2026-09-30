@@ -20566,3 +20566,44 @@ ciblee par l'allocateur bas sans etre preferee. A rebatir et tester avec le fix 
 Etat : fondation solide et gatee (sans le drapeau, aucun changement -- Dead Cells confirme). La
 completion est un effort focalise sur le chemin memoire du JIT ; a faire a froid, pas en fin de
 session.
+
+## 295. LuaJIT tourne NATIVEMENT : la fenetre basse 64 bits fonctionne (sans Rosetta)
+
+Suite de §294. Les deux problemes sont resolus et le rebasage est complet. Vermintide 2 depasse
+LuaJIT sur la pile arm64ec native : il atteint « STARTUP: PostCreate Application », charge DXVK
+2.7.1, cree un device D3D11 (feature level 11_0), et le pont DRM Steam repond (SteamAPI_Init OK).
+Tout est gate par PROTON_OUVERT_LUAJIT ; sans le drapeau, codegen et handler sont identiques
+(Dead Cells intact).
+
+La fenetre basse (correctif 0073) :
+- Base a 2 Tio (bit 41, un seul bit pour que « or »/« and » du rebasage aient un immediat logique
+  valide). A 32 Gio elle tombait en plein dans l'empreinte 1:1 de l'invite -- « map_free_area
+  couldn't map free area » : les allocations 1:1 l'occupaient deja. 2 Tio est au-dessus de
+  l'invite et sous les bibliotheques hotes (~7 Tio).
+- La fenetre saute sa page zero (invite [0x10000, 4 Gio)) : sinon l'offset 0 rendait l'adresse
+  invite 0x0, lue comme un echec de VirtualAlloc.
+- MEM_COMMIT/MEM_RESET sur une reservation de la fenetre sont traduits vers le miroir hote avant
+  find_view : l'invite passe une adresse basse, la vue vit au miroir. Sans ca, l'engagement
+  echouait (STATUS_NOT_MAPPED_VIEW) et le « rep stosb » d'init de l'arene fautait.
+
+Le rebasage FEX (correctif 0070) -- lecon centrale : il faut rebaser l'ADRESSE EFFECTIVE
+complete (base + index*echelle), jamais la base seule. Sous x86 « movups xmm0,[rdx+rcx] » a
+rdx=0x328ca3a8 (bas) et rcx haut : rebaser rdx puis ajouter rcx rebasait un pointeur haut par
+megarde. GuestLowAddr materialise donc la somme (TMP4), decide, puis rebase sans toucher aux
+flags NZCV (FEX y garde les flags x86) : lsr/sub/asr/and/orr. Cable en trois points :
+GenerateMemOperand, GenerateSVEMemOperand, et les chemins GPR crus de LoadMemTSO/StoreMemTSO
+(stlur/ldapur, hors GenerateMemOperand) ; plus MemSet/MemCpy (rep stos/movs) qui rebasent leur
+adresse de depart une fois.
+
+L'acces HOTE (le mur de §294 non anticipe) : les DLL ARM64EC de Wine tournent nativement et
+dereferencent un pointeur invite en 1:1 -- pour un pointeur de la fenetre basse, elles touchent la
+mauvaise memoire. Cle : la fenetre active, tout acces de DONNEE sous 4 Gio vient du code hote (le
+code invite est deja rebase ; un NULL invite fauterait a la base, pas sous 4 Gio). On l'intercepte
+donc dans segv_handler : on decode le load/store ARM64 (paires, offset immediat/registre,
+pre/post-index, entier et SIMD), on le rejoue vers (adresse | base), on applique le writeback, on
+avance le PC. C'est la solution generale ; sur Linux le probleme n'existe pas (le bas 4 Gio y est
+1:1, macOS l'interdit par __PAGEZERO -- verifie : un binaire arm64 a petit pagezero est SIGKILL).
+
+Reste (hors LuaJIT) : apres PostCreate Application, le jeu gele sur une « nested exception on
+signal stack » pendant un demarrage tres charge en SEH (IsBadStringPtr, callbacks Steam). Pas un
+probleme LuaJIT -- bring-up general du jeu, a investiguer a part.
