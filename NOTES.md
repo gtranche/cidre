@@ -20618,3 +20618,27 @@ Correctif : `luajit_miroir_engage()` (lecture seule du bitmap vprot, donc sur pi
 verifie l'engagement avant tout acces ; sinon l'emulateur rend FALSE et la violation part vers le
 __except de l'invite. Lecon : un handler de signal ne doit jamais dereferencer une adresse dont il
 n'a pas prouve l'accessibilite -- sinon la faute imbriquee est fatale.
+
+## 296. Après LuaJIT : le vrai mur suivant, une exception C++ x64 sous arm64ec
+
+Une fois LuaJIT franchi et la garde miroir posée (§295, §295 bis), Vermintide 2 atteint
+« PostCreate Application », DXVK, device D3D11, pont Steam OK — puis GÈLE. Diagnostic complet
+(instrumentation de la chaîne SEH de Wine) :
+
+1. `sl.interposer.dll` (NVIDIA Streamline) lance un `std::filesystem_error` à l'init (matériel
+   non-NVIDIA). Import statique du jeu : impossible de simplement le retirer.
+2. Un `catch(std::exception& e)` (par référence, offset 0x98) l'attrape. Wine fait tout
+   correctement : `find_catch_handler` copie le pointeur d'objet (valide) dans la fente d'attrape,
+   et JUSTE avant d'appeler le funclet, `call_catch_handler` voit `slot[frame+0x98]` = l'objet
+   valide (sonde SONDE_CCH). `arm64x_check_call` préserve bien x0-x7.
+3. MAIS le funclet d'attrape est du code x64 (isEC=0), invoqué à travers le pont arm64ec->x64
+   (exit thunk généré par le compilateur + `ExitToX64`/`DispatcherLoopTopEnterEC` de FEX). Le
+   funclet reçoit un mauvais pointeur de trame : il lit l'objet d'exception à NULL, appelle
+   `what()`/msvcp140 avec `rcx`=NULL -> faute `[NULL+0x48]` -> nouvelle exception -> même funclet
+   -> récursion -> débordement de pile.
+
+Donc le mur est un bug d'appel de funclet d'attrape C++ x64 sous arm64ec : la trame (rdx) n'arrive
+pas au funclet à travers FEX. Ce n'est NI LuaJIT, NI l'émulateur d'accès hôte (§295 bis) —
+présent aussi sans Steam (même cascade 0x48). La correction est dans la livraison de registres de
+l'entrée EC de FEX (`ExitToX64` -> SRA) ou le thunk de sortie du compilateur — chantier FEX
+profond, à mener à froid. Toute exception C++ du jeu bute là ; c'est le prochain vrai verrou.
