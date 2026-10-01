@@ -20885,3 +20885,501 @@ Leviers, par ordre d'effet :
 
 Le jeu lui-meme n'est pas en cause : entre deux compilations il tient ~28 fps a 1080p. Le stutter
 est entierement du a l'absence de GPL cote pilote Metal.
+
+## 303. GPL dans KosmicKrisp : plan d'implementation (en cours)
+
+But : exposer VK_EXT_graphics_pipeline_library pour que DXVK compile en async et tue le stutter
+de traversee (§302). KosmicKrisp delegue deja les pipelines au runtime commun Mesa
+(vulkan/runtime/vk_pipeline.c) qui implemente GPL EN ENTIER sur des objets-shaders ; il suffit que
+le pilote produise des objets-shaders INDEPENDANTS par etage. Reference : NVK (nouveau/vulkan,
+meme archi, autorise ; PAS asahi/hk qui est interdit a l'IA par src/mesa/CLAUDE.md).
+
+Contraintes Mesa (src/mesa/CLAUDE.md=AGENTS.md) : pas de commentaires de code generes par l'IA ;
+commits de code Mesa portent `Generated-by: LLM` ; ne rien pousser sur le GitLab de Mesa.
+
+Etat ACTUEL (le blocage) : kk_compile_shaders (kk_shader.c:2181) fait une opt inter-etages
+(nir_opt_varyings_bulk sur VS+FS), synthetise un FS pass-through si absent (:2255), puis
+gather_graphics_pipeline_create_info(:1685) + kk_compile_graphics_pipeline(:1958) batissent UN
+MTLRenderPipelineState monolithique porte par shaders[0] (le VS). Le VS porte vs_library+fs_library,
+rp_variants, et tout l'etat de sortie dans info.vs (kk_shader.h:84). Au draw, kk_cmd_draw.c:1084
+appelle kk_get_render_pipeline_variant(device, vs, key) : le VS EST le pipeline.
+
+Boucle build (natif arm64, ~5 s incremental) :
+  PATH=$PWD/toolchain/bin:$PATH ninja -C build/mesa && ninja -C build/mesa install
+  -> le jeu charge prefix/lib/libvulkan_kosmickrisp.dylib via VK_DRIVER_FILES.
+
+PLAN par etapes (GPL reste OFF jusqu'a l'etape 5) :
+1. Modele d'etat : scinder kk_shader_info -> l'etat de SORTIE (blend[], blend_write_mask[],
+   rt_formats[], color_attachment_count, has_ms/alpha_to_*, fs_outputs_read_mask, DS) appartient au
+   FS ; l'etat PRE-RASTER (topology, attribs_read, sample_count, view_mask, outputs_written,
+   xfb) reste cote VS. Chaque kk_shader porte sa propre mtl_library+mtl_function (pas tout sur le VS).
+2. Assemblage au draw : kk_build_render_pipeline / kk_get_render_pipeline_variant prennent le VS ET
+   le FS lies ; cache des variantes au niveau DEVICE, cle = (vs_function, fs_function, formats,
+   write_mask). Retirer rp_variants du VS seul.
+3. Compilation par etage : kk_compile_shaders tolere un sous-ensemble d'etages ; supprimer le FS
+   pass-through synthetique et l'appel monolithique kk_compile_graphics_pipeline ; chaque etage ->
+   un kk_shader autonome (lib+fonction+son etat). Garder nir_opt_varyings_bulk UNIQUEMENT quand le
+   runtime passe l'ensemble complet avec le drapeau d'optimisation (lien monolithique/LTO).
+   Tess/GS : couplage intrinseque (emules en compute) -> repli monolithique quand presents.
+4. Build + VALIDATION SANS REGRESSION, GPL encore OFF : le runtime commun utilise toujours le
+   chemin monolithique (optimize=true), donc Dead Cells + Donjon VT2 doivent etre identiques.
+5. Activer : kk_physical_device.c -> .EXT_shader_object + .EXT_graphics_pipeline_library (liste
+   d'extensions ~l.100-200) et features .shaderObject + .graphicsPipelineLibrary (struct ~l.237).
+   Build + install + relancer VT2 : DXVK doit logger GPL supporte, et le stutter doit chuter.
+
+Pieges connus : ne pas regenerer un `make` nu cote wine sans -DWINE_TEB_SANS_X18 (sans rapport ici,
+c'est Mesa). Tester Dead Cells (sans PROTON_OUVERT_LUAJIT) ET VT2 (-eac-untrusted) a l'etape 4 et 5.
+
+## 304. GPL KosmicKrisp : etages 1-4 FAITS (fondation sans regression) ; reste la 2e marche
+
+Suite du §303. Statut au 2026-10-01 :
+
+FAIT et prouve sans regression (conformance x64 identique : D3D12=1742, D3D11=4328 ; + titre 3D
+VT2 rendu sur arm64) :
+- Chaque etage graphique compile en kk_shader INDEPENDANT (sa propre mtl_library+mtl_function,
+  kk_build_stage_library).
+- kk_shader_info scinde : pre-raster (topology, attribs_read, sample_count, view_mask,
+  outputs_written, xfb) sur le VS ; sortie (rt_formats, d/s_format, color_attachment_count,
+  blend[], has_ms, alpha_to_*) sur le FS. DS garde sur le VS (toujours lie, y compris draws
+  depth-only sans FS) -- ecart assume vs plan, equivalent pour le chemin monolithique.
+- Assemblage du MTLRenderPipelineState au DRAW, combinant VS+FS lies ; cache de variantes au
+  niveau DEVICE, cle (vs_function, fs_function, formats, write_disable_mask).
+- Repli monolithique conserve pour tess/GS (emules en compute).
+- Bug corrige : eviction du cache device dans kk_shader_destroy (cle = pointeurs de fonction
+  reutilises apres liberation sinon -> pipelines batis sur fonctions liberees, +82 echecs D3D12).
+- GPL/shaderObject PAS encore advertis (physical_device.c net-inchange).
+Fichiers : kk_shader.{c,h}, kk_device.{c,h}, kk_cmd_draw.c.
+
+BLOCAGE etape 5 (mesure) : advertir GPL fait crasher au 1er vkCreateGraphicsPipelines, parce que
+l'etat est CUIT dans les shaders a la compilation depuis un etat COMPLET :
+- kk_lower_vs_vbo() lit state->vi (fetch d'attributs de sommet) -> NULL dans la lib pre-raster.
+- kk_lower_hw_vs() lit state->ia ; multiview lit state->mv.
+- kk_lower_fs_blend (blend logiciel, pour les blends que Metal ne fait pas nativement) lit l'etat
+  de sortie -> indispo dans la lib fragment-shader (c'est une autre lib que fragment-output).
+
+2e MARCHE a faire (choix utilisateur : continuer) -- recette NVK :
+A. Fetch de sommet DYNAMIQUE : sortir kk_lower_vs_vbo de la compilation ; le VS lit les attributs
+   via l'etat dynamique de vertex input pose au draw (VK_EXT_vertex_input_dynamic_state /
+   dynamic vi). Chaque etage compile alors sans state->vi.
+B. Blend DYNAMIQUE : sortir kk_lower_fs_blend ; appliquer le blend via l'etat dynamique au draw,
+   ou ne lier le blend logiciel que quand la lib fragment-output est connue a l'assemblage.
+C. Tolerer state partiel/NULL dans kk_lower_nir/kk_compile_shader/les deux gathers (deja amorce).
+D. Advertir .EXT_shader_object + .EXT_graphics_pipeline_library + features shaderObject +
+   graphicsPipelineLibrary. Build arm64+x64, conformance == reference, puis DXVK doit logger GPL
+   supporte et le stutter VT2 doit chuter.
+Gate a chaque etape : sh tests/run_conformance.sh <tag> doit rester <= 1742/4328.
+
+## 303. Pont EAC « a vide » : le mecanisme de Proton reporte sur Wine 11 macOS, mesure (2026-10-01)
+
+Suite des §271-273, §292, §299 et §301. Le travail vit dans un projet a part,
+`~/Dev/eac-bridge-macos` (commit 6ab6a5b), avec quatre documents : ARCHITECTURE (le eac-bridge de
+Proton lu dans le code public), PORTABILITY (matrice composant par composant), EPIC (la demande a
+porter) et ESSAIS (les mesures). Ici, seulement ce qui touche cette pile.
+
+### Ce que le code de Proton dit, et que je supposais mal
+
+- Le `eac-bridge` de Proton est **ferme** : `Makefile.in` l. 910 le construit « si le dossier
+  existe », et il n'est pas dans le depot. Ses accroches, elles, sont publiques dans Valve-Wine
+  (`proton_11.0`) : `lsteamclient` pose `PROTON_EAC_RUNTIME` (outil Steam 1826330) ; `ntdll` ajoute
+  `$RUNTIME/v2/lib64` aux chemins de DLL integrees ; `loadorder.c` impose le pont (BUILTIN) pour
+  `easyanticheat[_x64]` **seulement si `easyanticheat_x64.so` est pose a cote de la DLL**, NATIVE
+  sinon, et NATIVE pour le lanceur (`PROTON_EAC_LAUNCHER_PROCESS`, pose par `kernelbase` d'apres
+  le nom de produit) ; `ws2_32` a un hack DNS par appid.
+- **Pour EAC-EOS, Proton ne relaie rien** : l'amorceur d'Epic detecte Wine, se declare `linux64`,
+  telecharge le module et le mappe lui-meme via `/proc/self/maps` et `__libc_dlopen_mode`
+  (§299). Proton n'intervient que par `kernelbase` (cwd, deux variables). Donc le §292 bis avait
+  raison sur un point et tort sur l'autre : pas de pont Valve pour EOS, mais un module Linux et
+  un chemin glibc quand meme, sans equivalent Darwin.
+
+### Ce qui est construit : correctif 0075
+
+`0075-wine11-pont-eac-a-vide.patch`, applique dans `src/wine11` (non commite la, comme le reste) :
+les trois accroches (loader, loadorder avec `.dylib` ou `.so`, kernelbase sur le nom de fichier
+`EasyAntiCheat_launcher.exe`) et un module `dlls/easyanticheat_x64` (PE arm64ec + unixlib arm64)
+qui exporte les 52 noms de la DLL d'Epic, relaie quatre registres vers un module natif Mach-O
+charge par `dlopen` a cote de la DLL, et rend 0 (« client non disponible ») sans module. Aucune
+logique anti-triche ; rien n'est masque ; aucune attestation n'est fabriquee.
+
+Construction : `configure` modifie ⇒ `make` relance configure ⇒ **« bison too old »** avec le
+bison 2.3 du systeme. Il faut `PATH=/usr/local/opt/bison/bin:<llvm-mingw>/bin:...` (ce que fait
+`etape2_construire_pile.sh` pour Wine 10). Puis les deux drapeaux TEB, comme toujours ; verifie :
+0 lecture de `x18` dans le pont, `ntdll.dll` ARM64X, `h32temps` ok, `banc_x64` 20 M tours en 85,4 ms.
+
+### Mesure : six cas, tous conformes
+
+Faux dossiers `drive_c/jeu_eac_{avec,sans}_module` avec la vraie `EasyAntiCheat_x64.dll` de VT2,
+une sonde x86-64 sans CRT, un module de test arm64 qui journalise et rend 0.
+
+| cas | disposition | choix de Wine |
+| --- | --- | --- |
+| 1 | DLL + `easyanticheat_x64.dylib` a cote | **pont**, `CreateGameClient(0x140002068,0,0,0)` traverse jusqu'au module, rend 0 |
+| 2 | DLL seule | **native** d'Epic |
+| 3 | pont retire de Wine, pose dans `$PROTON_EAC_RUNTIME/v2/lib64` | pont, comme 1 |
+| 3 bis | idem sans la variable | `LoadLibrary` echoue 0x7e, comme Proton sans son runtime |
+| 4 | sonde renommee `EasyAntiCheat_launcher.exe`, lancee par `cmd /c` | **native** (drapeau pose par CreateProcess) |
+| 4 bis | meme sonde, vrai nom, `cmd /c` | pont |
+
+Le message `err:virtual ... KUSER_SHARED_DATA de l'invite non reservee : c0000018` apparait une
+fois dans 2 journaux sur 6, jamais sur le temoin : c'est le message trompeur deja identifie, pas le pont.
+
+### Ce que ca ne prouve pas
+
+Les prototypes reels des 52 exports (SDK EAC), le comportement d'un module d'Epic (il n'en existe
+aucun pour cet hote), et un jeu EAC classique reel (aucun installe ; VT2 est EOS, et l'amorceur EOS
+echoue exactement comme au §273, pont ou pas). Le dernier maillon reste chez Epic : `docs/EPIC.md`.
+
+Prochain pas possible sans Epic : un jeu EAC classique gratuit dont le depot Windows embarque le
+`easyanticheat_x64.so` (support Proton active par l'editeur), pour lire la table d'exports reelle
+du module Linux et la sequence d'appels reelle du jeu. Paladins etudie : voir §304.
+
+## 304. Paladins comme banc d'essai du pont EAC : etudie, pas installe (2026-10-01)
+
+Question du §303 : un jeu EAC **classique**, gratuit, dont le depot Windows embarque le
+`easyanticheat_x64.so` d'Epic. Paladins (appid 444090, Hi-Rez, 30 Go) regarde de pres :
+
+- **EAC classique, bien** : la configuration de lancement est `Binaries/EasyAntiCheat/Launcher/
+  Settings64.json` (executable `Win64\Paladins.exe`) -- c'est le lanceur `EasyAntiCheat_launcher.exe`,
+  exactement le chemin que le correctif 0075 couvre (cas 4 du §303). Pas l'amorceur EOS.
+- **Linux/Proton** : AreWeAntiCheatYet « Running » ; derniere entree « EAC updated, and Linux
+  allowed after Evil Mojo layoffs », 1er avril 2025 ; note « known to break often ». ProtonDB :
+  silver (593 rapports, tendance bronze) ; le dernier rapport Proton (ValveSoftware/Proton #1787,
+  30 decembre 2025, Proton 10.0-4) se plaint d'alt-tab en DX11, donc le jeu **se lance** -- EAC
+  passe. Valve : « Unsupported » sur Steam Deck. Donc : support Linux active cote editeur, mais
+  fragile et non officiel.
+- **SMITE (386360, meme editeur, 30 Go)** est la meilleure alternative : support Linux **officiel**
+  depuis la 10.6 (juin 2023), AWACY « Supported », ProtonDB silver tendance gold (411 rapports).
+  Meme integration Hi-Rez (UE3, lanceur EAC classique). Smite 2 (2437170, UE5) est gold mais
+  probablement EOS, et ne sert pas le pont classique. Halo Infinite, Fall Guys, Lost Ark : plus
+  gros ou a contournement.
+- **Installation** : le Steam macOS telecharge les depots Windows grace a `steam_dev.cfg`
+  (`@sSteamCmdForcePlatformType windows`, §190) ; 176 Go libres. Pas de steamcmd ici.
+
+Ce que l'installation donnerait, quel que soit le choix : (1) le vrai `easyanticheat_x64.so`
+d'Epic pour lire sa table d'exports (`llvm-readelf`) et verifier que le pont de Valve relaie bien
+nom pour nom ; (2) la sequence d'appels reelle du jeu dans le pont (`WINEDEBUG=+eacbridge`) avec
+ses arguments ; (3) le comportement du jeu en « client non disponible » sur notre pile -- notre
+`loadorder` accepte `.so` comme marqueur, le pont est choisi, `dlopen` d'un ELF echoue
+proprement, et c'est voulu : on n'execute pas le module Linux, on constate. Ce que ca ne
+donnerait pas : une partie en ligne, qui exige l'attestation.
+
+Decision laissee a l'auteur : Smite (sur, officiel) ou Paladins (demande, fragile). Hors anti-
+triche, les deux sont de l'UE3 x86-64 jamais essaye sur la pile : le premier mur peut etre ailleurs.
+
+## 305. GPL KosmicKrisp : 2e marche STOPPEE -- GPL est un projet multi-fonctions, pas une etape
+
+Suite du §304. La 2e tentative s'est arretee tot (regle anti-patinage) sur une trouvaille qui
+change le plan. Arbre laisse propre : GPL NON advertis, conformance a la reference (D3D12=1742,
+D3D11=4326, le -2 est du bruit DXGI), arm64+x64 buildent. Gardes d'etat partiel/NULL conservees
+(acompte sur C, no-op quand state complet).
+
+TROUVAILLE DECISIVE : advertir EXT_graphics_pipeline_library SEUL (meme sans shaderObject) fait
+crasher vkd3d-proton (d3d12) PENDANT le setup du device, AVANT toute compilation de pipeline :
+« Unhandled page fault on read access to 0x0 at address 0x0 » dans test_sdk_configuration_creation
+(1er test vkd3d) = appel d'un pointeur de fonction NULL. Une sonde dans kk_compile_shaders n'a
+enregistre AUCUNE entree -> le crash est en amont de tout le travail A/B. d3d11 (DXVK) va plus loin
+avec les gardes vi/ia/mv mais crashe plus tard. Pas de backtrace capturable : winedbg pend,
+winedbg --auto tue wineserver.
+
+MUR STRUCTUREL confirme (pire que prevu via NVK) : KosmicKrisp n'a PAS d'unite materielle de fetch
+de sommet. L'approche NVK (laisser le HW fetcher selon l'etat dynamique) NE TRANSFERE PAS.
+kk_lower_vs_vbo (kk_shader.c:352) cuit format/diviseur/instancie/binding dans le VS ; seuls
+base+stride sont deja dynamiques (root table KK_ROOT_ATTRIBS). Rendre le vi dynamique exige SOIT
+un fetch in-shader agnostique au format pilote par une table runtime (nouvelle passe NIR +
+plomberie format/stride/diviseur dans la root table), SOIT advertir+implementer
+EXT_vertex_input_dynamic_state avec une variante de VS par etat-vi (garder le NIR du VS vivant).
+Blend (B) : kk_lower_fs_blend cuit le blend logiciel dans le FS ; exige extended_dynamic_state3
+color blend pour passer en dynamique.
+
+VERDICT : GPL sur KosmicKrisp = projet multi-fonctions a part entiere, chacune gatee :
+(1) diagnostiquer l'appel NULL au setup device (backtrace d'abord -- p.ex. sonde Vulkan GPL native
+hors wine, avec lldb, contre l'ICD) ; (2) fetch de sommet dynamique (A, gros, pas de HW fetch) ;
+(3) blend dynamique (B, extended_dynamic_state3). La fondation 1-4 reste la bonne base.
+
+## 305. Smite installe : c'est de l'EAC-EOS sans module Linux, et le §304 se trompait (2026-10-01)
+
+Smite (386360, 39,8 Go, build 17711927) telecharge par le Steam macOS. Le §304 le donnait « EAC
+classique, .so a peu pres certain » : **faux sur les deux points**, mesure sur le depot.
+
+- **EAC-EOS**, pas classique : `EasyAntiCheat/Settings.json` porte `productid`/`sandboxid`/
+  `deploymentid`, `EasyAntiCheat_EOS_Setup.exe` est la, et l'amorceur est `SmiteEAC64.exe`
+  (3,9 Mo, classe `easyanticheat::launcher::AntiCheatLauncher`, `StartModuleDownload` -- le
+  `start_protected_game.exe` renomme, version 1.6.3 contre 1.9.3 chez VT2). Aucun `.so`, aucun
+  `EasyAntiCheat_x64.dll` dans le depot. Le pont du §303 n'a donc rien a y faire.
+- **Aucun module Linux servi** : l'amorceur, sous la pile, se declare `linux64`, demande
+  `modules-cdn.eac-prod.on.epicgames.com/modules/f71b1231.../e03ac5a2.../linux64` et recoit
+  **403** (VT2 recevait 200). Le « support Linux » de la 10.6 (juin 2023) n'est donc pas, ou
+  plus, active cote Epic pour ce deploiement -- ce que AreWeAntiCheatYet #340 disait deja
+  (« Smite EAC is not actually working »). Sur Proton aussi, Smite tourne alors sans EAC.
+- **Le chemin « null client » marche de bout en bout sur notre pile** : 403 -> « launching with
+  null client, result code: 506 » -> `CreateProcess` de `Binaries\Win64\Smite.exe` -> « Launcher
+  finished with: 301 » -> l'amorceur se termine (`wait_for_game_process_exit: false`). C'est la
+  premiere fois qu'on voit l'amorceur EOS lancer un jeu ici : avec VT2 il s'arretait en 206.
+- **Le jeu, lui, refuse de demarrer hors Steam** : `Launch.log` dit « Steam Client API
+  Disabled! », « Epic Online Services API Disabled! », puis boite « ?INT?Launch.Errors.
+  Error_FailToLaunch? » (capture `/tmp/eac-smite/ecran_petit.png`). UE3 12.1.8253.16 s'initialise
+  (Vivox, MCTS, 10 coeurs vus) sans aucun `err:` Wine : le mur est le ticket Steam, pas la pile.
+  Lance **depuis Steam** avec `lancer_depuis_steam.sh`, le pont lsteamclient fournirait ce
+  ticket (comme pour VT2 au §299) ; on verrait alors si le backend Hi-Rez accepte un client sans
+  EAC. Non fait : il faut quitter Steam pour poser l'option de lancement (`brancher_jeux_steam.sh`).
+
+Bilan pour le pont EAC : Smite ne sert pas le pont classique, et il n'exerce pas non plus le
+mappage EOS (pas de module). Il montre seulement que l'amorceur EOS sait lancer un jeu en mode
+non protege sur la pile. Pour exercer le pont classique il faut un depot avec `EasyAntiCheat_x64.dll`
+**et** `easyanticheat_x64.so` ; la liste des jeux qui livrent ce `.so` n'est pas publique, il faut
+regarder les depots (SteamDB, section « Depots » du jeu, cherche `easyanticheat_x64.so`) avant
+de telecharger. Candidats a verifier ainsi : Halo MCC (976730, Deck verifie, classique), Dead by
+Daylight (381210, classique, Deck verifie), Hunt: Showdown 1896 ; tous payants.
+
+## 306. GPL KosmicKrisp : diagnostic natif -- blocages bien plus etroits que craint
+
+Suite du §305. Sonde Vulkan NATIVE (arm64, hors wine, liee a prefix/lib/libvulkan.1.dylib, ICD
+KosmicKrisp) sous lldb. Arbre laisse propre (GPL OFF, build OK, conformance reference).
+
+Trois resultats decisifs :
+
+1. LE CRASH WINE N'EST PAS DANS KOSMICKRISP. En natif, GPL+shaderObject advertis : vkCreateInstance
+   -> vkCreateDevice (GPL+shaderObject+KHR_pipeline_library+dynamic_rendering) = VK_SUCCESS ->
+   creation d'une bibliotheque fragment-output = VK_SUCCESS. AUCUN crash. Donc l'« appel NULL au
+   setup device » vu sous vkd3d/DXVK vit dans la couche thunk winevulkan (un entrypoint
+   EXT_shader_object / dynamic-state que winevulkan resout a NULL quand ces features sont
+   advertises), PAS dans le driver. C'est du travail cote src/wine (winevulkan), independant.
+
+2. BUG NATIF TROUVE ET CORRIGE (garde d'etat partiel). La bibliotheque pre-raster faisait SIGSEGV
+   dans kk_hash_graphics_state (ldrb sur x8=0) -> kk_populate_vs_key deref state->vi/ia NULL (le
+   vertex input est une autre bibliotheque GPL). Gardes NULL ajoutees dans kk_populate_vs_key,
+   kk_populate_fs_key, kk_hash_graphics_state (kk_shader.c, GARDEES, no-op si state complet,
+   conformance inchangee).
+
+3. APRES correction, 3 bibliotheques sur 4 compilent (fragment-shader, fragment-output,
+   vertex-input = VK_SUCCESS). Seule la pre-raster VS echoue, et PROPREMENT
+   (VK_ERROR_INVALID_SHADER_NV, pas un crash) : avec state->vi==NULL la garde SAUTE kk_lower_vs_vbo,
+   donc les load_input ne sont pas abaisses et nir_to_msl emet `float4 t1 = in.(null);`. C'est
+   exactement la TACHE A (fetch de sommet dynamique), et ca surgit comme une erreur de compilation
+   nette -> bien plus traitable qu'un crash.
+   Tache B (blend) : la lib fragment-shader compile car le blend vit dans la lib fragment-output ;
+   kk_lower_fs_blend ne se declenche donc jamais pour GPL -> les pipelines blendes rendraient SANS
+   blend (ecart de correction, pas un crash) -> priorite plus basse que A.
+
+BILAN : cote driver, GPL se reduit a A (VS fetch sans state->vi : fetch in-shader agnostique au
+format pilote par une table runtime, OU differer+cacher le vbo-lowering par etat-vi) + B (blend).
+Le crash de setup est un probleme winevulkan separe qui gate le harness et DXVK/vkd3d. Outil pret :
+scratchpad/gpl_probe.c + gpl_probe2.c (banc GPL natif pour valider A sans wine).
+PROCHAIN PAS SUGGERE : implementer A, valider avec la sonde native (elle lie deja les 4 biblios en
+pipeline executable des que la pre-raster passe), decouple du probleme couche-wine.
+
+## 307. GPL KosmicKrisp : tache A (fetch de sommet dynamique) FAITE, prouvee par rendu natif
+
+Suite du §306. Tache A reglee. Arbre livre : GPL OFF, build arm64+x64 OK, conformance monolithique
+a la reference (D3D12=1742, D3D11=4326, -2 = bruit).
+
+Approche : LOWERING DE VERTEX-INPUT DIFFERE (pas de fetch agnostique au format). Quand un etage
+sommet est compile sans vi (lib pre-raster GPL : state->vi==NULL, non-emule), le driver GARDE le
+NIR du VS sur le kk_shader. Au draw : clone NIR -> kk_lower_vs_vbo_vi(nir, dyn->vi, robustness2)
+-> MSL -> mtl_function, CACHE par cle d'attributs (format/binding/diviseur/input_rate), comme le
+cache de variantes de pipeline par format. Reutilise le fetch in-shader eprouve de kk (unorm/snorm/
+packed, robustesse). Chemin monolithique intact (vi present a la compile -> cuit comme avant). Pas
+besoin de EXT_vertex_input_dynamic_state : dyn->vi est deja peuple par la lib vertex-input liee.
+
+Deux bugs GPL draw-time corriges en plus (gates sur vs->vs_nir != NULL, donc monolithique
+byte-identique) : (1) topologie (l'input-assembly est dans la lib vertex-input -> state->ia NULL a
+la compile pre-raster -> classe POINT par defaut ; resolue depuis dyn->ia au draw, ajoutee a la cle
+de variante) ; (2) write-disable couleur (la lib fragment-output est separee -> rt_formats du FS
+vide -> l'ancienne logique masquait toutes les ecritures ; refait sur attachements lies +
+fs.outputs_written_mask). NB : 1er jet non-gate a regresse D3D11 a 4396 ; le gating a corrige.
+
+VALIDATION NATIVE (sans wine, gpl_probe3) : les 4 bibliotheques GPL lient en pipeline executable ;
+draw d'un triangle (loc0 R32G32_SFLOAT position, loc1 R8G8B8A8_UNORM couleur) dans une cible 64x64
+-> readback : pixel central (0,255,0,255), 64/64 verts -> FETCH DE SOMMET CORRECT, unpack UNORM
+compris. Chemin monolithique de controle : vert aussi.
+
+Fichiers : kk_shader.{c,h}, kk_cmd_draw.c (physical_device.c net-inchange). Bancs natifs reutilisables :
+scratchpad/gpl_probe2.c (+link) et gpl_probe3.c (+draw/readback).
+
+RESTE pour GPL complet : tache B (blend sous GPL -- le blend logiciel/natif de la lib
+fragment-output n'est pas encore thread au FS ; pipelines blendes rendraient sans blend correct) ;
+serialisation du VS differe au cache de pipeline (retourne false pour l'instant) ; ET le crash
+winevulkan au setup device (§306, couche src/wine) qui gate les VRAIS jeux. Advertir GPL n'aidera
+DXVK/vkd3d qu'une fois ce dernier regle.
+
+## 308. GPL : le verrou n'est PAS winevulkan -- c'est l'emulation tess/GS de kk sous GPL
+
+Suite du §307. Diagnostic (trace WINEDEBUG + journalisation kk_compile_shaders + sondes PE et
+natives). Arbre propre : GPL OFF, conformance reference (1742/4328), arm64+x64 buildent.
+
+CORRECTION du §306 : winevulkan N'EST PAS en cause. Une sonde PE (mingw, charge vulkan-1.dll,
+batit les 4 biblios GPL + lie, modules inline facon DXVK) a travers wine -> winevulkan -> KK x64
+PASSE sans crash (mono et 8 fils). winevulkan a deja tous les thunks (vkCreateShadersEXT,
+vkCmdBindShadersEXT, vkCmdSetVertexInputEXT, SetColorBlend*, etc.).
+
+Deux problemes distincts :
+1. shaderObject advertis -> crash d3d12 au setup. Mais on n'a PAS besoin de shaderObject (DXVK et
+   les jeux utilisent GPL, pas les shader objects bruts). -> ne pas advertir shaderObject. Avec
+   GPL SEUL (sans shaderObject), d3d12/vkd3d tourne jusqu'au bout : 1808 echecs (+66 vs 1742, =
+   l'ecart blend de la tache B encore ouvert).
+2. GPL seul -> crash d3d11 (DXVK) : les appels qui crashent sont des biblios GPL pre-raster qui
+   GROUPENT des etages tess/GS avec etat partiel (vi/ia/ms/rp/cb/ds tous NULL). L'emulation tess/GS
+   de kk (etages emules en compute a la creation de la biblio, suppose l'etat monolithique complet
+   + tous les etages ensemble) ne supporte pas la compilation partielle par-biblio de GPL.
+3. Echouer proprement (VK_ERROR) n'est PAS viable : DXVK ne tolere pas l'echec d'une biblio
+   pre-raster (d3d11 est tombe a 358). Il faut du SUCCES.
+
+TAILLE DU CORRECTIF : GROS. Supporter tess/GS sous GPL = differer TOUTE la compilation emulee
+vertex-side (VS->compute, lowering poly tess/GS, pipelines compute de pre-render, sous-programmes
+GS, VS de rasterisation) de la creation de biblio au DRAW (analogue a la tache A mais pour tout le
+chemin d'emulation) + implementer GS-nourri-par-tess (kk refuse aujourd'hui). Refactor majeur,
+risque de regression, et tess/GS est relativement rare.
+
+Garde : petit garde NULL-vi ajoute dans kk_lower_vs_vbo (inoffensif GPL OFF). Tache A + gardes
+d'etat partiel conservees. Sondes gardees : pe_probe.c/pe_conc (PE GPL via wine), gpl_probe3.c.
+
+FORK STRATEGIQUE (NOTES §302 rappel) : soit (A) finir GPL = differer tess/GS + tache B blend (gros)
+soit (B) voie NON-GPL : DXVK 1.10 + dxvk-async + cache d'etat legacy sur disque (pas de GPL driver,
+potentiellement bien moins cher pour le meme gain anti-stutter). Question cle pas chere : VT2
+utilise-t-il tess/GS ? Si non, une voie GPL etroite (juste tache B) pourrait suffire pour VT2.
+
+## 306. Dead by Daylight : EAC-EOS franchi par l'interrupteur d'Epic, puis le mur SSE4.2 de FEX (2026-10-01)
+
+DbD (appid 381210, 65 Go, EAC-EOS) sert enfin de banc d'essai apres Smite (§305, pas de module) --
+mais pour le pont EOS, pas le classique (aucun jeu installe n'a le `.so`).
+
+1. **EAC-EOS franchi, honnetement.** `EOS_USE_ANTICHEATCLIENTNULL=1` (interrupteur d'Epic, cf
+   eac-bridge-macos/docs/EOS.md) : l'amorceur part en null client, lance DeadByDaylight-Win64-Shipping.exe.
+   Mesure sur VT2 puis DbD. Lance depuis Steam via `tests/lancer_eos_depuis_steam.sh`.
+
+2. **Mur suivant, nomme : SSE4.2.** Le jeu affichait « This CPU does not support a required feature
+   (SSE4.2) » puis restait a 0 % CPU, GameThread dans NtUserGetMessage (c'etait la boite modale, pas
+   « le jeu tourne » -- erreur de lecture de la sonde au depart). Cause mesuree avec une sonde CPUID
+   invitee (`scratchpad/cpuid/cpuid.exe`) : FEX rend `CPUID.1 ECX=0xbcc8330d`, **bit 20 (SSE4.2)
+   a zero**, alors que SSE4.1/POPCNT/AVX/AVX2 sont presents. Dans FEX, `CPUID.cpp:483`
+   `(HostFeatures.SupportsCRC << 20)` : SSE4.2 n'est annonce que si l'hote a CRC32, et la detection
+   Windows/arm64ec sous Wine (`Source/Windows/Common/CPUFeatures.cpp` -> `FEX::FetchHostFeatures`) ne
+   le detecte pas. Or le CPU Apple **a** CRC32/AES/PMULL.
+
+3. **Correctif, sans recompiler FEX :** la config FEX se lit dans l'environnement
+   (`WOW64/Module.cpp:532 LoadConfig(..., _environ, ...)`), et l'option `HostFeatures=enablecrypto`
+   force CRC+AES+SHA+PMULL a vrai (`Source/Common/HostFeatures.cpp:384`). `FEX_HOSTFEATURES=enablecrypto`
+   (valeur **minuscule**, sensible a la casse) -> sonde CPUID `ECX 0xbed8330f`, SSE4.2 + AES + PCLMULQDQ
+   a 1. C'est la verite de l'hote, pas un maquillage. Ajoute a `tests/etape2_pile_arm64ec.sh` (vaut
+   pour tout jeu x86-64). Risque residuel faible : annoncer SSE4.2 promet PCMPESTRI/M ; FEX les
+   implemente, mais a surveiller si un jeu s'en sert lourdement.
+
+4. **Apres SSE4.2, DbD initialise vraiment** : ~100 % CPU, 3 Go, montage des paks (18+ FChunkCacheWorker)
+   puis jeu de threads moteur (BackgroundThreadPool, FHeartBeatThread). Journal du jeu **chiffre**
+   (anti-triche), donc progression lue au CPU/threads. Murs encore devant, hors anti-triche :
+   rendu (RHI/DXVK), et le ticket Steam (lancer depuis Steam pour l'avoir). Chantier DbD = separe,
+   de la compat UE4, comme LuaJIT l'etait pour VT2. Voir [[project_eac_bridge_macos]].
+
+## 309. Voie async (non-GPL) : dxvk-gplasync 2.7.1-1 MARCHE, gain reel mais partiel
+
+Suite du §308. Route (a) DXVK 1.10.3 : BLOQUEE (pas de support arm64, intrinseques x86 non gardes,
+2022 pre-arm64). Route (b) dxvk-gplasync v2.7.1-1 : VIABLE sans GPL -- le chemin async de DXVK 2.x
+depose la compile optimisee (monolithique) sur un worker et rend un handle vide ; le draw est saute
+(dxvk_context.cpp:6102 if(!handle) return false) jusqu'a ce que le pipeline soit pret. Independant
+de GPL, se declenche quand le fast-link GPL est absent = notre cas. Patch applique sur nos 5 patches
+DXVK sans conflit. Construit arm64ec + x64 en dossiers separes (build/dxvk-async-*), 2.7.1 stock
+intact en repli. Patch sauve : ./dxvk-gplasync-2.7.1-1.patch. Async ON par defaut (DXVK_ASYNC=0
+desactive).
+
+MESURE VT2 (Donjon, DXVK_ASYNC=1, « DXVK: v2.7.1-1-gplasync » + « Graphics pipeline libraries not
+supported » -> chemin async confirme) vs reference sync §302 :
+  stalls 290 -> 40 ; total 166552 ms -> 30395 ms (~5,5x moins) ; median 320 -> 261 ms.
+  MAIS p90 ~1245->1264 et max 5197->5400 INCHANGES.
+Analyse des gros stalls residuels : ce ne sont PAS de la compilation de pipeline mais du
+CHARGEMENT D'ASSETS au boot -- le max 5400 ms est PatchedResourcePackage::flush (setup boot
+packages / physics properties), hors de portee de l'async (streaming disque du jeu, present aussi
+en natif). Les stalls de compilation de pipeline (la « traversee ») sont eux largement elimines.
+Rendu correct (menu + scene 3D). Zero crash.
+
+CAVEAT : le run de mesure a atteint le menu/Adventure, pas une traversee complete prolongee du
+Donjon. Pour un chiffre dur « stutter de marche elimine », refaire une mesure en restant en jeu et
+en se deplacant, et ne compter que les stalls en jeu (exclure le boot). Compromis connu : DXVK 2.x
+n'a plus le cache disque -> le pop-in revient chaque session (jamais de gel). Deploye actuellement
+dans le prefixe ; A/B via DXVK_ASYNC=0/1 ou restaurer depuis /tmp/dxvk-stock-backup.
+
+## 307. Le mur general des jeux a beaucoup de threads : la table TEB saturait (2026-10-01)
+
+En ouvrant le chantier online de DbD (§306), trouve un mur **general** de la pile, pas propre a DbD.
+
+**Symptome :** `err:seh:enregistrer_teb table des TEB saturee`, 26 fois, sur un jeu qui lance
+**110 threads natifs**. Le lecteur C `__wine_current_teb` (thread.c) et l'ecrivain `enregistrer_teb`
+(unix/signal_arm64.c) partagent une table de hachage `__wine_teb_table[1024]` indexee par
+`(tpidrro_el0 >> 14) % 1024`, sondage lineaire borne a 8. 26 threads sur 110 ne trouvaient pas de
+case en 8 sondes -> l'ecrivain renonce, et le lecteur retombe sur `__getReg(18)` = x18, **efface par
+macOS** -> TEB faux. Les appels de ces threads (dont le reseau) cassaient en silence -> « Steam
+offline ».
+
+**Preuve que c'est le hachage, pas le remplissage :** 110 threads dans 1024 cases, un hachage
+uniforme ne saturerait jamais 8 cases consecutives (charge 0,11). Donc `(cle >> 14)` agglutine les
+`tpidrro_el0` (bases TSD macOS mal distribuees sur les bits 14+).
+
+**Le chemin ASM (`LIRE_PEB_TSD`, signal_arm64ec.c) n'est PAS touche** : il lit le TEB directement
+dans le TSD pthread (`tpidrro + cle*8`), fiable. Seul le lecteur C utilisait la table. Donc le
+correctif est contenu aux deux copies C.
+
+**Correctif (0075 bis, non encore numerote) :** hachage de Fibonacci
+`(cle * 0x9E3779B97F4A7C15) >> 53` (brasse tous les bits), table 1024 -> 2048, sondage 8 -> 16,
+**a l'identique** dans thread.c (lecteur) et unix/signal_arm64.c (ecrivain) ; l'ASM inchange.
+Mesure apres reconstruction : **26 -> 0 saturations**, temoins h32temps et banc_x64 OK, ntdll ARM64X.
+DbD charge alors **entierement** et rend (swapchain 1728x1117, RenderThread/RHIThread), ne plante
+plus.
+
+**Mais un second mur, independant, demeure :** le login en ligne EOS echoue quand meme. Apres
+chargement, GameThread repasse en GetMessage a 0 % (dialogue « Steam offline »), puis le jeu sort
+proprement (`__telemetry_main_return_trigger`, pas de plantage). DbD demande `SteamUser023` +
+`SteamNetworking006` + EOS ; le pont relaie SteamClient017/021, Steam natif est en ligne (5 TCP
+etablies). Reste a instrumenter l'appel d'authentification (GetAuthSessionTicket /
+GetAuthTicketForWebApi pour EOS Connect) ou tracer le HTTPS d'EOS vers Epic. A part, et peut-etre
+dependant du backend. Voir [[project_eac_bridge_macos]].
+
+## 310. Bouton « Jouer » de Steam : VT2 remarche (il manquait LuaJIT + eac-untrusted au chemin Steam)
+
+Suite du §277 (ou VT2 par « Jouer » donnait « fenetre noire puis fermeture »). Le mecanisme
+d'integration etait deja la et correct : brancher_jeux_steam.sh pose l'option de lancement
+(lancer_depuis_steam.sh %command%) sur TOUS les jeux Windows dans localconfig.vdf, en un coup
+(agent de session : installer_agent_steam.sh). Rien a editer a la main. Rappel : Steam macOS ne
+cable PAS compatibilitytools.d (§186-188, prouve 3 fois) -- les options de lancement sont le SEUL
+hook. L'option VT2 etait bien posee.
+
+Cause du « se lance et se ferme » : lancer_depuis_steam.sh (et etape2) ne posaient PAS les deux
+choses qu'on n'a ajoutees qu'aujourd'hui pour VT2, et que mes scripts de test exportaient a la main :
+- PROTON_OUVERT_LUAJIT=1 (sinon crash LuaJIT au boot = fermeture immediate) ;
+- l'argument -eac-untrusted (realm Modded ; sinon mur EAC au backend).
+Steam ne transmet ni l'un ni l'autre.
+
+Correctif (tests/lancer_depuis_steam.sh) : bloc par-appid (donnee, pas exception) ->
+  case ${SteamAppId} in 552500) export PROTON_OUVERT_LUAJIT=1 ; set -- "$@" -eac-untrusted ;; esac
+Plus : nettoyage des faux_steam/wineserver orphelins en tete du script (un reste d'une session
+precedente faisait planter le nouveau lancement des le demarrage -- access violation precoce 0x8).
+
+Verifie en simulant EXACTEMENT « Jouer » (SteamAppId=552500, lancer_depuis_steam.sh launcher/Launcher.exe,
+SANS poser LuaJIT/eac a la main) : jeux.conf substitue Launcher.exe -> binaries/vermintide2.exe, le
+script pose LuaJIT + -eac-untrusted, et le MENU s'affiche, rendu, ~70 % CPU. (DXVK async gplasync
+charge au passage.) Piege de mesure note : suivre le journal console NOMME du run, pas « le plus
+recent » -- un vieux log d'une relance manuelle a donne un faux « StateTitleScreenMain ».
+
+CAVEAT : un gel intermittent au montage de la fenetre (fil principal boucle dans apply_window_pos /
+update_window_state -- plein ecran sur Wine-macOS, fragile) est survenu 1 fois sur 2. Si le
+lancement gele (fenetre noire, ~0 % CPU), quitter et relancer. Si c'est frequent : essayer
+borderless_fullscreen=true / fullscreen=false dans user_settings.config. A creuser si ca gene.
+
+## 311. VT2 JOUABLE par « Jouer » de Steam : plein ecran sans bordure + async 4 fils
+
+Suite du §310. Deux blocages restants resolus, le jeu est jouable (Donjon 1re personne) via Steam.
+
+1. GEL DE DEMARRAGE INTERMITTENT (2 fois sur 3) : fil principal fige dans apply_window_pos /
+   update_window_state -> journal bloque a « config renderer », 0,2 % CPU, « ecran blanc bizarre ».
+   C'est le PLEIN ECRAN EXCLUSIF de Wine-macOS (bascule de mode fragile). Correctif :
+   user_settings.config borderless_fullscreen = true (fullscreen reste true) -> plein ecran SANS
+   BORDURE, pas de bascule de mode. Verifie : boot franchit config renderer sans geler, fenetre
+   1728x1117 a (0,0) layer 27, menu + chargement + Donjon rendus. Sauvegarde .avant-borderless.
+
+2. DEADLOCK A L'ENTREE DU DONJON : le fil renderer gele 16 s sur present_frame pendant le gros
+   paquet de compilation de pipelines -> chien de garde du jeu (« Update not called 16s ») tue le
+   process. Cause : l'async lance 10 fils compilateurs qui saturent les 10 coeurs du M1 Max et
+   affament le fil principal. Correctif : DXVK_CONFIG=dxvk.numCompilerThreads=4 (laisse des coeurs
+   au jeu). Avec borderless + async 10 fils le Donjon chargeait deja (spawn joueur) mais avec un
+   stall max de 13,3 s -- a 3 s du watchdog. 4 fils pour la marge.
+
+Cable dans tests/lancer_depuis_steam.sh (bloc 552500) : PROTON_OUVERT_LUAJIT=1, DXVK_ASYNC=1,
+DXVK_CONFIG=dxvk.numCompilerThreads=4, +-eac-untrusted. L'utilisateur clique « Jouer », rien a regler.
+A affiner : valider 4 fils de bout en bout sous charge ; le compromis fils/throughput est tunable.

@@ -16,6 +16,17 @@
 # n'existera jamais. C'est le vrai client natif qui repond derriere.
 set -e
 R=$(cd "$(dirname "$0")" && cd .. && pwd)
+
+# Hygiene avant lancement : un faux_steam ou un wineserver laisses par une
+# session precedente font planter le nouveau lancement des le demarrage
+# (access violation precoce, « ca se lance et ca se ferme »). Si AUCUN jeu ne
+# tourne mais que des restes trainent, on les retire. On ne touche a rien si un
+# jeu est deja en cours.
+if ! pgrep -f '[v]ermintide2.exe' >/dev/null 2>&1; then
+   pkill -9 -f '[c]:\\faux_steam.exe' 2>/dev/null || true
+   pkill -9 -f 'wine11-arm64/bin/wineserver' 2>/dev/null || true
+   sleep 1
+fi
 export WINEPREFIX=${WINEPREFIX:-$R/wine/pfx-arm64ec}
 JOURNAL=${PROTON_OUVERT_JOURNAL:-$R/build/logs/steam-${SteamAppId:-inconnu}.log}
 mkdir -p "$(dirname "$JOURNAL")"
@@ -79,6 +90,25 @@ if [ -n "${SteamAppId:-}" ] && [ -f "$TABLE" ]; then
       fi
    fi
 fi
+
+# Besoins propres a certains jeux -- donnee, pas exception dans le code. Steam
+# ne transmet ni l'environnement ni les arguments que la pile exige pour un jeu
+# donne ; on les pose ici, par appid.
+#   552500 Vermintide 2 : LuaJIT veut la fenetre basse 64 bits (PROTON_OUVERT_LUAJIT,
+#     sinon plantage au boot) ; EAC online est un mur -> realm « Modded » via
+#     -eac-untrusted (voir NOTES EAC).
+case ${SteamAppId:-} in
+   552500)
+      export PROTON_OUVERT_LUAJIT=1
+      # DXVK async (build gplasync) : compile les pipelines en fond au lieu de
+      # bloquer le rendu -> tue le stutter de traversee. Fils compilateurs
+      # limites : a 10 (defaut, = tous les coeurs) le gros chargement du Donjon
+      # affame le fil principal 16 s et le chien de garde du jeu tue le process.
+      export DXVK_ASYNC=1 DXVK_CONFIG="dxvk.numCompilerThreads=4"
+      set -- "$@" -eac-untrusted
+      echo "    552500 : LuaJIT, DXVK async 4 fils, +-eac-untrusted" >>"$JOURNAL"
+      ;;
+esac
 
 cd "$DOSSIER"
 exec sh "$R/tests/etape2_pile_arm64ec.sh" "$PROG" "$@" >>"$JOURNAL" 2>&1
