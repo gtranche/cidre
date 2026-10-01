@@ -20854,3 +20854,34 @@ Voies legitimes, toutes hors de nos mains : (1) Epic livre un client Apple silic
 « Wine sur macOS » dans l'amorceur, comme il l'a fait pour Linux ; (2) Fatshark l'active pour
 Vermintide 2. L'argument a porter a Epic : ils acceptent deja un x64 emule (Windows on Arm).
 En attendant, le Modded Realm (-eac-untrusted) est la voie officielle, et elle tourne (§300).
+
+## 302. Vermintide 2 : premiere mesure de performance, et la cause du stutter de traversee
+
+Mesure sur M1 Max, Modded Realm, 2026-10-01. Rendu 1728x1117 (= retina/2), present IMMEDIATE,
+non plafonne (vsync off, max_fps=0), particules high.
+
+- **Regime etabli : ~25-28 fps.** Honnete (non plafonne, pas d'artefact retina : 1080p logique).
+  Cout structurel attendu = notre surcout bindless (+31,7 % vs Metal natif, cf. projet) + VT2 est
+  un gros DX11.
+- **Enormes ralentissements en se deplacant = stutter de compilation de pipeline, pas la charge
+  GPU.** Confirme : KosmicKrisp n'expose pas `VK_EXT_graphics_pipeline_library`
+  (`DXVK: Graphics pipeline libraries not supported`). Sans GPL, DXVK 2.7.1 ne peut pas compiler
+  les pipelines graphiques en asynchrone : l'edition finale du pipeline est synchrone au draw, la
+  premiere fois qu'un shader/materiau apparait -> gel. Les 10 threads compilateurs ne font que les
+  modules, pas le lien final.
+- **Aucun cache persistant.** Aucun `.dxvk-cache` ecrit (DXVK 2.x s'appuie sur GPL ; sans GPL, pas
+  de secours) -> chaque session recompile tout. Distribution mesuree sur un run : 290 stalls,
+  mediane 320 ms, p90 1,2 s, max 5,2 s, 166 s perdues au total ; les plus gros bloquent
+  Application::update / present_frame.
+
+Leviers, par ordre d'effet :
+1. **GPL dans KosmicKrisp** (`VK_EXT_graphics_pipeline_library`) : le vrai remede (async + cache
+   GPL). Gros morceau cote Mesa. C'est la meme famille de travail que le reste de KosmicKrisp.
+2. **A tester : DXVK plus ancien (1.10.x) + dxvk-async + cache d'etat legacy sur disque.** La 1.10
+   garde le cache `.dxvk-cache` persistant et le patch async fonctionne sans GPL : la compilation
+   ne bloquerait plus le rendu, et un 2e passage d'une carte serait lisse. A valider compatible
+   avec notre pile (on est passe a 2.7.1 pour des raisons a retrouver).
+3. Baisser resolution de rendu / particules / ombres ; et le M4 (surtout Pro/Max) aidera.
+
+Le jeu lui-meme n'est pas en cause : entre deux compilations il tient ~28 fps a 1080p. Le stutter
+est entierement du a l'absence de GPL cote pilote Metal.
