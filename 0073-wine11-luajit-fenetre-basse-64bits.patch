@@ -51,10 +51,11 @@ diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
 diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
 --- a/dlls/ntdll/unix/signal_arm64.c
 +++ b/dlls/ntdll/unix/signal_arm64.c
-@@ -1259,6 +1259,149 @@
+@@ -1258,7 +1258,153 @@
+  *		segv_handler
   *
   * Handler for SIGSEGV and related errors.
-  */
++ */
 +#ifdef __APPLE__
 +/*
 + * Redirection d'un acces HOTE a un pointeur invite de la fenetre basse.
@@ -70,7 +71,7 @@ diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
 + * Couvre les formes qu'un compilateur C emet : registre a offset immediat
 + * (non signe, non echelonne, pre/post-indexe), a offset registre, et les paires
 + * (LDP/STP). Entier et SIMD.
-+ */
+  */
 +static BOOL emuler_acces_fenetre_basse( ucontext_t *ctx, ULONG_PTR guest_addr )
 +{
 +    const UINT insn = *(const UINT *)PC_sig( ctx );
@@ -84,6 +85,9 @@ diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
 +    if (!luajit_miroir_engage( (const void *)host, FALSE ) ||
 +        !luajit_miroir_engage( (const void *)(host + 31), FALSE ))
 +        return FALSE;
++#ifdef SONDE_EMU_COMPTE
++    { static LONG n; LONG v = InterlockedIncrement( &n ); if ((v % 2000) == 1) ERR( "SONDE_EMU_COMPTE %ld acces hote emules (pc=%p guest=%p)\n", (long)v, (void *)PC_sig(ctx), (void *)guest_addr ); }
++#endif
 +
 +    /* Rn : 31 = SP.  Rt : 31 = registre zero. */
 +    #define XN(n)      ((n) == 31 ? SP_sig(ctx) : REGn_sig((n), ctx))
@@ -201,7 +205,7 @@ diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
  static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
  {
      ucontext_t *sigcontext = _sigcontext;
-@@ -1266,6 +1409,21 @@
+@@ -1266,6 +1412,21 @@
      CONTEXT context;
      EXCEPTION_RECORD rec = { .ExceptionAddress = (void *)PC_sig(sigcontext) };
      DWORD64 esr = get_fault_esr( sigcontext );
@@ -478,3 +482,575 @@ diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
          *size_ptr = size;
          *old_prot = old;
      }
+diff --git a/dlls/ntdll/string.c b/dlls/ntdll/string.c
+--- a/dlls/ntdll/string.c
++++ b/dlls/ntdll/string.c
+@@ -34,7 +34,34 @@
+ #include "winternl.h"
+ #include "ntdll_misc.h"
+ 
++/*
++ * Fenetre basse LuaJIT (voir ntdll/unix/virtual.c §295) : un pointeur invite sous 4 Gio
++ * designe la memoire du miroir hote (adresse | base). Le code ARM64EC de Wine accede a la
++ * memoire en 1:1 ; sans traduction, chaque octet lu par ces routines passe par une faute et
++ * l'emulateur d'acces hote -- des centaines de milliers d'exceptions par minute. On traduit
++ * donc a l'entree des routines chaudes, et on retraduit les pointeurs rendus dans le tampon.
++ * Inactif (base nulle) partout ailleurs que sur arm64ec avec PROTON_OUVERT_LUAJIT.
++ */
++#ifdef __arm64ec__
++extern ULONG64 __wine_luajit_low_base;
++static inline ULONG_PTR fb_base(void) { return __wine_luajit_low_base; }
++static inline const void *fb_in(const void *p)
++{
++    ULONG_PTR a = (ULONG_PTR)p, b = fb_base();
++    return (b && a >= 0x10000 && a < 0x100000000ull) ? (const void *)(a | b) : p;
++}
++/* retraduire un pointeur rendu dans le tampon traduit vers l'adresse invite d'origine */
++static inline void *fb_out(const void *res, const void *orig, const void *trad)
++{
++    return res ? (void *)((const char *)orig + ((const char *)res - (const char *)trad)) : NULL;
++}
++#else
++#define fb_in(p) (p)
++#define fb_out(res,orig,trad) ((void *)(res))
++#endif
+ 
++
++
+ /* same as wctypes except for TAB, which doesn't have C1_BLANK for some reason... */
+ static const unsigned short ctypes[257] =
+ {
+@@ -70,7 +97,7 @@
+ /*********************************************************************
+  *                  memchr   (NTDLL.@)
+  */
+-void * __cdecl memchr( const void *ptr, int c, size_t n )
++static __attribute__((no_builtin)) void * __cdecl fb_impl_memchr( const void *ptr, int c, size_t n )
+ {
+     const unsigned char *p = ptr;
+ 
+@@ -82,7 +109,7 @@
+ /*********************************************************************
+  *                  memcmp   (NTDLL.@)
+  */
+-int __cdecl memcmp( const void *ptr1, const void *ptr2, size_t n )
++static __attribute__((no_builtin)) int __cdecl fb_impl_memcmp( const void *ptr1, const void *ptr2, size_t n )
+ {
+     const unsigned char *p1, *p2;
+ 
+@@ -101,7 +128,7 @@
+  * NOTES
+  *  Behaves like memmove.
+  */
+-void * __cdecl memcpy( void *dst, const void *src, size_t n )
++static __attribute__((no_builtin)) void * __cdecl fb_impl_memcpy( void *dst, const void *src, size_t n )
+ {
+     unsigned char *d = dst;
+     const unsigned char *s = src;
+@@ -123,7 +150,7 @@
+ /*********************************************************************
+  *                  memmove   (NTDLL.@)
+  */
+-void * __cdecl memmove( void *dst, const void *src, size_t n )
++static __attribute__((no_builtin)) void * __cdecl fb_impl_memmove( void *dst, const void *src, size_t n )
+ {
+     unsigned char *d = dst;
+     const unsigned char *s = src;
+@@ -194,7 +221,7 @@
+ /*********************************************************************
+  *                  memset   (NTDLL.@)
+  */
+-void *__cdecl memset( void *dst, int c, size_t n )
++static __attribute__((no_builtin)) void *__cdecl fb_impl_memset( void *dst, int c, size_t n )
+ {
+     typedef uint64_t DECLSPEC_ALIGN(1) unaligned_ui64;
+     typedef uint32_t DECLSPEC_ALIGN(1) unaligned_ui32;
+@@ -324,7 +351,7 @@
+ /*********************************************************************
+  *                  strcat   (NTDLL.@)
+  */
+-char * __cdecl strcat( char *dst, const char *src )
++static __attribute__((no_builtin)) char * __cdecl fb_impl_strcat( char *dst, const char *src )
+ {
+     char *d = dst;
+     while (*d) d++;
+@@ -356,7 +383,7 @@
+ /*********************************************************************
+  *                  strchr   (NTDLL.@)
+  */
+-char * __cdecl strchr( const char *str, int c )
++static __attribute__((no_builtin)) char * __cdecl fb_impl_strchr( const char *str, int c )
+ {
+     do { if (*str == (char)c) return (char *)(ULONG_PTR)str; } while (*str++);
+     return NULL;
+@@ -366,7 +393,7 @@
+ /*********************************************************************
+  *                  strcmp   (NTDLL.@)
+  */
+-int __cdecl strcmp( const char *str1, const char *str2 )
++static __attribute__((no_builtin)) int __cdecl fb_impl_strcmp( const char *str1, const char *str2 )
+ {
+     while (*str1 && *str1 == *str2) { str1++; str2++; }
+     if ((unsigned char)*str1 > (unsigned char)*str2) return 1;
+@@ -378,7 +405,7 @@
+ /*********************************************************************
+  *                  strcpy   (NTDLL.@)
+  */
+-char * __cdecl strcpy( char *dst, const char *src )
++static __attribute__((no_builtin)) char * __cdecl fb_impl_strcpy( char *dst, const char *src )
+ {
+     char *d = dst;
+     while ((*d++ = *src++));
+@@ -420,7 +447,7 @@
+ /*********************************************************************
+  *                  strlen   (NTDLL.@)
+  */
+-size_t __cdecl strlen( const char *str )
++static __attribute__((no_builtin)) size_t __cdecl fb_impl_strlen( const char *str )
+ {
+     const char *s = str;
+     while (*s) s++;
+@@ -485,7 +512,7 @@
+ /*********************************************************************
+  *                  strncmp   (NTDLL.@)
+  */
+-int __cdecl strncmp( const char *str1, const char *str2, size_t len )
++static __attribute__((no_builtin)) int __cdecl fb_impl_strncmp( const char *str1, const char *str2, size_t len )
+ {
+     if (!len) return 0;
+     while (--len && *str1 && *str1 == *str2) { str1++; str2++; }
+@@ -497,7 +524,7 @@
+  *                  strncpy   (NTDLL.@)
+  */
+ #undef strncpy
+-char * __cdecl strncpy( char *dst, const char *src, size_t len )
++static __attribute__((no_builtin)) char * __cdecl fb_impl_strncpy( char *dst, const char *src, size_t len )
+ {
+     char *d;
+     for (d = dst; len && *src; d++, src++, len--) *d = *src;
+@@ -572,7 +599,7 @@
+ /*********************************************************************
+  *                  strrchr   (NTDLL.@)
+  */
+-char * __cdecl strrchr( const char *str, int c )
++static __attribute__((no_builtin)) char * __cdecl fb_impl_strrchr( const char *str, int c )
+ {
+     char *ret = NULL;
+     do { if (*str == (char)c) ret = (char *)(ULONG_PTR)str; } while (*str++);
+@@ -594,7 +621,7 @@
+ /*********************************************************************
+  *                  strstr   (NTDLL.@)
+  */
+-char * __cdecl strstr( const char *str, const char *sub )
++static __attribute__((no_builtin)) char * __cdecl fb_impl_strstr( const char *str, const char *sub )
+ {
+     while (*str)
+     {
+@@ -2099,3 +2126,61 @@
+     path[0] = 0;
+     return ERANGE;
+ }
++
++/* --- enveloppes fenetre basse (voir en-tete fb_in) --- */
++void * __cdecl memmove( void *dst, const void *src, size_t n )
++{
++    fb_impl_memmove( (void *)fb_in(dst), fb_in(src), n ); return dst;
++}
++void * __cdecl memcpy( void *dst, const void *src, size_t n )
++{
++    fb_impl_memcpy( (void *)fb_in(dst), fb_in(src), n ); return dst;
++}
++void * __cdecl memset( void *dst, int c, size_t n )
++{
++    fb_impl_memset( (void *)fb_in(dst), c, n ); return dst;
++}
++int __cdecl memcmp( const void *p1, const void *p2, size_t n )
++{
++    return fb_impl_memcmp( fb_in(p1), fb_in(p2), n );
++}
++void * __cdecl memchr( const void *p, int c, size_t n )
++{
++    const void *t = fb_in(p); return fb_out( fb_impl_memchr( t, c, n ), p, t );
++}
++size_t __cdecl strlen( const char *s )
++{
++    return fb_impl_strlen( fb_in(s) );
++}
++int __cdecl strcmp( const char *s1, const char *s2 )
++{
++    return fb_impl_strcmp( fb_in(s1), fb_in(s2) );
++}
++int __cdecl strncmp( const char *s1, const char *s2, size_t n )
++{
++    return fb_impl_strncmp( fb_in(s1), fb_in(s2), n );
++}
++char * __cdecl strchr( const char *s, int c )
++{
++    const char *t = fb_in(s); return fb_out( fb_impl_strchr( t, c ), s, t );
++}
++char * __cdecl strrchr( const char *s, int c )
++{
++    const char *t = fb_in(s); return fb_out( fb_impl_strrchr( t, c ), s, t );
++}
++char * __cdecl strstr( const char *h, const char *nd )
++{
++    const char *t = fb_in(h); return fb_out( fb_impl_strstr( t, fb_in(nd) ), h, t );
++}
++char * __cdecl strcpy( char *dst, const char *src )
++{
++    fb_impl_strcpy( (char *)fb_in(dst), fb_in(src) ); return dst;
++}
++char * __cdecl strncpy( char *dst, const char *src, size_t n )
++{
++    fb_impl_strncpy( (char *)fb_in(dst), fb_in(src), n ); return dst;
++}
++char * __cdecl strcat( char *dst, const char *src )
++{
++    fb_impl_strcat( (char *)fb_in(dst), fb_in(src) ); return dst;
++}
+diff --git a/dlls/ntdll/wcstring.c b/dlls/ntdll/wcstring.c
+--- a/dlls/ntdll/wcstring.c
++++ b/dlls/ntdll/wcstring.c
+@@ -34,6 +34,33 @@
+ #include "winternl.h"
+ #include "ntdll_misc.h"
+ 
++/*
++ * Fenetre basse LuaJIT (voir ntdll/unix/virtual.c §295) : un pointeur invite sous 4 Gio
++ * designe la memoire du miroir hote (adresse | base). Le code ARM64EC de Wine accede a la
++ * memoire en 1:1 ; sans traduction, chaque octet lu par ces routines passe par une faute et
++ * l'emulateur d'acces hote -- des centaines de milliers d'exceptions par minute. On traduit
++ * donc a l'entree des routines chaudes, et on retraduit les pointeurs rendus dans le tampon.
++ * Inactif (base nulle) partout ailleurs que sur arm64ec avec PROTON_OUVERT_LUAJIT.
++ */
++#ifdef __arm64ec__
++extern ULONG64 __wine_luajit_low_base;
++static inline ULONG_PTR fb_base(void) { return __wine_luajit_low_base; }
++static inline const void *fb_in(const void *p)
++{
++    ULONG_PTR a = (ULONG_PTR)p, b = fb_base();
++    return (b && a >= 0x10000 && a < 0x100000000ull) ? (const void *)(a | b) : p;
++}
++/* retraduire un pointeur rendu dans le tampon traduit vers l'adresse invite d'origine */
++static inline void *fb_out(const void *res, const void *orig, const void *trad)
++{
++    return res ? (void *)((const char *)orig + ((const char *)res - (const char *)trad)) : NULL;
++}
++#else
++#define fb_in(p) (p)
++#define fb_out(res,orig,trad) ((void *)(res))
++#endif
++
++
+ static const unsigned short wctypes[256] =
+ {
+     /* 00 */
+@@ -181,7 +208,7 @@
+ /***********************************************************************
+  *           wcscpy    (NTDLL.@)
+  */
+-LPWSTR __cdecl wcscpy( LPWSTR dst, LPCWSTR src )
++static __attribute__((no_builtin)) LPWSTR __cdecl fb_impl_wcscpy( LPWSTR dst, LPCWSTR src )
+ {
+     WCHAR *p = dst;
+     while ((*p++ = *src++));
+@@ -212,7 +239,7 @@
+ /***********************************************************************
+  *           wcslen    (NTDLL.@)
+  */
+-size_t __cdecl wcslen( LPCWSTR str )
++static __attribute__((no_builtin)) size_t __cdecl fb_impl_wcslen( LPCWSTR str )
+ {
+     const WCHAR *s = str;
+     while (*s) s++;
+@@ -253,7 +280,7 @@
+ /*********************************************************************
+  *           wcschr    (NTDLL.@)
+  */
+-LPWSTR __cdecl wcschr( LPCWSTR str, WCHAR ch )
++static __attribute__((no_builtin)) LPWSTR __cdecl fb_impl_wcschr( LPCWSTR str, WCHAR ch )
+ {
+     do { if (*str == ch) return (WCHAR *)(ULONG_PTR)str; } while (*str++);
+     return NULL;
+@@ -263,7 +290,7 @@
+ /*********************************************************************
+  *           wcscmp    (NTDLL.@)
+  */
+-int __cdecl wcscmp( LPCWSTR str1, LPCWSTR str2 )
++static __attribute__((no_builtin)) int __cdecl fb_impl_wcscmp( LPCWSTR str1, LPCWSTR str2 )
+ {
+     while (*str1 && (*str1 == *str2)) { str1++; str2++; }
+     return *str1 - *str2;
+@@ -350,7 +377,7 @@
+  *           wcsncpy    (NTDLL.@)
+  */
+ #undef wcsncpy
+-LPWSTR __cdecl wcsncpy( LPWSTR s1, LPCWSTR s2, size_t n )
++static __attribute__((no_builtin)) LPWSTR __cdecl fb_impl_wcsncpy( LPWSTR s1, LPCWSTR s2, size_t n )
+ {
+     size_t i;
+ 
+@@ -426,7 +453,7 @@
+ /*********************************************************************
+  *           wcsrchr    (NTDLL.@)
+  */
+-LPWSTR __cdecl wcsrchr( LPCWSTR str, WCHAR ch )
++static __attribute__((no_builtin)) LPWSTR __cdecl fb_impl_wcsrchr( LPCWSTR str, WCHAR ch )
+ {
+     WCHAR *ret = NULL;
+     do { if (*str == ch) ret = (WCHAR *)(ULONG_PTR)str; } while (*str++);
+@@ -448,7 +475,7 @@
+ /*********************************************************************
+  *           wcsstr    (NTDLL.@)
+  */
+-LPWSTR __cdecl wcsstr( LPCWSTR str, LPCWSTR sub )
++static __attribute__((no_builtin)) LPWSTR __cdecl fb_impl_wcsstr( LPCWSTR str, LPCWSTR sub )
+ {
+     while (*str)
+     {
+@@ -1453,3 +1480,33 @@
+     path[0] = 0;
+     return ERANGE;
+ }
++
++/* --- enveloppes fenetre basse (voir en-tete fb_in) --- */
++size_t __cdecl wcslen( const WCHAR *s )
++{
++    return fb_impl_wcslen( fb_in(s) );
++}
++int __cdecl wcscmp( const WCHAR *s1, const WCHAR *s2 )
++{
++    return fb_impl_wcscmp( fb_in(s1), fb_in(s2) );
++}
++WCHAR * __cdecl wcscpy( WCHAR *dst, const WCHAR *src )
++{
++    fb_impl_wcscpy( (WCHAR *)fb_in(dst), fb_in(src) ); return dst;
++}
++WCHAR * __cdecl wcsncpy( WCHAR *dst, const WCHAR *src, size_t n )
++{
++    fb_impl_wcsncpy( (WCHAR *)fb_in(dst), fb_in(src), n ); return dst;
++}
++WCHAR * __cdecl wcschr( const WCHAR *s, WCHAR c )
++{
++    const WCHAR *t = fb_in(s); return fb_out( fb_impl_wcschr( t, c ), s, t );
++}
++WCHAR * __cdecl wcsrchr( const WCHAR *s, WCHAR c )
++{
++    const WCHAR *t = fb_in(s); return fb_out( fb_impl_wcsrchr( t, c ), s, t );
++}
++WCHAR * __cdecl wcsstr( const WCHAR *h, const WCHAR *nd )
++{
++    const WCHAR *t = fb_in(h); return fb_out( fb_impl_wcsstr( t, fb_in(nd) ), h, t );
++}
+diff --git a/dlls/msvcrt/string.c b/dlls/msvcrt/string.c
+--- a/dlls/msvcrt/string.c
++++ b/dlls/msvcrt/string.c
+@@ -36,6 +36,33 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(msvcrt);
+ 
++
++/*
++ * Fenetre basse LuaJIT (voir ntdll/unix/virtual.c §295) : un pointeur invite sous 4 Gio
++ * designe la memoire du miroir hote (adresse | base). Le code ARM64EC de Wine accede a la
++ * memoire en 1:1 ; sans traduction, chaque octet lu par ces routines passe par une faute et
++ * l'emulateur d'acces hote -- des centaines de milliers d'exceptions par minute. On traduit
++ * donc a l'entree des routines chaudes, et on retraduit les pointeurs rendus dans le tampon.
++ * Inactif (base nulle) partout ailleurs que sur arm64ec avec PROTON_OUVERT_LUAJIT.
++ */
++#ifdef __arm64ec__
++extern __declspec(dllimport) ULONG64 __wine_luajit_low_base;
++static inline ULONG_PTR fb_base(void) { return __wine_luajit_low_base; }
++static inline const void *fb_in(const void *p)
++{
++    ULONG_PTR a = (ULONG_PTR)p, b = fb_base();
++    return (b && a >= 0x10000 && a < 0x100000000ull) ? (const void *)(a | b) : p;
++}
++/* retraduire un pointeur rendu dans le tampon traduit vers l'adresse invite d'origine */
++static inline void *fb_out(const void *res, const void *orig, const void *trad)
++{
++    return res ? (void *)((const char *)orig + ((const char *)res - (const char *)trad)) : NULL;
++}
++#else
++#define fb_in(p) (p)
++#define fb_out(res,orig,trad) ((void *)(res))
++#endif
++
+ struct MSVCRT__LDOUBLE
+ {
+     ULONGLONG m;
+@@ -1255,7 +1282,7 @@
+ /*********************************************************************
+  *                  strncpy (MSVCRT.@)
+  */
+-char* __cdecl strncpy(char *dst, const char *src, size_t len)
++static __attribute__((no_builtin)) char* __cdecl fb_impl_strncpy(char *dst, const char *src, size_t len)
+ {
+     size_t i;
+ 
+@@ -1377,7 +1404,7 @@
+ /*********************************************************************
+  *      strcat (MSVCRT.@)
+  */
+-char* __cdecl strcat( char *dst, const char *src )
++static __attribute__((no_builtin)) char* __cdecl fb_impl_strcat( char *dst, const char *src )
+ {
+     char *d = dst;
+     while (*d) d++;
+@@ -1562,7 +1589,7 @@
+ /*********************************************************************
+  *              strlen (MSVCRT.@)
+  */
+-size_t __cdecl strlen(const char *str)
++static __attribute__((no_builtin)) size_t __cdecl fb_impl_strlen(const char *str)
+ {
+     const char *s = str;
+     while (*s) s++;
+@@ -2765,7 +2792,7 @@
+ /*********************************************************************
+  *                  memcmp (MSVCRT.@)
+  */
+-int __cdecl memcmp(const void *ptr1, const void *ptr2, size_t n)
++static __attribute__((no_builtin)) int __cdecl fb_impl_memcmp(const void *ptr1, const void *ptr2, size_t n)
+ {
+     const unsigned char *p1 = ptr1, *p2 = ptr2;
+     size_t align;
+@@ -3050,7 +3077,7 @@
+ #else
+ # define MERGE(w1, sh1, w2, sh2) ((w1 >> sh1) | (w2 << sh2))
+ #endif
+-void * __cdecl memmove(void *dst, const void *src, size_t n)
++static __attribute__((no_builtin)) void * __cdecl fb_impl_memmove(void *dst, const void *src, size_t n)
+ {
+ #if defined(__x86_64__) && !defined(__arm64ec__)
+     return sse2_memmove(dst, src, n);
+@@ -3158,7 +3185,7 @@
+ /*********************************************************************
+  *                  memcpy   (MSVCRT.@)
+  */
+-void * __cdecl memcpy(void *dst, const void *src, size_t n)
++static __attribute__((no_builtin)) void * __cdecl fb_impl_memcpy(void *dst, const void *src, size_t n)
+ {
+     return memmove(dst, src, n);
+ }
+@@ -3191,7 +3218,7 @@
+ /*********************************************************************
+  *		    memset (MSVCRT.@)
+  */
+-void *__cdecl memset(void *dst, int c, size_t n)
++static __attribute__((no_builtin)) void *__cdecl fb_impl_memset(void *dst, int c, size_t n)
+ {
+     typedef uint64_t DECLSPEC_ALIGN(1) unaligned_ui64;
+     typedef uint32_t DECLSPEC_ALIGN(1) unaligned_ui32;
+@@ -3247,7 +3274,7 @@
+ /*********************************************************************
+  *		    strchr (MSVCRT.@)
+  */
+-char* __cdecl strchr(const char *str, int c)
++static __attribute__((no_builtin)) char* __cdecl fb_impl_strchr(const char *str, int c)
+ {
+     do
+     {
+@@ -3259,7 +3286,7 @@
+ /*********************************************************************
+  *                  strrchr (MSVCRT.@)
+  */
+-char* __cdecl strrchr(const char *str, int c)
++static __attribute__((no_builtin)) char* __cdecl fb_impl_strrchr(const char *str, int c)
+ {
+     char *ret = NULL;
+     do { if (*str == (char)c) ret = (char*)str; } while (*str++);
+@@ -3269,7 +3296,7 @@
+ /*********************************************************************
+  *                  memchr   (MSVCRT.@)
+  */
+-void* __cdecl memchr(const void *ptr, int c, size_t n)
++static __attribute__((no_builtin)) void* __cdecl fb_impl_memchr(const void *ptr, int c, size_t n)
+ {
+     const unsigned char *p = ptr;
+ 
+@@ -3280,7 +3307,7 @@
+ /*********************************************************************
+  *                  strcmp (MSVCRT.@)
+  */
+-int __cdecl strcmp(const char *str1, const char *str2)
++static __attribute__((no_builtin)) int __cdecl fb_impl_strcmp(const char *str1, const char *str2)
+ {
+     while (*str1 && *str1 == *str2) { str1++; str2++; }
+     if ((unsigned char)*str1 > (unsigned char)*str2) return 1;
+@@ -3291,7 +3318,7 @@
+ /*********************************************************************
+  *                  strncmp   (MSVCRT.@)
+  */
+-int __cdecl strncmp(const char *str1, const char *str2, size_t len)
++static __attribute__((no_builtin)) int __cdecl fb_impl_strncmp(const char *str1, const char *str2, size_t len)
+ {
+     if (!len) return 0;
+     while (--len && *str1 && *str1 == *str2) { str1++; str2++; }
+@@ -3376,7 +3403,7 @@
+ /*********************************************************************
+  *                  strstr   (MSVCRT.@)
+  */
+-char* __cdecl strstr(const char *haystack, const char *needle)
++static __attribute__((no_builtin)) char* __cdecl fb_impl_strstr(const char *haystack, const char *needle)
+ {
+     size_t i, j, len, needle_len, lps_len;
+     BYTE lps[256];
+@@ -3554,3 +3581,57 @@
+     return *str1 ? (char*)str1 : NULL;
+ }
+ #endif
++
++/* --- enveloppes fenetre basse (voir en-tete fb_in) --- */
++void * __cdecl memmove( void *dst, const void *src, size_t n )
++{
++    fb_impl_memmove( (void *)fb_in(dst), fb_in(src), n ); return dst;
++}
++void * __cdecl memcpy( void *dst, const void *src, size_t n )
++{
++    fb_impl_memcpy( (void *)fb_in(dst), fb_in(src), n ); return dst;
++}
++void * __cdecl memset( void *dst, int c, size_t n )
++{
++    fb_impl_memset( (void *)fb_in(dst), c, n ); return dst;
++}
++int __cdecl memcmp( const void *p1, const void *p2, size_t n )
++{
++    return fb_impl_memcmp( fb_in(p1), fb_in(p2), n );
++}
++void * __cdecl memchr( const void *p, int c, size_t n )
++{
++    const void *t = fb_in(p); return fb_out( fb_impl_memchr( t, c, n ), p, t );
++}
++size_t __cdecl strlen( const char *s )
++{
++    return fb_impl_strlen( fb_in(s) );
++}
++int __cdecl strcmp( const char *s1, const char *s2 )
++{
++    return fb_impl_strcmp( fb_in(s1), fb_in(s2) );
++}
++int __cdecl strncmp( const char *s1, const char *s2, size_t n )
++{
++    return fb_impl_strncmp( fb_in(s1), fb_in(s2), n );
++}
++char * __cdecl strchr( const char *s, int c )
++{
++    const char *t = fb_in(s); return fb_out( fb_impl_strchr( t, c ), s, t );
++}
++char * __cdecl strrchr( const char *s, int c )
++{
++    const char *t = fb_in(s); return fb_out( fb_impl_strrchr( t, c ), s, t );
++}
++char * __cdecl strstr( const char *h, const char *nd )
++{
++    const char *t = fb_in(h); return fb_out( fb_impl_strstr( t, fb_in(nd) ), h, t );
++}
++char * __cdecl strncpy( char *dst, const char *src, size_t n )
++{
++    fb_impl_strncpy( (char *)fb_in(dst), fb_in(src), n ); return dst;
++}
++char * __cdecl strcat( char *dst, const char *src )
++{
++    fb_impl_strcat( (char *)fb_in(dst), fb_in(src) ); return dst;
++}

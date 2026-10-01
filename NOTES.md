@@ -20676,3 +20676,31 @@ msvcp140, lu par le symbole a l'adresse de la faute).
 
 Piege de session : « cp » par-dessus ntdll.so mappee -> SIGKILL (rc=137) meme sur wine --version ;
 remplacer par cp vers un nom temporaire puis mv (nouvel inode).
+
+## 298. Vitesse : la tempete d'acces hote (628 000 fautes) et les routines CRT conscientes de la fenetre
+
+Une fois KUSER aliasee (§297), le jeu allait jusqu'au bout du chargement des scripts... et son
+chien de garde le tuait (« Deadlock detected. Update was not called for 15 s », dans
+statistics_definitions.lua) : ~27 s pour une phase qui prend 2-4 s sous Windows. Mesure au
+compteur dans l'emulateur d'acces hote (§295) : 628 001 fautes emulees en deux minutes, dont 78 %
+dans memmove d'ucrtbase, puis strlen/strcmp de ntdll, strstr, strchr, memset -- des routines C
+de Wine (cote ARM64EC) appelees par le jeu ET par LuaJIT sur des chaines basses, emulees octet
+par octet via une exception Mach chacune (20-50 us). Dizaines de secondes sur le fil principal.
+
+Correctif (0073, msvcrt/string.c, ntdll/string.c, ntdll/wcstring.c) : les routines chaudes
+(mem*/str*/wcs*) traduisent a l'entree tout pointeur invite sous 4 Gio vers son miroir
+(fb_in : une comparaison et un « or », via l'export __wine_luajit_low_base) et retraduisent les
+pointeurs rendus dans le tampon (fb_out). Compile seulement pour __arm64ec__ ; identite si la
+base est nulle. Resultat : 0 emulation en 200 s (au lieu de 628 000), scripts charges en ~10 s,
+plus de deadlock, le jeu passe l'init Steam et tourne (fenetre, audio, backend TLS).
+
+Piege rencontre : en renommant les corps en fb_impl_*, ils ne sont plus « la » fonction memmove
+ou strlen, et LLVM reconnait leurs boucles comme des idiomes qu'il remplace par des appels a
+memmove/strlen -> recursion infinie -> tempete d'exceptions (wineboot a 100 % dans
+call_seh_handlers/virtual_unwind, sample(1) l'a montre). __attribute__((no_builtin)) sur chaque
+corps. C'est le piege classique de toute implementation de libc.
+
+Autre piege : chaque « make install » bumpe la version et le lancement suivant relance
+wineboot --init ; le tuer avant la fin laisse .update-timestamp en arriere et CHAQUE lancement
+suivant recommence (journaux vides, « faux_steam mort »). Laisser wineboot -u finir (25 s sain)
+et verifier que .update-timestamp change.
