@@ -1,0 +1,613 @@
+Pont Easy Anti-Cheat « a vide » pour Wine 11 sur macOS (eac-bridge-macos, etape 2).
+
+Reproduit la plomberie du eac-bridge de Proton :
+  - ntdll/unix/loader.c    : PROTON_EAC_RUNTIME -> $RUNTIME/v2/lib32 et /v2/lib64 ajoutes aux
+                             chemins de DLL integrees (meme disposition que le runtime Steam 1826330).
+  - ntdll/unix/loadorder.c : easyanticheat{,_x64,_x86}.dll -> module integre (le pont) seulement si
+                             easyanticheat_x64.dylib ou .so est pose a cote ; sinon DLL native d'Epic ;
+                             DLL native imposee au lanceur EAC (PROTON_EAC_LAUNCHER_PROCESS).
+  - kernelbase/process.c   : marque EasyAntiCheat_launcher.exe (Proton lit le nom de produit, ici le
+                             nom de fichier).
+  - dlls/easyanticheat_x64 : le pont, PE + unixlib ; relaie les exports de la DLL d'Epic vers un module
+                             natif Mach-O charge par dlopen, et rend « client non disponible » sinon.
+                             Aucune logique anti-triche, aucune attestation fabriquee.
+Base : Wine 11.18 tel que modifie dans proton-ouvert (src/wine11). S'applique avec patch -p1.
+
+diff -ruN a/configure b/configure
+--- a/configure	2026-10-01 08:51:48
++++ b/configure	2026-10-01 08:51:48
+@@ -1260,6 +1260,7 @@
+ enable_loadperf
+ enable_localspl
+ enable_localui
++enable_easyanticheat_x64
+ enable_lsteamclient
+ enable_lz32
+ enable_magnification
+@@ -22602,6 +22603,7 @@
+ wine_fn_config_makefile dlls/localspl enable_localspl
+ wine_fn_config_makefile dlls/localspl/tests enable_tests
+ wine_fn_config_makefile dlls/localui enable_localui
++wine_fn_config_makefile dlls/easyanticheat_x64 enable_easyanticheat_x64
+ wine_fn_config_makefile dlls/lsteamclient enable_lsteamclient
+ wine_fn_config_makefile dlls/localui/tests enable_tests
+ wine_fn_config_makefile dlls/lz32 enable_lz32
+diff -ruN a/configure.ac b/configure.ac
+--- a/configure.ac	2026-10-01 08:51:48
++++ b/configure.ac	2026-10-01 08:51:48
+@@ -2908,6 +2908,7 @@
+ WINE_CONFIG_MAKEFILE(dlls/localspl)
+ WINE_CONFIG_MAKEFILE(dlls/localspl/tests)
+ WINE_CONFIG_MAKEFILE(dlls/localui)
++WINE_CONFIG_MAKEFILE(dlls/easyanticheat_x64)
+ WINE_CONFIG_MAKEFILE(dlls/lsteamclient)
+ WINE_CONFIG_MAKEFILE(dlls/localui/tests)
+ WINE_CONFIG_MAKEFILE(dlls/lz32)
+diff -ruN a/dlls/easyanticheat_x64/Makefile.in b/dlls/easyanticheat_x64/Makefile.in
+--- a/dlls/easyanticheat_x64/Makefile.in	1970-01-01 01:00:00
++++ b/dlls/easyanticheat_x64/Makefile.in	2026-10-01 08:51:48
+@@ -0,0 +1,6 @@
++MODULE  = easyanticheat_x64.dll
++UNIXLIB = easyanticheat_x64.so
++
++SOURCES = \
++	main.c \
++	unix.c
+diff -ruN a/dlls/easyanticheat_x64/easyanticheat_x64.spec b/dlls/easyanticheat_x64/easyanticheat_x64.spec
+--- a/dlls/easyanticheat_x64/easyanticheat_x64.spec	1970-01-01 01:00:00
++++ b/dlls/easyanticheat_x64/easyanticheat_x64.spec	2026-10-01 08:51:48
+@@ -0,0 +1,56 @@
++# Table d'exports de EasyAntiCheat_x64.dll (EAC classique), relevee sur la DLL d'Epic.
++# Les prototypes reels viennent du SDK EAC ; ici chaque entree relaie quatre registres.
++@ cdecl Cerberus_BeginFrame(ptr ptr ptr ptr)
++@ cdecl Cerberus_EndFrame(ptr ptr ptr ptr)
++@ cdecl Cerberus_GameRoundEnd(ptr ptr ptr ptr)
++@ cdecl Cerberus_GameRoundStart(ptr ptr ptr ptr)
++@ cdecl Cerberus_PlayerDespawn(ptr ptr ptr ptr)
++@ cdecl Cerberus_PlayerDowned(ptr ptr ptr ptr)
++@ cdecl Cerberus_PlayerRevive(ptr ptr ptr ptr)
++@ cdecl Cerberus_PlayerSpawn(ptr ptr ptr ptr)
++@ cdecl Cerberus_PlayerTakeDamage(ptr ptr ptr ptr)
++@ cdecl Cerberus_PlayerTick(ptr ptr ptr ptr)
++@ cdecl Cerberus_PlayerUseWeapon(ptr ptr ptr ptr)
++@ cdecl ClientAuth_ClientWriteChallengeResponse(ptr ptr ptr ptr)
++@ cdecl ClientAuth_Destroy(ptr ptr ptr ptr)
++@ cdecl ClientAuth_Initialize(ptr ptr ptr ptr)
++@ cdecl CreateClientAuth(ptr ptr ptr ptr)
++@ cdecl CreateGameClient(ptr ptr ptr ptr)
++@ cdecl CreateGameLauncher(ptr ptr ptr ptr)
++@ cdecl CreateHttpsClient(ptr ptr ptr ptr)
++@ cdecl CreateThirdPartyLauncher(ptr ptr ptr ptr)
++@ cdecl GameClientP2P_BeginSession(ptr ptr ptr ptr)
++@ cdecl GameClientP2P_Cerberus(ptr ptr ptr ptr)
++@ cdecl GameClientP2P_EndSession(ptr ptr ptr ptr)
++@ cdecl GameClientP2P_InitLocalization(ptr ptr ptr ptr)
++@ cdecl GameClientP2P_PollForMessageToPeer(ptr ptr ptr ptr)
++@ cdecl GameClientP2P_PollStatus(ptr ptr ptr ptr)
++@ cdecl GameClientP2P_ReceiveMessageFromPeer(ptr ptr ptr ptr)
++@ cdecl GameClientP2P_RegisterPeer(ptr ptr ptr ptr)
++@ cdecl GameClientP2P_ResetState(ptr ptr ptr ptr)
++@ cdecl GameClientP2P_SetLogCallback(ptr ptr ptr ptr)
++@ cdecl GameClientP2P_SetMaxAllowedMessageLength(ptr ptr ptr ptr)
++@ cdecl GameClientP2P_UnregisterPeer(ptr ptr ptr ptr)
++@ cdecl GameClientP2P_UpdatePlatformUserAuthTicket(ptr ptr ptr ptr)
++@ cdecl GameClient_ConnectionReset(ptr ptr ptr ptr)
++@ cdecl GameClient_Destroy(ptr ptr ptr ptr)
++@ cdecl GameClient_Initialize(ptr ptr ptr ptr)
++@ cdecl GameClient_NetProtect(ptr ptr ptr ptr)
++@ cdecl GameClient_PollStatus(ptr ptr ptr ptr)
++@ cdecl GameClient_PopNetworkMessage(ptr ptr ptr ptr)
++@ cdecl GameClient_PushNetworkMessage(ptr ptr ptr ptr)
++@ cdecl GameClient_SetMaxAllowedMessageLength(ptr ptr ptr ptr)
++@ cdecl GameClient_ValidateServerHost(ptr ptr ptr ptr)
++@ cdecl GameLauncher_Destroy(ptr ptr ptr ptr)
++@ cdecl GameLauncher_GetGameProcessId(ptr ptr ptr ptr)
++@ cdecl GameLauncher_OpenGameProcess(ptr ptr ptr ptr)
++@ cdecl GameLauncher_StartGameA(ptr ptr ptr ptr)
++@ cdecl GameLauncher_StartGameW(ptr ptr ptr ptr)
++@ cdecl NetProtectClient_GetProtectMessageOutputLength(ptr ptr ptr ptr)
++@ cdecl NetProtectClient_ProtectMessage(ptr ptr ptr ptr)
++@ cdecl NetProtectClient_UnprotectMessage(ptr ptr ptr ptr)
++@ cdecl ThirdPartyLauncher_Destroy(ptr ptr ptr ptr)
++@ cdecl ThirdPartyLauncher_Initialize(ptr ptr ptr ptr)
++@ cdecl ThirdPartyLauncher_SetServer(ptr ptr ptr ptr)
++# Propre au pont macOS : permet a une sonde de reconnaitre le pont sans appeler le reste.
++@ cdecl EacMacosBridge_Describe(ptr long)
+diff -ruN a/dlls/easyanticheat_x64/exports.h b/dlls/easyanticheat_x64/exports.h
+--- a/dlls/easyanticheat_x64/exports.h	1970-01-01 01:00:00
++++ b/dlls/easyanticheat_x64/exports.h	2026-10-01 08:51:48
+@@ -0,0 +1,53 @@
++/* Genere a partir de easyanticheat_x64.spec : un relais par export. */
++RELAIS(Cerberus_BeginFrame)
++RELAIS(Cerberus_EndFrame)
++RELAIS(Cerberus_GameRoundEnd)
++RELAIS(Cerberus_GameRoundStart)
++RELAIS(Cerberus_PlayerDespawn)
++RELAIS(Cerberus_PlayerDowned)
++RELAIS(Cerberus_PlayerRevive)
++RELAIS(Cerberus_PlayerSpawn)
++RELAIS(Cerberus_PlayerTakeDamage)
++RELAIS(Cerberus_PlayerTick)
++RELAIS(Cerberus_PlayerUseWeapon)
++RELAIS(ClientAuth_ClientWriteChallengeResponse)
++RELAIS(ClientAuth_Destroy)
++RELAIS(ClientAuth_Initialize)
++RELAIS(CreateClientAuth)
++RELAIS(CreateGameClient)
++RELAIS(CreateGameLauncher)
++RELAIS(CreateHttpsClient)
++RELAIS(CreateThirdPartyLauncher)
++RELAIS(GameClientP2P_BeginSession)
++RELAIS(GameClientP2P_Cerberus)
++RELAIS(GameClientP2P_EndSession)
++RELAIS(GameClientP2P_InitLocalization)
++RELAIS(GameClientP2P_PollForMessageToPeer)
++RELAIS(GameClientP2P_PollStatus)
++RELAIS(GameClientP2P_ReceiveMessageFromPeer)
++RELAIS(GameClientP2P_RegisterPeer)
++RELAIS(GameClientP2P_ResetState)
++RELAIS(GameClientP2P_SetLogCallback)
++RELAIS(GameClientP2P_SetMaxAllowedMessageLength)
++RELAIS(GameClientP2P_UnregisterPeer)
++RELAIS(GameClientP2P_UpdatePlatformUserAuthTicket)
++RELAIS(GameClient_ConnectionReset)
++RELAIS(GameClient_Destroy)
++RELAIS(GameClient_Initialize)
++RELAIS(GameClient_NetProtect)
++RELAIS(GameClient_PollStatus)
++RELAIS(GameClient_PopNetworkMessage)
++RELAIS(GameClient_PushNetworkMessage)
++RELAIS(GameClient_SetMaxAllowedMessageLength)
++RELAIS(GameClient_ValidateServerHost)
++RELAIS(GameLauncher_Destroy)
++RELAIS(GameLauncher_GetGameProcessId)
++RELAIS(GameLauncher_OpenGameProcess)
++RELAIS(GameLauncher_StartGameA)
++RELAIS(GameLauncher_StartGameW)
++RELAIS(NetProtectClient_GetProtectMessageOutputLength)
++RELAIS(NetProtectClient_ProtectMessage)
++RELAIS(NetProtectClient_UnprotectMessage)
++RELAIS(ThirdPartyLauncher_Destroy)
++RELAIS(ThirdPartyLauncher_Initialize)
++RELAIS(ThirdPartyLauncher_SetServer)
+diff -ruN a/dlls/easyanticheat_x64/main.c b/dlls/easyanticheat_x64/main.c
+--- a/dlls/easyanticheat_x64/main.c	1970-01-01 01:00:00
++++ b/dlls/easyanticheat_x64/main.c	2026-10-01 08:51:48
+@@ -0,0 +1,64 @@
++/*
++ * Cote PE du pont EAC « a vide » : ce que le jeu appelle a la place de la DLL d'Epic.
++ */
++
++#include <stdarg.h>
++#include <string.h>
++
++#include "windef.h"
++#include "winbase.h"
++#include "wine/debug.h"
++
++#include "unixlib.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(eacbridge);
++
++extern char * CDECL wine_get_unix_file_name( LPCWSTR dos );
++
++BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, void *reserved )
++{
++    if (reason == DLL_PROCESS_ATTACH)
++    {
++        struct attach_params params = { 0 };
++        WCHAR chemin[MAX_PATH], *p;
++        char *dossier = NULL;
++
++        DisableThreadLibraryCalls( inst );
++        if (__wine_init_unix_call()) return FALSE;
++
++        /* Le jeu a demande <dossier du jeu>\EasyAntiCheat_x64.dll ; Wine a charge ce
++         * module a la place mais garde le nom demande, qui donne le dossier du jeu. */
++        if (GetModuleFileNameW( inst, chemin, ARRAY_SIZE(chemin) ) && (p = wcsrchr( chemin, '\\' )))
++        {
++            *p = 0;
++            dossier = wine_get_unix_file_name( chemin );
++        }
++        params.dossier_unix = (UINT_PTR)dossier;
++        if (WINE_UNIX_CALL( unix_attach, &params )) return FALSE;
++        HeapFree( GetProcessHeap(), 0, dossier );
++    }
++    return TRUE;
++}
++
++static UINT64 relayer( const char *nom, UINT64 a, UINT64 b, UINT64 c, UINT64 d )
++{
++    struct relayer_params params = { (UINT_PTR)nom, { a, b, c, d }, 0 };
++
++    TRACE( "%s(%#I64x, %#I64x, %#I64x, %#I64x)\n", nom, a, b, c, d );
++    if (WINE_UNIX_CALL( unix_relayer, &params )) return 0;
++    return params.ret;
++}
++
++#define RELAIS(nom) \
++    UINT64 CDECL nom( UINT64 a, UINT64 b, UINT64 c, UINT64 d ) { return relayer( #nom, a, b, c, d ); }
++#include "exports.h"
++#undef RELAIS
++
++/* Propre au pont : decrit le pont et son module natif. Rend la longueur ecrite. */
++UINT CDECL EacMacosBridge_Describe( char *tampon, UINT taille )
++{
++    struct decrire_params params = { (UINT_PTR)tampon, taille, 0 };
++
++    if (WINE_UNIX_CALL( unix_decrire, &params )) return 0;
++    return params.ret;
++}
+diff -ruN a/dlls/easyanticheat_x64/unix.c b/dlls/easyanticheat_x64/unix.c
+--- a/dlls/easyanticheat_x64/unix.c	1970-01-01 01:00:00
++++ b/dlls/easyanticheat_x64/unix.c	2026-10-01 08:51:48
+@@ -0,0 +1,121 @@
++/*
++ * Cote unix du pont EAC « a vide » : cherche un module natif de l'hote a cote de
++ * la DLL demandee par le jeu, le charge, et lui relaie les appels.
++ *
++ * Le module natif attendu est celui que l'editeur d'anti-triche fournirait pour
++ * cet hote. Aujourd'hui il n'en existe aucun pour « jeu Windows sous Wine sur
++ * macOS » ; le seul module que ce pont charge est donc le module de test local du
++ * projet, qui journalise et rend « client non disponible ». Ce code ne fabrique
++ * aucune reponse d'attestation et ne masque rien a un module reel.
++ */
++
++#if 0
++#pragma makedep unix
++#endif
++
++#include "config.h"
++
++#include <dlfcn.h>
++#include <stdarg.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++
++#include "ntstatus.h"
++#define WIN32_NO_STATUS
++#include "windef.h"
++#include "winbase.h"
++#include "winternl.h"
++#include "wine/debug.h"
++
++#include "unixlib.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(eacbridge);
++
++/* ABI du module natif, definie par ce projet (docs/ARCHITECTURE.md §5.4). */
++typedef int         (*appel_t)( const char *nom, const UINT64 args[4], UINT64 *ret );
++typedef const char *(*decrire_t)( void );
++
++static void     *module;
++static appel_t   module_appel;
++static decrire_t module_decrire;
++static char      chemin_module[1024];
++
++static const char *candidats[] = { "easyanticheat_x64.dylib", "easyanticheat_x64.so" };
++
++static NTSTATUS attach( void *args )
++{
++    const struct attach_params *params = args;
++    const char *dossier = (const char *)(UINT_PTR)params->dossier_unix;
++    const char *force = getenv( "EAC_MACOS_MODULE" );
++    unsigned int i;
++
++    if (force) snprintf( chemin_module, sizeof(chemin_module), "%s", force );
++    else if (dossier)
++    {
++        for (i = 0; i < ARRAY_SIZE(candidats); i++)
++        {
++            snprintf( chemin_module, sizeof(chemin_module), "%s/%s", dossier, candidats[i] );
++            if (!access( chemin_module, R_OK )) break;
++        }
++        if (i == ARRAY_SIZE(candidats)) chemin_module[0] = 0;
++    }
++
++    if (chemin_module[0] && (module = dlopen( chemin_module, RTLD_NOW | RTLD_LOCAL )))
++    {
++        module_appel   = dlsym( module, "eac_macos_module_appel" );
++        module_decrire = dlsym( module, "eac_macos_module_decrire" );
++        FIXME( "pont EAC a vide : module natif %s charge (%s)\n", chemin_module,
++               module_decrire ? module_decrire() : "sans description" );
++        if (!module_appel) WARN( "le module n'exporte pas eac_macos_module_appel : tout appel rendra 0\n" );
++    }
++    else
++    {
++        FIXME( "pont EAC a vide : aucun module natif (%s) ; tout appel rend « client non disponible »\n",
++               chemin_module[0] ? dlerror() : "rien a cote de la DLL" );
++    }
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS relayer( void *args )
++{
++    struct relayer_params *params = args;
++    const char *nom = (const char *)(UINT_PTR)params->nom;
++
++    params->ret = 0;
++    if (module_appel)
++    {
++        int rc = module_appel( nom, params->args, &params->ret );
++        TRACE( "%s -> module rc %d, ret %#llx\n", nom, rc, (unsigned long long)params->ret );
++    }
++    else TRACE( "%s -> client non disponible (0)\n", nom );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS decrire( void *args )
++{
++    struct decrire_params *params = args;
++    char *tampon = (char *)(UINT_PTR)params->tampon;
++
++    params->ret = snprintf( tampon, params->taille, "eac-bridge-macos 0.1 (pont a vide) ; module natif : %s%s%s",
++                            module ? chemin_module : "aucun",
++                            module_decrire ? " ; " : "", module_decrire ? module_decrire() : "" );
++    return STATUS_SUCCESS;
++}
++
++const unixlib_entry_t __wine_unix_call_funcs[] =
++{
++    attach,
++    relayer,
++    decrire,
++};
++
++C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );
++
++const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
++{
++    attach,
++    relayer,
++    decrire,
++};
+diff -ruN a/dlls/easyanticheat_x64/unixlib.h b/dlls/easyanticheat_x64/unixlib.h
+--- a/dlls/easyanticheat_x64/unixlib.h	1970-01-01 01:00:00
++++ b/dlls/easyanticheat_x64/unixlib.h	2026-10-01 08:51:48
+@@ -0,0 +1,46 @@
++/*
++ * Pont EAC « a vide » pour Wine/macOS : interface entre le cote PE et le cote unix.
++ *
++ * Ce module remplace EasyAntiCheat_x64.dll (EAC classique) quand un module natif
++ * est pose a cote, comme le eac-bridge de Proton. Il ne contient aucune logique
++ * anti-triche : il relaie les appels du jeu vers un module natif de l'hote, et
++ * rend « client non disponible » quand il n'y en a pas. Il n'atteste rien.
++ */
++
++#ifndef __WINE_EASYANTICHEAT_X64_UNIXLIB_H
++#define __WINE_EASYANTICHEAT_X64_UNIXLIB_H
++
++#include <stdarg.h>
++#include "windef.h"
++#include "winbase.h"
++#include "wine/unixlib.h"
++
++/* Largeurs fixes, comme lsteamclient : la meme disposition sert a tout appelant. */
++struct attach_params
++{
++    UINT64 dossier_unix;   /* const char * : dossier de la DLL demandee par le jeu, ou 0 */
++};
++
++struct relayer_params
++{
++    UINT64 nom;            /* const char * : nom de l'export appele */
++    UINT64 args[4];        /* rcx, rdx, r8, r9 tels que recus */
++    UINT64 ret;            /* valeur a rendre dans rax */
++};
++
++struct decrire_params
++{
++    UINT64 tampon;         /* char * */
++    UINT32 taille;
++    UINT32 ret;            /* longueur ecrite */
++};
++
++enum unix_funcs
++{
++    unix_attach,
++    unix_relayer,
++    unix_decrire,
++    unix_funcs_count,
++};
++
++#endif
+diff -ruN a/dlls/kernelbase/process.c b/dlls/kernelbase/process.c
+--- a/dlls/kernelbase/process.c	2026-10-01 08:51:48
++++ b/dlls/kernelbase/process.c	2026-10-01 08:51:48
+@@ -505,6 +505,14 @@
+ /**********************************************************************
+  *           CreateProcessInternalW   (kernelbase.@)
+  */
++static BOOL is_eac_launcher( const WCHAR *app_name )
++{
++    const WCHAR *p = app_name + wcslen( app_name );
++
++    while (p != app_name && p[-1] != '\\' && p[-1] != '/') p--;
++    return !wcsicmp( p, L"EasyAntiCheat_launcher.exe" );
++}
++
+ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR *app_name, WCHAR *cmd_line,
+                                                       SECURITY_ATTRIBUTES *process_attr,
+                                                       SECURITY_ATTRIBUTES *thread_attr,
+@@ -566,6 +574,33 @@
+     {
+         status = STATUS_NO_MEMORY;
+         goto done;
++    }
++
++    /* Pont EAC : le lanceur classique (EasyAntiCheat_launcher.exe) doit garder la DLL
++     * native d'Epic, c'est lui qui telecharge et lance le jeu ; on le marque pour que
++     * ntdll (loadorder.c) ne lui substitue pas le pont. Proton reconnait le lanceur a
++     * son nom de produit ; ici on se contente du nom de fichier. */
++    if (is_eac_launcher( app_name ))
++    {
++        UNICODE_STRING var, val;
++        WCHAR *new_env = RtlAllocateHeap( GetProcessHeap(), 0, params->EnvironmentSize );
++
++        if (new_env)
++        {
++            memcpy( new_env, params->Environment, params->EnvironmentSize );
++            RtlDestroyProcessParameters( params );
++            RtlInitUnicodeString( &var, L"PROTON_EAC_LAUNCHER_PROCESS" );
++            RtlInitUnicodeString( &val, L"1" );
++            RtlSetEnvironmentVariable( &new_env, &var, &val );
++            params = create_process_params( app_name, tidy_cmdline, cur_dir, new_env,
++                                            flags | CREATE_UNICODE_ENVIRONMENT, startup_info );
++            RtlFreeHeap( GetProcessHeap(), 0, new_env );
++            if (!params)
++            {
++                status = STATUS_NO_MEMORY;
++                goto done;
++            }
++        }
+     }
+ 
+     if (flags & (DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS))
+diff -ruN a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+--- a/dlls/ntdll/unix/loader.c	2026-10-01 08:51:48
++++ b/dlls/ntdll/unix/loader.c	2026-10-01 08:51:48
+@@ -294,10 +294,11 @@
+ 
+ static void set_dll_path(void)
+ {
+-    char *p, *path = getenv( "WINEDLLPATH" );
++    char *p, *path = getenv( "WINEDLLPATH" ), *eac_runtime = getenv( "PROTON_EAC_RUNTIME" );
+     int i, count = 0;
+ 
+     if (path) for (p = path, count = 1; *p; p++) if (*p == ':') count++;
++    if (eac_runtime) count += 2;
+ 
+     dll_paths = malloc( (count + 2) * sizeof(*dll_paths) );
+     count = 0;
+@@ -309,6 +310,20 @@
+         path = strdup(path);
+         for (p = strtok( path, ":" ); p; p = strtok( NULL, ":" )) dll_paths[count++] = strdup( p );
+         free( path );
++    }
++
++    /* Pont EAC : un runtime externe, dispose comme celui de Proton (v2/lib64, v2/lib32),
++     * fournit les modules integres easyanticheat_x64/x86 sans les installer dans Wine. */
++    if (eac_runtime)
++    {
++        static const char *const sous[] = { "/v2/lib32/", "/v2/lib64/" };
++        for (i = 0; i < 2; i++)
++        {
++            p = malloc( strlen(eac_runtime) + strlen(sous[i]) + 1 );
++            strcpy( p, eac_runtime );
++            strcat( p, sous[i] );
++            dll_paths[count++] = p;
++        }
+     }
+ 
+     for (i = 0; i < count; i++) dll_path_maxlen = max( dll_path_maxlen, strlen(dll_paths[i]) );
+diff -ruN a/dlls/ntdll/unix/loadorder.c b/dlls/ntdll/unix/loadorder.c
+--- a/dlls/ntdll/unix/loadorder.c	2026-10-01 08:51:48
++++ b/dlls/ntdll/unix/loadorder.c	2026-10-01 08:51:48
+@@ -75,6 +75,7 @@
+ static HANDLE app_key;
+ static BOOL init_done;
+ static BOOL main_exe_loaded;
++static BOOL eac_launcher_process;
+ 
+ /***************************************************************************
+  *	get_version_entry
+@@ -482,16 +483,85 @@
+ {
+     const WCHAR *p;
+ 
+-    const WCHAR *p;
++    static const WCHAR eac_launcherW[] = {'P','R','O','T','O','N','_','E','A','C','_','L','A','U','N','C','H','E','R','_','P','R','O','C','E','S','S','=',0};
+ 
+     if ((p = wcsrchr( app_name, '\\' ))) app_name = p + 1;
+     app_key = open_app_key( app_name );
+     main_exe_loaded = TRUE;
+ 
++    /* Pont EAC : kernelbase marque le lanceur classique dans son environnement Windows. */
++    for (p = NtCurrentTeb()->Peb->ProcessParameters->Environment; *p; p += wcslen( p ) + 1)
++    {
++        if (!wcsncmp( p, eac_launcherW, ARRAY_SIZE(eac_launcherW) - 1 ))
++        {
++            eac_launcher_process = TRUE;
++            break;
++        }
++    }
+ }
+ 
+ 
+ /***************************************************************************
++ *	eac_bridge_load_order
++ *
++ * Pont EAC, meme regle que le eac-bridge de Proton : la DLL easyanticheat
++ * (_x64, _x86 ou nue) demandee par le jeu est remplacee par le module integre
++ * (le pont) seulement si un module natif de l'hote est pose a cote d'elle.
++ * Sinon la DLL native d'Epic est chargee, comme sans pont. Le lanceur EAC
++ * garde toujours la DLL native. Rend LO_INVALID si la DLL n'est pas concernee.
++ */
++static enum loadorder eac_bridge_load_order( const WCHAR *module, const WCHAR *basename )
++{
++    static const WCHAR easyanticheatW[] = {'e','a','s','y','a','n','t','i','c','h','e','a','t',0};
++    static const WCHAR x64W[] = {'_','x','6','4',0};
++    static const WCHAR x86W[] = {'_','x','8','6',0};
++    static const WCHAR prefixW[] = {'\\','?','?','\\'};
++    static const WCHAR dylibW[] = {'.','d','y','l','i','b',0};
++    static const WCHAR soW[] = {'.','s','o',0};
++    static const WCHAR *const extensions[] = { dylibW, soW };
++    const WCHAR *suffixe;
++    UNICODE_STRING natif, nt_name;
++    OBJECT_ATTRIBUTES attr;
++    char *unix_name = NULL;
++    NTSTATUS status = STATUS_NO_SUCH_FILE;
++    unsigned int i, len, base_len;
++
++    if (wcsnicmp( basename, easyanticheatW, ARRAY_SIZE(easyanticheatW) - 1 )) return LO_INVALID;
++    suffixe = basename + ARRAY_SIZE(easyanticheatW) - 1;
++    if (*suffixe && wcsicmp( suffixe, x64W ) && wcsicmp( suffixe, x86W )) return LO_INVALID;
++
++    if (eac_launcher_process)
++    {
++        TRACE( "%s : lanceur EAC, DLL native imposee\n", debugstr_w(module) );
++        return LO_NATIVE;
++    }
++
++    /* <dossier>\easyanticheat_x64.<ext> ; une DLL nue est traitee comme _x64 */
++    len = wcslen( module );
++    base_len = basename - module + ARRAY_SIZE(easyanticheatW) - 1;
++    if (!(natif.Buffer = malloc( (len + 16) * sizeof(WCHAR) ))) return LO_INVALID;
++    memcpy( natif.Buffer, prefixW, sizeof(prefixW) );
++    for (i = 0; i < ARRAY_SIZE(extensions) && status; i++)
++    {
++        memcpy( natif.Buffer + 4, module, base_len * sizeof(WCHAR) );
++        natif.Buffer[4 + base_len] = 0;
++        wcscat( natif.Buffer, *suffixe ? suffixe : x64W );
++        wcscat( natif.Buffer, extensions[i] );
++        natif.Length = natif.MaximumLength = wcslen( natif.Buffer ) * sizeof(WCHAR);
++        InitializeObjectAttributes( &attr, &natif, 0, 0, NULL );
++        status = get_nt_and_unix_names( &attr, &nt_name, &unix_name, FILE_OPEN, FALSE );
++        if (!status) TRACE( "%s : module natif %s present, pont impose\n", debugstr_w(module), unix_name );
++        free( nt_name.Buffer );
++        free( unix_name );
++        nt_name.Buffer = NULL; unix_name = NULL;
++    }
++    if (status) TRACE( "%s : aucun module natif a cote (%s), DLL native\n", debugstr_w(module), debugstr_w(natif.Buffer) );
++    free( natif.Buffer );
++    return status ? LO_NATIVE : LO_BUILTIN;
++}
++
++
++/***************************************************************************
+  *	get_load_order   (internal)
+  *
+  * Return the loadorder of a module.
+@@ -519,6 +589,10 @@
+     module[len + 1] = 0;
+     remove_dll_ext( module + 1 );
+     basename = get_basename( module + 1 );
++
++    /* Pont EAC : regle speciale avant toute configuration */
++    if (!is_system_dir && (ret = eac_bridge_load_order( module + 1, basename )) != LO_INVALID)
++        goto done;
+ 
+     /* first explicit module name */
+     if ((ret = get_load_order_value( std_key, app_key, is_system_dir ? basename : module+1 )) != LO_INVALID)

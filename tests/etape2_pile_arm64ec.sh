@@ -16,6 +16,14 @@ export VK_DRIVER_FILES=$R/prefix/share/vulkan/icd.d/kosmickrisp_mesa_icd.aarch64
 export DYLD_LIBRARY_PATH=$R/wine/vklib-arm64:$R/prefix/lib
 export MESA_KK_EXPERIMENTAL=${MESA_KK_EXPERIMENTAL:-custom_border,image_view_min_lod}
 
+# FEX ne detecte pas CRC32/AES/PMULL sur l'hote Apple sous Wine (chemin de detection
+# Windows incomplet), donc il n'annonce pas SSE4.2 dans le CPUID invite -- et un jeu qui
+# teste ce bit refuse de demarrer (Dead by Daylight : « This CPU does not support a required
+# feature (SSE4.2) »). Le CPU Apple a reellement ces instructions ; enablecrypto remet le bit
+# a la verite (SSE4.2 + AES-NI + PCLMULQDQ), ce n'est pas un maquillage. Mesure : sonde CPUID
+# ECX 0xbcc8330d -> 0xbed8330f. Separe par virgule si on ajoute d'autres drapeaux hote.
+export FEX_HOSTFEATURES=${FEX_HOSTFEATURES:-enablecrypto}
+
 # Ce dossier precede les chemins systeme : il sert a presenter les bonnes
 # tranches arm64. /usr/local/lib contient un libfreetype x86_64 (la pile
 # Rosetta), que dlopen du soname nu trouvait d'abord -- d'ou « Wine cannot find
