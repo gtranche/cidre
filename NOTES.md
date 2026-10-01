@@ -20822,3 +20822,35 @@ tard : compilation des pipelines Metal au premier passage) -> StateIngame HOST -
 -> selection de heros en 3D -> **vue a la premiere personne dans le Donjon, HUD, arme en main**.
 Steam macOS vivant. Capture : scratchpad/d3_43.png. Reste : mesurer les images par seconde,
 rejouer sans trace, la stabilite sur une mission.
+
+## 301. EAC-EOS : ce que dit Epic, verifie a la source (2026-10-01)
+
+Recherche faite apres le jalon du §300, pour ne pas rouvrir le sujet a l'aveugle.
+
+- Notes de version du SDK EOS (dev.epicgames.com, lues dans le navigateur, la page est rendue
+  en JavaScript) : « Anti-cheat currently does not support Apple silicon. » Le SDK lui-meme est
+  un dylib universel, pas le client anti-triche. Il n'existe donc aucun module EAC Darwin arm64,
+  meme pour un jeu Mac natif.
+- Memes notes : « Anti-Cheat supports Windows on Arm for x64 game binaries that run using
+  emulation. Native ARM64 game binaries are not supported. » Epic accepte donc un x64 emule --
+  sous Windows, avec son driver. Et « Anti-Cheat Client Interface does not support LinuxARM64 »
+  (1.16.4) : pas de client natif arm64 non plus sous Linux ; Proton+EAC sur Asahi passerait par
+  le .so x86-64 sous FEX, hors de notre pile de toute facon.
+- Wine/Proton : « If you want to activate Wine/Proton support for your Windows game, you must
+  activate a Linux module in the EOS Developer Portal. » C'est l'editeur qui choisit, module par
+  module, et le module est Linux (easyanticheat_x64.so, charge par l'amorceur via libc.so et
+  /proc, §299). Rien de tel pour Wine sur macOS : l'amorceur n'a pas ce chemin.
+- CodeWeavers (billet d'aout 2026, et forums) : Wine vit en espace utilisateur, aucune
+  modification de Wine ne fera tourner un anti-triche noyau ; et en tant que societe americaine
+  ils ne contournent pas une mesure de protection (DMCA) -- seul l'editeur peut agir.
+
+Decompiler EasyAntiCheat_EOS.sys ou easyanticheat_x64.so pour « refaire une version Darwin » :
+non. Le module est obfusque, se verifie lui-meme, telecharge des mises a jour signees et atteste
+aupres d'Epic ; une reimplementation qui atteste a sa place est, par definition, un faux client
+anti-triche -- ce que font les tricheurs, et ce que le DMCA et les conditions d'EAC interdisent.
+Ce projet n'y va pas.
+
+Voies legitimes, toutes hors de nos mains : (1) Epic livre un client Apple silicon et un chemin
+« Wine sur macOS » dans l'amorceur, comme il l'a fait pour Linux ; (2) Fatshark l'active pour
+Vermintide 2. L'argument a porter a Epic : ils acceptent deja un x64 emule (Windows on Arm).
+En attendant, le Modded Realm (-eac-untrusted) est la voie officielle, et elle tourne (§300).
