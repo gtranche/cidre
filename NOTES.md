@@ -20653,3 +20653,26 @@ call_handler_x64 -> thunk -> FEX livre bien la trame ; l'hypothese « rdx perdu 
 ces cas. Le gel du jeu tient a une specificite restante a cerner avec le reproducteur : objet
 std::filesystem_error dont la vtable vit dans msvcp140 ARM64EC (appel virtuel x64->EC depuis le
 funclet), catch du type de base avec ajustement de this, ou metadonnees FH3 reelles de MSVC.
+
+## 297. Le gel de Vermintide 2 RESOLU : KUSER_SHARED_DATA manquait dans le miroir
+
+Chaine causale complete, remontee a l'envers depuis le debordement de pile (§296) :
+_Mtx_lock(NULL) <- catch(std::exception&) de Streamline sur un logger non initialise <-
+std::filesystem_error lance par Streamline <- copie de "<journal>/sl.log" vers ProgramData avec
+un journal jamais ouvert ("/sl.log") <- filtre d'exception top-level de Streamline (« Exception
+detected - creating mini-dump ») <- une AV REELLE : lecture de 0x2007ffe0308 = miroir de la
+fenetre basse | 0x7ffe0308 = KUSER_SHARED_DATA.SystemCall, par le stub syscall x64 de ntdll
+(« testb $1, 0x7ffe0308 », signal_arm64ec.c) quand le jeu appelle un Nt* directement.
+
+La fenetre basse (§295) rebase TOUTE adresse invite sous 4 Gio, donc aussi la page partagee
+noyau a son adresse Windows canonique -- qui n'etait pas presente dans le miroir. Correctif
+(0073, virtual.c) : la reserver et la remapper a luajit_low_base + 0x7ffe0000, exactement comme
+Wine le fait deja pour l'invite 32 bits a user_space_wow_base + 0x7ffe0000. Mesure : plus aucune
+faute miroir, plus aucun throw C++, plus de debordement ; le jeu atteint « Setting display mode
+1728x1117@120 » (swapchain DXGI). Le reproducteur minimal (§296 bis) avait ete decisif par
+l'ABSENCE de reproduction : le chemin SEH etait sain, il fallait chercher plus haut. Et le
+pointeur NULL n'etait pas l'objet d'exception : c'etait le logger de Streamline (_Mtx_lock dans
+msvcp140, lu par le symbole a l'adresse de la faute).
+
+Piege de session : « cp » par-dessus ntdll.so mappee -> SIGKILL (rc=137) meme sur wine --version ;
+remplacer par cp vers un nom temporaire puis mv (nouvel inode).

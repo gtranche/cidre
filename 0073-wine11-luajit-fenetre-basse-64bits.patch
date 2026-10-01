@@ -238,10 +238,11 @@ diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
 diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
 --- a/dlls/ntdll/unix/virtual.c
 +++ b/dlls/ntdll/unix/virtual.c
-@@ -218,6 +218,49 @@
+@@ -217,6 +217,49 @@
+  */
  ULONG_PTR user_space_wow_base = 0;
  struct _KUSER_SHARED_DATA *user_shared_data = (void *)0x17ffe0000ull;
- 
++
 +/*
 + * Fenetre basse d'un invite 64 bits (macOS arm64 uniquement).
 + *
@@ -284,14 +285,17 @@ diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
 +    return (luajit_low_base && host >= luajit_low_base && host < luajit_low_base + 0x100000000ull)
 +        ? (host & 0xffffffffull) : host;
 +}
-+
+ 
  /***********************************************************************
   *           __wine_wow64_host_base
-  *
-@@ -1203,6 +1246,26 @@
- 
- 
- /***********************************************************************
+@@ -1199,6 +1242,26 @@
+ #endif
+     for (i = 0; i < host_page_size / page_size; i++) vprot |= vprot_ptr[i];
+     return vprot;
++}
++
++
++/***********************************************************************
 + *           luajit_miroir_engage
 + *
 + * Le miroir de la fenetre basse (adresse hote) est-il engage et accessible ?
@@ -308,13 +312,9 @@ diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
 +    if (!(v & VPROT_COMMITTED) || (v & VPROT_GUARD)) return FALSE;
 +    if (ecriture) return (v & VPROT_WRITE) != 0;
 +    return (v & (VPROT_READ | VPROT_WRITE | VPROT_EXEC)) != 0;
-+}
-+
-+
-+/***********************************************************************
-  *           get_vprot_range_size
-  *
-  * Return the size of the region with equal masked vprot byte.
+ }
+ 
+ 
 @@ -3875,6 +3938,30 @@
       * multiple de 4 Gio pour que le rebasage de l'emulateur soit un simple
       * « orr » d'un bit haut. */
@@ -346,7 +346,43 @@ diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
  #endif
  #endif
  
-@@ -5412,6 +5499,7 @@
+@@ -4315,6 +4402,21 @@
+     {
+         ERR( "wine: failed to map the shared user data: %08x\n", status );
+         exit(1);
++    }
++
++    if (luajit_low_base)
++    {
++        /* Fenetre basse LuaJIT (§295) : l'invite 64 bits lit aussi KUSER_SHARED_DATA
++         * a 0x7ffe0000 -- notamment le stub syscall x64 de ntdll, « testb $1,
++         * 0x7ffe0308 », quand le jeu appelle un Nt* directement. Sous 4 Gio, FEX
++         * rebase cette lecture dans le miroir : la page doit donc y vivre aussi,
++         * sinon la faute part en AV dans le jeu (Vermintide 2 : filtre Streamline
++         * -> minidump -> copie de journal -> filesystem_error -> _Mtx_lock(NULL)). */
++        char *miroir = (char *)luajit_low_base + 0x7ffe0000;
++
++        status = map_view( &view, miroir, page_size, 0, VPROT_READ | VPROT_COMMITTED, 0, 0, 0 );
++        if (status && status != STATUS_CONFLICTING_ADDRESSES)
++            ERR( "wine: KUSER_SHARED_DATA non reservee dans la fenetre basse: %08x\n", status );
+     }
+ 
+     if (user_space_wow_base)
+@@ -4797,6 +4899,13 @@
+ 
+         if (invite != mmap( invite, page_size, PROT_READ, MAP_SHARED | MAP_FIXED, fd, 0 ))
+             ERR( "wine: KUSER_SHARED_DATA non remappee pour l'invite\n" );
++    }
++    if (luajit_low_base)
++    {
++        void *miroir = (char *)luajit_low_base + 0x7ffe0000;
++
++        if (miroir != mmap( miroir, page_size, PROT_READ, MAP_SHARED | MAP_FIXED, fd, 0 ))
++            ERR( "wine: KUSER_SHARED_DATA non remappee dans la fenetre basse\n" );
+     }
+     if (needs_close) close( fd );
+     NtClose( section );
+@@ -5412,6 +5521,7 @@
      void *base;
      unsigned int vprot;
      BOOL is_dos_memory = FALSE;
@@ -354,13 +390,13 @@ diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
      struct file_view *view;
      sigset_t sigset;
      SIZE_T size = *size_ptr;
-@@ -5442,8 +5530,42 @@
+@@ -5442,8 +5552,42 @@
       */
      /* Un invite 32 bits arrive deja rebase au-dessus de la base de sa fenetre,
       * donc la plage ci-dessous ne designe que des demandes d'invites 64 bits. */
 -    if (*ret && (char *)*ret + size <= (char *)limit_4g)
 +    if (luajit_low_base && *ret && (char *)*ret + size <= (char *)limit_4g)
-     {
++    {
 +        if (type & MEM_RESERVE)
 +        {
 +            /* Un invite 64 bits qui exige une adresse basse (LuaJIT) : on le
@@ -391,14 +427,14 @@ diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
 +        }
 +    }
 +    else if (*ret && (char *)*ret + size <= (char *)limit_4g)
-+    {
+     {
 +        /* Base sous 4 Gio sans fenetre basse active : le noyau de macOS ne la
 +         * donnera jamais (__PAGEZERO). On la traite en preference, au plus
 +         * proche de Windows ou la demande aboutit. */
          TRACE( "base %p demandee sous 4 Gio, inaccessible sur macOS : traitee en preference\n", *ret );
          *ret = NULL;
      }
-@@ -5557,7 +5679,8 @@
+@@ -5557,7 +5701,8 @@
  
      if (status == STATUS_SUCCESS)
      {
@@ -408,7 +444,7 @@ diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
          *size_ptr = size;
      }
      else if (status == STATUS_NO_MEMORY)
-@@ -5843,6 +5966,7 @@
+@@ -5843,6 +5988,7 @@
      /* Fix the parameters */
  
      if (size) size = ROUND_SIZE( addr, size, page_mask );
@@ -416,7 +452,7 @@ diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
      base = ROUND_ADDR( addr, page_mask );
  
      server_enter_uninterrupted_section( &virtual_mutex, &sigset );
-@@ -5887,7 +6011,7 @@
+@@ -5887,7 +6033,7 @@
  
      if (status == STATUS_SUCCESS)
      {
@@ -425,7 +461,7 @@ diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
          *size_ptr = size;
      }
      server_leave_uninterrupted_section( &virtual_mutex, &sigset );
-@@ -5943,6 +6067,7 @@
+@@ -5943,6 +6089,7 @@
      /* Fix the parameters */
  
      size = ROUND_SIZE( addr, size, page_mask );
@@ -433,7 +469,7 @@ diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
      base = ROUND_ADDR( addr, page_mask );
  
      server_enter_uninterrupted_section( &virtual_mutex, &sigset );
-@@ -5965,7 +6090,7 @@
+@@ -5965,7 +6112,7 @@
  
      if (status == STATUS_SUCCESS)
      {
