@@ -1,0 +1,100 @@
+lsteamclient : Steam_IsKnownInterface repond « connue », et repli getter d'interface.
+
+Correctif VALIDE (Dead by Daylight, mesure) : le SteamAPI_Init moderne (SDK >= 1.6x) valide
+chaque interface requise par l'export plat Steam_IsKnownInterface juste apres ConnectToGlobalUser.
+Le pont le stubbait a 0 -> le jeu concluait « interface manquante », appelait
+Steam_NotifyMissingInterface, relachait l'utilisateur et abandonnait l'init (boucle 54x,
+« Steam offline »), AVANT meme GetISteamUser. Le steamclient.dylib natif n'exporte pas cette
+fonction ; le pont repond lui-meme « connue » (il sait fournir les interfaces standard via
+GetISteamGenericInterface). Apres : init OK, 17 interfaces acquises, callbacks pompes, le jeu
+depasse le mur et rend. General : touche tout jeu dont le steam_api fait cette verification.
+
+Correctif DEFENSIF (non declenche par DbD, inerte sans risque) : si un getter d'interface
+d'ISteamClient par chaine de version rend 0 (disposition de vtable differente entre le steam_api
+du jeu et le steamclient natif), repli par GetISteamGenericInterface (emplacement natif 12),
+independant de la disposition.
+
+S'applique avec patch -p1 sur Wine 11.18 (arbre proton-ouvert). Voir eac-bridge-macos/docs/EOS.md.
+
+diff -ruN a/dlls/lsteamclient/main.c b/dlls/lsteamclient/main.c
+--- a/dlls/lsteamclient/main.c	2026-10-01 16:58:05
++++ b/dlls/lsteamclient/main.c	2026-10-01 16:58:05
+@@ -176,6 +176,20 @@
+     }
+ }
+ 
++/*
++ * Une chaine est-elle un nom de version d'interface Steam (« SteamUser023 »,
++ * « STEAMAPPS_INTERFACE_VERSION008 ») ? Sert a reconnaitre un getter d'interface
++ * d'ISteamClient a son troisieme argument, independamment de l'emplacement.
++ */
++static BOOL est_version_interface( const char *s )
++{
++    if (!s) return FALSE;
++    if (strstr( s, "_INTERFACE_VERSION" )) return TRUE;
++    if (strncasecmp( s, "Steam", 5 )) return FALSE;
++    while (*s) { if (*s >= '0' && *s <= '9') return TRUE; s++; }
++    return FALSE;
++}
++
+ /* Les emplacements d'ISteamClient qui rendent une interface. Identiques de la
+  * version 017 a la version 021 : elles ne divergent qu'a partir de 19. */
+ static BOOL rend_interface( unsigned emplacement )
+@@ -348,7 +362,33 @@
+      * de la version exacte, alors on relaie sans envelopper.
+      */
+     if (WINE_UNIX_CALL( unix_appel_vtable, &params )) return 0;
+-    if (!params.ret) return 0;
++    if (!params.ret)
++    {
++        /*
++         * Le getter a rendu 0. Les SDK recents ont retire CreateLocalUser
++         * d'ISteamClient : GetISteamUser y est passe de l'emplacement 5 a 4.
++         * Le steam_api du jeu (Dead by Daylight : SteamUser023 a l'emplacement 4)
++         * ne tombe alors pas sur l'emplacement natif, reste a l'ancienne
++         * disposition. Quand l'appel portait une chaine de version, on recupere
++         * l'interface par GetISteamGenericInterface (emplacement natif 12), qui
++         * la designe par son nom et non par un emplacement -- valable pour les
++         * deux dispositions. Ne s'active que sur l'echec, donc n'altere pas les
++         * getters qui marchaient deja (Vermintide 2, Dead Cells).
++         */
++        const char *version = chaine_plausible( c ) ? (const char *)(ULONG_PTR)c : NULL;
++        if (version && est_version_interface( version ))
++        {
++            struct generic_interface_params gp = { objet->natif, (INT32)a, (INT32)b,
++                                                   (UINT64)(ULONG_PTR)version, 0 };
++            if (!WINE_UNIX_CALL( unix_get_generic_interface, &gp ) && gp.ret)
++            {
++                TRACE( "getter emplacement %u rendu 0 ; %s recupere par GetISteamGenericInterface -> %p\n",
++                       emplacement, debugstr_a( version ), (void *)(ULONG_PTR)gp.ret );
++                return (ULONG_PTR)envelopper( gp.ret, version );
++            }
++        }
++        return 0;
++    }
+ 
+     if (rend_interface( emplacement ))
+     {
+@@ -1008,9 +1048,20 @@
+ 
+ int CDECL Steam_IsKnownInterface( void )
+ {
++    /*
++     * Le SteamAPI_Init moderne (SDK >= 1.6x) valide chaque interface requise par
++     * cet export plat juste apres ConnectToGlobalUser : s'il rend 0, le jeu
++     * conclut qu'une interface manque, appelle Steam_NotifyMissingInterface,
++     * relache l'utilisateur et abandonne l'init -- avant meme GetISteamUser
++     * (mesure sur Dead by Daylight). Le steamclient.dylib natif n'exporte pas
++     * cette fonction, donc on repond nous-memes : le pont sait fournir les
++     * interfaces standard (il relaie GetISteamGenericInterface vers le natif),
++     * donc « connue ». Rendre 0 ici bloquait tout jeu dont le steam_api fait
++     * cette verification.
++     */
+     static int dit;
+-    if (!dit) { dit = 1; FIXME( "export plat sollicite : Steam_IsKnownInterface\n" ); }
+-    return 0;
++    if (!dit) { dit = 1; FIXME( "Steam_IsKnownInterface : repond connue (le pont fournit l'interface)\n" ); }
++    return 1;
+ }
+ 
+ int CDECL Steam_LogOff( void )
