@@ -1,0 +1,66 @@
+Table TEB sans x18 : hachage de Fibonacci contre la saturation sur les jeux a beaucoup de threads.
+
+Le mecanisme TEB-sans-x18 (patches 0048/0049) indexe __wine_teb_table par (tpidrro_el0 >> 14),
+sondage borne a 8. Les bases TSD de macOS sont mal distribuees sur ces bits : un jeu a 110 threads
+(Dead by Daylight) agglutine 26 threads au-dela de 8 sondes -> l'ecrivain (unix/signal_arm64.c
+enregistrer_teb) renonce, et le lecteur (thread.c __wine_current_teb) retombe sur x18, efface par
+macOS -> TEB faux, appels casses en silence (dont le reseau). 110 threads dans 1024 cases ne
+sature JAMAIS avec un hachage uniforme (charge 0,11) : c'est bien le hachage.
+
+Correctif, A L'IDENTIQUE dans les deux copies C (le chemin ASM LIRE_PEB_TSD lit le TSD pthread
+directement, il n'est pas concerne) : hachage multiplicatif (cle * 0x9E3779B97F4A7C15) >> 53,
+table 1024 -> 2048, sondage 8 -> 16. Mesure : 26 -> 0 saturations ; temoins h32temps + banc_x64 OK.
+S'applique avec patch -p1 sur Wine 11.18 apres les patches TEB existants. Voir NOTES 307.
+
+diff -ruN a/dlls/ntdll/thread.c b/dlls/ntdll/thread.c
+--- a/dlls/ntdll/thread.c	2026-10-01 16:11:27
++++ b/dlls/ntdll/thread.c	2026-10-01 16:11:27
+@@ -768,7 +768,7 @@
+  * court.
+  */
+ 
+-#define TEB_TABLE_TAILLE 1024
++#define TEB_TABLE_TAILLE 2048
+ 
+ struct entree_teb
+ {
+@@ -806,13 +806,13 @@
+ TEB * WINAPI __wine_current_teb(void)
+ {
+     ULONG_PTR cle = cle_du_fil();
+-    unsigned int i = (unsigned int)((cle >> 14) % TEB_TABLE_TAILLE);
++    unsigned int i = (unsigned int)((cle * 0x9E3779B97F4A7C15ULL) >> 53); /* hachage Fibonacci ; IDENTIQUE a enregistrer_teb */
+     unsigned int n;
+ 
+     /* Sondage borne : une recherche infructueuse doit coûter quelques
+      * comparaisons, pas mille. Cette fonction est appelee a chaque acces au
+      * TEB, c'est-a-dire partout. */
+-    for (n = 0; n < 8; n++)
++    for (n = 0; n < 16; n++)
+     {
+         if (__wine_teb_table[i].cle == cle) return __wine_teb_table[i].teb;
+         if (!__wine_teb_table[i].cle) break;
+diff -ruN a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
+--- a/dlls/ntdll/unix/signal_arm64.c	2026-10-01 16:11:27
++++ b/dlls/ntdll/unix/signal_arm64.c	2026-10-01 16:11:27
+@@ -347,7 +347,7 @@
+  * tours. Le cote unix inscrit la correspondance des le demarrage du fil, avant
+  * que le moindre code PE ne s'execute.
+  */
+-#define TEB_TABLE_TAILLE 1024
++#define TEB_TABLE_TAILLE 2048
+ 
+ struct entree_teb
+ {
+@@ -402,9 +402,9 @@
+     unsigned int i, n;
+ 
+     if (!teb_table) return;
+-    i = (unsigned int)((cle >> 14) % TEB_TABLE_TAILLE);
++    i = (unsigned int)((cle * 0x9E3779B97F4A7C15ULL) >> 53); /* hachage Fibonacci ; IDENTIQUE a __wine_current_teb */
+     /* Meme borne que la recherche : inserer au-dela la rendrait introuvable. */
+-    for (n = 0; n < 8; n++)
++    for (n = 0; n < 16; n++)
+     {
+         if (!teb_table[i].cle || teb_table[i].cle == cle)
+         {
