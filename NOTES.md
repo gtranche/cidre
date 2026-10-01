@@ -20704,3 +20704,121 @@ Autre piege : chaque « make install » bumpe la version et le lancement suivant
 wineboot --init ; le tuer avant la fin laisse .update-timestamp en arriere et CHAQUE lancement
 suivant recommence (journaux vides, « faux_steam mort »). Laisser wineboot -u finir (25 s sain)
 et verifier que .update-timestamp change.
+
+## 299. JALON : Vermintide 2 au MENU PRINCIPAL en arm64 natif ; EAC-EOS est bien un mur, le Modded Realm passe
+
+Suite du §298. Le lancement « pont faux_steam + lsteamclient » tournait a 22 % CPU sans rien
+dans le journal console pendant dix minutes : ce n'etait PAS un gel. L'ecran du Mac etait eteint
+(3 h du matin), la capture plein ecran rendait du noir, et le jeu attendait simplement sur son
+ecran d'avertissement epilepsie « Appuyez sur n'importe quelle touche ». Le fil principal
+pompait ses messages (PeekMessage + Sleep a 63 %), dxvk-cs encodait des passes Metal, la
+CAMetalLayer presentait. Lecon : avant de diagnostiquer un gel, verifier que le jeu n'attend pas
+une entree -- et allumer l'ecran (caffeinate -d -u) avant screencapture.
+
+Pour appuyer une touche sans l'accessibilite macOS (osascript refuse -25211), un programme
+INVITE de 3,5 Kio : touche.exe (SendInput, sans CRT, bati avec le clang msvc de llvm-mingw comme
+les reproducteurs du §296 ; argument = VK hexa et scan code). Il tourne sous FEX dans le meme
+prefixe, met la fenetre au premier plan, envoie la touche. Et fenetres (swift, CGWindowList) pour
+trouver l'id de fenetre a passer a screencapture -l. Dans tests/outils_fenetre/.
+
+Deroule observe apres la touche : ecran titre « Recuperation de compte » -> login PlayFab via le
+ticket Steam (le pont lsteamclient -> Steam macOS fonctionne : playfab_id obtenu) -> trois cloud
+scripts reussis -> executeDLCLogic exige un **defi EAC** -> « EAC disabled on client » ->
+exit code 0xfa730001 -> boite « Erreur sur le serveur ». C'est exactement la frontiere EAC-EOS.
+
+### EAC-EOS, mesure sur les binaires du jeu (correction du §292 bis)
+
+- EasyAntiCheat_EOS_Setup.exe installe un **service** EasyAntiCheat_EOS.exe et un **driver**
+  EasyAntiCheat_EOS.sys (CreateService, Global\EasyAntiCheat_EOSEventDriver). Donc EAC-EOS n'est
+  pas « userspace sans driver » comme ecrit au §292 bis : sur Windows il y a un noyau.
+- L'amorceur start_protected_game.exe a un chemin Wine explicite : wine_get_unix_file_name,
+  libc.so, __libc_dlopen_mode, /proc/%i/maps, « Starting Wine module mapping, Wine version: %s »,
+  « Failed to locate the game binary (Wine) ». Sous Proton il mappe le runtime LINUX
+  easyanticheat_x64.so dans le process. Il n'existe ni module Darwin ni driver macOS.
+- Conclusion inchangee sur le fond : **structurel**. Fabriquer un module qui atteste a la place
+  d'EAC serait contourner l'anti-triche ; on ne le fait pas.
+
+### La voie officielle : -eac-untrusted
+
+Launcher.exe (le launcher Fatshark) lance le « Modded Realm » avec `vermintide2.exe -eac-untrusted`
+(un tiret). Avec ce drapeau : `eac-untrusted = true`, le backend repond sans defi EAC, 23 cloud
+scripts reussis (verifyAccountData, migrateCosmetics, updateDLCOwnership, GetUserInventory,
+verifyCareerLoadouts...), notes de patch 6.12.0 chargees, et le **MENU PRINCIPAL** s'affiche
+(START GAME / OPTIONS / CINEMATICS / PROLOGUE / CREDITS / QUIT GAME) en ~2 min depuis le lancement.
+Capture : scratchpad/untrusted_06_petit.png. C'est le meme compromis que les joueurs Windows qui
+jouent sans EAC : progression du Modded Realm, pas de realm officiel.
+
+Pile complete validee sur ce jeu : vermintide2.exe (x86-64) -> FEX arm64ec -> Wine 11 arm64 ->
+LuaJIT natif via la fenetre basse (§295-298) -> DXVK 2.7.1 -> winevulkan -> KosmicKrisp -> Metal,
+audio Wwise, TLS vers PlayFab, pont Steam vers le client Steam macOS. Sans Rosetta.
+
+Reste ouvert : ~112 exceptions ACCESS_VIOLATION/s gerees sur le fil principal (non bloquantes,
+65 000 en dix minutes) -- a identifier avec trace+seh ; et l'entree en partie (chargement du
+Donjon).
+
+## 300. JALON : Vermintide 2 JOUABLE -- le Donjon a la premiere personne, et quatre defauts du pont Steam
+
+Suite du §299. Du menu principal au Donjon, il manquait quatre choses, toutes dans le pont
+lsteamclient (0074), aucune dans FEX ni dans le rendu.
+
+### 1. Retour par pointeur cache : il faut DECALER les arguments
+
+`GetLobbyOwner(lobby)` rend un CSteamID. Classe a constructeur : MSVC x64 le rend par pointeur
+cache, premier argument apres « this » ; System V le rend dans RAX et n'a pas ce parametre. Le
+chemin 64 bits ecrivait bien `*a = ret` mais passait (a, b, c...) au natif : GetLobbyOwner
+recevait le pointeur de sortie comme id de lobby, le jeu lisait un tampon jamais ecrit ->
+host_peer_id = "11038", « Is not host of own lobby » (state_loading.lua:941). GetSteamID, sans
+argument, marchait et masquait le bug. Decalage : natif(b, c, d...).
+
+En plus la table mesuree ratait trois tampons (prologue sans « lea -N(%ebp),%edx ; push %edx ») :
+GetLobbyOwner, GetLobbyMemberByIndex, GetClanOwner. Corriges dans signatures32.h et dans le
+generateur (CORRECTIONS de tests/engendrer_i386.py).
+
+### 2. L'export plat Steam_GetAPICallResult n'etait pas relaye
+
+Apres CreateLobby le client livre le rappel 703 (SteamAPICallCompleted_t), puis steam_api vient
+chercher la structure par Steam_GetAPICallResult(pipe, call, tampon, taille, attendu, &echec).
+En stub (rendre 0), aucun CallResult n'aboutissait : LobbyEnter_t arrivait mais jamais
+LobbyCreated_t -> « Failed to create Steam lobby ». Relaye vers le natif (dlsym), recopie via
+un tampon PE comme get_callback. Le dernier parametre est un bool natif : UN octet.
+
+### 3. Disposition des rappels : pack(8) Windows contre pack(4) natif
+
+LobbyCreated_t { EResult ; uint64 lobby } fait 12 octets cote macOS (lobby a l'offset 4) et 16
+cote jeu (offset 8). Recopie brute, le jeu lisait le mot HAUT : lobby 0x0000000001860000, et
+interrogeait GetLobbyOwner dessus a chaque image, 15 000 fois en trois minutes, sans jamais etre
+hote. convertir_rappel() insere quatre octets de bourrage a l'offset 4 pour 513 et 1221 ; les
+autres rappels mesures (504, 505, 304, 703, 1222, 1281) ne different que par le bourrage final.
+C'est le probleme que Proton resout par ses convertisseurs engendres ; ici, sur mesure.
+
+### 4. La voix tue le client Steam macOS
+
+A l'entree dans le Donjon le jeu appelle ISteamUser::StartVoiceRecording. Journal de connexion
+de Steam : « StartVoiceRecording() » puis « Created OPUS PLC voice encoder », puis plus rien --
+steam_osx a disparu (pas de rapport macOS : Breakpad en interne), et les lancements suivants
+mouraient sur « src/common/pipes.cpp (900) : fatal stalled cross-thread pipe (pipe is
+disconnected) ». Le pont ne relaie plus ISteamUser 7..11 (Start/StopVoiceRecording,
+GetAvailableVoice, GetVoice, DecompressVoice) : k_EVoiceResultNotRecording. De toute facon un
+pont n'a pas a faire capturer le micro de la machine sans que l'utilisateur l'ait demande.
+
+### Deux pieges de methode, mesures
+
+- **Un `make` nu dans build/wine11-arm64-ec reconstruit sans -DWINE_TEB_SANS_X18** (la memoire
+  le disait deja) : NtCurrentTeb() repasse par x18, et lsteamclient a plante au hasard dans
+  HeapAlloc(GetProcessHeap()) -- lecture a l'adresse 0x60 = TEB->Peb avec x18 nul. Temoin :
+  `llvm-objdump -d lsteamclient.dll | grep -c x18` doit rendre 0. Toujours :
+  `make aarch64_CFLAGS="-g -O2 -DWINE_TEB_SANS_X18" arm64ec_CFLAGS="-g -O2 -DWINE_TEB_SANS_X18"`.
+- **La souris injectee** : le jeu (raw input + GetCursorPos) reagit a SetCursorPos + clic
+  (touche.exe clicabs x% y%), pas aux grands deltas relatifs, et Echap ne ferme pas ses menus.
+  Le journal console du jeu est bufferise par blocs : ne pas conclure d'un journal muet.
+- Les ~112 AV/s du §299 etaient les sondes IsBadStringPtrA du pont lui-meme sur des petits
+  entiers (1, 2, 0x40) ; sondes limitees a TRACE_ON et a >= 64 Kio : 0 AV au menu.
+
+### Resultat
+
+Menu -> START GAME -> ADVENTURE -> ecrans de premier lancement (gamma, panning rule) -> lobby
+Steam cree, hote -> inn_level charge (« Level load completed! » apres ~8 s, fondu ~2 min plus
+tard : compilation des pipelines Metal au premier passage) -> StateIngame HOST -> joueur spawne
+-> selection de heros en 3D -> **vue a la premiere personne dans le Donjon, HUD, arme en main**.
+Steam macOS vivant. Capture : scratchpad/d3_43.png. Reste : mesurer les images par seconde,
+rejouer sans trace, la stabilite sur une mission.

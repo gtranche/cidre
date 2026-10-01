@@ -1,0 +1,10 @@
+LIBRARY user32.dll
+EXPORTS
+FindWindowA
+SetForegroundWindow
+SendInput
+GetForegroundWindow
+GetWindowTextA
+GetClientRect
+ClientToScreen
+SetCursorPos

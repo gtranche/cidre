@@ -22,7 +22,8 @@ serie_wine() {
 }
 
 serie_wine11() {
-   ls "$R"/0048-*.patch "$R"/0049-*.patch "$R"/0068-*.patch "$R"/0072-*.patch "$R"/0073-*.patch 2>/dev/null
+   ls "$R"/0048-*.patch "$R"/0049-*.patch "$R"/0068-*.patch "$R"/0072-*.patch "$R"/0073-*.patch \
+      "$R"/0074-*.patch 2>/dev/null
 }
 
 serie_vkd3d_proton() {

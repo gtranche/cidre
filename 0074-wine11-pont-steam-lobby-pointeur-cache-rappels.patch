@@ -1,0 +1,423 @@
+diff --color -ruN dlls/lsteamclient/lsteamclient.spec /Users/gtranche/Dev/proton-ouvert/src/wine11/dlls/lsteamclient/lsteamclient.spec
+--- a/dlls/lsteamclient/lsteamclient.spec	2026-10-01 05:22:54
++++ b/dlls/lsteamclient/lsteamclient.spec	2026-10-01 04:14:43
+@@ -33,7 +33,7 @@
+ @ cdecl Steam_GSSetServerType()
+ @ cdecl Steam_GSSetSpawnCount()
+ @ cdecl Steam_GSUpdateStatus()
+-@ cdecl Steam_GetAPICallResult()
++@ cdecl Steam_GetAPICallResult(long int64 ptr long long ptr)
+ @ cdecl Steam_GetGSHandle()
+ @ cdecl Steam_InitiateGameConnection()
+ @ cdecl Steam_IsKnownInterface()
+diff --color -ruN dlls/lsteamclient/main.c /Users/gtranche/Dev/proton-ouvert/src/wine11/dlls/lsteamclient/main.c
+--- a/dlls/lsteamclient/main.c	2026-10-01 05:22:54
++++ b/dlls/lsteamclient/main.c	2026-10-01 05:09:46
+@@ -225,7 +225,42 @@
+     return NULL;
+ }
+ 
++/*
++ * La voix n'est pas relayee.
++ *
++ * ISteamUser 7..11 (StartVoiceRecording, StopVoiceRecording, GetAvailableVoice,
++ * GetVoice, DecompressVoice) feraient capturer le micro de la machine par le
++ * client Steam macOS, sans que l'utilisateur l'ait demande. Et mesure sur
++ * Vermintide 2 : a l'entree dans le Donjon, StartVoiceRecording a ete la
++ * derniere ligne du journal de connexion de Steam avant que le client
++ * disparaisse (« Created OPUS PLC voice encoder », puis plus rien), et les
++ * lancements suivants mouraient sur « fatal stalled cross-thread pipe (pipe
++ * is disconnected) ». On repond donc « pas d'enregistrement » sans appeler le
++ * natif : k_EVoiceResultNotRecording = 2 pour les lectures, rien pour les
++ * ordres. Les emplacements sont ceux de SteamUser017 a 023, stables.
++ */
++static BOOL voix_non_relayee( const char *interface, unsigned emplacement, UINT64 *ret )
++{
++    if (!meme_interface( "ISteamUser", interface )) return FALSE;
++    switch (emplacement)
++    {
++    case 7: case 8:              *ret = 0; break;   /* Start/StopVoiceRecording : void */
++    case 9: case 10: case 11:    *ret = 2; break;   /* k_EVoiceResultNotRecording */
++    default: return FALSE;
++    }
++    TRACE( "%s emplacement %u : voix non relayee\n", interface, emplacement );
++    return TRUE;
++}
++
+ #ifdef _WIN64
++/* Un mot est-il une chaine d'invite lisible ? Sous 64 Kio il n'y a jamais de
++ * pointeur valide : repondre sans sonder evite une exception par appel. */
++static BOOL chaine_plausible( UINT64 mot )
++{
++    if (mot < 0x10000) return FALSE;
++    return !IsBadStringPtrA( (LPCSTR)(ULONG_PTR)mot, 64 );
++}
++
+ static UINT64 repartir( unsigned emplacement, void *self,
+                         UINT64 a, UINT64 b, UINT64 c, UINT64 d, UINT64 e, UINT64 f )
+ {
+@@ -236,18 +271,27 @@
+ 
+     /* Un appel par methode et par image : en ERR, le journal coutait plus cher
+      * que le pont lui-meme. En TRACE, il ne s'active qu'a la demande. */
+-    if (!IsBadStringPtrA( (LPCSTR)(ULONG_PTR)a, 64 ))
+-        TRACE( "%s emplacement %u( \"%s\", %p, %p )\n", ou, emplacement,
+-             (const char *)(ULONG_PTR)a, (void *)(ULONG_PTR)b, (void *)(ULONG_PTR)c );
+-    else if (!IsBadStringPtrA( (LPCSTR)(ULONG_PTR)b, 64 ))
+-        TRACE( "%s emplacement %u( %p, \"%s\", %p )\n", ou, emplacement,
+-             (void *)(ULONG_PTR)a, (const char *)(ULONG_PTR)b, (void *)(ULONG_PTR)c );
+-    else if (!IsBadStringPtrA( (LPCSTR)(ULONG_PTR)c, 64 ))
+-        TRACE( "%s emplacement %u( %p, %p, \"%s\" )\n", ou, emplacement,
+-             (void *)(ULONG_PTR)a, (void *)(ULONG_PTR)b, (const char *)(ULONG_PTR)c );
+-    else
+-        TRACE( "%s emplacement %u( %p, %p, %p )\n", ou, emplacement,
+-             (void *)(ULONG_PTR)a, (void *)(ULONG_PTR)b, (void *)(ULONG_PTR)c );
++    if (TRACE_ON(lsteamclient))
++    {
++        /* Sonder un mot avec IsBadStringPtrA coute une exception entiere quand
++         * ce n'est pas un pointeur : sur Vermintide 2, trois sondes par appel et
++         * des petits entiers (1, 2, 0x40...) donnaient 112 ACCESS_VIOLATION par
++         * seconde sur le fil principal, chacune deroulee par arm64ec. On ne
++         * sonde donc qu'en TRACE, et jamais sous 64 Kio -- ou aucun pointeur
++         * d'invite ne vit. */
++        if (chaine_plausible( a ))
++            TRACE( "%s emplacement %u( \"%s\", %p, %p )\n", ou, emplacement,
++                 (const char *)(ULONG_PTR)a, (void *)(ULONG_PTR)b, (void *)(ULONG_PTR)c );
++        else if (chaine_plausible( b ))
++            TRACE( "%s emplacement %u( %p, \"%s\", %p )\n", ou, emplacement,
++                 (void *)(ULONG_PTR)a, (const char *)(ULONG_PTR)b, (void *)(ULONG_PTR)c );
++        else if (chaine_plausible( c ))
++            TRACE( "%s emplacement %u( %p, %p, \"%s\" )\n", ou, emplacement,
++                 (void *)(ULONG_PTR)a, (void *)(ULONG_PTR)b, (const char *)(ULONG_PTR)c );
++        else
++            TRACE( "%s emplacement %u( %p, %p, %p )\n", ou, emplacement,
++                 (void *)(ULONG_PTR)a, (void *)(ULONG_PTR)b, (void *)(ULONG_PTR)c );
++    }
+ 
+     /*
+      * Pour une sous-interface, le relais se passe de carte : l'emplacement N de
+@@ -260,22 +304,40 @@
+      */
+     if (objet->nom[0])
+     {
+-        if (WINE_UNIX_CALL( unix_appel_vtable, &params )) return 0;
++        UINT64 neutre;
+ 
++        if (voix_non_relayee( objet->nom, emplacement, &neutre )) return neutre;
+         sig = emplacement < NB_SIGNATURES ? objet->sigs[emplacement] : NULL;
+         if (sig && sig->tampon)
+         {
+-            /* Le natif a rendu la valeur dans RAX ; l'appelant attend qu'elle
+-             * soit ecrite dans son tampon et que RAX en porte l'adresse. Au-dela
+-             * de huit octets la structure ne revient plus dans un seul registre
+-             * -- classe MEMORY ou mixte entier/flottant -- et le relais ne sait
+-             * pas encore la traiter. */
++            /*
++             * Retour par pointeur cache (un CSteamID : classe a constructeur,
++             * que MSVC ne rend jamais dans RAX). Cote Microsoft x64 le pointeur
++             * de sortie occupe le premier argument apres « this » ; cote
++             * System V la meme classe, trivialement copiable, revient dans RAX
++             * et la methode n'a pas ce parametre. Il faut donc DECALER : le
++             * natif recoit b, c, d... et non a, b, c... Sans ce decalage,
++             * GetLobbyOwner recevait le pointeur de sortie comme id de lobby,
++             * rendait n'importe quoi, et le jeu lisait dans son tampon jamais
++             * ecrit : « Is not host of own lobby », host_peer_id = "11038"
++             * (Vermintide 2, state_loading.lua:941). GetSteamID, sans
++             * argument, ne souffrait pas de l'absence de decalage -- d'ou le
++             * steam_id juste a cote du lobby faux.
++             *
++             * Au-dela de huit octets la structure ne revient plus dans un seul
++             * registre -- classe MEMORY ou mixte entier/flottant -- et le
++             * relais ne sait pas encore la traiter.
++             */
+             if (sig->tampon != 8) { ERR( "%s emplacement %u : tampon de %u octets, non traite\n", ou, emplacement, sig->tampon ); return 0; }
+             if (!a) return 0;
++            params.a = b; params.b = c; params.c = d; params.d = e; params.e = f; params.f = 0;
++            if (WINE_UNIX_CALL( unix_appel_vtable, &params )) return 0;
+             *(UINT64 *)(ULONG_PTR)a = params.ret;
+-            TRACE( "structure de 8 octets rendue via le tampon %p\n", (void *)(ULONG_PTR)a );
++            TRACE( "structure de 8 octets rendue via le tampon %p : %s\n", (void *)(ULONG_PTR)a,
++                   wine_dbgstr_longlong(params.ret) );
+             return a;
+         }
++        if (WINE_UNIX_CALL( unix_appel_vtable, &params )) return 0;
+         return params.ret;
+     }
+ 
+@@ -296,8 +358,8 @@
+          * avant-dernier pour ceux qui se passent d'utilisateur. */
+         const char *nom = NULL;
+ 
+-        if (!IsBadStringPtrA( (LPCSTR)(ULONG_PTR)c, 64 )) nom = (const char *)(ULONG_PTR)c;
+-        else if (!IsBadStringPtrA( (LPCSTR)(ULONG_PTR)b, 64 )) nom = (const char *)(ULONG_PTR)b;
++        if (chaine_plausible( c )) nom = (const char *)(ULONG_PTR)c;
++        else if (chaine_plausible( b )) nom = (const char *)(ULONG_PTR)b;
+         return (ULONG_PTR)envelopper( params.ret, nom );
+     }
+     return params.ret;
+@@ -425,6 +487,12 @@
+     TRACE( "%s emplacement %u (%u mots%s)\n", ou, emplacement, mots,
+            tampon ? ", retour par pointeur cache" : "" );
+ 
++    if (objet->nom[0])
++    {
++        UINT64 neutre;
++        if (voix_non_relayee( objet->nom, emplacement, &neutre )) return neutre;
++    }
++
+     dest[0] = &params.a; dest[1] = &params.b; dest[2] = &params.c;
+     dest[3] = &params.d; dest[4] = &params.e; dest[5] = &params.f;
+     dest[6] = &params.g; dest[7] = &params.h; dest[8] = &params.i;
+@@ -644,6 +712,49 @@
+     int            m_cubParam;
+ } CallbackMsg_t;
+ 
++/*
++ * Disposition des rappels : Windows contre natif.
++ *
++ * Les en-tetes Steamworks empaquetent les structures de rappel sur 8 octets
++ * sous Windows et sur 4 ailleurs. Un uint64 qui suit un champ de 4 octets
++ * n'est donc pas au meme endroit : LobbyCreated_t { EResult ; uint64 lobby }
++ * fait 12 octets cote macOS (lobby a l'offset 4) et 16 cote jeu (offset 8).
++ * Recopie brute, le jeu lisait le mot HAUT du lobby suivi de zeros :
++ * 0x0000000001860000, et interrogeait GetLobbyOwner la-dessus a chaque image
++ * sans jamais devenir hote (Vermintide 2, 15 000 appels en trois minutes).
++ *
++ * Pour les structures connues ou la difference se reduit a quatre octets de
++ * bourrage inseres a l'offset 4, on les insere. Les autres rappels mesures
++ * (504, 505, 304, 703, 1222, 1281...) ne different que par le bourrage final,
++ * sans effet sur la lecture. A completer rappel par rappel, sur mesure.
++ */
++static int convertir_rappel( int id, unsigned char *tampon, int taille_native, int capacite )
++{
++    static const struct { int id; int taille_native; } inserer4[] =
++    {
++        { 513,  12 },  /* LobbyCreated_t : { EResult ; uint64 } */
++        { 1221, 704 }, /* SteamNetConnectionStatusChangedCallback_t : m_info passe de 4 a 8 */
++    };
++    unsigned i;
++
++    for (i = 0; i < ARRAY_SIZE(inserer4); i++)
++    {
++        if (inserer4[i].id != id) continue;
++        if (taille_native <= 0) taille_native = inserer4[i].taille_native;
++        if (taille_native != inserer4[i].taille_native || capacite < taille_native + 4)
++        {
++            ERR( "rappel %d : %d octets natifs, %d attendus, capacite %d\n",
++                 id, taille_native, inserer4[i].taille_native, capacite );
++            return taille_native;
++        }
++        memmove( tampon + 8, tampon + 4, taille_native - 4 );
++        memset( tampon + 4, 0, 4 );
++        TRACE( "rappel %d : disposition native %d -> Windows %d octets\n", id, taille_native, taille_native + 4 );
++        return taille_native + 4;
++    }
++    return taille_native;
++}
++
+ BOOL CDECL Steam_BGetCallback( int pipe, CallbackMsg_t *msg, int *call )
+ {
+     /* La charge utile est recopiee ici : les rappels Steamworks sont tires
+@@ -660,7 +771,9 @@
+     /* Le cote unix a recopie la charge dans notre tampon et rend son adresse
+      * telle qu'il l'a recue, donc celle de l'hote : le jeu attend la sienne. */
+     msg->m_pubParam   = params.msg.param ? charge : NULL;
+-    msg->m_cubParam   = params.msg.taille;
++    msg->m_cubParam   = params.msg.param
++                      ? convertir_rappel( msg->m_iCallback, charge, params.msg.taille, sizeof(charge) )
++                      : params.msg.taille;
+     if (call) *call = params.call;
+ 
+     TRACE( "rappel %d, %d octets a %p\n", msg->m_iCallback, msg->m_cubParam, msg->m_pubParam );
+@@ -841,11 +954,42 @@
+     return 0;
+ }
+ 
+-int CDECL Steam_GetAPICallResult( void )
++/*
++ * Le resultat d'un appel asynchrone (CallResult).
++ *
++ * Quand une methode rend un SteamAPICall_t (CreateLobby, RequestLobbyList,
++ * les requetes de stats...), le client annonce la fin par le rappel 703
++ * (SteamAPICallCompleted_t), puis steam_api vient chercher la structure de
++ * resultat par cet export plat. Le laisser en stub rendait 0 : CreateLobby
++ * aboutissait cote Steam, LobbyEnter_t arrivait, mais le LobbyCreated_t
++ * attendu par le jeu n'arrivait jamais -> « Failed to create Steam lobby »
++ * (Vermintide 2). Le dernier parametre est un bool natif : un seul octet.
++ */
++BOOL CDECL Steam_GetAPICallResult( int pipe, UINT64 call, void *tampon, int taille,
++                                   int attendu, unsigned char *echec )
+ {
+-    static int dit;
+-    if (!dit) { dit = 1; FIXME( "export plat sollicite : Steam_GetAPICallResult\n" ); }
+-    return 0;
++    static unsigned char charge[8192];
++    struct get_api_call_result_params params = { pipe, taille, call, vers_hote( charge ), attendu, 0, 0, 0 };
++
++    if (!tampon || taille <= 0 || taille > (int)sizeof(charge))
++    {
++        ERR( "tampon %p de %d octets : refuse\n", tampon, taille );
++        return FALSE;
++    }
++    if (WINE_UNIX_CALL( unix_get_api_call_result, &params )) return FALSE;
++    if (echec) *echec = params.echec ? 1 : 0;
++    if (!params.ret) return FALSE;
++    /* Le natif a rempli sa disposition a lui ; le jeu attend la sienne, et
++     * dit laquelle par l'identifiant attendu. On ne connait pas la taille
++     * native rendue : la table la porte (0 = « prends la tienne »). */
++    {
++        int n = convertir_rappel( attendu, charge, 0, sizeof(charge) );
++        if (n <= 0 || n > taille) n = taille;
++        memcpy( tampon, charge, n );
++    }
++    TRACE( "appel %s, rappel %d, %d octets -> %p (echec %d)\n",
++           wine_dbgstr_longlong(call), attendu, taille, tampon, params.echec );
++    return TRUE;
+ }
+ 
+ int CDECL Steam_GetGSHandle( void )
+diff --color -ruN dlls/lsteamclient/signatures32.h /Users/gtranche/Dev/proton-ouvert/src/wine11/dlls/lsteamclient/signatures32.h
+--- a/dlls/lsteamclient/signatures32.h	2026-10-01 05:22:54
++++ b/dlls/lsteamclient/signatures32.h	2026-10-01 03:58:08
+@@ -23,6 +23,15 @@
+      * buffer, taille, puis quatre pointeurs de sortie. Sans cette ligne, le
+      * relais transmet 0 argument -> ticket vide -> le DRM refuse (code 54). */
+     { "ISteamAppTicket", 0, 7, 0, "GetAppOwnershipTicketData" },
++    /* Corrections manuelles (voir CORRECTIONS dans tests/engendrer_i386.py) :
++     * ces trois methodes rendent un CSteamID par pointeur cache, comme
++     * GetSteamID ou GetLobbyByIndex, mais la mesure n'a pas reconnu leur
++     * prologue (pas de « lea -N(%ebp),%edx ; push %edx »). Le nombre de mots,
++     * lui, etait juste et inclut deja le pointeur cache (3 = sret + CSteamID).
++     * Preuve : Vermintide 2, GetLobbyOwner relaye sans tampon -> le natif
++     * recevait le pointeur de sortie comme id de lobby, le jeu lisait un
++     * tampon jamais ecrit : host_peer_id = "11038", « Is not host of own
++     * lobby » (state_loading.lua:941). */
+     { "ISteamClient", 1, 1, 0, "BReleaseSteamPipe" },
+     { "ISteamClient", 34, 1, 0, "sans_nom_34" },
+     { "ISteamAppList", 4, 1, 0, "GetAppBuildId" },
+@@ -149,7 +158,7 @@
+     { "ISteamFriends", 20, 2, 0, "GetClanName" },
+     { "ISteamFriends", 41, 4, 0, "GetClanOfficerByIndex" },
+     { "ISteamFriends", 40, 2, 0, "GetClanOfficerCount" },
+-    { "ISteamFriends", 39, 3, 0, "GetClanOwner" },
++    { "ISteamFriends", 39, 3, 8, "GetClanOwner" },
+     { "ISteamFriends", 21, 2, 0, "GetClanTag" },
+     { "ISteamFriends", 51, 2, 8, "GetCoplayFriend" },
+     { "ISteamFriends", 50, 0, 0, "GetCoplayFriendCount" },
+@@ -425,10 +434,10 @@
+     { "ISteamMatchmaking", 22, 7, 0, "GetLobbyDataByIndex" },
+     { "ISteamMatchmaking", 21, 2, 0, "GetLobbyDataCount" },
+     { "ISteamMatchmaking", 30, 5, 0, "GetLobbyGameServer" },
+-    { "ISteamMatchmaking", 18, 4, 0, "GetLobbyMemberByIndex" },
++    { "ISteamMatchmaking", 18, 4, 8, "GetLobbyMemberByIndex" },
+     { "ISteamMatchmaking", 24, 5, 0, "GetLobbyMemberData" },
+     { "ISteamMatchmaking", 32, 2, 0, "GetLobbyMemberLimit" },
+-    { "ISteamMatchmaking", 35, 3, 0, "GetLobbyOwner" },
++    { "ISteamMatchmaking", 35, 3, 8, "GetLobbyOwner" },
+     { "ISteamMatchmaking", 17, 2, 0, "GetNumLobbyMembers" },
+     { "ISteamMatchmaking", 16, 4, 0, "InviteUserToLobby" },
+     { "ISteamMatchmaking", 14, 2, 0, "JoinLobby" },
+diff --color -ruN dlls/lsteamclient/unix.c /Users/gtranche/Dev/proton-ouvert/src/wine11/dlls/lsteamclient/unix.c
+--- a/dlls/lsteamclient/unix.c	2026-10-01 05:22:54
++++ b/dlls/lsteamclient/unix.c	2026-10-01 04:14:43
+@@ -45,6 +45,8 @@
+ 
+ typedef unsigned char (*b_get_callback_t)( int pipe, struct callback_msg_natif *msg, int *call );
+ typedef void          (*free_last_callback_t)( int pipe );
++typedef unsigned char (*get_api_call_result_t)( int pipe, unsigned long long call, void *tampon,
++                                                int taille, int attendu, unsigned char *echec );
+ 
+ static void *steamclient;
+ static create_interface_t p_CreateInterface;
+@@ -55,6 +57,7 @@
+ static plate_rien_t         p_CreateSteamPipe;
+ static b_get_callback_t     p_BGetCallback;
+ static free_last_callback_t p_FreeLastCallback;
++static get_api_call_result_t p_GetAPICallResult;
+ 
+ static const char *chemins[] =
+ {
+@@ -99,6 +102,7 @@
+     p_CreateSteamPipe     = dlsym( steamclient, "Steam_CreateSteamPipe" );
+     p_BGetCallback        = dlsym( steamclient, "Steam_BGetCallback" );
+     p_FreeLastCallback    = dlsym( steamclient, "Steam_FreeLastCallback" );
++    p_GetAPICallResult    = dlsym( steamclient, "Steam_GetAPICallResult" );
+ 
+     TRACE( "steamclient.dylib charge, CreateInterface a %p, BGetCallback a %p\n",
+            p_CreateInterface, p_BGetCallback );
+@@ -247,6 +251,23 @@
+     return STATUS_SUCCESS;
+ }
+ 
++/* Le resultat d'un appel asynchrone : voir get_api_call_result_params. */
++static NTSTATUS get_api_call_result( void *args )
++{
++    struct get_api_call_result_params *params = args;
++    unsigned char echec = 0;
++
++    if (!p_GetAPICallResult) return STATUS_ENTRYPOINT_NOT_FOUND;
++    if (!params->tampon || params->taille <= 0) return STATUS_INVALID_PARAMETER;
++
++    params->ret = p_GetAPICallResult( params->pipe, params->call, (void *)(ULONG_PTR)params->tampon,
++                                      params->taille, params->attendu, &echec );
++    params->echec = echec;
++    TRACE( "appel %s, rappel %d attendu, %d octets -> %d (echec %d)\n",
++           wine_dbgstr_longlong(params->call), params->attendu, params->taille, params->ret, echec );
++    return STATUS_SUCCESS;
++}
++
+ static NTSTATUS free_last_callback( void *args )
+ {
+     struct free_last_callback_params *params = args;
+@@ -328,6 +349,7 @@
+     free_last_callback,
+     get_generic_interface,
+     appel_vtable,
++    get_api_call_result,
+ };
+ 
+ C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );
+@@ -351,6 +373,7 @@
+     free_last_callback,
+     get_generic_interface,
+     appel_vtable,
++    get_api_call_result,
+ };
+ 
+ C_ASSERT( ARRAYSIZE(__wine_unix_call_wow64_funcs) == unix_funcs_count );
+diff --color -ruN dlls/lsteamclient/unixlib.h /Users/gtranche/Dev/proton-ouvert/src/wine11/dlls/lsteamclient/unixlib.h
+--- a/dlls/lsteamclient/unixlib.h	2026-10-01 05:22:54
++++ b/dlls/lsteamclient/unixlib.h	2026-10-01 04:14:43
+@@ -127,6 +127,24 @@
+     INT32 pipe;
+ };
+ 
++/* Steam_GetAPICallResult : le resultat differe d'un appel asynchrone
++ * (SteamAPICall_t), que steam_api vient chercher quand le rappel 703
++ * (SteamAPICallCompleted_t) le lui annonce. Sans lui, aucun CallResult
++ * n'aboutit : CreateLobby « reussit » puis le jeu n'apprend jamais le
++ * LobbyCreated_t. Meme discipline que get_callback : la charge est recopiee
++ * dans un tampon fourni par le cote PE. */
++struct get_api_call_result_params
++{
++    INT32  pipe;
++    INT32  taille;        /* taille attendue de la structure, et du tampon */
++    UINT64 call;          /* SteamAPICall_t */
++    UINT64 tampon;        /* ou recopier la charge utile */
++    INT32  attendu;       /* iCallbackExpected */
++    INT32  echec;         /* *pbFailed, rendu sur un entier : un bool natif fait un octet */
++    INT32  ret;
++    INT32  bourrage;
++};
++
+ enum lsteamclient_funcs
+ {
+     unix_attach,
+@@ -138,6 +156,7 @@
+     unix_free_last_callback,
+     unix_get_generic_interface,
+     unix_appel_vtable,
++    unix_get_api_call_result,
+     unix_funcs_count
+ };
+ 

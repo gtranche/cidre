@@ -60,6 +60,17 @@ COMPLEMENT = [
     ("ISteamClient", 34, 1, 0, "sans_nom_34"),
 ]
 
+# Tampons que la mesure ne voit pas : methodes rendant un CSteamID par pointeur
+# cache dont le prologue n'a pas la forme « lea -N(%ebp),%edx ; push %edx ».
+# Le nombre de mots releve est juste (il inclut le pointeur cache). Etabli sur
+# Vermintide 2 : GetLobbyOwner relaye sans tampon donnait « Is not host of own
+# lobby », host_peer_id lu dans un tampon jamais ecrit.
+CORRECTIONS = {
+    ("ISteamMatchmaking", "GetLobbyOwner"): 8,
+    ("ISteamMatchmaking", "GetLobbyMemberByIndex"): 8,
+    ("ISteamFriends", "GetClanOwner"): 8,
+}
+
 
 def signatures(sig):
     o = ['/* Engendre par tests/engendrer_i386.py -- ne pas editer a la main.\n'
@@ -84,7 +95,8 @@ def signatures(sig):
             if v['emplacement'] >= EMPLACEMENTS or v['octets'] // 4 >= MOTS:
                 continue
             o.append('    { "%s", %d, %d, %d, "%s" },\n'
-                     % (iface, v['emplacement'], v['octets'] // 4, v['tampon'], meth))
+                     % (iface, v['emplacement'], v['octets'] // 4,
+                        CORRECTIONS.get((iface, meth), v['tampon']), meth))
             n += 1
     o.append('};\n')
     return ''.join(o), n
