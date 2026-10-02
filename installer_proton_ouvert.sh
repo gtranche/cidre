@@ -8,7 +8,7 @@
 set -e
 DEST=${1:-$HOME/Library/Application Support/proton-ouvert}
 SRC=${2:-}
-REL_URL="https://github.com/@@OWNER@@/@@REPO@@/releases/latest/download/proton-ouvert-runtime.tar.zst"
+REL_URL="https://github.com/gtranche/proton-ouvert/releases/latest/download/proton-ouvert-runtime.tar.zst"
 
 command -v zstd >/dev/null || { echo "zstd requis (brew install zstd)" >&2; exit 1; }
 mkdir -p "$DEST"

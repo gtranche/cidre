@@ -1,0 +1,38 @@
+# Release automatique : sur un tag vX.Y.Z, construit la pile depuis les sources
+# sur un runner macOS Apple Silicon, empaquette le runtime, et l'attache a la
+# release. ATTENTION : build lourd (plusieurs heures) et NON encore eprouve sur
+# CI -- a valider au premier tag. Alternative fiable : tests/publier_release.sh
+# depuis une machine ou le build existe deja.
+name: release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  construire-et-publier:
+    runs-on: macos-14   # Apple Silicon
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - name: Outils de build (arm64)
+        run: |
+          brew install meson ninja cmake glslang spirv-tools llvm zstd bison || true
+      - name: Toolchain (llvm-mingw)
+        run: sh tests/etape0_toolchain.sh
+      - name: Sources + patches
+        run: |
+          sh tests/etape1_appliquer_correctifs.sh --cloner
+          sh tests/etape1_appliquer_correctifs.sh
+      - name: FEX
+        run: sh tests/construire_fex.sh --installer
+      - name: Pile arm64 (Mesa, Wine, DXVK)
+        run: sh tests/construire_pile_arm64.sh
+      - name: Empaqueter le runtime
+        run: sh tests/empaqueter_runtime.sh "$GITHUB_WORKSPACE/proton-ouvert-runtime.tar.zst"
+      - name: Publier la release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: proton-ouvert-runtime.tar.zst
+          fail_on_unmatched_files: true
