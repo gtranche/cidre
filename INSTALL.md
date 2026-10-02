@@ -27,9 +27,11 @@ bouton « Jouer » de Steam (voir plus bas).
 **[TROU]** Ces prérequis sont documentés mais non vérifiés/installés par un
 script. À faire : un `etape0` qui teste leur présence et les installe.
 
-## 2. Toolchain (`toolchain/`)  **[TROU : non scripté]**
+## 2. Toolchain (`toolchain/`)
 
-Un blob téléchargé, aujourd'hui présent mais sans script de récupération :
+**Scripté** pour le coeur (llvm-mingw) : `sh tests/etape0_toolchain.sh`
+(télécharge, vérifie le sha256, extrait, pose le symlink `llvm-mingw` ; idempotent).
+Reste manuel : dxc, innoextract, le venv Python. Détail du blob :
 - `llvm-mingw-20260908-ucrt-macos-universal.tar.xz` (~124 Mo, sha256 connu, voir NOTES §… « llvm-mingw ») — fournit les triplets `aarch64-w64-mingw32`, `arm64ec-w64-mingw32`, `i386-windows`, `x86_64-pc-windows-msvc`. **Patché** par `etape1` (accès TEB via x18 dans `winnt.h`, voir §3).
 - `dxc` (DirectX Shader Compiler), `innoextract` (extraction d'installeurs GOG), `pyenv`, `vkxml`.
 
@@ -67,7 +69,11 @@ Applique la série par arbre (voir `tests/series.sh`), régénère `configure` (
 patche le `winnt.h` de la toolchain et FEX (patch `0070`). Vérifiable :
 `sh tests/verifier_reconstruction.sh` (base + série reproduit l'arbre de travail).
 
-## 5. Construire FEX  **[TROU : recette non scriptée]**
+## 5. Construire FEX
+
+**Scripté** : `sh tests/construire_fex.sh [--installer]`
+(cmake `-DMINGW_TRIPLE=arm64ec…`/`aarch64…`, `-DTUNE_CPU=generic -DBUILD_TESTING=OFF`,
+build-ec + build-wow64 ; recette validée contre les CMakeCache existants).
 
 FEX produit `libarm64ecfex.dll` (invités x86-64) et `libwow64fex.dll` (invités
 32 bits). Build cmake avec `-DMINGW_TRIPLE=arm64ec-w64-mingw32` (voir NOTES §222,
@@ -126,9 +132,9 @@ un jeu avec `.app`/Mach-O est laissé à Steam.
 ## Résumé des TROUS pour un bootstrap « une commande » (`etape0` à écrire)
 
 1. Prérequis système (2× Homebrew + paquets + Xcode CLT) : vérifier/installer.
-2. Télécharger + peupler `toolchain/` (llvm-mingw + sha256, dxc, innoextract).
+2. ~~llvm-mingw~~ **fait** (`etape0_toolchain.sh`). Reste : dxc, innoextract, venv Python.
 3. Ajouter **FEX** et **Vulkan-Loader** à la liste de clone d'`etape1`.
-4. Scripter le **build FEX** (cmake `-DMINGW_TRIPLE=arm64ec-w64-mingw32`, build-ec + build-wow64).
+4. ~~build FEX~~ **fait** (`construire_fex.sh`).
 5. Un orchestrateur `de-zero-a-jouable.sh` : etape0 → etape1 → FEX → etape2 → préfixe → Steam.
 
 Rien de tout ça n'est bloquant techniquement — ce sont des étapes aujourd'hui
