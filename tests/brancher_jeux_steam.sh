@@ -23,8 +23,22 @@ MODE=${1:-montrer}
 F=$(ls "$STEAM"/userdata/*/config/localconfig.vdf 2>/dev/null | head -1)
 [ -f "$F" ] || { echo "localconfig.vdf introuvable sous $STEAM/userdata" >&2; exit 2; }
 
-# Les jeux installes, et ceux qui portent un executable Windows.
+# Un jeu a-t-il une version macOS NATIVE ? -- un bundle .app, ou un executable
+# Mach-O dans son depot. Si oui, on ne l'enveloppe pas : Steam le lance
+# nativement, et poser notre couche par-dessus donnerait au mieux une version
+# Windows degradee (Surviving Mars : texte abime, §277) la ou le natif tourne.
+# Signal filesystem, portable : pas besoin de lire les caches binaires de Steam.
+a_version_macos() {
+   find "$1" -maxdepth 3 -name "*.app" -type d 2>/dev/null | grep -q . && return 0
+   find "$1" -maxdepth 2 -type f -perm +111 ! -name "*.exe" ! -name "*.dll" 2>/dev/null \
+      | head -100 | tr '\n' '\0' | xargs -0 file 2>/dev/null | grep -q "Mach-O" && return 0
+   return 1
+}
+
+# Les jeux installes, et ceux qui portent un executable Windows SANS version
+# macOS native.
 JEUX=""
+IGNORES=""
 for acf in "$STEAM"/steamapps/appmanifest_*.acf; do
    [ -f "$acf" ] || continue
    appid=$(basename "$acf" | sed 's/appmanifest_//; s/\.acf//')
@@ -32,11 +46,23 @@ for acf in "$STEAM"/steamapps/appmanifest_*.acf; do
    nom=$(sed -n 's/.*"name"[[:space:]]*"\(.*\)".*/\1/p' "$acf" | head -1)
    [ -n "$dir" ] && [ -d "$STEAM/steamapps/common/$dir" ] || continue
    find "$STEAM/steamapps/common/$dir" -maxdepth 3 -name "*.exe" 2>/dev/null | grep -q . || continue
+   if a_version_macos "$STEAM/steamapps/common/$dir"; then
+      IGNORES="$IGNORES$appid	$nom
+"
+      continue
+   fi
    JEUX="$JEUX$appid	$nom
 "
 done
 
-[ -n "$JEUX" ] || { echo "aucun jeu avec un executable Windows"; exit 0; }
+if [ -n "$IGNORES" ]; then
+   echo "ignores (version macOS native, lances par Steam directement) :"
+   printf '%s' "$IGNORES" | while IFS='	' read -r a n; do printf "  %-9s %s\n" "$a" "$n"; done
+   echo
+fi
+
+[ -n "$JEUX" ] || { echo "aucun jeu Windows-only a brancher"; exit 0; }
+echo "jeux Windows-only a brancher :"
 printf '%s' "$JEUX" | while IFS='	' read -r a n; do printf "  %-9s %s\n" "$a" "$n"; done
 
 [ "$MODE" = "--ecrire" ] || [ "$MODE" = "--retirer" ] || {
@@ -50,7 +76,10 @@ if pgrep -f "Steam.AppBundle/Steam/Contents/MacOS/steam_osx" >/dev/null 2>&1; th
 fi
 
 cp -p "$F" "$F.sauvegarde-$(date '+%Y%m%d-%H%M%S')"
-printf '%s' "$JEUX" | cut -f1 | RETIRER=$([ "$MODE" = "--retirer" ] && echo 1) CMD="$CMD" python3 - "$F" <<'PY'
+printf '%s' "$JEUX" | cut -f1 | \
+   RETIRER=$([ "$MODE" = "--retirer" ] && echo 1) CMD="$CMD" \
+   NATIFS="$(printf '%s' "$IGNORES" | cut -f1 | tr '\n' ' ')" \
+   python3 - "$F" <<'PY'
 import sys, os
 p=sys.argv[1]; cmd=os.environ["CMD"]; retirer=os.environ.get("RETIRER")
 appids=[x.strip() for x in sys.stdin if x.strip()]
@@ -82,6 +111,15 @@ for appid in appids:
         faits.append((appid,"deja en place"))
     else:
         faits.append((appid,"LAISSEE INTACTE (option personnelle deja presente)"))
+for appid in os.environ.get("NATIFS","").split():
+    fin=fin_bloc(i)
+    ligne=next((k for k in range(i,fin) if l[k].strip()=='"%s"'%appid and l[k+1].strip()=='{'), None)
+    if ligne is None: continue
+    f2=fin_bloc(ligne)
+    k=next((k for k in range(ligne+1,f2) if '"LaunchOptions"' in l[k]), None)
+    if k is not None and 'lancer_depuis_steam.sh' in l[k]:
+        del l[k]; faits.append((appid,"retiree (version macOS native)"))
+
 d='\n'.join(l)
 if d.count('{')!=d.count('}'):
     print("accolades desequilibrees, rien ecrit", file=sys.stderr); sys.exit(1)
