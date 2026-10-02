@@ -30,6 +30,10 @@ VKD3D_URL=https://github.com/HansKristian-Work/vkd3d-proton.git
 VKD3D_REV=5d0db7414b0b3f1afa7c9a84acf9ff483cb805d1
 DXVK_URL=https://github.com/doitsujin/dxvk.git
 DXVK_REV=c3dd74be6baec53786d4e064a572185b70347a17
+FEX_URL=https://github.com/FEX-Emu/FEX.git
+FEX_REV=72b2ff88aec8
+VKLOADER_URL=https://github.com/KhronosGroup/Vulkan-Loader.git
+VKLOADER_REV=e14698090707
 
 cloner() {
    url=$1; rev=$2; dst=$3
@@ -48,6 +52,9 @@ if [ "${1:-}" = "--cloner" ]; then
    cloner "$WINE11_URL" "$WINE11_REV" "$R/src/wine11"
    cloner "$VKD3D_URL" "$VKD3D_REV" "$R/src/vkd3d-proton"
    cloner "$DXVK_URL"  "$DXVK_REV"  "$R/src/dxvk"
+   cloner "$VKLOADER_URL" "$VKLOADER_REV" "$R/src/Vulkan-Loader"
+   mkdir -p "$R/third_party"
+   cloner "$FEX_URL"  "$FEX_REV"  "$R/third_party/FEX"
 fi
 
 . "$R/tests/series.sh"
