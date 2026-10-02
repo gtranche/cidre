@@ -5,6 +5,11 @@ en une commande — les sections marquées **[TROU]** demandent un script ou une
 récupération manuelle. L'objectif de ce document est que l'installation soit
 *reproductible et comprise*, pas magique.
 
+**Automatique :** `sh tests/de_zero_a_jouable.sh` enchaine tout (prerequis →
+toolchain → clone+patches → FEX → pile arm64 → prefixe → Steam). Les 2 Homebrew
+et Xcode CLT restent manuels (le script le dit). Le detail des etapes suit, pour
+comprendre/reprendre une etape isolee.
+
 Cible : Apple Silicon (testé M1 Max, macOS 26 « Tahoe »). La pile arm64 native
 (sans Rosetta) est la voie actuelle ; une ancienne voie x86_64/Rosetta existe
 dans `etape2_construire_pile.sh` mais n'est plus la cible.
