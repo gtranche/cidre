@@ -1,4 +1,34 @@
-# Installer proton-ouvert sur un Mac neuf
+# Installer proton-ouvert
+
+## Pour JOUER (install du runtime pre-compile) -- la voie normale
+
+Le runtime deja construit est publie en **release GitHub** (un tarball
+`proton-ouvert-runtime.tar.zst`, ~550 Mo). L'utilisateur ne construit rien :
+
+```
+sh installer_proton_ouvert.sh
+```
+
+Il telecharge le tarball de la derniere release, le decompresse (sous
+`~/Library/Application Support/proton-ouvert` par defaut), **relocalise** l'ICD
+Vulkan, regenere un prefixe Wine propre (sans mono/gecko), y depose DXVK + FEX,
+et branche Steam. Prerequis utilisateur : macOS Apple Silicon, `zstd`
+(`brew install zstd`), Steam installe. Valide : le runtime est relocalisable
+(Wine tourne depuis le nouvel emplacement, FEX et KosmicKrisp suivent).
+
+Cote mainteneur, produire le tarball de release :
+```
+sh tests/empaqueter_runtime.sh        # -> proton-ouvert-runtime.tar.zst (~554 Mo)
+```
+puis l'attacher a une release GitHub (chaque asset <= 2 Gio -- on est loin).
+(Dans `installer_proton_ouvert.sh`, remplacer `@@OWNER@@/@@REPO@@` par le depot.)
+
+---
+
+## Pour DEVELOPPER / reconstruire depuis les sources
+
+Ce qui suit construit tout depuis zero (utile pour un mainteneur, PAS pour un
+joueur). Automatique : `sh tests/de_zero_a_jouable.sh`.
 
 État : **carte d'installation + trous connus**. Ce n'est pas encore un bootstrap
 en une commande — les sections marquées **[TROU]** demandent un script ou une
