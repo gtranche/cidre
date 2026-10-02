@@ -11,6 +11,12 @@ SRC=${2:-}
 REL_URL="https://github.com/gtranche/proton-ouvert/releases/latest/download/proton-ouvert-runtime.tar.zst"
 
 command -v zstd >/dev/null || { echo "zstd requis (brew install zstd)" >&2; exit 1; }
+# Wine rasterise ses polices avec FreeType (tranche arm64 de Homebrew). Sans lui :
+# « Wine cannot find the FreeType font library » et aucun texte a l'ecran -- vrai
+# prerequis. fontconfig n'est QUE pour l'appariement des polices systeme ; la pile
+# tourne sans (Wine embarque ses .fon), donc on le signale comme recommande, pas du.
+[ -f /opt/homebrew/lib/libfreetype.6.dylib ] || { echo "  ATTENTION : FreeType absent -> brew install freetype  (sinon : pas de texte)" >&2; MANQUE_FONTES=1; }
+[ -f /opt/homebrew/lib/libfontconfig.1.dylib ] || echo "  (optionnel : brew install fontconfig pour un meilleur appariement des polices)"
 mkdir -p "$DEST"
 
 echo "== 1. Recuperation du runtime =="
@@ -47,7 +53,17 @@ for d in d3d11 dxgi d3d10core d3d9 d3d8; do
 done
 WINE_ARM64="$R/wine/wine11-arm64" WINEPREFIX="$WINEPREFIX" sh "$R/tests/installer_fex.sh" >/dev/null 2>&1 || true
 
-echo "== 6. Integration Steam =="
+echo "== 6. Pont Steam (lsteamclient + faux client + registre) =="
+# Sans ce pont, le steam_api64.dll du jeu ne trouve pas de client (registre
+# ActiveProcess vide) et SteamAPI_Init echoue -- le jeu « se lance et se ferme ».
+if WINE="$R/wine/wine11-arm64/bin/wine" WINEPREFIX="$WINEPREFIX" \
+     B="$R/wine/wine11-arm64/lib/wine" sh "$R/tests/preparer_pont_steam_arm64.sh" >/dev/null 2>&1; then
+   echo "  pont installe (lsteamclient en system32, faux_steam.exe, cles de registre)"
+else
+   echo "  (pont : echec -- verifiez wine/lsteamclient ; le jeu risque de se fermer au lancement)"
+fi
+
+echo "== 7. Integration Steam =="
 if pgrep -f steam_osx >/dev/null 2>&1; then
    echo "  Steam tourne : fermez-le, puis lancez 'sh $R/tests/brancher_jeux_steam.sh --ecrire'."
 else
@@ -57,6 +73,7 @@ else
 fi
 
 echo
+[ -n "${MANQUE_FONTES:-}" ] && echo "RAPPEL : brew install freetype  (requis pour afficher le texte)"
 echo "INSTALLE sous $R"
 echo "Lancez un jeu Windows depuis Steam (bouton Jouer). Les scripts attendent la"
 echo "pile a cet emplacement ; ne le deplacez pas sans relancer l'etape 3."
