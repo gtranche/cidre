@@ -38,4 +38,12 @@ done
 # bouchons xtajit, et la trace dit alors « x64 emulation not implemented ».
 sh "$R/tests/installer_fex.sh" >/dev/null
 
+# Débogage sous winedbg : si PROTON_OUVERT_WINEDBG pointe un fichier de commandes,
+# on lance le programme sous winedbg en lui donnant ce fichier comme entrée (les
+# commandes s'exécutent quand winedbg s'arrête sur la faute). Garde-fou : ne change
+# rien tant que la variable n'est pas posée.
+if [ -n "${PROTON_OUVERT_WINEDBG:-}" ]; then
+   exec "$WINE" winedbg "$@" < "$PROTON_OUVERT_WINEDBG"
+fi
+
 exec "$WINE" "$@"
