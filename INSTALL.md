@@ -2,8 +2,19 @@
 
 ## Pour JOUER (install du runtime pre-compile) -- la voie normale
 
-Le runtime deja construit est publie en **release GitHub** (un tarball
-`proton-ouvert-runtime.tar.zst`, ~550 Mo). L'utilisateur ne construit rien :
+Le runtime deja construit est publie en **release GitHub**. L'utilisateur ne
+construit rien : il telecharge UN fichier depuis la page de la derniere release
+et le lance.
+
+- Page : https://github.com/gtranche/proton-ouvert/releases/latest
+- **`installer-proton-ouvert.command`** : double-clic dans le Finder. La 1re
+  fois, Gatekeeper bloque un script telecharge -> **clic droit > Ouvrir**.
+- ou **`installer_proton_ouvert.sh`** : `sh ~/Downloads/installer_proton_ouvert.sh`
+  (echappe a Gatekeeper, pas de clic droit).
+
+L'installeur va chercher le tarball `proton-ouvert-runtime.tar.zst` (~550 Mo) de
+la release et fait tout le reste. Depuis une copie du depot, c'est le meme
+script :
 
 ```
 sh installer_proton_ouvert.sh
