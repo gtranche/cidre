@@ -28,6 +28,13 @@ if ! pgrep -f '[v]ermintide2.exe' >/dev/null 2>&1; then
    sleep 1
 fi
 export WINEPREFIX=${WINEPREFIX:-$R/wine/pfx-arm64ec}
+
+# Ordonnancement memoire FEX. L'emulation TSO (defaut, pour la correction) taxe
+# chaque acces memoire sensible a l'ordre : mesure sur micro-banc = jusqu'a 3,7x
+# sur du code a fort trafic memoire. CIDRE_TSO=0 la desactive -> gros gain CPU,
+# au prix d'un risque de course sur du code lock-free qui compte sur l'ordre fort
+# du x86. Opt-in, par jeu (exporter CIDRE_TSO=0 avant de lancer). Defaut : inchange.
+if [ -n "${CIDRE_TSO:-}" ]; then export FEX_TSOENABLED=$CIDRE_TSO; fi
 JOURNAL=${PROTON_OUVERT_JOURNAL:-$R/build/logs/steam-${SteamAppId:-inconnu}.log}
 mkdir -p "$(dirname "$JOURNAL")"
 
