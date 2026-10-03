@@ -1,0 +1,50 @@
+Chantier KosmicKrisp opt n1 : vectoriser les loads de descripteur bindless.
+
+lower_tex charge ~8 champs du descripteur (64o) par sample en loads etroits
+separes ; CSE/LICM tournent deja mais nir_opt_load_store_vectorize non.
+Ajoute le pass (modes global|constant) + callback dans msl_optimize_nir.
+A valider sur bench_frag. S'applique avec patch -p1 sur src/mesa.
+
+--- a/src/kosmickrisp/compiler/nir_to_msl.c
++++ b/src/kosmickrisp/compiler/nir_to_msl.c
+@@ -2347,6 +2347,28 @@
+    msl_nir_lower_subgroups(nir);
+ }
+ 
++/* Chantier KosmicKrisp : les acces bindless chargent ~8 champs de descripteur
++ * par echantillonnage (lod_bias, sampler_index, swizzle, flags...) en loads
++ * etroits separes, depuis un meme descripteur de 64 octets. Les fusionner
++ * reduit les transactions memoire et la pression de registres (surcout bindless
++ * surlineaire mesure a +138%). nir_opt_load_store_vectorize n'etait pas lance.
++ */
++static bool
++kk_mem_vectorize_cb(unsigned align_mul, unsigned align_offset,
++                    unsigned bit_size, unsigned num_components,
++                    int64_t hole_size, nir_intrinsic_instr *low,
++                    nir_intrinsic_instr *high, void *data)
++{
++   if (hole_size > 0)
++      return false;
++   unsigned align = nir_combined_align(align_mul, align_offset);
++   if ((bit_size / 8) > align)
++      return false;
++   if ((bit_size / 8) * num_components > 16)
++      return false;
++   return true;
++}
++
+ bool
+ msl_optimize_nir(struct nir_shader *nir)
+ {
+@@ -2362,6 +2384,11 @@
+       NIR_PASS(progress, nir, nir_opt_undef);
+       NIR_PASS(progress, nir, nir_opt_dce);
+       NIR_PASS(progress, nir, nir_opt_cse);
++      NIR_PASS(progress, nir, nir_opt_load_store_vectorize,
++               &(const nir_load_store_vectorize_options){
++                  .modes = nir_var_mem_global | nir_var_mem_constant,
++                  .callback = kk_mem_vectorize_cb,
++               });
+       NIR_PASS(progress, nir, nir_opt_dead_cf);
+       NIR_PASS(progress, nir, nir_opt_copy_prop);
+       NIR_PASS(progress, nir, nir_opt_deref);
