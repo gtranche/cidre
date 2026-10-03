@@ -29,3 +29,4 @@ outils/*.a
 
 # Config locale de l'outil (chemins absolus machine)
 .claude/
+tools/steamcmd/
