@@ -70,3 +70,24 @@ blake3_neon sur arm64 (ou -Dmesa option), puis `ninja -C build/mesa && install`.
   mesurer avant/après de façon reproductible, SANS dépendre de VT2.
 - Le driver optimisé est actuellement installé (non validé). Rebuild sans 0078
   pour revenir au connu-bon si besoin.
+
+## Résultat honnête de l'opt n°1 (2026-10-03 nuit) : NON concluant
+
+- Banc multi-textures écrit (`bench_frag_multi.c`, NTEX=1..64) pour isoler le
+  coût des descripteurs. **Avant ≈ après** (0,077-0,108 ms, bruit), et **plat**
+  de 1 à 64 textures. Donc l'opt n°1 est **inerte** sur ce workload.
+- **Le banc lui-même est invalide** : 0,077 ms / 40 passes / 1080p / 64 samples
+  = ~67 Tsamples/s, impossible → les samples sont **éliminés** (texture non
+  initialisée, travail non forcé). Il faut forcer le travail (texture remplie,
+  sortie dépendante de tous les samples, dépendance de chaîne) pour un vrai banc.
+- **Bilan :** l'hypothèse « les loads de descripteur sont le goulot » n'est ni
+  confirmée ni infirmée. Patch 0078 **parqué** (`.parked`, hors série), driver
+  remis au connu-bon.
+
+## La vraie prochaine étape
+
+Localiser où partent les ~45 ms/frame de VT2 au niveau GPU, par une **capture de
+frame Metal** (Xcode GPU trace via `MTL_CAPTURE_ENABLED=1` + MTLCaptureManager,
+ou le HUD Metal détaillé), sur un run VT2 stable. Sans ça, on optimise à l'aveugle.
+Alternative : un banc qui reproduit fidèlement le motif bindless de NOTES §137
+(114 samplings, MSL à la main) et FORCE le travail GPU.
