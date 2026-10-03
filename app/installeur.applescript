@@ -16,7 +16,7 @@ on error number -128
 end try
 
 -- 2. Prerequis (zstd requis ; FreeType requis pour le texte)
-set manque to do shell script "m=''; command -v zstd >/dev/null 2>&1 || m=\"$m zstd\"; [ -f /opt/homebrew/lib/libfreetype.6.dylib ] || m=\"$m freetype\"; echo $m"
+set manque to do shell script "m=''; command -v zstd >/dev/null 2>&1 || m=\"$m zstd\"; [ -f /opt/homebrew/lib/libfreetype.6.dylib ] || m=\"$m freetype\"; [ -f /opt/homebrew/opt/spirv-tools/lib/libSPIRV-Tools.dylib ] || m=\"$m spirv-tools\"; echo $m"
 if manque is not "" then
 	set cmd to "brew install" & manque
 	try

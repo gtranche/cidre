@@ -12,6 +12,9 @@ REPO="gtranche/cidre"
 REL_URL="https://github.com/$REPO/releases/latest/download/cidre-runtime.tar.zst"
 
 command -v zstd >/dev/null || { echo "zstd requis (brew install zstd)" >&2; exit 1; }
+# Le driver Vulkan livre (libvulkan_kosmickrisp.dylib) lie libSPIRV-Tools.dylib
+# par chemin absolu Homebrew : sans lui, l'ICD ne se charge pas et rien ne rend.
+[ -f /opt/homebrew/opt/spirv-tools/lib/libSPIRV-Tools.dylib ] || { echo "SPIRV-Tools requis -> brew install spirv-tools" >&2; MANQUE_SPIRV=1; }
 # Wine rasterise ses polices avec FreeType (tranche arm64 de Homebrew). Sans lui :
 # « Wine cannot find the FreeType font library » et aucun texte a l'ecran -- vrai
 # prerequis. fontconfig n'est QUE pour l'appariement des polices systeme ; la pile
@@ -92,6 +95,7 @@ fi
 
 echo
 [ -n "${MANQUE_FONTES:-}" ] && echo "RAPPEL : brew install freetype  (requis pour afficher le texte)"
+[ -n "${MANQUE_SPIRV:-}" ] && echo "RAPPEL : brew install spirv-tools  (requis : le driver Vulkan en depend)"
 echo "INSTALLE sous $R"
 echo "Lancez un jeu Windows depuis Steam (bouton Jouer). Les scripts attendent la"
 echo "pile a cet emplacement ; ne le deplacez pas sans relancer l'etape 3."
