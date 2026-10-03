@@ -198,3 +198,26 @@ Metal se termine vraiment), et splitter si la lecture vise une image de cet ense
 Plus lourd (hooks sur les écritures/attachements + début/fin d'encodeur réel), mais
 c'est le bon modèle. Le test de correction DREDGE (écran blanc = instantané) est un
 bon garde-fou rapide à chaque itération.
+
+## CORRECTION (soir, suite) : le « split naïf casse le rendu » était un FAUX diagnostic
+
+Réimplémenté proprement : suivi des images ÉCRITES à l'échelle de l'encodeur
+(src des barriers), split si une image LUE y figure, repli prudent. Puis version
+DIAGNOSTIC (toujours split + log) : **KK_SKIP = 0 pour DREDGE** → mon optimisation
+ne change RIEN au comportement de DREDGE. Or l'écran restait blanc même en
+diagnostic (= comportement original). Donc **l'écran blanc n'était PAS la logique
+de split** : c'était l'environnement (DREDGE met maintenant ~150 s à rendre contre
+60 s plus tôt ; captures prématurées ; fenêtres non-capturables en fin de session).
+=> Les conclusions « ma modif casse le rendu » étaient prématurées.
+
+**Statut réel :** l'approche « ensemble d'images écrites par encodeur » est le bon
+modèle et est behavioralement NEUTRE pour DREDGE (ne saute aucun split là-bas).
+Reste NON validée : il faut un environnement de test fiable + VT2 en jeu (où
+l'opti pourrait réellement sauter des splits inter-ressources). Driver remis au
+connu-bon ; code de l'opti non conservé en patch (à ré-implémenter proprement au
+prochain passage, l'approche est décrite ci-dessus).
+
+**Leçon environnement :** après de longues sessions, le démarrage des jeux et la
+capture d'écran deviennent peu fiables (processus résiduels, pression mémoire).
+Valider le chantier barrières sur une machine fraîche, DREDGE ET VT2, avec le HUD
+Metal + MESA_KK_DEBUG, pas en fin de marathon.
