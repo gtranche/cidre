@@ -178,3 +178,23 @@ valide). Driver remis au connu-bon.
 ne splitter que si l'image lue a été écrite dans la passe). C'est de l'ingénierie
 de hazard GPU à faire avec soin et tests de correction, pas un raccourci. Le
 diagnostic (262 barrières ALL→ALL + splits / frame, GPU-bound) reste la base solide.
+
+## Tentative split par-ressource (version naïve) : ÉCHEC correction, leçon précise
+
+Implémenté : ne splitter que si l'image lue est un **attachement courant**. Rebuild,
+test DREDGE → **écran blanc** (rendu cassé). Reverté, driver au connu-bon.
+
+**Pourquoi c'est faux (capital) :** KosmicKrisp **chaîne plusieurs sous-passes dans
+un même encodeur Metal**. Une image écrite dans une sous-passe PRÉCÉDENTE du même
+encodeur n'est plus dans `render->color_att` (les attachements courants) quand une
+sous-passe ultérieure l'échantillonne — mais le hazard de mémoire tuilée existe
+toujours. Le `write_available` collant d'origine attrapait ces hazards inter-sous-
+passes ; ma vérif « attachement courant » les ratait → split nécessaire sauté →
+corruption. C'est EXACTEMENT ce que dit le TODO (« remove the chaining of encoders »).
+
+**La version correcte** doit suivre un **ensemble d'images ÉCRITES à l'échelle de
+l'encodeur** (accumulé sur toutes les sous-passes chaînées, vidé quand l'encodeur
+Metal se termine vraiment), et splitter si la lecture vise une image de cet ensemble.
+Plus lourd (hooks sur les écritures/attachements + début/fin d'encodeur réel), mais
+c'est le bon modèle. Le test de correction DREDGE (écran blanc = instantané) est un
+bon garde-fou rapide à chaque itération.
