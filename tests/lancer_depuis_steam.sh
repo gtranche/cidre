@@ -145,5 +145,22 @@ case ${SteamAppId:-} in
       ;;
 esac
 
+# Restauration des sauvegardes depuis le dossier synchronise (iCloud), si plus
+# recentes (ex. jouees sur une autre machine). Non destructif, non bloquant.
+# Steam Cloud ne peut pas le faire pour un jeu Windows sur macOS (roots non
+# resolus) ; on replique sa logique. cf. tests/sync_saves_steam.sh.
+if [ -n "${SteamAppId:-}" ]; then
+   sh "$R/tests/sync_saves_steam.sh" "$SteamAppId" restore >>"$JOURNAL" 2>&1 || true
+fi
+
 cd "$DOSSIER"
-exec sh "$R/tests/etape2_pile_arm64ec.sh" "$PROG" "$@" >>"$JOURNAL" 2>&1
+# On ne fait PLUS exec : on attend la fin du jeu pour sauvegarder apres coup.
+sh "$R/tests/etape2_pile_arm64ec.sh" "$PROG" "$@" >>"$JOURNAL" 2>&1
+RC=$?
+
+# Sauvegarde vers le dossier synchronise apres la sortie du jeu (meme en cas de
+# crash : on sauve l'etat tel quel). Non bloquant.
+if [ -n "${SteamAppId:-}" ]; then
+   sh "$R/tests/sync_saves_steam.sh" "$SteamAppId" backup >>"$JOURNAL" 2>&1 || true
+fi
+exit $RC
