@@ -165,3 +165,16 @@ rebuild (wrapper arm64), puis TEST CORRECTION sur DREDGE + VT2 (pas d'artefact, 
 de crash, visuel identique) AVANT de mesurer le gain. Un split/barrière retiré à
 tort = corruption GPU parfois intermittente. Oracle perf : HUD DXVK barriers +
 MTL_HUD GPU-ms, et MESA_KK_DEBUG=barrier_stats,pass_stats pour passes/splits/frame.
+
+## Expérience jetable (splits OFF) : pas de raccourci
+
+Désactiver TOUS les splits (`kk_barrier_requires_encoder_split → false`) + rebuild :
+**DREDGE affiche un écran blanc** (rendu cassé, le GPU lit des attachements non
+flushés). => Les splits sont fonctionnellement nécessaires ; impossible de mesurer
+le « plafond barrières » en les supprimant (le rendu cassé n'est pas une mesure
+valide). Driver remis au connu-bon.
+
+**Conclusion :** le gain ne s'obtient QUE par le travail par-ressource (cible n°1 :
+ne splitter que si l'image lue a été écrite dans la passe). C'est de l'ingénierie
+de hazard GPU à faire avec soin et tests de correction, pas un raccourci. Le
+diagnostic (262 barrières ALL→ALL + splits / frame, GPU-bound) reste la base solide.
