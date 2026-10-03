@@ -221,3 +221,27 @@ prochain passage, l'approche est décrite ci-dessus).
 capture d'écran deviennent peu fiables (processus résiduels, pression mémoire).
 Valider le chantier barrières sur une machine fraîche, DREDGE ET VT2, avec le HUD
 Metal + MESA_KK_DEBUG, pas en fin de marathon.
+
+## RÉSULTAT DÉFINITIF (env frais post-reboot) : pas de faux splits, approche morte
+
+Optimisation « split par-ressource » (ensemble d'images écrites par encodeur)
+ré-implémentée proprement et testée EN JEU avec log par-skip :
+- **DREDGE : KK_SKIP = 0.** VT2 Forteresse (22,5 fps, rendu parfait, 0 artefact) :
+  **KK_SKIP = 0.** L'optimisation ne saute AUCUN split, dans aucun des deux jeux.
+- Donc **tous les splits de VT2 (127 passes, 282 barrières/frame) sont RÉELS** :
+  le `write_available` collant ne créait pas de faux splits. L'image lue a toujours
+  été écrite dans l'encodeur (vrai render-to-texture).
+
+**Conclusion : l'approche « éviter les faux splits » est MORTE pour VT2.** Le coût
+est inhérent : VT2 est un moteur différé (g-buffer, lighting, post) qui fait ~127
+render-to-texture par frame, et chaque passe sur un GPU TBDR Apple = un aller-retour
+tuile↔DRAM + une barrière. Native Metal paierait aussi ces passes, mais l'optimise
+(programmable blending, memoryless, tile shaders) — ce que DXVK→Metal ne peut pas
+exploiter sans reconnaître les motifs précis de VT2. C'est un décalage architectural
+(moteur différé immédiat sur TBDR via traduction), pas un bug corrigeable simplement.
+
+**Ce qui reste (tout dur, gain incertain) :** barrières ALL→ALL plus étroites
+(target #2, demande de découpler les encodeurs) ; attachements memoryless/transients
+quand le jeu ne les stocke pas ; ou optimisations Metal-spécifiques par motif de
+passe. Aucun levier facile. Le diagnostic chiffré (127 passes réelles/frame) reste
+la vérité : VT2 à 22 fps est en grande partie le prix de son moteur différé sur TBDR.
