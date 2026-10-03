@@ -140,3 +140,28 @@ Comparaison DREDGE (69-84 fps) : bien moins de passes/frame.
 access réellement demandés par le jeu (TODO KosmicKrisp), en découplant le
 chaînage d'encodeurs. C'est LE gisement fps pour VT2 et tout moteur à passes
 multiples.
+
+## Cibles d'implémentation précises (kk_cmd_buffer.c)
+
+`kk_CmdPipelineBarrier2` + `kk_barrier_requires_encoder_split` — trois sur-
+conservatismes, du plus sûr au plus risqué à corriger :
+
+1. **Split par ressource (le gros gain, risque moyen).** `write_available` est un
+   booléen collant global : une fois une écriture faite dans la passe, toute
+   lecture-texture ultérieure force `cs_end`+`cs_start_render` (store+reload des
+   attachements = aller-retour tile↔DRAM). Les images sont nommées dans
+   `dep->pImageMemoryBarriers[i].image` → ne splitter que si l'image LUE a bien
+   été ÉCRITE dans CETTE passe (suivi par ensemble d'images, ajouté à
+   kk_rendering_state). Défaut = splitter (sûr) si incertain.
+2. **Barrière de fermeture ALL→ALL (cas render_closing).** Stocker les stages dst
+   réels du dependency et émettre une barrière étroite au lieu de MTL_STAGE_ALL→
+   MTL_STAGE_ALL. ATTENTION : le TODO dit que ça demande de découpler le chaînage
+   d'encodeurs — à comprendre avant de toucher.
+3. **MSAA split systématique** (`samples > 1`) : vérifier si on peut l'éviter hors
+   vrai hazard résolve.
+
+**Méthode obligatoire (hazard GPU = correction critique) :** une touche à la fois,
+rebuild (wrapper arm64), puis TEST CORRECTION sur DREDGE + VT2 (pas d'artefact, pas
+de crash, visuel identique) AVANT de mesurer le gain. Un split/barrière retiré à
+tort = corruption GPU parfois intermittente. Oracle perf : HUD DXVK barriers +
+MTL_HUD GPU-ms, et MESA_KK_DEBUG=barrier_stats,pass_stats pour passes/splits/frame.
