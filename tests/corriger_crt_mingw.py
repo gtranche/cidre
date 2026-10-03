@@ -125,4 +125,4 @@ def main(lib):
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1] if len(sys.argv) > 1 else
-                  os.path.expanduser("~/Dev/proton-ouvert/toolchain/llvm-mingw/aarch64-w64-mingw32/lib")))
+                  os.path.expanduser("~/Dev/cidre/toolchain/llvm-mingw/aarch64-w64-mingw32/lib")))

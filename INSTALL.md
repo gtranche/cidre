@@ -1,4 +1,4 @@
-# Installer proton-ouvert
+# Installer Cidre
 
 ## Pour JOUER (install du runtime pre-compile) -- la voie normale
 
@@ -6,22 +6,22 @@ Le runtime deja construit est publie en **release GitHub**. L'utilisateur ne
 construit rien : il telecharge UN fichier depuis la page de la derniere release
 et le lance.
 
-- Page : https://github.com/gtranche/proton-ouvert/releases/latest
-- **`installer-proton-ouvert.command`** : double-clic dans le Finder. La 1re
+- Page : https://github.com/gtranche/cidre/releases/latest
+- **`installer-cidre.command`** : double-clic dans le Finder. La 1re
   fois, Gatekeeper bloque un script telecharge -> **clic droit > Ouvrir**.
-- ou **`installer_proton_ouvert.sh`** : `sh ~/Downloads/installer_proton_ouvert.sh`
+- ou **`installer_cidre.sh`** : `sh ~/Downloads/installer_cidre.sh`
   (echappe a Gatekeeper, pas de clic droit).
 
-L'installeur va chercher le tarball `proton-ouvert-runtime.tar.zst` (~550 Mo) de
+L'installeur va chercher le tarball `cidre-runtime.tar.zst` (~550 Mo) de
 la release et fait tout le reste. Depuis une copie du depot, c'est le meme
 script :
 
 ```
-sh installer_proton_ouvert.sh
+sh installer_cidre.sh
 ```
 
 Il telecharge le tarball de la derniere release, le decompresse (sous
-`~/Library/Application Support/proton-ouvert` par defaut), **relocalise** l'ICD
+`~/Library/Application Support/cidre` par defaut), **relocalise** l'ICD
 Vulkan, regenere un prefixe Wine propre (sans mono/gecko), y depose DXVK + FEX,
 et branche Steam. Prerequis utilisateur : macOS Apple Silicon, `zstd`
 (`brew install zstd`), Steam installe. Valide : le runtime est relocalisable
@@ -29,10 +29,10 @@ et branche Steam. Prerequis utilisateur : macOS Apple Silicon, `zstd`
 
 Cote mainteneur, produire le tarball de release :
 ```
-sh tests/empaqueter_runtime.sh        # -> proton-ouvert-runtime.tar.zst (~554 Mo)
+sh tests/empaqueter_runtime.sh        # -> cidre-runtime.tar.zst (~554 Mo)
 ```
 puis l'attacher a une release GitHub (chaque asset <= 2 Gio -- on est loin).
-(Dans `installer_proton_ouvert.sh`, remplacer `@@OWNER@@/@@REPO@@` par le depot.)
+(Dans `installer_cidre.sh`, remplacer `@@OWNER@@/@@REPO@@` par le depot.)
 
 ---
 
@@ -169,7 +169,7 @@ un jeu avec `.app`/Mach-O est laissé à Steam.
 ## 9. Limites connues
 
 - **EAC/BattlEye online** : mur structurel (pas de module macOS/Wine-macOS chez
-  l'éditeur). Voir `project_proton_ouvert_anti_triche`. Modded Realm quand il existe.
+  l'éditeur). Voir `project_cidre_anti_triche`. Modded Realm quand il existe.
 - **Jeux LuaJIT non-GC64** : exigent `PROTON_OUVERT_LUAJIT=1` (fenêtre basse 64 bits).
 - **Plein écran exclusif** fragile sur Wine-macOS → préférer `borderless_fullscreen=true`.
 

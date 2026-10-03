@@ -2,10 +2,10 @@
 {
   "compat_tools"
   {
-    "proton_ouvert"
+    "cidre"
     {
       "install_path" "."
-      "display_name" "Proton ouvert"
+      "display_name" "Cidre"
       "from_oslist"  "windows"
       "to_oslist"    "macos"
     }

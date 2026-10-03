@@ -1,15 +1,15 @@
 #!/bin/sh
-# Installe proton-ouvert (runtime deja compile) pour JOUER. Ne construit rien.
+# Installe Cidre (runtime deja compile) pour JOUER. Ne construit rien.
 #
-#   sh installer_proton_ouvert.sh [DESTINATION] [chemin/vers/runtime.tar.zst | URL]
+#   sh installer_cidre.sh [DESTINATION] [chemin/vers/runtime.tar.zst | URL]
 #
-# Par defaut : installe sous ~/Library/Application Support/proton-ouvert et va
+# Par defaut : installe sous ~/Library/Application Support/cidre et va
 # chercher le tarball de la derniere release si aucun n'est fourni.
 set -e
-DEST=${1:-$HOME/Library/Application Support/proton-ouvert}
+DEST=${1:-$HOME/Library/Application Support/cidre}
 SRC=${2:-}
-REPO="gtranche/proton-ouvert"
-REL_URL="https://github.com/$REPO/releases/latest/download/proton-ouvert-runtime.tar.zst"
+REPO="gtranche/cidre"
+REL_URL="https://github.com/$REPO/releases/latest/download/cidre-runtime.tar.zst"
 
 command -v zstd >/dev/null || { echo "zstd requis (brew install zstd)" >&2; exit 1; }
 # Wine rasterise ses polices avec FreeType (tranche arm64 de Homebrew). Sans lui :
@@ -33,8 +33,8 @@ else
       echo "  URL publique indisponible (depot prive ?) -> tentative via gh"
       rm -f "$TAR"
       if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-         gh release download -R "$REPO" -p "proton-ouvert-runtime.tar.zst" -O "$TAR" --clobber \
-            || { echo "echec gh (pas d'acces au depot ?). Rendez le depot public, ou passez un tarball local :  sh installer_proton_ouvert.sh \"$DEST\" /chemin/runtime.tar.zst" >&2; exit 1; }
+         gh release download -R "$REPO" -p "cidre-runtime.tar.zst" -O "$TAR" --clobber \
+            || { echo "echec gh (pas d'acces au depot ?). Rendez le depot public, ou passez un tarball local :  sh installer_cidre.sh \"$DEST\" /chemin/runtime.tar.zst" >&2; exit 1; }
       else
          echo "Asset inaccessible : depot prive et gh absent/non connecte." >&2
          echo "  - soit : brew install gh ; gh auth login   (acces au depot requis)" >&2
@@ -47,12 +47,12 @@ fi
 
 echo "== 2. Decompression dans $DEST =="
 zstd -dc "$TAR" | ( cd "$DEST" && tar xf - )
-R="$DEST/proton-ouvert"
+R="$DEST/cidre"
 [ -d "$R/wine/wine11-arm64" ] || { echo "runtime invalide (wine absent)" >&2; exit 1; }
 
 echo "== 3. Relocalisation de l'ICD Vulkan =="
 for j in "$R/prefix/share/vulkan/icd.d/"*.json; do
-   [ -f "$j" ] && sed -i '' "s#@@PROTON_OUVERT@@#$R#g" "$j" && echo "  $(basename "$j") -> $R"
+   [ -f "$j" ] && sed -i '' "s#@@CIDRE@@#$R#g" "$j" && echo "  $(basename "$j") -> $R"
 done
 
 echo "== 4. Preparation du prefixe Wine (sans mono/gecko) =="

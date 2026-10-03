@@ -1,6 +1,6 @@
-# NOTES — Proton ouvert sur macOS (non commité)
+# NOTES — Cidre sur macOS (non commité)
 
-Dossier de travail : `~/Dev/proton-ouvert/`. Rien installé dans le système à ce stade.
+Dossier de travail : `~/Dev/cidre/`. Rien installé dans le système à ce stade.
 
 ## 1. État machine — MESURÉ le 2026-09-16
 
@@ -105,9 +105,9 @@ Wine »), le point de blocage pressenti est **dans Mesa/KosmicKrisp**, pas dans 
 ## 5. Build KosmicKrisp — blocage de dépendances (2026-09-16)
 
 ### Outillage local monté (conforme « rien en dur »)
-- venv `~/Dev/proton-ouvert/toolchain/` — Python **3.12.7**, meson **1.12.0**, mako, pyyaml.
+- venv `~/Dev/cidre/toolchain/` — Python **3.12.7**, meson **1.12.0**, mako, pyyaml.
   (Piège : le venv initial sur `/usr/bin/python3` = 3.9.6 est refusé, Mesa exige **Python ≥ 3.10**.)
-- Prefix d'installation : `~/Dev/proton-ouvert/prefix/`. Build : `~/Dev/proton-ouvert/build/`.
+- Prefix d'installation : `~/Dev/cidre/prefix/`. Build : `~/Dev/cidre/build/`.
 - Sources ajoutées : `Vulkan-Headers`, `Vulkan-Loader`, `Vulkan-Tools` (Khronos, shallow).
 - Présents : pkg-config 0.29.2, cmake 4.3.2, ninja, clang 17 (Apple). **bison 2.3** (ancien, à surveiller).
 - Mesa cloné = version **26.3.0-devel**. La configuration meson démarre, détecte bien
@@ -13271,7 +13271,7 @@ affirmation était infondée, et ces chaînes semblaient la démentir.
 
 ### L'outil, et ce qu'il a donné
 
-`steam/proton-ouvert/` : `compatibilitytool.vdf`, `toolmanifest.vdf`, et un script qui délègue
+`steam/cidre/` : `compatibilitytool.vdf`, `toolmanifest.vdf`, et un script qui délègue
 à `etape2_pile_wow64.sh` en journalisant tout ce que Steam lui passe. Installé par lien
 symbolique dans `~/Library/Application Support/Steam/compatibilitytools.d/`, rien de copié.
 
@@ -13328,14 +13328,14 @@ reste est intéressante. Écrite à la main dans `config.vdf`, sous
 `InstallConfigStore/Software/Valve/Steam` :
 
 ```
-"CompatToolMapping" { "0" { "name" "proton_ouvert_macos" "priority" "250" } }
+"CompatToolMapping" { "0" { "name" "cidre_macos" "priority" "250" } }
 ```
 
 Le client l'a lue, appliquée, et conservée :
 
 ```
 [2026-09-24 16:28:34] Client version: 1788652215
-[2026-09-24 16:28:34] Mapping AppID 0 to tool "proton_ouvert_macos" with priority 250
+[2026-09-24 16:28:34] Mapping AppID 0 to tool "cidre_macos" with priority 250
 ```
 
 `compat_log.txt`, muet depuis le 15 septembre 2025, a été réécrit. **Le client macOS honore
@@ -13355,17 +13355,17 @@ autoInstallDxvk : false        <- ne touchera pas a notre DXVK
 autoInstallVkd3d : false
 ```
 
-`heroic/proton-ouvert/` présente notre pile comme une version de Wine ordinaire : `bin/wine64`
+`heroic/cidre/` présente notre pile comme une version de Wine ordinaire : `bin/wine64`
 et `bin/wineserver` sont des enveloppes qui posent `VK_DRIVER_FILES`, `DYLD_LIBRARY_PATH`,
 `WINEDLLOVERRIDES` et `MESA_KK_EXPERIMENTAL` avant de passer la main, et `lib` pointe sur
 l'arbre Wine. Vérifié :
 
 ```
-heroic/proton-ouvert/bin/wine64 --version  ->  wine-10.0
+heroic/cidre/bin/wine64 --version  ->  wine-10.0
 ```
 
-Déclarée dans la configuration d'Heroic comme « Proton ouvert », avec `enableWoW64` à vrai
-puisque notre Wine est un WoW64 neuf. `config.json` sauvegardé sous `.avant-proton-ouvert`.
+Déclarée dans la configuration d'Heroic comme « Cidre », avec `enableWoW64` à vrai
+puisque notre Wine est un WoW64 neuf. `config.json` sauvegardé sous `.avant-cidre`.
 
 Tout ce qui est ajouté vit dans le dossier du projet ; côté Steam et Heroic, il n'y a qu'un
 lien symbolique et deux clés de configuration, chacun annulable d'une commande.
@@ -13381,10 +13381,10 @@ Trois essais, trois refus, et une preuve à chaque étage.
 
 2. CompatToolMapping ecrit a la main dans config.vdf
    -> lu, applique, conserve. compat_log.txt, muet depuis un an, est reecrit :
-      Mapping AppID 0 to tool "proton_ouvert_macos" with priority 250
+      Mapping AppID 0 to tool "cidre_macos" with priority 250
 
 3. raccourci non-Steam vers un .exe, associe nommement a l'outil
-   -> Mapping AppID 3624361000 to tool "proton_ouvert_macos"
+   -> Mapping AppID 3624361000 to tool "cidre_macos"
       Failed running GameID ... : "/chemin/DREDGE.exe" (OS Error 0)
       steam/appels.log : jamais ecrit.
 ```
@@ -15479,7 +15479,7 @@ wine: could not load kernel32.dll, status c0000135
 message est normal.
 
 **« C'est le detour par start.exe. »** Lance depuis le repertoire du projet, Wine resolvait
-« wineboot » en `Z:\...\proton-ouvert\wineboot`, inexistant, et se rabattait sur `start.exe`.
+« wineboot » en `Z:\...\cidre\wineboot`, inexistant, et se rabattait sur `start.exe`.
 Lance depuis `/tmp`, l'echec est identique. Ce n'etait pas ca.
 
 ### Ce que dit reellement la trace
@@ -19293,7 +19293,7 @@ Jusqu'ici tout se lançait à la main. `tests/lancer_depuis_steam.sh` se pose da
 lancement** du jeu, dans Steam :
 
 ```
-/chemin/vers/proton-ouvert/tests/lancer_depuis_steam.sh %command%
+/chemin/vers/cidre/tests/lancer_depuis_steam.sh %command%
 ```
 
 Steam remplace `%command%` par l'exécutable et ses arguments, et transmet son environnement --

@@ -15,7 +15,7 @@
 set -e
 R=$(cd "$(dirname "$0")/.." && pwd)
 STEAM=${STEAM:-$HOME/Library/Application Support/Steam}
-ETIQUETTE=com.proton-ouvert.brancher
+ETIQUETTE=com.cidre.brancher
 PLIST=$HOME/Library/LaunchAgents/$ETIQUETTE.plist
 
 if [ "${1:-}" = "--retirer" ]; then

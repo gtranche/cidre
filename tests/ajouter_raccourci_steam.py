@@ -86,7 +86,7 @@ def main(args):
         if len(ancien) > 13:
             print("shortcuts.vdf contient deja des raccourcis, je n'ecrase pas")
             return 1
-        with open(cible + ".avant-proton-ouvert", "wb") as f:
+        with open(cible + ".avant-cidre", "wb") as f:
             f.write(ancien)
 
     donnees, appid = construire(exe, nom)

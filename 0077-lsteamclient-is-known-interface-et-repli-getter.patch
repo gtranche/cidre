@@ -14,7 +14,7 @@ d'ISteamClient par chaine de version rend 0 (disposition de vtable differente en
 du jeu et le steamclient natif), repli par GetISteamGenericInterface (emplacement natif 12),
 independant de la disposition.
 
-S'applique avec patch -p1 sur Wine 11.18 (arbre proton-ouvert). Voir eac-bridge-macos/docs/EOS.md.
+S'applique avec patch -p1 sur Wine 11.18 (arbre cidre). Voir eac-bridge-macos/docs/EOS.md.
 
 diff -ruN a/dlls/lsteamclient/main.c b/dlls/lsteamclient/main.c
 --- a/dlls/lsteamclient/main.c	2026-10-01 16:58:05

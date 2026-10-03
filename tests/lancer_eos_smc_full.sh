@@ -13,7 +13,7 @@
 # ont un mode hors-ligne/non protégé légitime.
 #
 # Option de lancement Steam :
-#   /Users/gtranche/Dev/proton-ouvert/tests/lancer_eos_smc_full.sh %command%
+#   /Users/gtranche/Dev/cidre/tests/lancer_eos_smc_full.sh %command%
 set -e
 R=$(cd "$(dirname "$0")" && pwd)
 export FEX_SMCCHECKS=full

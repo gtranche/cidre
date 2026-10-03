@@ -1,5 +1,5 @@
 #!/bin/sh
-R=/Users/gtranche/Dev/proton-ouvert
+R=/Users/gtranche/Dev/cidre
 TAG="$1"
 export WINEPREFIX=$R/wine/pfx
 export WINEDEBUG=-all

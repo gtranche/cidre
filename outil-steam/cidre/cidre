@@ -1,8 +1,8 @@
 #!/bin/sh
-# Outil de compatibilite Steam : « Proton ouvert ».
+# Outil de compatibilite Steam : « Cidre ».
 #
 # Steam appelle ce programme a la place du jeu, avec un verbe puis la commande
-# du jeu :  proton-ouvert run <jeu.exe> [args...]
+# du jeu :  cidre run <jeu.exe> [args...]
 #
 # C'est le meme contrat que Proton sous Linux. L'interet par rapport aux options
 # de lancement : Steam le choisit une fois pour toutes, par jeu ou par defaut,
@@ -13,7 +13,7 @@
 # STEAM_COMPAT_DATA_PATH / STEAM_COMPAT_CLIENT_INSTALL_PATH. Le jeu parle au
 # vrai client Steam de macOS a travers le pont lsteamclient ; rien n'est simule.
 set -e
-R=${PROTON_OUVERT_RACINE:-/Users/gtranche/Dev/proton-ouvert}
+R=${PROTON_OUVERT_RACINE:-/Users/gtranche/Dev/cidre}
 export WINEPREFIX=${WINEPREFIX:-$R/wine/pfx-arm64ec}
 JOURNAL=$R/build/logs/steam-${SteamAppId:-inconnu}.log
 mkdir -p "$(dirname "$JOURNAL")"
@@ -33,7 +33,7 @@ case $EXE in
 esac
 
 {
-   echo "=== $(date '+%F %T')  outil=proton-ouvert verbe=$VERBE appid=${SteamAppId:-?}"
+   echo "=== $(date '+%F %T')  outil=cidre verbe=$VERBE appid=${SteamAppId:-?}"
    echo "    jeu     : $PROG"
    echo "    dossier : $DOSSIER"
    echo "    args    : $*"

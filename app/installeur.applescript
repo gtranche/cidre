@@ -1,16 +1,16 @@
--- proton-ouvert : installeur natif macOS (applet AppleScript).
+-- cidre : installeur natif macOS (applet AppleScript).
 -- Telecharge le runtime (barre de progression native), puis delegue la
--- configuration a installer_proton_ouvert.sh embarque dans Contents/Resources.
+-- configuration a installer_cidre.sh embarque dans Contents/Resources.
 
-set repoURL to "https://github.com/gtranche/proton-ouvert/releases/latest/download/proton-ouvert-runtime.tar.zst"
-set destDefault to (POSIX path of (path to home folder)) & "Library/Application Support/proton-ouvert"
-set shPath to POSIX path of (path to resource "installer_proton_ouvert.sh")
+set repoURL to "https://github.com/gtranche/cidre/releases/latest/download/cidre-runtime.tar.zst"
+set destDefault to (POSIX path of (path to home folder)) & "Library/Application Support/cidre"
+set shPath to POSIX path of (path to resource "installer_cidre.sh")
 
 -- 1. Accueil / confirmation
 try
-	display dialog "proton-ouvert installe le runtime qui fait tourner les jeux Windows via Steam, sans Rosetta.
+	display dialog "Cidre installe le runtime qui fait tourner les jeux Windows via Steam, sans Rosetta.
 
-Telechargement d'environ 550 Mo puis configuration, quelques minutes." with title "Installer proton-ouvert" buttons {"Annuler", "Installer"} default button "Installer" with icon note
+Telechargement d'environ 550 Mo puis configuration, quelques minutes." with title "Installer Cidre" buttons {"Annuler", "Installer"} default button "Installer" with icon note
 on error number -128
 	return
 end try
@@ -33,7 +33,7 @@ puis relancez cet installeur." with title "Prerequis manquants" buttons {"Copier
 end if
 
 -- 3. Telechargement avec barre de progression determinee
-set tarPath to (do shell script "mktemp -d") & "/proton-ouvert-runtime.tar.zst"
+set tarPath to (do shell script "mktemp -d") & "/cidre-runtime.tar.zst"
 set total to 0
 try
 	set total to (do shell script "curl -fsIL " & quoted form of repoURL & " | awk 'BEGIN{IGNORECASE=1} /^content-length:/{v=$2} END{gsub(/\\r/,\"\",v); print v+0}'") as integer

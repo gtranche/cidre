@@ -1,4 +1,4 @@
-diff --color -ruN dlls/lsteamclient/lsteamclient.spec /Users/gtranche/Dev/proton-ouvert/src/wine11/dlls/lsteamclient/lsteamclient.spec
+diff --color -ruN dlls/lsteamclient/lsteamclient.spec /Users/gtranche/Dev/cidre/src/wine11/dlls/lsteamclient/lsteamclient.spec
 --- a/dlls/lsteamclient/lsteamclient.spec	2026-10-01 05:22:54
 +++ b/dlls/lsteamclient/lsteamclient.spec	2026-10-01 04:14:43
 @@ -33,7 +33,7 @@
@@ -10,7 +10,7 @@ diff --color -ruN dlls/lsteamclient/lsteamclient.spec /Users/gtranche/Dev/proton
  @ cdecl Steam_GetGSHandle()
  @ cdecl Steam_InitiateGameConnection()
  @ cdecl Steam_IsKnownInterface()
-diff --color -ruN dlls/lsteamclient/main.c /Users/gtranche/Dev/proton-ouvert/src/wine11/dlls/lsteamclient/main.c
+diff --color -ruN dlls/lsteamclient/main.c /Users/gtranche/Dev/cidre/src/wine11/dlls/lsteamclient/main.c
 --- a/dlls/lsteamclient/main.c	2026-10-01 05:22:54
 +++ b/dlls/lsteamclient/main.c	2026-10-01 05:09:46
 @@ -225,7 +225,42 @@
@@ -276,7 +276,7 @@ diff --color -ruN dlls/lsteamclient/main.c /Users/gtranche/Dev/proton-ouvert/src
  }
  
  int CDECL Steam_GetGSHandle( void )
-diff --color -ruN dlls/lsteamclient/signatures32.h /Users/gtranche/Dev/proton-ouvert/src/wine11/dlls/lsteamclient/signatures32.h
+diff --color -ruN dlls/lsteamclient/signatures32.h /Users/gtranche/Dev/cidre/src/wine11/dlls/lsteamclient/signatures32.h
 --- a/dlls/lsteamclient/signatures32.h	2026-10-01 05:22:54
 +++ b/dlls/lsteamclient/signatures32.h	2026-10-01 03:58:08
 @@ -23,6 +23,15 @@
@@ -317,7 +317,7 @@ diff --color -ruN dlls/lsteamclient/signatures32.h /Users/gtranche/Dev/proton-ou
      { "ISteamMatchmaking", 17, 2, 0, "GetNumLobbyMembers" },
      { "ISteamMatchmaking", 16, 4, 0, "InviteUserToLobby" },
      { "ISteamMatchmaking", 14, 2, 0, "JoinLobby" },
-diff --color -ruN dlls/lsteamclient/unix.c /Users/gtranche/Dev/proton-ouvert/src/wine11/dlls/lsteamclient/unix.c
+diff --color -ruN dlls/lsteamclient/unix.c /Users/gtranche/Dev/cidre/src/wine11/dlls/lsteamclient/unix.c
 --- a/dlls/lsteamclient/unix.c	2026-10-01 05:22:54
 +++ b/dlls/lsteamclient/unix.c	2026-10-01 04:14:43
 @@ -45,6 +45,8 @@
@@ -385,7 +385,7 @@ diff --color -ruN dlls/lsteamclient/unix.c /Users/gtranche/Dev/proton-ouvert/src
  };
  
  C_ASSERT( ARRAYSIZE(__wine_unix_call_wow64_funcs) == unix_funcs_count );
-diff --color -ruN dlls/lsteamclient/unixlib.h /Users/gtranche/Dev/proton-ouvert/src/wine11/dlls/lsteamclient/unixlib.h
+diff --color -ruN dlls/lsteamclient/unixlib.h /Users/gtranche/Dev/cidre/src/wine11/dlls/lsteamclient/unixlib.h
 --- a/dlls/lsteamclient/unixlib.h	2026-10-01 05:22:54
 +++ b/dlls/lsteamclient/unixlib.h	2026-10-01 04:14:43
 @@ -127,6 +127,24 @@

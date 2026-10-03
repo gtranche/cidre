@@ -4,7 +4,7 @@
 #
 # A poser dans les options de lancement du jeu, dans Steam :
 #
-#   /chemin/vers/proton-ouvert/tests/lancer_eos_depuis_steam.sh %command%
+#   /chemin/vers/cidre/tests/lancer_eos_depuis_steam.sh %command%
 #
 # On exporte l'interrupteur officiel d'Epic EOS_USE_ANTICHEATCLIENTNULL : l'amorceur
 # start_protected_game.exe le reconnait, saute le telechargement et le mappage du

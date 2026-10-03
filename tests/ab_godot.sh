@@ -1,5 +1,5 @@
 #!/bin/sh
-cd /Users/gtranche/Dev/proton-ouvert
+cd /Users/gtranche/Dev/cidre
 EXE=third_party/godot/Godot_v4.7.2-stable_win64_console.exe
 arret() {
   pkill -9 -f "Godot_v4" 2>/dev/null

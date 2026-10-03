@@ -1,13 +1,13 @@
 #!/bin/sh
 # Empaquette le RUNTIME (binaires deja construits) en un tarball a livrer en
 # release GitHub. Ne contient PAS les sources, le build, la toolchain, ni le
-# prefixe (regenere a l'install). L'installeur (installer_proton_ouvert.sh) le
+# prefixe (regenere a l'install). L'installeur (installer_cidre.sh) le
 # decompresse, relocalise l'ICD et regenere le prefixe.
 #   sh tests/empaqueter_runtime.sh [sortie.tar.zst]
 set -e
 R=$(cd "$(dirname "$0")/.." && pwd)
-OUT=${1:-$R/proton-ouvert-runtime.tar.zst}
-STAGE=$(mktemp -d)/proton-ouvert
+OUT=${1:-$R/cidre-runtime.tar.zst}
+STAGE=$(mktemp -d)/cidre
 mkdir -p "$STAGE"
 
 echo "== Wine 11 arm64 (elague : sans include/doc/man) =="
@@ -21,7 +21,7 @@ mkdir -p "$STAGE/prefix"
 ( cd "$R/prefix" && tar cf - lib share bin 2>/dev/null ) | ( cd "$STAGE/prefix" && tar xf - )
 # L'ICD json : chemin a reecrire a l'install -> on le neutralise avec un jeton.
 for j in "$STAGE/prefix/share/vulkan/icd.d/"*.json; do
-   [ -f "$j" ] && sed -i '' "s#$R#@@PROTON_OUVERT@@#g" "$j"
+   [ -f "$j" ] && sed -i '' "s#$R#@@CIDRE@@#g" "$j"
 done
 
 echo "== DXVK arm64ec (stock + async gplasync) =="
@@ -48,7 +48,7 @@ cp "$R/outil-steam/jeux.conf" "$STAGE/outil-steam/" 2>/dev/null || true
 cp "$R/build/faux_steam.exe" "$STAGE/build/" 2>/dev/null || true
 
 echo "== compression (zstd) =="
-( cd "$(dirname "$STAGE")" && tar cf - proton-ouvert ) | zstd -15 -T0 -o "$OUT" -f
+( cd "$(dirname "$STAGE")" && tar cf - cidre ) | zstd -15 -T0 -o "$OUT" -f
 rm -rf "$(dirname "$STAGE")"
 echo
 echo "RUNTIME empaquete : $OUT"

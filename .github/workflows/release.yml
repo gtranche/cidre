@@ -31,9 +31,9 @@ jobs:
       - name: Pile arm64 (Mesa, Wine, DXVK)
         run: sh tests/construire_pile_arm64.sh
       - name: Empaqueter le runtime
-        run: sh tests/empaqueter_runtime.sh "$GITHUB_WORKSPACE/proton-ouvert-runtime.tar.zst"
+        run: sh tests/empaqueter_runtime.sh "$GITHUB_WORKSPACE/cidre-runtime.tar.zst"
       - name: Publier la release
         uses: softprops/action-gh-release@v2
         with:
-          files: proton-ouvert-runtime.tar.zst
+          files: cidre-runtime.tar.zst
           fail_on_unmatched_files: true

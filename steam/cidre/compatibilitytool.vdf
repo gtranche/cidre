@@ -2,17 +2,17 @@
 {
   "compat_tools"
   {
-    "proton_ouvert_macos"
+    "cidre_macos"
     {
       "install_path" "."
-      "display_name" "Proton ouvert (macos)"
+      "display_name" "Cidre (macos)"
       "from_oslist"  "windows"
       "to_oslist"    "macos"
     }
-    "proton_ouvert_osx"
+    "cidre_osx"
     {
       "install_path" "."
-      "display_name" "Proton ouvert (osx)"
+      "display_name" "Cidre (osx)"
       "from_oslist"  "windows"
       "to_oslist"    "osx"
     }

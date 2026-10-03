@@ -16,23 +16,23 @@ if pgrep -f "steam_osx" >/dev/null; then
 fi
 
 # 1. L'outil de compatibilite, que le client macOS ne scanne jamais (section 188).
-if [ -L "$S/compatibilitytools.d/proton-ouvert" ]; then
-   rm "$S/compatibilitytools.d/proton-ouvert"
+if [ -L "$S/compatibilitytools.d/cidre" ]; then
+   rm "$S/compatibilitytools.d/cidre"
    rmdir "$S/compatibilitytools.d" 2>/dev/null || true
    echo "retire : le lien dans compatibilitytools.d"
 fi
 
 # 2. La table de correspondance, lue mais jamais suivie d'effet.
 C="$S/config/config.vdf"
-if [ -f "$C.avant-proton-ouvert" ]; then
-   mv "$C.avant-proton-ouvert" "$C"
+if [ -f "$C.avant-cidre" ]; then
+   mv "$C.avant-cidre" "$C"
    echo "restaure : config.vdf"
 fi
 
 # 3. Le raccourci non-Steam vers DREDGE, qui servait de sonde.
 U=$(ls -d "$S"/userdata/[0-9]* 2>/dev/null | grep -v "/0$" | head -1)
-if [ -n "$U" ] && [ -f "$U/config/shortcuts.vdf.avant-proton-ouvert" ]; then
-   mv "$U/config/shortcuts.vdf.avant-proton-ouvert" "$U/config/shortcuts.vdf"
+if [ -n "$U" ] && [ -f "$U/config/shortcuts.vdf.avant-cidre" ]; then
+   mv "$U/config/shortcuts.vdf.avant-cidre" "$U/config/shortcuts.vdf"
    rm -f "$U/config/shortcuts.vdf.guillemets"
    echo "restaure : shortcuts.vdf"
 fi

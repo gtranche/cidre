@@ -13,7 +13,7 @@
 # A poser dans les OPTIONS DE LANCEMENT du jeu, dans Steam, a la place du lanceur
 # habituel :
 #
-#   /Users/gtranche/Dev/proton-ouvert/tests/tracer_dbd_sauvegarde.sh %command%
+#   /Users/gtranche/Dev/cidre/tests/tracer_dbd_sauvegarde.sh %command%
 #
 # Lance le jeu, attends la boite « SAVE GAME ERROR », clique « fermer le jeu »,
 # puis analyse :  sh tests/analyser_trace_dbd.sh

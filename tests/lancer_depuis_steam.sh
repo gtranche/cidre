@@ -3,7 +3,7 @@
 #
 # A poser dans les options de lancement du jeu, dans Steam :
 #
-#   /chemin/vers/proton-ouvert/tests/lancer_depuis_steam.sh %command%
+#   /chemin/vers/cidre/tests/lancer_depuis_steam.sh %command%
 #
 # Steam remplace %command% par l'executable du jeu et ses arguments, et nous
 # transmet son environnement : SteamAppId, SteamGameId, SteamOverlayGameId, et

@@ -2,7 +2,7 @@
 # Outil de compatibilite Steam : lance un jeu Windows a travers la pile ouverte.
 #
 # Steam appelle ce script comme il appelle Proton sous Linux :
-#   proton-ouvert run /chemin/vers/jeu.exe [arguments...]
+#   cidre run /chemin/vers/jeu.exe [arguments...]
 #
 # Les variables que Steam fournit sont journalisees a chaque appel, parce que
 # c'est la seule facon de savoir ce qu'il passe reellement sur macOS.

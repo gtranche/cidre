@@ -11,7 +11,7 @@ Reproduit la plomberie du eac-bridge de Proton :
   - dlls/easyanticheat_x64 : le pont, PE + unixlib ; relaie les exports de la DLL d'Epic vers un module
                              natif Mach-O charge par dlopen, et rend « client non disponible » sinon.
                              Aucune logique anti-triche, aucune attestation fabriquee.
-Base : Wine 11.18 tel que modifie dans proton-ouvert (src/wine11). S'applique avec patch -p1.
+Base : Wine 11.18 tel que modifie dans cidre (src/wine11). S'applique avec patch -p1.
 
 diff -ruN a/configure b/configure
 --- a/configure	2026-10-01 08:51:48
