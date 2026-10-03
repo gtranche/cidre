@@ -40,6 +40,10 @@ if [ -n "${CIDRE_TSO:-}" ]; then export FEX_TSOENABLED=$CIDRE_TSO; fi
 # 60 Hz fait chuter a 40/30 (pas 59) -- mesure DREDGE : 40 fps vsync on vs 69 off.
 # CIDRE_VSYNC=0 force syncInterval=0 cote DXVK (pas de penalite vblank ; tearing
 # possible). Opt-in, par jeu. On l'ajoute au DXVK_CONFIG sans ecraser l'existant.
+# HUD fps/GPU a la demande : CIDRE_HUD=1 -> compteur fps + charge GPU a l'ecran
+# (pratique pour regler les options graphiques en voyant l'effet). Opt-in.
+if [ -n "${CIDRE_HUD:-}" ] && [ -z "${DXVK_HUD:-}" ]; then export DXVK_HUD=fps,gpuload,frametimes; fi
+
 if [ "${CIDRE_VSYNC:-}" = "0" ]; then
    case ";${DXVK_CONFIG:-};" in
       *syncInterval*) : ;;
