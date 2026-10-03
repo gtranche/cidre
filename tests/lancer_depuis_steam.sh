@@ -117,10 +117,14 @@ fi
 #     -eac-untrusted (voir NOTES EAC).
 case ${SteamAppId:-} in
    1562430)
-      # DREDGE (Unity) : pas lourd en GPU mais la vsync FIFO le bloque a 40 (perte
-      # vblank). syncInterval=0 -> 69 fps mesure (~1,7x). Tearing possible.
+      # DREDGE (Unity). Deux leviers mesures en jeu : 40 fps defaut -> 69 avec
+      # vsync off (la vsync FIFO perd un vblank et plafonne a 40) -> 84 en ajoutant
+      # TSO off (relache l'ordonnancement memoire FEX ; DREDGE est peu threade,
+      # risque de course faible et teste lisse). A GPU 89%, on frole le plafond GPU.
+      # Contreparties : tearing possible (vsync off) ; si bug/plantage, retirer TSO.
       export DXVK_CONFIG="${DXVK_CONFIG:+$DXVK_CONFIG;}dxgi.syncInterval=0;d3d11.syncInterval=0"
-      echo "    1562430 : vsync off (syncInterval=0)" >>"$JOURNAL"
+      export FEX_TSOENABLED=0
+      echo "    1562430 : vsync off + TSO off (40->84 fps mesure)" >>"$JOURNAL"
       ;;
    552500)
       export PROTON_OUVERT_LUAJIT=1
