@@ -119,3 +119,24 @@ d'encodeurs** (dit par le TODO). Gain attendu : overlap des passes.
 **Reste à quantifier sur VT2 EN JEU** (pas le menu) : passes/frame réelles. Blocage
 actuel = VT2 ne se lance pas de façon fiable en auto. Voie : capture collaborative
 (l'utilisateur amène VT2 au Donjon, on lit les stats MESA_KK_DEBUG + le HUD).
+
+## QUANTIFIÉ en jeu (2026-10-03) : VT2 Forteresse, HUD DXVK + Metal
+
+| Par frame | Valeur |
+| --- | --- |
+| FPS | 24,3 |
+| Temps GPU/frame | 40,8 ms (GPU 100 %) |
+| Render passes | **115** |
+| Barrières | **262** (chacune ALL→ALL, ~0 % élidée) |
+| Draw calls | 1792 (~0,9 ms CPU, négligeable) |
+| Pipelines liés | 461 |
+
+262 flushs GPU complets par frame = ~6300/s à 24 fps. Le GPU est à 100 % mais
+passe l'essentiel de ses 40 ms à drainer/recharger le pipeline entre passes, pas
+à calculer. **Diagnostic confirmé et chiffré : VT2 est barrier/encodeur-bound.**
+Comparaison DREDGE (69-84 fps) : bien moins de passes/frame.
+
+=> Le chantier est validé : **alléger les 262 barrières ALL→ALL** vers les stages/
+access réellement demandés par le jeu (TODO KosmicKrisp), en découplant le
+chaînage d'encodeurs. C'est LE gisement fps pour VT2 et tout moteur à passes
+multiples.
