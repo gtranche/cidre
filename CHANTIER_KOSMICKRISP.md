@@ -91,3 +91,31 @@ frame Metal** (Xcode GPU trace via `MTL_CAPTURE_ENABLED=1` + MTLCaptureManager,
 ou le HUD Metal détaillé), sur un run VT2 stable. Sans ça, on optimise à l'aveugle.
 Alternative : un banc qui reproduit fidèlement le motif bindless de NOTES §137
 (114 samplings, MSL à la main) et FORCE le travail GPU.
+
+## Profilage GPU (2026-10-03, stats intégrées) : LE vrai levier = les barrières
+
+Variable corrigée : **`MESA_KK_DEBUG`** (pas KK_DEBUG). Flags utiles :
+`barrier_stats,pass_stats,draw_stats`. Mesuré sur DREDGE (fiable) et VT2 (resté au
+menu, VT2 injouable en auto) :
+- **~1 barrière par render pass, ~0 % élidées** (DREDGE 0,3 %, VT2 0,0 %).
+- Chaque barrière = **`mtl_barrier_after_stages(MTL_STAGE_ALL, MTL_STAGE_ALL)`**,
+  le flush le plus lourd (sérialisation totale du GPU entre passes).
+- gâchis pixels = 1,00x, passes partielles 0 % → PAS un problème de pixels gâchés.
+
+**Cause confirmée par le code lui-même** (`kk_cmd_buffer.c` ~l.744,
+`kk_CmdPipelineBarrier2`) :
+> TODO_KOSMICKRISP Lighten barriers according to the actual requested barrier.
+> To take advantage of this we need to remove the chaining of encoders.
+
+Donc KosmicKrisp ignore les stage/access masks précis du jeu et pose un barrier
+ALL→ALL par barrier Vulkan. Pour un moteur à N passes/frame, c'est N
+sérialisations complètes → GPU 100 % mais débit bas, insensible aux réglages.
+**C'est le candidat n°1 pour VT2**, bien mieux étayé que l'opt descripteurs (parquée).
+
+**Chantier (non trivial, architectural) :** alléger les barrières selon le barrier
+Vulkan réel (stages/access précis), ce qui demande de **découpler le chaînage
+d'encodeurs** (dit par le TODO). Gain attendu : overlap des passes.
+
+**Reste à quantifier sur VT2 EN JEU** (pas le menu) : passes/frame réelles. Blocage
+actuel = VT2 ne se lance pas de façon fiable en auto. Voie : capture collaborative
+(l'utilisateur amène VT2 au Donjon, on lit les stats MESA_KK_DEBUG + le HUD).
