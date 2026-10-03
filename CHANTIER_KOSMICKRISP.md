@@ -56,3 +56,17 @@ blake3_neon sur arm64 (ou -Dmesa option), puis `ninja -C build/mesa && install`.
 2. Rendre les intrinsics de handle (`nir_load_texture_handle_kk`) factorisables
    entre samples partageant une texture.
 3. Argument buffers Metal natifs / ResourceID plutôt que reconstruction manuelle.
+
+## Statut 2026-10-03 (soir)
+
+- **Build débloqué** (ninja x86_64/Rosetta → wrapper `cc -arch arm64` + clean).
+  Driver optimisé (patch 0078) **compilé et installé**, `nir_to_msl.c` OK.
+- **Validation NON concluante ce jour** : (a) VT2 a planté sur un deadlock de
+  chargement (fragile, souci intermittent connu, non attribuable à la modif) ;
+  (b) `bench_frag` est mono-texture → le LICM amortit, ne montre pas l'effet ;
+  (c) KK_DEBUG=msl/nir n'a rien sorti via le bench.
+- **Prochaine étape = l'oracle manquant** : écrire un micro-banc fragment
+  **multi-textures** (16+ samplers distincts, le cas que la modif cible) pour
+  mesurer avant/après de façon reproductible, SANS dépendre de VT2.
+- Le driver optimisé est actuellement installé (non validé). Rebuild sans 0078
+  pour revenir au connu-bon si besoin.
