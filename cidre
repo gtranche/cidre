@@ -1,0 +1,62 @@
+#!/bin/sh
+# Cidre launcher (CLI MVP) : installer / lancer / gerer tes jeux Steam, natif OU
+# via Cidre, sans jongler avec la console Steam. Les jeux restent dans Steam
+# (amis/succes/overlay via le Steam natif + notre pont). Install auto via SteamCMD.
+set -u
+R=$(cd "$(dirname "$0")" && pwd)
+STEAM="$HOME/Library/Application Support/Steam"
+SA="$STEAM/steamapps"
+STEAMCMD=${STEAMCMD:-/opt/homebrew/bin/steamcmd}
+
+nom()  { sed -n 's/.*"name"[[:space:]]*"\(.*\)".*/\1/p' "$SA/appmanifest_$1.acf" 2>/dev/null | head -1; }
+dir()  { sed -n 's/.*"installdir"[[:space:]]*"\(.*\)".*/\1/p' "$SA/appmanifest_$1.acf" 2>/dev/null | head -1; }
+
+# plateforme reellement INSTALLEE (definitif d'apres les fichiers)
+plat() {
+   d="$SA/common/$(dir "$1")"
+   [ -d "$d" ] || { echo absent; return; }
+   find "$d" -maxdepth 3 -name '*.app' -type d 2>/dev/null | grep -q . && { echo macos; return; }
+   find "$d" -maxdepth 2 -name '*.exe' 2>/dev/null | grep -q . && { echo windows; return; }
+   echo inconnu
+}
+# Cidre (notre wrapper) pose sur ce jeu ?
+cidre_wrap() { grep -A6 "\"$1\"$" "$STEAM"/userdata/*/config/localconfig.vdf 2>/dev/null | grep -q "lancer_depuis_steam.sh" && echo oui || echo non; }
+
+usage() {
+   cat <<USAGE
+cidre — launcher Cidre (jeux Steam, natif ou via Cidre)
+  cidre list                      liste tes jeux + plateforme + mode de lancement
+  cidre play <appid>              lance le jeu (via Steam : natif ou Cidre selon l'install)
+  cidre sync <appid|all> [backup|restore]   sauvegardes (iCloud)
+  cidre install <appid> [auto|macos|windows]   installe le bon depot sans la console Steam
+  cidre wrap                      (re)pose le wrapper Cidre sur les jeux Windows-only
+USAGE
+}
+
+cmd=${1:-help}; [ $# -gt 0 ] && shift
+case "$cmd" in
+  list|ls)
+    printf "%-9s %-26s %-9s %s\n" APPID JEU PLATEFORME LANCEMENT
+    for acf in "$SA"/appmanifest_*.acf; do
+      [ -f "$acf" ] || continue; id=$(basename "$acf"|sed 's/[^0-9]//g'); [ "$id" = 228980 ] && continue
+      p=$(plat "$id"); [ "$p" = macos ] && l="natif (Steam)" || l="Cidre"
+      [ "$(cidre_wrap "$id")" = non ] && [ "$p" = windows ] && l="Cidre (wrapper absent!)"
+      printf "%-9s %-26.26s %-9s %s\n" "$id" "$(nom "$id")" "$p" "$l"
+    done ;;
+  play|jouer)
+    id=${1:?usage: cidre play <appid>}
+    echo "lancement de $(nom "$id") ($id) via Steam..."
+    open "steam://run/$id" ;;
+  sync)
+    id=${1:?usage: cidre sync <appid|all> [backup|restore]}; sens=${2:-backup}
+    export WINEPREFIX="$R/wine/pfx-arm64ec"
+    if [ "$id" = all ]; then
+      awk -F'\t' '!/^#/ && NF>=2 {print $1}' "$R/outil-steam/saves.conf" | while read -r a; do
+        sh "$R/tests/sync_saves_steam.sh" "$a" "$sens"; done
+    else sh "$R/tests/sync_saves_steam.sh" "$id" "$sens"; fi ;;
+  wrap)
+    sh "$R/tests/brancher_jeux_steam.sh" --ecrire ;;
+  install|installer)
+    sh "$R/tests/cidre_install.sh" "$@" ;;
+  help|*) usage ;;
+esac
