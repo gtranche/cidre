@@ -38,8 +38,33 @@ NOM=$(sed -n 's/.*"name"[[:space:]]*"\(.*\)".*/\1/p' "$SAPPS/appmanifest_$APPID.
 INSTALLDIR=$(sed -n 's/.*"installdir"[[:space:]]*"\(.*\)".*/\1/p' "$SAPPS/appmanifest_$APPID.acf" 2>/dev/null | head -1)
 [ -n "$INSTALLDIR" ] || INSTALLDIR="app_$APPID"
 
+# Compte Steam memorise par le client (loginusers.vdf) : on pre-remplit l'identifiant
+# pour que SteamCMD ne demande que le mot de passe (une seule fois, ensuite memorise).
+# La machine est deja autorisee Steam Guard (ssfn), donc en principe pas de code 2FA.
+ACCT=$(python3 - "$STEAM/config/loginusers.vdf" <<'PYEOF' 2>/dev/null
+import sys,re
+try: t=open(sys.argv[1],encoding="utf-8",errors="ignore").read()
+except Exception: sys.exit(0)
+blocks=re.findall(r'\{([^{}]*)\}', t, re.S)
+best=""
+for b in blocks:
+    m=re.search(r'"AccountName"\s*"([^"]+)"', b)
+    if not m: continue
+    if re.search(r'"MostRecent"\s*"1"', b): print(m.group(1)); break
+    if not best: best=m.group(1)
+else:
+    if best: print(best)
+PYEOF
+)
 echo "== $NOM ($APPID) -> installation en version $PLAT =="
-echo "   (SteamCMD va demander ta connexion Steam ; Cidre ne voit jamais ton mot de passe)"
+if [ -n "$ACCT" ]; then
+   echo "   Connexion SteamCMD pour le compte '$ACCT' : tape juste ton MOT DE PASSE quand il le demande."
+   echo "   (une seule fois ; ensuite memorise. Cidre ne voit jamais ton mot de passe.)"
+   LOGIN_ARGS="+login $ACCT"
+else
+   echo "   SteamCMD va demander identifiant + mot de passe."
+   LOGIN_ARGS="+login"
+fi
 
 # 3) Steam doit etre ferme (SteamCMD et le client partagent la config).
 if pgrep -f steam_osx >/dev/null 2>&1; then
@@ -50,7 +75,7 @@ fi
 
 DEST="$SAPPS/common/$INSTALLDIR"
 echo "== SteamCMD : telechargement du depot $PLAT vers $DEST =="
-"$SCMD" +force_install_dir "$DEST" +login +@sSteamCmdForcePlatformType "$PLAT" \
+"$SCMD" +force_install_dir "$DEST" $LOGIN_ARGS +@sSteamCmdForcePlatformType "$PLAT" \
    +app_update "$APPID" validate +quit
 RC=$?
 [ $RC -eq 0 ] || { echo "SteamCMD a echoue (code $RC)" >&2; exit $RC; }
