@@ -35,6 +35,17 @@ export WINEPREFIX=${WINEPREFIX:-$R/wine/pfx-arm64ec}
 # au prix d'un risque de course sur du code lock-free qui compte sur l'ordre fort
 # du x86. Opt-in, par jeu (exporter CIDRE_TSO=0 avant de lancer). Defaut : inchange.
 if [ -n "${CIDRE_TSO:-}" ]; then export FEX_TSOENABLED=$CIDRE_TSO; fi
+
+# Presentation / vsync. En FIFO strict (vsync on), une frame qui rate le vblank
+# 60 Hz fait chuter a 40/30 (pas 59) -- mesure DREDGE : 40 fps vsync on vs 69 off.
+# CIDRE_VSYNC=0 force syncInterval=0 cote DXVK (pas de penalite vblank ; tearing
+# possible). Opt-in, par jeu. On l'ajoute au DXVK_CONFIG sans ecraser l'existant.
+if [ "${CIDRE_VSYNC:-}" = "0" ]; then
+   case ";${DXVK_CONFIG:-};" in
+      *syncInterval*) : ;;
+      *) export DXVK_CONFIG="${DXVK_CONFIG:+$DXVK_CONFIG;}dxgi.syncInterval=0;d3d11.syncInterval=0" ;;
+   esac
+fi
 JOURNAL=${PROTON_OUVERT_JOURNAL:-$R/build/logs/steam-${SteamAppId:-inconnu}.log}
 mkdir -p "$(dirname "$JOURNAL")"
 
@@ -105,6 +116,12 @@ fi
 #     sinon plantage au boot) ; EAC online est un mur -> realm « Modded » via
 #     -eac-untrusted (voir NOTES EAC).
 case ${SteamAppId:-} in
+   1562430)
+      # DREDGE (Unity) : pas lourd en GPU mais la vsync FIFO le bloque a 40 (perte
+      # vblank). syncInterval=0 -> 69 fps mesure (~1,7x). Tearing possible.
+      export DXVK_CONFIG="${DXVK_CONFIG:+$DXVK_CONFIG;}dxgi.syncInterval=0;d3d11.syncInterval=0"
+      echo "    1562430 : vsync off (syncInterval=0)" >>"$JOURNAL"
+      ;;
    552500)
       export PROTON_OUVERT_LUAJIT=1
       # DXVK async (build gplasync) : compile les pipelines en fond au lieu de
