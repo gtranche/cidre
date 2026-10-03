@@ -30,12 +30,16 @@ CMD="$R/build/installer-cidre.command"
 } > "$CMD"
 chmod +x "$CMD"
 
+echo "== construction de l'app d'install (.app) =="
+APPZIP="$R/build/Installer-Cidre.zip"
+sh "$R/tests/construire_app_install.sh" "$APPZIP" >/dev/null && echo "  $APPZIP"
+
 echo "== release $TAG ($SZ) =="
 if gh release view "$TAG" -R gtranche/cidre >/dev/null 2>&1; then
-   gh release upload "$TAG" "$TARBALL" "$CMD" "$R/installer_cidre.sh" \
+   gh release upload "$TAG" "$TARBALL" "$CMD" "$APPZIP" "$R/installer_cidre.sh" \
       -R gtranche/cidre --clobber
 else
-   gh release create "$TAG" "$TARBALL" "$CMD" "$R/installer_cidre.sh" \
+   gh release create "$TAG" "$TARBALL" "$CMD" "$APPZIP" "$R/installer_cidre.sh" \
       -R gtranche/cidre --title "Cidre $TAG" --notes "$NOTES"
 fi
 echo "Publie : https://github.com/gtranche/cidre/releases/tag/$TAG"
