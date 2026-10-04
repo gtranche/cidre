@@ -1,6 +1,14 @@
 # Installer Cidre
 
-## Pour JOUER (install du runtime pre-compile) -- la voie normale
+## Pour JOUER -- la voie normale : Verger
+
+[Verger](https://github.com/gtranche/verger), l'interface de Cidre, installe le
+runtime et le met a jour tout seul : il telecharge `cidre-runtime.tar.xz` depuis
+la derniere release, le decompresse dans `~/Library/Application Support/Cidre`
+et lance `cidre setup`. Rien d'autre a lancer. Prerequis Homebrew :
+`brew install spirv-tools freetype`.
+
+## Sans Verger (install du runtime pre-compile en ligne de commande)
 
 Le runtime deja construit est publie en **release GitHub**. L'utilisateur ne
 construit rien : il telecharge UN fichier depuis la page de la derniere release
