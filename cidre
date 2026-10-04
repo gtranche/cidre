@@ -293,7 +293,11 @@ case "$cmd" in
       fils_compilation)
         case $val in ''|*[!0-9]*) echo "fils_compilation attend un entier (0 = defaut DXVK)" >&2; exit 2 ;; esac
         [ "$val" -le 64 ] || { echo "fils_compilation : 64 au plus" >&2; exit 2; } ;;
-      *) echo "option inconnue : $cle (tso, vsync, hud, async, fils_compilation, eac_untrusted, luajit, plein_ecran, gamemode)" >&2; exit 2 ;;
+      langue)
+        # une chaine : ecrite entre guillemets dans le profil (TOML)
+        case $val in auto|fr|en|de|es|it|pt|ru|pl|ja|ko|zh) val="\"$val\"" ;;
+          *) echo "langue attend auto ou un code : fr, en, de, es, it, pt, ru, pl, ja, ko, zh" >&2; exit 2 ;; esac ;;
+      *) echo "option inconnue : $cle (tso, vsync, hud, async, fils_compilation, eac_untrusted, luajit, plein_ecran, gamemode, langue)" >&2; exit 2 ;;
     esac
     CIDRE_PROFILS=${CIDRE_PROFILS:-$CIDRE_DIR/profils.toml} sh "$R/tests/profil_cidre.sh" "$id" set "$cle" "$val" ;;
   unset)

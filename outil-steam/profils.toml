@@ -11,6 +11,10 @@
 # Sous-ensemble de TOML volontairement plat : des sections [defaut] et [<appid>],
 # des lignes `cle = valeur` (true/false, entier, ou "chaine"). Rien d'autre.
 #
+#   langue           langue du jeu : "auto" (suivre macOS et Steam, ne rien forcer)
+#                    ou un code : fr, en, de, es, it, pt, ru, pl, ja, ko, zh. Pose
+#                    la locale Windows (LC_ALL) et, pour les jeux de la table
+#                    outil-steam/langues.conf, leur fichier de reglages.
 #   tso              emulation de l'ordre memoire x86 par FEX. false = gros gain
 #                    CPU (jusqu'a 3,7x mesure), risque de course sur du lock-free.
 #   vsync            false = syncInterval 0 (plus de plafond vblank ; tearing possible).
@@ -21,6 +25,7 @@
 #   luajit           fenetre basse 64 bits pour LuaJIT (PROTON_OUVERT_LUAJIT).
 
 [defaut]
+langue = "auto"
 tso = true
 vsync = true
 hud = false
