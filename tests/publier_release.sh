@@ -9,8 +9,11 @@ NOTES=${2:-"Runtime Cidre $TAG (pile deja compilee). Install : sh installer_cidr
 command -v gh >/dev/null || { echo "gh requis (brew install gh ; gh auth login)" >&2; exit 1; }
 
 TARBALL="$R/cidre-runtime.tar.zst"
+# Le .tar.xz est celui que telecharge Verger (macOS le decompresse sans zstd) :
+# sans lui, Verger refuse la release.
+TARBALL_XZ="$R/cidre-runtime.tar.xz"
 echo "== empaquetage =="
-sh "$R/tests/empaqueter_runtime.sh" "$TARBALL"
+CIDRE_VERSION=${TAG#v} sh "$R/tests/empaqueter_runtime.sh" "$TARBALL"
 SZ=$(ls -lh "$TARBALL" | awk '{print $5}')
 
 # Asset unique, executable : on genere un .command double-cliquable a partir de
@@ -36,10 +39,10 @@ sh "$R/tests/construire_app_install.sh" "$APPZIP" >/dev/null && echo "  $APPZIP"
 
 echo "== release $TAG ($SZ) =="
 if gh release view "$TAG" -R gtranche/cidre >/dev/null 2>&1; then
-   gh release upload "$TAG" "$TARBALL" "$CMD" "$APPZIP" "$R/installer_cidre.sh" \
+   gh release upload "$TAG" "$TARBALL" "$TARBALL_XZ" "$CMD" "$APPZIP" "$R/installer_cidre.sh" \
       -R gtranche/cidre --clobber
 else
-   gh release create "$TAG" "$TARBALL" "$CMD" "$APPZIP" "$R/installer_cidre.sh" \
+   gh release create "$TAG" "$TARBALL" "$TARBALL_XZ" "$CMD" "$APPZIP" "$R/installer_cidre.sh" \
       -R gtranche/cidre --title "Cidre $TAG" --notes "$NOTES"
 fi
 echo "Publie : https://github.com/gtranche/cidre/releases/tag/$TAG"

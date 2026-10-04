@@ -1,17 +1,26 @@
-# Release automatique : sur un tag vX.Y.Z, construit la pile depuis les sources
-# sur un runner macOS Apple Silicon, empaquette le runtime, et l'attache a la
-# release. ATTENTION : build lourd (plusieurs heures) et NON encore eprouve sur
-# CI -- a valider au premier tag. Alternative fiable : tests/publier_release.sh
-# depuis une machine ou le build existe deja.
+# Reconstruit la pile depuis les sources sur un runner macOS Apple Silicon et
+# empaquette le runtime. A LANCER A LA MAIN (onglet Actions) : le build est lourd
+# (plusieurs heures) et n'a encore jamais abouti sur CI.
+#
+# Il ne se declenche plus sur un tag. Les releases sont publiees depuis la
+# machine ou le build existe (tests/publier_release.sh) ; un tag lancait ce build
+# non eprouve, qui echouait -- ou qui, en reussissant, aurait remplace les
+# archives deja publiees par d'autres, jamais essayees.
 name: release
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version du runtime a construire, sans le v (ex. 1.2.0)"
+        required: true
+      publier:
+        description: "Attacher les archives a la release v<version> (sinon : artefact du run)"
+        type: boolean
+        default: false
 permissions:
   contents: write
 jobs:
-  construire-et-publier:
+  construire:
     runs-on: macos-14   # Apple Silicon
     timeout-minutes: 350
     steps:
@@ -31,9 +40,23 @@ jobs:
       - name: Pile arm64 (Mesa, Wine, DXVK)
         run: sh tests/construire_pile_arm64.sh
       - name: Empaqueter le runtime
+        env:
+          CIDRE_VERSION: ${{ inputs.version }}
         run: sh tests/empaqueter_runtime.sh "$GITHUB_WORKSPACE/cidre-runtime.tar.zst"
+      - name: Garder les archives (artefact du run)
+        if: ${{ !inputs.publier }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cidre-runtime-${{ inputs.version }}
+          path: |
+            cidre-runtime.tar.zst
+            cidre-runtime.tar.xz
       - name: Publier la release
+        if: ${{ inputs.publier }}
         uses: softprops/action-gh-release@v2
         with:
-          files: cidre-runtime.tar.zst
+          tag_name: v${{ inputs.version }}
+          files: |
+            cidre-runtime.tar.zst
+            cidre-runtime.tar.xz
           fail_on_unmatched_files: true

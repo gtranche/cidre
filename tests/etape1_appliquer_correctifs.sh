@@ -96,7 +96,9 @@ if [ -f "$TC" ]; then
    echo "== toolchain =="
    if grep -q __MINGW_TEB_SANS_X18 "$TC"; then
       echo "   0069 deja applique"
-   elif patch "$TC" -p0 --silent < "$R"/0069-*.patch; then
+   # cat, pas `< motif` : un sh non interactif n'etend pas un motif dans une
+   # redirection, et cherche alors un fichier nomme « 0069-*.patch ».
+   elif cat "$R"/0069-*.patch | patch "$TC" -p0 --silent; then
       echo "   1 correctif applique"
    else
       echo "   ECHEC sur 0069" >&2; exit 1
