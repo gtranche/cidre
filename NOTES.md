@@ -21383,3 +21383,55 @@ Suite du §310. Deux blocages restants resolus, le jeu est jouable (Donjon 1re p
 Cable dans tests/lancer_depuis_steam.sh (bloc 552500) : PROTON_OUVERT_LUAJIT=1, DXVK_ASYNC=1,
 DXVK_CONFIG=dxvk.numCompilerThreads=4, +-eac-untrusted. L'utilisateur clique « Jouer », rien a regler.
 A affiner : valider 4 fils de bout en bout sous charge ; le compromis fils/throughput est tunable.
+
+## 312. Overlay Steam (Maj+Tab) dans un jeu Cidre : MARCHE, option `overlay` + correctif 0080 (2026-10-04)
+
+L'overlay Steam (Maj+Tab, amis, succes, guides, notification de demarrage) s'affiche dans un jeu
+Windows lance par Cidre. Prouve sur Dead Cells (588650) par `cidre play`, capture a l'appui, en
+fenetre. En vrai plein ecran macOS (CIDRE_FULLSCREEN_SPACE) le jeu s'affiche normalement avec
+l'injection active, mais l'ouverture de l'overlay dans ce mode n'a pas ete constatee.
+Actif par defaut (`overlay = true` dans [defaut], decision de l'utilisateur) ; `cidre set <id> overlay false` pour un jeu qu'il generait.
+
+COMMENT
+1. Injection. Steam affiche son overlay dans un jeu Mac natif en injectant
+   <Steam>/Contents/MacOS/gameoverlayrenderer.dylib (universel, tranche arm64). Il ne le fait pas pour
+   nous : les DYLD_* ne survivent pas a /bin/sh. etape2 pose donc DYLD_INSERT_LIBRARIES juste avant
+   l'exec de Wine, pour le Wine du jeu seul (pas le faux client). Ca survit a la re-execution de Wine
+   et les enfants en heritent. Piege de mesure : /usr/bin/env retire les DYLD_* lui aussi.
+2. Presentation (correctif 0080, WSI Metal de Mesa). L'overlay ne dessine que dans
+   -[_MTLCommandBuffer presentDrawable:] / commit (Metal 3). KosmicKrisp rend en Metal 4 et presentait
+   par -[CAMetalDrawable present] : crochet jamais appele, Steam ne lancait meme pas gameoverlayui.
+   Avec MESA_WSI_METAL_PRESENT_WITH_COMMAND_BUFFER=1 (pose par etape2 avec l'injection), la swapchain
+   presente par un MTLCommandBuffer d'une file Metal 3.
+3. Ordre GPU. Metal n'ordonne rien entre la file Metal 4 du jeu et cette file Metal 3 : sans
+   precaution l'overlay est dessine PUIS ecrase par le blit final du jeu -- a l'ecran, un clignotement.
+   Le correctif fait signaler un MTLSharedEvent par la file Metal 4 apres le blit et attendre cet
+   evenement par le tampon Metal 3 (encodeWaitForEvent). Mesure avec une sonde externe basculant
+   l'ordre a chaud : sans ordre = clignote, avec = stable (53 679 images ordonnees sur 53 681, ~73 i/s).
+
+CE QUI A ETE VU
+- Steam lance `gameoverlayui -pid <jeu> -steampid <steam> -gameid 588650` des la premiere image.
+- Maj+Tab : un appui = une bascule (la detection de la bibliotheque marche telle quelle sous winemac).
+  Overlay ouvert, le clavier est retire au jeu ; la souris marche dans l'overlay (fenetre des succes
+  ouverte a la main).
+- Defaut mineur : a l'ouverture d'un panneau, une demi-seconde ou seul son cadre est dessine. Pas
+  compare a un jeu natif.
+- Journal de l'overlay : STEAM_OVERLAY_LOGGING=1 STEAM_OVERLAY_LOGGING_FLUSH=1 ->
+  /tmp/gameoverlayrenderer.<pid>.log (cote jeu) et /tmp/gameoverlay_ui.txt (cote interface).
+
+FAUSSES PISTES, pour ne pas les refaire
+- « Le raccourci est detecte deux fois » : non. C'etait l'affichage qui ne tenait pas (point 3) ;
+  l'utilisateur rappuyait.
+- « Contacts deconnectes dans l'overlay » : rien a voir avec l'overlay ni le pont. Le SteamCMD de
+  Cidre s'etait connecte au compte a la meme seconde que le client recevait « Session Replaced »
+  (connection_log des deux cotes) ; le client reste hors ligne jusqu'a « Passer en ligne ».
+- La barre de titre au-dessus du jeu : lancement sans plein_ecran (CIDRE_FULLSCREEN_SPACE), pas l'overlay.
+
+NON TESTE : Vermintide 2 et tout autre jeu, lancement par le bouton « Jouer » de Steam, cout par
+image du chemin Metal 3, tenue sur une longue session, Remote Play (la bibliotheque capture au meme
+endroit, donc plausible), Steam Input (le jeu lit la manette par Wine, pas par Steam : inconnu),
+reponses de ISteamUtils::IsOverlayEnabled / BOverlayNeedsPresent par le pont. L'option est quand
+meme active par defaut : au premier jeu qui s'en trouve mal, le regler a false dans son profil.
+
+Construction : build/mesa se construit avec toolchain/bin en tete du PATH. Le ninja de /usr/local/bin
+est x86_64 : il compile en x86_64 sous Rosetta et casse l'edition de liens de libkk.a.

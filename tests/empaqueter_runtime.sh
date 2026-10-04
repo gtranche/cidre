@@ -61,7 +61,7 @@ livrer() { # <chemin relatif au depot>
 for f in etape2_pile_arm64ec.sh lancer_depuis_steam.sh brancher_jeux_steam.sh \
          installer_agent_steam.sh preparer_pont_steam_arm64.sh sync_saves_steam.sh \
          installer_fex.sh profil_cidre.sh cidre_install.sh bibliotheque_steam.py \
-         majs_steam.py steamcmd_session.py configurer_cidre.sh; do
+         majs_steam.py steamcmd_session.py configurer_cidre.sh langue_jeu.sh; do
    livrer "tests/$f"
 done
 # La CLI `cidre` : le contrat que pilote Verger (list/info --json, play, dl, sync).
@@ -70,7 +70,7 @@ cp -R "$R/tests/outils_fenetre" "$STAGE/tests/" 2>/dev/null || true
 mkdir -p "$STAGE/outil-steam" "$STAGE/build"
 # jeux.conf est lu par lancer_depuis_steam.sh en $R/outil-steam/jeux.conf :
 # le livrer a CE chemin, pas a la racine (sinon la table de lanceurs est muette).
-for f in jeux.conf saves.conf profils.toml; do livrer "outil-steam/$f"; done
+for f in jeux.conf saves.conf profils.toml langues.conf; do livrer "outil-steam/$f"; done
 # Le faux client Steam (occupe ActiveProcess\\pid pour que SteamAPI_Init ne
 # patiente pas apres un client Windows absent). preparer_pont_steam_arm64.sh le
 # lit en $R/build/faux_steam.exe et le depose dans le prefixe.

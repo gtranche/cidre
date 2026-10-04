@@ -11,10 +11,17 @@
 # Sous-ensemble de TOML volontairement plat : des sections [defaut] et [<appid>],
 # des lignes `cle = valeur` (true/false, entier, ou "chaine"). Rien d'autre.
 #
+#   langue           langue du jeu : "auto" (suivre macOS et Steam, ne rien forcer)
+#                    ou un code : fr, en, de, es, it, pt, ru, pl, ja, ko, zh. Pose
+#                    la locale Windows (LC_ALL) et, pour les jeux de la table
+#                    outil-steam/langues.conf, leur fichier de reglages.
 #   tso              emulation de l'ordre memoire x86 par FEX. false = gros gain
 #                    CPU (jusqu'a 3,7x mesure), risque de course sur du lock-free.
 #   vsync            false = syncInterval 0 (plus de plafond vblank ; tearing possible).
 #   hud              compteur fps + charge GPU a l'ecran (DXVK_HUD, MTL_HUD).
+#   overlay          overlay Steam en jeu (Maj+Tab, amis, succes, notifications) :
+#                    injecte la bibliotheque d'overlay du client Steam dans le jeu.
+#                    false pour un jeu qu'elle generait (jeu hors Steam : sans effet).
 #   async            compilation des pipelines en fond (DXVK gplasync) : tue le stutter.
 #   fils_compilation nombre de fils compilateurs DXVK ; 0 = defaut DXVK (tous les coeurs).
 #   eac_untrusted    ajoute -eac-untrusted (realm « Modded » ; EAC en ligne = mur).
@@ -27,9 +34,11 @@
 #                    vrai plein ecran, donc avec plein_ecran = true.
 
 [defaut]
+langue = "auto"
 tso = true
 vsync = true
 hud = false
+overlay = true
 async = false
 fils_compilation = 0
 eac_untrusted = false
