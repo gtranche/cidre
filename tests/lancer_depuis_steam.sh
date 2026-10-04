@@ -22,12 +22,18 @@ R=$(cd "$(dirname "$0")" && cd .. && pwd)
 # (access violation precoce, « ca se lance et ca se ferme »). Si AUCUN jeu ne
 # tourne mais que des restes trainent, on les retire. On ne touche a rien si un
 # jeu est deja en cours.
+export WINEPREFIX=${WINEPREFIX:-$R/wine/pfx-arm64ec}
 if ! pgrep -f '[v]ermintide2.exe' >/dev/null 2>&1; then
    pkill -9 -f '[c]:\\faux_steam.exe' 2>/dev/null || true
-   pkill -9 -f 'wine11-arm64/bin/wineserver' 2>/dev/null || true
+   # Le wineserver de CE prefixe, et lui seul : « wineserver -k » le retrouve
+   # par le verrou du prefixe, lui demande de s'arreter (il emporte ses
+   # processus) et ne le tue qu'au bout de 10 s. Pas de pkill sur la ligne de
+   # commande : Wine lance son serveur par .../lib/wine/../../bin/wineserver,
+   # que le motif 'wine11-arm64/bin/wineserver' n'a jamais attrape, et un motif
+   # plus large tuerait aussi le serveur d'un autre prefixe.
+   "$R/wine/wine11-arm64/bin/wineserver" -k 2>/dev/null || true
    sleep 1
 fi
-export WINEPREFIX=${WINEPREFIX:-$R/wine/pfx-arm64ec}
 
 # Profil du jeu : options de lancement par appid, en donnees. Reglages livres
 # dans outil-steam/profils.toml, surcharges par l'utilisateur (ou Verger) dans
