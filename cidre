@@ -101,6 +101,8 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
   cidre list [--json]             liste tes jeux + plateforme + mode de lancement
   cidre info <id> [--json]        fiche d'un jeu : plateforme, taille, chemin, options actives
   cidre play <id>                 lance le jeu (natif via Steam, ou par la pile Cidre)
+  cidre set <id> <option> <valeur>   regle une option de lancement du jeu (profils.toml)
+  cidre unset <id> [option]       revient au reglage livre (sans option : toutes)
   cidre sync <appid|all> [backup|restore]   sauvegardes (iCloud)
  Steam
   cidre library [--json] [--refresh]   les jeux que possede ton compte (installes ou non)
@@ -148,7 +150,7 @@ case "$cmd" in
     opts=$(sh "$R/tests/profil_cidre.sh" "$id" json)
     grep -q "^$id	" "$R/outil-steam/saves.conf" 2>/dev/null && sv=true || sv=false
     if [ "$JSON" = oui ]; then
-      fiche_json "$id"; printf ',"sauvegardes":%s,"options":%s}\n' "$sv" "$opts"
+      fiche_json "$id"; printf ',"sauvegardes":%s,"options":%s,"options_perso":%s}\n' "$sv" "$opts" "$(sh "$R/tests/profil_cidre.sh" "$id" perso)"
     else
       echo "id          : $id"
       echo "nom         : $(nom "$id")"
@@ -227,6 +229,23 @@ case "$cmd" in
       echo "Echec SteamCMD (rc=$rc). Si 'Invalid Password', relance et saisis bien mot de passe + Steam Guard."
       exit $rc
     fi ;;
+  set)
+    id=${1:-}; cle=${2:-}; val=${3:-}
+    [ -n "$id" ] && [ -n "$cle" ] && [ -n "$val" ] || { echo "usage: cidre set <id> <option> <valeur>" >&2; exit 2; }
+    connu "$id" || { echo "jeu inconnu : $id" >&2; exit 1; }
+    case $cle in
+      tso|vsync|hud|async|eac_untrusted|luajit)
+        case $val in true|false) ;; *) echo "$cle attend true ou false" >&2; exit 2 ;; esac ;;
+      fils_compilation)
+        case $val in ''|*[!0-9]*) echo "fils_compilation attend un entier (0 = defaut DXVK)" >&2; exit 2 ;; esac
+        [ "$val" -le 64 ] || { echo "fils_compilation : 64 au plus" >&2; exit 2; } ;;
+      *) echo "option inconnue : $cle (tso, vsync, hud, async, fils_compilation, eac_untrusted, luajit)" >&2; exit 2 ;;
+    esac
+    CIDRE_PROFILS=${CIDRE_PROFILS:-$CIDRE_DIR/profils.toml} sh "$R/tests/profil_cidre.sh" "$id" set "$cle" "$val" ;;
+  unset)
+    id=${1:?usage: cidre unset <id> [option]}
+    connu "$id" || { echo "jeu inconnu : $id" >&2; exit 1; }
+    CIDRE_PROFILS=${CIDRE_PROFILS:-$CIDRE_DIR/profils.toml} sh "$R/tests/profil_cidre.sh" "$id" unset "${2:-}" ;;
   library|lib|bibliotheque)
     # Ce que possede le compte : SteamCMD (session memorisee) donne les licences,
     # le cache du client Steam donne les noms et les plateformes. Les licences

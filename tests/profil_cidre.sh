@@ -3,10 +3,13 @@
 # (outil-steam/profils.toml) surcharges par ceux de l'utilisateur
 # (~/Library/Application Support/Cidre/profils.toml, ecrit par Verger).
 #
-#   profil_cidre.sh <appid> [env|json]
+#   profil_cidre.sh <id> [env|json|perso]
+#   profil_cidre.sh <id> set <cle> <valeur>     ecrit un reglage utilisateur
+#   profil_cidre.sh <id> unset [cle]            l'enleve (sans cle : tous ceux du jeu)
 #
 # env  (defaut) : une ligne `cle=valeur` par option resolue
 # json          : un objet {"cle": valeur, ...}
+# perso         : en JSON, les seuls reglages que l'utilisateur a poses sur ce jeu
 #
 # Priorite, cle par cle : [appid] utilisateur > [appid] livre > [defaut]
 # utilisateur > [defaut] livre. Un fichier absent n'est pas une erreur.
@@ -15,6 +18,48 @@ R=$(cd "$(dirname "$0")/.." && pwd)
 APPID=${1:-}; FORMAT=${2:-env}
 LIVRE="$R/outil-steam/profils.toml"
 PERSO=${CIDRE_PROFILS:-$HOME/Library/Application Support/Cidre/profils.toml}
+
+# Ecriture : on reecrit le fichier utilisateur en ne touchant que la section du
+# jeu ; le reste (autres jeux, [defaut], commentaires) passe tel quel.
+case $FORMAT in set|unset)
+   [ -n "$APPID" ] || { echo "usage : profil_cidre.sh <id> set <cle> <valeur> | unset [cle]" >&2; exit 2; }
+   CLE=${3:-}; VAL=${4:-}
+   [ "$FORMAT" = unset ] || [ -n "$CLE" ] || { echo "cle manquante" >&2; exit 2; }
+   mkdir -p "$(dirname "$PERSO")"
+   [ -f "$PERSO" ] || : >"$PERSO"
+   awk -v id="$APPID" -v mode="$FORMAT" -v cle="$CLE" -v val="$VAL" '
+      function entete(l) { if (l !~ /^[ \t]*\[/) return ""; gsub(/^[ \t]*\[[ \t]*"?|"?[ \t]*\].*$/, "", l); return l }
+      function cle_de(l,   i, c) { i = index(l, "="); if (!i || l ~ /^[ \t]*#/) return ""; c = substr(l, 1, i - 1); gsub(/[ \t]/, "", c); return c }
+      # fin de la section du jeu : y poser la cle si elle n y etait pas
+      function clore() { if (dedans && mode == "set" && !pose) { print cle " = " val; pose = 1 } dedans = 0 }
+      {
+         e = entete($0)
+         if (e != "" || $0 ~ /^[ \t]*\[/) {
+            clore()
+            if (e == id) {
+               vue = 1; dedans = 1
+               if (mode == "unset" && cle == "") next    # la section entiere s en va
+            }
+            print; next
+         }
+         if (dedans) {
+            if (mode == "unset" && cle == "") next
+            if (cle_de($0) == cle) {
+               if (mode == "set" && !pose) { print cle " = " val; pose = 1 }
+               next
+            }
+            # garder les lignes vides de fin de section apres la cle ajoutee
+            if ($0 ~ /^[ \t]*$/ && mode == "set" && !pose) { print cle " = " val; pose = 1 }
+         }
+         print
+      }
+      END {
+         clore()
+         if (mode == "set" && !vue) { if (NR) print ""; print "[" id "]"; print cle " = " val }
+      }
+   ' "$PERSO" >"$PERSO.tmp" && mv "$PERSO.tmp" "$PERSO"
+   exit ;;
+esac
 
 for f in "$LIVRE" "$PERSO"; do [ -f "$f" ] && cat "$f"; printf '\n#@fichier-suivant\n'; done |
 awk -v appid="$APPID" -v format="$FORMAT" '
@@ -48,12 +93,14 @@ awk -v appid="$APPID" -v format="$FORMAT" '
       if (!(cle in valeur) || rang >= rangde[cle]) { valeur[cle] = val; rangde[cle] = rang; estchaine[cle] = chaine }
    }
    END {
-      if (format == "json") {
-         printf "{"
+      if (format == "json" || format == "perso") {
+         printf "{"; premier = 1
          for (k = 1; k <= n; k++) {
             c = ordre[k]; v = valeur[c]
+            # perso : seulement ce qui vient de la section du jeu dans le fichier utilisateur
+            if (format == "perso" && rangde[c] != 3) continue
             if (estchaine[c] || v !~ /^(true|false|-?[0-9]+)$/) { gsub(/\\/, "\\\\", v); gsub(/"/, "\\\"", v); v = "\"" v "\"" }
-            printf "%s\"%s\":%s", (k > 1 ? "," : ""), c, v
+            printf "%s\"%s\":%s", (premier ? "" : ","), c, v; premier = 0
          }
          print "}"
       } else
