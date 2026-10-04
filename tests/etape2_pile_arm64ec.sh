@@ -50,4 +50,16 @@ if [ -n "${PROTON_OUVERT_WINEDBG:-}" ]; then
    exec "$WINE" winedbg "$@" < "$PROTON_OUVERT_WINEDBG"
 fi
 
+# Overlay Steam : la bibliotheque que Steam injecte dans un jeu Mac natif, posee
+# ici et pas plus haut -- macOS retire les variables DYLD_* a chaque passage par
+# /bin/sh, elle doit donc etre exportee par le dernier script avant Wine. Wine se
+# re-execute et la variable survit ; les processus enfants du jeu en heritent.
+# L'overlay ne dessine que dans -[MTLCommandBuffer presentDrawable:] (Metal 3) ;
+# KosmicKrisp presente en Metal 4, sauf si on lui demande de passer par un tampon
+# Metal 3 ordonne apres l'image du jeu (correctif 0080, NOTES §312).
+if [ -n "${CIDRE_OVERLAY_DYLIB:-}" ] && [ -f "$CIDRE_OVERLAY_DYLIB" ]; then
+   export DYLD_INSERT_LIBRARIES="$CIDRE_OVERLAY_DYLIB"
+   export MESA_WSI_METAL_PRESENT_WITH_COMMAND_BUFFER=1
+fi
+
 exec "$WINE" "$@"

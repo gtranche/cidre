@@ -1,0 +1,171 @@
+Generated-by: LLM
+
+diff --git a/src/vulkan/wsi/wsi_common_metal.c b/src/vulkan/wsi/wsi_common_metal.c
+index 54542c6..294253a 100644
+--- a/src/vulkan/wsi/wsi_common_metal.c
++++ b/src/vulkan/wsi/wsi_common_metal.c
+@@ -10,6 +10,7 @@
+ 
+ #include "util/cnd_monotonic.h"
+ #include "util/timespec.h"
++#include "util/u_debug.h"
+ #include "util/u_vector.h"
+ 
+ #include "wsi_common_entrypoints.h"
+@@ -361,6 +362,10 @@ struct wsi_metal_swapchain {
+    struct wsi_metal_layer_blit_context *blit_context;
+    struct wsi_metal_present_info *present_info;
+ 
++   /* Only with MESA_WSI_METAL_PRESENT_WITH_COMMAND_BUFFER, see
++    * wsi_metal_layer_present_with_command_buffer. */
++   struct wsi_metal_layer_present_context *present_context;
++
+    uint32_t current_image_index;
+ 
+    /* VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR */
+@@ -711,6 +716,14 @@ wsi_metal_swapchain_queue_present(struct wsi_swapchain *wsi_chain,
+          image->base.cpu_map,
+          chain->extent.width, chain->extent.height,
+          image->base.row_pitches[0]);
++   } else if (chain->present_context) {
++      /* Blit is already recorded and committed to the Metal 4 queue: present
++       * with a Metal 3 command buffer ordered after it. */
++      void *mtl4_queue = NULL;
++      if (wsi_chain->wsi->metal.get_mtl4_command_queue)
++         mtl4_queue = wsi_chain->wsi->metal.get_mtl4_command_queue(wsi_chain->device);
++      wsi_metal_layer_present_with_command_buffer(chain->present_context,
++                                                  &image->drawable, mtl4_queue);
+    } else {
+       /* Blit is already recorded, just present now */
+       wsi_metal_layer_present(&image->drawable);
+@@ -859,6 +872,9 @@ wsi_metal_swapchain_destroy(struct wsi_swapchain *wsi_chain,
+    if (chain->base.wsi->sw)
+       wsi_destroy_metal_layer_blit_context(chain->blit_context);
+ 
++   if (chain->present_context)
++      wsi_destroy_metal_layer_present_context(chain->present_context);
++
+    wsi_metal_release_present_info(chain->present_info);
+ 
+    if (chain->base.wsi->metal.get_mtl4_command_queue) {
+@@ -977,6 +993,15 @@ wsi_metal_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+    if (is_sw_driver)
+       chain->blit_context = wsi_create_metal_layer_blit_context();
+ 
++   /* Opt-in: an overlay injected in the process (Steam's) only sees frames
++    * presented through a Metal 3 command buffer. A NULL context falls back to
++    * presenting the drawable directly. */
++   if (!is_sw_driver &&
++       debug_get_bool_option("MESA_WSI_METAL_PRESENT_WITH_COMMAND_BUFFER", false)) {
++      chain->present_context =
++         wsi_create_metal_layer_present_context(metal_surface->pLayer);
++   }
++
+    *swapchain_out = &chain->base;
+ 
+    return VK_SUCCESS;
+diff --git a/src/vulkan/wsi/wsi_common_metal_layer.h b/src/vulkan/wsi/wsi_common_metal_layer.h
+index f98fd1a..051f59c 100644
+--- a/src/vulkan/wsi/wsi_common_metal_layer.h
++++ b/src/vulkan/wsi/wsi_common_metal_layer.h
+@@ -59,6 +59,25 @@ wsi_metal_layer_blit_and_present(struct wsi_metal_layer_blit_context *context,
+ void
+ wsi_metal_layer_present(CAMetalDrawable **drawable_ptr);
+ 
++/* Presents through a Metal 3 MTLCommandBuffer (presentDrawable: + commit)
++ * instead of -[CAMetalDrawable present]. This is the only presentation path
++ * in-process overlays hook (Steam's gameoverlayrenderer swizzles
++ * -[MTLCommandBuffer presentDrawable:] and draws into that command buffer).
++ * mtl4_command_queue, when not NULL, is the Metal 4 queue the frame was
++ * rendered with: the command buffer then waits on the GPU for that queue, as
++ * Metal does not order work between the two queues by itself. */
++struct wsi_metal_layer_present_context;
++
++struct wsi_metal_layer_present_context *
++wsi_create_metal_layer_present_context(const CAMetalLayer *metal_layer);
++
++void
++wsi_destroy_metal_layer_present_context(struct wsi_metal_layer_present_context *context);
++
++void
++wsi_metal_layer_present_with_command_buffer(struct wsi_metal_layer_present_context *context,
++   CAMetalDrawable **drawable_ptr, void *mtl4_command_queue);
++
+ void
+ wsi_metal_layer_make_queue_resident(const CAMetalLayer *metal_layer,
+    void *mtl4_command_queue);
+diff --git a/src/vulkan/wsi/wsi_common_metal_layer.m b/src/vulkan/wsi/wsi_common_metal_layer.m
+index 6308d70..616cff2 100644
+--- a/src/vulkan/wsi/wsi_common_metal_layer.m
++++ b/src/vulkan/wsi/wsi_common_metal_layer.m
+@@ -369,6 +369,70 @@
+    }
+ }
+ 
++struct wsi_metal_layer_present_context {
++   id<MTLCommandQueue> commandQueue;
++   id<MTLSharedEvent> event;
++   uint64_t eventValue;
++};
++
++struct wsi_metal_layer_present_context *
++wsi_create_metal_layer_present_context(const CAMetalLayer *metal_layer)
++{
++   @autoreleasepool {
++      id<MTLDevice> device = metal_layer.device;
++      if (device == nil)
++         return NULL;
++
++      struct wsi_metal_layer_present_context *context =
++         calloc(1, sizeof(struct wsi_metal_layer_present_context));
++      if (context == NULL)
++         return NULL;
++
++      context->commandQueue = [device newCommandQueue];
++      context->event = [device newSharedEvent];
++      if (context->commandQueue == nil || context->event == nil) {
++         wsi_destroy_metal_layer_present_context(context);
++         return NULL;
++      }
++
++      return context;
++   }
++}
++
++void
++wsi_destroy_metal_layer_present_context(struct wsi_metal_layer_present_context *context)
++{
++   [context->commandQueue release];
++   [context->event release];
++   free(context);
++}
++
++void
++wsi_metal_layer_present_with_command_buffer(struct wsi_metal_layer_present_context *context,
++   CAMetalDrawable **drawable_ptr, void *mtl4_command_queue)
++{
++   @autoreleasepool {
++      id<CAMetalDrawable> drawable = [(id<CAMetalDrawable>)*drawable_ptr autorelease];
++      id<MTLCommandBuffer> commandBuffer = [context->commandQueue commandBuffer];
++
++      if (mtl4_command_queue != NULL) {
++         /* The frame, down to its final blit into the drawable, was committed
++          * to the Metal 4 queue. Whatever gets encoded in this command buffer
++          * draws over that frame, so it must run after it: signal from the
++          * Metal 4 queue, wait here. */
++         id<MTL4CommandQueue> queue = (id<MTL4CommandQueue>)mtl4_command_queue;
++         uint64_t value = ++context->eventValue;
++         [queue signalEvent:context->event value:value];
++         [commandBuffer encodeWaitForEvent:context->event value:value];
++      }
++
++      [commandBuffer presentDrawable:drawable];
++      [commandBuffer commit];
++
++      *drawable_ptr = nil;
++   }
++}
++
+ void
+ wsi_metal_layer_make_queue_resident(const CAMetalLayer *metal_layer,
+    void *mtl4_command_queue)
