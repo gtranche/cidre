@@ -44,3 +44,9 @@ luajit = true
 async = true
 fils_compilation = 4
 eac_untrusted = true
+
+# Dead Cells (HashLink/SDL2). CPU/traduction-bound (GPU ~20-25%, inoccupe) :
+# mesure en jeu 75 fps -> 110 fps avec tso off (+47%), chargement aussi bien plus
+# rapide. Peu sensible aux courses en pratique, teste lisse. Si bug, tso = true.
+[588650]
+tso = false
