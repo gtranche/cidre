@@ -30,8 +30,12 @@ export FEX_HOSTFEATURES=${FEX_HOSTFEATURES:-enablecrypto}
 # the FreeType font library » alors que configure l'avait bien trouve.
 mkdir -p "$R/wine/vklib-arm64"
 ln -sf "$R/prefix/lib/libvulkan.1.dylib" "$R/wine/vklib-arm64/libMoltenVK.dylib"
+# Un runtime installe embarque FreeType dans libs/ (aucun Homebrew requis) ; un
+# depot de developpement prend celui de Homebrew.
 for l in libfreetype.6.dylib libfontconfig.1.dylib; do
-   [ -f /opt/homebrew/lib/$l ] && ln -sf /opt/homebrew/lib/$l "$R/wine/vklib-arm64/$l"
+   if [ -f "$R/libs/$l" ]; then ln -sf "$R/libs/$l" "$R/wine/vklib-arm64/$l"
+   elif [ -f /opt/homebrew/lib/$l ]; then ln -sf /opt/homebrew/lib/$l "$R/wine/vklib-arm64/$l"
+   fi
 done
 
 # FEX est repose a chaque fois : « make install » de Wine remet ses propres

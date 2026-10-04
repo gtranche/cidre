@@ -57,6 +57,18 @@ fiche_json() {
       "$1" "$a" "$(json "$(nom "$1")")" "$p" "$l" "$s" "$inst" "$w" "$(json "$(chemin "$1")")" "${t:-0}" "${d:-0}"
 }
 
+# SteamCMD a son propre dossier de travail, a part du client Steam. Par defaut
+# ils partagent ~/Library/Application Support/Steam, et le client, en ecrivant
+# sa configuration, efface la session que SteamCMD y avait memorisee : il
+# fallait se reconnecter apres chaque lancement de Steam. SteamCMD suit HOME.
+SCMD_HOME="$CIDRE_DIR/steamcmd"
+# session memorisee, mot de passe demande au terminal s'il le faut
+scmd() { mkdir -p "$SCMD_HOME"; HOME="$SCMD_HOME" "$SCMD" "$@"; }
+# session memorisee ou rien : jamais de tentative de mot de passe (code 3)
+scmd_memorise() { mkdir -p "$SCMD_HOME"; HOME="$SCMD_HOME" python3 "$R/tests/steamcmd_session.py" "$SCMD" "$@"; }
+# sans compte : les informations publiques de Steam (versions des jeux)
+scmd_anonyme() { mkdir -p "$CIDRE_DIR/steamcmd-anonyme"; HOME="$CIDRE_DIR/steamcmd-anonyme" "$SCMD" +login anonymous "$@" </dev/null; }
+
 # binaire SteamCMD : le notre d'abord, puis PATH/brew
 resolve_steamcmd() {
    for c in "$R/tools/steamcmd/steamcmd.sh" "$STEAMCMD" "$(command -v steamcmd 2>/dev/null)"; do
@@ -108,7 +120,8 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
   cidre setup                     configure le runtime apres une installation ou une mise a jour
  Steam
   cidre library [--json] [--refresh]   les jeux que possede ton compte (installes ou non)
-  cidre dl <appid> [windows|macos]   telecharge le depot DANS le dossier Cidre (hors client, zero ecrasement)
+  cidre updates [--json] [--refresh]   les jeux installes dont une version plus recente est publiee
+  cidre dl <appid> [windows|macos]   telecharge (ou met a jour) le jeu DANS le dossier Cidre, hors du client
   cidre login                     memorise la session SteamCMD (mot de passe tape a SteamCMD, une fois)
   cidre install <appid> [auto|macos|windows]   installe le depot dans le client Steam
   cidre wrap                      (re)pose le wrapper Cidre sur les jeux Windows-only
@@ -216,12 +229,18 @@ case "$cmd" in
     echo "  dossier : $DEST   (hors du client Steam)"
     echo "  -> Si demande : tape TON mot de passe + code Steam Guard (une fois ; ensuite memorise)."
     echo
-    "$SCMD" +@sSteamCmdForcePlatformType "$os" \
+    # Au terminal, SteamCMD peut demander le mot de passe ; lance par une
+    # interface, il ne le peut pas : session memorisee, ou code 3.
+    if [ -t 0 ]; then session=scmd; else session=scmd_memorise; fi
+    $session +@sSteamCmdForcePlatformType "$os" \
             +force_install_dir "$DEST" \
             +login "$U" \
             +app_update "$id" validate \
             +quit
     rc=$?
+    # rien de telecharge : ne pas laisser un dossier vide passer pour un jeu
+    rmdir "$DEST/steamapps" "$DEST" 2>/dev/null
+    [ $rc -eq 3 ] && { echo "Session Steam non memorisee : connecte-toi (\`cidre login\`)." >&2; exit 3; }
     echo
     if [ $rc -eq 0 ]; then
       echo "OK. Contenu telecharge :"
@@ -237,10 +256,11 @@ case "$cmd" in
     oui() { "$@" >/dev/null 2>&1 && echo true || echo false; }
     rt=$(oui test -d "$R/wine/wine11-arm64")
     pf=$(oui test -d "${WINEPREFIX:-$R/wine/pfx-arm64ec}/drive_c/windows/system32")
-    # Bibliotheques que la pile charge par leur chemin Homebrew : le pilote
-    # Vulkan lie SPIRV-Tools, Wine rasterise ses polices avec FreeType.
-    sp=$(oui test -f /opt/homebrew/opt/spirv-tools/lib/libSPIRV-Tools.dylib)
-    ft=$(oui test -f /opt/homebrew/lib/libfreetype.6.dylib)
+    # Le pilote Vulkan lie SPIRV-Tools, Wine rasterise ses polices avec FreeType.
+    # Un runtime installe les embarque (libs/) ; un depot de developpement les
+    # prend dans Homebrew.
+    sp=$(oui test -f "$R/libs/libSPIRV-Tools.dylib" -o -f /opt/homebrew/opt/spirv-tools/lib/libSPIRV-Tools.dylib)
+    ft=$(oui test -f "$R/libs/libfreetype.6.dylib" -o -f /opt/homebrew/lib/libfreetype.6.dylib)
     sc=false; [ -n "$(resolve_steamcmd)" ] && sc=true
     ec=$(oui pgrep -f "$R/wine/.*wineserver")
     if [ "$JSON" = oui ]; then
@@ -287,11 +307,12 @@ case "$cmd" in
       U=$(steam_user)
       [ -n "$U" ] || { echo "Compte Steam introuvable. Exporte CIDRE_STEAM_USER=<ton_login> et relance." >&2; exit 1; }
       mkdir -p "$(dirname "$CACHE")"
-      # </dev/null : sans session memorisee, SteamCMD echoue au lieu d'attendre un mot de passe
-      "$SCMD" +login "$U" +licenses_print +quit </dev/null >"$CACHE.tmp" 2>&1
+      scmd_memorise +login "$U" +licenses_print +quit >"$CACHE.tmp" 2>&1
+      # la sortie vient d'un terminal : fins de ligne CR LF
+      tr -d '\r' <"$CACHE.tmp" >"$CACHE.tmp2" && mv "$CACHE.tmp2" "$CACHE.tmp"
       if ! grep -q "^License packageID" "$CACHE.tmp"; then
         rm -f "$CACHE.tmp"
-        echo "Session SteamCMD non memorisee : lance \`cidre login\` une fois dans un terminal." >&2
+        echo "Session Steam non memorisee : connecte-toi (\`cidre login\`)." >&2
         exit 3
       fi
       mv "$CACHE.tmp" "$CACHE"
@@ -305,6 +326,33 @@ print("%-9s %-40s %-15s %s" % ("APPID", "JEU", "PLATEFORMES", "INSTALLE"))
 for j in json.load(sys.stdin):
     print("%-9s %-40.40s %-15s %s" % (j["appid"], j["nom"], ",".join(j["plateformes"]), "oui" if j["installe"] else ""))'
     fi ;;
+  updates|majs)
+    # Le build installe de chaque jeu, compare a celui de la branche publique.
+    # Information publique : SteamCMD la lit sans compte, donc sans session.
+    # Gardee en cache une demi-heure ; --refresh la redemande.
+    CACHE="$CIDRE_DIR/cache/appinfo.txt"
+    paires=""; demandes=""
+    for id in $(appids); do
+      b=$(champ "$id" buildid); [ -n "$b" ] || continue
+      paires="$paires $id=$b"; demandes="$demandes +app_info_print $id"
+    done
+    if [ -n "$demandes" ] && { [ ! -s "$CACHE" ] || [ "$MAJ" = oui ] || [ -n "$(find "$CACHE" -mmin +30 2>/dev/null)" ]; }; then
+      SCMD=$(resolve_steamcmd)
+      [ -n "$SCMD" ] || { echo "SteamCMD introuvable (ni tools/steamcmd/ ni PATH)." >&2; exit 1; }
+      mkdir -p "$(dirname "$CACHE")"
+      scmd_anonyme +app_info_update 1 $demandes +quit >"$CACHE.tmp" 2>&1
+      grep -q "^AppID : " "$CACHE.tmp" || { rm -f "$CACHE.tmp"; echo "Steam n'a pas repondu (hors ligne ?)." >&2; exit 1; }
+      mv "$CACHE.tmp" "$CACHE"
+    fi
+    [ -s "$CACHE" ] || { [ "$JSON" = oui ] && echo "[]"; exit 0; }
+    if [ "$JSON" = oui ]; then
+      python3 "$R/tests/majs_steam.py" "$CACHE" $paires
+    else
+      python3 "$R/tests/majs_steam.py" "$CACHE" $paires | python3 -c '
+import json, sys
+for j in json.load(sys.stdin):
+    print("%-9s %s" % (j["appid"], "a jour" if j["a_jour"] else "MISE A JOUR : build %s -> %s" % (j["build_installe"], j["build_disponible"])))'
+    fi ;;
   login)
     SCMD=$(resolve_steamcmd)
     [ -n "$SCMD" ] || { echo "SteamCMD introuvable (ni tools/steamcmd/ ni PATH)." >&2; exit 1; }
@@ -312,7 +360,7 @@ for j in json.load(sys.stdin):
     [ -n "$U" ] || { echo "Compte Steam introuvable. Exporte CIDRE_STEAM_USER=<ton_login> et relance." >&2; exit 1; }
     echo "Connexion SteamCMD pour '$U' : tape ton mot de passe (+ Steam Guard) a SteamCMD."
     echo "Une seule fois ; Cidre ne voit jamais ton mot de passe."
-    "$SCMD" +login "$U" +quit ;;
+    scmd +login "$U" +quit ;;
   add|ajouter)
     exe=${1:?usage: cidre add <jeu.exe> [nom]}
     [ -f "$exe" ] || { echo "fichier introuvable : $exe" >&2; exit 1; }

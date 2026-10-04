@@ -36,29 +36,51 @@ for d in d3d11 dxgi d3d10core d3d9 d3d8; do
    cp "$R/build/dxvk-async-winarm64ec/src/$d/$d.dll" "$STAGE/dxvk/async/" 2>/dev/null || true
 done
 
+# Outils de generation de code de Mesa : ils ne servent qu'a construire, et
+# mesa_clc tirerait tout LLVM dans le runtime.
+rm -f "$STAGE/prefix/bin/mesa_clc" "$STAGE/prefix/bin/kk_clc" "$STAGE/prefix/bin/vtn_bindgen2"
+
 echo "== scripts de lancement + integration Steam =="
-mkdir -p "$STAGE/tests"
-cp "$R/tests/"etape2_pile_arm64ec.sh "$R/tests/"lancer_depuis_steam.sh \
-   "$R/tests/"brancher_jeux_steam.sh "$R/tests/"installer_agent_steam.sh \
-   "$R/tests/"preparer_pont_steam_arm64.sh "$R/tests/"sync_saves_steam.sh \
-   "$R/tests/"installer_fex.sh "$R/tests/"profil_cidre.sh \
-   "$R/tests/"cidre_install.sh "$R/tests/"bibliotheque_steam.py \
-   "$R/tests/"configurer_cidre.sh "$STAGE/tests/" 2>/dev/null || true
+# Les scripts et les donnees partent tels qu'ils sont COMMITES, pas tels qu'ils
+# sont sur le disque : une release ne doit pas embarquer un travail en cours.
+# Hors d'un depot git (ou pour un fichier pas encore suivi), on prend le disque.
+livrer() { # <chemin relatif au depot>
+   mkdir -p "$(dirname "$STAGE/$1")"
+   if git -C "$R" cat-file -e "HEAD:$1" 2>/dev/null; then
+      git -C "$R" show "HEAD:$1" >"$STAGE/$1"
+      git -C "$R" diff --quiet HEAD -- "$1" 2>/dev/null || echo "  $1 : modifie sur le disque, on livre la version commitee"
+   elif [ -f "$R/$1" ]; then
+      cp "$R/$1" "$STAGE/$1"
+      echo "  $1 : pas dans git, on livre le disque"
+   else
+      echo "  $1 : ABSENT" >&2; return 1
+   fi
+   case $1 in *.sh|*.py|cidre) chmod +x "$STAGE/$1" ;; esac
+}
+for f in etape2_pile_arm64ec.sh lancer_depuis_steam.sh brancher_jeux_steam.sh \
+         installer_agent_steam.sh preparer_pont_steam_arm64.sh sync_saves_steam.sh \
+         installer_fex.sh profil_cidre.sh cidre_install.sh bibliotheque_steam.py \
+         majs_steam.py configurer_cidre.sh; do
+   livrer "tests/$f"
+done
 # La CLI `cidre` : le contrat que pilote Verger (list/info --json, play, dl, sync).
-cp "$R/cidre" "$STAGE/" 2>/dev/null || true
+livrer cidre
 cp -R "$R/tests/outils_fenetre" "$STAGE/tests/" 2>/dev/null || true
 mkdir -p "$STAGE/outil-steam" "$STAGE/build"
 # jeux.conf est lu par lancer_depuis_steam.sh en $R/outil-steam/jeux.conf :
 # le livrer a CE chemin, pas a la racine (sinon la table de lanceurs est muette).
-cp "$R/outil-steam/jeux.conf" "$STAGE/outil-steam/" 2>/dev/null || true
-cp "$R/outil-steam/saves.conf" "$STAGE/outil-steam/" 2>/dev/null || true
-cp "$R/outil-steam/profils.toml" "$STAGE/outil-steam/" 2>/dev/null || true
+for f in jeux.conf saves.conf profils.toml; do livrer "outil-steam/$f"; done
 # Le faux client Steam (occupe ActiveProcess\\pid pour que SteamAPI_Init ne
 # patiente pas apres un client Windows absent). preparer_pont_steam_arm64.sh le
 # lit en $R/build/faux_steam.exe et le depose dans le prefixe.
 cp "$R/build/faux_steam.exe" "$STAGE/build/" 2>/dev/null || true
 
 echo "$CIDRE_VERSION" >"$STAGE/VERSION"
+
+echo "== bibliotheques Homebrew embarquees (libs/) =="
+# Le pilote Vulkan lie zstd et SPIRV-Tools, Wine charge FreeType par dlopen :
+# on les livre, pour qu'une machine sans Homebrew fasse tourner les jeux.
+python3 "$R/tests/embarquer_dependances.py" "$STAGE" /opt/homebrew/lib/libfreetype.6.dylib
 
 echo "== compression (zstd) =="
 ( cd "$(dirname "$STAGE")" && tar cf - cidre ) | zstd -15 -T${CIDRE_FILS:-0} -o "$OUT" -f
