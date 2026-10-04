@@ -19,6 +19,12 @@
 #   fils_compilation nombre de fils compilateurs DXVK ; 0 = defaut DXVK (tous les coeurs).
 #   eac_untrusted    ajoute -eac-untrusted (realm « Modded » ; EAC en ligne = mur).
 #   luajit           fenetre basse 64 bits pour LuaJIT (PROTON_OUVERT_LUAJIT).
+#   plein_ecran      vrai plein ecran macOS (Space) auto quand le jeu couvre
+#                    l'ecran : couvre l'encoche, laisse macOS scaler une
+#                    resolution plus basse pour remplir, et autorise le Game Mode.
+#   gamemode         force le macOS Game Mode (gamepolicyctl set on, sans sudo) au
+#                    lancement et le rend a auto a la sortie ; n'a d'effet qu'en
+#                    vrai plein ecran, donc avec plein_ecran = true.
 
 [defaut]
 tso = true
@@ -28,6 +34,8 @@ async = false
 fils_compilation = 0
 eac_untrusted = false
 luajit = false
+plein_ecran = true
+gamemode = true
 
 # DREDGE (Unity). Mesure en jeu : 40 fps defaut -> 69 avec vsync off (la vsync
 # FIFO perd un vblank et plafonne a 40) -> 84 en ajoutant TSO off (peu threade,
