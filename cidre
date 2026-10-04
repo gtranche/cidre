@@ -39,6 +39,15 @@ appids() {
 }
 # tous les jeux : appids Steam, puis jeux hors Steam
 ids() { appids; awk -F'\t' '/^local-/ {print $1}' "$LOCAUX" 2>/dev/null; }
+# Temoin « en cours » pour un jeu que cidre lance lui-meme et attend (dossier
+# Cidre, hors Steam). Steam, lui, note dans son registre le jeu qu'il a lance.
+EN_COURS="$CIDRE_DIR/en-cours"
+temoin_en_cours() { # <id>
+   case $1 in ''|*[!a-z0-9-]*) return ;; esac
+   mkdir -p "$EN_COURS" && echo $$ >"$EN_COURS/$1"
+   trap 'rm -f "$EN_COURS/'"$1"'"' EXIT
+}
+
 # chaine JSON (echappe \ " et tabulation)
 json() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g')"; }
 # la fiche JSON d'un jeu (sans l'accolade fermante : `info` y ajoute des champs)
@@ -133,6 +142,7 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
   cidre list [--json]             liste tes jeux + plateforme + mode de lancement
   cidre info <id> [--json]        fiche d'un jeu : plateforme, taille, chemin, options actives
   cidre play <id>                 lance le jeu (natif via Steam, ou par la pile Cidre)
+  cidre running [--json]          les jeux en cours
   cidre set <id> <option> <valeur>   regle une option de lancement du jeu (profils.toml)
   cidre unset <id> [option]       revient au reglage livre (sans option : toutes)
                                   <id> = defaut : le reglage general, que suit tout jeu sans reglage propre
@@ -209,6 +219,7 @@ case "$cmd" in
       [ -n "$EXE" ] || { echo "jeu inconnu : $id" >&2; exit 1; }
       [ -f "$EXE" ] || { echo "executable introuvable : $EXE" >&2; exit 1; }
       echo "lancement Cidre : $(basename "$EXE")  ($id)"
+      temoin_en_cours "$id"
       CIDRE_JEU=$id sh "$R/tests/lancer_depuis_steam.sh" "$EXE"
     elif [ -d "$CDIR" ]; then
       # Jeu telecharge par Cidre (hors client) : on lance par la pile Cidre.
@@ -221,11 +232,33 @@ case "$cmd" in
       [ -n "$EXE" ] || { echo "aucun .exe dans $CDIR"; exit 1; }
       echo "lancement Cidre : $(basename "$EXE")  (appid $id)"
       echo "  (dossier : $CDIR)"
+      temoin_en_cours "$id"
       SteamAppId=$id SteamGameId=$id SteamOverlayGameId=$id \
         sh "$R/tests/lancer_depuis_steam.sh" "$EXE"
     else
       echo "lancement de $(nom "$id") ($id) via Steam..."
       open "steam://run/$id"
+    fi ;;
+  running|en-cours)
+    # Les jeux en cours, par leur id. Deux sources : le jeu que Steam dit avoir
+    # lance (natif, ou Windows par notre wrapper), et les temoins de `cidre play`.
+    en_cours=""
+    if pgrep -x steam_osx >/dev/null 2>&1; then
+      a=$(sed -n 's/.*"RunningAppID"[[:space:]]*"\([0-9]*\)".*/\1/p' "$STEAM/registry.vdf" 2>/dev/null | head -1)
+      [ -n "$a" ] && [ "$a" != 0 ] && en_cours=$a
+    fi
+    for f in "$EN_COURS"/*; do
+      [ -f "$f" ] || continue
+      # un temoin dont le processus n'existe plus est un reste : on l'enleve
+      if kill -0 "$(cat "$f" 2>/dev/null)" 2>/dev/null; then en_cours="$en_cours $(basename "$f")"; else rm -f "$f"; fi
+    done
+    en_cours=$(printf '%s\n' $en_cours | sort -u)
+    if [ "$JSON" = oui ]; then
+      sep='['; [ -n "$en_cours" ] || printf '['
+      for i in $en_cours; do printf '%s"%s"' "$sep" "$i"; sep=','; done
+      echo ']'
+    else
+      [ -n "$en_cours" ] && printf '%s\n' $en_cours
     fi ;;
   sync)
     id=${1:?usage: cidre sync <appid|all> [backup|restore]}; sens=${2:-backup}
