@@ -7,23 +7,38 @@ R=$(cd "$(dirname "$0")" && pwd)
 STEAM="$HOME/Library/Application Support/Steam"
 SA="$STEAM/steamapps"
 STEAMCMD=${STEAMCMD:-/opt/homebrew/bin/steamcmd}
+CIDRE_DIR=${CIDRE_DIR:-$HOME/Library/Application Support/Cidre}
 # Dossier des jeux telecharges par Cidre, HORS du client Steam (zero ecrasement).
-CIDRE_GAMES="$HOME/Library/Application Support/Cidre/games"
+CIDRE_GAMES="$CIDRE_DIR/games"
+# Jeux hors Steam, ajoutes par `cidre add`. TAB-separe : id (local-...), nom,
+# chemin de l'executable. Un jeu = une ligne.
+LOCAUX="$CIDRE_DIR/jeux-locaux.conf"
 
-# Un jeu vit soit dans le dossier Cidre (telecharge par `cidre dl`, prioritaire,
-# comme pour `cidre play`), soit dans le client Steam.
-source_de() { [ -d "$CIDRE_GAMES/$1" ] && echo cidre || echo steam; }
+# Un jeu vit dans le dossier Cidre (telecharge par `cidre dl`, prioritaire,
+# comme pour `cidre play`), dans le client Steam, ou hors Steam (id local-...).
+est_local() { case $1 in local-*) return 0 ;; esac; return 1; }
+local_champ() { awk -F'\t' -v i="$1" -v n="$2" '$1==i {print $n; exit}' "$LOCAUX" 2>/dev/null; }
+source_de() { est_local "$1" && { echo local; return; }; [ -d "$CIDRE_GAMES/$1" ] && echo cidre || echo steam; }
 acf()   { [ -d "$CIDRE_GAMES/$1" ] && echo "$CIDRE_GAMES/$1/steamapps/appmanifest_$1.acf" || echo "$SA/appmanifest_$1.acf"; }
-champ() { sed -n 's/.*"'"$2"'"[[:space:]]*"\(.*\)".*/\1/p' "$(acf "$1")" 2>/dev/null | head -1; }
-nom()   { champ "$1" name | sed 's/\\"/"/g; s/\\\\/\\/g'; }
+champ() { est_local "$1" && return; sed -n 's/.*"'"$2"'"[[:space:]]*"\(.*\)".*/\1/p' "$(acf "$1")" 2>/dev/null | head -1; }
+nom()   { est_local "$1" && { local_champ "$1" 2; return; }; champ "$1" name | sed 's/\\"/"/g; s/\\\\/\\/g'; }
 dir()   { champ "$1" installdir; }
-chemin() { [ -d "$CIDRE_GAMES/$1" ] && echo "$CIDRE_GAMES/$1" || echo "$SA/common/$(dir "$1")"; }
-# appids connus : manifestes Steam + dossiers Cidre (sans Steamworks Redist 228980)
+chemin() {
+   est_local "$1" && { dirname "$(local_champ "$1" 3)"; return; }
+   [ -d "$CIDRE_GAMES/$1" ] && echo "$CIDRE_GAMES/$1" || echo "$SA/common/$(dir "$1")"
+}
+connu() { # le jeu existe-t-il pour Cidre ?
+   est_local "$1" && { [ -n "$(local_champ "$1" 1)" ]; return; }
+   [ -f "$(acf "$1")" ] || [ -d "$CIDRE_GAMES/$1" ]
+}
+# appids Steam : manifestes du client + dossiers Cidre (sans Steamworks Redist 228980)
 appids() {
    { for f in "$SA"/appmanifest_*.acf; do [ -f "$f" ] && basename "$f" | sed 's/[^0-9]//g'; done
      for d in "$CIDRE_GAMES"/*/; do [ -d "$d" ] && basename "$d"; done
    } | grep -E '^[0-9]+$' | grep -vx 228980 | sort -un
 }
+# tous les jeux : appids Steam, puis jeux hors Steam
+ids() { appids; awk -F'\t' '/^local-/ {print $1}' "$LOCAUX" 2>/dev/null; }
 # chaine JSON (echappe \ " et tabulation)
 json() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g')"; }
 # la fiche JSON d'un jeu (sans l'accolade fermante : `info` y ajoute des champs)
@@ -31,11 +46,15 @@ fiche_json() {
    p=$(plat "$1"); s=$(source_de "$1")
    [ "$p" = macos ] && l=natif || l=cidre
    [ "$p" = absent ] && inst=false || inst=true
+   # dossier Cidre : un telechargement interrompu n'est pas un jeu installe
+   [ "$s" = cidre ] && [ "$(champ "$1" StateFlags)" != 4 ] && inst=false
    # le wrapper ne concerne que les jeux lances par Steam
    w=null; [ "$s" = steam ] && { [ "$(cidre_wrap "$1")" = oui ] && w=true || w=false; }
    t=$(champ "$1" SizeOnDisk); d=$(champ "$1" LastPlayed)
-   printf '{"appid":%s,"nom":%s,"plateforme":"%s","lancement":"%s","source":"%s","installe":%s,"wrapper":%s,"chemin":%s,"taille":%s,"dernier_lancement":%s' \
-      "$1" "$(json "$(nom "$1")")" "$p" "$l" "$s" "$inst" "$w" "$(json "$(chemin "$1")")" "${t:-0}" "${d:-0}"
+   # un jeu hors Steam n'a pas d'appid : `id` est la cle commune a tous les jeux
+   est_local "$1" && a=null || a=$1
+   printf '{"id":"%s","appid":%s,"nom":%s,"plateforme":"%s","lancement":"%s","source":"%s","installe":%s,"wrapper":%s,"chemin":%s,"taille":%s,"dernier_lancement":%s' \
+      "$1" "$a" "$(json "$(nom "$1")")" "$p" "$l" "$s" "$inst" "$w" "$(json "$(chemin "$1")")" "${t:-0}" "${d:-0}"
 }
 
 # binaire SteamCMD : le notre d'abord, puis PATH/brew
@@ -66,6 +85,7 @@ PY
 
 # plateforme reellement INSTALLEE (definitif d'apres les fichiers)
 plat() {
+   est_local "$1" && { [ -f "$(local_champ "$1" 3)" ] && echo windows || echo absent; return; }
    d=$(chemin "$1")
    [ -d "$d" ] || { echo absent; return; }
    find "$d" -maxdepth 3 -name '*.app' -type d 2>/dev/null | grep -q . && { echo macos; return; }
@@ -77,45 +97,60 @@ cidre_wrap() { grep -A6 "\"$1\"$" "$STEAM"/userdata/*/config/localconfig.vdf 2>/
 
 usage() {
    cat <<USAGE
-cidre — launcher Cidre (jeux Steam, natif ou via Cidre)
+cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
   cidre list [--json]             liste tes jeux + plateforme + mode de lancement
-  cidre info <appid> [--json]     fiche d'un jeu : plateforme, taille, chemin, options actives
-  cidre play <appid>              lance le jeu (via Steam : natif ou Cidre selon l'install)
+  cidre info <id> [--json]        fiche d'un jeu : plateforme, taille, chemin, options actives
+  cidre play <id>                 lance le jeu (natif via Steam, ou par la pile Cidre)
   cidre sync <appid|all> [backup|restore]   sauvegardes (iCloud)
-  cidre install <appid> [auto|macos|windows]   installe le bon depot sans la console Steam
+ Steam
+  cidre library [--json] [--refresh]   les jeux que possede ton compte (installes ou non)
   cidre dl <appid> [windows|macos]   telecharge le depot DANS le dossier Cidre (hors client, zero ecrasement)
+  cidre login                     memorise la session SteamCMD (mot de passe tape a SteamCMD, une fois)
+  cidre install <appid> [auto|macos|windows]   installe le depot dans le client Steam
   cidre wrap                      (re)pose le wrapper Cidre sur les jeux Windows-only
+ Hors Steam
+  cidre add <jeu.exe> [nom] [--json]   ajoute un jeu Windows a la bibliotheque
+  cidre run <fichier.exe> [args]  lance un .exe une fois (un installeur, par exemple)
+  cidre prefix                    le disque C: ou atterrissent les installeurs
+  cidre rm <id>                   retire un jeu hors Steam, ou desinstalle un jeu du dossier Cidre
 USAGE
 }
 
 cmd=${1:-help}; [ $# -gt 0 ] && shift
 # --json (n'importe ou) : sortie pour une interface (Verger), stable et parsable
-JSON=non
-for a in "$@"; do shift; [ "$a" = --json ] && JSON=oui || set -- "$@" "$a"; done
+JSON=non; MAJ=non
+# `run` transmet ses arguments tels quels au programme
+[ "$cmd" = run ] || for a in "$@"; do
+   shift
+   case $a in --json) JSON=oui ;; --refresh) MAJ=oui ;; *) set -- "$@" "$a" ;; esac
+done
 case "$cmd" in
   list|ls)
     if [ "$JSON" = oui ]; then
       sep='['
-      for id in $(appids); do printf '%s\n  ' "$sep"; fiche_json "$id"; printf '}'; sep=','; done
+      for id in $(ids); do printf '%s\n  ' "$sep"; fiche_json "$id"; printf '}'; sep=','; done
       [ "$sep" = '[' ] && echo '[]' || printf '\n]\n'
       exit 0
     fi
-    printf "%-9s %-26s %-9s %s\n" APPID JEU PLATEFORME LANCEMENT
-    for id in $(appids); do
+    printf "%-18s %-26s %-10s %s\n" ID JEU PLATEFORME LANCEMENT
+    for id in $(ids); do
       p=$(plat "$id"); [ "$p" = macos ] && l="natif (Steam)" || l="Cidre"
-      [ "$(source_de "$id")" = cidre ] && l="Cidre (dossier Cidre)"
-      [ "$(source_de "$id")" = steam ] && [ "$(cidre_wrap "$id")" = non ] && [ "$p" = windows ] && l="Cidre (wrapper absent!)"
-      printf "%-9s %-26.26s %-9s %s\n" "$id" "$(nom "$id")" "$p" "$l"
+      case $(source_de "$id") in
+        cidre) l="Cidre (dossier Cidre)" ;;
+        local) l="Cidre (hors Steam)" ;;
+        steam) [ "$(cidre_wrap "$id")" = non ] && [ "$p" = windows ] && l="Cidre (wrapper absent!)" ;;
+      esac
+      printf "%-18s %-26.26s %-10s %s\n" "$id" "$(nom "$id")" "$p" "$l"
     done ;;
   info)
-    id=${1:?usage: cidre info <appid> [--json]}
-    [ -f "$(acf "$id")" ] || [ -d "$CIDRE_GAMES/$id" ] || { echo "jeu inconnu : $id" >&2; exit 1; }
+    id=${1:?usage: cidre info <id> [--json]}
+    connu "$id" || { echo "jeu inconnu : $id" >&2; exit 1; }
     opts=$(sh "$R/tests/profil_cidre.sh" "$id" json)
     grep -q "^$id	" "$R/outil-steam/saves.conf" 2>/dev/null && sv=true || sv=false
     if [ "$JSON" = oui ]; then
       fiche_json "$id"; printf ',"sauvegardes":%s,"options":%s}\n' "$sv" "$opts"
     else
-      echo "appid       : $id"
+      echo "id          : $id"
       echo "nom         : $(nom "$id")"
       echo "plateforme  : $(plat "$id")"
       echo "source      : $(source_de "$id")"
@@ -125,9 +160,16 @@ case "$cmd" in
       echo "options     : $(sh "$R/tests/profil_cidre.sh" "$id" | tr '\n' ' ')"
     fi ;;
   play|jouer)
-    id=${1:?usage: cidre play <appid>}
+    id=${1:?usage: cidre play <id>}
     CDIR="$CIDRE_GAMES/$id"
-    if [ -d "$CDIR" ]; then
+    if est_local "$id"; then
+      # Jeu hors Steam : pas d'appid, son profil de lancement est range sous son id.
+      EXE=$(local_champ "$id" 3)
+      [ -n "$EXE" ] || { echo "jeu inconnu : $id" >&2; exit 1; }
+      [ -f "$EXE" ] || { echo "executable introuvable : $EXE" >&2; exit 1; }
+      echo "lancement Cidre : $(basename "$EXE")  ($id)"
+      CIDRE_JEU=$id sh "$R/tests/lancer_depuis_steam.sh" "$EXE"
+    elif [ -d "$CDIR" ]; then
       # Jeu telecharge par Cidre (hors client) : on lance par la pile Cidre.
       # On choisit l'exe principal : on ecarte les variantes (_gl), lanceurs,
       # serveurs et handlers de crash ; a defaut, le premier .exe trouve.
@@ -183,6 +225,82 @@ case "$cmd" in
       find "$DEST" -maxdepth 3 \( -name '*.exe' -o -name '*.app' \) 2>/dev/null | head
     else
       echo "Echec SteamCMD (rc=$rc). Si 'Invalid Password', relance et saisis bien mot de passe + Steam Guard."
+      exit $rc
+    fi ;;
+  library|lib|bibliotheque)
+    # Ce que possede le compte : SteamCMD (session memorisee) donne les licences,
+    # le cache du client Steam donne les noms et les plateformes. Les licences
+    # sont gardees en cache ; --refresh les redemande.
+    CACHE="$CIDRE_DIR/cache/licences.txt"
+    if [ ! -s "$CACHE" ] || [ "$MAJ" = oui ]; then
+      SCMD=$(resolve_steamcmd)
+      [ -n "$SCMD" ] || { echo "SteamCMD introuvable (ni tools/steamcmd/ ni PATH)." >&2; exit 1; }
+      U=$(steam_user)
+      [ -n "$U" ] || { echo "Compte Steam introuvable. Exporte CIDRE_STEAM_USER=<ton_login> et relance." >&2; exit 1; }
+      mkdir -p "$(dirname "$CACHE")"
+      # </dev/null : sans session memorisee, SteamCMD echoue au lieu d'attendre un mot de passe
+      "$SCMD" +login "$U" +licenses_print +quit </dev/null >"$CACHE.tmp" 2>&1
+      if ! grep -q "^License packageID" "$CACHE.tmp"; then
+        rm -f "$CACHE.tmp"
+        echo "Session SteamCMD non memorisee : lance \`cidre login\` une fois dans un terminal." >&2
+        exit 3
+      fi
+      mv "$CACHE.tmp" "$CACHE"
+    fi
+    if [ "$JSON" = oui ]; then
+      python3 "$R/tests/bibliotheque_steam.py" "$CACHE" $(appids)
+    else
+      python3 "$R/tests/bibliotheque_steam.py" "$CACHE" $(appids) | python3 -c '
+import json, sys
+print("%-9s %-40s %-15s %s" % ("APPID", "JEU", "PLATEFORMES", "INSTALLE"))
+for j in json.load(sys.stdin):
+    print("%-9s %-40.40s %-15s %s" % (j["appid"], j["nom"], ",".join(j["plateformes"]), "oui" if j["installe"] else ""))'
+    fi ;;
+  login)
+    SCMD=$(resolve_steamcmd)
+    [ -n "$SCMD" ] || { echo "SteamCMD introuvable (ni tools/steamcmd/ ni PATH)." >&2; exit 1; }
+    U=$(steam_user)
+    [ -n "$U" ] || { echo "Compte Steam introuvable. Exporte CIDRE_STEAM_USER=<ton_login> et relance." >&2; exit 1; }
+    echo "Connexion SteamCMD pour '$U' : tape ton mot de passe (+ Steam Guard) a SteamCMD."
+    echo "Une seule fois ; Cidre ne voit jamais ton mot de passe."
+    "$SCMD" +login "$U" +quit ;;
+  add|ajouter)
+    exe=${1:?usage: cidre add <jeu.exe> [nom]}
+    [ -f "$exe" ] || { echo "fichier introuvable : $exe" >&2; exit 1; }
+    [ "$(head -c 2 "$exe" 2>/dev/null)" = MZ ] || { echo "pas un executable Windows : $exe" >&2; exit 1; }
+    exe=$(cd "$(dirname "$exe")" && pwd)/$(basename "$exe")
+    n=$(printf '%s' "${2:-$(basename "$exe" | sed 's/\.[Ee][Xx][Ee]$//')}" | tr '\t' ' ')
+    # deja dans la bibliotheque : on rend le jeu existant
+    id=$(awk -F'\t' -v e="$exe" '$3==e {print $1; exit}' "$LOCAUX" 2>/dev/null)
+    if [ -z "$id" ]; then
+      slug=$(printf '%s' "$n" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C sed 's/[^a-z0-9]\{1,\}/-/g; s/^-//; s/-$//')
+      [ -n "$slug" ] || slug=jeu
+      id=local-$slug; i=2
+      while [ -n "$(local_champ "$id" 1)" ]; do id=local-$slug-$i; i=$((i + 1)); done
+      mkdir -p "$CIDRE_DIR"
+      printf '%s\t%s\t%s\n' "$id" "$n" "$exe" >>"$LOCAUX"
+    fi
+    if [ "$JSON" = oui ]; then fiche_json "$id"; printf '}\n'
+    else echo "ajoute : $(nom "$id")  ($id)"; fi ;;
+  run)
+    exe=${1:?usage: cidre run <fichier.exe> [args]}; shift
+    [ -f "$exe" ] || { echo "fichier introuvable : $exe" >&2; exit 1; }
+    exe=$(cd "$(dirname "$exe")" && pwd)/$(basename "$exe")
+    sh "$R/tests/lancer_depuis_steam.sh" "$exe" "$@" ;;
+  prefix|prefixe)
+    echo "${WINEPREFIX:-$R/wine/pfx-arm64ec}/drive_c" ;;
+  rm|retirer)
+    id=${1:?usage: cidre rm <id>}
+    if est_local "$id"; then
+      connu "$id" || { echo "jeu inconnu : $id" >&2; exit 1; }
+      awk -F'\t' -v i="$id" '$1!=i' "$LOCAUX" >"$LOCAUX.tmp" && mv "$LOCAUX.tmp" "$LOCAUX"
+      echo "retire de la bibliotheque : $id (les fichiers du jeu ne sont pas touches)"
+    else
+      # un appid, rien d'autre : pas de chemin, pas de vide
+      case $id in ''|*[!0-9]*) echo "id invalide : $id" >&2; exit 2 ;; esac
+      [ -d "$CIDRE_GAMES/$id" ] || { echo "$id n'est pas dans le dossier Cidre ; un jeu du client Steam se desinstalle depuis Steam." >&2; exit 1; }
+      rm -rf "${CIDRE_GAMES:?}/${id:?}"
+      echo "desinstalle : $CIDRE_GAMES/$id"
     fi ;;
   help|*) usage ;;
 esac

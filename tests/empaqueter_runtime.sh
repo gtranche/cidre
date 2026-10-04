@@ -37,7 +37,7 @@ cp "$R/tests/"etape2_pile_arm64ec.sh "$R/tests/"lancer_depuis_steam.sh \
    "$R/tests/"brancher_jeux_steam.sh "$R/tests/"installer_agent_steam.sh \
    "$R/tests/"preparer_pont_steam_arm64.sh "$R/tests/"sync_saves_steam.sh \
    "$R/tests/"installer_fex.sh "$R/tests/"profil_cidre.sh \
-   "$R/tests/"cidre_install.sh "$STAGE/tests/" 2>/dev/null || true
+   "$R/tests/"cidre_install.sh "$R/tests/"bibliotheque_steam.py "$STAGE/tests/" 2>/dev/null || true
 # La CLI `cidre` : le contrat que pilote Verger (list/info --json, play, dl, sync).
 cp "$R/cidre" "$STAGE/" 2>/dev/null || true
 cp -R "$R/tests/outils_fenetre" "$STAGE/tests/" 2>/dev/null || true

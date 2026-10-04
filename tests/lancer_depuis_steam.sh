@@ -32,7 +32,9 @@ export WINEPREFIX=${WINEPREFIX:-$R/wine/pfx-arm64ec}
 # Profil du jeu : options de lancement par appid, en donnees. Reglages livres
 # dans outil-steam/profils.toml, surcharges par l'utilisateur (ou Verger) dans
 # ~/Library/Application Support/Cidre/profils.toml. cf. tests/profil_cidre.sh.
-PROFIL=$(sh "$R/tests/profil_cidre.sh" "${SteamAppId:-}" 2>/dev/null || true)
+# Un jeu hors Steam n'a pas d'appid : `cidre play` donne son id dans CIDRE_JEU.
+JEU=${CIDRE_JEU:-${SteamAppId:-}}
+PROFIL=$(sh "$R/tests/profil_cidre.sh" "$JEU" 2>/dev/null || true)
 # Une option : l'environnement explicite (0/1) garde la main, sinon le profil.
 profil() { printf '%s\n' "$PROFIL" | sed -n "s/^$1=//p" | head -1; }
 opt() { # <cle du profil> <variable d'environnement>
@@ -80,7 +82,7 @@ case $FILS in ''|0|*[!0-9]*) : ;; *) dxvk_config "dxvk.numCompilerThreads=$FILS"
 
 # LuaJIT veut la fenetre basse 64 bits (sinon plantage au boot, ex. Vermintide 2).
 [ "$(opt luajit CIDRE_LUAJIT)" = true ] && export PROTON_OUVERT_LUAJIT=1
-JOURNAL=${PROTON_OUVERT_JOURNAL:-$R/build/logs/steam-${SteamAppId:-inconnu}.log}
+JOURNAL=${PROTON_OUVERT_JOURNAL:-$R/build/logs/steam-${JEU:-inconnu}.log}
 mkdir -p "$(dirname "$JOURNAL")"
 
 [ $# -ge 1 ] || { echo "usage : a mettre dans les options de lancement Steam, suivi de %command%" >&2; exit 2; }
