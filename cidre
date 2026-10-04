@@ -115,6 +115,8 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
   cidre play <id>                 lance le jeu (natif via Steam, ou par la pile Cidre)
   cidre set <id> <option> <valeur>   regle une option de lancement du jeu (profils.toml)
   cidre unset <id> [option]       revient au reglage livre (sans option : toutes)
+                                  <id> = defaut : le reglage general, que suit tout jeu sans reglage propre
+  cidre options [--json]          les reglages generaux
   cidre sync <appid|all> [backup|restore]   sauvegardes (iCloud)
   cidre status [--json]           version du runtime, prerequis, etat de l'installation
   cidre setup                     configure le runtime apres une installation ou une mise a jour
@@ -123,6 +125,8 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
   cidre updates [--json] [--refresh]   les jeux installes dont une version plus recente est publiee
   cidre dl <appid> [windows|macos]   telecharge (ou met a jour) le jeu DANS le dossier Cidre, hors du client
   cidre login                     memorise la session SteamCMD (mot de passe tape a SteamCMD, une fois)
+  cidre session [--json]          le compte Steam, et si sa session est memorisee
+  cidre logout                    oublie la session Steam (les jeux installes restent jouables)
   cidre install <appid> [auto|macos|windows]   installe le depot dans le client Steam
   cidre wrap                      (re)pose le wrapper Cidre sur les jeux Windows-only
  Hors Steam
@@ -281,21 +285,47 @@ case "$cmd" in
     sh "$R/tests/configurer_cidre.sh" ;;
   set)
     id=${1:-}; cle=${2:-}; val=${3:-}
-    [ -n "$id" ] && [ -n "$cle" ] && [ -n "$val" ] || { echo "usage: cidre set <id> <option> <valeur>" >&2; exit 2; }
-    connu "$id" || { echo "jeu inconnu : $id" >&2; exit 1; }
+    [ -n "$id" ] && [ -n "$cle" ] && [ -n "$val" ] || { echo "usage: cidre set <id|defaut> <option> <valeur>" >&2; exit 2; }
+    [ "$id" = defaut ] || connu "$id" || { echo "jeu inconnu : $id" >&2; exit 1; }
     case $cle in
-      tso|vsync|hud|async|eac_untrusted|luajit)
+      tso|vsync|hud|async|eac_untrusted|luajit|plein_ecran|gamemode)
         case $val in true|false) ;; *) echo "$cle attend true ou false" >&2; exit 2 ;; esac ;;
       fils_compilation)
         case $val in ''|*[!0-9]*) echo "fils_compilation attend un entier (0 = defaut DXVK)" >&2; exit 2 ;; esac
         [ "$val" -le 64 ] || { echo "fils_compilation : 64 au plus" >&2; exit 2; } ;;
-      *) echo "option inconnue : $cle (tso, vsync, hud, async, fils_compilation, eac_untrusted, luajit)" >&2; exit 2 ;;
+      *) echo "option inconnue : $cle (tso, vsync, hud, async, fils_compilation, eac_untrusted, luajit, plein_ecran, gamemode)" >&2; exit 2 ;;
     esac
     CIDRE_PROFILS=${CIDRE_PROFILS:-$CIDRE_DIR/profils.toml} sh "$R/tests/profil_cidre.sh" "$id" set "$cle" "$val" ;;
   unset)
-    id=${1:?usage: cidre unset <id> [option]}
-    connu "$id" || { echo "jeu inconnu : $id" >&2; exit 1; }
+    id=${1:?usage: cidre unset <id|defaut> [option]}
+    [ "$id" = defaut ] || connu "$id" || { echo "jeu inconnu : $id" >&2; exit 1; }
     CIDRE_PROFILS=${CIDRE_PROFILS:-$CIDRE_DIR/profils.toml} sh "$R/tests/profil_cidre.sh" "$id" unset "${2:-}" ;;
+  options)
+    # Les reglages generaux : la section [defaut], livree puis surchargee par
+    # l'utilisateur. Un jeu les suit pour toute option qu'il ne regle pas lui-meme.
+    if [ "$JSON" = oui ]; then
+      printf '{"options":%s,"options_perso":%s}\n' \
+        "$(sh "$R/tests/profil_cidre.sh" defaut json)" "$(sh "$R/tests/profil_cidre.sh" defaut perso)"
+    else
+      sh "$R/tests/profil_cidre.sh" defaut
+    fi ;;
+  session)
+    # La session est-elle memorisee ? On le demande a SteamCMD, sans jamais
+    # tenter de mot de passe (code 3 = non).
+    U=$(steam_user); ok=false
+    SCMD=$(resolve_steamcmd)
+    if [ -n "$U" ] && [ -n "$SCMD" ]; then
+      scmd_memorise +login "$U" +quit >/dev/null 2>&1 && ok=true
+    fi
+    if [ "$JSON" = oui ]; then printf '{"compte":%s,"connecte":%s}\n' "$(json "$U")" "$ok"
+    else echo "compte   : ${U:-(aucun)}"; echo "connecte : $ok"; fi ;;
+  logout|deconnexion)
+    # SteamCMD garde sa session dans son dossier a lui : l'oublier, c'est
+    # l'effacer. La liste des jeux du compte part avec ; les jeux installes
+    # restent ou ils sont, et jouables.
+    S="$SCMD_HOME/Library/Application Support/Steam"
+    rm -f "$S/config/config.vdf" "$S/config/loginusers.vdf" "$S/local.vdf" "$CIDRE_DIR/cache/licences.txt"
+    echo "session Steam oubliee" ;;
   library|lib|bibliotheque)
     # Ce que possede le compte : SteamCMD (session memorisee) donne les licences,
     # le cache du client Steam donne les noms et les plateformes. Les licences

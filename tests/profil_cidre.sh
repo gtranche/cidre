@@ -98,7 +98,8 @@ awk -v appid="$APPID" -v format="$FORMAT" '
          for (k = 1; k <= n; k++) {
             c = ordre[k]; v = valeur[c]
             # perso : seulement ce qui vient de la section du jeu dans le fichier utilisateur
-            if (format == "perso" && rangde[c] != 3) continue
+            # (pour `defaut` : la section [defaut] du fichier utilisateur, rang 1)
+            if (format == "perso" && rangde[c] != (appid == "defaut" ? 1 : 3)) continue
             if (estchaine[c] || v !~ /^(true|false|-?[0-9]+)$/) { gsub(/\\/, "\\\\", v); gsub(/"/, "\\\"", v); v = "\"" v "\"" }
             printf "%s\"%s\":%s", (premier ? "" : ","), c, v; premier = 0
          }
