@@ -1,0 +1,46 @@
+# Options de lancement par jeu -- donnee, pas exception dans le code.
+#
+# Lu par tests/profil_cidre.sh (donc par lancer_depuis_steam.sh et `cidre info`).
+# Ce fichier porte les reglages LIVRES avec Cidre. L'utilisateur (ou Verger) les
+# surcharge dans ~/Library/Application Support/Cidre/profils.toml, meme format.
+#
+# Priorite, cle par cle, du plus fort au plus faible :
+#   environnement explicite (CIDRE_TSO=0...)  >  [appid] utilisateur
+#   >  [appid] livre  >  [defaut] utilisateur  >  [defaut] livre
+#
+# Sous-ensemble de TOML volontairement plat : des sections [defaut] et [<appid>],
+# des lignes `cle = valeur` (true/false, entier, ou "chaine"). Rien d'autre.
+#
+#   tso              emulation de l'ordre memoire x86 par FEX. false = gros gain
+#                    CPU (jusqu'a 3,7x mesure), risque de course sur du lock-free.
+#   vsync            false = syncInterval 0 (plus de plafond vblank ; tearing possible).
+#   hud              compteur fps + charge GPU a l'ecran (DXVK_HUD, MTL_HUD).
+#   async            compilation des pipelines en fond (DXVK gplasync) : tue le stutter.
+#   fils_compilation nombre de fils compilateurs DXVK ; 0 = defaut DXVK (tous les coeurs).
+#   eac_untrusted    ajoute -eac-untrusted (realm « Modded » ; EAC en ligne = mur).
+#   luajit           fenetre basse 64 bits pour LuaJIT (PROTON_OUVERT_LUAJIT).
+
+[defaut]
+tso = true
+vsync = true
+hud = false
+async = false
+fils_compilation = 0
+eac_untrusted = false
+luajit = false
+
+# DREDGE (Unity). Mesure en jeu : 40 fps defaut -> 69 avec vsync off (la vsync
+# FIFO perd un vblank et plafonne a 40) -> 84 en ajoutant TSO off (peu threade,
+# risque de course faible et teste lisse). Si bug/plantage, remettre tso = true.
+[1562430]
+vsync = false
+tso = false
+
+# Warhammer: Vermintide 2. LuaJIT veut la fenetre basse (sinon plantage au boot).
+# Fils compilateurs limites : a 10 (tous les coeurs) le gros chargement du Donjon
+# affame le fil principal 16 s et le chien de garde du jeu tue le process.
+[552500]
+luajit = true
+async = true
+fils_compilation = 4
+eac_untrusted = true

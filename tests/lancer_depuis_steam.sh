@@ -29,30 +29,57 @@ if ! pgrep -f '[v]ermintide2.exe' >/dev/null 2>&1; then
 fi
 export WINEPREFIX=${WINEPREFIX:-$R/wine/pfx-arm64ec}
 
+# Profil du jeu : options de lancement par appid, en donnees. Reglages livres
+# dans outil-steam/profils.toml, surcharges par l'utilisateur (ou Verger) dans
+# ~/Library/Application Support/Cidre/profils.toml. cf. tests/profil_cidre.sh.
+PROFIL=$(sh "$R/tests/profil_cidre.sh" "${SteamAppId:-}" 2>/dev/null || true)
+# Une option : l'environnement explicite (0/1) garde la main, sinon le profil.
+profil() { printf '%s\n' "$PROFIL" | sed -n "s/^$1=//p" | head -1; }
+opt() { # <cle du profil> <variable d'environnement>
+   eval "v=\${$2:-}"
+   case $v in 1) echo true; return ;; 0) echo false; return ;; esac
+   profil "$1"
+}
+dxvk_config() { export DXVK_CONFIG="${DXVK_CONFIG:+$DXVK_CONFIG;}$1"; }
+
 # Ordonnancement memoire FEX. L'emulation TSO (defaut, pour la correction) taxe
 # chaque acces memoire sensible a l'ordre : mesure sur micro-banc = jusqu'a 3,7x
-# sur du code a fort trafic memoire. CIDRE_TSO=0 la desactive -> gros gain CPU,
-# au prix d'un risque de course sur du code lock-free qui compte sur l'ordre fort
-# du x86. Opt-in, par jeu (exporter CIDRE_TSO=0 avant de lancer). Defaut : inchange.
-if [ -n "${CIDRE_TSO:-}" ]; then export FEX_TSOENABLED=$CIDRE_TSO; fi
+# sur du code a fort trafic memoire. tso = false (ou CIDRE_TSO=0) la desactive
+# -> gros gain CPU, au prix d'un risque de course sur du code lock-free qui
+# compte sur l'ordre fort du x86. Opt-in, par jeu. Defaut : inchange.
+case $(opt tso CIDRE_TSO) in
+   false) export FEX_TSOENABLED=0 ;;
+   true)  [ -n "${CIDRE_TSO:-}" ] && export FEX_TSOENABLED=1 ;;
+esac
 
-# Presentation / vsync. En FIFO strict (vsync on), une frame qui rate le vblank
-# 60 Hz fait chuter a 40/30 (pas 59) -- mesure DREDGE : 40 fps vsync on vs 69 off.
-# CIDRE_VSYNC=0 force syncInterval=0 cote DXVK (pas de penalite vblank ; tearing
-# possible). Opt-in, par jeu. On l'ajoute au DXVK_CONFIG sans ecraser l'existant.
-# HUD fps/GPU a la demande : CIDRE_HUD=1 -> compteur fps + charge GPU a l'ecran
-# (pratique pour regler les options graphiques en voyant l'effet). Opt-in.
-if [ -n "${CIDRE_HUD:-}" ]; then
+# HUD fps/GPU a la demande : hud = true (ou CIDRE_HUD=1) -> compteur fps + charge
+# GPU a l'ecran (pratique pour regler les options graphiques en voyant l'effet).
+if [ "$(opt hud CIDRE_HUD)" = true ]; then
    [ -z "${DXVK_HUD:-}" ] && export DXVK_HUD=fps,gpuload,drawcalls,submissions,pipelines,frametimes
    export MTL_HUD_ENABLED=1   # HUD Metal d'Apple : GPU-ms reel par frame
 fi
 
-if [ "${CIDRE_VSYNC:-}" = "0" ]; then
+# Presentation / vsync. En FIFO strict (vsync on), une frame qui rate le vblank
+# 60 Hz fait chuter a 40/30 (pas 59) -- mesure DREDGE : 40 fps vsync on vs 69 off.
+# vsync = false (ou CIDRE_VSYNC=0) force syncInterval=0 cote DXVK (pas de
+# penalite vblank ; tearing possible). On l'ajoute au DXVK_CONFIG sans ecraser
+# l'existant.
+if [ "$(opt vsync CIDRE_VSYNC)" = false ]; then
    case ";${DXVK_CONFIG:-};" in
       *syncInterval*) : ;;
-      *) export DXVK_CONFIG="${DXVK_CONFIG:+$DXVK_CONFIG;}dxgi.syncInterval=0;d3d11.syncInterval=0" ;;
+      *) dxvk_config "dxgi.syncInterval=0;d3d11.syncInterval=0" ;;
    esac
 fi
+
+# DXVK async (build gplasync) : compile les pipelines en fond au lieu de bloquer
+# le rendu -> tue le stutter de traversee. fils_compilation borne les fils
+# compilateurs (0 = defaut DXVK, tous les coeurs).
+[ "$(opt async CIDRE_ASYNC)" = true ] && export DXVK_ASYNC=1
+FILS=${CIDRE_FILS_COMPILATION:-$(profil fils_compilation)}
+case $FILS in ''|0|*[!0-9]*) : ;; *) dxvk_config "dxvk.numCompilerThreads=$FILS" ;; esac
+
+# LuaJIT veut la fenetre basse 64 bits (sinon plantage au boot, ex. Vermintide 2).
+[ "$(opt luajit CIDRE_LUAJIT)" = true ] && export PROTON_OUVERT_LUAJIT=1
 JOURNAL=${PROTON_OUVERT_JOURNAL:-$R/build/logs/steam-${SteamAppId:-inconnu}.log}
 mkdir -p "$(dirname "$JOURNAL")"
 
@@ -70,6 +97,7 @@ esac
    echo "=== $(date '+%F %T')  appid=${SteamAppId:-?}  jeu=$PROG"
    echo "    dossier : $DOSSIER"
    echo "    args    : $*"
+   echo "    profil  : $(echo $PROFIL)"
 } >>"$JOURNAL"
 
 # Ce que Steam nous donne n'est pas forcement un binaire Windows : un jeu peut
@@ -116,34 +144,14 @@ if [ -n "${SteamAppId:-}" ] && [ -f "$TABLE" ]; then
    fi
 fi
 
-# Besoins propres a certains jeux -- donnee, pas exception dans le code. Steam
-# ne transmet ni l'environnement ni les arguments que la pile exige pour un jeu
-# donne ; on les pose ici, par appid.
-#   552500 Vermintide 2 : LuaJIT veut la fenetre basse 64 bits (PROTON_OUVERT_LUAJIT,
-#     sinon plantage au boot) ; EAC online est un mur -> realm « Modded » via
-#     -eac-untrusted (voir NOTES EAC).
-case ${SteamAppId:-} in
-   1562430)
-      # DREDGE (Unity). Deux leviers mesures en jeu : 40 fps defaut -> 69 avec
-      # vsync off (la vsync FIFO perd un vblank et plafonne a 40) -> 84 en ajoutant
-      # TSO off (relache l'ordonnancement memoire FEX ; DREDGE est peu threade,
-      # risque de course faible et teste lisse). A GPU 89%, on frole le plafond GPU.
-      # Contreparties : tearing possible (vsync off) ; si bug/plantage, retirer TSO.
-      export DXVK_CONFIG="${DXVK_CONFIG:+$DXVK_CONFIG;}dxgi.syncInterval=0;d3d11.syncInterval=0"
-      export FEX_TSOENABLED=0
-      echo "    1562430 : vsync off + TSO off (40->84 fps mesure)" >>"$JOURNAL"
-      ;;
-   552500)
-      export PROTON_OUVERT_LUAJIT=1
-      # DXVK async (build gplasync) : compile les pipelines en fond au lieu de
-      # bloquer le rendu -> tue le stutter de traversee. Fils compilateurs
-      # limites : a 10 (defaut, = tous les coeurs) le gros chargement du Donjon
-      # affame le fil principal 16 s et le chien de garde du jeu tue le process.
-      export DXVK_ASYNC=1 DXVK_CONFIG="dxvk.numCompilerThreads=4"
-      set -- "$@" -eac-untrusted
-      echo "    552500 : LuaJIT, DXVK async 4 fils, +-eac-untrusted" >>"$JOURNAL"
-      ;;
-esac
+# Arguments propres au profil. A poser APRES la table des lanceurs, qui remet les
+# arguments a zero quand elle remplace l'executable.
+#   eac_untrusted : EAC online est un mur -> realm « Modded » via -eac-untrusted
+#     (voir NOTES EAC).
+if [ "$(opt eac_untrusted CIDRE_EAC_UNTRUSTED)" = true ]; then
+   set -- "$@" -eac-untrusted
+   echo "    profil : +-eac-untrusted" >>"$JOURNAL"
+fi
 
 # Restauration des sauvegardes depuis le dossier synchronise (iCloud), si plus
 # recentes (ex. jouees sur une autre machine). Non destructif, non bloquant.
