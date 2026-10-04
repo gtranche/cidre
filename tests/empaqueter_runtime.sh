@@ -61,7 +61,7 @@ livrer() { # <chemin relatif au depot>
 for f in etape2_pile_arm64ec.sh lancer_depuis_steam.sh brancher_jeux_steam.sh \
          installer_agent_steam.sh preparer_pont_steam_arm64.sh sync_saves_steam.sh \
          installer_fex.sh profil_cidre.sh cidre_install.sh bibliotheque_steam.py \
-         majs_steam.py configurer_cidre.sh langue_jeu.sh; do
+         majs_steam.py steamcmd_session.py configurer_cidre.sh langue_jeu.sh; do
    livrer "tests/$f"
 done
 # La CLI `cidre` : le contrat que pilote Verger (list/info --json, play, dl, sync).

@@ -62,10 +62,30 @@ fiche_json() {
 # sa configuration, efface la session que SteamCMD y avait memorisee : il
 # fallait se reconnecter apres chaque lancement de Steam. SteamCMD suit HOME.
 SCMD_HOME="$CIDRE_DIR/steamcmd"
+# Sur la meme machine, SteamCMD et le client Steam annoncent a Steam la meme
+# adresse privee, et Steam coupe alors le client des que SteamCMD se connecte au
+# compte (« Session Replaced ») : amis et chat hors ligne, sans reconnexion.
+# SteamCMD sait annoncer une autre adresse ; rien n'y est envoye, elle ne sert
+# qu'a distinguer sa session. Une par lancement, hors des plages des box.
+SCMD_ID="-private_ip_override 10.$((254 - ($$ >> 16 & 1))).$(($$ >> 8 & 255)).$(($$ & 255))"
 # session memorisee, mot de passe demande au terminal s'il le faut
-scmd() { mkdir -p "$SCMD_HOME"; HOME="$SCMD_HOME" "$SCMD" "$@"; }
+scmd() { mkdir -p "$SCMD_HOME"; scmd_garde env HOME="$SCMD_HOME" "$SCMD" $SCMD_ID "$@"; }
 # session memorisee ou rien : jamais de tentative de mot de passe (code 3)
-scmd_memorise() { mkdir -p "$SCMD_HOME"; HOME="$SCMD_HOME" python3 "$R/tests/steamcmd_session.py" "$SCMD" "$@"; }
+scmd_memorise() { mkdir -p "$SCMD_HOME"; scmd_garde env HOME="$SCMD_HOME" python3 "$R/tests/steamcmd_session.py" "$SCMD" $SCMD_ID "$@"; }
+# Filet : l'option n'est pas documentee et SteamCMD se met a jour seul. Si le
+# client a quand meme ete coupe pendant la commande, il ne se reconnecte pas de
+# lui-meme : on le lui demande, et on le dit (fd 3 : la sortie de SteamCMD est
+# parfois capturee).
+exec 3>&2
+scmd_garde() {
+   jc="$STEAM/logs/connection_log.txt"; nc=$(wc -l 2>/dev/null <"$jc"); nc=${nc:-0}
+   "$@"; rcs=$?
+   if tail -n +$((nc + 1)) "$jc" 2>/dev/null | grep -q "not auto reconnecting due to Session Replaced"; then
+      open -g "steam://open/goonline"
+      echo "Cidre : SteamCMD a deconnecte le client Steam (amis hors ligne) ; reconnexion demandee." >&3
+   fi
+   return $rcs
+}
 # sans compte : les informations publiques de Steam (versions des jeux)
 scmd_anonyme() { mkdir -p "$CIDRE_DIR/steamcmd-anonyme"; HOME="$CIDRE_DIR/steamcmd-anonyme" "$SCMD" +login anonymous "$@" </dev/null; }
 
@@ -288,7 +308,7 @@ case "$cmd" in
     [ -n "$id" ] && [ -n "$cle" ] && [ -n "$val" ] || { echo "usage: cidre set <id|defaut> <option> <valeur>" >&2; exit 2; }
     [ "$id" = defaut ] || connu "$id" || { echo "jeu inconnu : $id" >&2; exit 1; }
     case $cle in
-      tso|vsync|hud|async|eac_untrusted|luajit|plein_ecran|gamemode)
+      tso|vsync|hud|overlay|async|eac_untrusted|luajit|plein_ecran|gamemode)
         case $val in true|false) ;; *) echo "$cle attend true ou false" >&2; exit 2 ;; esac ;;
       fils_compilation)
         case $val in ''|*[!0-9]*) echo "fils_compilation attend un entier (0 = defaut DXVK)" >&2; exit 2 ;; esac
@@ -297,7 +317,7 @@ case "$cmd" in
         # une chaine : ecrite entre guillemets dans le profil (TOML)
         case $val in auto|fr|en|de|es|it|pt|ru|pl|ja|ko|zh) val="\"$val\"" ;;
           *) echo "langue attend auto ou un code : fr, en, de, es, it, pt, ru, pl, ja, ko, zh" >&2; exit 2 ;; esac ;;
-      *) echo "option inconnue : $cle (tso, vsync, hud, async, fils_compilation, eac_untrusted, luajit, plein_ecran, gamemode, langue)" >&2; exit 2 ;;
+      *) echo "option inconnue : $cle (tso, vsync, hud, overlay, async, fils_compilation, eac_untrusted, luajit, plein_ecran, gamemode, langue)" >&2; exit 2 ;;
     esac
     CIDRE_PROFILS=${CIDRE_PROFILS:-$CIDRE_DIR/profils.toml} sh "$R/tests/profil_cidre.sh" "$id" set "$cle" "$val" ;;
   unset)

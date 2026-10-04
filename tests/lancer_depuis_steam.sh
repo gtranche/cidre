@@ -22,12 +22,18 @@ R=$(cd "$(dirname "$0")" && cd .. && pwd)
 # (access violation precoce, « ca se lance et ca se ferme »). Si AUCUN jeu ne
 # tourne mais que des restes trainent, on les retire. On ne touche a rien si un
 # jeu est deja en cours.
+export WINEPREFIX=${WINEPREFIX:-$R/wine/pfx-arm64ec}
 if ! pgrep -f '[v]ermintide2.exe' >/dev/null 2>&1; then
    pkill -9 -f '[c]:\\faux_steam.exe' 2>/dev/null || true
-   pkill -9 -f 'wine11-arm64/bin/wineserver' 2>/dev/null || true
+   # Le wineserver de CE prefixe, et lui seul : « wineserver -k » le retrouve
+   # par le verrou du prefixe, lui demande de s'arreter (il emporte ses
+   # processus) et ne le tue qu'au bout de 10 s. Pas de pkill sur la ligne de
+   # commande : Wine lance son serveur par .../lib/wine/../../bin/wineserver,
+   # que le motif 'wine11-arm64/bin/wineserver' n'a jamais attrape, et un motif
+   # plus large tuerait aussi le serveur d'un autre prefixe.
+   "$R/wine/wine11-arm64/bin/wineserver" -k 2>/dev/null || true
    sleep 1
 fi
-export WINEPREFIX=${WINEPREFIX:-$R/wine/pfx-arm64ec}
 
 # Profil du jeu : options de lancement par appid, en donnees. Reglages livres
 # dans outil-steam/profils.toml, surcharges par l'utilisateur (ou Verger) dans
@@ -77,6 +83,20 @@ esac
 if [ "$(opt hud CIDRE_HUD)" = true ]; then
    [ -z "${DXVK_HUD:-}" ] && export DXVK_HUD=fps,gpuload,drawcalls,submissions,pipelines,frametimes
    export MTL_HUD_ENABLED=1   # HUD Metal d'Apple : GPU-ms reel par frame
+fi
+
+# Overlay Steam (Maj+Tab, amis, succes, notifications en jeu). Steam l'affiche
+# dans un jeu Mac natif en injectant gameoverlayrenderer.dylib dans le processus ;
+# il ne le fait pas pour nous (les variables DYLD_* ne survivent pas a /bin/sh).
+# overlay = true (defaut ; CIDRE_OVERLAY=0 pour s'en passer) injecte la meme
+# bibliotheque dans le Wine du jeu -- de lui seul, pas du faux client -- et fait
+# presenter KosmicKrisp par le chemin Metal qu'elle sait accrocher (cf.
+# etape2_pile_arm64ec.sh, NOTES §312). Sans effet pour un jeu hors Steam (pas
+# d'appid : l'overlay n'aurait rien a quoi se rattacher) ou sans client Steam.
+OVERLAY=
+if [ "$(opt overlay CIDRE_OVERLAY)" = true ] && [ -n "${SteamAppId:-}" ]; then
+   OVERLAY="$HOME/Library/Application Support/Steam/Steam.AppBundle/Steam/Contents/MacOS/gameoverlayrenderer.dylib"
+   [ -f "$OVERLAY" ] || OVERLAY=
 fi
 
 # Presentation / vsync. En FIFO strict (vsync on), une frame qui rate le vblank
@@ -132,7 +152,7 @@ fi
 
 # Le client de service : un seul a la fois, reutilise s'il tourne deja.
 if ! pgrep -f 'c:\\faux_steam.exe' >/dev/null 2>&1; then
-   WINEDEBUG=-all sh "$R/tests/etape2_pile_arm64ec.sh" 'c:\faux_steam.exe' >>"$JOURNAL" 2>&1 &
+   WINEDEBUG=-all CIDRE_OVERLAY_DYLIB= sh "$R/tests/etape2_pile_arm64ec.sh" 'c:\faux_steam.exe' >>"$JOURNAL" 2>&1 &
    i=0
    while [ $i -lt 60 ] && ! grep -q "inscrit" "$JOURNAL" 2>/dev/null; do sleep 1; i=$((i + 1)); done
 fi
@@ -186,7 +206,7 @@ cd "$DOSSIER"
 # restauration des sauvegardes, qui peut ramener ce meme fichier d'iCloud.
 [ "$LANGUE" = auto ] || sh "$R/tests/langue_jeu.sh" "$JEU" "$LANGUE" >>"$JOURNAL" 2>&1 || true
 # On ne fait PLUS exec : on attend la fin du jeu pour sauvegarder apres coup.
-sh "$R/tests/etape2_pile_arm64ec.sh" "$PROG" "$@" >>"$JOURNAL" 2>&1
+CIDRE_OVERLAY_DYLIB=$OVERLAY sh "$R/tests/etape2_pile_arm64ec.sh" "$PROG" "$@" >>"$JOURNAL" 2>&1
 RC=$?
 
 # Sauvegarde vers le dossier synchronise apres la sortie du jeu (meme en cas de
