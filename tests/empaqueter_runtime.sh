@@ -1,12 +1,17 @@
 #!/bin/sh
 # Empaquette le RUNTIME (binaires deja construits) en un tarball a livrer en
 # release GitHub. Ne contient PAS les sources, le build, la toolchain, ni le
-# prefixe (regenere a l'install). L'installeur (installer_cidre.sh) le
-# decompresse, relocalise l'ICD et regenere le prefixe.
-#   sh tests/empaqueter_runtime.sh [sortie.tar.zst]
+# prefixe (regenere a l'install). Verger (ou installer_cidre.sh) le decompresse
+# puis lance `cidre setup`, qui relocalise l'ICD et regenere le prefixe.
+#   CIDRE_VERSION=1.1.0 sh tests/empaqueter_runtime.sh [sortie.tar.zst]
+# Sort deux archives du meme contenu : .tar.zst (installer_cidre.sh) et .tar.xz
+# (Verger : macOS sait decompresser xz sans rien installer, pas zstd).
 set -e
 R=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${1:-$R/cidre-runtime.tar.zst}
+# La version que `cidre status` annonce et que Verger compare a la derniere
+# release : celle du tag qu'on s'apprete a publier, sans le « v ».
+: "${CIDRE_VERSION:?donne la version a publier, ex. CIDRE_VERSION=1.1.0}"
 STAGE=$(mktemp -d)/cidre
 mkdir -p "$STAGE"
 
@@ -37,7 +42,8 @@ cp "$R/tests/"etape2_pile_arm64ec.sh "$R/tests/"lancer_depuis_steam.sh \
    "$R/tests/"brancher_jeux_steam.sh "$R/tests/"installer_agent_steam.sh \
    "$R/tests/"preparer_pont_steam_arm64.sh "$R/tests/"sync_saves_steam.sh \
    "$R/tests/"installer_fex.sh "$R/tests/"profil_cidre.sh \
-   "$R/tests/"cidre_install.sh "$R/tests/"bibliotheque_steam.py "$STAGE/tests/" 2>/dev/null || true
+   "$R/tests/"cidre_install.sh "$R/tests/"bibliotheque_steam.py \
+   "$R/tests/"configurer_cidre.sh "$STAGE/tests/" 2>/dev/null || true
 # La CLI `cidre` : le contrat que pilote Verger (list/info --json, play, dl, sync).
 cp "$R/cidre" "$STAGE/" 2>/dev/null || true
 cp -R "$R/tests/outils_fenetre" "$STAGE/tests/" 2>/dev/null || true
@@ -52,9 +58,14 @@ cp "$R/outil-steam/profils.toml" "$STAGE/outil-steam/" 2>/dev/null || true
 # lit en $R/build/faux_steam.exe et le depose dans le prefixe.
 cp "$R/build/faux_steam.exe" "$STAGE/build/" 2>/dev/null || true
 
+echo "$CIDRE_VERSION" >"$STAGE/VERSION"
+
 echo "== compression (zstd) =="
-( cd "$(dirname "$STAGE")" && tar cf - cidre ) | zstd -15 -T0 -o "$OUT" -f
+( cd "$(dirname "$STAGE")" && tar cf - cidre ) | zstd -15 -T${CIDRE_FILS:-0} -o "$OUT" -f
+echo "== compression (xz) =="
+OUT_XZ="${OUT%.zst}"; OUT_XZ="${OUT_XZ%.xz}.xz"
+( cd "$(dirname "$STAGE")" && /usr/bin/tar -c --xz --options "xz:compression-level=6,xz:threads=${CIDRE_FILS:-0}" -f "$OUT_XZ" cidre )
 rm -rf "$(dirname "$STAGE")"
 echo
-echo "RUNTIME empaquete : $OUT"
-ls -lh "$OUT" | awk '{print "  taille : "$5}'
+echo "RUNTIME empaquete (version $CIDRE_VERSION) :"
+ls -lh "$OUT" "$OUT_XZ" | awk '{print "  "$5"  "$9}'

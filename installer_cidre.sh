@@ -53,45 +53,9 @@ zstd -dc "$TAR" | ( cd "$DEST" && tar xf - )
 R="$DEST/cidre"
 [ -d "$R/wine/wine11-arm64" ] || { echo "runtime invalide (wine absent)" >&2; exit 1; }
 
-echo "== 3. Relocalisation de l'ICD Vulkan =="
-for j in "$R/prefix/share/vulkan/icd.d/"*.json; do
-   [ -f "$j" ] && sed -i '' "s#@@CIDRE@@#$R#g" "$j" && echo "  $(basename "$j") -> $R"
-done
-
-echo "== 4. Preparation du prefixe Wine (sans mono/gecko) =="
-export WINEPREFIX="$R/wine/pfx-arm64ec"
-export WINEDEBUG=-all WINEDLLOVERRIDES="mscoree=d;mshtml=d"
-if [ ! -d "$WINEPREFIX/drive_c/windows/system32" ]; then
-   "$R/wine/wine11-arm64/bin/wineboot" -u >/dev/null 2>&1 || true
-fi
-
-echo "== 5. DXVK (async) + FEX dans le prefixe =="
-P="$WINEPREFIX/drive_c/windows/system32"
-Pw="$WINEPREFIX/drive_c/windows/syswow64"
-mkdir -p "$P" "$Pw"
-for d in d3d11 dxgi d3d10core d3d9 d3d8; do
-   [ -f "$R/dxvk/async/$d.dll" ] && cp "$R/dxvk/async/$d.dll" "$P/" 2>/dev/null || true
-done
-WINE_ARM64="$R/wine/wine11-arm64" WINEPREFIX="$WINEPREFIX" sh "$R/tests/installer_fex.sh" >/dev/null 2>&1 || true
-
-echo "== 6. Pont Steam (lsteamclient + faux client + registre) =="
-# Sans ce pont, le steam_api64.dll du jeu ne trouve pas de client (registre
-# ActiveProcess vide) et SteamAPI_Init echoue -- le jeu « se lance et se ferme ».
-if WINE="$R/wine/wine11-arm64/bin/wine" WINEPREFIX="$WINEPREFIX" \
-     B="$R/wine/wine11-arm64/lib/wine" sh "$R/tests/preparer_pont_steam_arm64.sh" >/dev/null 2>&1; then
-   echo "  pont installe (lsteamclient en system32, faux_steam.exe, cles de registre)"
-else
-   echo "  (pont : echec -- verifiez wine/lsteamclient ; le jeu risque de se fermer au lancement)"
-fi
-
-echo "== 7. Integration Steam =="
-if pgrep -f steam_osx >/dev/null 2>&1; then
-   echo "  Steam tourne : fermez-le, puis lancez 'sh $R/tests/brancher_jeux_steam.sh --ecrire'."
-else
-   STEAM="$HOME/Library/Application Support/Steam" \
-     sh "$R/tests/brancher_jeux_steam.sh" --ecrire 2>/dev/null || \
-     echo "  (Steam non detecte -- lancez brancher_jeux_steam.sh --ecrire apres l'avoir installe/connecte.)"
-fi
+echo "== 3. Configuration (cidre setup) =="
+# La configuration voyage avec le runtime : c'est la meme que lance Verger.
+sh "$R/tests/configurer_cidre.sh"
 
 echo
 [ -n "${MANQUE_FONTES:-}" ] && echo "RAPPEL : brew install freetype  (requis pour afficher le texte)"

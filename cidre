@@ -104,6 +104,8 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
   cidre set <id> <option> <valeur>   regle une option de lancement du jeu (profils.toml)
   cidre unset <id> [option]       revient au reglage livre (sans option : toutes)
   cidre sync <appid|all> [backup|restore]   sauvegardes (iCloud)
+  cidre status [--json]           version du runtime, prerequis, etat de l'installation
+  cidre setup                     configure le runtime apres une installation ou une mise a jour
  Steam
   cidre library [--json] [--refresh]   les jeux que possede ton compte (installes ou non)
   cidre dl <appid> [windows|macos]   telecharge le depot DANS le dossier Cidre (hors client, zero ecrasement)
@@ -229,6 +231,33 @@ case "$cmd" in
       echo "Echec SteamCMD (rc=$rc). Si 'Invalid Password', relance et saisis bien mot de passe + Steam Guard."
       exit $rc
     fi ;;
+  status|etat)
+    # VERSION est pose par l'empaqueteur ; un depot de developpement n'en a pas.
+    v=$(cat "$R/VERSION" 2>/dev/null); v=${v:-dev}
+    oui() { "$@" >/dev/null 2>&1 && echo true || echo false; }
+    rt=$(oui test -d "$R/wine/wine11-arm64")
+    pf=$(oui test -d "${WINEPREFIX:-$R/wine/pfx-arm64ec}/drive_c/windows/system32")
+    # Bibliotheques que la pile charge par leur chemin Homebrew : le pilote
+    # Vulkan lie SPIRV-Tools, Wine rasterise ses polices avec FreeType.
+    sp=$(oui test -f /opt/homebrew/opt/spirv-tools/lib/libSPIRV-Tools.dylib)
+    ft=$(oui test -f /opt/homebrew/lib/libfreetype.6.dylib)
+    sc=false; [ -n "$(resolve_steamcmd)" ] && sc=true
+    ec=$(oui pgrep -f "$R/wine/.*wineserver")
+    if [ "$JSON" = oui ]; then
+      printf '{"version":%s,"racine":%s,"runtime":%s,"prefixe":%s,"steamcmd":%s,"jeu_en_cours":%s,"prerequis":{"spirv_tools":%s,"freetype":%s}}\n' \
+        "$(json "$v")" "$(json "$R")" "$rt" "$pf" "$sc" "$ec" "$sp" "$ft"
+    else
+      echo "version      : $v"
+      echo "racine       : $R"
+      echo "runtime      : $rt"
+      echo "prefixe      : $pf"
+      echo "steamcmd     : $sc"
+      echo "jeu en cours : $ec"
+      echo "spirv-tools  : $sp   (brew install spirv-tools)"
+      echo "freetype     : $ft   (brew install freetype)"
+    fi ;;
+  setup|configurer)
+    sh "$R/tests/configurer_cidre.sh" ;;
   set)
     id=${1:-}; cle=${2:-}; val=${3:-}
     [ -n "$id" ] && [ -n "$cle" ] && [ -n "$val" ] || { echo "usage: cidre set <id> <option> <valeur>" >&2; exit 2; }
