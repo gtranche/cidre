@@ -120,6 +120,14 @@ case $FILS in ''|0|*[!0-9]*) : ;; *) dxvk_config "dxvk.numCompilerThreads=$FILS"
 
 # LuaJIT veut la fenetre basse 64 bits (sinon plantage au boot, ex. Vermintide 2).
 [ "$(opt luajit CIDRE_LUAJIT)" = true ] && export PROTON_OUVERT_LUAJIT=1
+
+# Vrai plein ecran macOS (Space) automatique. winemac.drv promeut la fenetre de
+# jeu qui couvre l'ecran vers un Space natif (equivalent Ctrl+Cmd+F) : couvre
+# l'encoche du MacBook, laisse macOS scaler une resolution de jeu plus basse pour
+# remplir l'ecran, et met l'app au premier plan en plein ecran -- condition du
+# Game Mode. Generique tous jeux ; plein_ecran = false pour un jeu recalcitrant.
+[ "$(opt plein_ecran CIDRE_PLEIN_ECRAN)" = true ] && export CIDRE_FULLSCREEN_SPACE=1
+
 JOURNAL=${PROTON_OUVERT_JOURNAL:-$R/build/logs/steam-${JEU:-inconnu}.log}
 mkdir -p "$(dirname "$JOURNAL")"
 
@@ -199,6 +207,32 @@ fi
 # resolus) ; on replique sa logique. cf. tests/sync_saves_steam.sh.
 if [ -n "${SteamAppId:-}" ]; then
    sh "$R/tests/sync_saves_steam.sh" "$SteamAppId" restore >>"$JOURNAL" 2>&1 || true
+fi
+
+# macOS Game Mode : priorise CPU/GPU pour le jeu, reduit la latence manette/audio.
+# Il s'active deja seul quand une app categorie « jeu » (nos cles Info.plist
+# embarquees dans le binaire Wine) est au premier plan en vrai plein ecran -- d'ou
+# le Space automatique ci-dessus. gamemode = true le FORCE en plus via
+# gamepolicyctl (sans sudo) et le rend a « auto » a la sortie (trap), pour ne pas
+# laisser le reglage colle apres le jeu. Si gamepolicyctl est absent, on ne force
+# rien : l'activation automatique en plein ecran suffit.
+# gamepolicyctl n'est PAS dans le PATH ni livre avec les Command Line Tools : il
+# n'existe que sous Xcode.app (.../Developer/usr/bin). On le cherche donc la, en
+# plus du PATH et du developer dir actif.
+GAMEPOLICYCTL=$(command -v gamepolicyctl 2>/dev/null || true)
+if [ -z "$GAMEPOLICYCTL" ]; then
+   for c in "$(xcode-select -p 2>/dev/null)/usr/bin/gamepolicyctl" \
+            /Applications/Xcode*.app/Contents/Developer/usr/bin/gamepolicyctl; do
+      [ -x "$c" ] && GAMEPOLICYCTL=$c && break
+   done
+fi
+if [ "$(opt gamemode CIDRE_GAME_MODE)" = true ] && [ -n "$GAMEPOLICYCTL" ]; then
+   if "$GAMEPOLICYCTL" game-mode set on >>"$JOURNAL" 2>&1; then
+      echo "    game mode : force on (rendu a auto a la sortie)" >>"$JOURNAL"
+      trap '"$GAMEPOLICYCTL" game-mode set auto >>"$JOURNAL" 2>&1 || true' EXIT INT TERM
+   else
+      echo "    game mode : gamepolicyctl a echoue, on laisse l'auto" >>"$JOURNAL"
+   fi
 fi
 
 cd "$DOSSIER"

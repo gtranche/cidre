@@ -1,5 +1,32 @@
 # Chantier KosmicKrisp : le coût bindless (fps GPU-bound, ex. Vermintide 2)
 
+## ⛔ CLOS (2026-10-04) — le levier bindless n'existe pas
+
+Résolution définitive, preuve mécanisme + mesure déterministe :
+
+1. **Build débloqué** sans douleur : wrapper `cc/c++/clang/clang++` → `-arch arm64`
+   en tête de PATH, `ninja -C build/mesa` **incrémental ~15 s** (clean inutile, les
+   .o étaient déjà arm64). 0078 recompile/s'installe (dylib arm64). Voir
+   `feedback_cidre_build_mesa_ninja_rosetta` en mémoire.
+2. **0078 était inerte par construction.** Les champs de descripteur sont chargés
+   via `nir_load_global_constant_offset`, intrinsèque **absent de la table INFO de
+   `nir_opt_load_store_vectorize`** → `get_info()` = NULL → la passe l'ignore
+   (`if (!info) continue;`). D'où le « non concluant » du 2026-10-03 : la passe ne
+   touchait aucune load du hot path texture.
+3. **Fix minimal testé** (enregistrer `global_constant_offset` dans INFO + callback
+   permissif + compteur `CIDRE_VEC_STATS`) : mesure sur shader texturé réel =
+   **`desc loads 2 -> 2, merged 0`**. Un `texop_tex` ne charge que **2** champs
+   (`image_gpu_resource_id` 64b@0 + `sampler_index` 16b@8 ; le « ~7,8 » ci-dessous
+   était un sur-comptage des lectures conditionnelles par-texop). Tailles 64b/16b,
+   consommées par des intrinsèques handle distincts → **ne fusionnent pas**.
+
+**=> Vectoriser les loads de descripteur bindless ne rapporte rien pour VT2.**
+Cohérent avec le barrier-profiling en jeu (127 passes / 282 barrières ALL→ALL par
+frame — voir plus bas). Driver remis au connu-bon (edits reverted). Le patch
+`0078-*.patch.parked` est conservé pour archive. **Vrai gisement = barrières /
+encodeurs, pas le bindless.** Le diagnostic 2026-10-03 ci-dessous est conservé
+pour historique mais sa conclusion « cause = bindless » est RÉFUTÉE.
+
 ## Diagnostic (mesuré, 2026-10-03, M1 Max)
 
 - **VT2 est GPU-bound** : 22 fps à GPU 100 %, frametime plat, déjà en rendu 720p

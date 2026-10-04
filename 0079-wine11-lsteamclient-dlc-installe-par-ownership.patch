@@ -1,0 +1,42 @@
+wine11 / lsteamclient : DLC Windows rendus installes par l'ownership du compte.
+
+Le client Steam de macOS evalue BIsDlcInstalled par plateforme et repond 0
+pour les DLC Windows, meme possedes et presents sur le disque (trace VT2
+552500 : 80 appels emplacement 7 -> 0, tandis que BIsSubscribedApp -> 1).
+On se rabat sur BIsSubscribedApp (ownership, independant de la plateforme).
+Remplace le forcage global steam_dev.cfg (@sSteamCmdForcePlatformType windows),
+qui cassait les jeux natifs macOS. Cible : ISteamApps emplacement 7 seul.
+
+--- a/dlls/lsteamclient/main.c	2026-10-04 12:46:14
++++ b/dlls/lsteamclient/main.c	2026-10-04 12:45:38
+@@ -352,6 +352,30 @@
+             return a;
+         }
+         if (WINE_UNIX_CALL( unix_appel_vtable, &params )) return 0;
++
++        /*
++         * ISteamApps::BIsDlcInstalled (emplacement 7). Le client Steam de macOS
++         * evalue l'installation DLC par plateforme : il repond 0 pour les DLC
++         * Windows meme quand le compte les possede et que leurs depots sont sur
++         * le disque (install Windows complete). On se rabat alors sur
++         * BIsSubscribedApp (emplacement 6, ownership du compte, independant de la
++         * plateforme -- mesure : il rend bien 1 pour l'appid de base). Un DLC
++         * possede redevient « installe » ; un DLC non possede rend toujours 0 et
++         * reste cache. Aucun forcage global de plateforme (steam_dev.cfg), donc
++         * aucun effet de bord sur les jeux natifs macOS.
++         */
++        if (!params.ret && emplacement == 7 && meme_interface( "ISteamApps", objet->nom ))
++        {
++            struct appel_vtable_params poss = { objet->natif, 6, 0, a };
++
++            if (!WINE_UNIX_CALL( unix_appel_vtable, &poss ) && poss.ret)
++            {
++                if (TRACE_ON(lsteamclient))
++                    TRACE( "%s BIsDlcInstalled(%s)=0 -> repli BIsSubscribedApp=1, rendu installe\n",
++                           ou, wine_dbgstr_longlong(a) );
++                return poss.ret;
++            }
++        }
+         return params.ret;
+     }
+ 
