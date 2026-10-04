@@ -19,6 +19,7 @@ echo "== Wine 11 arm64 (elague : sans include/doc/man) =="
 mkdir -p "$STAGE/wine/wine11-arm64"
 ( cd "$R/wine/wine11-arm64" && tar cf - \
     --exclude='include' --exclude='share/man' --exclude='share/doc' \
+    --exclude='*.avant-*' \
     bin lib share ) | ( cd "$STAGE/wine/wine11-arm64" && tar xf - )
 
 echo "== KosmicKrisp + loader Vulkan (prefix/) =="
