@@ -244,14 +244,15 @@ case "$cmd" in
     sc=false; [ -n "$(resolve_steamcmd)" ] && sc=true
     ec=$(oui pgrep -f "$R/wine/.*wineserver")
     if [ "$JSON" = oui ]; then
-      printf '{"version":%s,"racine":%s,"runtime":%s,"prefixe":%s,"steamcmd":%s,"jeu_en_cours":%s,"prerequis":{"spirv_tools":%s,"freetype":%s}}\n' \
-        "$(json "$v")" "$(json "$R")" "$rt" "$pf" "$sc" "$ec" "$sp" "$ft"
+      printf '{"version":%s,"racine":%s,"runtime":%s,"prefixe":%s,"steamcmd":%s,"compte_steam":%s,"jeu_en_cours":%s,"prerequis":{"spirv_tools":%s,"freetype":%s}}\n' \
+        "$(json "$v")" "$(json "$R")" "$rt" "$pf" "$sc" "$(json "$(steam_user)")" "$ec" "$sp" "$ft"
     else
       echo "version      : $v"
       echo "racine       : $R"
       echo "runtime      : $rt"
       echo "prefixe      : $pf"
       echo "steamcmd     : $sc"
+      echo "compte steam : $(steam_user)"
       echo "jeu en cours : $ec"
       echo "spirv-tools  : $sp   (brew install spirv-tools)"
       echo "freetype     : $ft   (brew install freetype)"
