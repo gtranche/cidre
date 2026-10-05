@@ -76,54 +76,19 @@ if pgrep -f "Steam.AppBundle/Steam/Contents/MacOS/steam_osx" >/dev/null 2>&1; th
 fi
 
 cp -p "$F" "$F.sauvegarde-$(date '+%Y%m%d-%H%M%S')"
-printf '%s' "$JEUX" | cut -f1 | \
-   RETIRER=$([ "$MODE" = "--retirer" ] && echo 1) CMD="$CMD" \
+# APPIDS, la liste des jeux ou poser (ou retirer) l'option, reste vide : elle
+# n'est jamais arrivee jusqu'a l'ecriture (l'ancien script Python la lisait sur
+# une entree que son propre texte occupait), et seul le retrait sur les jeux
+# natifs a tourne. La brancher pour de bon ecrirait $CMD chez tous les jeux
+# Windows ; or un runtime installe par Verger vit sous « Application Support »,
+# et cet espace coupe l'option en deux : a proteger d'abord.
+# Le fichier est recrit sur place (memes droits), en gardant sa derniere ligne
+# telle qu'elle est.
+TMP="$F.cidre-$$"
+[ -n "$(tail -c 1 "$F")" ] && SANS_FIN=1 || SANS_FIN=
+LC_ALL=C RETIRER=$([ "$MODE" = "--retirer" ] && echo 1) CMD="$CMD" APPIDS="" \
    NATIFS="$(printf '%s' "$IGNORES" | cut -f1 | tr '\n' ' ')" \
-   python3 - "$F" <<'PY'
-import sys, os
-p=sys.argv[1]; cmd=os.environ["CMD"]; retirer=os.environ.get("RETIRER")
-appids=[x.strip() for x in sys.stdin if x.strip()]
-l=open(p, encoding='utf-8', errors='surrogateescape').read().split('\n')
-i=next(k for k,x in enumerate(l) if x.strip()=='"apps"' and l[k+1].strip()=='{')
-tab=l[i][:len(l[i])-len(l[i].lstrip('\t'))]+'\t'
-def fin_bloc(deb):
-    prof=0
-    for k in range(deb+1,len(l)):
-        prof += l[k].count('{')-l[k].count('}')
-        if prof==0: return k
-    return len(l)-1
-fin=fin_bloc(i); faits=[]
-for appid in appids:
-    ligne=next((k for k in range(i,fin) if l[k].strip()=='"%s"'%appid and l[k+1].strip()=='{'), None)
-    if ligne is None:
-        if retirer: continue
-        l[i+2:i+2]=[tab+'"%s"'%appid, tab+'{', tab+'\t"LaunchOptions"\t\t"%s"'%cmd, tab+'}']
-        fin+=4; faits.append((appid,"creee"))
-        continue
-    f2=fin_bloc(ligne)
-    k=next((k for k in range(ligne+1,f2) if '"LaunchOptions"' in l[k]), None)
-    if retirer:
-        if k is not None and 'lancer_depuis_steam.sh' in l[k]:
-            del l[k]; fin-=1; faits.append((appid,"retiree"))
-    elif k is None:
-        l[ligne+2:ligne+2]=[tab+'\t"LaunchOptions"\t\t"%s"'%cmd]; fin+=1; faits.append((appid,"posee"))
-    elif 'lancer_depuis_steam.sh' in l[k]:
-        faits.append((appid,"deja en place"))
-    else:
-        faits.append((appid,"LAISSEE INTACTE (option personnelle deja presente)"))
-for appid in os.environ.get("NATIFS","").split():
-    fin=fin_bloc(i)
-    ligne=next((k for k in range(i,fin) if l[k].strip()=='"%s"'%appid and l[k+1].strip()=='{'), None)
-    if ligne is None: continue
-    f2=fin_bloc(ligne)
-    k=next((k for k in range(ligne+1,f2) if '"LaunchOptions"' in l[k]), None)
-    if k is not None and 'lancer_depuis_steam.sh' in l[k]:
-        del l[k]; faits.append((appid,"retiree (version macOS native)"))
-
-d='\n'.join(l)
-if d.count('{')!=d.count('}'):
-    print("accolades desequilibrees, rien ecrit", file=sys.stderr); sys.exit(1)
-open(p,'w',encoding='utf-8',errors='surrogateescape').write(d)
-for a,q in faits: print("  %-9s %s" % (a,q))
-PY
+   SORTIE="$TMP" SANS_FIN=$SANS_FIN awk -f "$R/tests/brancher_jeux_steam.awk" "$F"
+cat "$TMP" >"$F"
+rm -f "$TMP"
 echo; echo "fait. Rouvrez Steam."

@@ -28,7 +28,7 @@ fi
 
 # 2) plateforme : auto -> macos si version Apple Silicon dispo, sinon windows.
 if [ "$PLAT" = auto ]; then
-   if strings "$STEAM/appcache/appinfo.vdf" 2>/dev/null | grep -q "macosapplesilicon" \
+   if LC_ALL=C grep -aqs "macosapplesilicon" "$STEAM/appcache/appinfo.vdf" \
       && grep -aqs "$APPID" "$STEAM/appcache/appinfo.vdf" ; then PLAT=macos; else PLAT=windows; fi
    # garde-fou : la detection appinfo est approximative -> on confirmera a l'ecran
 fi
@@ -41,21 +41,7 @@ INSTALLDIR=$(sed -n 's/.*"installdir"[[:space:]]*"\(.*\)".*/\1/p' "$SAPPS/appman
 # Compte Steam memorise par le client (loginusers.vdf) : on pre-remplit l'identifiant
 # pour que SteamCMD ne demande que le mot de passe (une seule fois, ensuite memorise).
 # La machine est deja autorisee Steam Guard (ssfn), donc en principe pas de code 2FA.
-ACCT=$(python3 - "$STEAM/config/loginusers.vdf" <<'PYEOF' 2>/dev/null
-import sys,re
-try: t=open(sys.argv[1],encoding="utf-8",errors="ignore").read()
-except Exception: sys.exit(0)
-blocks=re.findall(r'\{([^{}]*)\}', t, re.S)
-best=""
-for b in blocks:
-    m=re.search(r'"AccountName"\s*"([^"]+)"', b)
-    if not m: continue
-    if re.search(r'"MostRecent"\s*"1"', b): print(m.group(1)); break
-    if not best: best=m.group(1)
-else:
-    if best: print(best)
-PYEOF
-)
+ACCT=$(sh "$R/tests/compte_steam.sh" "$STEAM/config/loginusers.vdf" 2>/dev/null)
 echo "== $NOM ($APPID) -> installation en version $PLAT =="
 if [ -n "$ACCT" ]; then
    echo "   Connexion SteamCMD pour le compte '$ACCT' : tape juste ton MOT DE PASSE quand il le demande."
