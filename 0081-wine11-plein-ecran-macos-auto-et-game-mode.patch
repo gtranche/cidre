@@ -1,0 +1,122 @@
+Generated-by: LLM
+
+--- aa/dlls/winemac.drv/cocoa_window.h
++++ bb/dlls/winemac.drv/cocoa_window.h
+@@ -68,6 +68,11 @@
+     NSRect nonFullscreenFrame;
+     NSTimeInterval enteredFullScreenTime;
+ 
++    /* Cidre : verrou pour ne promouvoir qu'une fois une fenetre de jeu
++       couvrant l'ecran vers un vrai plein ecran Space macOS. Latch a vie
++       de la fenetre pour ne jamais lutter contre une sortie manuelle. */
++    BOOL cidreEnteredFullScreen;
++
+     int draggingPhase;
+     NSPoint dragStartPosition;
+     NSPoint dragWindowStartPosition;
+--- aa/dlls/winemac.drv/cocoa_window.m
++++ bb/dlls/winemac.drv/cocoa_window.m
+@@ -64,6 +64,27 @@
+ @end
+ 
+ 
++/* Cidre : vrai plein ecran macOS (Space) automatique pour les jeux.
++ *
++ * Quand un jeu Windows passe en plein ecran, winemac cree normalement une
++ * fenetre borderless couvrant l'ecran (notre drapeau `fullscreen`), PAS un
++ * Space macOS natif. On veut le vrai plein ecran Space (equivalent
++ * Ctrl+Cmd+F) car c'est la seule configuration ou : l'encoche est couverte,
++ * macOS scale une resolution de jeu plus basse pour remplir l'ecran, et le
++ * Game Mode s'active. Active par l'env CIDRE_FULLSCREEN_SPACE (pose par le
++ * launcher), lu une seule fois. */
++static BOOL cidre_wants_fullscreen_space(void)
++{
++    static BOOL want;
++    static dispatch_once_t once;
++    dispatch_once(&once, ^{
++        const char* v = getenv("CIDRE_FULLSCREEN_SPACE");
++        want = v && (*v == '1' || *v == 'y' || *v == 'Y' || *v == 't' || *v == 'T');
++    });
++    return want;
++}
++
++
+ static NSUInteger style_mask_for_features(const struct macdrv_window_features* wf)
+ {
+     NSUInteger style_mask;
+@@ -1056,9 +1077,13 @@
+     {
+         NSUInteger style = [self styleMask];
+ 
+-        if (behavior & NSWindowCollectionBehaviorParticipatesInCycle &&
++        if ((behavior & NSWindowCollectionBehaviorParticipatesInCycle &&
+             style & NSWindowStyleMaskResizable && !(style & NSWindowStyleMaskUtilityWindow) && !maximized &&
+-            !(self.parentWindow || self.latentParentWindow))
++            !(self.parentWindow || self.latentParentWindow)) ||
++            /* Cidre : une fois promue en Space macOS, la fenetre de jeu doit
++               rester FullScreenPrimary meme si elle est borderless, sinon la
++               branche Auxiliary ci-dessous la ferait sortir du plein ecran. */
++            (cidreEnteredFullScreen && cidre_wants_fullscreen_space()))
+         {
+             behavior |= NSWindowCollectionBehaviorFullScreenPrimary;
+             behavior &= ~NSWindowCollectionBehaviorFullScreenAuxiliary;
+@@ -1817,6 +1842,34 @@
+                 [controller updateFullscreenWindows];
+ 
+             [controller adjustWindowLevels];
++
++            /* Cidre : promeut cette fenetre borderless-plein-ecran vers un vrai
++               Space macOS, une seule fois (latch), sans jamais relancer apres
++               une sortie manuelle. On force FullScreenPrimary car une fenetre
++               borderless est sinon marquee Auxiliary et toggleFullScreen: n'y
++               ferait rien. Le toggle est differe au prochain tour de run loop
++               pour ne pas reentrer pendant l'etablissement du cadre. */
++            if (nowFullscreen && cidre_wants_fullscreen_space() &&
++                !cidreEnteredFullScreen && !enteringFullScreen &&
++                !([self styleMask] & NSWindowStyleMaskFullScreen) &&
++                !self.disabled && !maximized &&
++                [self isVisible] && [self isOnActiveSpace])
++            {
++                NSWindowCollectionBehavior behavior = [self collectionBehavior];
++
++                cidreEnteredFullScreen = YES;
++                behavior |= NSWindowCollectionBehaviorFullScreenPrimary;
++                behavior &= ~NSWindowCollectionBehaviorFullScreenAuxiliary;
++                if (behavior != [self collectionBehavior])
++                    [self setCollectionBehavior:behavior];
++
++                dispatch_async(dispatch_get_main_queue(), ^{
++                    if (!([self styleMask] & NSWindowStyleMaskFullScreen) &&
++                        !self.disabled && !maximized &&
++                        [self isVisible] && [self isOnActiveSpace])
++                        [self toggleFullScreen:nil];
++                });
++            }
+         }
+     }
+ 
+--- aa/loader/wine_info.plist.in
++++ bb/loader/wine_info.plist.in
+@@ -26,5 +26,22 @@
+     <string>WineApplication</string>
+     <key>LSUIElement</key>
+     <string>1</string>
++    <!-- Cidre : le binaire aarch64-unix/wine est le process qui cree la fenetre
++         Cocoa du jeu. Ces cles s'appliquent donc a la fenetre de jeu. Comme
++         elles sont dans le template .plist.in, elles sont posees au link
++         (-Wl,-sectcreate) a chaque build : un make install ne les efface plus. -->
++    <!-- Non notch-aware repousse le contenu sous l'encoche ; NO le laisse la
++         couvrir en plein ecran (comme un jeu Mac natif). -->
++    <key>NSPrefersDisplaySafeAreaCompatibilityMode</key>
++    <false/>
++    <!-- Categorie « jeu » + support Game Mode : macOS active alors le Game Mode
++         (priorite CPU/GPU, latence manette/audio reduite) quand la fenetre est
++         au premier plan en vrai plein ecran. LSSupportsGameMode exige macOS 26+. -->
++    <key>LSApplicationCategoryType</key>
++    <string>public.app-category.games</string>
++    <key>LSSupportsGameMode</key>
++    <true/>
++    <key>GCSupportsGameMode</key>
++    <true/>
+ </dict>
+ </plist>
