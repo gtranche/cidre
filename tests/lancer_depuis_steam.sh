@@ -205,8 +205,8 @@ fi
 # recentes (ex. jouees sur une autre machine). Non destructif, non bloquant.
 # Steam Cloud ne peut pas le faire pour un jeu Windows sur macOS (roots non
 # resolus) ; on replique sa logique. cf. tests/sync_saves_steam.sh.
-if [ -n "${SteamAppId:-}" ]; then
-   sh "$R/tests/sync_saves_steam.sh" "$SteamAppId" restore >>"$JOURNAL" 2>&1 || true
+if [ -n "$JEU" ]; then
+   sh "$R/tests/sync_saves_steam.sh" "$JEU" restore >>"$JOURNAL" 2>&1 || true
 fi
 
 # macOS Game Mode : priorise CPU/GPU pour le jeu, reduit la latence manette/audio.
@@ -245,7 +245,7 @@ RC=$?
 
 # Sauvegarde vers le dossier synchronise apres la sortie du jeu (meme en cas de
 # crash : on sauve l'etat tel quel). Non bloquant.
-if [ -n "${SteamAppId:-}" ]; then
-   sh "$R/tests/sync_saves_steam.sh" "$SteamAppId" backup >>"$JOURNAL" 2>&1 || true
+if [ -n "$JEU" ]; then
+   sh "$R/tests/sync_saves_steam.sh" "$JEU" backup >>"$JOURNAL" 2>&1 || true
 fi
 exit $RC

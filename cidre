@@ -48,6 +48,11 @@ temoin_en_cours() { # <id>
    trap 'rm -f "$EN_COURS/'"$1"'"' EXIT
 }
 
+# Les jeux dont on sait ou sont les sauvegardes : le fichier livre, et celui de
+# l'utilisateur (`cidre saves set`), qui passe avant.
+SAVES_PERSO="$CIDRE_DIR/saves.conf"
+saves_ids() { cat "$SAVES_PERSO" "$R/outil-steam/saves.conf" 2>/dev/null | awk -F'\t' '!/^#/ && NF>=2 && !vu[$1]++ {print $1}'; }
+
 # chaine JSON (echappe \ " et tabulation)
 json() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g')"; }
 # la fiche JSON d'un jeu (sans l'accolade fermante : `info` y ajoute des champs)
@@ -145,7 +150,9 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
   cidre unset <id> [option]       revient au reglage livre (sans option : toutes)
                                   <id> = defaut : le reglage general, que suit tout jeu sans reglage propre
   cidre options [--json]          les reglages generaux
-  cidre sync <appid|all> [backup|restore]   sauvegardes (iCloud)
+  cidre saves [<id>] [--json]     ou en est la synchro des sauvegardes (iCloud)
+  cidre saves set <id> <dossier>  dire ou un jeu range ses sauvegardes (unset : revenir au reglage livre)
+  cidre sync <id|all> [backup|restore]   sauvegarder vers iCloud, ou restaurer ce qui y est plus recent
   cidre status [--json]           version du runtime, prerequis, etat de l'installation
   cidre setup                     configure le runtime apres une installation ou une mise a jour
  Steam
@@ -195,7 +202,7 @@ case "$cmd" in
     id=${1:?usage: cidre info <id> [--json]}
     connu "$id" || { echo "jeu inconnu : $id" >&2; exit 1; }
     opts=$(sh "$R/tests/profil_cidre.sh" "$id" json)
-    grep -q "^$id	" "$R/outil-steam/saves.conf" 2>/dev/null && sv=true || sv=false
+    [ -n "$(saves_ids | grep -x "$id")" ] && sv=true || sv=false
     if [ "$JSON" = oui ]; then
       fiche_json "$id"; printf ',"sauvegardes":%s,"options":%s,"options_perso":%s}\n' "$sv" "$opts" "$(sh "$R/tests/profil_cidre.sh" "$id" perso)"
     else
@@ -258,13 +265,63 @@ case "$cmd" in
     else
       [ -n "$en_cours" ] && printf '%s\n' $en_cours
     fi ;;
+  chemin)
+    # le dossier d'un jeu (pour les scripts du runtime)
+    id=${1:?usage: cidre chemin <id>}
+    connu "$id" && chemin "$id" ;;
   sync)
-    id=${1:?usage: cidre sync <appid|all> [backup|restore]}; sens=${2:-backup}
-    export WINEPREFIX="$R/wine/pfx-arm64ec"
+    id=${1:?usage: cidre sync <id|all> [backup|restore]}; sens=${2:-backup}
+    case $sens in backup|restore) ;; *) echo "usage: cidre sync <id|all> [backup|restore]" >&2; exit 2 ;; esac
+    export WINEPREFIX="${WINEPREFIX:-$R/wine/pfx-arm64ec}"
     if [ "$id" = all ]; then
-      awk -F'\t' '!/^#/ && NF>=2 {print $1}' "$R/outil-steam/saves.conf" | while read -r a; do
-        sh "$R/tests/sync_saves_steam.sh" "$a" "$sens"; done
+      saves_ids | while read -r a; do sh "$R/tests/sync_saves_steam.sh" "$a" "$sens"; done
     else sh "$R/tests/sync_saves_steam.sh" "$id" "$sens"; fi ;;
+  saves|sauvegardes)
+    export WINEPREFIX="${WINEPREFIX:-$R/wine/pfx-arm64ec}"
+    case ${1:-} in
+      set)
+        # Dire ou un jeu range ses sauvegardes : un dossier du jeu lui-meme, ou
+        # du disque C: (dossier utilisateur du prefixe).
+        id=${2:-}; d=${3:-}
+        [ -n "$id" ] && [ -n "$d" ] || { echo "usage: cidre saves set <id> <dossier>" >&2; exit 2; }
+        connu "$id" || { echo "jeu inconnu : $id" >&2; exit 1; }
+        [ -d "$d" ] || { echo "dossier introuvable : $d" >&2; exit 1; }
+        d=$(cd "$d" && pwd -P)
+        jeu=$(cd "$(chemin "$id")" 2>/dev/null && pwd -P)
+        util=$(ls -d "$WINEPREFIX/drive_c/users/"*/AppData 2>/dev/null | head -1)
+        util=$(cd "$(dirname "${util:-/nonexistent/x}")" 2>/dev/null && pwd -P)
+        case $d in
+          "$jeu") echo "choisis le dossier des sauvegardes, pas celui du jeu entier" >&2; exit 1 ;;
+          "$jeu"/*) rel="jeu:${d#$jeu/}" ;;
+          "${util:-/nonexistent}"/*) rel=${d#$util/} ;;
+          *) echo "ce dossier n'est ni dans le jeu ni sur le disque C: de Cidre : $d" >&2; exit 1 ;;
+        esac
+        mkdir -p "$CIDRE_DIR"; touch "$SAVES_PERSO"
+        awk -F'\t' -v i="$id" '$1!=i' "$SAVES_PERSO" >"$SAVES_PERSO.tmp"
+        printf '%s\t%s\n' "$id" "$rel" >>"$SAVES_PERSO.tmp"
+        mv "$SAVES_PERSO.tmp" "$SAVES_PERSO"
+        [ "$JSON" = oui ] && sh "$R/tests/sync_saves_steam.sh" "$id" etat || echo "sauvegardes de $id : $rel" ;;
+      unset)
+        # Oublier le reglage de l'utilisateur : on revient a ce que livre Cidre.
+        id=${2:?usage: cidre saves unset <id>}
+        [ -f "$SAVES_PERSO" ] && awk -F'\t' -v i="$id" '$1!=i' "$SAVES_PERSO" >"$SAVES_PERSO.tmp" && mv "$SAVES_PERSO.tmp" "$SAVES_PERSO"
+        [ "$JSON" = oui ] && sh "$R/tests/sync_saves_steam.sh" "$id" etat || true ;;
+      '')
+        # l'etat de tous les jeux configures et presents
+        if [ "$JSON" = oui ]; then
+          sep='['
+          for a in $(saves_ids); do connu "$a" || continue; printf '%s\n  %s' "$sep" "$(sh "$R/tests/sync_saves_steam.sh" "$a" etat)"; sep=','; done
+          [ "$sep" = '[' ] && echo '[]' || printf '\n]\n'
+        else
+          for a in $(saves_ids); do
+            connu "$a" || continue
+            printf '%-18s %-26.26s %s\n' "$a" "$(nom "$a")" "$(sh "$R/tests/sync_saves_steam.sh" "$a" etat | sed -n 's/.*"etat":"\([a-z_]*\)".*/\1/p')"
+          done
+        fi ;;
+      *)
+        connu "$1" || { echo "jeu inconnu : $1" >&2; exit 1; }
+        sh "$R/tests/sync_saves_steam.sh" "$1" etat ;;
+    esac ;;
   wrap)
     sh "$R/tests/brancher_jeux_steam.sh" --ecrire ;;
   install|installer)
@@ -472,6 +529,9 @@ case "$cmd" in
       # un appid, rien d'autre : pas de chemin, pas de vide
       case $id in ''|*[!0-9]*) echo "id invalide : $id" >&2; exit 2 ;; esac
       [ -d "$CIDRE_GAMES/$id" ] || { echo "$id n'est pas dans le dossier Cidre ; un jeu du client Steam se desinstalle depuis Steam." >&2; exit 1; }
+      # Certains jeux rangent leurs sauvegardes dans leur propre dossier : on
+      # les met a l'abri avant de l'effacer.
+      WINEPREFIX="${WINEPREFIX:-$R/wine/pfx-arm64ec}" sh "$R/tests/sync_saves_steam.sh" "$id" backup
       rm -rf "${CIDRE_GAMES:?}/${id:?}"
       echo "desinstalle : $CIDRE_GAMES/$id"
     fi ;;
