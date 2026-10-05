@@ -23,6 +23,11 @@
 #                    injecte la bibliotheque d'overlay du client Steam dans le jeu.
 #                    false pour un jeu qu'elle generait (jeu hors Steam : sans effet).
 #   async            compilation des pipelines en fond (DXVK gplasync) : tue le stutter.
+#   narrow_barriers  relache les barrieres de cloture d'encodeur KosmicKrisp vers
+#                    les vraies stages (au lieu de ALL->ALL) : laisse les passes
+#                    GPU se recouvrir. Gain en scene chargee (GPU-bound) ; nul en
+#                    scene legere. Valide sur VT2 (stable, image correcte) ;
+#                    prudent ailleurs -> defaut false.
 #   fils_compilation nombre de fils compilateurs DXVK ; 0 = defaut DXVK (tous les coeurs).
 #   eac_untrusted    ajoute -eac-untrusted (realm « Modded » ; EAC en ligne = mur).
 #   luajit           fenetre basse 64 bits pour LuaJIT (PROTON_OUVERT_LUAJIT).
@@ -32,6 +37,10 @@
 #   gamemode         force le macOS Game Mode (gamepolicyctl set on, sans sudo) au
 #                    lancement et le rend a auto a la sortie ; n'a d'effet qu'en
 #                    vrai plein ecran, donc avec plein_ecran = true.
+#   dx12             vrai D3D12 via vkd3d-proton arm64ec (installe en system32,
+#                    force d3d12=n). false (defaut) = d3d12 builtin de Wine, qui
+#                    retombe en D3D11/DXVK. KosmicKrisp plafonne au FL 12.0 : un
+#                    jeu qui exige FL 12.1 (ex. PEAK) reste en D3D11 meme a true.
 
 [defaut]
 langue = "auto"
@@ -40,11 +49,13 @@ vsync = true
 hud = false
 overlay = true
 async = false
+narrow_barriers = false
 fils_compilation = 0
 eac_untrusted = false
 luajit = false
 plein_ecran = true
 gamemode = true
+dx12 = false
 
 # DREDGE (Unity). Mesure en jeu : 40 fps defaut -> 69 avec vsync off (la vsync
 # FIFO perd un vblank et plafonne a 40) -> 84 en ajoutant TSO off (peu threade,
@@ -59,6 +70,7 @@ tso = false
 [552500]
 luajit = true
 async = true
+narrow_barriers = true
 fils_compilation = 4
 eac_untrusted = true
 
@@ -67,3 +79,14 @@ eac_untrusted = true
 # rapide. Peu sensible aux courses en pratique, teste lisse. Si bug, tso = true.
 [588650]
 tso = false
+
+# PEAK (Unity 6 DX12). Le jeu exige le Feature Level 12.1. dx12 = true : on charge
+# vkd3d-proton arm64ec + annonce des caps FL 12.1 a KosmicKrisp (drapeau fl12). Le
+# DX12 FONCTIONNE (PEAK en D3D12 12.1, menu propre, 0 crash), MAIS le gameplay
+# freeze : fl12 annonce le sparse/tiled sans backend reel, et PEAK cree de vraies
+# tiled resources pour streamer ses textures -> non-residence silencieuse -> freeze.
+# Donc dx12 = false (D3D11 fluide, jouable) tant que le VRAI backend sparse Metal
+# (TiledResourcesTier2 reel) n'est pas ecrit dans KosmicKrisp. Repasser a true quand
+# ce sera fait. La conservative raster feinte, elle, ne gene pas.
+[3527290]
+dx12 = false

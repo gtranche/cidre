@@ -50,6 +50,14 @@ opt() { # <cle du profil> <variable d'environnement>
 }
 dxvk_config() { export DXVK_CONFIG="${DXVK_CONFIG:+$DXVK_CONFIG;}$1"; }
 
+# Cache de pipelines Metal (KosmicKrisp) : les shaders compiles (MSL -> binaire
+# Metal) sont ranges par jeu dans une archive MTL4 et relus au lancement suivant,
+# pour ne compiler qu'une fois. Active par defaut des qu'on a un identifiant de
+# jeu ; CIDRE_PIPELINE_CACHE=0 (ou cache_pipelines=0 dans le profil) le coupe.
+if [ -n "$JEU" ] && [ "$(opt cache_pipelines CIDRE_PIPELINE_CACHE)" != false ]; then
+   export MESA_KK_PIPELINE_CACHE="${MESA_KK_PIPELINE_CACHE:-$HOME/Library/Application Support/Cidre/vkd3d-cache/$JEU}"
+fi
+
 # Langue du jeu. langue = "auto" (defaut) ne force rien : Wine annonce la langue
 # de macOS, le pont Steam relaie celle du client. Sinon un code a deux lettres
 # (ou CIDRE_LANGUE=fr), applique par deux voies -- un jeu choisit sa langue par
@@ -115,6 +123,36 @@ fi
 # le rendu -> tue le stutter de traversee. fils_compilation borne les fils
 # compilateurs (0 = defaut DXVK, tous les coeurs).
 [ "$(opt async CIDRE_ASYNC)" = true ] && export DXVK_ASYNC=1
+
+# Renderer D3D12. Defaut : d3d12 builtin de Wine (etape2 : CIDRE_D3D12=b), qui
+# retombe proprement en D3D11/DXVK si le jeu exige une interface D3D12 recente
+# (cas PEAK : il exige le Feature Level 12.1, non supporte par KosmicKrisp -> DX11).
+# dx12 = true (ou CIDRE_DX12=1) : installe vkd3d-proton arm64ec en system32 et
+# force le natif (=n) pour du vrai D3D12 (FL 12.0). FL 12.1 (conservative raster,
+# absente de Metal) reste hors de portee -- chantier KosmicKrisp.
+if [ "$(opt dx12 CIDRE_DX12)" = true ]; then
+   P12="$WINEPREFIX/drive_c/windows/system32"
+   for d in d3d12core d3d12; do
+      for cand in "$R/vkd3d/$d.dll" "$R/build/vkd3d-winarm64ec/libs/$d/$d.dll"; do
+         [ -f "$cand" ] || continue
+         cmp -s "$cand" "$P12/$d.dll" || cp "$cand" "$P12/$d.dll"
+         break
+      done
+   done
+   export CIDRE_D3D12=n
+   # Annonce opt-in des capacites FL 12.x a KosmicKrisp (sparse/tiled tier 2, ROV,
+   # conservative raster) pour que vkd3d-proton atteigne le Feature Level 12.1.
+   # Best-effort : si le jeu cree vraiment une ressource tiled, ca peut echouer.
+   export MESA_KK_EXPERIMENTAL="${MESA_KK_EXPERIMENTAL:-custom_border,image_view_min_lod},fl12"
+fi
+
+# Relachement cible des barrieres de cloture d'encodeur KosmicKrisp vers les
+# vraies stages (au lieu de ALL->ALL) : laisse les passes GPU se recouvrir, gain
+# en scene chargee (GPU-bound). Valide sur VT2. Un environnement explicite
+# (y compris CIDRE_NARROW_BARRIERS=global pour le mode debug) garde la main.
+if [ -z "${CIDRE_NARROW_BARRIERS:-}" ] && [ "$(profil narrow_barriers)" = true ]; then
+   export CIDRE_NARROW_BARRIERS=1
+fi
 FILS=${CIDRE_FILS_COMPILATION:-$(profil fils_compilation)}
 case $FILS in ''|0|*[!0-9]*) : ;; *) dxvk_config "dxvk.numCompilerThreads=$FILS" ;; esac
 

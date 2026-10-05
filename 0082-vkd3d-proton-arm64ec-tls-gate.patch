@@ -1,0 +1,53 @@
+# vkd3d-proton arm64ec : garder vkd3d_address_binding_tracker_mark_user_thread()
+# derriere tracker_active (evite un deref TLS via x18, mort sur macOS, quand le
+# tracker est inactif -- cas KosmicKrisp, pas VK_EXT_device_address_binding_report).
+# S applique dans src/vkd3d-proton avec: patch -p1 < ce_fichier
+
+diff --git a/libs/vkd3d/memory.c b/libs/vkd3d/memory.c
+index 187f0fd..b937aeb 100644
+--- a/libs/vkd3d/memory.c
++++ b/libs/vkd3d/memory.c
+@@ -1020,7 +1020,8 @@ static HRESULT vkd3d_try_allocate_device_memory(struct d3d12_device *device,
+     }
+ 
+     /* In case we get address binding callbacks, ensure driver knows it's not a sparse bind that happens async. */
+-    vkd3d_address_binding_tracker_mark_user_thread();
++    if (vkd3d_address_binding_tracker_active(&device->address_binding_tracker))
++        vkd3d_address_binding_tracker_mark_user_thread();
+ 
+     vr = VK_CALL(vkAllocateMemory(device->vk_device, &allocate_info, NULL, &allocation->vk_memory));
+ 
+diff --git a/libs/vkd3d/resource.c b/libs/vkd3d/resource.c
+index 70e0dda..37fca42 100644
+--- a/libs/vkd3d/resource.c
++++ b/libs/vkd3d/resource.c
+@@ -133,7 +133,8 @@ HRESULT vkd3d_create_buffer_explicit_usage(struct d3d12_device *device,
+     }
+ 
+     /* In case we get address binding callbacks, ensure driver knows it's not a sparse bind that happens async. */
+-    vkd3d_address_binding_tracker_mark_user_thread();
++    if (vkd3d_address_binding_tracker_active(&device->address_binding_tracker))
++        vkd3d_address_binding_tracker_mark_user_thread();
+ 
+     if ((vr = VK_CALL(vkCreateBuffer(device->vk_device, &buffer_info, NULL, vk_buffer))) < 0)
+     {
+@@ -281,7 +282,8 @@ HRESULT vkd3d_create_buffer(struct d3d12_device *device,
+     }
+ 
+     /* In case we get address binding callbacks, ensure driver knows it's not a sparse bind that happens async. */
+-    vkd3d_address_binding_tracker_mark_user_thread();
++    if (vkd3d_address_binding_tracker_active(&device->address_binding_tracker))
++        vkd3d_address_binding_tracker_mark_user_thread();
+ 
+     if ((vr = VK_CALL(vkCreateBuffer(device->vk_device, &buffer_info, NULL, vk_buffer))) < 0)
+     {
+@@ -1203,7 +1205,8 @@ static HRESULT vkd3d_create_image(struct d3d12_device *device,
+         return hr;
+ 
+     /* In case we get address binding callbacks, ensure driver knows it's not a sparse bind that happens async. */
+-    vkd3d_address_binding_tracker_mark_user_thread();
++    if (vkd3d_address_binding_tracker_active(&device->address_binding_tracker))
++        vkd3d_address_binding_tracker_mark_user_thread();
+ 
+     if ((vr = VK_CALL(vkCreateImage(device->vk_device, &create_info.image_info, NULL, vk_image))) < 0)
+         WARN("Failed to create Vulkan image, vr %d.\n", vr);

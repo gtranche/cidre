@@ -10,12 +10,19 @@ export PATH="$R/toolchain/bin:$PATH"
 MINGW="$R/toolchain/llvm-mingw/bin"
 J=$(sysctl -n hw.ncpu 2>/dev/null || echo 4)
 
-echo "== objet cxa_globals (lien DXVK arm64ec) =="
+echo "== objets TLS sans x18 (lien arm64ec) =="
 CXA="$R/outils/cxa_globals_sans_x18_arm64ec.o"
 if [ ! -f "$CXA" ]; then
    "$MINGW/arm64ec-w64-mingw32-clang" -c "$R/outils/cxa_globals_sans_x18.c" -o "$CXA"
 fi
-ls -l "$CXA"
+# Runtime emutls sans x18 : vkd3d-proton se construit en -femulated-tls (ses
+# variables __thread fautaient sur [x18,#0x58], mort sur macOS) et appelle ce
+# __emutls_get_address, servi en TLS Win32 que le Wine corrige rend x18-free.
+EMU="$R/outils/emutls_sans_x18_arm64ec.o"
+if [ ! -f "$EMU" ]; then
+   "$MINGW/arm64ec-w64-mingw32-clang" -O2 -c "$R/outils/emutls_sans_x18.c" -o "$EMU"
+fi
+ls -l "$CXA" "$EMU"
 
 echo "== Mesa / KosmicKrisp (arm64) -> prefix/ =="
 [ -f "$R/build/mesa/build.ninja" ] || meson setup "$R/build/mesa" "$R/src/mesa" \
@@ -51,6 +58,16 @@ for pair in "src/dxvk:build/dxvk-winarm64ec" "src/dxvk-async:build/dxvk-async-wi
       --cross-file "$CROSS" -Dbuildtype=release -Dcpp_link_args="$CXA"
    ninja -C "$R/$bld" -j"$J"
 done
+
+echo "== vkd3d-proton arm64ec (vrai D3D12, option dx12) =="
+# Meme chaine arm64ec que DXVK. hexpthk=1 -> chargeable par un jeu x64 sous FEX
+# (l'ancien build arm64 pur etait inchargeable). enable_tests=false : on ne veut
+# que les DLL. lancer_depuis_steam.sh les installe en system32 quand dx12 = true.
+[ -f "$R/build/vkd3d-winarm64ec/build.ninja" ] || meson setup "$R/build/vkd3d-winarm64ec" "$R/src/vkd3d-proton" \
+   --cross-file "$CROSS" -Dbuildtype=release -Denable_tests=false \
+   -Dc_args=-femulated-tls -Dcpp_args=-femulated-tls \
+   -Dc_link_args="$EMU" -Dcpp_link_args="$CXA $EMU"
+ninja -C "$R/build/vkd3d-winarm64ec" -j"$J"
 
 echo
 echo "Pile arm64 construite. Ensuite : FEX (construire_fex.sh --installer), le"

@@ -11,11 +11,12 @@ R=$(cd "$(dirname "$0")/.." && pwd)
 WINE=${WINE:-$R/wine/wine11-arm64/bin/wine}
 export WINEPREFIX=${WINEPREFIX:-$R/wine/pfx-arm64ec}
 export WINEDEBUG=${WINEDEBUG:--all}
-# dxgi/d3d11 = DXVK (natif), d3d12/d3d12core = vkd3d-proton (natif). Sans forcer
-# d3d12=n, Wine charge son d3d12 builtin qui deadlock a l'init graphique des jeux
-# DX12 (ex. PEAK : bloque a 0% CPU apres le boot.config Unity, jamais de fenetre).
-# Inoffensif pour les jeux DX11 (ils ne chargent pas d3d12).
-export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:-mscoree,mshtml=;dxgi,d3d11=n;d3d12,d3d12core=n}"
+# dxgi/d3d11 = DXVK (natif). d3d12/d3d12core : builtin par defaut (CIDRE_D3D12=b)
+# -- le d3d12 builtin de Wine tombe proprement en D3D11/DXVK si le jeu demande une
+# interface D3D12 recente (cas PEAK : FL 12.1 non supporte par KosmicKrisp -> DX11).
+# lancer_depuis_steam.sh pose CIDRE_D3D12=n (natif) quand l'option dx12 est vraie :
+# il installe alors vkd3d-proton arm64ec en system32 pour du vrai D3D12 (FL 12.0).
+export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:-mscoree,mshtml=;dxgi,d3d11=n;d3d12,d3d12core=${CIDRE_D3D12:-b}}"
 export VK_DRIVER_FILES=$R/prefix/share/vulkan/icd.d/kosmickrisp_mesa_icd.aarch64.json
 export DYLD_LIBRARY_PATH=$R/wine/vklib-arm64:$R/prefix/lib
 export MESA_KK_EXPERIMENTAL=${MESA_KK_EXPERIMENTAL:-custom_border,image_view_min_lod}

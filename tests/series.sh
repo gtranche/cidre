@@ -28,7 +28,8 @@ serie_wine11() {
 
 serie_vkd3d_proton() {
    ls "$R"/0004-*.patch "$R"/0007-*.patch "$R"/0008-*.patch \
-      "$R"/0014-*.patch "$R"/0016-*.patch "$R"/0044-*.patch 2>/dev/null
+      "$R"/0014-*.patch "$R"/0016-*.patch "$R"/0044-*.patch \
+      "$R"/0082-*.patch 2>/dev/null
 }
 
 serie_dxvk() {

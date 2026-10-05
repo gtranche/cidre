@@ -37,6 +37,14 @@ for d in d3d11 dxgi d3d10core d3d9 d3d8; do
    cp "$R/build/dxvk-async-winarm64ec/src/$d/$d.dll" "$STAGE/dxvk/async/" 2>/dev/null || true
 done
 
+# vkd3d-proton arm64ec (vrai D3D12, option dx12). lancer_depuis_steam.sh installe
+# ces DLL en system32 et force d3d12=n quand l'option dx12 est vraie ; sinon le
+# d3d12 builtin de Wine (repli D3D11) est utilise. Cherche $R/vkd3d/*.dll au lancement.
+mkdir -p "$STAGE/vkd3d"
+for d in d3d12core d3d12; do
+   cp "$R/build/vkd3d-winarm64ec/libs/$d/$d.dll" "$STAGE/vkd3d/" 2>/dev/null || true
+done
+
 # Outils de generation de code de Mesa : ils ne servent qu'a construire, et
 # mesa_clc tirerait tout LLVM dans le runtime.
 rm -f "$STAGE/prefix/bin/mesa_clc" "$STAGE/prefix/bin/kk_clc" "$STAGE/prefix/bin/vtn_bindgen2"
