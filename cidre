@@ -79,8 +79,20 @@ SCMD_HOME="$CIDRE_DIR/steamcmd"
 SCMD_ID="-private_ip_override 10.$((254 - ($$ >> 16 & 1))).$(($$ >> 8 & 255)).$(($$ & 255))"
 # session memorisee, mot de passe demande au terminal s'il le faut
 scmd() { mkdir -p "$SCMD_HOME"; scmd_garde env HOME="$SCMD_HOME" "$SCMD" $SCMD_ID "$@"; }
+# Le petit outil natif (tests/cidre_outil.c) : le pseudo-terminal prete a
+# SteamCMD et la lecture des caches binaires du client Steam. Un runtime
+# installe le livre construit -- un Mac sans outils de developpement n'a ni
+# Python ni compilateur. Un depot de developpement, lui, a la source : on l'y
+# construit au premier besoin, et quand elle a change.
+OUTIL="$R/build/cidre-outil"
+outil_pret() {
+   if [ -f "$R/tests/cidre_outil.c" ] && { [ ! -x "$OUTIL" ] || [ "$R/tests/cidre_outil.c" -nt "$OUTIL" ]; }; then
+      sh "$R/tests/construire_cidre_outil.sh" >&2 || return 1
+   fi
+   [ -x "$OUTIL" ] || { echo "Runtime incomplet : $OUTIL absent. Reinstalle le runtime Cidre." >&2; return 1; }
+}
 # session memorisee ou rien : jamais de tentative de mot de passe (code 3)
-scmd_memorise() { mkdir -p "$SCMD_HOME"; scmd_garde env HOME="$SCMD_HOME" python3 "$R/tests/steamcmd_session.py" "$SCMD" $SCMD_ID "$@"; }
+scmd_memorise() { outil_pret || return 1; mkdir -p "$SCMD_HOME"; scmd_garde env HOME="$SCMD_HOME" "$OUTIL" session "$SCMD" $SCMD_ID "$@"; }
 # Filet : l'option n'est pas documentee et SteamCMD se met a jour seul. Si le
 # client a quand meme ete coupe pendant la commande, il ne se reconnecte pas de
 # lui-meme : on le lui demande, et on le dit (fd 3 : la sortie de SteamCMD est
@@ -107,21 +119,7 @@ resolve_steamcmd() {
 # nom de compte Steam (MostRecent) depuis loginusers.vdf, sinon CIDRE_STEAM_USER
 steam_user() {
    [ -n "${CIDRE_STEAM_USER:-}" ] && { echo "$CIDRE_STEAM_USER"; return; }
-   python3 - "$STEAM/config/loginusers.vdf" 2>/dev/null <<'PY'
-import sys,re
-try: t=open(sys.argv[1]).read()
-except Exception: sys.exit(1)
-blocks=re.findall(r'"\d{17}"\s*\{(.*?)\n\t\}', t, re.S) or re.findall(r'\{(.*?)\}', t, re.S)
-pick=None
-for b in blocks:
-    acc=re.search(r'"AccountName"\s*"([^"]+)"', b)
-    if acc and re.search(r'"MostRecent"\s*"1"', b): pick=acc.group(1); break
-if not pick:
-    for b in blocks:
-        acc=re.search(r'"AccountName"\s*"([^"]+)"', b)
-        if acc: pick=acc.group(1); break
-print(pick or "")
-PY
+   sh "$R/tests/compte_steam.sh" "$STEAM/config/loginusers.vdf" 2>/dev/null
 }
 
 # plateforme reellement INSTALLEE (definitif d'apres les fichiers)
@@ -388,6 +386,7 @@ case "$cmd" in
     # le cache du client Steam donne les noms et les plateformes. Les licences
     # sont gardees en cache ; --refresh les redemande.
     CACHE="$CIDRE_DIR/cache/licences.txt"
+    outil_pret || exit 1
     if [ ! -s "$CACHE" ] || [ "$MAJ" = oui ]; then
       SCMD=$(resolve_steamcmd)
       [ -n "$SCMD" ] || { echo "SteamCMD introuvable (ni tools/steamcmd/ ni PATH)." >&2; exit 1; }
@@ -405,13 +404,9 @@ case "$cmd" in
       mv "$CACHE.tmp" "$CACHE"
     fi
     if [ "$JSON" = oui ]; then
-      python3 "$R/tests/bibliotheque_steam.py" "$CACHE" $(appids)
+      "$OUTIL" bibliotheque "$CACHE" $(appids)
     else
-      python3 "$R/tests/bibliotheque_steam.py" "$CACHE" $(appids) | python3 -c '
-import json, sys
-print("%-9s %-40s %-15s %s" % ("APPID", "JEU", "PLATEFORMES", "INSTALLE"))
-for j in json.load(sys.stdin):
-    print("%-9s %-40.40s %-15s %s" % (j["appid"], j["nom"], ",".join(j["plateformes"]), "oui" if j["installe"] else ""))'
+      "$OUTIL" bibliotheque --texte "$CACHE" $(appids)
     fi ;;
   updates|majs)
     # Le build installe de chaque jeu, compare a celui de la branche publique.
@@ -432,14 +427,8 @@ for j in json.load(sys.stdin):
       mv "$CACHE.tmp" "$CACHE"
     fi
     [ -s "$CACHE" ] || { [ "$JSON" = oui ] && echo "[]"; exit 0; }
-    if [ "$JSON" = oui ]; then
-      python3 "$R/tests/majs_steam.py" "$CACHE" $paires
-    else
-      python3 "$R/tests/majs_steam.py" "$CACHE" $paires | python3 -c '
-import json, sys
-for j in json.load(sys.stdin):
-    print("%-9s %s" % (j["appid"], "a jour" if j["a_jour"] else "MISE A JOUR : build %s -> %s" % (j["build_installe"], j["build_disponible"])))'
-    fi ;;
+    [ "$JSON" = oui ] && texte=0 || texte=1
+    LC_ALL=C awk -v paires="$paires" -v texte=$texte -f "$R/tests/majs_steam.awk" "$CACHE" ;;
   login)
     SCMD=$(resolve_steamcmd)
     [ -n "$SCMD" ] || { echo "SteamCMD introuvable (ni tools/steamcmd/ ni PATH)." >&2; exit 1; }

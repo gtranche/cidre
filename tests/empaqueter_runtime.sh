@@ -60,8 +60,8 @@ livrer() { # <chemin relatif au depot>
 }
 for f in etape2_pile_arm64ec.sh lancer_depuis_steam.sh brancher_jeux_steam.sh \
          installer_agent_steam.sh preparer_pont_steam_arm64.sh sync_saves_steam.sh \
-         installer_fex.sh profil_cidre.sh cidre_install.sh bibliotheque_steam.py \
-         majs_steam.py steamcmd_session.py configurer_cidre.sh langue_jeu.sh; do
+         installer_fex.sh profil_cidre.sh cidre_install.sh compte_steam.sh \
+         majs_steam.awk brancher_jeux_steam.awk configurer_cidre.sh langue_jeu.sh; do
    livrer "tests/$f"
 done
 # La CLI `cidre` : le contrat que pilote Verger (list/info --json, play, dl, sync).
@@ -75,6 +75,19 @@ for f in jeux.conf saves.conf profils.toml langues.conf; do livrer "outil-steam/
 # patiente pas apres un client Windows absent). preparer_pont_steam_arm64.sh le
 # lit en $R/build/faux_steam.exe et le depose dans le prefixe.
 cp "$R/build/faux_steam.exe" "$STAGE/build/" 2>/dev/null || true
+
+echo "== cidre-outil (terminal de SteamCMD, caches binaires de Steam) =="
+# Construit ici, depuis la source commitee : la machine qui recoit le runtime
+# n'a ni compilateur ni Python (sans les outils de developpement d'Apple,
+# /usr/bin/python3 n'est qu'un relais qui propose de les installer). La source
+# n'est pas livree : en la voyant, `cidre` voudrait reconstruire l'outil.
+livrer tests/cidre_outil.c
+sh "$R/tests/construire_cidre_outil.sh" "$STAGE/tests/cidre_outil.c" "$STAGE/build/cidre-outil"
+rm "$STAGE/tests/cidre_outil.c"
+# Garde-fou : rien de ce qu'on livre ne doit appeler python3.
+if grep -rnE '(^|[^[:alnum:]_/.-])python3?([^[:alnum:]_.-]|$)' "$STAGE/cidre" "$STAGE/tests" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#'; then
+   echo "un script livre appelle python : un Mac sans outils de developpement ne l'a pas" >&2; exit 1
+fi
 
 echo "$CIDRE_VERSION" >"$STAGE/VERSION"
 
