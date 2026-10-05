@@ -146,6 +146,7 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
   cidre info <id> [--json]        fiche d'un jeu : plateforme, taille, chemin, options actives
   cidre play <id>                 lance le jeu (natif via Steam, ou par la pile Cidre)
   cidre running [--json]          les jeux en cours
+  cidre log <id> [lignes]         la fin du journal du dernier lancement d'un jeu (sans les traces)
   cidre set <id> <option> <valeur>   regle une option de lancement du jeu (profils.toml)
   cidre unset <id> [option]       revient au reglage livre (sans option : toutes)
                                   <id> = defaut : le reglage general, que suit tout jeu sans reglage propre
@@ -265,6 +266,20 @@ case "$cmd" in
     else
       [ -n "$en_cours" ] && printf '%s\n' $en_cours
     fi ;;
+  log|journal)
+    # La fin utile du journal d'un jeu, pour un rapport d'incident : son dernier
+    # lancement, sans les lignes de trace (elles pesent des dizaines de Mo).
+    id=${1:?usage: cidre log <id> [lignes]}; n=${2:-200}
+    case $id in ''|*[!a-z0-9-]*) echo "id invalide : $id" >&2; exit 2 ;; esac
+    case $n in ''|*[!0-9]*) echo "usage: cidre log <id> [lignes]" >&2; exit 2 ;; esac
+    J="$R/build/logs/steam-$id.log"
+    [ -f "$J" ] || exit 0
+    # On ne relit que la fin du fichier : le debut d'un lancement tres bavard
+    # peut en sortir, on donne alors ce qu'on a.
+    tail -c 12000000 "$J" | LC_ALL=C grep -av ':trace:' | LC_ALL=C awk '
+      /^=== [0-9]/ { n = 0 }          # un nouveau lancement : on repart de la
+      { l[++n] = $0 }
+      END { for (i = 1; i <= n; i++) print l[i] }' | tail -n "$n" ;;
   chemin)
     # le dossier d'un jeu (pour les scripts du runtime)
     id=${1:?usage: cidre chemin <id>}
