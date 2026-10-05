@@ -17,11 +17,49 @@
 set -e
 R=$(cd "$(dirname "$0")/.." && pwd)
 STEAM=${STEAM:-$HOME/Library/Application Support/Steam}
-CMD="$R/tests/lancer_depuis_steam.sh %command%"
 MODE=${1:-montrer}
 
-F=$(ls "$STEAM"/userdata/*/config/localconfig.vdf 2>/dev/null | head -1)
+# L'option de lancement. Steam la decoupe en arguments a la maniere d'un shell :
+# il ecrit lui-meme %command% entre apostrophes quand le chemin du jeu a un
+# espace (« Application Support »), et le jeu arrive en un seul argument
+# (logs/gameprocess_log.txt). Un runtime installe par Verger vit lui aussi sous
+# « Application Support » : son chemin prend donc les memes apostrophes, qui
+# n'ont pas besoin d'echappement dans le VDF. Un chemin sans rien de special
+# reste nu, comme il l'a toujours ete.
+LANCEUR="$R/tests/lancer_depuis_steam.sh"
+case $LANCEUR in
+   *[\'\"\\]*)
+      echo "chemin du runtime avec apostrophe, guillemet ou barre oblique inverse :" >&2
+      echo "  $R" >&2
+      echo "Steam ne saurait pas le relire dans une option de lancement. Deplacez-le." >&2
+      exit 2 ;;
+   *[!A-Za-z0-9/._-]*) CMD="'$LANCEUR' %command%" ;;
+   *) CMD="$LANCEUR %command%" ;;
+esac
+
+# Le compte : userdata a un dossier par compte, nomme par la partie basse de
+# son identifiant 64 bits, plus « anonymous » et « 0 » qui ne sont a personne.
+# On prend celui que le client a ouvert en dernier, d'apres
+# config/loginusers.vdf (MostRecent, sinon le Timestamp le plus grand) ; a
+# defaut, le localconfig.vdf modifie le plus recemment parmi les vrais comptes.
+ID64=$(LC_ALL=C awk '
+   /^[ \t]*"[0-9]+"[ \t\r]*$/ { id = $0; gsub(/[^0-9]/, "", id) }
+   /"MostRecent"[ \t]*"1"/ { recent = id }
+   match($0, /"Timestamp"[ \t]*"[0-9]+"/) {
+      t = substr($0, RSTART, RLENGTH - 1); sub(/.*"/, "", t)
+      if (t + 0 >= max) { max = t + 0; dernier = id }
+   }
+   END { print (recent != "" ? recent : dernier) }
+' "$STEAM/config/loginusers.vdf" 2>/dev/null || true)
+F=
+case $ID64 in
+   ''|*[!0-9]*) ;;
+   *) F="$STEAM/userdata/$((ID64 - 76561197960265728))/config/localconfig.vdf" ;;
+esac
+[ -f "$F" ] || F=$(ls -t "$STEAM"/userdata/[1-9]*/config/localconfig.vdf 2>/dev/null | head -1)
 [ -f "$F" ] || { echo "localconfig.vdf introuvable sous $STEAM/userdata" >&2; exit 2; }
+echo "compte Steam : $(basename "$(dirname "$(dirname "$F")")")"
+echo
 
 # Un jeu a-t-il une version macOS NATIVE ? -- un bundle .app, ou un executable
 # Mach-O dans son depot. Si oui, on ne l'enveloppe pas : Steam le lance
@@ -75,20 +113,22 @@ if pgrep -f "Steam.AppBundle/Steam/Contents/MacOS/steam_osx" >/dev/null 2>&1; th
    exit 1
 fi
 
-cp -p "$F" "$F.sauvegarde-$(date '+%Y%m%d-%H%M%S')"
-# APPIDS, la liste des jeux ou poser (ou retirer) l'option, reste vide : elle
-# n'est jamais arrivee jusqu'a l'ecriture (l'ancien script Python la lisait sur
-# une entree que son propre texte occupait), et seul le retrait sur les jeux
-# natifs a tourne. La brancher pour de bon ecrirait $CMD chez tous les jeux
-# Windows ; or un runtime installe par Verger vit sous « Application Support »,
-# et cet espace coupe l'option en deux : a proteger d'abord.
 # Le fichier est recrit sur place (memes droits), en gardant sa derniere ligne
-# telle qu'elle est.
+# telle qu'elle est -- et seulement s'il change : l'agent de session relance ce
+# script toutes les demi-heures, inutile de sauvegarder et de recrire a chaque
+# fois un fichier deja bon.
 TMP="$F.cidre-$$"
 [ -n "$(tail -c 1 "$F")" ] && SANS_FIN=1 || SANS_FIN=
-LC_ALL=C RETIRER=$([ "$MODE" = "--retirer" ] && echo 1) CMD="$CMD" APPIDS="" \
+LC_ALL=C RETIRER=$([ "$MODE" = "--retirer" ] && echo 1) CMD="$CMD" \
+   APPIDS="$(printf '%s' "$JEUX" | cut -f1 | tr '\n' ' ')" \
    NATIFS="$(printf '%s' "$IGNORES" | cut -f1 | tr '\n' ' ')" \
    SORTIE="$TMP" SANS_FIN=$SANS_FIN awk -f "$R/tests/brancher_jeux_steam.awk" "$F"
+if cmp -s "$TMP" "$F"; then
+   rm -f "$TMP"
+   echo; echo "rien a changer."
+   exit 0
+fi
+cp -p "$F" "$F.sauvegarde-$(date '+%Y%m%d-%H%M%S')"
 cat "$TMP" >"$F"
 rm -f "$TMP"
 echo; echo "fait. Rouvrez Steam."
