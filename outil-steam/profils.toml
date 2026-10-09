@@ -15,6 +15,9 @@
 #                    ou un code : fr, en, de, es, it, pt, ru, pl, ja, ko, zh. Pose
 #                    la locale Windows (LC_ALL) et, pour les jeux de la table
 #                    outil-steam/langues.conf, leur fichier de reglages.
+#   journal_detaille laisse Wine ecrire ses messages d'erreur dans le journal du jeu
+#                    (WINEDEBUG=err+all), au lieu de le faire taire. Pour comprendre
+#                    un jeu qui ne demarre pas ; un peu plus lent, a couper ensuite.
 #   tso              emulation de l'ordre memoire x86 par FEX. false = gros gain
 #                    CPU (jusqu'a 3,7x mesure), risque de course sur du lock-free.
 #   vsync            false = syncInterval 0 (plus de plafond vblank ; tearing possible).
@@ -44,6 +47,7 @@
 
 [defaut]
 langue = "auto"
+journal_detaille = false
 tso = true
 vsync = true
 hud = false

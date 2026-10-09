@@ -156,6 +156,7 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
   cidre saves set <id> <dossier>  dire ou un jeu range ses sauvegardes (unset : revenir au reglage livre)
   cidre sync <id|all> [backup|restore]   sauvegarder vers iCloud, ou restaurer ce qui y est plus recent
   cidre status [--json]           version du runtime, prerequis, etat de l'installation
+  cidre doctor                    diagnostic : ce qui est la, ce qui tourne, et si Wine demarre (texte a copier)
   cidre setup                     configure le runtime apres une installation ou une mise a jour
  Steam
   cidre library [--json] [--refresh]   les jeux que possede ton compte (installes ou non)
@@ -445,6 +446,8 @@ case "$cmd" in
       echo "spirv-tools  : $sp   (brew install spirv-tools)"
       echo "freetype     : $ft   (brew install freetype)"
     fi ;;
+  doctor|diagnostic)
+    sh "$R/tests/diagnostic_cidre.sh" ;;
   setup|configurer)
     sh "$R/tests/configurer_cidre.sh" ;;
   set)
@@ -452,7 +455,7 @@ case "$cmd" in
     [ -n "$id" ] && [ -n "$cle" ] && [ -n "$val" ] || { echo "usage: cidre set <id|defaut> <option> <valeur>" >&2; exit 2; }
     [ "$id" = defaut ] || connu "$id" || { echo "jeu inconnu : $id" >&2; exit 1; }
     case $cle in
-      tso|vsync|hud|overlay|async|narrow_barriers|eac_untrusted|luajit|plein_ecran|gamemode)
+      journal_detaille|tso|vsync|hud|overlay|async|narrow_barriers|eac_untrusted|luajit|plein_ecran|gamemode)
         case $val in true|false) ;; *) echo "$cle attend true ou false" >&2; exit 2 ;; esac ;;
       fils_compilation)
         case $val in ''|*[!0-9]*) echo "fils_compilation attend un entier (0 = defaut DXVK)" >&2; exit 2 ;; esac
@@ -461,7 +464,7 @@ case "$cmd" in
         # une chaine : ecrite entre guillemets dans le profil (TOML)
         case $val in auto|fr|en|de|es|it|pt|ru|pl|ja|ko|zh) val="\"$val\"" ;;
           *) echo "langue attend auto ou un code : fr, en, de, es, it, pt, ru, pl, ja, ko, zh" >&2; exit 2 ;; esac ;;
-      *) echo "option inconnue : $cle (tso, vsync, hud, overlay, async, narrow_barriers, fils_compilation, eac_untrusted, luajit, plein_ecran, gamemode, langue)" >&2; exit 2 ;;
+      *) echo "option inconnue : $cle (journal_detaille, tso, vsync, hud, overlay, async, narrow_barriers, fils_compilation, eac_untrusted, luajit, plein_ecran, gamemode, langue)" >&2; exit 2 ;;
     esac
     CIDRE_PROFILS=${CIDRE_PROFILS:-$CIDRE_DIR/profils.toml} sh "$R/tests/profil_cidre.sh" "$id" set "$cle" "$val" ;;
   unset)

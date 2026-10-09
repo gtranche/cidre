@@ -196,11 +196,32 @@ if [ "$(head -c 2 "$DOSSIER/$PROG" 2>/dev/null)" != "MZ" ]; then
    exec "./$PROG" "$@"
 fi
 
+# Journal detaille : par defaut on fait taire Wine (WINEDEBUG=-all), ce qui rend
+# muet aussi un Wine qui ne demarre pas. journal_detaille = true lui laisse ses
+# messages d'erreur, pour le client de service comme pour le jeu.
+JOURNAL_WINE=-all
+if [ "$(opt journal_detaille CIDRE_JOURNAL_DETAILLE)" = true ]; then
+   JOURNAL_WINE=err+all,fixme-all
+   [ -n "${WINEDEBUG:-}" ] || export WINEDEBUG=$JOURNAL_WINE
+   echo "    journal detaille : WINEDEBUG=$JOURNAL_WINE" >>"$JOURNAL"
+fi
+
 # Le client de service : un seul a la fois, reutilise s'il tourne deja.
 if ! pgrep -f 'c:\\faux_steam.exe' >/dev/null 2>&1; then
-   WINEDEBUG=-all CIDRE_OVERLAY_DYLIB= sh "$R/tests/etape2_pile_arm64ec.sh" 'c:\faux_steam.exe' >>"$JOURNAL" 2>&1 &
+   WINEDEBUG=$JOURNAL_WINE CIDRE_OVERLAY_DYLIB= sh "$R/tests/etape2_pile_arm64ec.sh" 'c:\faux_steam.exe' >>"$JOURNAL" 2>&1 &
+   # On attend SA ligne « inscrit » : celle d'un lancement precedent est deja
+   # dans le journal, on ne compte que ce qui s'y ajoute.
+   # (`|| true` : grep rend 1 quand il compte zero, et ce script est en `set -e`)
+   inscrits() { grep -c "inscrit" "$JOURNAL" 2>/dev/null || true; }
+   avant=$(inscrits); avant=${avant:-0}
    i=0
-   while [ $i -lt 60 ] && ! grep -q "inscrit" "$JOURNAL" 2>/dev/null; do sleep 1; i=$((i + 1)); done
+   while [ $i -lt 60 ]; do
+      n=$(inscrits); [ "${n:-0}" -gt "$avant" ] && break
+      sleep 1; i=$((i + 1))
+   done
+   # Sans lui, le jeu ne trouvera pas Steam ; et s'il n'a pas demarre, le jeu ne
+   # demarrera sans doute pas non plus. Le dire, plutot que se taire.
+   [ $i -lt 60 ] || echo "    client de service : pas demarre apres 60 s -- Wine ne repond pas ? (\`cidre doctor\` le dira)" >>"$JOURNAL"
 fi
 
 # Certains jeux font lancer par Steam un « lanceur » que la pile ne sait pas
@@ -278,8 +299,10 @@ cd "$DOSSIER"
 # restauration des sauvegardes, qui peut ramener ce meme fichier d'iCloud.
 [ "$LANGUE" = auto ] || sh "$R/tests/langue_jeu.sh" "$JEU" "$LANGUE" >>"$JOURNAL" 2>&1 || true
 # On ne fait PLUS exec : on attend la fin du jeu pour sauvegarder apres coup.
-CIDRE_OVERLAY_DYLIB=$OVERLAY sh "$R/tests/etape2_pile_arm64ec.sh" "$PROG" "$@" >>"$JOURNAL" 2>&1
-RC=$?
+# `&& ... ||` : ce script est en `set -e`, et un jeu qui sort sur un code d'erreur
+# (un plantage, un arret force) l'arretait ici meme, AVANT la sauvegarde ci-dessous.
+CIDRE_OVERLAY_DYLIB=$OVERLAY sh "$R/tests/etape2_pile_arm64ec.sh" "$PROG" "$@" >>"$JOURNAL" 2>&1 && RC=0 || RC=$?
+[ $RC -eq 0 ] || echo "    le jeu s'est termine sur le code $RC" >>"$JOURNAL"
 
 # Sauvegarde vers le dossier synchronise apres la sortie du jeu (meme en cas de
 # crash : on sauve l'etat tel quel). Non bloquant.
