@@ -903,10 +903,11 @@ diff -urN a/src/kosmickrisp/compiler/msl_nir_lower_common.c b/src/kosmickrisp/co
 diff -urN a/src/kosmickrisp/compiler/nir_to_msl.c b/src/kosmickrisp/compiler/nir_to_msl.c
 --- a/src/kosmickrisp/compiler/nir_to_msl.c
 +++ b/src/kosmickrisp/compiler/nir_to_msl.c
-@@ -1077,8 +1077,67 @@
+@@ -1076,9 +1076,68 @@
+       return "volatile device";
     }
     return access & ACCESS_COHERENT ? "coherent device" : "device";
- }
++}
 +
 +static const char *alu_fp_math_mode_pragma(struct nir_to_msl_ctx *ctx,
 +                                           const nir_alu_instr *alu);
@@ -915,7 +916,7 @@ diff -urN a/src/kosmickrisp/compiler/nir_to_msl.c b/src/kosmickrisp/compiler/nir
 +msl_def_stays_in_scope(const nir_def *def)
 +{
 +   const nir_cf_node *scope = nir_def_instr((nir_def *)def)->block->cf_node.parent;
- 
++
 +   if (scope == NULL)
 +      return false;
 +
@@ -954,8 +955,8 @@ diff -urN a/src/kosmickrisp/compiler/nir_to_msl.c b/src/kosmickrisp/compiler/nir
 +      return false;
 +
 +   return msl_def_stays_in_scope(def);
-+}
-+
+ }
+ 
  static void
 +msl_emit_dest(struct nir_to_msl_ctx *ctx, const nir_def *def)
 +{
@@ -1017,6 +1018,30 @@ diff -urN a/src/kosmickrisp/compiler/nir_to_msl.c b/src/kosmickrisp/compiler/nir
           }
        }
     }
+@@ -2534,6 +2595,23 @@
+    emit_output_return(&ctx, shader);
+    ctx.indentlevel--;
+    P(&ctx, "}\n");
++   if (shader->info.stage == MESA_SHADER_FRAGMENT && getenv("CIDRE_TEX_STATS")) {
++      unsigned tex_handles = 0, samples = 0;
++      nir_foreach_block(block, impl) {
++         nir_foreach_instr(instr, block) {
++            if (instr->type == nir_instr_type_tex) {
++               samples++;
++            } else if (instr->type == nir_instr_type_intrinsic) {
++               nir_intrinsic_instr *in = nir_instr_as_intrinsic(instr);
++               if (in->intrinsic == nir_intrinsic_load_texture_handle_kk ||
++                   in->intrinsic == nir_intrinsic_load_depth_texture_kk)
++                  tex_handles++;
++            }
++         }
++      }
++      fprintf(stderr, "CIDRE_TEX_STATS frag handles=%u samples=%u\n",
++              tex_handles, samples);
++   }
+    char *ret = ctx.text->buf;
+    _mesa_hash_table_destroy(ctx.types, NULL);
+    ralloc_steal(options->mem_ctx, ctx.text->buf);
 diff -urN a/src/kosmickrisp/compiler/nir_to_msl.h b/src/kosmickrisp/compiler/nir_to_msl.h
 --- a/src/kosmickrisp/compiler/nir_to_msl.h
 +++ b/src/kosmickrisp/compiler/nir_to_msl.h
