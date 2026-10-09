@@ -220,7 +220,7 @@ SONDE="$R/build/sonde-wx"
 # un depot de developpement la construit au besoin ; un runtime installe la recoit
 [ -x "$SONDE" ] || { [ -f "$R/tests/sonde_wx.c" ] && cc -arch arm64 -O1 -o "$SONDE" "$R/tests/sonde_wx.c" 2>/dev/null; }
 if [ -x "$SONDE" ]; then
-   limite 60 "$SONDE" || echo "  -> au moins un essai a echoue"
+   limite 60 "$SONDE" || echo "  -> la sonde signale un probleme (voir sa derniere ligne)"
    cut -c1-200 "$T/outil" | sed 's/^/  | /'
 else
    echo "  saute : la sonde n'est pas livree dans ce runtime"

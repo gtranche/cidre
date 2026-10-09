@@ -294,6 +294,13 @@ case "$cmd" in
       pkill -KILL -f "$LANCEURS" 2>/dev/null
     fi
     [ -x "$WS" ] && "$WS" -k9 2>/dev/null
+    # 4. Les orphelins : des processus Windows de CE runtime qui ont survecu a
+    #    leur serveur (vu sur macOS 27 : services.exe, plugplay.exe... restes
+    #    des heures). On les reconnait au binaire Wine qu'ils ont en memoire --
+    #    ceux d'un autre Wine (CrossOver, Whisky) ne sont pas touches.
+    for pid in $(ps -axo pid=,command= | awk '$2 ~ /^[A-Za-z]:\\/ { print $1 }'); do
+      lsof -a -p "$pid" -d txt -Fn 2>/dev/null | grep -qF "n$R/wine/" && kill -KILL "$pid" 2>/dev/null
+    done
     rm -f "${EN_COURS:?}"/* 2>/dev/null
     echo "arrete" ;;
   log|journal)

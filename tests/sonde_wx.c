@@ -289,21 +289,22 @@ static const struct
     const char *nom;
     int (*essai)( void );
     int methode;
+    int requis;  /* Cidre en depend ; les autres essais decrivent la machine */
 } essais[] =
 {
-    { "bascule explicite, sans faute             ", essai_explicite, SANS_BASCULE },
-    { "faute d'execution, telle que le noyau la dit", essai_execution, SANS_BASCULE },
-    { "faute d'ecriture, telle que le noyau la dit ", essai_ecriture, SANS_BASCULE },
-    { "droit d'executer donne pendant un signal  ", essai_persistance_execution, SANS_BASCULE },
-    { "droit d'ecrire donne pendant un signal    ", essai_persistance_ecriture, SANS_BASCULE },
-    { "reprise apres faute d'execution, par l'ESR ", essai_execution, CLASSE_PAR_ESR },
-    { "reprise apres faute d'ecriture, par l'ESR  ", essai_ecriture, CLASSE_PAR_ESR },
-    { "reprise apres faute d'execution, par le pc ", essai_execution, CLASSE_PAR_ADRESSE },
-    { "reprise apres faute d'ecriture, par le pc  ", essai_ecriture, CLASSE_PAR_ADRESSE },
-    { "reprise apres faute d'execution, hors signal", essai_execution, HORS_SIGNAL },
-    { "reprise apres faute d'ecriture, hors signal ", essai_ecriture, HORS_SIGNAL },
-    { "va-et-vient ecrire/executer, dans le signal ", essai_va_et_vient, CLASSE_PAR_ESR },
-    { "va-et-vient ecrire/executer, hors signal    ", essai_va_et_vient, HORS_SIGNAL },
+    { "bascule explicite, sans faute             ", essai_explicite, SANS_BASCULE, 1 },
+    { "faute d'execution, telle que le noyau la dit", essai_execution, SANS_BASCULE, 0 },
+    { "faute d'ecriture, telle que le noyau la dit ", essai_ecriture, SANS_BASCULE, 0 },
+    { "droit d'executer donne pendant un signal  ", essai_persistance_execution, SANS_BASCULE, 0 },
+    { "droit d'ecrire donne pendant un signal    ", essai_persistance_ecriture, SANS_BASCULE, 0 },
+    { "reprise apres faute d'execution, par l'ESR ", essai_execution, CLASSE_PAR_ESR, 0 },
+    { "reprise apres faute d'ecriture, par l'ESR  ", essai_ecriture, CLASSE_PAR_ESR, 0 },
+    { "reprise apres faute d'execution, par le pc ", essai_execution, CLASSE_PAR_ADRESSE, 0 },
+    { "reprise apres faute d'ecriture, par le pc  ", essai_ecriture, CLASSE_PAR_ADRESSE, 0 },
+    { "reprise apres faute d'execution, hors signal", essai_execution, HORS_SIGNAL, 1 },
+    { "reprise apres faute d'ecriture, hors signal ", essai_ecriture, HORS_SIGNAL, 1 },
+    { "va-et-vient ecrire/executer, dans le signal ", essai_va_et_vient, CLASSE_PAR_ESR, 0 },
+    { "va-et-vient ecrire/executer, hors signal    ", essai_va_et_vient, HORS_SIGNAL, 1 },
 };
 
 int main( void )
@@ -335,10 +336,14 @@ int main( void )
         {
             if (WTERMSIG( etat ) == SIGALRM) printf( "BLOQUE : pas fini apres 5 s" );
             else printf( "TUE par le signal %d", WTERMSIG( etat ) );
-            echecs++;
+            echecs += essais[i].requis;
         }
-        else if (WEXITSTATUS( etat )) echecs++;
+        else if (WEXITSTATUS( etat )) echecs += essais[i].requis;
         printf( "\n" );
     }
+    /* Seuls comptent les essais dont Cidre depend (le droit d'executer donne
+     * hors du signal) ; qu'il ne tienne pas dans le signal decrit la machine. */
+    printf( "%s\n", echecs ? "=> le mecanisme dont Cidre depend NE FONCTIONNE PAS ici"
+                            : "=> le mecanisme dont Cidre depend fonctionne ici" );
     return echecs ? 1 : 0;
 }
