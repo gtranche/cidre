@@ -146,6 +146,7 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
   cidre info <id> [--json]        fiche d'un jeu : plateforme, taille, chemin, options actives
   cidre play <id>                 lance le jeu (natif via Steam, ou par la pile Cidre)
   cidre running [--json]          les jeux en cours
+  cidre stop [<id>]               force l'arret d'un jeu lance par Cidre (et de tout ce que Wine fait tourner)
   cidre log <id> [lignes]         la fin du journal du dernier lancement d'un jeu (sans les traces)
   cidre set <id> <option> <valeur>   regle une option de lancement du jeu (profils.toml)
   cidre unset <id> [option]       revient au reglage livre (sans option : toutes)
@@ -266,6 +267,34 @@ case "$cmd" in
     else
       [ -n "$en_cours" ] && printf '%s\n' $en_cours
     fi ;;
+  stop|arreter)
+    # Force l'arret de ce qui tourne par la pile Cidre : un jeu qui ne repond
+    # plus, ou qui n'a jamais affiche sa fenetre. Wine n'a qu'un prefixe : on
+    # arrete tout ce qu'il fait tourner, pas un jeu parmi d'autres.
+    id=${1:-}
+    if [ -n "$id" ]; then
+      connu "$id" || { echo "jeu inconnu : $id" >&2; exit 1; }
+      [ "$(plat "$id")" = macos ] && { echo "$(nom "$id") est un jeu natif : quitte-le depuis le jeu, ou depuis Steam." >&2; exit 1; }
+    fi
+    export WINEPREFIX="${WINEPREFIX:-$R/wine/pfx-arm64ec}"
+    WS="$R/wine/wine11-arm64/bin/wineserver"
+    # un chemin, en motif pour pgrep (les points et les espaces y comptent)
+    motif() { printf '%s' "$1" | sed 's/[][\.*^$()+?{}|]/\\&/g'; }
+    LANCEURS="$(motif "$R/tests/")(lancer_depuis_steam|etape2_pile_arm64ec)\\.sh"
+    # 1. Demander a Wine d'arreter ses processus. Le lanceur du jeu voit alors
+    #    le jeu se terminer et finit son travail (sauvegardes, Mode Jeu).
+    [ -x "$WS" ] && "$WS" -k 2>/dev/null
+    # 2. Lui laisser quelques secondes pour ca...
+    i=0; while [ $i -lt 8 ] && pgrep -f "$LANCEURS" >/dev/null 2>&1; do sleep 1; i=$((i + 1)); done
+    # 3. ...puis arreter ce qui reste : un lanceur bloque avant meme d'avoir
+    #    demarre Wine, un serveur Wine qui ne repond plus.
+    if pgrep -f "$LANCEURS" >/dev/null 2>&1; then
+      pkill -TERM -f "$LANCEURS" 2>/dev/null; sleep 2
+      pkill -KILL -f "$LANCEURS" 2>/dev/null
+    fi
+    [ -x "$WS" ] && "$WS" -k9 2>/dev/null
+    rm -f "${EN_COURS:?}"/* 2>/dev/null
+    echo "arrete" ;;
   log|journal)
     # La fin utile du journal d'un jeu, pour un rapport d'incident : son dernier
     # lancement, sans les lignes de trace (elles pesent des dizaines de Mo).
