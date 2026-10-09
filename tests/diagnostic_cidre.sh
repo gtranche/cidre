@@ -163,7 +163,15 @@ ps -axo pid=,etime=,command= | grep -E "lancer_depuis_steam|etape2_pile|wineserv
    | awk '{printf "  %s  depuis %s  ", $1, $2; for (i = 3; i <= NF && i <= 5; i++) printf "%s ", $i; print ""}' | cut -c1-200 | head -30 >"$T/processus"
 if [ -s "$T/processus" ]; then cat "$T/processus"; else echo "  aucun lanceur, aucun processus Wine"; fi
 # Wine tournait-il deja pour CE runtime ? (on ne lui ajoute alors pas de client Steam)
-DEJA=$(ps -axo pid=,command= | grep -F "$R/wine/" | grep wineserver | grep -v grep | head -1)
+serveur() { ps -axo pid=,command= | grep -F "$R/wine/" | grep wineserver | grep -v grep | head -1; }
+DEJA=$(serveur)
+# Juste apres `cidre setup` (une installation, une mise a jour), le serveur de
+# Wine s'attarde quelques secondes sans qu'aucun jeu ne tourne : on le laisse
+# partir plutot que de sauter l'essai x86-64.
+i=0
+while [ -n "$DEJA" ] && [ $i -lt 30 ] && ! pgrep -f "lancer_depuis_steam|faux_steam" >/dev/null 2>&1; do
+   sleep 1; i=$((i + 1)); DEJA=$(serveur)
+done
 LANCE=1
 
 titre "Wine repond-il ?"
