@@ -5,8 +5,23 @@
 set -e
 R=$(cd "$(dirname "$0")/.." && pwd)
 TAG=${1:?usage: publier_release.sh vX.Y.Z [notes]}
-NOTES=${2:-"Runtime Cidre $TAG (pile deja compilee). Install : sh installer_cidre.sh"}
 command -v gh >/dev/null || { echo "gh requis (brew install gh ; gh auth login)" >&2; exit 1; }
+
+# Les notes de la release. Sans texte fourni : ce qui a change depuis la release
+# precedente, c'est-a-dire le sujet de chaque commit entre son etiquette et HEAD.
+notes_auto() {
+   prec=$(gh release list -R gtranche/cidre -L 30 --json tagName,isDraft \
+            -q "[.[] | select(.isDraft | not) | .tagName | select(. != \"$TAG\")][0]" 2>/dev/null)
+   echo "Runtime Cidre $TAG (pile deja compilee). Installation et mises a jour : par Verger, ou \`sh installer_cidre.sh\`."
+   [ -n "$prec" ] || return 0
+   # l'etiquette est creee par GitHub a la publication : on la rapatrie
+   git -C "$R" fetch -q origin "refs/tags/$prec:refs/tags/$prec" 2>/dev/null || true
+   git -C "$R" rev-parse -q --verify "refs/tags/$prec" >/dev/null || return 0
+   liste=$(git -C "$R" log --no-merges --format='- %s' "$prec..HEAD")
+   [ -n "$liste" ] || return 0
+   printf '\n## Depuis %s\n\n%s\n' "$prec" "$liste"
+}
+NOTES=${2:-$(notes_auto)}
 
 TARBALL="$R/cidre-runtime.tar.zst"
 # Le .tar.xz est celui que telecharge Verger (macOS le decompresse sans zstd) :
