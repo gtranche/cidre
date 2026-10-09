@@ -311,12 +311,15 @@ case "$cmd" in
     case $n in ''|*[!0-9]*) echo "usage: cidre log <id> [lignes]" >&2; exit 2 ;; esac
     J="$R/build/logs/steam-$id.log"
     [ -f "$J" ] || exit 0
-    # On ne relit que la fin du fichier : le debut d'un lancement tres bavard
-    # peut en sortir, on donne alors ce qu'on a.
-    tail -c 12000000 "$J" | LC_ALL=C grep -av ':trace:' | LC_ALL=C awk '
-      /^=== [0-9]/ { n = 0 }          # un nouveau lancement : on repart de la
+    # Le dernier lancement, depuis sa ligne d'en-tete. Des lignes de trace on
+    # ne garde que les premieres exceptions (journal detaille, +seh) : c'est la
+    # premiere qui dit pourquoi un jeu tombe, les suivantes se repetent.
+    debut=$(LC_ALL=C grep -ab '^=== [0-9]' "$J" | tail -1 | cut -d: -f1)
+    tail -c "+$(( ${debut:-0} + 1 ))" "$J" | LC_ALL=C awk -v max=240 '
+      /:trace:/ { if ($0 ~ /:trace:seh:/ && t < max) t++; else { coupe++; next } }
       { l[++n] = $0 }
-      END { for (i = 1; i <= n; i++) print l[i] }' | tail -n "$n" ;;
+      END { for (i = 1; i <= n; i++) print l[i]
+            if (coupe) print "    (" coupe " lignes de trace de plus, non montrees)" }' | tail -n "$n" ;;
   chemin)
     # le dossier d'un jeu (pour les scripts du runtime)
     id=${1:?usage: cidre chemin <id>}

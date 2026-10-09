@@ -168,6 +168,9 @@ case $FILS in ''|0|*[!0-9]*) : ;; *) dxvk_config "dxvk.numCompilerThreads=$FILS"
 
 JOURNAL=${PROTON_OUVERT_JOURNAL:-$R/build/logs/steam-${JEU:-inconnu}.log}
 mkdir -p "$(dirname "$JOURNAL")"
+# Un journal detaille peut peser lourd : au-dela de 30 Mo, on repart d'un
+# fichier neuf en gardant le precedent a cote.
+if [ "$(stat -f %z "$JOURNAL" 2>/dev/null || echo 0)" -gt 30000000 ]; then mv -f "$JOURNAL" "$JOURNAL.precedent"; fi
 
 [ $# -ge 1 ] || { echo "usage : a mettre dans les options de lancement Steam, suivi de %command%" >&2; exit 2; }
 
@@ -202,8 +205,11 @@ fi
 JOURNAL_WINE=-all
 if [ "$(opt journal_detaille CIDRE_JOURNAL_DETAILLE)" = true ]; then
    JOURNAL_WINE=err+all,fixme-all
-   [ -n "${WINEDEBUG:-}" ] || export WINEDEBUG=$JOURNAL_WINE
-   echo "    journal detaille : WINEDEBUG=$JOURNAL_WINE" >>"$JOURNAL"
+   # Pour le jeu, les exceptions en plus (+seh) : la premiere dit pourquoi il
+   # tombe, quand la derniere ligne d'erreur n'en montre que la consequence.
+   # `cidre log` n'en rend que le debut.
+   [ -n "${WINEDEBUG:-}" ] || export WINEDEBUG=$JOURNAL_WINE,+seh
+   echo "    journal detaille : WINEDEBUG=$WINEDEBUG" >>"$JOURNAL"
 fi
 
 # Le client de service : un seul a la fois, reutilise s'il tourne deja.
