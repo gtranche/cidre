@@ -1,0 +1,470 @@
+dxvk : vidage des sommets et des textures, pour diagnostiquer un rendu
+
+Instrumentation de l'enquete sur le texte de Surviving Mars (NOTES §278 et
+§281). Rien ne change sans variable d'environnement ; chaque crochet se reduit
+alors a un test.
+
+  PROTON_OUVERT_VIDER_SOMMETS=<fichier>   ecrit, pour les petits dessins (600
+        sommets au plus, deux cents dessins au plus), le debut du tampon de
+        sommets et les tampons de constantes des nuanceurs de sommets et de
+        fragments.
+  PROTON_OUVERT_VIDER_SOMMETS_APRES=<s>   n'ecrit rien avant ce nombre de
+        secondes, pour sauter le chargement.
+  PROTON_OUVERT_VIDER_SOMMETS_ATLAS=<n>   ne garde que les dessins dont le
+        nuanceur de fragments a une texture de n x n liee.
+  PROTON_OUVERT_VIDER_TEXTURES=<dossier>  ecrit dans ce dossier les textures a
+        leur creation (PGM ou PPM), le contenu televerse dans les textures
+        dynamiques a un octet par texel, et journalise les televersements
+        partiels (les blocs BC7 non nuls sont ecrits aussi).
+
+Ecrit le 2026-09-29 dans src/dxvk (commits 12c9644 et d7cf806 pour les notes),
+exporte seulement le 2026-10-09. S'applique apres 0085.
+
+--- a/src/d3d11/d3d11_context.cpp
++++ b/src/d3d11/d3d11_context.cpp
+@@ -1,3 +1,7 @@
++#include <atomic>
++#include <chrono>
++#include <cstdlib>
++#include <fstream>
+ #include <algorithm>
+ 
+ #include "d3d11_context.h"
+@@ -978,6 +982,10 @@
+   }
+ 
+ 
++  /* Vidage des sommets d'un dessin, pour regarder les coordonnees plutot que le
++   * resultat. Inerte sans PROTON_OUVERT_VIDER_SOMMETS, qui nomme le fichier.
++   * On ne prend que les petits dessins -- un libelle de texte fait quelques
++   * quadrilateres -- et on s'arrete apres deux cents. */
+   /* Un bloc BC7 dont les huit premiers bits sont nuls n'a pas de mode : la
+    * specification le dit reserve, et son decodage n'est pas defini. Les cartes
+    * sous Windows en rendent du noir transparent ; le materiel Apple en rend du
+@@ -1007,7 +1015,148 @@
+ 
+       if (nul)
+         blocs[i] = 0x40u;   /* mode 6, extremites et indices nuls -> (0,0,0,0) */
++    }
++  }
++
++
++  template<typename ContextType>
++  void D3D11CommonContext<ContextType>::ViderSommets(const char* quoi, UINT nb, UINT premier) {
++    /* Interroger l'environnement a chaque dessin couterait cher : on le lit une
++     * fois. Sans la variable, le crochet se reduit a un test. */
++    static const char* const ou = std::getenv("PROTON_OUVERT_VIDER_SOMMETS");
++
++    if (!ou || nb > 600u)
++      return;
++
++    /* Les premiers dessins sont ceux du chargement. Compter les dessins est peu
++     * sur -- un menu statique en demande une poignee -- alors on attend un
++     * nombre de secondes, donne par PROTON_OUVERT_VIDER_SOMMETS_APRES. */
++    static const auto debut = std::chrono::steady_clock::now();
++    static std::atomic<uint32_t> nd = { 0u };
++
++    static const char* const apres = std::getenv("PROTON_OUVERT_VIDER_SOMMETS_APRES");
++    long secondes = apres ? strtol(apres, nullptr, 10) : 0;
++
++    auto ecoule = std::chrono::duration_cast<std::chrono::seconds>(
++      std::chrono::steady_clock::now() - debut).count();
++
++    if (ecoule < secondes || nd >= 200u)
++      return;
++
++    /* Le bon discriminant n'est pas la valeur mais la ressource liee : le
++     * dessin du texte est celui dont le nuanceur de fragments a pour texture
++     * l'atlas. PROTON_OUVERT_VIDER_SOMMETS_ATLAS donne sa largeur ; sans elle
++     * on ne filtre pas. Chercher des coordonnees dans quatre mille dessins ne
++     * menait nulle part (§281). */
++    static const char* const largeur = std::getenv("PROTON_OUVERT_VIDER_SOMMETS_ATLAS");
++    uint32_t cote = largeur ? uint32_t(strtoul(largeur, nullptr, 10)) : 0u;
++    int fente = -1;
++
++    if (cote) {
++      auto& srv = m_state.srv[DxbcProgramType::PixelShader];
++
++      for (uint32_t i = 0; i < srv.maxCount && fente < 0; i++) {
++        auto& vue = srv.views[i];
++
++        if (vue == nullptr)
++          continue;
++
++        auto iv = vue->GetImageView();
++
++        if (iv != nullptr && iv->image() != nullptr
++         && iv->image()->info().extent.width  == cote
++         && iv->image()->info().extent.height == cote)
++          fente = int(i);
++      }
++
++      if (fente < 0)
++        return;
++    }
++
++    auto& vb = m_state.ia.vertexBuffers[0];
++
++    if (vb.buffer == nullptr)
++      return;
++
++    /* Chaque dessin commence a son propre sommet : lire le debut du tampon ne
++     * montrait que le premier quadrilatere de l'image, toujours le meme. */
++    auto tranche = vb.buffer->GetBufferSlice(vb.offset + size_t(premier) * vb.stride);
++
++    if (!tranche.mapPtr(0))
++      return;
++
++    uint32_t n = nd++;
++    size_t octets = std::min<size_t>(tranche.length(), size_t(nb) * vb.stride);
++    std::ofstream f(ou, std::ios::app);
++
++    if (!f)
++      return;
++
++    f << "dessin " << n << " par " << quoi << " atlas_en_fente " << fente << " nb " << nb << " premier " << premier
++      << " pas " << vb.stride << " octets " << octets << "\n";
++
++    auto v = reinterpret_cast<const float*>(tranche.mapPtr(0));
++
++    for (size_t i = 0; i < octets / 4u && i < 1536u; i++)
++      f << v[i] << (((i + 1u) % 8u) ? " " : "\n");
++
++    /* Le tampon de sommets ne porte qu'un quadrilatere unite : la position et
++     * les coordonnees d'un libelle viennent d'un tampon de constantes. On
++     * l'ecrit aussi, sans quoi on ne voit rien de ce qui nous interesse. */
++    /* Tous les tampons de constantes des deux nuanceurs, et toute ressource
++     * liee qui est un tampon : la position d'un libelle est forcement dans
++     * l'un d'eux. */
++    static const struct { DxbcProgramType t; const char* nom; } etages[] = {
++      { DxbcProgramType::VertexShader, "vs" },
++      { DxbcProgramType::PixelShader,  "ps" } };
++
++    for (auto& e : etages) {
++      auto& cbv = m_state.cbv[e.t];
++
++      for (uint32_t i = 0; i < cbv.maxCount; i++) {
++        auto& cb = cbv.buffers[i];
++
++        if (cb.buffer == nullptr)
++          continue;
++
++        auto tc = cb.buffer->GetBufferSlice(cb.constantOffset * 16u);
++
++        if (!tc.mapPtr(0))
++          continue;
++
++        size_t nc = std::min<size_t>(tc.length(), 512u);
++        auto c = reinterpret_cast<const float*>(tc.mapPtr(0));
++
++        f << "  cb " << e.nom << i << " (" << tc.length() << " o) :";
++        for (size_t k = 0; k < nc / 4u && k < 40u; k++)
++          f << " " << c[k];
++        f << "\n";
++      }
++
++      auto& srv = m_state.srv[e.t];
++
++      for (uint32_t i = 0; i < srv.maxCount; i++) {
++        auto& vue = srv.views[i];
++
++        if (vue == nullptr || vue->GetResourceType() != D3D11_RESOURCE_DIMENSION_BUFFER)
++          continue;
++
++        auto bv = vue->GetBufferView();
++
++        if (bv == nullptr || bv->buffer() == nullptr || !bv->buffer()->mapPtr(0))
++          continue;
++
++        size_t nb2 = std::min<size_t>(bv->info().size, 512u);
++        auto c = reinterpret_cast<const float*>(bv->buffer()->mapPtr(bv->info().offset));
++
++        f << "  srv " << e.nom << i << " tampon (" << bv->info().size << " o) :";
++        for (size_t k = 0; k < nb2 / 4u && k < 40u; k++)
++          f << " " << c[k];
++        f << "\n";
++      }
+     }
++
++    f << "\n";
+   }
+ 
+ 
+@@ -1020,6 +1169,8 @@
+     if (unlikely(!VertexCount))
+       return;
+ 
++    ViderSommets("Draw", VertexCount, StartVertexLocation);
++
+     VkDrawIndirectCommand draw = { };
+     draw.vertexCount   = VertexCount;
+     draw.instanceCount = 1u;
+@@ -1040,6 +1191,8 @@
+     if (unlikely(!IndexCount))
+       return;
+ 
++    ViderSommets("DrawIndexed", IndexCount, StartIndexLocation);
++
+     VkDrawIndexedIndirectCommand draw = { };
+     draw.indexCount    = IndexCount;
+     draw.instanceCount = 1u;
+@@ -1059,6 +1212,8 @@
+           UINT            StartInstanceLocation) {
+     D3D10DeviceLock lock = LockContext();
+ 
++    ViderSommets("DrawInstanced", VertexCountPerInstance, StartVertexLocation);
++
+     if (unlikely(!VertexCountPerInstance || !InstanceCount))
+       return;
+ 
+@@ -1080,6 +1235,8 @@
+           INT             BaseVertexLocation,
+           UINT            StartInstanceLocation) {
+     D3D10DeviceLock lock = LockContext();
++
++    ViderSommets("DrawIndexedInstanced", IndexCountPerInstance, StartIndexLocation);
+ 
+     if (unlikely(!IndexCountPerInstance || !InstanceCount))
+       return;
+@@ -5691,7 +5848,86 @@
+ 
+     uint32_t dstSubresource = D3D11CalcSubresource(pDstSubresource->mipLevel,
+       pDstSubresource->arrayLayer, pDstTexture->Desc()->MipLevels);
++
++    /* Journal des televersements partiels, pour voir ou un jeu pose ses
++     * glyphes dans son atlas. Inerte sans PROTON_OUVERT_VIDER_TEXTURES. */
++    static const char* const vider_tex = std::getenv("PROTON_OUVERT_VIDER_TEXTURES");
++
++    if (vider_tex) {
++      auto desc = pDstTexture->Desc();
+ 
++      Logger::info(str::format("televersement : texture ", desc->Width, "x", desc->Height,
++        " fmt ", uint32_t(desc->Format), " sous-ressource ", dstSubresource,
++        " en (", DstOffset.x, ",", DstOffset.y, ") taille ",
++        DstExtent.width, "x", DstExtent.height,
++        "  tranche offset ", StagingBuffer.offset(), " longueur ", StagingBuffer.length()));
++
++      /* Les formats compresses : on ecrit les octets bruts. Un atlas BC7 se
++       * lit ensuite bloc par bloc, ne serait-ce que pour savoir quels modes il
++       * emploie -- un decodeur se trompe sur un mode, pas sur tous. */
++      if (desc->Format == DXGI_FORMAT_BC7_TYPELESS
++       || desc->Format == DXGI_FORMAT_BC7_UNORM
++       || desc->Format == DXGI_FORMAT_BC7_UNORM_SRGB) {
++        if (StagingBuffer.buffer() != nullptr && StagingBuffer.mapPtr(0) != nullptr) {
++          static std::atomic<uint32_t> nbc7 = { 0u };
++          uint32_t n = nbc7++;
++
++          auto octets = reinterpret_cast<const uint8_t*>(StagingBuffer.mapPtr(0));
++          size_t nonnuls = 0;
++
++          for (size_t i = 0; i < StagingBuffer.length(); i++)
++            nonnuls += octets[i] != 0;
++
++          Logger::info(str::format("BC7 ", n, " en (", DstOffset.x, ",", DstOffset.y,
++            ") ", DstExtent.width, "x", DstExtent.height, " : ", nonnuls, " octets non nuls sur ",
++            StagingBuffer.length()));
++
++          if (nonnuls) {
++            std::string nom = str::format(std::getenv("PROTON_OUVERT_VIDER_TEXTURES"),
++              "/bc7-", n, "-", DstExtent.width, "x", DstExtent.height,
++              "-en", DstOffset.x, "x", DstOffset.y, ".bin");
++            std::ofstream f(nom, std::ios::binary);
++
++            if (f)
++              f.write(reinterpret_cast<const char*>(octets), StagingBuffer.length());
++          }
++        }
++      }
++
++      /* Pour les formats non compresses a quatre octets, on ecrit ce que le jeu
++       * televerse : si un libelle de texte arrive deja troue, la faute est en
++       * amont du materiel. */
++      if ((desc->Format == DXGI_FORMAT_B8G8R8A8_TYPELESS
++        || desc->Format == DXGI_FORMAT_B8G8R8A8_UNORM
++        || desc->Format == DXGI_FORMAT_R8G8B8A8_TYPELESS
++        || desc->Format == DXGI_FORMAT_R8G8B8A8_UNORM)
++       && StagingBuffer.buffer() != nullptr
++       && StagingBuffer.mapPtr(0) != nullptr) {
++        static std::atomic<uint32_t> compteur = { 0u };
++        uint32_t n = compteur++;
++
++        std::string nom = str::format(std::getenv("PROTON_OUVERT_VIDER_TEXTURES"),
++          "/televerse-", n, "-", DstExtent.width, "x", DstExtent.height, ".ppm");
++        std::ofstream f(nom, std::ios::binary);
++
++        if (f) {
++          f << "P6\n" << DstExtent.width << " " << DstExtent.height << "\n255\n";
++          auto src = reinterpret_cast<const uint8_t*>(StagingBuffer.mapPtr(0));
++
++          for (uint32_t y = 0; y < DstExtent.height; y++) {
++            for (uint32_t x = 0; x < DstExtent.width; x++) {
++              const uint8_t* t = src + (size_t(y) * DstExtent.width + x) * 4u;
++              /* On ecrit l'alpha en gris : c'est lui qui porte le texte. */
++              char v[3] = { char(t[3]), char(t[3]), char(t[3]) };
++              f.write(v, 3);
++            }
++          }
++
++          Logger::info(str::format("televersement vide : ", nom));
++        }
++      }
++    }
++
+     if (dstIsImage) {
+       EmitCs([
+         cDstImage         = pDstTexture->GetImage(),
+--- a/src/d3d11/d3d11_context.h
++++ b/src/d3d11/d3d11_context.h
+@@ -850,6 +850,8 @@
+ 
+     void BatchDraw(
+       const VkDrawIndirectCommand&            draw);
++
++    void ViderSommets(const char* quoi, UINT nb, UINT premier);
+ 
+     void BatchDrawIndexed(
+       const VkDrawIndexedIndirectCommand&     draw);
+--- a/src/d3d11/d3d11_context_imm.cpp
++++ b/src/d3d11/d3d11_context_imm.cpp
+@@ -1,3 +1,7 @@
++#include <atomic>
++#include <cstdlib>
++#include <fstream>
++
+ #include "d3d11_cmdlist.h"
+ #include "d3d11_context_imm.h"
+ #include "d3d11_device.h"
+@@ -655,7 +659,43 @@
+     bool needsUpload = mapType != uint32_t(D3D11_MAP_READ)
+       && (mapMode == D3D11_COMMON_TEXTURE_MAP_MODE_BUFFER || mapMode == D3D11_COMMON_TEXTURE_MAP_MODE_DYNAMIC);
+ 
++    /* Vidage du contenu televerse, pour regarder ce que le jeu ecrit dans une
++     * texture dynamique plutot que d'en juger a l'ecran. Inerte sans
++     * PROTON_OUVERT_VIDER_TEXTURES. On ne prend que les formats a un octet par
++     * texel : un masque de texte rasterise par le processeur en fait partie. */
+     if (needsUpload) {
++      const char* dossier = std::getenv("PROTON_OUVERT_VIDER_TEXTURES");
++      auto desc = pResource->Desc();
++
++      if (dossier && (desc->Format == DXGI_FORMAT_R8_TYPELESS
++                   || desc->Format == DXGI_FORMAT_R8_UNORM
++                   || desc->Format == DXGI_FORMAT_A8_UNORM)) {
++        auto tampon = pResource->GetMappedBuffer(Subresource);
++        auto plan = pResource->GetSubresourceLayout(VK_IMAGE_ASPECT_COLOR_BIT, Subresource);
++
++        if (tampon != nullptr && tampon->mapPtr(0)) {
++          static std::atomic<uint32_t> compteur = { 0u };
++          uint32_t n = compteur++;
++
++          /* Une sur vingt suffit : le masque est reecrit a chaque image. */
++          if (!(n % 20u)) {
++            std::string nom = str::format(dossier, "/masque-", n, "-",
++              desc->Width, "x", desc->Height, "-pas", plan.RowPitch, ".pgm");
++            std::ofstream f(nom, std::ios::binary);
++
++            if (f) {
++              f << "P5\n" << desc->Width << " " << desc->Height << "\n255\n";
++              auto src = reinterpret_cast<const uint8_t*>(tampon->mapPtr(0));
++
++              for (uint32_t y = 0; y < desc->Height; y++)
++                f.write(reinterpret_cast<const char*>(src + size_t(y) * plan.RowPitch), desc->Width);
++
++              Logger::info(str::format("masque vide : ", nom));
++            }
++          }
++        }
++      }
++
+       if (pResource->NeedsDirtyRegionTracking()) {
+         for (uint32_t i = 0; i < pResource->GetDirtyRegionCount(Subresource); i++) {
+           D3D11_COMMON_TEXTURE_REGION region = pResource->GetDirtyRegion(Subresource, i);
+--- a/src/d3d11/d3d11_initializer.cpp
++++ b/src/d3d11/d3d11_initializer.cpp
+@@ -1,4 +1,7 @@
++#include <atomic>
++#include <cstdlib>
+ #include <cstring>
++#include <fstream>
+ 
+ #include "d3d11_context_imm.h"
+ #include "d3d11_device.h"
+@@ -41,9 +44,79 @@
+   }
+   
+ 
++  /* Vidage des textures a leur creation, pour regarder ce que le jeu televerse
++   * plutot que d'en juger a l'ecran. Inerte sans PROTON_OUVERT_VIDER_TEXTURES,
++   * qui nomme le dossier de sortie. Un fichier PGM ou PPM par texture, lisible
++   * sans outil. */
++  static void ViderTextureInitiale(
++    const D3D11_COMMON_TEXTURE_DESC*  pDesc,
++    const D3D11_SUBRESOURCE_DATA*     pInitialData) {
++    const char* dossier = std::getenv("PROTON_OUVERT_VIDER_TEXTURES");
++
++    if (!dossier)
++      return;
++
++    /* D'abord dire ce qu'on voit passer : sans cela on ne sait pas si le
++     * silence vient de l'absence de textures ou du filtre. */
++    Logger::info(str::format("texture vue : ", pDesc->Width, "x", pDesc->Height,
++      " fmt ", uint32_t(pDesc->Format), " mips ", pDesc->MipLevels,
++      " usage ", uint32_t(pDesc->Usage), " bind ", uint32_t(pDesc->BindFlags),
++      pInitialData && pInitialData[0].pSysMem ? " avec donnees" : " sans donnees"));
++
++    if (!pInitialData || !pInitialData[0].pSysMem)
++      return;
++
++    uint32_t octets = 0;
++    bool gris = false;
++
++    switch (pDesc->Format) {
++      case DXGI_FORMAT_A8_UNORM:
++      case DXGI_FORMAT_R8_UNORM:       octets = 1; gris = true;  break;
++      case DXGI_FORMAT_B8G8R8A8_UNORM:
++      case DXGI_FORMAT_R8G8B8A8_UNORM: octets = 4; gris = false; break;
++      default: return;
++    }
++
++    static std::atomic<uint32_t> compteur = { 0u };
++    uint32_t n = compteur++;
++
++    std::string nom = str::format(dossier, "/texture-", n, "-",
++      pDesc->Width, "x", pDesc->Height, "-fmt", uint32_t(pDesc->Format),
++      gris ? ".pgm" : ".ppm");
++
++    std::ofstream f(nom, std::ios::binary);
++    if (!f)
++      return;
++
++    f << (gris ? "P5\n" : "P6\n") << pDesc->Width << " " << pDesc->Height << "\n255\n";
++
++    auto src = reinterpret_cast<const uint8_t*>(pInitialData[0].pSysMem);
++
++    for (uint32_t y = 0; y < pDesc->Height; y++) {
++      const uint8_t* ligne = src + size_t(y) * pInitialData[0].SysMemPitch;
++
++      if (gris) {
++        f.write(reinterpret_cast<const char*>(ligne), pDesc->Width);
++      } else {
++        for (uint32_t x = 0; x < pDesc->Width; x++) {
++          /* On ecrit l'alpha en niveaux de gris dans les trois canaux : c'est
++           * lui qui porte la couverture d'un atlas de police. */
++          char v = char(ligne[x * octets + 3]);
++          char t[3] = { v, v, v };
++          f.write(t, 3);
++        }
++      }
++    }
++
++    Logger::info(str::format("texture videe : ", nom));
++  }
++
++
+   void D3D11Initializer::InitTexture(
+           D3D11CommonTexture*         pTexture,
+     const D3D11_SUBRESOURCE_DATA*     pInitialData) {
++    ViderTextureInitiale(pTexture->Desc(), pInitialData);
++
+     if (pTexture->Desc()->MiscFlags & D3D11_RESOURCE_MISC_TILED)
+       InitTiledTexture(pTexture);
+     else if (pTexture->GetMapMode() == D3D11_COMMON_TEXTURE_MAP_MODE_DIRECT)

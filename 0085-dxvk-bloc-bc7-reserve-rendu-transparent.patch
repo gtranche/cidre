@@ -1,0 +1,69 @@
+dxvk : un bloc BC7 reserve rend du noir transparent, comme sous Windows
+
+Un bloc BC7 dont les huit premiers bits sont nuls n'a pas de mode : la
+specification le dit reserve et ne definit pas son decodage. Les cartes sous
+Windows en rendent du noir transparent ; le materiel Apple, du noir OPAQUE
+(mesure : tests/probe_bc7_mode6.c, cas du bloc entierement nul).
+
+Surviving Mars televerse exactement cela pour son glyphe d'espace -- 256 octets
+de zeros -- et chaque espace entre deux mots devenait un pave noir (NOTES §283).
+
+Au televersement d'une texture BC7, un bloc entierement nul est remplace par le
+bloc mode 6 qui rend (0,0,0,0) : le bit de mode pose, tout le reste a zero.
+
+Ecrit le 2026-09-29 dans src/dxvk (commit 4ec0a9f pour les notes et la sonde),
+exporte seulement le 2026-10-09 : jusque-la une reconstruction depuis la serie
+perdait ce correctif.
+
+--- a/src/d3d11/d3d11_context.cpp
++++ b/src/d3d11/d3d11_context.cpp
+@@ -975,6 +975,39 @@
+       ctx->bindDrawBuffers(DxvkBufferSlice(),
+         DxvkBufferSlice());
+     });
++  }
++
++
++  /* Un bloc BC7 dont les huit premiers bits sont nuls n'a pas de mode : la
++   * specification le dit reserve, et son decodage n'est pas defini. Les cartes
++   * sous Windows en rendent du noir transparent ; le materiel Apple en rend du
++   * noir OPAQUE. Mesure : tests/probe_bc7_mode6.c, cas du bloc entierement nul.
++   *
++   * Surviving Mars televerse exactement cela pour son glyphe d'espace -- 256
++   * octets de zeros -- si bien que chaque espace entre deux mots devenait un
++   * pave noir. On remplace donc le bloc reserve par le bloc mode 6 qui rend
++   * (0,0,0,0) : le bit de mode pose, tout le reste a zero. Ce n'est pas
++   * arbitraire -- c'est choisir, parmi les comportements que la specification
++   * laisse indefinis, celui des machines sur lesquelles le jeu a ete ecrit.
++   */
++  static void ReparerBlocsBc7Reserves(VkFormat format, void* donnees, size_t taille) {
++    if (format != VK_FORMAT_BC7_UNORM_BLOCK && format != VK_FORMAT_BC7_SRGB_BLOCK)
++      return;
++
++    auto blocs = reinterpret_cast<uint8_t*>(donnees);
++
++    for (size_t i = 0; i + 16u <= taille; i += 16u) {
++      if (blocs[i])
++        continue;
++
++      bool nul = true;
++
++      for (size_t k = 1; k < 16u && nul; k++)
++        nul = !blocs[i + k];
++
++      if (nul)
++        blocs[i] = 0x40u;   /* mode 6, extremites et indices nuls -> (0,0,0,0) */
++    }
+   }
+ 
+ 
+@@ -5636,6 +5669,9 @@
+       pDstTexture->GetVkImageType(), extent, 1,
+       formatInfo, formatInfo->aspectMask);
+ 
++    ReparerBlocsBc7Reserves(packedFormat, stagingSlice.mapPtr(0),
++      util::computeImageDataSize(packedFormat, extent));
++
+     UpdateImage(pDstTexture, &subresource,
+       offset, extent, std::move(stagingSlice));
+ 
