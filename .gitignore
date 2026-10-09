@@ -30,3 +30,12 @@ outils/*.a
 # Config locale de l'outil (chemins absolus machine)
 .claude/
 tools/steamcmd/
+
+# Tarballs runtime (reconstruits par l'empaquetage)
+cidre-runtime.tar.*
+
+# Bancs de perf jetables (bindless / W^X)
+tests/bench_bindless.c
+tests/bench_bindless_metal.m
+tests/bench_argbuf_metal.m
+tests/build_bench_bindless.sh
