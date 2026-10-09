@@ -222,6 +222,18 @@ else
    fi
 fi
 
+titre "Un programme 32 bits (Wine + FEX) : cmd /c ver en 32 bits"
+if [ -n "$DEJA" ]; then
+   echo "  saute : Wine tournait deja."
+elif [ ! -d "$R/wine/wine11-arm64/lib/wine/i386-windows" ]; then
+   echo "  saute : ce runtime n'a pas de partie 32 bits"
+else
+   WINEDEBUG=err+all,fixme-all CIDRE_OVERLAY_DYLIB= avec_delai 45 sh "$R/tests/etape2_pile_arm64ec.sh" 'C:\windows\syswow64\cmd.exe' /c ver
+   grep -v "KUSER_SHARED_DATA" "$T/sortie" 2>/dev/null | tail -n 30 | cut -c1-300 | sed 's/^/  | /'
+   if grep -q "Microsoft Windows" "$T/sortie" 2>/dev/null; then echo "  -> les programmes 32 bits demarrent"
+   else echo "  -> PAS DE REPONSE d'un programme 32 bits : les jeux 32 bits et les installeurs ne demarreront pas"; fi
+fi
+
 # Le mecanisme dont depend l'emulation x86-64, rejoue hors de Wine : comment le
 # noyau decrit une faute sur une page de code, et si la reprise aboutit.
 titre "Bascule ecriture/execution des pages de code (sonde, sans Wine)"

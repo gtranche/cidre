@@ -1,0 +1,73 @@
+wine11 : dire ce qui occupe une plage ou l'on n'a pas trouve de place
+
+Sur un Mac M4 sous macOS 27, un programme 32 bits ne demarre pas :
+
+    err:virtual:map_free_area couldn't map free area in range
+        0x400010000-0x47fff0001, size 0x6c000
+    wine: failed to start ... UEPrereqSetup_x64.exe: c0000017
+
+La fenetre d'un invite 32 bits (user_space_wow_base, 16 Gio) n'est pas
+reservee d'avance : ce que l'hote y pose la lui prend. Sur M1 / macOS 26 elle
+reste libre ; ce qui l'occupe sur la machine fautive n'est pas connu. Quand la
+recherche echoue, map_free_area liste maintenant les regions que le noyau voit
+dans la plage (adresses, taille, droits, etiquette de l'allocateur), en ERR
+donc visibles dans le journal detaille et dans `cidre doctor`.
+
+Diagnostic seulement : aucun changement de comportement.
+---
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -1711,7 +1711,40 @@
+ 
+     return NULL;
+ }
++
++
++#ifdef __APPLE__
++/*
++ * Qui occupe une plage ou l'on n'a pas trouve de place ? La fenetre d'un
++ * invite 32 bits n'est pas reservee d'avance (voir user_space_wow_base) : ce
++ * que l'hote y pose -- allocateur, bibliotheques systeme -- la lui prend. Sur
++ * un Mac M4 sous macOS 27, un programme 32 bits ne trouvait pas 432 Kio dans
++ * ses 2 Gio. On demande au noyau ce qui s'y trouve, pour le journal.
++ */
++static void decrire_occupation( const void *base, const void *end )
++{
++    mach_vm_address_t adresse = (mach_vm_address_t)base;
++    int n = 0;
++
++    while (adresse < (mach_vm_address_t)end && n < 16)
++    {
++        mach_vm_size_t taille = 0;
++        natural_t profondeur = 0;
++        vm_region_submap_info_data_64_t info;
++        mach_msg_type_number_t compte = VM_REGION_SUBMAP_INFO_COUNT_64;
+ 
++        if (mach_vm_region_recurse( mach_task_self(), &adresse, &taille, &profondeur,
++                                    (vm_region_recurse_info_t)&info, &compte )) break;
++        if (adresse >= (mach_vm_address_t)end) break;
++        ERR( "  occupe : %p-%p (%lu Mo) droits %x/%x etiquette %u%s\n",
++             (void *)adresse, (void *)(adresse + taille), (unsigned long)(taille >> 20),
++             info.protection, info.max_protection, info.user_tag, info.is_submap ? " sous-carte" : "" );
++        adresse += taille;
++        n++;
++    }
++    if (!n) ERR( "  le noyau ne voit rien dans cette plage\n" );
++}
++#endif
+ 
+ /***********************************************************************
+  *           map_free_area
+@@ -1762,7 +1795,12 @@
+         start = try_map_free_area( base, end, step, start, size, unix_prot );
+ 
+     if (!start)
++    {
+         ERR( "couldn't map free area in range %p-%p, size %p\n", base, end, (void *)size );
++#ifdef __APPLE__
++        decrire_occupation( base, end );
++#endif
++    }
+ 
+     return start;
+ }
