@@ -135,7 +135,7 @@ for f in wine/wine11-arm64/bin/wine wine/wine11-arm64/bin/wineserver \
          prefix/lib/libvulkan.1.dylib prefix/lib/libvulkan_kosmickrisp.dylib \
          libs/libSPIRV-Tools.dylib libs/libfreetype.6.dylib libs/libzstd.1.dylib \
          dxvk/async/d3d11.dll dxvk/async/dxgi.dll \
-         build/faux_steam.exe build/cidre-outil tools/steamcmd/steamcmd; do piece "$f"; done
+         build/faux_steam.exe build/cidre-outil build/sonde-wx tools/steamcmd/steamcmd; do piece "$f"; done
 echo "  wine        : $(file -b "$WINE" 2>/dev/null | cut -c1-60)"
 echo "  signature   : $(codesign --verify "$WINE" 2>&1 | head -1 | cut -c1-120 || true)$(codesign --verify "$WINE" >/dev/null 2>&1 && echo valide)"
 echo "  quarantaine : $(xattr -p com.apple.quarantine "$WINE" 2>/dev/null || echo aucune)"
@@ -211,6 +211,19 @@ else
          arreter_wine
       done
    fi
+fi
+
+# Le mecanisme dont depend l'emulation x86-64, rejoue hors de Wine : comment le
+# noyau decrit une faute sur une page de code, et si la reprise aboutit.
+titre "Bascule ecriture/execution des pages de code (sonde, sans Wine)"
+SONDE="$R/build/sonde-wx"
+# un depot de developpement la construit au besoin ; un runtime installe la recoit
+[ -x "$SONDE" ] || { [ -f "$R/tests/sonde_wx.c" ] && cc -arch arm64 -O1 -o "$SONDE" "$R/tests/sonde_wx.c" 2>/dev/null; }
+if [ -x "$SONDE" ]; then
+   limite 60 "$SONDE" || echo "  -> au moins un essai a echoue"
+   cut -c1-200 "$T/outil" | sed 's/^/  | /'
+else
+   echo "  saute : la sonde n'est pas livree dans ce runtime"
 fi
 
 titre "Vulkan (pilote KosmicKrisp sur Metal)"

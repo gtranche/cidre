@@ -93,6 +93,11 @@ echo "== cidre-outil (terminal de SteamCMD, caches binaires de Steam) =="
 livrer tests/cidre_outil.c
 sh "$R/tests/construire_cidre_outil.sh" "$STAGE/tests/cidre_outil.c" "$STAGE/build/cidre-outil"
 rm "$STAGE/tests/cidre_outil.c"
+# La sonde du basculement ecriture/execution, pour `cidre doctor` : meme raison,
+# construite ici et livree sans sa source.
+livrer tests/sonde_wx.c
+cc -arch arm64 -mmacosx-version-min=13.0 -O1 -Wall -Wextra -o "$STAGE/build/sonde-wx" "$STAGE/tests/sonde_wx.c"
+rm "$STAGE/tests/sonde_wx.c"
 # Garde-fou : rien de ce qu'on livre ne doit appeler python3.
 if grep -rnE '(^|[^[:alnum:]_/.-])python3?([^[:alnum:]_.-]|$)' "$STAGE/cidre" "$STAGE/tests" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#'; then
    echo "un script livre appelle python : un Mac sans outils de developpement ne l'a pas" >&2; exit 1
