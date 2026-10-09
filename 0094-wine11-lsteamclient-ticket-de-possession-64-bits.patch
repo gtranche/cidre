@@ -1,0 +1,122 @@
+wine11 / lsteamclient : le ticket de possession pour un jeu 64 bits sous DRM Steam
+
+L'enveloppe SteamStub demande ISteamAppTicket::GetAppOwnershipTicketData, sept
+arguments, une seule fois, avant de dechiffrer le jeu. Deux defauts du pont
+donnaient « Application load error 6:0000065432 » (Clair Obscur: Expedition 33) :
+
+1. En 64 bits le relais ne transmettait que six arguments. Le septieme -- le
+   pointeur ou le client ecrit la longueur de la signature -- partait a zero :
+   ticket rendu (208 octets) mais sans signature. Le relais natif et le chemin
+   32 bits en passaient deja neuf ; les thunks 64 bits aussi maintenant.
+
+2. Le client Steam n'a le ticket en cache que pour un jeu qu'il a deja vu
+   tourner. Pour un jeu Windows telecharge hors du client -- que celui de macOS
+   ne peut ni installer ni lancer --, la premiere demande rend zero et declenche
+   la requete a Valve ; le ticket arrive une seconde plus tard, a condition que
+   le processus se soit annonce sous l'identifiant du jeu (SteamAppId). Le pont
+   redemande donc, dix secondes au plus (attendre_ticket), en 64 comme en 32 bits.
+
+Mesure (tests/h64ticket.c, compte possedant les jeux, client macOS connecte) :
+jeu installe 588650 : 208 octets, longueur de signature jamais ecrite -> 128 ;
+jeux Windows jamais demandes 987840 et 221380 : 0 octet sans SteamAppId meme en
+insistant quinze secondes, 178/184 octets avec, des la deuxieme demande.
+
+Reconstruire lsteamclient.dll (aarch64-windows et i386-windows) depuis
+build/wine11-arm64-ec, les deux drapeaux TEB, llvm-mingw dans le PATH.
+---
+--- a/dlls/lsteamclient/main.c
++++ b/dlls/lsteamclient/main.c
+@@ -240,6 +240,32 @@
+ }
+ 
+ /*
++ * ISteamAppTicket::GetAppOwnershipTicketData (emplacement 0) : le ticket de
++ * possession, que l'enveloppe SteamStub demande une seule fois avant de
++ * dechiffrer le jeu. Le client Steam ne l'a en cache que pour un jeu qu'il a
++ * deja vu tourner. Pour les autres -- un jeu Windows telecharge hors du client,
++ * que celui de macOS ne peut ni installer ni lancer --, la premiere demande
++ * rend zero et declenche la requete a Valve ; le ticket arrive une seconde plus
++ * tard (mesure : tests/h64ticket.c, a condition que le processus se soit
++ * annonce sous l'identifiant du jeu, ce que fait SteamAppId). Sans attendre, le
++ * premier lancement s'arretait sur « Application load error 6:0000065432 ».
++ * On redemande donc, dix secondes au plus.
++ */
++static void attendre_ticket( const char *interface, unsigned emplacement, struct appel_vtable_params *params )
++{
++    unsigned essai;
++
++    if (params->ret || emplacement || !meme_interface( "ISteamAppTicket", interface )) return;
++    for (essai = 0; essai < 40 && !params->ret; essai++)
++    {
++        Sleep( 250 );
++        if (WINE_UNIX_CALL( unix_appel_vtable, params )) return;
++    }
++    if (params->ret) TRACE( "ticket de possession obtenu apres %u nouvelle(s) demande(s)\n", essai );
++    else ERR( "ticket de possession toujours vide apres dix secondes : jeu absent du compte, ou client Steam deconnecte\n" );
++}
++
++/*
+  * La voix n'est pas relayee.
+  *
+  * ISteamUser 7..11 (StartVoiceRecording, StopVoiceRecording, GetAvailableVoice,
+@@ -275,11 +301,21 @@
+     return !IsBadStringPtrA( (LPCSTR)(ULONG_PTR)mot, 64 );
+ }
+ 
++/*
++ * Neuf arguments, comme le relais natif et comme en 32 bits. On n'en passait
++ * que six : ISteamAppTicket::GetAppOwnershipTicketData en prend sept, et le
++ * dernier -- le pointeur ou le client ecrit la longueur de la signature --
++ * partait a zero. L'enveloppe SteamStub d'un jeu 64 bits recevait un ticket
++ * sans signature et s'arretait sur « Application load error 6:0000065432 »
++ * (Clair Obscur: Expedition 33 ; temoin tests/h64ticket.c). Une methode qui a
++ * moins d'arguments laisse lire des mots de la pile de l'appelant, sans effet.
++ */
+ static UINT64 repartir( unsigned emplacement, void *self,
+-                        UINT64 a, UINT64 b, UINT64 c, UINT64 d, UINT64 e, UINT64 f )
++                        UINT64 a, UINT64 b, UINT64 c, UINT64 d, UINT64 e, UINT64 f,
++                        UINT64 g, UINT64 h, UINT64 i )
+ {
+     struct objet_pe *objet = self;
+-    struct appel_vtable_params params = { objet->natif, emplacement, 0, a, b, c, d, e, f, 0, 0, 0, 0 };
++    struct appel_vtable_params params = { objet->natif, emplacement, 0, a, b, c, d, e, f, g, h, i, 0 };
+     const char *ou = objet->nom[0] ? objet->nom : "ISteamClient";
+     const struct signature_steam *sig;
+ 
+@@ -344,7 +380,8 @@
+              */
+             if (sig->tampon != 8) { ERR( "%s emplacement %u : tampon de %u octets, non traite\n", ou, emplacement, sig->tampon ); return 0; }
+             if (!a) return 0;
+-            params.a = b; params.b = c; params.c = d; params.d = e; params.e = f; params.f = 0;
++            params.a = b; params.b = c; params.c = d; params.d = e; params.e = f; params.f = g;
++            params.g = h; params.h = i; params.i = 0;
+             if (WINE_UNIX_CALL( unix_appel_vtable, &params )) return 0;
+             *(UINT64 *)(ULONG_PTR)a = params.ret;
+             TRACE( "structure de 8 octets rendue via le tampon %p : %s\n", (void *)(ULONG_PTR)a,
+@@ -352,6 +389,7 @@
+             return a;
+         }
+         if (WINE_UNIX_CALL( unix_appel_vtable, &params )) return 0;
++        attendre_ticket( objet->nom, emplacement, &params );
+ 
+         /*
+          * ISteamApps::BIsDlcInstalled (emplacement 7). Le client Steam de macOS
+@@ -431,8 +469,8 @@
+ 
+ #define EMPLACEMENT(n) \
+     static UINT64 thunk_##n( void *self, UINT64 a, UINT64 b, UINT64 c, \
+-                             UINT64 d, UINT64 e, UINT64 f ) \
+-    { return repartir( n, self, a, b, c, d, e, f ); }
++                             UINT64 d, UINT64 e, UINT64 f, UINT64 g, UINT64 h, UINT64 i ) \
++    { return repartir( n, self, a, b, c, d, e, f, g, h, i ); }
+ EMPLACEMENT(0)
+ EMPLACEMENT(1)
+ EMPLACEMENT(2)
+@@ -605,6 +643,7 @@
+     }
+ 
+     if (WINE_UNIX_CALL( unix_appel_vtable, &params )) return 0;
++    if (objet->nom[0]) attendre_ticket( objet->nom, emplacement, &params );
+ 
+     if (tampon)
+     {
