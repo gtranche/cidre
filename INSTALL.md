@@ -2,11 +2,26 @@
 
 ## Pour JOUER -- la voie normale : Verger
 
-[Verger](https://github.com/gtranche/verger), l'interface de Cidre, installe le
-runtime et le met a jour tout seul : il telecharge `cidre-runtime.tar.xz` depuis
-la derniere release, le decompresse dans `~/Library/Application Support/Cidre`
-et lance `cidre setup`. Rien d'autre a lancer. Prerequis Homebrew :
-`brew install spirv-tools freetype`.
+Il faut un Mac Apple Silicon sous macOS 26 ou plus recent. Ni Homebrew, ni
+Rosetta, ni outils de developpement.
+
+1. **Installer le client Steam** (https://store.steampowered.com/about/), le
+   lancer et s'y connecter. Il lance les jeux Steam, et c'est dans son cache que
+   Cidre lit le nom des jeux du compte.
+2. **Installer [Verger](https://github.com/gtranche/verger/releases/latest)** :
+   decompresser `Verger.zip`, puis clic droit > Ouvrir la premiere fois
+   (l'application n'est pas notarisee par Apple).
+3. **Laisser Verger installer Cidre** : il telecharge `cidre-runtime.tar.xz`
+   depuis la derniere release, le decompresse dans
+   `~/Library/Application Support/Cidre` et lance `cidre setup`, qui prepare le
+   pilote Vulkan, le prefixe Wine, DXVK, FEX, le pont Steam et SteamCMD.
+4. **Se connecter a Steam dans Verger** (bouton +, « Connexion a Steam ») : c'est
+   la session de SteamCMD, l'outil de Valve qui telecharge les jeux. Elle est
+   distincte de celle du client Steam.
+
+SteamCMD est installe a partir des paquets a jour de Valve
+(`tests/installer_steamcmd.sh`), pas de son archive `steamcmd_osx.tar.gz` : elle
+date de 2020 et ne contient qu'un binaire Intel, qui ne demarre pas sans Rosetta.
 
 ## Sans Verger (install du runtime pre-compile en ligne de commande)
 

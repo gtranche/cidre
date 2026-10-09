@@ -388,17 +388,29 @@ case "$cmd" in
     # prend dans Homebrew.
     sp=$(oui test -f "$R/libs/libSPIRV-Tools.dylib" -o -f /opt/homebrew/opt/spirv-tools/lib/libSPIRV-Tools.dylib)
     ft=$(oui test -f "$R/libs/libfreetype.6.dylib" -o -f /opt/homebrew/lib/libfreetype.6.dylib)
-    sc=false; [ -n "$(resolve_steamcmd)" ] && sc=true
+    # SteamCMD : la, ET capable de tourner sur ce processeur. L'ancienne
+    # archive de Valve ne contient qu'un binaire Intel, inutilisable sur un Mac
+    # Apple Silicon sans Rosetta.
+    sc=false; s=$(resolve_steamcmd)
+    if [ -n "$s" ]; then
+      b="$(dirname "$s")/steamcmd"
+      if [ "$(uname -m)" != arm64 ] || [ ! -f "$b" ] || file "$b" 2>/dev/null | grep -q arm64 \
+         || arch -x86_64 /usr/bin/true 2>/dev/null; then sc=true; fi
+    fi
+    # Le client Steam : il lance les jeux Steam, et c'est dans son cache que
+    # Cidre lit le nom des jeux du compte.
+    cs=$(oui test -d "$STEAM/Steam.AppBundle" -o -d /Applications/Steam.app)
     ec=$(oui pgrep -f "$R/wine/.*wineserver")
     if [ "$JSON" = oui ]; then
-      printf '{"version":%s,"racine":%s,"runtime":%s,"prefixe":%s,"steamcmd":%s,"compte_steam":%s,"jeu_en_cours":%s,"prerequis":{"spirv_tools":%s,"freetype":%s}}\n' \
-        "$(json "$v")" "$(json "$R")" "$rt" "$pf" "$sc" "$(json "$(steam_user)")" "$ec" "$sp" "$ft"
+      printf '{"version":%s,"racine":%s,"runtime":%s,"prefixe":%s,"steamcmd":%s,"client_steam":%s,"compte_steam":%s,"jeu_en_cours":%s,"prerequis":{"spirv_tools":%s,"freetype":%s}}\n' \
+        "$(json "$v")" "$(json "$R")" "$rt" "$pf" "$sc" "$cs" "$(json "$(steam_user)")" "$ec" "$sp" "$ft"
     else
       echo "version      : $v"
       echo "racine       : $R"
       echo "runtime      : $rt"
       echo "prefixe      : $pf"
       echo "steamcmd     : $sc"
+      echo "client steam : $cs"
       echo "compte steam : $(steam_user)"
       echo "jeu en cours : $ec"
       echo "spirv-tools  : $sp   (brew install spirv-tools)"

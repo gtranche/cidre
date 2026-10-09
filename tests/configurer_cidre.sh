@@ -46,20 +46,19 @@ fi
 
 echo "== 5/6 SteamCMD =="
 # Pour telecharger les jeux (`cidre dl`) et lire la bibliotheque du compte.
-# Le tarball officiel de Valve, pas le cask brew (soucis Gatekeeper).
+# Les paquets a jour de Valve, pas son archive de 2020 : elle ne contient qu'un
+# binaire Intel, qui ne demarre pas sur un Mac Apple Silicon sans Rosetta.
 SCMD_DIR="$R/tools/steamcmd"
-if [ -x "$SCMD_DIR/steamcmd.sh" ]; then
+# Un SteamCMD deja la mais incapable de tourner ici (l'ancienne archive, jamais
+# mise a jour faute de Rosetta) est a refaire.
+if [ -x "$SCMD_DIR/steamcmd.sh" ] && { [ "$(uname -m)" != arm64 ] || file "$SCMD_DIR/steamcmd" 2>/dev/null | grep -q arm64; }; then
    echo "  deja la"
+elif sh "$R/tests/installer_steamcmd.sh" "$SCMD_DIR"; then
+   :
 else
-   mkdir -p "$SCMD_DIR"
-   if curl -fsSL --retry 3 -o "$SCMD_DIR/steamcmd_osx.tar.gz" \
-        "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_osx.tar.gz" \
-      && ( cd "$SCMD_DIR" && tar xzf steamcmd_osx.tar.gz ); then
-      xattr -cr "$SCMD_DIR" 2>/dev/null || true
-      echo "  installe"
-   else
-      echo "  telechargement impossible -- relancer \`cidre setup\` une fois en ligne"
-   fi
+   # Dit a Verger (et a `cidre status`) que l'installation est incomplete.
+   echo "  SteamCMD n'a pas pu etre installe -- relancer \`cidre setup\` une fois en ligne"
+   SETUP_INCOMPLET=1
 fi
 
 echo "== 6/6 Integration Steam =="
@@ -73,4 +72,8 @@ else
      echo "  Steam non detecte -- lance \`cidre wrap\` apres l'avoir installe et connecte."
 fi
 
+if [ -n "${SETUP_INCOMPLET:-}" ]; then
+   echo "Cidre est installe, mais incomplet : $R"
+   exit 4
+fi
 echo "Cidre est pret : $R"
