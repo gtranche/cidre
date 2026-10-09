@@ -1,0 +1,343 @@
+Generated-by: LLM
+
+KosmicKrisp : cache de pipelines Metal sur disque (MESA_KK_PIPELINE_CACHE)
+
+Avec MESA_KK_PIPELINE_CACHE=<dossier>, le compilateur MTL4 enregistre les
+pipelines qu'il compile dans <dossier>/kk_pipelines.mtl4archive et les relit au
+lancement suivant : « compiler une fois ». Sans la variable, rien ne change.
+
+L'archive est ecrite par un fil dedie, et seulement quand aucune compilation
+n'est en cours (verrou lecteur pour compiler, tentative de verrou ecrivain pour
+ecrire) : serialiser pendant qu'un autre fil compile fait planter Metal. Elle
+est ecrite une derniere fois a la destruction du compilateur.
+
+MESA_KK_COMPILE_STATS=1 affiche a la fin le nombre et la duree des compilations
+de bibliotheques et de pipelines.
+
+Ecrit le 2026-10-05, exporte le 2026-10-09. Remplace cache-pipelines-metal.patch,
+qui ne s'applique pas sur la serie.
+
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.h b/src/kosmickrisp/bridge/mtl_compiler.h
+--- a/src/kosmickrisp/bridge/mtl_compiler.h
++++ b/src/kosmickrisp/bridge/mtl_compiler.h
+@@ -16,7 +16,8 @@
+ enum mtl_pixel_format;
+ 
+ /* Compiler */
+-mtl_compiler *mtl_new_compiler(mtl_device *device);
++mtl_compiler *mtl_new_compiler(mtl_device *device, const char *cache_dir);
++void mtl_compiler_flush_archive(mtl_compiler *compiler, const char *cache_dir);
+ 
+ /* Library */
+ mtl_library *
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.m b/src/kosmickrisp/bridge/mtl_compiler.m
+--- a/src/kosmickrisp/bridge/mtl_compiler.m
++++ b/src/kosmickrisp/bridge/mtl_compiler.m
+@@ -7,32 +7,195 @@
+ #include "mtl_compiler.h"
+ #include "mtl_format.h"
+ 
++#include <Metal/MTL4Archive.h>
+ #include <Metal/MTL4ComputePipeline.h>
+ #include <Metal/MTL4LibraryDescriptor.h>
+ #include <Metal/MTL4LibraryFunctionDescriptor.h>
++#include <Metal/MTL4PipelineDataSetSerializer.h>
+ #include <Metal/MTL4RenderPipeline.h>
+ #include <Metal/MTLDevice.h>
+ 
++#import <objc/runtime.h>
++
++#include <pthread.h>
++#include <stdatomic.h>
++#include <string.h>
++#include <time.h>
++
++static const void *kk_task_options_key = &kk_task_options_key;
++
++static MTL4CompilerTaskOptions *
++kk_compiler_task_options(id<MTL4Compiler> comp)
++{
++   return objc_getAssociatedObject(comp, kk_task_options_key);
++}
++
++static pthread_rwlock_t kk_compile_rwlock = PTHREAD_RWLOCK_INITIALIZER;
++static id<MTL4Compiler> kk_flush_compiler;
++static char kk_flush_dir[2048];
++static _Atomic uint32_t kk_pipe_total;
++static pthread_t kk_flusher_thread;
++static atomic_bool kk_flusher_stop;
++static atomic_bool kk_flusher_running;
++
++static bool
++kk_serialize_to_dir(id<MTL4PipelineDataSetSerializer> serializer, const char *dir)
++{
++   @autoreleasepool {
++      NSString *base = [NSString stringWithUTF8String:dir];
++      NSString *tmp = [base stringByAppendingPathComponent:@"kk_pipelines.mtl4archive.tmp"];
++      NSString *final = [base stringByAppendingPathComponent:@"kk_pipelines.mtl4archive"];
++      NSError *e = nil;
++      if (![serializer serializeAsArchiveAndFlushToURL:[NSURL fileURLWithPath:tmp] error:&e]) {
++         if (e && ![e.localizedDescription containsString:@"othing to serialize"])
++            fprintf(stderr, "KK: pipeline archive flush failed: %s\n", e.localizedDescription.UTF8String);
++         return false;
++      }
++      [[NSFileManager defaultManager] removeItemAtPath:final error:NULL];
++      [[NSFileManager defaultManager] moveItemAtPath:tmp toPath:final error:NULL];
++      return true;
++   }
++}
++
++static void *
++kk_flusher_main(void *arg)
++{
++   (void)arg;
++   uint32_t last = 0;
++   while (!atomic_load(&kk_flusher_stop)) {
++      for (int i = 0; i < 100 && !atomic_load(&kk_flusher_stop); i++)
++         usleep(100000);
++      uint32_t now = atomic_load(&kk_pipe_total);
++      if (now == last)
++         continue;
++      if (pthread_rwlock_trywrlock(&kk_compile_rwlock) != 0)
++         continue;
++      id<MTL4PipelineDataSetSerializer> ser = kk_flush_compiler.pipelineDataSetSerializer;
++      if (ser != nil && kk_serialize_to_dir(ser, kk_flush_dir))
++         last = now;
++      pthread_rwlock_unlock(&kk_compile_rwlock);
++   }
++   return NULL;
++}
++
++static _Atomic uint64_t kk_stat_lib_ns;
++static _Atomic uint64_t kk_stat_pipe_ns;
++static _Atomic uint32_t kk_stat_lib_count;
++static _Atomic uint32_t kk_stat_pipe_count;
++
++static bool
++kk_compile_stats_enabled(void)
++{
++   static int cached = -1;
++   if (cached < 0) {
++      const char *e = getenv("MESA_KK_COMPILE_STATS");
++      cached = (e && e[0] && e[0] != '0') ? 1 : 0;
++   }
++   return cached == 1;
++}
++
++static uint64_t
++kk_now_ns(void)
++{
++   return clock_gettime_nsec_np(CLOCK_MONOTONIC);
++}
++
++static NSURL *
++kk_archive_url(const char *cache_dir)
++{
++   NSString *dir = [NSString stringWithUTF8String:cache_dir];
++   [[NSFileManager defaultManager] createDirectoryAtPath:dir
++                             withIntermediateDirectories:YES
++                                              attributes:nil
++                                                   error:nil];
++   NSString *path = [dir stringByAppendingPathComponent:@"kk_pipelines.mtl4archive"];
++   return [NSURL fileURLWithPath:path];
++}
++
+ /* Compiler */
+ mtl_compiler *
+-mtl_new_compiler(mtl_device *device)
++mtl_new_compiler(mtl_device *device, const char *cache_dir)
+ {
+    @autoreleasepool {
+       id<MTLDevice> dev = (id<MTLDevice>)device;
+ 
+       MTL4CompilerDescriptor *desc = [[MTL4CompilerDescriptor new] autorelease];
+ 
++      if (cache_dir && cache_dir[0]) {
++         MTL4PipelineDataSetSerializerDescriptor *sdesc =
++            [[MTL4PipelineDataSetSerializerDescriptor new] autorelease];
++         sdesc.configuration =
++            MTL4PipelineDataSetSerializerConfigurationCaptureBinaries;
++         id<MTL4PipelineDataSetSerializer> serializer =
++            [dev newPipelineDataSetSerializerWithDescriptor:sdesc];
++         desc.pipelineDataSetSerializer = serializer;
++      }
++
+       NSError *error;
+       id<MTL4Compiler> compiler = [dev newCompilerWithDescriptor:desc error:&error];
+ 
+       if (compiler == nil) {
+          fprintf(stderr, "Failed to create MTL4Compiler: %s\n", [error.localizedDescription UTF8String]);
++         return compiler;
+       }
+ 
++      if (cache_dir && cache_dir[0]) {
++         NSURL *url = kk_archive_url(cache_dir);
++         NSError *aerr = nil;
++         id<MTL4Archive> archive = [dev newArchiveWithURL:url error:&aerr];
++         if (archive != nil) {
++            MTL4CompilerTaskOptions *opts =
++               [[MTL4CompilerTaskOptions new] autorelease];
++            opts.lookupArchives = @[ archive ];
++            objc_setAssociatedObject(compiler, kk_task_options_key, opts,
++                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
++         }
++
++         if (compiler.pipelineDataSetSerializer != nil &&
++             !atomic_exchange(&kk_flusher_running, true)) {
++            kk_flush_compiler = compiler;
++            strncpy(kk_flush_dir, cache_dir, sizeof(kk_flush_dir) - 1);
++            if (pthread_create(&kk_flusher_thread, NULL, kk_flusher_main, NULL) != 0)
++               atomic_store(&kk_flusher_running, false);
++         }
++      }
++
+       return compiler;
+    }
+ }
+ 
++void
++mtl_compiler_flush_archive(mtl_compiler *compiler, const char *cache_dir)
++{
++   if (kk_compile_stats_enabled()) {
++      fprintf(stderr,
++              "KK compile: library %u calls / %.1f s, pipeline %u calls / %.1f s\n",
++              atomic_load(&kk_stat_lib_count),
++              atomic_load(&kk_stat_lib_ns) / 1.0e9,
++              atomic_load(&kk_stat_pipe_count),
++              atomic_load(&kk_stat_pipe_ns) / 1.0e9);
++   }
++
++   if (atomic_load(&kk_flusher_running)) {
++      atomic_store(&kk_flusher_stop, true);
++      pthread_join(kk_flusher_thread, NULL);
++      atomic_store(&kk_flusher_running, false);
++      kk_flush_compiler = nil;
++   }
++
++   if (compiler == NULL || cache_dir == NULL || cache_dir[0] == '\0')
++      return;
++
++   @autoreleasepool {
++      id<MTL4Compiler> comp = (id<MTL4Compiler>)compiler;
++      id<MTL4PipelineDataSetSerializer> serializer = comp.pipelineDataSetSerializer;
++      if (serializer == nil)
++         return;
++
++      kk_serialize_to_dir(serializer, cache_dir);
++   }
++}
++
+ /* Library */
+ mtl_library *
+ mtl_new_library(mtl_compiler *compiler, const char *src,
+@@ -54,7 +217,15 @@
+       desc.options = opts;
+ 
+       NSError *error;
++      bool stats = kk_compile_stats_enabled();
++      uint64_t t0 = stats ? kk_now_ns() : 0;
++      pthread_rwlock_rdlock(&kk_compile_rwlock);
+       id<MTLLibrary> lib = [comp newLibraryWithDescriptor:desc error:&error];
++      pthread_rwlock_unlock(&kk_compile_rwlock);
++      if (stats) {
++         atomic_fetch_add(&kk_stat_lib_ns, kk_now_ns() - t0);
++         atomic_fetch_add(&kk_stat_lib_count, 1);
++      }
+ 
+       if (lib == nil) {
+          fprintf(stderr, "Failed to create MTLLibrary: %s\n", [error.localizedDescription UTF8String]);
+@@ -92,8 +263,17 @@
+       desc.maxTotalThreadsPerThreadgroup = max_total_threads_per_threadgroup;
+ 
+       NSError *error;
+-      id<MTLComputePipelineState> pipeline = [comp newComputePipelineStateWithDescriptor:desc compilerTaskOptions:nil
++      bool stats = kk_compile_stats_enabled();
++      uint64_t t0 = stats ? kk_now_ns() : 0;
++      pthread_rwlock_rdlock(&kk_compile_rwlock);
++      id<MTLComputePipelineState> pipeline = [comp newComputePipelineStateWithDescriptor:desc compilerTaskOptions:kk_compiler_task_options(comp)
+                                                                                    error:&error];
++      pthread_rwlock_unlock(&kk_compile_rwlock);
++      atomic_fetch_add(&kk_pipe_total, 1);
++      if (stats) {
++         atomic_fetch_add(&kk_stat_pipe_ns, kk_now_ns() - t0);
++         atomic_fetch_add(&kk_stat_pipe_count, 1);
++      }
+ 
+       if (pipeline == nil) {
+          fprintf(stderr, "Failed to create MTLComputePipelineState: %s\n", [error.localizedDescription UTF8String]);
+@@ -241,8 +421,17 @@
+       MTL4RenderPipelineDescriptor *desc = (MTL4RenderPipelineDescriptor *)descriptor;
+ 
+       NSError *error = nil;
+-      id<MTLRenderPipelineState> pipeline = [comp newRenderPipelineStateWithDescriptor:desc compilerTaskOptions:nil
++      bool stats = kk_compile_stats_enabled();
++      uint64_t t0 = stats ? kk_now_ns() : 0;
++      pthread_rwlock_rdlock(&kk_compile_rwlock);
++      id<MTLRenderPipelineState> pipeline = [comp newRenderPipelineStateWithDescriptor:desc compilerTaskOptions:kk_compiler_task_options(comp)
+                                                                                  error:&error];
++      pthread_rwlock_unlock(&kk_compile_rwlock);
++      atomic_fetch_add(&kk_pipe_total, 1);
++      if (stats) {
++         atomic_fetch_add(&kk_stat_pipe_ns, kk_now_ns() - t0);
++         atomic_fetch_add(&kk_stat_pipe_count, 1);
++      }
+ 
+       if (pipeline == nil) {
+          fprintf(stderr, "Failed to create MTLRenderPipelineState: %s\n", [error.localizedDescription UTF8String]);
+diff --git a/src/kosmickrisp/vulkan/kk_device.c b/src/kosmickrisp/vulkan/kk_device.c
+--- a/src/kosmickrisp/vulkan/kk_device.c
++++ b/src/kosmickrisp/vulkan/kk_device.c
+@@ -54,7 +54,7 @@
+    /* KK_WORKAROUND_11 */
+    struct kk_physical_device *pdev = kk_device_physical(dev);
+    if (pdev->settings.disabled_workarounds & BITFIELD64_BIT(11)) {
+-      return mtl_new_compiler(dev->mtl_handle);
++      return mtl_new_compiler(dev->mtl_handle, dev->pipeline_cache_dir);
+    }
+ 
+    call_once(&compilers_ht_once, kk_init_compiler_table);
+@@ -71,7 +71,7 @@
+          return NULL;
+       }
+ 
+-      compiler->handle = mtl_new_compiler(dev->mtl_handle);
++      compiler->handle = mtl_new_compiler(dev->mtl_handle, dev->pipeline_cache_dir);
+       if (compiler->handle == NULL) {
+          ralloc_free(compiler);
+          simple_mtx_unlock(&compilers_ht_lock);
+@@ -95,6 +95,7 @@
+    /* KK_WORKAROUND_11 */
+    struct kk_physical_device *pdev = kk_device_physical(dev);
+    if (pdev->settings.disabled_workarounds & BITFIELD64_BIT(11)) {
++      mtl_compiler_flush_archive(dev->mtl_compiler_handle, dev->pipeline_cache_dir);
+       mtl_release(dev->mtl_compiler_handle);
+       return;
+    }
+@@ -108,6 +109,7 @@
+       --compiler->refcount;
+ 
+       if (compiler->refcount == 0) {
++         mtl_compiler_flush_archive(compiler->handle, dev->pipeline_cache_dir);
+          _mesa_hash_table_remove(&compilers_ht, ent);
+          mtl_release(compiler->handle);
+          ralloc_free(compiler);
+@@ -296,6 +298,8 @@
+    dev->vk.command_dispatch_table = &dev->vk.dispatch_table;
+    dev->vk.get_timestamp = kk_get_timestamp;
+ 
++   dev->pipeline_cache_dir = debug_get_option("MESA_KK_PIPELINE_CACHE", NULL);
++
+    /* Create a new Metal pipeline compiler for the device */
+    dev->mtl_compiler_handle = kk_acquire_compiler(dev);
+    if (dev->mtl_compiler_handle == NULL)
+diff --git a/src/kosmickrisp/vulkan/kk_device.h b/src/kosmickrisp/vulkan/kk_device.h
+--- a/src/kosmickrisp/vulkan/kk_device.h
++++ b/src/kosmickrisp/vulkan/kk_device.h
+@@ -85,6 +85,7 @@
+ 
+    mtl_device *mtl_handle;
+    mtl_compiler *mtl_compiler_handle;
++   const char *pipeline_cache_dir;
+ 
+    /* Dispatch table exposed to the user. Required since we need to record all
+     * commands due to Metal limitations */

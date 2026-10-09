@@ -1,0 +1,508 @@
+Generated-by: LLM
+
+KosmicKrisp : drapeau experimental fl12 et textures sparse par placement Metal
+
+MESA_KK_EXPERIMENTAL=...,fl12 annonce ce que vkd3d-proton exige pour le niveau
+de fonctionnalite D3D12 12.1 : liaison et residence sparse, file SPARSE_BINDING,
+VK_EXT_conservative_rasterization et VK_EXT_fragment_shader_interlock, filtrage
+minmax. Sans le drapeau, rien n'est annonce et rien ne change.
+
+Ce correctif n'apporte de chemin d'execution que pour les images sparse : une
+image sparse est creee non residente (placementSparsePageSize), et
+vkQueueBindSparse mappe ses tuiles sur la memoire d'un MTLHeap par
+updateTextureMappings de la MTL4CommandQueue. Les autres capacites sont
+seulement annoncees ici -- la rasterisation conservative est une feinte, dit
+ETAT_PEAK_DX12_2026-10-05.md -- d'ou le caractere experimental.
+
+Ecrit le 2026-10-05, exporte le 2026-10-09. Pas encore valide en jeu
+(ETAT_PEAK_DX12_2026-10-05.md).
+
+diff --git a/src/kosmickrisp/bridge/mtl_command_queue.h b/src/kosmickrisp/bridge/mtl_command_queue.h
+--- a/src/kosmickrisp/bridge/mtl_command_queue.h
++++ b/src/kosmickrisp/bridge/mtl_command_queue.h
+@@ -9,6 +9,7 @@
+ 
+ #include "mtl_types.h"
+ 
++#include <stdbool.h>
+ #include <stdint.h>
+ 
+ /* MTL4CommitOptions */
+@@ -27,6 +28,12 @@
+ void mtl_command_queue_remove_residency_set(mtl_command_queue *cmd_queue,
+                                             mtl_residency_set *set);
+ 
++void mtl_queue_update_texture_mapping(mtl_command_queue *queue,
++                                      mtl_texture *texture, mtl_heap *heap,
++                                      bool map, uint32_t origin[3],
++                                      uint32_t size[3], uint32_t level,
++                                      uint32_t slice, uint64_t heap_offset_tiles);
++
+ void mtl_signal_event(mtl_command_queue *queue, mtl_event *event,
+                       uint64_t value);
+ void mtl_wait_for_event(mtl_command_queue *queue, mtl_event *event,
+diff --git a/src/kosmickrisp/bridge/mtl_command_queue.m b/src/kosmickrisp/bridge/mtl_command_queue.m
+--- a/src/kosmickrisp/bridge/mtl_command_queue.m
++++ b/src/kosmickrisp/bridge/mtl_command_queue.m
+@@ -8,6 +8,9 @@
+ 
+ #include <Metal/MTLDevice.h>
+ #include <Metal/MTLCommandQueue.h>
++#include <Metal/MTL4CommandQueue.h>
++#include <Metal/MTLHeap.h>
++#include <Metal/MTLTexture.h>
+ 
+ /* MTL4CommitOptions */
+ mtl_commit_options *
+@@ -77,6 +80,29 @@
+ }
+ 
+ void
++mtl_queue_update_texture_mapping(mtl_command_queue *queue, mtl_texture *texture,
++                                 mtl_heap *heap, bool map, uint32_t origin[3],
++                                 uint32_t size[3], uint32_t level, uint32_t slice,
++                                 uint64_t heap_offset_tiles)
++{
++   @autoreleasepool {
++      id<MTL4CommandQueue> q = (id<MTL4CommandQueue>)queue;
++      id<MTLTexture> t = (id<MTLTexture>)texture;
++      id<MTLHeap> h = (id<MTLHeap>)heap;
++      MTL4UpdateSparseTextureMappingOperation op = {
++         .mode = map ? MTLSparseTextureMappingModeMap
++                     : MTLSparseTextureMappingModeUnmap,
++         .textureRegion = MTLRegionMake3D(origin[0], origin[1], origin[2],
++                                          size[0], size[1], size[2]),
++         .textureLevel = level,
++         .textureSlice = slice,
++         .heapOffset = (NSUInteger)heap_offset_tiles,
++      };
++      [q updateTextureMappings:t heap:h operations:&op count:1];
++   }
++}
++
++void
+ mtl_signal_event(mtl_command_queue *queue, mtl_event *event, uint64_t value)
+ {
+    @autoreleasepool {
+diff --git a/src/kosmickrisp/bridge/mtl_heap.h b/src/kosmickrisp/bridge/mtl_heap.h
+--- a/src/kosmickrisp/bridge/mtl_heap.h
++++ b/src/kosmickrisp/bridge/mtl_heap.h
+@@ -27,6 +27,15 @@
+ mtl_texture *mtl_new_texture_with_descriptor(
+    mtl_heap *heap, const struct kk_image_layout *layout, uint64_t offset);
+ 
++/* Placement sparse : texture non-residente, tuiles mappees via la MTL4CommandQueue. */
++mtl_texture *mtl_new_sparse_texture(mtl_device *device,
++                                    const struct kk_image_layout *layout);
++void mtl_device_sparse_tile_size(mtl_device *device, enum mtl_texture_type type,
++                                 uint32_t pixel_format, uint32_t sample_count,
++                                 uint32_t out_tile_px[3]);
++uint64_t mtl_device_sparse_tile_size_in_bytes(mtl_device *device);
++uint32_t mtl_texture_first_mip_in_tail(mtl_texture *texture);
++
+ void mtl_heap_set_label(mtl_heap *heap, const char *label);
+ void mtl_resource_set_label(mtl_resource *resource, const char *label);
+ 
+diff --git a/src/kosmickrisp/bridge/mtl_heap.m b/src/kosmickrisp/bridge/mtl_heap.m
+--- a/src/kosmickrisp/bridge/mtl_heap.m
++++ b/src/kosmickrisp/bridge/mtl_heap.m
+@@ -11,6 +11,8 @@
+ #include "kk_image_layout.h"
+ 
+ #include <Metal/MTLHeap.h>
++#include <Metal/MTLDevice.h>
++#include <Metal/MTLTexture.h>
+ 
+ /* Creation */
+ mtl_heap *
+@@ -82,7 +84,53 @@
+    }
+ }
+ 
++mtl_texture *
++mtl_new_sparse_texture(mtl_device *device, const struct kk_image_layout *layout)
++{
++   @autoreleasepool {
++      id<MTLDevice> dev = (id<MTLDevice>)device;
++      MTLTextureDescriptor *descriptor = [mtl_new_texture_descriptor(layout) autorelease];
++      descriptor.resourceOptions = KK_MTL_RESOURCE_OPTIONS;
++      descriptor.placementSparsePageSize = MTLSparsePageSize16;
++      return [dev newTextureWithDescriptor:descriptor];
++   }
++}
++
+ void
++mtl_device_sparse_tile_size(mtl_device *device, enum mtl_texture_type type,
++                            uint32_t pixel_format, uint32_t sample_count,
++                            uint32_t out_tile_px[3])
++{
++   @autoreleasepool {
++      id<MTLDevice> dev = (id<MTLDevice>)device;
++      MTLSize s = [dev sparseTileSizeWithTextureType:(MTLTextureType)type
++                                         pixelFormat:(MTLPixelFormat)pixel_format
++                                         sampleCount:sample_count];
++      out_tile_px[0] = (uint32_t)s.width;
++      out_tile_px[1] = (uint32_t)s.height;
++      out_tile_px[2] = (uint32_t)s.depth;
++   }
++}
++
++uint64_t
++mtl_device_sparse_tile_size_in_bytes(mtl_device *device)
++{
++   @autoreleasepool {
++      id<MTLDevice> dev = (id<MTLDevice>)device;
++      return (uint64_t)dev.sparseTileSizeInBytes;
++   }
++}
++
++uint32_t
++mtl_texture_first_mip_in_tail(mtl_texture *texture)
++{
++   @autoreleasepool {
++      id<MTLTexture> t = (id<MTLTexture>)texture;
++      return (uint32_t)t.firstMipmapInTail;
++   }
++}
++
++void
+ mtl_heap_set_label(mtl_heap *heap, const char *label)
+ {
+    @autoreleasepool {
+diff --git a/src/kosmickrisp/vulkan/kk_debug.c b/src/kosmickrisp/vulkan/kk_debug.c
+--- a/src/kosmickrisp/vulkan/kk_debug.c
++++ b/src/kosmickrisp/vulkan/kk_debug.c
+@@ -38,6 +38,7 @@
+    {"custom_border", KK_EXPERIMENTAL_CUSTOM_BORDER},
+    {"image_view_min_lod", KK_EXPERIMENTAL_IMAGE_VIEW_MIN_LOD},
+    {"m5_optimize_e5b9g9r9", KK_EXPERIMENTAL_M5_OPTIMIZE_E5B9G9R9},
++   {"fl12", KK_EXPERIMENTAL_FL12},
+    {NULL, 0},
+ };
+ 
+diff --git a/src/kosmickrisp/vulkan/kk_debug.h b/src/kosmickrisp/vulkan/kk_debug.h
+--- a/src/kosmickrisp/vulkan/kk_debug.h
++++ b/src/kosmickrisp/vulkan/kk_debug.h
+@@ -56,6 +56,7 @@
+    /* Using allowGPUOptimizedContents on M5 for this format causes
+     * vkCmdCopyImage() tests in CTS to fail, but it is otherwise usable */
+    KK_EXPERIMENTAL_M5_OPTIMIZE_E5B9G9R9 = 1ull << 2,
++   KK_EXPERIMENTAL_FL12 = 1ull << 3,
+ };
+ 
+ extern enum kk_experimental kk_mesa_experimental_flags;
+diff --git a/src/kosmickrisp/vulkan/kk_image.c b/src/kosmickrisp/vulkan/kk_image.c
+--- a/src/kosmickrisp/vulkan/kk_image.c
++++ b/src/kosmickrisp/vulkan/kk_image.c
+@@ -7,6 +7,7 @@
+ 
+ #include "kk_image.h"
+ 
++#include "kk_debug.h"
+ #include "kk_device.h"
+ #include "kk_device_memory.h"
+ #include "kk_entrypoints.h"
+@@ -285,8 +286,10 @@
+    if (ycbcr_info && pImageFormatInfo->type != VK_IMAGE_TYPE_2D)
+       return VK_ERROR_FORMAT_NOT_SUPPORTED;
+ 
+-   /* Don't support sparse residency */
+-   if ((pImageFormatInfo->flags & VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT))
++   /* Sparse residency : supporte via placement sparse Metal quand fl12 est actif
++    * (tiled resources reels). Sinon non annonce. */
++   if ((pImageFormatInfo->flags & VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT) &&
++       !KK_EXPERIMENTAL(FL12))
+       return VK_ERROR_FORMAT_NOT_SUPPORTED;
+ 
+    /* From the Vulkan 1.3.279 spec:
+@@ -529,6 +532,9 @@
+    *pPropertyCount = 0;
+    return;
+ }
++
++static void kk_image_finish(struct kk_device *dev, struct kk_image *image,
++                            const VkAllocationCallbacks *pAllocator);
+ 
+ static VkResult
+ kk_image_init(struct kk_device *dev, struct kk_image *image,
+@@ -571,6 +577,24 @@
+       kk_image_layout_init(dev, &image->vk, vk_format_to_pipe_format(format),
+                            width_scale, height_scale,
+                            &image->planes[plane].layout);
++   }
++
++   image->is_sparse =
++      (pCreateInfo->flags & (VK_IMAGE_CREATE_SPARSE_BINDING_BIT |
++                             VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT)) != 0;
++
++   /* Une image sparse est creee non-residente maintenant ; ses tuiles seront
++    * mappees vers la memoire d'un heap par vkQueueBindSparse. Pas de
++    * BindImageMemory pour elle. */
++   if (image->is_sparse) {
++      for (uint8_t plane = 0; plane < image->plane_count; plane++) {
++         image->planes[plane].mtl_handle =
++            mtl_new_sparse_texture(dev->mtl_handle, &image->planes[plane].layout);
++         if (image->planes[plane].mtl_handle == NULL) {
++            kk_image_finish(dev, image, NULL);
++            return vk_error(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY);
++         }
++      }
+    }
+ 
+    return VK_SUCCESS;
+@@ -764,6 +788,46 @@
+    kk_get_image_memory_requirements(dev, &image, aspects, pMemoryRequirements);
+ 
+    kk_image_finish(dev, &image, NULL);
++}
++
++static void
++kk_fill_sparse_memory_requirements(
++   struct kk_device *dev, struct kk_image *image,
++   uint32_t *pCount, VkSparseImageMemoryRequirements2 *pReqs)
++{
++   if (!image->is_sparse || image->planes[0].mtl_handle == NULL) {
++      *pCount = 0u;
++      return;
++   }
++   if (pReqs == NULL || *pCount == 0u) {
++      *pCount = 1u;
++      return;
++   }
++
++   const struct kk_image_layout *layout = &image->planes[0].layout;
++   uint32_t tile[3];
++   mtl_device_sparse_tile_size(dev->mtl_handle, layout->type,
++                               (uint32_t)layout->format.mtl,
++                               layout->sample_count_sa, tile);
++   for (int t = 0; t < 3; ++t)
++      if (!tile[t])
++         tile[t] = 1;
++
++   uint32_t tail = mtl_texture_first_mip_in_tail(image->planes[0].mtl_handle);
++   uint64_t tile_bytes = mtl_device_sparse_tile_size_in_bytes(dev->mtl_handle);
++
++   pReqs[0].memoryRequirements = (VkSparseImageMemoryRequirements){
++      .formatProperties = {
++         .aspectMask = image->vk.aspects,
++         .imageGranularity = {tile[0], tile[1], tile[2]},
++         .flags = 0,
++      },
++      .imageMipTailFirstLod = tail,
++      .imageMipTailSize = tile_bytes,
++      .imageMipTailOffset = 0,
++      .imageMipTailStride = 0,
++   };
++   *pCount = 1u;
+ }
+ 
+ VKAPI_ATTR void VKAPI_CALL
+@@ -772,7 +836,10 @@
+    uint32_t *pSparseMemoryRequirementCount,
+    VkSparseImageMemoryRequirements2 *pSparseMemoryRequirements)
+ {
+-   *pSparseMemoryRequirementCount = 0u;
++   VK_FROM_HANDLE(kk_device, dev, device);
++   VK_FROM_HANDLE(kk_image, image, pInfo->image);
++   kk_fill_sparse_memory_requirements(dev, image, pSparseMemoryRequirementCount,
++                                      pSparseMemoryRequirements);
+ }
+ 
+ VKAPI_ATTR void VKAPI_CALL
+@@ -781,7 +848,16 @@
+    uint32_t *pSparseMemoryRequirementCount,
+    VkSparseImageMemoryRequirements2 *pSparseMemoryRequirements)
+ {
+-   *pSparseMemoryRequirementCount = 0u;
++   VK_FROM_HANDLE(kk_device, dev, device);
++   struct kk_image image = {0};
++
++   if (kk_image_init(dev, &image, pInfo->pCreateInfo) != VK_SUCCESS) {
++      *pSparseMemoryRequirementCount = 0u;
++      return;
++   }
++   kk_fill_sparse_memory_requirements(dev, &image, pSparseMemoryRequirementCount,
++                                      pSparseMemoryRequirements);
++   kk_image_finish(dev, &image, NULL);
+ }
+ 
+ static void
+diff --git a/src/kosmickrisp/vulkan/kk_image.h b/src/kosmickrisp/vulkan/kk_image.h
+--- a/src/kosmickrisp/vulkan/kk_image.h
++++ b/src/kosmickrisp/vulkan/kk_image.h
+@@ -53,6 +53,10 @@
+    /* Forces alpha value to be one when creating views. Needed for WSI */
+    bool wsi_opaque_alpha;
+ 
++   /* Placement sparse (tiled resources) : la texture est creee non-residente a
++    * la creation, ses tuiles sont mappees par vkQueueBindSparse. */
++   bool is_sparse;
++
+    uint8_t plane_count;
+    struct kk_image_plane planes[3];
+ };
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -92,8 +92,10 @@
+       .KHR_uniform_buffer_standard_layout = true,
+       .KHR_vulkan_memory_model = true, /* Required in Vulkan 1.3 */
+       .EXT_buffer_device_address = true,
++      .EXT_conservative_rasterization = KK_EXPERIMENTAL(FL12),
+       .EXT_descriptor_buffer = !KK_DEBUG(NO_DESCRIPTOR_BUFFER),
+       .EXT_descriptor_indexing = true,
++      .EXT_fragment_shader_interlock = KK_EXPERIMENTAL(FL12),
+       .EXT_host_query_reset = true,
+       .EXT_sampler_filter_minmax = pdev->info.gpu_apple_family >= 10,
+       .EXT_scalar_block_layout = true,
+@@ -254,6 +256,13 @@
+       .robustBufferAccess = true,
+       .samplerAnisotropy = true,
+       .sampleRateShading = true,
++      .sparseBinding = KK_EXPERIMENTAL(FL12),
++      .sparseResidencyBuffer = KK_EXPERIMENTAL(FL12),
++      .sparseResidencyImage2D = KK_EXPERIMENTAL(FL12),
++      .sparseResidencyAliased = KK_EXPERIMENTAL(FL12),
++      .shaderResourceResidency = KK_EXPERIMENTAL(FL12),
++      .fragmentShaderPixelInterlock = KK_EXPERIMENTAL(FL12),
++      .fragmentShaderSampleInterlock = KK_EXPERIMENTAL(FL12),
+       .shaderClipDistance = true,
+       .shaderCullDistance = true,
+       .shaderImageGatherExtended = true,
+@@ -690,9 +699,9 @@
+       .nonCoherentAtomSize = 64,
+ 
+       /* Vulkan 1.0 sparse properties */
+-      .sparseResidencyNonResidentStrict = false,
++      .sparseResidencyNonResidentStrict = KK_EXPERIMENTAL(FL12),
+       .sparseResidencyAlignedMipSize = false,
+-      .sparseResidencyStandard2DBlockShape = false,
++      .sparseResidencyStandard2DBlockShape = KK_EXPERIMENTAL(FL12),
+       .sparseResidencyStandard2DMultisampleBlockShape = false,
+       .sparseResidencyStandard3DBlockShape = false,
+ 
+@@ -771,7 +780,7 @@
+       .maxDescriptorSetUpdateAfterBindStorageImages = KK_MAX_DESCRIPTORS,
+       .maxDescriptorSetUpdateAfterBindInputAttachments = KK_MAX_DESCRIPTORS,
+       .filterMinmaxSingleComponentFormats =
+-         supported_extensions->EXT_sampler_filter_minmax,
++         supported_extensions->EXT_sampler_filter_minmax || KK_EXPERIMENTAL(FL12),
+       .filterMinmaxImageComponentMapping =
+          supported_extensions->EXT_sampler_filter_minmax,
+       .maxTimelineSemaphoreValueDifference = UINT64_MAX,
+@@ -1287,7 +1296,8 @@
+ 
+    pdev->queue_families[pdev->queue_family_count++] = (struct kk_queue_family){
+       .queue_flags =
+-         VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT,
++         VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT |
++         (KK_EXPERIMENTAL(FL12) ? VK_QUEUE_SPARSE_BINDING_BIT : 0),
+       .queue_count = 1,
+    };
+    assert(pdev->queue_family_count <= ARRAY_SIZE(pdev->queue_families));
+diff --git a/src/kosmickrisp/vulkan/kk_queue.c b/src/kosmickrisp/vulkan/kk_queue.c
+--- a/src/kosmickrisp/vulkan/kk_queue.c
++++ b/src/kosmickrisp/vulkan/kk_queue.c
+@@ -9,7 +9,9 @@
+ #include "kk_buffer.h"
+ #include "kk_cmd_buffer.h"
+ #include "kk_device.h"
++#include "kk_device_memory.h"
+ #include "kk_entrypoints.h"
++#include "kk_image.h"
+ #include "kk_physical_device.h"
+ #include "kk_sync.h"
+ 
+@@ -208,6 +210,82 @@
+    return result;
+ }
+ 
++static void
++kk_queue_bind_sparse(struct kk_queue *queue, struct vk_queue_submit *submit)
++{
++   struct kk_device *dev = kk_queue_device(queue);
++   const uint64_t tile_bytes =
++      mtl_device_sparse_tile_size_in_bytes(dev->mtl_handle);
++
++   for (uint32_t i = 0; i < submit->image_bind_count; ++i) {
++      const VkSparseImageMemoryBindInfo *info = &submit->image_binds[i];
++      VK_FROM_HANDLE(kk_image, image, info->image);
++      mtl_texture *tex = image->planes[0].mtl_handle;
++      const struct kk_image_layout *layout = &image->planes[0].layout;
++      uint32_t tile[3];
++      mtl_device_sparse_tile_size(dev->mtl_handle, layout->type,
++                                  (uint32_t)layout->format.mtl,
++                                  layout->sample_count_sa, tile);
++      for (int t = 0; t < 3; ++t)
++         if (!tile[t])
++            tile[t] = 1;
++
++      for (uint32_t b = 0; b < info->bindCount; ++b) {
++         const VkSparseImageMemoryBind *bind = &info->pBinds[b];
++         bool map = bind->memory != VK_NULL_HANDLE;
++         mtl_heap *heap = NULL;
++         uint64_t heap_off_tiles = 0;
++         if (map) {
++            VK_FROM_HANDLE(kk_device_memory, mem, bind->memory);
++            heap = mem->bo->mtl_handle;
++            heap_off_tiles =
++               (bind->memoryOffset + mem->bo->heap_offset_B) / tile_bytes;
++         }
++         uint32_t origin[3] = {
++            (uint32_t)(bind->offset.x) / tile[0],
++            (uint32_t)(bind->offset.y) / tile[1],
++            (uint32_t)(bind->offset.z) / tile[2],
++         };
++         uint32_t size[3] = {
++            (bind->extent.width + tile[0] - 1) / tile[0],
++            (bind->extent.height + tile[1] - 1) / tile[1],
++            (bind->extent.depth + tile[2] - 1) / tile[2],
++         };
++         mtl_queue_update_texture_mapping(queue->mtl_handle, tex, heap, map,
++                                          origin, size,
++                                          bind->subresource.mipLevel,
++                                          bind->subresource.arrayLayer,
++                                          heap_off_tiles);
++      }
++   }
++
++   for (uint32_t i = 0; i < submit->image_opaque_bind_count; ++i) {
++      const VkSparseImageOpaqueMemoryBindInfo *info =
++         &submit->image_opaque_binds[i];
++      VK_FROM_HANDLE(kk_image, image, info->image);
++      mtl_texture *tex = image->planes[0].mtl_handle;
++      uint32_t tail = mtl_texture_first_mip_in_tail(tex);
++
++      for (uint32_t b = 0; b < info->bindCount; ++b) {
++         const VkSparseMemoryBind *bind = &info->pBinds[b];
++         bool map = bind->memory != VK_NULL_HANDLE;
++         mtl_heap *heap = NULL;
++         uint64_t heap_off_tiles = 0;
++         if (map) {
++            VK_FROM_HANDLE(kk_device_memory, mem, bind->memory);
++            heap = mem->bo->mtl_handle;
++            heap_off_tiles =
++               (bind->memoryOffset + mem->bo->heap_offset_B) / tile_bytes;
++         }
++         uint32_t origin[3] = {0, 0, 0};
++         uint32_t size[3] = {
++            (uint32_t)((bind->size + tile_bytes - 1) / tile_bytes), 1, 1};
++         mtl_queue_update_texture_mapping(queue->mtl_handle, tex, heap, map,
++                                          origin, size, tail, 0, heap_off_tiles);
++      }
++   }
++}
++
+ static VkResult
+ kk_queue_submit(struct vk_queue *vk_queue, struct vk_queue_submit *submit)
+ {
+@@ -230,6 +308,9 @@
+     * Otherwise, users are playing with fire. */
+    kk_device_make_resources_resident(dev);
+ 
++   if (submit->image_bind_count || submit->image_opaque_bind_count)
++      kk_queue_bind_sparse(queue, submit);
++
+    for (uint32_t i = 0; i < submit->command_buffer_count; ++i) {
+       struct kk_cmd_buffer *cmd_buffer =
+          container_of(submit->command_buffers[i], struct kk_cmd_buffer, vk);

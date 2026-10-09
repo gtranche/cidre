@@ -1,0 +1,114 @@
+Generated-by: LLM
+
+KosmicKrisp : temps GPU par soumission (CIDRE_GPU_STATS)
+
+Avec CIDRE_GPU_STATS=1, affiche toutes les 120 soumissions (reglable par
+CIDRE_GPU_STATS_WINDOW) le temps GPU moyen et maximal par soumission et le taux
+d'occupation du GPU, lus dans le retour MTL4 (debut et fin GPU). La ligne
+rappelle le mode de CIDRE_NARROW_BARRIERS, dont c'est l'outil de mesure.
+Sans la variable, rien ne change.
+
+Ecrit le 2026-10-05, exporte le 2026-10-09.
+
+diff --git a/src/kosmickrisp/vulkan/kk_queue.c b/src/kosmickrisp/vulkan/kk_queue.c
+--- a/src/kosmickrisp/vulkan/kk_queue.c
++++ b/src/kosmickrisp/vulkan/kk_queue.c
+@@ -20,10 +20,82 @@
+ 
+ #include "vk_cmd_queue.h"
+ 
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
+ struct kk_commit_data {
+    struct kk_queue *queue;
+    struct kk_cmd_buffer *cmd;
+ };
++
++/* Chantier barrieres (diagnostic) : stats GPU-ms par soumission, lues du
++ * feedback MTL4 (GPUStartTime/GPUEndTime). Gate CIDRE_GPU_STATS=1. Sert a
++ * l'A/B du relachement des barrieres (CIDRE_NARROW_BARRIERS) : si le
++ * relachement retire des bulles, le GPU-ms/soumission baisse. Aucun lien avec
++ * la capture Metal (qui, elle, tue VT2). */
++static once_flag kk_gpu_stats_once = ONCE_FLAG_INIT;
++static bool kk_gpu_stats_enabled = false;
++static unsigned kk_gpu_stats_window = 120u;
++static mtx_t kk_gpu_stats_lock;
++
++static void
++kk_gpu_stats_init(void)
++{
++   kk_gpu_stats_enabled = getenv("CIDRE_GPU_STATS") != NULL;
++   const char *w = getenv("CIDRE_GPU_STATS_WINDOW");
++   if (w) {
++      int v = atoi(w);
++      if (v > 0)
++         kk_gpu_stats_window = (unsigned)v;
++   }
++   mtx_init(&kk_gpu_stats_lock, mtx_plain);
++}
++
++static void
++kk_gpu_stats_feed(const struct mtl_feedback_data *data)
++{
++   call_once(&kk_gpu_stats_once, kk_gpu_stats_init);
++   if (!kk_gpu_stats_enabled)
++      return;
++   if (data->gpu_end <= data->gpu_start)
++      return; /* timing invalide / soumission vide */
++
++   static unsigned n = 0u;
++   static double sum_ms = 0.0, max_ms = 0.0, busy = 0.0;
++   static double win_lo = 0.0, win_hi = 0.0;
++
++   mtx_lock(&kk_gpu_stats_lock);
++   double ms = (data->gpu_end - data->gpu_start) * 1000.0;
++   if (n == 0u)
++      win_lo = data->gpu_start;
++   if (data->gpu_start < win_lo)
++      win_lo = data->gpu_start;
++   if (data->gpu_end > win_hi)
++      win_hi = data->gpu_end;
++   busy += (data->gpu_end - data->gpu_start);
++   sum_ms += ms;
++   if (ms > max_ms)
++      max_ms = ms;
++   if (++n >= kk_gpu_stats_window) {
++      double span = win_hi - win_lo;
++      double occ = span > 0.0 ? (busy / span) * 100.0 : 0.0;
++      const char *nb = getenv("CIDRE_NARROW_BARRIERS");
++      const char *label = !nb              ? "ALL->ALL"
++                          : !strcmp(nb, "global") ? "GLOBAL(frag)"
++                                                  : "CIBLE";
++      fprintf(stderr,
++              "[CIDRE_GPU] %u soum : GPU-ms/soum moy=%.2f max=%.2f ; "
++              "occupation=%.0f%% ; barrieres=%s\n",
++              n, sum_ms / (double)n, max_ms, occ, label);
++      n = 0u;
++      sum_ms = 0.0;
++      max_ms = 0.0;
++      busy = 0.0;
++      win_hi = 0.0;
++   }
++   mtx_unlock(&kk_gpu_stats_lock);
++}
+ 
+ static void
+ kk_queue_wait_for_commits(struct kk_queue *queue)
+@@ -55,6 +127,7 @@
+ static void
+ commit_callback(struct mtl_feedback_data *data)
+ {
++   kk_gpu_stats_feed(data);
+    check_device_lost((struct kk_device *)data->user_data, data);
+ }
+ 
+@@ -65,6 +138,7 @@
+    struct kk_queue *queue = commit->queue;
+    struct kk_device *dev = kk_queue_device(queue);
+ 
++   kk_gpu_stats_feed(data);
+    check_device_lost(dev, data);
+ 
+    /* Completion callbacks are called from multiple threads, so we need to

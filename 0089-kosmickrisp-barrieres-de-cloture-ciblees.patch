@@ -1,0 +1,252 @@
+Generated-by: LLM
+
+KosmicKrisp : barrieres de cloture d'encodeur ciblees (CIDRE_NARROW_BARRIERS)
+
+A la fermeture d'un encodeur, KosmicKrisp pose une barriere ALL->ALL. L'A/B en
+jeu a montre qu'on gagne du temps GPU a la relacher, mais que la relacher partout
+en fragment->fragment casse les encodeurs compute et blit (corruption, gel).
+
+CIDRE_NARROW_BARRIERS :
+  absent      ALL->ALL, le comportement connu bon. C'est le defaut.
+  global      l'ancien fragment->fragment partout, pour comparer seulement.
+  autre       relachement cible : les etages reels selon le type d'encodeur,
+              resserres par ceux de la barriere Vulkan qui force la fermeture.
+              Toute autre valeur l'active, « 0 » compris : le commentaire du
+              code dit que 0 le coupe, le code ne le fait pas.
+
+Ecrit entre le 2026-10-05 et le 2026-10-09, exporte le 2026-10-09.
+
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.c b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+@@ -10,6 +10,139 @@
+ 
+ #include "util/u_atomic.h"
+ 
++#include <stdlib.h>
++#include <string.h>
++
++/* Chantier barrieres : relachement CIBLE des barrieres ALL->ALL de cloture
++ * d'encodeur, par type d'encodeur. L'A/B a prouve ~20-30% de gain GPU en
++ * relachant ces barrieres, mais le frag->frag GLOBAL cassait les encodeurs
++ * compute/blit (corruption/freeze). Ici on met les vraies stages par type.
++ *
++ * CIDRE_NARROW_BARRIERS :
++ *   non defini / 0 -> ALL->ALL (connu-bon).
++ *   1 (ou "targeted") -> relachement cible (defaut du relachement).
++ *   "global" -> ancien frag->frag global (pour comparaison/debug uniquement).
++ * Off par defaut : comportement connu-bon inchange. */
++enum kk_encoder_kind { KK_ENC_RENDER, KK_ENC_COMPUTE };
++
++static int
++kk_narrow_mode(void)
++{
++   static int mode = -1; /* 0=off, 1=targeted, 2=global */
++   if (mode < 0) {
++      const char *v = getenv("CIDRE_NARROW_BARRIERS");
++      if (!v)
++         mode = 0;
++      else if (!strcmp(v, "global"))
++         mode = 2;
++      else
++         mode = 1;
++   }
++   return mode;
++}
++
++static void
++kk_close_barrier_stages(enum kk_encoder_kind kind, enum mtl_stages *after,
++                        enum mtl_stages *before)
++{
++   int mode = kk_narrow_mode();
++
++   if (mode == 0) {
++      *after = MTL_STAGE_ALL;
++      *before = MTL_STAGE_ALL;
++      return;
++   }
++   if (mode == 2) {
++      *after = MTL_STAGE_FRAGMENT;
++      *before = MTL_STAGE_FRAGMENT;
++      return;
++   }
++
++   /* mode == 1 : cible. */
++   if (kind == KK_ENC_RENDER) {
++      /* Un encodeur de rendu ecrit couleur/profondeur (et storage) au stage
++       * FRAGMENT ; le vertex peut ecrire via storage/xfb emules. Ce qui le lit
++       * ensuite echantillonne au FRAGMENT, ou le lit en compute/blit. On EXCLUT
++       * VERTEX du cote consommateur pour laisser le tiling/vertex de la passe
++       * suivante recouvrir ce FRAGMENT (= le gain mesure), tout en protegeant
++       * l'echantillonnage fragment, les lectures compute et blit. */
++      *after = MTL_STAGE_VERTEX | MTL_STAGE_FRAGMENT;
++      *before = MTL_STAGE_FRAGMENT | MTL_STAGE_DISPATCH | MTL_STAGE_BLIT;
++   } else {
++      /* Un encodeur compute produit au DISPATCH/BLIT et peut alimenter
++       * n'importe quoi en aval (buffers de sommets, textures...). Conservateur
++       * cote consommateur (VERTEX inclus) : pas de recouvrement, mais correct.
++       * C'est la correction du cas que le frag->frag global cassait. */
++      *after = MTL_STAGE_DISPATCH | MTL_STAGE_BLIT;
++      *before = MTL_STAGE_VERTEX | MTL_STAGE_FRAGMENT | MTL_STAGE_DISPATCH |
++                MTL_STAGE_BLIT;
++   }
++}
++
++/* Traduit un masque de stages Vulkan (pDependencyInfo) en stages Metal. On
++ * regroupe tout le pipeline graphique amont (sommet/tess/geo/mesh/entree) sur
++ * VERTEX et la sortie fragment sur FRAGMENT, le compute sur DISPATCH, les copies
++ * sur BLIT. Les stages « tout le pipeline » et NONE retombent sur ALL (sur). */
++static enum mtl_stages
++kk_vk_pipeline_stages_to_mtl(VkPipelineStageFlags2 vk)
++{
++   if (vk & (VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT |
++             VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT |
++             VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT))
++      return MTL_STAGE_ALL;
++
++   const VkPipelineStageFlags2 vertex_bits =
++      VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT |
++      VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT |
++      VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT |
++      VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT |
++      VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
++      VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT |
++      VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT |
++      VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT |
++      VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
++      VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT |
++      VK_PIPELINE_STAGE_2_PRE_RASTERIZATION_SHADERS_BIT;
++   const VkPipelineStageFlags2 fragment_bits =
++      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
++      VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
++      VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT |
++      VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
++   const VkPipelineStageFlags2 blit_bits =
++      VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_RESOLVE_BIT |
++      VK_PIPELINE_STAGE_2_BLIT_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT |
++      VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT | VK_PIPELINE_STAGE_2_HOST_BIT;
++
++   enum mtl_stages m = 0;
++   if (vk & VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT)
++      m |= MTL_STAGE_VERTEX | MTL_STAGE_FRAGMENT;
++   if (vk & vertex_bits)
++      m |= MTL_STAGE_VERTEX;
++   if (vk & fragment_bits)
++      m |= MTL_STAGE_FRAGMENT;
++   if (vk & VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
++      m |= MTL_STAGE_DISPATCH;
++   if (vk & blit_bits)
++      m |= MTL_STAGE_BLIT;
++
++   return m ? m : MTL_STAGE_ALL;
++}
++
++static void
++kk_resolve_close_stages(struct kk_cmd_buffer *cmd, enum kk_encoder_kind kind,
++                        enum mtl_stages *after, enum mtl_stages *before)
++{
++   kk_close_barrier_stages(kind, after, before);
++
++   if (kk_narrow_mode() == 1 && cmd->metal.pending_barrier_before != 0) {
++      enum mtl_stages real_before = cmd->metal.pending_barrier_before;
++      enum mtl_stages narrowed = *before & real_before;
++      *before = narrowed ? narrowed : real_before;
++      cmd->metal.pending_barrier_after = 0;
++      cmd->metal.pending_barrier_before = 0;
++   }
++}
++
+ #include "kk_buffer.h"
+ #include "kk_cmd_pool.h"
+ #include "kk_descriptor_set_layout.h"
+@@ -500,7 +633,11 @@
+ static void
+ end_encoder(struct kk_cmd_buffer *cmd, mtl_command_encoder *encoder)
+ {
+-   mtl_barrier_after_stages(encoder, MTL_STAGE_ALL, MTL_STAGE_ALL);
++   enum kk_encoder_kind kind =
++      (encoder == cmd->metal.compute) ? KK_ENC_COMPUTE : KK_ENC_RENDER;
++   enum mtl_stages after, before;
++   kk_resolve_close_stages(cmd, kind, &after, &before);
++   mtl_barrier_after_stages(encoder, after, before);
+    util_dynarray_clear(&cmd->unordered_writes);
+    close_encoder(cmd, encoder);
+ }
+@@ -559,7 +696,10 @@
+       if (KK_DEBUG(BARRIER_STATS))
+          kk_barrier_stats_tick(p_atomic_inc_return(&kk_barrier_emitted) +
+                                kk_barrier_skipped);
+-      mtl_barrier_after_stages(encoder, MTL_STAGE_ALL, MTL_STAGE_ALL);
++      /* render_closing est toujours un encodeur de RENDU. */
++      enum mtl_stages after, before;
++      kk_resolve_close_stages(cmd, KK_ENC_RENDER, &after, &before);
++      mtl_barrier_after_stages(encoder, after, before);
+       util_dynarray_clear(&cmd->unordered_writes);
+    } else {
+       if (KK_DEBUG(BARRIER_STATS))
+@@ -740,11 +880,36 @@
+ {
+    VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
+ 
+-   /* TODO_KOSMICKRISP Lighten barriers according to the actual requested
+-    * barrier. To take advantage of this we need to remove the chaining of
+-    * encoders. */
++   /* En mode cible, on traduit les VRAIES stages src/dst de la barriere. On ne
++    * les retient (pending_barrier_*) que sur les chemins qui FERMENT un encodeur
++    * (render_closing, split) : la fermeture (end_encoder / cs_flush_closing)
++    * remplacera alors le ALL->ALL par exactement ce que le jeu demande (overlap
++    * recupere en securite). On accumule (|=) car plusieurs barrieres peuvent
++    * s'empiler avant la fermeture effective. Les barrieres intra-encodeur ne
++    * touchent pas pending (elles sont satisfaites sans fermeture). */
++   enum mtl_stages mtl_after = MTL_STAGE_ALL, mtl_before = MTL_STAGE_ALL;
++   if (kk_narrow_mode() == 1) {
++      VkPipelineStageFlags2 src = 0, dst = 0;
++      for (uint32_t i = 0; i < pDependencyInfo->memoryBarrierCount; i++) {
++         src |= pDependencyInfo->pMemoryBarriers[i].srcStageMask;
++         dst |= pDependencyInfo->pMemoryBarriers[i].dstStageMask;
++      }
++      for (uint32_t i = 0; i < pDependencyInfo->bufferMemoryBarrierCount; i++) {
++         src |= pDependencyInfo->pBufferMemoryBarriers[i].srcStageMask;
++         dst |= pDependencyInfo->pBufferMemoryBarriers[i].dstStageMask;
++      }
++      for (uint32_t i = 0; i < pDependencyInfo->imageMemoryBarrierCount; i++) {
++         src |= pDependencyInfo->pImageMemoryBarriers[i].srcStageMask;
++         dst |= pDependencyInfo->pImageMemoryBarriers[i].dstStageMask;
++      }
++      mtl_after = kk_vk_pipeline_stages_to_mtl(src);
++      mtl_before = kk_vk_pipeline_stages_to_mtl(dst);
++   }
++
+    if (cmd->metal.render_closing) {
+       cmd->metal.closing_needs_barrier = true;
++      cmd->metal.pending_barrier_after |= mtl_after;
++      cmd->metal.pending_barrier_before |= mtl_before;
+    } else if (cmd->metal.render) {
+       /* Multisample attachments require render pass split always. Then based on
+        * the barrier and if we are using depth/stencil or not, we may have to
+@@ -752,6 +917,8 @@
+        */
+       if (cmd->state.gfx.render.samples > 1 ||
+           kk_barrier_requires_encoder_split(cmd, pDependencyInfo)) {
++         cmd->metal.pending_barrier_after |= mtl_after;
++         cmd->metal.pending_barrier_before |= mtl_before;
+          kk_apply_attachment_store_ops(cmd, true);
+          cs_end(cmd);
+          cs_start_render(cmd);
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.h b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+@@ -328,6 +328,13 @@
+       mtl_render_encoder *render_closing;
+       bool closing_needs_barrier;
+ 
++      /* Stages reelles (traduites de pDependencyInfo) de la barriere qui force
++       * la fermeture de l'encodeur courant. 0 = pas de barriere ciblee en
++       * attente -> la fermeture retombe sur l'heuristique par type d'encodeur.
++       * Utilise seulement en mode CIDRE_NARROW_BARRIERS=targeted. */
++      enum mtl_stages pending_barrier_after;
++      enum mtl_stages pending_barrier_before;
++
+       /* Metal command buffers already closed for this recording, in the order
+        * they must execute. A recording that would overrun a single command
+        * buffer's encoder budget is spread over several; see
