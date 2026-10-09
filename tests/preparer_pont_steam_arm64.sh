@@ -27,9 +27,20 @@ K='HKCU\Software\Valve\Steam'
 reg "$K" SteamPath "REG_SZ" "$DOS"
 reg "$K" SteamExe  "REG_SZ" "$DOS\\steam.exe"
 
+# Ce que le registre designe comme client. Avec les DLL authentiques de Valve
+# dans le prefixe (installer_client_steam_windows.sh), ce sont elles : un jeu
+# protege par le DRM de Steam y verifie la signature de Valve avant de charger,
+# et Wine detourne leurs exports vers le pont. Sans elles, le pont sous son
+# propre nom : les jeux sans DRM tournent, les jeux proteges s'arretent sur
+# « Application load error 3 ».
+S="$PFX/drive_c/Program Files (x86)/Steam"
+DLL32='C:\windows\system32\lsteamclient.dll'; DLL64=$DLL32
+[ -s "$S/steamclient.dll" ]   && DLL32="$DOS\\steamclient.dll"
+[ -s "$S/steamclient64.dll" ] && DLL64="$DOS\\steamclient64.dll"
+
 K='HKCU\Software\Valve\Steam\ActiveProcess'
-reg "$K" SteamClientDll   "REG_SZ"    'C:\windows\system32\lsteamclient.dll'
-reg "$K" SteamClientDll64 "REG_SZ"    'C:\windows\system32\lsteamclient.dll'
+reg "$K" SteamClientDll   "REG_SZ"    "$DLL32"
+reg "$K" SteamClientDll64 "REG_SZ"    "$DLL64"
 reg "$K" SteamPath        "REG_SZ"    "$DOS"
 reg "$K" Universe         "REG_SZ"    "Public"
 reg "$K" pid              "REG_DWORD" "1"

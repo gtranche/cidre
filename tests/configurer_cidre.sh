@@ -37,6 +37,10 @@ WINE_ARM64="$R/wine/wine11-arm64" WINEPREFIX="$WINEPREFIX" sh "$R/tests/installe
 echo "== 4/6 Pont Steam =="
 # Sans ce pont, le steam_api64.dll du jeu ne trouve pas de client (registre
 # ActiveProcess vide) et SteamAPI_Init echoue -- le jeu « se lance et se ferme ».
+# Les DLL du client Steam de Windows, que les jeux proteges par le DRM de Steam
+# exigent. Leur absence n'empeche pas les autres jeux : on continue.
+sh "$R/tests/installer_client_steam_windows.sh" "$WINEPREFIX" ||
+   echo "  DLL du client Steam absentes -- les jeux proteges par le DRM de Steam ne demarreront pas ; relancer \`cidre setup\` une fois en ligne"
 if WINE="$R/wine/wine11-arm64/bin/wine" WINEPREFIX="$WINEPREFIX" \
      B="$R/wine/wine11-arm64/lib/wine" sh "$R/tests/preparer_pont_steam_arm64.sh" >/dev/null 2>&1; then
    echo "  pont installe (lsteamclient en system32, faux_steam.exe, cles de registre)"

@@ -157,6 +157,12 @@ for f in faux_steam.exe windows/system32/lsteamclient.dll windows/system32/xtaji
    if [ -f "$C/$f" ]; then printf '  %-40s %s octets\n' "$f" "$(stat -f %z "$C/$f")"; else printf '  %-40s ABSENT\n' "$f"; fi
 done
 echo "  registre    : $(oui test -s "$WINEPREFIX/system.reg")"
+# Ce qu'un jeu protege par le DRM de Steam exige : les DLL de Valve, et le
+# registre qui les designe (sinon : « Application load error 3:0000065432 »).
+for f in steamclient.dll steamclient64.dll Steam.dll; do
+   if [ -s "$C/Program Files (x86)/Steam/$f" ]; then printf '  %-40s %s octets\n' "Steam/$f" "$(stat -f %z "$C/Program Files (x86)/Steam/$f")"; else printf '  %-40s ABSENT\n' "Steam/$f"; fi
+done
+echo "  client Steam designe au registre : $(LC_ALL=C grep -a '^"SteamClientDll64"=' "$WINEPREFIX/user.reg" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d '"' | sed 's/\\\\/\\/g')"
 
 titre "Processus"
 ps -axo pid=,etime=,command= | grep -E "lancer_depuis_steam|etape2_pile|wineserver|[A-Za-z]:\\\\" | grep -v grep \
