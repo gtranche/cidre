@@ -1,0 +1,119 @@
+wine11 : retirer l'execution des pages JIT de l'invite, pas de celles de l'emulateur
+
+Deux choses dans ce correctif, parce que la premiere n'avait jamais ete exportee.
+
+1. Le correctif W^X du 2026-10-05 (PEAK, note_peak_wx_fex.md), tel qu'il vit
+   dans l'arbre de travail et dans les runtimes v1.4.4 a v1.4.7 : une page que
+   l'invite demande en ecriture+execution n'est jamais executee par l'hote --
+   l'emulateur la lit et emet de l'ARM64 -- donc on lui retire VPROT_EXEC, a
+   l'allocation et dans set_protection. Elle devient une page ordinaire, ni
+   MAP_JIT ni bascule par fil, et l'interblocage W^X de FEX disparait.
+
+2. Sa correction pour les invites 32 bits. Le discriminant d'origine etait
+   l'absence de MEM_EXTENDED_PARAMETER_EC_CODE, que FEX pose sur ses propres
+   tampons de code. C'est vrai dans un processus ARM64EC (invite x86-64). Un
+   invite i386 tourne dans un processus arm64 natif, sans table EC : EC_CODE y
+   est refuse (STATUS_INVALID_PARAMETER), libwow64fex ne le pose donc pas, et
+   son cache de code perdait le droit d'executer. Trace :
+     NtAllocateVirtualMemoryEx ... 01000000 103000 00000040  ->  c-rw-
+   puis faute d'execution (info[0]=8) sur ce tampon au premier saut, rendue a
+   l'invite, qui refaute dans KiUserExceptionDispatcher jusqu'au garde-fou
+   « pile hote au fond » de wow64. Aucun programme 32 bits ne demarrait, et
+   « wineboot --init » laissait syswow64 vide (son etape 32 bits mourait de la
+   meme facon) -- mesure : 0 fichier avant, 857 apres.
+
+   Pour un invite i386 le discriminant devient l'adresse : l'invite ne recoit
+   que des pages de sa fenetre de 4 Gio (adresse donnee dans la fenetre, ou
+   plafond qui l'y contraint), l'emulateur alloue au-dela. set_protection ne
+   change pas : is_emulated_code y est deja faux hors ARM64EC.
+
+Temoins : h32temps et h32smc sortent en 0 (1 avant) ; hello64, banc_x64 et
+h64tls inchanges. A/B fait en reposant l'ancien ntdll.so dans la meme
+installation.
+
+Un prefixe cree par un runtime v1.4.4 a v1.4.7 garde son syswow64 vide, et ce
+correctif seul ne le repare pas : un programme 32 bits y meurt sur « could not
+load kernel32.dll, status c0000135 », et « wineboot -u » n'y recree rien
+(mesure : 0 fichier). Il faut le recreer, ou le repeupler depuis un prefixe
+sain avec tests/peupler_syswow64.sh (mesure : 857 entrees, h32temps repasse).
+
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -2209,6 +2209,20 @@
+     NTSTATUS status;
+ 
+     if ((status = get_vprot_flags( protect, &vprot, view->protect & SEC_IMAGE ))) return status;
++
++    /*
++     * Meme traitement qu'a l'allocation (voir allocate_virtual_memory) : une page
++     * de code JIT d'invite emule repassee en exec+write par VirtualProtect ne doit
++     * pas redevenir exec hote (sinon RWX refuse par macOS, ou MAP_JIT/deadlock
++     * W^X). Discriminant ici : is_emulated_code -- le code natif de FEX est marque
++     * EC (bitmap pose a l'alloc via EC_CODE), l'invite ne l'est pas. On ne retire
++     * EXEC que pour exec+write (le cas exec seul, RX, est inoffensif sur macOS).
++     */
++    if ((main_image_info.Machine == IMAGE_FILE_MACHINE_AMD64 ||
++         main_image_info.Machine == IMAGE_FILE_MACHINE_I386) &&
++        (vprot & VPROT_EXEC) && (vprot & VPROT_WRITE) &&
++        is_view_valloc( view ) && is_emulated_code( (ULONG_PTR)base ))
++        vprot &= ~VPROT_EXEC;
+ 
+     if (is_view_valloc( view ))
+     {
+@@ -5524,6 +5538,20 @@
+ 
+ 
+ /***********************************************************************
++ *           is_wow_guest_request
++ *
++ * Une allocation demandee par un invite 32 bits tombe dans sa fenetre : soit
++ * l'adresse y est, soit le plafond l'y contraint -- en adresses d'invite quand
++ * il vient de zero_bits, deja rebase quand il vient de la forme etendue.
++ */
++static BOOL is_wow_guest_request( const void *base, ULONG_PTR limit_high )
++{
++    if (base) return (ULONG_PTR)base - user_space_wow_base < limit_4g;
++    return limit_high && limit_high < user_space_wow_base + limit_4g;
++}
++
++
++/***********************************************************************
+  *             allocate_virtual_memory
+  *
+  * NtAllocateVirtualMemory[Ex] implementation.
+@@ -5668,6 +5696,35 @@
+             if (type & MEM_RESERVE_PLACEHOLDER) vprot |= VPROT_PLACEHOLDER | VPROT_FREE_PLACEHOLDER;
+             if (protect & PAGE_NOCACHE) vprot |= SEC_NOCACHE;
+ 
++            /*
++             * Page de code JIT d'un invite emule (ex. le JIT Mono d'Unity sous
++             * FEX). On la reconnait, pour un invite x86-64 (main image AMD64), a :
++             * exec+write demandes, et ABSENCE du marqueur EC_CODE -- que FEX pose
++             * sur ses PROPRES allocations de code natif (AllocatorHooks.h, via
++             * MEM_EXTENDED_PARAMETER_EC_CODE), mais que le VirtualAlloc de l'invite
++             * ne porte pas. Un tel code n'est JAMAIS execute par l'hote (FEX le lit
++             * et emet de l'ARM64), donc on retire EXEC : la page devient RW
++             * ordinaire (ni MAP_JIT ni write-watch). Cela supprime le deadlock W^X
++             * (le store de FEX, execute depuis son cache MAP_JIT en mode X du fil,
++             * ecrit sans faute sur une page normale) sans toucher au code natif de
++             * FEX (EC_CODE => garde MAP_JIT/exec). Le code natif ARM64EC d'image
++             * passe par SEC_IMAGE, exclu ici.
++             *
++             * Invite 32 bits : le processus est arm64 natif, sans table EC, et
++             * l'emulateur ne peut donc pas marquer ses tampons (EC_CODE y est
++             * refuse plus haut). Le discriminant devient l'adresse : l'invite
++             * ne recoit que des pages de sa fenetre de 4 Gio, l'emulateur
++             * alloue au-dela. Sans cela son propre cache de code perdait le
++             * droit d'executer, et le premier saut dedans fautait sans fin.
++             */
++            if ((main_image_info.Machine == IMAGE_FILE_MACHINE_AMD64 ?
++                 !(attributes & MEM_EXTENDED_PARAMETER_EC_CODE) :
++                 main_image_info.Machine == IMAGE_FILE_MACHINE_I386 &&
++                 is_wow_guest_request( base, limit_high )) &&
++                (vprot & VPROT_EXEC) && (vprot & VPROT_WRITE) &&
++                !(vprot & (SEC_FILE | SEC_IMAGE | SEC_RESERVE | SEC_COMMIT)))
++                vprot &= ~VPROT_EXEC;
++
+             if (vprot & VPROT_WRITECOPY) status = STATUS_INVALID_PAGE_PROTECTION;
+             else if (is_dos_memory) status = allocate_dos_memory( &view, vprot );
+             else status = map_view( &view, base, size, type, vprot, limit_low, limit_high,
