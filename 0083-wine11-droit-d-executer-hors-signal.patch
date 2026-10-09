@@ -1,0 +1,195 @@
+wine11 : donner le droit d'executer une page MAP_JIT hors du signal
+
+Sur un Mac M4 sous macOS 27, aucun invite x86-64 ne demarrait : le fil tournait
+a 100 % sur la premiere instruction du code que l'emulateur venait d'ecrire,
+sans exception ni message (pile : thunk de sortie de kernel32 -> page MAP_JIT
+-> _sigtramp, en boucle).
+
+Une page MAP_JIT n'accorde qu'un droit a la fois, par fil. virtual_handle_fault
+donne celui que la faute reclame, dans le gestionnaire de signal. Mesure sur la
+machine fautive par tests/sonde_wx.c (lancee par `cidre doctor`) :
+  - l'ESR decrit bien la faute (EC 0x20 execution, 0x24 ecriture) ;
+  - le droit d'ecrire donne pendant un signal tient ;
+  - le droit d'executer donne pendant un signal NE tient PAS : au retour, le
+    noyau rend au fil le droit d'ecrire qu'il avait a l'arrivee de la faute ;
+  - donne hors de tout signal, il tient.
+Sur un M1 sous macOS 26, les deux tiennent -- d'ou une panne invisible ici.
+
+On donne donc le droit d'executer apres le retour du signal : segv_handler met
+de cote le contexte interrompu sous la pile du fil et fait reprendre celui-ci
+dans wx_tremplin, qui appelle pthread_jit_write_protect_np(1) puis s'arrete sur
+un point d'arret ; trap_handler y remet le contexte, registre pour registre.
+Les signaux asynchrones sont masques le temps du tremplin.
+
+CIDRE_WX_DANS_SIGNAL=1 rend l'ancien comportement, pour comparer. Temoins
+x86-64 identiques avec l'un et l'autre sur M1 ; cout mesure par la sonde :
+7,3 us par aller-retour ecrire/executer au lieu de 5,0.
+
+Remplace une premiere version de ce correctif (faute d'execution reconnue a son
+adresse), batie sur une hypothese que la sonde a dementie.
+
+Ne reconstruire que ntdll.so (build/wine11-arm64-ec, les deux drapeaux TEB).
+---
+--- a/dlls/ntdll/unix/signal_arm64.c
++++ b/dlls/ntdll/unix/signal_arm64.c
+@@ -1405,6 +1405,81 @@
+ }
+ #endif /* __APPLE__ */
+ 
++#ifdef __APPLE__
++/*
++ * Donner a un fil le droit d'executer une page MAP_JIT, hors du signal.
++ *
++ * Une page MAP_JIT n'accorde qu'un droit a la fois, par fil : ecrire ou
++ * executer. virtual_handle_fault donne celui que la faute reclame, et le
++ * faisait dans le gestionnaire. Pour le droit d'executer cela ne tient pas
++ * partout : sur un Mac M4 sous macOS 27, au retour du signal le noyau rend au
++ * fil le droit d'ecrire qu'il avait a l'arrivee de la faute, la meme faute
++ * revient, et aucun invite x86-64 ne demarre (le fil tourne a 100 % sur la
++ * premiere instruction du code emis). Mesure sur cette machine par
++ * tests/sonde_wx.c : le droit d'ecrire donne pendant un signal tient, celui
++ * d'executer non ; donne hors de tout signal, il tient.
++ *
++ * On le donne donc apres le retour. Le gestionnaire met de cote le contexte
++ * interrompu, sous la pile du fil, et fait reprendre celui-ci dans wx_tremplin,
++ * qui donne le droit puis s'arrete sur un point d'arret ; trap_handler y remet
++ * le contexte mis de cote, registre pour registre. Le fil a alors deja le
++ * droit d'executer : le noyau n'a rien a lui rendre.
++ */
++struct wx_cadre
++{
++    ULONG64                     magie;
++    _STRUCT_ARM_THREAD_STATE64  ss;
++    _STRUCT_ARM_NEON_STATE64    ns;
++    sigset_t                    masque;
++};
++#define WX_MAGIE 0x7872656c61697377ull
++
++extern void wx_tremplin(void);
++__ASM_GLOBAL_FUNC( wx_tremplin,
++                   "bl " __ASM_NAME("pthread_jit_write_protect_np") "\n\t"
++                   "brk #0x57e" )
++/* le point d'arret : la deuxieme instruction du tremplin */
++#define WX_TREMPLIN_ARRET ((ULONG_PTR)wx_tremplin + 4)
++
++static void wx_reprendre_hors_signal( ucontext_t *sigcontext )
++{
++    /* sous la pile interrompue, zone rouge passee */
++    struct wx_cadre *cadre = (struct wx_cadre *)((SP_sig(sigcontext) - 256 - sizeof(*cadre)) & ~(ULONG_PTR)15);
++
++    TRACE( "droit d'executer donne hors signal, pc=%p sp=%p\n",
++           (void *)PC_sig(sigcontext), (void *)SP_sig(sigcontext) );
++    cadre->magie  = WX_MAGIE;
++    cadre->ss     = sigcontext->uc_mcontext->__ss;
++    cadre->ns     = sigcontext->uc_mcontext->__ns;
++    cadre->masque = sigcontext->uc_sigmask;
++    PC_sig(sigcontext) = (ULONG_PTR)wx_tremplin;
++    SP_sig(sigcontext) = (ULONG_PTR)cadre;
++    REGn_sig(0, sigcontext) = 1;  /* pthread_jit_write_protect_np( 1 ) : executer */
++    /* Rien ne doit s'intercaler dans le tremplin (une suspension y lirait un
++     * contexte qui n'est pas celui du fil), sauf ce qu'il provoque lui-meme. */
++    sigfillset( &sigcontext->uc_sigmask );
++    sigdelset( &sigcontext->uc_sigmask, SIGTRAP );
++    sigdelset( &sigcontext->uc_sigmask, SIGSEGV );
++    sigdelset( &sigcontext->uc_sigmask, SIGBUS );
++    sigdelset( &sigcontext->uc_sigmask, SIGILL );
++}
++
++/* Le point d'arret du tremplin : remettre le contexte mis de cote. */
++static BOOL wx_fin_de_tremplin( ucontext_t *sigcontext )
++{
++    struct wx_cadre *cadre;
++
++    if (PC_sig(sigcontext) != WX_TREMPLIN_ARRET) return FALSE;
++    cadre = (struct wx_cadre *)SP_sig(sigcontext);
++    if (cadre->magie != WX_MAGIE) return FALSE;
++    cadre->magie = 0;
++    sigcontext->uc_mcontext->__ss = cadre->ss;
++    sigcontext->uc_mcontext->__ns = cadre->ns;
++    sigcontext->uc_sigmask = cadre->masque;
++    return TRUE;
++}
++#endif /* __APPLE__ */
++
+ static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
+ {
+     ucontext_t *sigcontext = _sigcontext;
+@@ -1531,7 +1606,18 @@
+     }
+     else
+ #endif
+-    if (!virtual_handle_fault( data, &rec, (void *)SP_sig(sigcontext) )) return;
++    {
++        NTSTATUS status = virtual_handle_fault( data, &rec, (void *)SP_sig(sigcontext) );
++
++#ifdef __APPLE__
++        if (status == STATUS_WX_EXECUTION)
++        {
++            wx_reprendre_hors_signal( sigcontext );
++            return;
++        }
++#endif
++        if (!status) return;
++    }
+     if (handle_syscall_fault( data, sigcontext, &rec )) return;
+ 
+     save_context( &context, sigcontext );
+@@ -1585,6 +1671,9 @@
+                              .ExceptionAddress = (void *)PC_sig(sigcontext) };
+     DWORD64 esr = 0;
+ 
++#ifdef __APPLE__
++    if (wx_fin_de_tremplin( sigcontext )) return;
++#endif
+     save_context( &context, sigcontext );
+ 
+ #ifdef linux
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -330,6 +330,10 @@
+ extern void virtual_map_user_shared_data(void);
+ extern void virtual_init_user_shared_data(void);
+ extern NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec, void *stack );
++/* Rendu par virtual_handle_fault (macOS arm64) : faute d'execution sur une page
++ * MAP_JIT, resolue a condition de donner au fil le droit d'executer hors du
++ * signal. Voir wx_reprendre_hors_signal. */
++#define STATUS_WX_EXECUTION ((NTSTATUS)0x400057e0)
+ extern unsigned int virtual_locked_server_call( void *req_ptr );
+ extern ssize_t virtual_locked_read( int fd, void *addr, size_t size );
+ extern ssize_t virtual_locked_pread( int fd, void *addr, size_t size, off_t offset );
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -316,6 +316,7 @@
+ static BOOL force_exec_prot;  /* whether to force PROT_EXEC on all PROT_READ mmaps */
+ static BOOL enable_write_exceptions;  /* raise exception on writes to executable memory */
+ static BOOL bascule_wx;  /* l'hote refuse ecriture et execution ensemble */
++static BOOL wx_dans_signal;  /* donner le droit d'executer dans le gestionnaire (CIDRE_WX_DANS_SIGNAL) */
+ 
+ struct range_entry
+ {
+@@ -3943,6 +3944,9 @@
+         if (p == MAP_FAILED) bascule_wx = TRUE;
+         else munmap( p, host_page_size );
+         TRACE( "ecriture+execution simultanees : %s\n", bascule_wx ? "refusees" : "accordees" );
++        /* L'ancien comportement, pour comparer : le droit d'executer donne
++         * dans le gestionnaire de signal. Boucle sans fin la ou il ne tient pas. */
++        wx_dans_signal = getenv( "CIDRE_WX_DANS_SIGNAL" ) != NULL;
+     }
+ 
+ #ifdef __APPLE__
+@@ -5095,6 +5099,15 @@
+          * Mesure : 6,06 M d'ecritures et 6,05 M d'executions concurrentes en
+          * 200 ms (tests/wx_map_jit.c).
+          */
++        if (err == EXCEPTION_EXECUTE_FAULT && !wx_dans_signal)
++        {
++            /* Le droit d'executer ne se donne pas ici : sur certaines machines
++             * il ne survit pas au retour du signal. segv_handler fait
++             * reprendre le fil dans un tremplin qui le donne (signal_arm64.c,
++             * wx_reprendre_hors_signal). */
++            mutex_unlock( &virtual_mutex );
++            return STATUS_WX_EXECUTION;
++        }
+         pthread_jit_write_protect_np( err == EXCEPTION_EXECUTE_FAULT );
+         /* Pas d'invalidation du cache d'instructions ici : l'emulateur fait la
+          * sienne apres avoir emis son code, et la faire a chaque bascule

@@ -27,6 +27,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 #include <libkern/OSCacheControl.h>
 
@@ -36,7 +37,31 @@
 static const unsigned int retourne_42[] = { 0xd2800540, 0xd65f03c0 }; /* mov x0,#42 ; ret */
 static volatile unsigned int *code;
 
-enum { CLASSE_PAR_ESR, CLASSE_PAR_ADRESSE, SANS_BASCULE };
+enum { CLASSE_PAR_ESR, CLASSE_PAR_ADRESSE, HORS_SIGNAL, SANS_BASCULE };
+
+/*
+ * Reprise hors du signal. Sur un Mac M4 sous macOS 27, le droit d'executer
+ * donne pendant un signal ne tient pas : au retour, le noyau rend au fil le
+ * droit d'ecrire qu'il avait a l'arrivee du signal. On le donne donc apres le
+ * retour : le gestionnaire met de cote le contexte interrompu et fait reprendre
+ * le fil dans un tremplin, qui donne le droit (hors de tout signal, la ou cela
+ * marche) puis s'arrete sur un point d'arret ; le gestionnaire de ce point
+ * d'arret remet le contexte mis de cote, registre pour registre. Le fil avait
+ * alors deja le droit d'executer : le noyau n'a rien a lui rendre.
+ */
+struct cadre_wx
+{
+    unsigned long long magie;
+    _STRUCT_ARM_THREAD_STATE64 ss;
+    _STRUCT_ARM_NEON_STATE64 ns;
+    sigset_t masque;
+};
+#define MAGIE_WX 0x7872656c61697377ull
+extern void tremplin_wx( void );
+extern void tremplin_wx_arret( void );
+__asm__( ".text\n.p2align 2\n.globl _tremplin_wx\n.globl _tremplin_wx_arret\n"
+         "_tremplin_wx:\n\tbl _pthread_jit_write_protect_np\n"
+         "_tremplin_wx_arret:\n\tbrk #0x57e\n" );
 static int methode;
 static volatile int fautes;
 static sigjmp_buf sortie;
@@ -70,7 +95,39 @@ static void faute( int sig, siginfo_t *info, void *ctx )
      * executait si l'adresse fautive est celle de l'instruction. */
     if (methode == CLASSE_PAR_ESR) execution = (ec == 0x20 || ec == 0x21);
     else execution = (adresse == pc);
+    if (execution && methode == HORS_SIGNAL)
+    {
+        /* sous la pile interrompue, zone rouge passee */
+        struct cadre_wx *c = (struct cadre_wx *)((uc->uc_mcontext->__ss.__sp - 256 - sizeof(*c)) & ~15ull);
+
+        c->magie = MAGIE_WX;
+        c->ss = uc->uc_mcontext->__ss;
+        c->ns = uc->uc_mcontext->__ns;
+        c->masque = uc->uc_sigmask;
+        uc->uc_mcontext->__ss.__pc = (unsigned long long)tremplin_wx;
+        uc->uc_mcontext->__ss.__sp = (unsigned long long)c;
+        uc->uc_mcontext->__ss.__x[0] = 1;
+        /* rien ne doit s'intercaler dans le tremplin, sauf ce qu'il provoque */
+        sigfillset( &uc->uc_sigmask );
+        sigdelset( &uc->uc_sigmask, SIGTRAP );
+        sigdelset( &uc->uc_sigmask, SIGBUS );
+        sigdelset( &uc->uc_sigmask, SIGSEGV );
+        sigdelset( &uc->uc_sigmask, SIGILL );
+        return;
+    }
     pthread_jit_write_protect_np( execution );
+}
+
+static void arret( int sig, siginfo_t *info, void *ctx )
+{
+    ucontext_t *uc = ctx;
+    struct cadre_wx *c = (struct cadre_wx *)uc->uc_mcontext->__ss.__sp;
+
+    (void)sig; (void)info;
+    if (uc->uc_mcontext->__ss.__pc != (unsigned long long)tremplin_wx_arret || c->magie != MAGIE_WX) _exit( 4 );
+    uc->uc_mcontext->__ss = c->ss;
+    uc->uc_mcontext->__ns = c->ns;
+    uc->uc_sigmask = c->masque;
 }
 
 static void autre_signal( int sig )
@@ -90,6 +147,8 @@ static void poser_gestionnaires( void )
     sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
     sigaction( SIGBUS, &sa, NULL );
     sigaction( SIGSEGV, &sa, NULL );
+    sa.sa_sigaction = arret;
+    sigaction( SIGTRAP, &sa, NULL );
     memset( &sa, 0, sizeof(sa) );
     sa.sa_handler = autre_signal;
     sigaction( SIGUSR1, &sa, NULL );
@@ -200,6 +259,31 @@ static int essai_persistance_ecriture( void )
     return 1;
 }
 
+/* Le va-et-vient d'un emulateur : ecrire du code, l'executer, recommencer. On
+ * verifie au passage que la reprise rend bien tous les registres (la valeur
+ * de retour vient de x0, le compteur vit dans un registre preserve). */
+static int essai_va_et_vient( void )
+{
+    enum { TOURS = 2000 };
+    struct timespec debut, fin;
+    volatile int i;
+    double us;
+
+    fautes = 0;
+    if (sigsetjmp( sortie, 1 )) { printf( "BOUCLE apres %d tours", i ); decrire_la_faute(); return 1; }
+    clock_gettime( CLOCK_MONOTONIC, &debut );
+    for (i = 0; i < TOURS; i++)
+    {
+        fautes = 0;
+        ecrire_le_code();
+        if (executer_le_code() != 42) { printf( "mauvaise valeur au tour %d", i ); return 1; }
+    }
+    clock_gettime( CLOCK_MONOTONIC, &fin );
+    us = ((fin.tv_sec - debut.tv_sec) * 1e9 + (fin.tv_nsec - debut.tv_nsec)) / 1e3 / TOURS;
+    printf( "ok, %d tours, %.1f us par tour", TOURS, us );
+    return 0;
+}
+
 static const struct
 {
     const char *nom;
@@ -216,6 +300,10 @@ static const struct
     { "reprise apres faute d'ecriture, par l'ESR  ", essai_ecriture, CLASSE_PAR_ESR },
     { "reprise apres faute d'execution, par le pc ", essai_execution, CLASSE_PAR_ADRESSE },
     { "reprise apres faute d'ecriture, par le pc  ", essai_ecriture, CLASSE_PAR_ADRESSE },
+    { "reprise apres faute d'execution, hors signal", essai_execution, HORS_SIGNAL },
+    { "reprise apres faute d'ecriture, hors signal ", essai_ecriture, HORS_SIGNAL },
+    { "va-et-vient ecrire/executer, dans le signal ", essai_va_et_vient, CLASSE_PAR_ESR },
+    { "va-et-vient ecrire/executer, hors signal    ", essai_va_et_vient, HORS_SIGNAL },
 };
 
 int main( void )
