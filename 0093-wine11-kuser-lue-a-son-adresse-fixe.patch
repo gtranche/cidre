@@ -1,0 +1,127 @@
+wine11 : KUSER_SHARED_DATA lisible a son adresse fixe par le code x86-64
+
+Windows pose cette page a 0x7ffe0000 dans tout processus, et du code x86-64 la
+lit la, en dur. Les routines systeme de ntdll le font toutes :
+
+    mov r10, rcx ; mov eax, N ; test byte ptr [7FFE0308h], 1 ; syscall
+
+Un programme les atteint des qu'il appelle une fonction Nt* lui-meme. Le
+lanceur de Clair Obscur: Expedition 33 le fait pour
+NtSetInformationThread(ThreadHideFromDebugger) : violation d'acces en lecture
+a 0x7ffe0308, puis le deroulage de cette exception refaute sans fin (retour
+bidon 0x000f000e000d000c cherche dans la table du code EC) jusqu'au bout de la
+pile -- « virtual_setup_exception stack overflow », et le jeu ne demarre pas.
+
+macOS interdit toute adresse sous 4 Gio a un processus arm64 : pour l'hote la
+page vit a user_shared_data. segv_handler rejoue donc la lecture depuis la,
+avec l'emulateur d'acces deja ecrit pour la fenetre basse de LuaJIT (dont le
+coeur devient emuler_acces_vers). Il apprend au passage les chargements
+ordonnes qu'un emulateur emet pour l'ordre memoire x86 : LDAR, LDAPR, LDAPUR.
+
+Rien a voir avec le M4 : meme panne sur M1. Temoin : tests/h64kuser.c
+(lectures directes et appel direct de la routine systeme).
+
+Ne reconstruire que ntdll.so (build/wine11-arm64-ec, les deux drapeaux TEB).
+---
+--- a/dlls/ntdll/unix/signal_arm64.c
++++ b/dlls/ntdll/unix/signal_arm64.c
+@@ -1275,21 +1275,12 @@
+  * (non signe, non echelonne, pre/post-indexe), a offset registre, et les paires
+  * (LDP/STP). Entier et SIMD.
+  */
+-static BOOL emuler_acces_fenetre_basse( ucontext_t *ctx, ULONG_PTR guest_addr )
++static BOOL emuler_acces_vers( ucontext_t *ctx, ULONG_PTR host )
+ {
+     const UINT insn = *(const UINT *)PC_sig( ctx );
+-    const ULONG_PTR host = guest_addr | luajit_low_base;
+ 
+-    /* Si le miroir n'est pas engage (pointeur bas invalide -- typiquement une
+-     * sonde IsBadStringPtr sur un petit entier), ne pas le dereferencer : cela
+-     * refauterait DANS le handler (exception imbriquee sur la pile de signal,
+-     * abandon du fil). On rend FALSE et la violation part vers le __except de
+-     * l'invite. Plage maximale d'un acces (paire Q) = 32 octets. */
+-    if (!luajit_miroir_engage( (const void *)host, FALSE ) ||
+-        !luajit_miroir_engage( (const void *)(host + 31), FALSE ))
+-        return FALSE;
+ #ifdef SONDE_EMU_COMPTE
+-    { static LONG n; LONG v = InterlockedIncrement( &n ); if ((v % 2000) == 1) ERR( "SONDE_EMU_COMPTE %ld acces hote emules (pc=%p guest=%p)\n", (long)v, (void *)PC_sig(ctx), (void *)guest_addr ); }
++    { static LONG n; LONG v = InterlockedIncrement( &n ); if ((v % 2000) == 1) ERR( "SONDE_EMU_COMPTE %ld acces hote emules (pc=%p guest=%p)\n", (long)v, (void *)PC_sig(ctx), (void *)host ); }
+ #endif
+ 
+     /* Rn : 31 = SP.  Rt : 31 = registre zero. */
+@@ -1391,6 +1382,27 @@
+             else { UINT64 v = XT_READ(Rt); memcpy((void*)host, &v, nb); }
+         }
+         if (sub == 1 || sub == 3) SET_XN( Rn, XN(Rn) + (INT64)imm9 );       /* writeback pre/post */
++        PC_sig(ctx) += 4;
++        return TRUE;
++    }
++
++    /* --- Chargements ordonnes, ceux qu'un emulateur emet pour respecter
++     *     l'ordre memoire x86 :
++     *       LDAR   (size 001000 110 11111 1 11111 Rn Rt)
++     *       LDAPR  (size 111000 101 11111 110000 Rn Rt)
++     *       LDAPUR (size 011001 opc 0 imm9 00 Rn Rt ; opc 01 charge, 1x signe) --- */
++    if ((insn & 0x3ffffc00u) == 0x08dffc00u || (insn & 0x3ffffc00u) == 0x38bfc000u)
++    {
++        XT_WRITE( insn & 31, CHARGE_ENTIER( 1u << (insn >> 30), FALSE ) );
++        PC_sig(ctx) += 4;
++        return TRUE;
++    }
++    if ((insn & 0x3f200c00u) == 0x19000000u && ((insn >> 22) & 3))
++    {
++        UINT opc = (insn >> 22) & 3;
++        UINT64 v = CHARGE_ENTIER( 1u << (insn >> 30), opc >= 2 );
++        if (opc == 3) v &= 0xffffffffull;   /* signe sur 32 bits, haut a zero */
++        XT_WRITE( insn & 31, v );
+         PC_sig(ctx) += 4;
+         return TRUE;
+     }
+@@ -1403,6 +1415,21 @@
+     #undef VREG
+     #undef CHARGE_ENTIER
+ }
++
++static BOOL emuler_acces_fenetre_basse( ucontext_t *ctx, ULONG_PTR guest_addr )
++{
++    const ULONG_PTR host = guest_addr | luajit_low_base;
++
++    /* Si le miroir n'est pas engage (pointeur bas invalide -- typiquement une
++     * sonde IsBadStringPtr sur un petit entier), ne pas le dereferencer : cela
++     * refauterait DANS le handler (exception imbriquee sur la pile de signal,
++     * abandon du fil). On rend FALSE et la violation part vers le __except de
++     * l'invite. Plage maximale d'un acces (paire Q) = 32 octets. */
++    if (!luajit_miroir_engage( (const void *)host, FALSE ) ||
++        !luajit_miroir_engage( (const void *)(host + 31), FALSE ))
++        return FALSE;
++    return emuler_acces_vers( ctx, host );
++}
+ #endif /* __APPLE__ */
+ 
+ #ifdef __APPLE__
+@@ -1499,6 +1526,25 @@
+         if ((ec == ESR_ELx_EC_DABT_LOW || ec == ESR_ELx_EC_DABT_CUR) &&
+             a >= 0x10000 && a < 0x100000000ull &&
+             emuler_acces_fenetre_basse( sigcontext, a ))
++            return;
++    }
++    else
++    {
++        /*
++         * KUSER_SHARED_DATA lue a son adresse fixe, 0x7ffe0000, par du code
++         * x86-64 : les routines systeme de ntdll le font toutes (« test byte
++         * ptr [7FFE0308h],1 » avant l'appel systeme), et un programme les
++         * atteint des qu'il appelle une fonction Nt* lui-meme. macOS interdit
++         * cette adresse a l'hote : la page vit a user_shared_data. On rejoue
++         * la lecture depuis la. Sans cela le lanceur de Clair Obscur:
++         * Expedition 33 tombait sur NtSetInformationThread, puis dans une
++         * cascade d'exceptions jusqu'au bout de sa pile (tests/h64kuser.c).
++         */
++        UINT ec = ESR_ELx_EC( esr );
++        ULONG_PTR a = (ULONG_PTR)siginfo->si_addr;
++        if ((ec == ESR_ELx_EC_DABT_LOW || ec == ESR_ELx_EC_DABT_CUR) && !ESR_ELx_ISS_DABT_WNR( esr ) &&
++            a >= 0x7ffe0000 && a < 0x7ffe1000 &&
++            emuler_acces_vers( sigcontext, (ULONG_PTR)user_shared_data + (a - 0x7ffe0000) ))
+             return;
+     }
+ #endif
