@@ -1,0 +1,17 @@
+Generated-by: LLM
+
+KosmicKrisp : loads de descripteur spéculables cachables
+
+diff --git a/src/kosmickrisp/compiler/nir_to_msl.c b/src/kosmickrisp/compiler/nir_to_msl.c
+--- a/src/kosmickrisp/compiler/nir_to_msl.c
++++ b/src/kosmickrisp/compiler/nir_to_msl.c
+@@ -1065,6 +1065,9 @@
+ global_access_qualifier(struct nir_to_msl_ctx *ctx,
+                         enum gl_access_qualifier access)
+ {
++   if ((access & ACCESS_CAN_SPECULATE) &&
++       !(access & (ACCESS_COHERENT | ACCESS_VOLATILE)))
++      return "device";
+    if (!(ctx->disabled_workarounds & BITFIELD64_BIT(6)))
+       return "coherent device";
+    if (access & ACCESS_VOLATILE) {
