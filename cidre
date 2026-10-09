@@ -316,6 +316,8 @@ case "$cmd" in
     # premiere qui dit pourquoi un jeu tombe, les suivantes se repetent.
     debut=$(LC_ALL=C grep -ab '^=== [0-9]' "$J" | tail -1 | cut -d: -f1)
     tail -c "+$(( ${debut:-0} + 1 ))" "$J" | LC_ALL=C awk -v max=240 '
+      # (les reprises de page de code ne sont pas des exceptions : on en garde trois)
+      /:trace:seh:wx_/ { if (++wx > 3) { coupe++; next } else { l[++n] = $0; next } }
       /:trace:/ { if ($0 ~ /:trace:seh:/ && t < max) t++; else { coupe++; next } }
       { l[++n] = $0 }
       END { for (i = 1; i <= n; i++) print l[i]
