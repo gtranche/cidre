@@ -152,6 +152,9 @@ titre "Prefixe Wine"
 echo "  dossier     : $WINEPREFIX"
 echo "  cree        : $(oui test -d "$C/windows/system32")"
 echo "  system32    : $(ls "$C/windows/system32" 2>/dev/null | wc -l | tr -d ' ') fichiers"
+# La partie 32 bits : sans elle, ni jeu 32 bits ni installeur de prerequis.
+echo "  syswow64    : $(ls "$C/windows/syswow64" 2>/dev/null | wc -l | tr -d ' ') fichiers ; ntdll 32 bits : $(if [ -f "$C/windows/syswow64/ntdll.dll" ]; then echo present; else echo ABSENT; fi)"
+echo "  runtime Visual C++ declare au registre : vue 64 bits $(oui grep -aqi 'Software\\\\Microsoft\\\\VisualStudio\\\\14.0\\\\VC\\\\Runtimes\\\\x64' "$WINEPREFIX/system.reg"), vue 32 bits $(oui grep -aqi 'Wow6432Node\\\\Microsoft\\\\VisualStudio\\\\14.0\\\\VC\\\\Runtimes\\\\x64' "$WINEPREFIX/system.reg")"
 for f in faux_steam.exe windows/system32/lsteamclient.dll windows/system32/xtajit64.dll \
          windows/system32/d3d11.dll windows/system32/dxgi.dll; do
    if [ -f "$C/$f" ]; then printf '  %-40s %s octets\n' "$f" "$(stat -f %z "$C/$f")"; else printf '  %-40s ABSENT\n' "$f"; fi

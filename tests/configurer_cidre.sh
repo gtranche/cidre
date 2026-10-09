@@ -21,8 +21,43 @@ echo "== 2/6 Prefixe Wine =="
 # Sans mono ni gecko. Un prefixe existant (et ses sauvegardes) est garde.
 export WINEPREFIX="$R/wine/pfx-arm64ec"
 export WINEDEBUG=-all WINEDLLOVERRIDES="mscoree=d;mshtml=d"
+WB="$R/wine/wine11-arm64/bin/wineboot"; WS="$R/wine/wine11-arm64/bin/wineserver"
+# La partie 32 bits manque-t-elle ? Un prefixe cree par les runtimes 1.4.4 a
+# 1.4.7 -- ou aucun programme 32 bits ne demarrait -- est reste avec un
+# syswow64 vide et sans la vue 32 bits du registre. Wine ne le rattrape pas
+# seul : sans ces fichiers, le programme 32 bits qui devrait les poser ne
+# demarre pas (« could not load kernel32.dll »). Consequences : aucun jeu 32
+# bits, et les lanceurs Unreal qui ne trouvent pas le runtime Visual C++ au
+# registre 32 bits proposent de l'installer, puis echouent (« descripteur
+# invalide »).
+sans_32_bits() {
+   [ -d "$R/wine/wine11-arm64/lib/wine/i386-windows" ] && [ ! -f "$WINEPREFIX/drive_c/windows/syswow64/ntdll.dll" ]
+}
 if [ ! -d "$WINEPREFIX/drive_c/windows/system32" ]; then
-   "$R/wine/wine11-arm64/bin/wineboot" -u >/dev/null 2>&1 || true
+   "$WB" -u >/dev/null 2>&1 || true
+elif sans_32_bits; then
+   # Reparation qui ne touche a rien d'autre : Wine cree un prefixe neuf a
+   # cote, on en greffe les seuls fichiers systeme 32 bits absents, puis Wine
+   # complete le registre du vrai prefixe. Les jeux, sauvegardes et reglages
+   # qu'il contient restent en place.
+   echo "  prefixe sans partie 32 bits : reparation (une minute), le reste n'est pas touche"
+   "$WS" -k 2>/dev/null; "$WS" -w 2>/dev/null
+   NEUF=$(mktemp -d "$R/wine/.pfx-neuf.XXXXXX") && {
+      WINEPREFIX="$NEUF" "$WB" -u >/dev/null 2>&1 || true
+      WINEPREFIX="$NEUF" "$WS" -w 2>/dev/null
+      if [ -f "$NEUF/drive_c/windows/syswow64/ntdll.dll" ]; then
+         ( cd "$NEUF/drive_c/windows/syswow64" &&
+           find . -type d | while IFS= read -r d; do mkdir -p "$WINEPREFIX/drive_c/windows/syswow64/$d"; done &&
+           find . -type f | while IFS= read -r f; do
+              [ -e "$WINEPREFIX/drive_c/windows/syswow64/$f" ] || cp "$f" "$WINEPREFIX/drive_c/windows/syswow64/$f"
+           done )
+         "$WB" -u >/dev/null 2>&1 || true
+         "$WS" -w 2>/dev/null
+      fi
+      rm -rf "$NEUF"
+   }
+   if sans_32_bits; then echo "  reparation impossible : les jeux 32 bits ne demarreront pas"
+   else echo "  partie 32 bits en place ($(ls "$WINEPREFIX/drive_c/windows/syswow64" | wc -l | tr -d ' ') fichiers)"; fi
 fi
 
 echo "== 3/6 DXVK et FEX =="
