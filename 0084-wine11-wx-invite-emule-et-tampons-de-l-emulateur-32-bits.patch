@@ -39,7 +39,7 @@ sain avec tests/peupler_syswow64.sh (mesure : 857 entrees, h32temps repasse).
 
 --- a/dlls/ntdll/unix/virtual.c
 +++ b/dlls/ntdll/unix/virtual.c
-@@ -2209,6 +2209,20 @@
+@@ -2209,6 +2209,21 @@
      NTSTATUS status;
  
      if ((status = get_vprot_flags( protect, &vprot, view->protect & SEC_IMAGE ))) return status;
@@ -57,13 +57,17 @@ sain avec tests/peupler_syswow64.sh (mesure : 857 entrees, h32temps repasse).
 +        (vprot & VPROT_EXEC) && (vprot & VPROT_WRITE) &&
 +        is_view_valloc( view ) && is_emulated_code( (ULONG_PTR)base ))
 +        vprot &= ~VPROT_EXEC;
- 
++
      if (is_view_valloc( view ))
      {
-@@ -5524,6 +5538,20 @@
+         if (vprot & VPROT_WRITECOPY) return STATUS_INVALID_PAGE_PROTECTION;
+@@ -5520,6 +5535,20 @@
+ }
  
- 
- /***********************************************************************
+ #endif  /* _WIN64 */
++
++
++/***********************************************************************
 + *           is_wow_guest_request
 + *
 + * Une allocation demandee par un invite 32 bits tombe dans sa fenetre : soit
@@ -75,13 +79,10 @@ sain avec tests/peupler_syswow64.sh (mesure : 857 entrees, h32temps repasse).
 +    if (base) return (ULONG_PTR)base - user_space_wow_base < limit_4g;
 +    return limit_high && limit_high < user_space_wow_base + limit_4g;
 +}
-+
-+
-+/***********************************************************************
-  *             allocate_virtual_memory
-  *
-  * NtAllocateVirtualMemory[Ex] implementation.
-@@ -5668,6 +5696,35 @@
+ 
+ 
+ /***********************************************************************
+@@ -5667,6 +5696,35 @@
              if (type & MEM_RESERVE_PLACEHOLDER) vprot |= VPROT_PLACEHOLDER | VPROT_FREE_PLACEHOLDER;
              if (protect & PAGE_NOCACHE) vprot |= SEC_NOCACHE;
  

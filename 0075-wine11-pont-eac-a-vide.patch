@@ -13,25 +13,6 @@ Reproduit la plomberie du eac-bridge de Proton :
                              Aucune logique anti-triche, aucune attestation fabriquee.
 Base : Wine 11.18 tel que modifie dans cidre (src/wine11). S'applique avec patch -p1.
 
-diff -ruN a/configure b/configure
---- a/configure	2026-10-01 08:51:48
-+++ b/configure	2026-10-01 08:51:48
-@@ -1260,6 +1260,7 @@
- enable_loadperf
- enable_localspl
- enable_localui
-+enable_easyanticheat_x64
- enable_lsteamclient
- enable_lz32
- enable_magnification
-@@ -22602,6 +22603,7 @@
- wine_fn_config_makefile dlls/localspl enable_localspl
- wine_fn_config_makefile dlls/localspl/tests enable_tests
- wine_fn_config_makefile dlls/localui enable_localui
-+wine_fn_config_makefile dlls/easyanticheat_x64 enable_easyanticheat_x64
- wine_fn_config_makefile dlls/lsteamclient enable_lsteamclient
- wine_fn_config_makefile dlls/localui/tests enable_tests
- wine_fn_config_makefile dlls/lz32 enable_lz32
 diff -ruN a/configure.ac b/configure.ac
 --- a/configure.ac	2026-10-01 08:51:48
 +++ b/configure.ac	2026-10-01 08:51:48
@@ -503,8 +484,8 @@ diff -ruN a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
  
      for (i = 0; i < count; i++) dll_path_maxlen = max( dll_path_maxlen, strlen(dll_paths[i]) );
 diff -ruN a/dlls/ntdll/unix/loadorder.c b/dlls/ntdll/unix/loadorder.c
---- a/dlls/ntdll/unix/loadorder.c	2026-10-01 08:51:48
-+++ b/dlls/ntdll/unix/loadorder.c	2026-10-01 08:51:48
+--- a/dlls/ntdll/unix/loadorder.c
++++ b/dlls/ntdll/unix/loadorder.c
 @@ -75,6 +75,7 @@
  static HANDLE app_key;
  static BOOL init_done;
@@ -513,17 +494,16 @@ diff -ruN a/dlls/ntdll/unix/loadorder.c b/dlls/ntdll/unix/loadorder.c
  
  /***************************************************************************
   *	get_version_entry
-@@ -482,16 +483,85 @@
+@@ -482,9 +483,81 @@
  {
      const WCHAR *p;
  
--    const WCHAR *p;
 +    static const WCHAR eac_launcherW[] = {'P','R','O','T','O','N','_','E','A','C','_','L','A','U','N','C','H','E','R','_','P','R','O','C','E','S','S','=',0};
- 
++
      if ((p = wcsrchr( app_name, '\\' ))) app_name = p + 1;
      app_key = open_app_key( app_name );
      main_exe_loaded = TRUE;
- 
++
 +    /* Pont EAC : kernelbase marque le lanceur classique dans son environnement Windows. */
 +    for (p = NtCurrentTeb()->Peb->ProcessParameters->Environment; *p; p += wcslen( p ) + 1)
 +    {
@@ -533,10 +513,10 @@ diff -ruN a/dlls/ntdll/unix/loadorder.c b/dlls/ntdll/unix/loadorder.c
 +            break;
 +        }
 +    }
- }
- 
- 
- /***************************************************************************
++}
++
++
++/***************************************************************************
 + *	eac_bridge_load_order
 + *
 + * Pont EAC, meme regle que le eac-bridge de Proton : la DLL easyanticheat
@@ -593,21 +573,17 @@ diff -ruN a/dlls/ntdll/unix/loadorder.c b/dlls/ntdll/unix/loadorder.c
 +    if (status) TRACE( "%s : aucun module natif a cote (%s), DLL native\n", debugstr_w(module), debugstr_w(natif.Buffer) );
 +    free( natif.Buffer );
 +    return status ? LO_NATIVE : LO_BUILTIN;
-+}
-+
-+
-+/***************************************************************************
-  *	get_load_order   (internal)
-  *
-  * Return the loadorder of a module.
-@@ -519,6 +589,10 @@
-     module[len + 1] = 0;
+ }
+ 
+ 
+@@ -517,6 +590,10 @@
      remove_dll_ext( module + 1 );
      basename = get_basename( module + 1 );
-+
+ 
 +    /* Pont EAC : regle speciale avant toute configuration */
 +    if (!is_system_dir && (ret = eac_bridge_load_order( module + 1, basename )) != LO_INVALID)
 +        goto done;
- 
++
      /* first explicit module name */
      if ((ret = get_load_order_value( std_key, app_key, is_system_dir ? basename : module+1 )) != LO_INVALID)
+         goto done;
