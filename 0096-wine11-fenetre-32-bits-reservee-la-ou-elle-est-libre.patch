@@ -1,0 +1,182 @@
+wine11 : la fenetre de l'invite 32 bits, reservee la ou le noyau l'accorde
+
+La fenetre d'adresses d'un invite 32 bits etait fixee a 16 Gio et laissee
+ouverte. Deux defauts, mesures :
+
+- macOS 27 : la region des bibliotheques systeme partagees s'etend jusqu'au-dela
+  de 18 Gio (0x2ea000000-0x480000000 et plus, liste par decrire_occupation sur
+  un Mac M4). Aucun programme 32 bits n'y demarrait -- « couldn't map free area
+  in range 0x400010000-0x47fff0001 », c0000017 --, donc ni jeu 32 bits, ni
+  installeur, ni reparation d'un prefixe sans partie 32 bits.
+- macOS 26 : l'allocateur de l'hote pose au hasard des reservations de
+  plusieurs gigaoctets ; sur six demarrages, 7 processus sur 54 trouvaient les
+  16 Gio deja pris. De quoi expliquer des temoins 32 bits bloques par moments.
+
+virtual_init essaie maintenant des bases d'un seul bit (16, 32, 64 Gio... :
+l'emulateur rebase par un « orr ») et RESERVE la premiere que le noyau accorde,
+avant que l'hote n'y pose quoi que ce soit. La fenetre devient une zone
+reservee de Wine : les allocations de l'invite 32 bits y passent par
+map_reserved_area ; celles de l'hote et des invites 64 bits, dont la plage
+enjambe la fenetre, cherchent de part et d'autre (map_view). L'emulateur et les
+bibliotheques de l'invite lisent la base dans __wine_wow64_guest_base.
+
+CIDRE_FENETRE_32_GIO impose une base (essais).
+
+Temoins sur M1 : 22 programmes 32 bits, memes codes de sortie qu'avec le ntdll
+publie ; temoins 64 bits inchanges.
+
+Ne reconstruire que ntdll.so (build/wine11-arm64-ec, les deux drapeaux TEB).
+---
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -1710,8 +1710,43 @@
+     }
+ 
+     return NULL;
++}
++
++
++#ifdef __APPLE__
++/* La fenetre de l'invite 32 bits est-elle a nous ? Voir virtual_init. */
++static BOOL fenetre_reservee;
++
++/* Prendre 4 Gio a cette adresse, si le noyau les accorde la et pas ailleurs. */
++static BOOL reserver_fenetre( ULONG_PTR base )
++{
++    void *p = mmap( (void *)base, limit_4g, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0 );
++
++    if (p == MAP_FAILED) return FALSE;
++    if (p != (void *)base)
++    {
++        munmap( p, limit_4g );
++        return FALSE;
++    }
++    mmap_add_reserved_area( p, limit_4g );
++    return TRUE;
+ }
++
++/*
++ * Une recherche qui ne vise pas la fenetre de l'invite 32 bits ne doit pas y
++ * tomber : la zone est reservee, donc preferee par map_reserved_area, et
++ * l'hote ou un invite 64 bits y prendraient la place des programmes 32 bits.
++ * Quand la plage demandee enjambe la fenetre, on cherche de part et d'autre.
++ */
++static BOOL enjambe_la_fenetre( const void *start, const void *end )
++{
++    const char *debut = (const char *)user_space_wow_base, *fin = debut + limit_4g;
+ 
++    if (!fenetre_reservee) return FALSE;
++    if ((const char *)end <= debut || (const char *)start >= fin) return FALSE;      /* a cote */
++    return !((const char *)start >= debut && (const char *)end <= fin);               /* dedans : c'est l'invite */
++}
++#endif
+ 
+ #ifdef __APPLE__
+ /*
+@@ -2573,6 +2608,39 @@
+         }
+ #endif
+ 
++#ifdef __APPLE__
++        if (enjambe_la_fenetre( start, end ))
++        {
++            void *debut = (void *)user_space_wow_base, *fin = (char *)debut + limit_4g;
++            void *bas[2] = { start, min( end, debut ) }, *haut[2] = { max( start, fin ), end };
++            void **premier = top_down ? haut : bas, **second = top_down ? bas : haut;
++            const BOOL bornee = start > address_space_start || end < host_addr_space_limit || top_down;
++
++            ptr = NULL;
++            if (premier[0] < premier[1])
++                ptr = map_reserved_area( premier[0], premier[1], host_size, top_down, unix_prot, align_mask );
++            if (!ptr && second[0] < second[1])
++                ptr = map_reserved_area( second[0], second[1], host_size, top_down, unix_prot, align_mask );
++            if (ptr)
++            {
++                TRACE( "got mem in reserved area %p-%p\n", ptr, (char *)ptr + size );
++                goto done;
++            }
++            if (bornee)
++            {
++                if (premier[0] < premier[1] && (char *)premier[1] - (char *)premier[0] >= host_size)
++                    ptr = map_free_area( premier[0], premier[1], host_size, top_down, unix_prot, align_mask );
++                if (!ptr && second[0] < second[1] && (char *)second[1] - (char *)second[0] >= host_size)
++                    ptr = map_free_area( second[0], second[1], host_size, top_down, unix_prot, align_mask );
++                if (!ptr) return STATUS_NO_MEMORY;
++                TRACE( "got mem with map_free_area %p-%p\n", ptr, (char *)ptr + size );
++                goto done;
++            }
++            /* sinon : le noyau choisit, et il ne choisira pas dans une zone prise */
++        }
++        else
++#endif
++        {
+         if ((ptr = map_reserved_area( start, end, host_size, top_down, unix_prot, align_mask )))
+         {
+             TRACE( "got mem in reserved area %p-%p\n", ptr, (char *)ptr + size );
+@@ -2586,6 +2654,7 @@
+             TRACE( "got mem with map_free_area %p-%p\n", ptr, (char *)ptr + size );
+             goto done;
+         }
++        }
+ 
+         for (;;)
+         {
+@@ -3993,9 +4062,46 @@
+      * ou macOS charge le binaire hote -- mesure : « map_fixed_area out of memory
+      * for 0x100400000 ». A 16 Gio l'espace est libre. La base doit rester un
+      * multiple de 4 Gio pour que le rebasage de l'emulateur soit un simple
+-     * « orr » d'un bit haut. */
+-    user_space_wow_base = 4 * limit_4g;
++     * « orr » d'un bit haut.
++     *
++     * « Libre » se verifie, il ne se suppose pas, et ne dure que si on la
++     * prend. Sur macOS 27 la region des bibliotheques systeme partagees
++     * s'etend jusqu'au-dela de 18 Gio (0x2ea000000-0x480000000 et plus, mesure
++     * sur un Mac M4 par decrire_occupation), en plein sur la fenetre : aucun
++     * programme 32 bits n'y demarrait, « couldn't map free area in range
++     * 0x400010000-0x47fff0001 ». Et ailleurs l'allocateur de l'hote pose au
++     * hasard des reservations de plusieurs gigaoctets (vues entre 25 et 41 Gio
++     * sur macOS 26), qui tombent dans une fenetre laissee ouverte.
++     *
++     * On essaie donc des bases d'un seul bit (16, 32, 64 Gio...) et on RESERVE
++     * la premiere que le noyau accorde, des maintenant, avant que l'hote n'y
++     * mette quoi que ce soit. Elle devient une zone reservee de Wine : les
++     * allocations de l'invite 32 bits y passent par map_reserved_area, celles
++     * de l'hote et des invites 64 bits l'evitent (voir map_view). L'emulateur
++     * et les bibliotheques de l'invite lisent la base dans
++     * __wine_wow64_guest_base : rien ne la suppose a 16 Gio.
++     * CIDRE_FENETRE_32_GIO en impose une (essais). */
++    {
++        static const unsigned int candidates[] = { 16, 32, 64, 128, 256, 512, 1024 };
++        const char *imposee = getenv( "CIDRE_FENETRE_32_GIO" );
++        unsigned int k, gio = imposee ? atoi( imposee ) : 0;
+ 
++        user_space_wow_base = 0;
++        if (gio >= 8 && !(gio & (gio - 1)) && reserver_fenetre( (ULONG_PTR)gio << 30 ))
++            user_space_wow_base = (ULONG_PTR)gio << 30;
++        for (k = 0; !user_space_wow_base && k < ARRAY_SIZE(candidates); k++)
++            if (reserver_fenetre( (ULONG_PTR)candidates[k] << 30 ))
++                user_space_wow_base = (ULONG_PTR)candidates[k] << 30;
++        if (user_space_wow_base) fenetre_reservee = TRUE;
++        else
++        {
++            ERR( "aucune fenetre de 4 Gio libre pour un invite 32 bits\n" );
++            user_space_wow_base = 4 * limit_4g;
++        }
++        TRACE( "fenetre de l'invite 32 bits a %#lx%s\n", user_space_wow_base,
++               fenetre_reservee ? ", reservee" : "" );
++    }
++
+     /* Fenetre basse d'un invite 64 bits (LuaJIT). Le miroir hote des adresses
+      * invite sous 4 Gio. Posee tres haut -- 2 Tio, soit le bit 41 : au-dessus
+      * de l'empreinte 1:1 de l'invite (l'exe a 5 Gio, DXVK et ses textures sous
+@@ -4431,6 +4537,9 @@
+         {
+             user_space_wow_limit = user_space_wow_base + limit_4g - 1;
+             /* reserve space for top-down allocations; some apps break if the entire high 2G is available */
++#ifdef __APPLE__
++            if (!fenetre_reservee)
++#endif
+             reserve_area( (void *)(user_space_wow_base + 0xfff00000), (void *)(user_space_wow_base + 0xffff0000) );
+         }
+         else user_space_wow_limit = user_space_wow_base + limit_2g - 1;
