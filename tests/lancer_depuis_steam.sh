@@ -146,6 +146,20 @@ if [ "$(opt dx12 CIDRE_DX12)" = true ]; then
    export MESA_KK_EXPERIMENTAL="${MESA_KK_EXPERIMENTAL:-custom_border,image_view_min_lod},fl12"
 fi
 
+# Overrides DLL propres au jeu (base de compat, cf. profils.toml). Format Wine
+# "a,b=n;c=b" (n=natif, b=builtin, =disable). etape2 les AJOUTE aux overrides par
+# defaut (dxgi/d3d11/d3d12). De quoi forcer une audio, une d3dx ou une dll moteur
+# par jeu, a la facon des recettes CrossOver, sans toucher au code.
+DLLOV=${CIDRE_DLL_OVERRIDES:-$(profil dll_overrides)}
+[ -n "$DLLOV" ] && export CIDRE_DLL_OVERRIDES="$DLLOV"
+
+# Version de Windows presentee par le prefixe, quand un jeu l'exige (win7, winxp ;
+# win10 par defaut, non force). Pose via le registre du prefixe avant le lancement.
+WINVER=${CIDRE_WINDOWS_VERSION:-$(profil windows_version)}
+if [ -n "$WINVER" ] && [ "$WINVER" != win10 ]; then
+   "$R/wine/wine11-arm64/bin/wine" winecfg -v "$WINVER" >>"$JOURNAL" 2>&1 || true
+fi
+
 # Relachement cible des barrieres de cloture d'encodeur KosmicKrisp vers les
 # vraies stages (au lieu de ALL->ALL) : laisse les passes GPU se recouvrir, gain
 # en scene chargee (GPU-bound). Valide sur VT2. Un environnement explicite

@@ -16,7 +16,9 @@ export WINEDEBUG=${WINEDEBUG:--all}
 # interface D3D12 recente (cas PEAK : FL 12.1 non supporte par KosmicKrisp -> DX11).
 # lancer_depuis_steam.sh pose CIDRE_D3D12=n (natif) quand l'option dx12 est vraie :
 # il installe alors vkd3d-proton arm64ec en system32 pour du vrai D3D12 (FL 12.0).
-export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:-mscoree,mshtml=;dxgi,d3d11=n;d3d12,d3d12core=${CIDRE_D3D12:-b}}"
+# CIDRE_DLL_OVERRIDES : overrides DLL par jeu (profil dll_overrides), ajoutes aux
+# defauts ci-dessus (ex. "xaudio2_9=n" pour un jeu dont l'audio builtin bogue).
+export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:-mscoree,mshtml=;dxgi,d3d11=n;d3d12,d3d12core=${CIDRE_D3D12:-b}}${CIDRE_DLL_OVERRIDES:+;$CIDRE_DLL_OVERRIDES}"
 export VK_DRIVER_FILES=$R/prefix/share/vulkan/icd.d/kosmickrisp_mesa_icd.aarch64.json
 export DYLD_LIBRARY_PATH=$R/wine/vklib-arm64:$R/prefix/lib
 export MESA_KK_EXPERIMENTAL=${MESA_KK_EXPERIMENTAL:-custom_border,image_view_min_lod}

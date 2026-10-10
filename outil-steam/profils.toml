@@ -44,6 +44,25 @@
 #                    force d3d12=n). false (defaut) = d3d12 builtin de Wine, qui
 #                    retombe en D3D11/DXVK. KosmicKrisp plafonne au FL 12.0 : un
 #                    jeu qui exige FL 12.1 (ex. PEAK) reste en D3D11 meme a true.
+#
+# --- base de compatibilite par jeu (inspiree des recettes CrossOver, cf.
+#     VEILLE_CROSSOVER.md). dll_overrides et windows_version sont APPLIQUES par le
+#     lanceur ; les autres sont des donnees (pour Verger / `cidre info --json` et
+#     les tests). Regle d'autorite : nos tests Cidre (source "cidre-test") priment
+#     sur WineHQ AppDB, qui prime sur la base CrossOver -- donnees, jamais
+#     executees a l'aveugle. ---
+#   windows_version  version de Windows du prefixe si le jeu l'exige : win7, winxp...
+#                    (win10 par defaut, non force). Applique via winecfg au lancement.
+#   dll_overrides    overrides DLL propres au jeu, format Wine "a,b=n;c=b" (n natif,
+#                    b builtin, = disable). Ajoutes aux overrides par defaut. APPLIQUE.
+#   dependances      redistribuables requis, verbes facon winetricks separes par des
+#                    espaces (ex. "vcrun2022 dotnet48"). Pour l'installeur (a venir).
+#   moteur           moteur du jeu : unity, unreal, hashlink, stingray, godot...
+#   anticheat        none, eac, battleye, denuvo. eac/battleye EN LIGNE = mur.
+#   etat             compat testee ICI : or (parfait), argent (jouable, limites),
+#                    bronze (demarre, perf/bugs), ko (non), non-teste.
+#   source           origine de la fiche : cidre-test (verifie ici, fait autorite),
+#                    winehq, crossover.
 
 [defaut]
 langue = "auto"
@@ -67,6 +86,10 @@ dx12 = false
 [1562430]
 vsync = false
 tso = false
+moteur = "unity"
+anticheat = "none"
+etat = "or"
+source = "cidre-test"
 
 # Warhammer: Vermintide 2. LuaJIT veut la fenetre basse (sinon plantage au boot).
 # Fils compilateurs limites : a 10 (tous les coeurs) le gros chargement du Donjon
@@ -77,12 +100,20 @@ async = true
 narrow_barriers = true
 fils_compilation = 4
 eac_untrusted = true
+moteur = "stingray"
+anticheat = "eac"
+etat = "argent"
+source = "cidre-test"
 
 # Dead Cells (HashLink/SDL2). CPU/traduction-bound (GPU ~20-25%, inoccupe) :
 # mesure en jeu 75 fps -> 110 fps avec tso off (+47%), chargement aussi bien plus
 # rapide. Peu sensible aux courses en pratique, teste lisse. Si bug, tso = true.
 [588650]
 tso = false
+moteur = "hashlink"
+anticheat = "none"
+etat = "or"
+source = "cidre-test"
 
 # PEAK (Unity 6 DX12). Le jeu exige le Feature Level 12.1. dx12 = true : on charge
 # vkd3d-proton arm64ec + annonce des caps FL 12.1 a KosmicKrisp (drapeau fl12). Le
@@ -94,3 +125,7 @@ tso = false
 # ce sera fait. La conservative raster feinte, elle, ne gene pas.
 [3527290]
 dx12 = false
+moteur = "unity"
+anticheat = "none"
+etat = "bronze"
+source = "cidre-test"
