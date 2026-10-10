@@ -1,0 +1,27 @@
+wine11 : eviter un crash de NSVersionOfRunTimeLibrary au demarrage
+
+Au demarrage de l'app Cocoa, AppKit peut appeler NSVersionOfRunTimeLibrary()
+en interne pendant que l'app s'initialise. Si un thread Wine decharge une
+dylib au meme moment, cet appel peut planter l'app avant qu'elle ne demarre.
+
+Enregistrer tot le defaut NSUseActiveDisplayForMainScreen=YES fait prendre a
+AppKit un chemin qui evite ce controle de version au mauvais moment.
+
+Recupere tel quel des sources CrossOver 26.3 (hack CodeWeavers 12205, Wine
+winemac.drv, LGPL 2.1 -- en-tete d'origine Ken Thomases / CodeWeavers Inc.
+conserve). Aucune dependance, auto-contenu ; ajoute cocoa_main.m.
+
+--- aa/dlls/winemac.drv/cocoa_main.m
++++ bb/dlls/winemac.drv/cocoa_main.m
+@@ -74,6 +74,11 @@
+             created_app = TRUE;
+         }
+ 
++        /* CrossOver hack 12205: Prevent call to NSVersionOfRunTimeLibrary() during app startup.
++                                 It can crash if a Wine thread unloads a dylib simultaneously. */
++        [[NSUserDefaults standardUserDefaults] registerDefaults:
++            [NSDictionary dictionaryWithObject:@"YES" forKey:@"NSUseActiveDisplayForMainScreen"]];
++
+         if ([NSApp respondsToSelector:@selector(setWineController:)])
+         {
+             WineApplicationController* controller = [WineApplicationController sharedController];
