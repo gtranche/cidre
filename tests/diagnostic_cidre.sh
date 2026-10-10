@@ -183,6 +183,29 @@ while [ -n "$DEJA" ] && [ $i -lt 30 ] && ! pgrep -f "lancer_depuis_steam|faux_st
 done
 LANCE=1
 
+# Ce que le client Steam de macOS croit en cours. Il suit les processus d'un
+# jeu un par un ; tant qu'il en reste un vivant, le jeu est « en cours » -- et
+# le compte ne peut pas le lancer sur une autre machine.
+titre "Steam : les jeux qu'il croit en cours"
+JS="$HOME/Library/Application Support/Steam/logs/console_log.txt"
+if [ -f "$JS" ]; then
+   tail -n 4000 "$JS" | LC_ALL=C awk '
+      / adding PID [0-9]+ as a tracked process/ { for (i = 1; i <= NF; i++) { if ($i == "AppID") app = $(i + 1); if ($i == "PID") pid = $(i + 1) } suivi[pid] = app }
+      / no longer tracking PID [0-9]+/          { for (i = 1; i <= NF; i++) if ($i == "PID") { p = $(i + 1); sub(/,/, "", p); delete suivi[p] } }
+      /Remove [0-9]+ from running list/         { for (i = 1; i <= NF; i++) if ($i == "Remove") fini = $(i + 1); for (p in suivi) if (suivi[p] == fini) delete suivi[p] }
+      END { for (p in suivi) print p, suivi[p] }' >"$T/suivis"
+   if [ -s "$T/suivis" ]; then
+      while read -r pid app; do
+         if kill -0 "$pid" 2>/dev/null; then echo "  jeu $app : processus $pid VIVANT -- $(ps -o etime=,command= -p "$pid" | cut -c1-150)"
+         else echo "  jeu $app : processus $pid suivi par Steam, mais il n'existe plus"; fi
+      done <"$T/suivis"
+   else
+      echo "  aucun"
+   fi
+else
+   echo "  journal du client Steam introuvable (client jamais lance ?)"
+fi
+
 titre "Wine repond-il ?"
 echo "  wine --version"
 avec_delai 15 "$WINE" --version; fin_de_sortie 5
