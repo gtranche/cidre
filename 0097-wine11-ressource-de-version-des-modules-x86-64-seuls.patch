@@ -1,0 +1,72 @@
+wine11 : la ressource de version des modules qui n'existent que pour x86-64
+
+vcruntime140_1.dll n'existe que pour x86-64 : sur un hote arm64 il est bati
+pour arm64ec seul. makedep liait alors le module avec les ressources de
+l'architecture native -- qui n'en a pas, puisqu'elle est desactivee pour ce
+module -- et la DLL sortait sans section .rsrc, donc sans numero de version
+(la regle de version.res existait, mais rien ne s'en servait).
+
+Des programmes lisent ce numero. Le lanceur des jeux Unreal
+(BootstrapPackagedGame) charge msvcp140_2.dll, puis demande la version de
+fichier de vcruntime140_1.dll ; faute de reponse il declare « Microsoft Visual
+C++ Runtime » absent, propose de l'installer, et lance UEPrereqSetup_x64.exe --
+quoi que dise le registre. Vu sur Clair Obscur: Expedition 33.
+
+Quand l'architecture native n'a aucune ressource pour un module lie depuis une
+autre, on prend celles de l'architecture liee. Seul vcruntime140_1 change dans
+le Makefile genere ; la DLL porte maintenant 14.50.35719.0.
+
+Verifie avec le vrai lanceur du jeu : avant, la boite « Would you like to
+install them now? » ; apres, il passe a CreateProcess sur l'executable du jeu.
+
+Apres ce correctif : `make Makefile` (regenere par makedep), puis relier
+dlls/vcruntime140_1/aarch64-windows/vcruntime140_1.dll avec les deux drapeaux
+TEB et llvm-mingw dans le PATH.
+---
+--- a/tools/makedep.c
++++ b/tools/makedep.c
+@@ -3930,7 +3930,7 @@
+     struct strarray imports = make->imports;
+     const char *p, *module_name;
+     char *spec_file = NULL;
+-    unsigned int link_arch;
++    unsigned int link_arch, res_arch = arch;
+ 
+     if (!make->is_exe)
+     {
+@@ -3978,13 +3978,25 @@
+         install_data_file( make, make->module, module_name,
+                            strmake( "$(libdir)/wine/%s", arch_pe_dirs[arch] ), NULL );
+     }
++
++    /*
++     * Un module qui n'existe que pour l'architecture liee (vcruntime140_1 :
++     * x86-64 seulement, donc arm64ec seul sur un hote arm64) n'a de ressources
++     * que de ce cote-la -- celles de l'architecture native ne sont pas
++     * construites. On liait alors sans aucune ressource, et la DLL sortait
++     * sans numero de version. Or des programmes le lisent : le lanceur des
++     * jeux Unreal demande la version de fichier de vcruntime140_1.dll et, faute
++     * de reponse, declare le runtime Visual C++ absent et propose de
++     * l'installer (Clair Obscur: Expedition 33).
++     */
++    if (link_arch != arch && !make->res_files[arch].count) res_arch = link_arch;
+ 
+     strarray_add( &make->all_targets[link_arch], module_name );
+     output( "%s:", obj_dir_path( make, module_name ));
+     if (spec_file) output_filename( spec_file );
+     output_filenames_obj_dir( make, make->object_files[arch] );
+     if (link_arch != arch) output_filenames_obj_dir( make, make->object_files[link_arch] );
+-    output_filenames_obj_dir( make, make->res_files[arch] );
++    output_filenames_obj_dir( make, make->res_files[res_arch] );
+     output_filenames( dep_libs );
+     output_filename( winebuild );
+     output_filename( winegcc );
+@@ -4004,7 +4016,7 @@
+     if (link_arch) output_filenames( get_expanded_arch_var_array( make, "EXTRADLLFLAGS", link_arch ));
+     output_filenames_obj_dir( make, make->object_files[arch] );
+     if (link_arch != arch) output_filenames_obj_dir( make, make->object_files[link_arch] );
+-    output_filenames_obj_dir( make, make->res_files[arch] );
++    output_filenames_obj_dir( make, make->res_files[res_arch] );
+     output_debug_files( make, module_name, link_arch );
+     output_filenames( all_libs );
+     output_filename( arch_make_variable( "LDFLAGS", link_arch ));
