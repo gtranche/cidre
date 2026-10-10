@@ -1,0 +1,389 @@
+Generated-by: LLM
+
+KosmicKrisp : le cache de pipelines Metal s'accumule enfin d'un lancement a l'autre
+
+Trois defauts du cache de 0087 faisaient qu'un jeu recompilait tout a chaque
+lancement :
+
+- le fil de flush ne survivait pas au premier peripherique. Liberer un
+  compilateur l'arretait en laissant son drapeau d'arret leve ; le fil relance
+  pour le peripherique suivant sortait aussitot. Un jeu qui cree un
+  peripherique d'essai puis le vrai (DXVK le fait) n'ecrivait donc plus rien :
+  il restait un fichier de 899152 octets, les pipelines internes du pilote ;
+- serializeAsArchiveAndFlushToURL vide le serialiseur : chaque flush n'ecrit
+  que ce qui a ete compile depuis le precedent. Reecrire le meme fichier
+  perdait tout le reste. Chaque flush va maintenant dans son propre fichier,
+  kk_pipelines.<pid>.<n>.mtl4archive, jamais reecrit ;
+- un pipeline relu par lookupArchives est recapture par le serialiseur : le
+  cache aurait double a chaque lancement. Les archives sont maintenant
+  interrogees directement (MTL4Archive), le compilateur ne sert qu'en cas
+  d'echec, et seul ce qui est reellement compile est ecrit.
+
+Le fil de flush essaie toutes les 100 ms une fois l'echeance passee, au lieu
+d'une fois toutes les 10 s, et si les compilations ne laissent aucun creux
+pendant 30 s il les retient au plus 2 s pour passer. L'intervalle entre deux
+flush double jusqu'a 1 min et un lot de moins de 32 pipelines attend jusqu'a
+60 s, pour ne pas multiplier les fichiers. Les archives sont interrogees de la
+plus grosse a la plus petite.
+
+MESA_KK_COMPILE_STATS=1 affiche en plus, toutes les 10 s, le nombre de
+pipelines compiles et relus.
+
+Ce correctif porte aussi une etape restee dans l'arbre de travail sans avoir
+ete exportee (un fichier par processus, relecture de tous les fichiers du
+dossier), qu'il remplace : la serie reproduit de nouveau l'arbre a l'identique.
+
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.m b/src/kosmickrisp/bridge/mtl_compiler.m
+--- a/src/kosmickrisp/bridge/mtl_compiler.m
++++ b/src/kosmickrisp/bridge/mtl_compiler.m
+@@ -7,6 +7,8 @@
+ #include "mtl_compiler.h"
+ #include "mtl_format.h"
+ 
++#include "util/macros.h"
++
+ #include <Metal/MTL4Archive.h>
+ #include <Metal/MTL4ComputePipeline.h>
+ #include <Metal/MTL4LibraryDescriptor.h>
+@@ -21,59 +23,154 @@
+ #include <stdatomic.h>
+ #include <string.h>
+ #include <time.h>
++#include <unistd.h>
+ 
+-static const void *kk_task_options_key = &kk_task_options_key;
++static const void *kk_archives_key = &kk_archives_key;
+ 
+-static MTL4CompilerTaskOptions *
+-kk_compiler_task_options(id<MTL4Compiler> comp)
++static NSArray<id<MTL4Archive>> *
++kk_compiler_archives(id<MTL4Compiler> comp)
+ {
+-   return objc_getAssociatedObject(comp, kk_task_options_key);
++   return objc_getAssociatedObject(comp, kk_archives_key);
+ }
+ 
+ static pthread_rwlock_t kk_compile_rwlock = PTHREAD_RWLOCK_INITIALIZER;
+ static id<MTL4Compiler> kk_flush_compiler;
+ static char kk_flush_dir[2048];
++static _Atomic uint32_t kk_flush_seq;
+ static _Atomic uint32_t kk_pipe_total;
+ static pthread_t kk_flusher_thread;
+ static atomic_bool kk_flusher_stop;
+ static atomic_bool kk_flusher_running;
++static atomic_bool kk_flush_wanted;
+ 
++#define KK_FLUSH_INTERVAL_NS 10000000000ull
++#define KK_FLUSH_INTERVAL_MAX_NS 60000000000ull
++#define KK_FLUSH_LINGER_NS   60000000000ull
++#define KK_FLUSH_STARVED_NS  30000000000ull
++#define KK_FLUSH_BATCH       32
++#define KK_FLUSH_GATE_MS     2000
++#define KK_FLUSH_GATE_TRIES  5
++
++static _Atomic uint32_t kk_stat_pipe_hits;
++
++static bool kk_compile_stats_enabled(void);
++static void kk_print_compile_stats(void);
++static uint64_t kk_now_ns(void);
++
++static void
++kk_compile_lock(void)
++{
++   for (int i = 0; i < KK_FLUSH_GATE_MS && atomic_load(&kk_flush_wanted); i++)
++      usleep(1000);
++   pthread_rwlock_rdlock(&kk_compile_rwlock);
++}
++
++static void
++kk_compile_unlock(void)
++{
++   pthread_rwlock_unlock(&kk_compile_rwlock);
++}
++
+ static bool
+ kk_serialize_to_dir(id<MTL4PipelineDataSetSerializer> serializer, const char *dir)
+ {
+    @autoreleasepool {
++      NSFileManager *fm = [NSFileManager defaultManager];
+       NSString *base = [NSString stringWithUTF8String:dir];
+-      NSString *tmp = [base stringByAppendingPathComponent:@"kk_pipelines.mtl4archive.tmp"];
+-      NSString *final = [base stringByAppendingPathComponent:@"kk_pipelines.mtl4archive"];
++      NSString *tmp = [base stringByAppendingPathComponent:
++                               [NSString stringWithFormat:@"kk_pipelines.%d.tmp",
++                                                          (int)getpid()]];
++      [fm removeItemAtPath:tmp error:NULL];
+       NSError *e = nil;
+       if (![serializer serializeAsArchiveAndFlushToURL:[NSURL fileURLWithPath:tmp] error:&e]) {
+          if (e && ![e.localizedDescription containsString:@"othing to serialize"])
+             fprintf(stderr, "KK: pipeline archive flush failed: %s\n", e.localizedDescription.UTF8String);
++         [fm removeItemAtPath:tmp error:NULL];
+          return false;
+       }
+-      [[NSFileManager defaultManager] removeItemAtPath:final error:NULL];
+-      [[NSFileManager defaultManager] moveItemAtPath:tmp toPath:final error:NULL];
+-      return true;
++      NSString *final;
++      do {
++         final = [base stringByAppendingPathComponent:
++                          [NSString stringWithFormat:@"kk_pipelines.%d.%u.mtl4archive",
++                                                     (int)getpid(),
++                                                     atomic_fetch_add(&kk_flush_seq, 1)]];
++      } while ([fm fileExistsAtPath:final]);
++      return [fm moveItemAtPath:tmp toPath:final error:NULL];
+    }
+ }
+ 
++static bool
++kk_flusher_gate(void)
++{
++   bool locked = false;
++   atomic_store(&kk_flush_wanted, true);
++   for (int i = 0; i < KK_FLUSH_GATE_MS && !locked &&
++                   !atomic_load(&kk_flusher_stop); i++) {
++      usleep(1000);
++      locked = pthread_rwlock_trywrlock(&kk_compile_rwlock) == 0;
++   }
++   atomic_store(&kk_flush_wanted, false);
++   return locked;
++}
++
+ static void *
+ kk_flusher_main(void *arg)
+ {
+    (void)arg;
+-   uint32_t last = 0;
++   uint32_t last = atomic_load(&kk_pipe_total);
++   uint64_t due = kk_now_ns() + KK_FLUSH_INTERVAL_NS;
++   uint64_t dirty_since = 0;
++   uint64_t waiting_since = 0;
++   uint64_t interval = KK_FLUSH_INTERVAL_NS;
++   uint64_t stats_due = due;
++   unsigned gate_failures = 0;
+    while (!atomic_load(&kk_flusher_stop)) {
+-      for (int i = 0; i < 100 && !atomic_load(&kk_flusher_stop); i++)
+-         usleep(100000);
+-      uint32_t now = atomic_load(&kk_pipe_total);
+-      if (now == last)
++      usleep(100000);
++      uint64_t t = kk_now_ns();
++      if (t >= stats_due) {
++         stats_due = t + KK_FLUSH_INTERVAL_NS;
++         if (kk_compile_stats_enabled())
++            kk_print_compile_stats();
++      }
++      uint32_t pending = atomic_load(&kk_pipe_total) - last;
++      if (pending == 0)
+          continue;
+-      if (pthread_rwlock_trywrlock(&kk_compile_rwlock) != 0)
++      if (dirty_since == 0)
++         dirty_since = t;
++      if (t < due ||
++          (pending < KK_FLUSH_BATCH && t - dirty_since < KK_FLUSH_LINGER_NS))
+          continue;
++      if (waiting_since == 0)
++         waiting_since = t;
++      bool gated = false;
++      if (pthread_rwlock_trywrlock(&kk_compile_rwlock) != 0) {
++         if (t - waiting_since < KK_FLUSH_STARVED_NS ||
++             gate_failures >= KK_FLUSH_GATE_TRIES)
++            continue;
++         waiting_since = 0;
++         if (!kk_flusher_gate()) {
++            gate_failures++;
++            continue;
++         }
++         gated = true;
++      }
++      uint64_t t0 = kk_now_ns();
++      uint32_t now = atomic_load(&kk_pipe_total);
+       id<MTL4PipelineDataSetSerializer> ser = kk_flush_compiler.pipelineDataSetSerializer;
+-      if (ser != nil && kk_serialize_to_dir(ser, kk_flush_dir))
+-         last = now;
++      bool ok = ser != nil && kk_serialize_to_dir(ser, kk_flush_dir);
+       pthread_rwlock_unlock(&kk_compile_rwlock);
++      uint64_t dt = kk_now_ns() - t0;
++      last = now;
++      gate_failures = 0;
++      dirty_since = 0;
++      waiting_since = 0;
++      due = t0 + dt + MAX2(interval, 20 * dt);
++      if (ok)
++         interval = MIN2(2 * interval, KK_FLUSH_INTERVAL_MAX_NS);
++      if (kk_compile_stats_enabled())
++         fprintf(stderr, "KK flush: %u compiled, %u from archives, %.2f s%s%s\n",
++                 now, atomic_load(&kk_stat_pipe_hits), dt / 1.0e9,
++                 gated ? ", gated" : "", ok ? "" : ", nothing written");
+    }
+    return NULL;
+ }
+@@ -100,18 +197,6 @@
+    return clock_gettime_nsec_np(CLOCK_MONOTONIC);
+ }
+ 
+-static NSURL *
+-kk_archive_url(const char *cache_dir)
+-{
+-   NSString *dir = [NSString stringWithUTF8String:cache_dir];
+-   [[NSFileManager defaultManager] createDirectoryAtPath:dir
+-                             withIntermediateDirectories:YES
+-                                              attributes:nil
+-                                                   error:nil];
+-   NSString *path = [dir stringByAppendingPathComponent:@"kk_pipelines.mtl4archive"];
+-   return [NSURL fileURLWithPath:path];
+-}
+-
+ /* Compiler */
+ mtl_compiler *
+ mtl_new_compiler(mtl_device *device, const char *cache_dir)
+@@ -140,21 +225,43 @@
+       }
+ 
+       if (cache_dir && cache_dir[0]) {
+-         NSURL *url = kk_archive_url(cache_dir);
+-         NSError *aerr = nil;
+-         id<MTL4Archive> archive = [dev newArchiveWithURL:url error:&aerr];
+-         if (archive != nil) {
+-            MTL4CompilerTaskOptions *opts =
+-               [[MTL4CompilerTaskOptions new] autorelease];
+-            opts.lookupArchives = @[ archive ];
+-            objc_setAssociatedObject(compiler, kk_task_options_key, opts,
+-                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
++         NSString *dir = [NSString stringWithUTF8String:cache_dir];
++         [[NSFileManager defaultManager] createDirectoryAtPath:dir
++                                   withIntermediateDirectories:YES
++                                                    attributes:nil
++                                                         error:nil];
++         NSFileManager *fm = [NSFileManager defaultManager];
++         NSMutableArray<NSString *> *paths = [NSMutableArray array];
++         for (NSString *aname in [fm contentsOfDirectoryAtPath:dir error:NULL]) {
++            if ([aname hasPrefix:@"kk_pipelines."] &&
++                [aname hasSuffix:@".mtl4archive"])
++               [paths addObject:[dir stringByAppendingPathComponent:aname]];
+          }
++         [paths sortUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
++            unsigned long long sa = [[fm attributesOfItemAtPath:a error:NULL] fileSize];
++            unsigned long long sb = [[fm attributesOfItemAtPath:b error:NULL] fileSize];
++            return sa > sb ? NSOrderedAscending
++                           : sa < sb ? NSOrderedDescending : NSOrderedSame;
++         }];
++         NSMutableArray *archives = [NSMutableArray array];
++         for (NSString *path in paths) {
++            id<MTL4Archive> archive =
++               [dev newArchiveWithURL:[NSURL fileURLWithPath:path] error:NULL];
++            if (archive != nil) {
++               [archives addObject:archive];
++               [archive release];
++            }
++         }
++         if (archives.count > 0)
++            objc_setAssociatedObject(compiler, kk_archives_key,
++                                     [NSArray arrayWithArray:archives],
++                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+ 
+          if (compiler.pipelineDataSetSerializer != nil &&
+              !atomic_exchange(&kk_flusher_running, true)) {
+             kk_flush_compiler = compiler;
+             strncpy(kk_flush_dir, cache_dir, sizeof(kk_flush_dir) - 1);
++            atomic_store(&kk_flusher_stop, false);
+             if (pthread_create(&kk_flusher_thread, NULL, kk_flusher_main, NULL) != 0)
+                atomic_store(&kk_flusher_running, false);
+          }
+@@ -164,19 +271,26 @@
+    }
+ }
+ 
++static void
++kk_print_compile_stats(void)
++{
++   fprintf(stderr,
++           "KK compile: library %u calls / %.1f s, pipeline %u calls / %.1f s, %u from archives\n",
++           atomic_load(&kk_stat_lib_count),
++           atomic_load(&kk_stat_lib_ns) / 1.0e9,
++           atomic_load(&kk_stat_pipe_count),
++           atomic_load(&kk_stat_pipe_ns) / 1.0e9,
++           atomic_load(&kk_stat_pipe_hits));
++}
++
+ void
+ mtl_compiler_flush_archive(mtl_compiler *compiler, const char *cache_dir)
+ {
+-   if (kk_compile_stats_enabled()) {
+-      fprintf(stderr,
+-              "KK compile: library %u calls / %.1f s, pipeline %u calls / %.1f s\n",
+-              atomic_load(&kk_stat_lib_count),
+-              atomic_load(&kk_stat_lib_ns) / 1.0e9,
+-              atomic_load(&kk_stat_pipe_count),
+-              atomic_load(&kk_stat_pipe_ns) / 1.0e9);
+-   }
++   if (kk_compile_stats_enabled())
++      kk_print_compile_stats();
+ 
+-   if (atomic_load(&kk_flusher_running)) {
++   if (atomic_load(&kk_flusher_running) &&
++       (id<MTL4Compiler>)compiler == kk_flush_compiler) {
+       atomic_store(&kk_flusher_stop, true);
+       pthread_join(kk_flusher_thread, NULL);
+       atomic_store(&kk_flusher_running, false);
+@@ -219,9 +333,9 @@
+       NSError *error;
+       bool stats = kk_compile_stats_enabled();
+       uint64_t t0 = stats ? kk_now_ns() : 0;
+-      pthread_rwlock_rdlock(&kk_compile_rwlock);
++      kk_compile_lock();
+       id<MTLLibrary> lib = [comp newLibraryWithDescriptor:desc error:&error];
+-      pthread_rwlock_unlock(&kk_compile_rwlock);
++      kk_compile_unlock();
+       if (stats) {
+          atomic_fetch_add(&kk_stat_lib_ns, kk_now_ns() - t0);
+          atomic_fetch_add(&kk_stat_lib_count, 1);
+@@ -265,11 +379,19 @@
+       NSError *error;
+       bool stats = kk_compile_stats_enabled();
+       uint64_t t0 = stats ? kk_now_ns() : 0;
+-      pthread_rwlock_rdlock(&kk_compile_rwlock);
+-      id<MTLComputePipelineState> pipeline = [comp newComputePipelineStateWithDescriptor:desc compilerTaskOptions:kk_compiler_task_options(comp)
+-                                                                                   error:&error];
+-      pthread_rwlock_unlock(&kk_compile_rwlock);
+-      atomic_fetch_add(&kk_pipe_total, 1);
++      kk_compile_lock();
++      id<MTLComputePipelineState> pipeline = nil;
++      for (id<MTL4Archive> archive in kk_compiler_archives(comp)) {
++         pipeline = [archive newComputePipelineStateWithDescriptor:desc error:NULL];
++         if (pipeline != nil)
++            break;
++      }
++      bool cached = pipeline != nil;
++      if (!cached)
++         pipeline = [comp newComputePipelineStateWithDescriptor:desc compilerTaskOptions:nil
++                                                          error:&error];
++      kk_compile_unlock();
++      atomic_fetch_add(cached ? &kk_stat_pipe_hits : &kk_pipe_total, 1);
+       if (stats) {
+          atomic_fetch_add(&kk_stat_pipe_ns, kk_now_ns() - t0);
+          atomic_fetch_add(&kk_stat_pipe_count, 1);
+@@ -423,11 +545,19 @@
+       NSError *error = nil;
+       bool stats = kk_compile_stats_enabled();
+       uint64_t t0 = stats ? kk_now_ns() : 0;
+-      pthread_rwlock_rdlock(&kk_compile_rwlock);
+-      id<MTLRenderPipelineState> pipeline = [comp newRenderPipelineStateWithDescriptor:desc compilerTaskOptions:kk_compiler_task_options(comp)
+-                                                                                 error:&error];
+-      pthread_rwlock_unlock(&kk_compile_rwlock);
+-      atomic_fetch_add(&kk_pipe_total, 1);
++      kk_compile_lock();
++      id<MTLRenderPipelineState> pipeline = nil;
++      for (id<MTL4Archive> archive in kk_compiler_archives(comp)) {
++         pipeline = [archive newRenderPipelineStateWithDescriptor:desc error:NULL];
++         if (pipeline != nil)
++            break;
++      }
++      bool cached = pipeline != nil;
++      if (!cached)
++         pipeline = [comp newRenderPipelineStateWithDescriptor:desc compilerTaskOptions:nil
++                                                         error:&error];
++      kk_compile_unlock();
++      atomic_fetch_add(cached ? &kk_stat_pipe_hits : &kk_pipe_total, 1);
+       if (stats) {
+          atomic_fetch_add(&kk_stat_pipe_ns, kk_now_ns() - t0);
+          atomic_fetch_add(&kk_stat_pipe_count, 1);

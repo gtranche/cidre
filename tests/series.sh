@@ -8,8 +8,9 @@
 # Attend que $R designe la racine du projet.
 
 serie_mesa() {
-   for f in "$R"/00[0-9][0-9]-kosmickrisp-*.patch; do
+   for f in "$R"/00[0-9][0-9]-kosmickrisp-*.patch "$R"/0[1-9][0-9][0-9]-kosmickrisp-*.patch; do
       case "$(basename "$f")" in 0000-*) continue;; esac
+      [ -f "$f" ] || continue
       echo "$f"
    done
 }
