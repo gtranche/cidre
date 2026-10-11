@@ -1,0 +1,1412 @@
+wine11 : synchronisation en process sur macOS (memoire partagee + attente par adresse)
+
+Wine 11.18 possede deja une synchronisation « en process » (inproc sync) : le
+serveur cree chaque evenement, mutex ou semaphore -- et la synchro interne de
+chaque processus, fil, minuterie, fichier, file de messages -- comme un objet
+du pilote Linux ntsync, en passe le descripteur aux clients, et ceux-ci
+l'operent par ioctl sans parler au serveur (dlls/ntdll/unix/sync.c,
+server/inproc_sync.c). macOS n'a pas ce pilote : HAVE_LINUX_NTSYNC_H est
+indefini, tout passe par le socket wineserver, et sur Expedition 33 le
+RenderThread passe 21 % de son temps a attendre la reponse du serveur pour
+NtSetEvent/NtWaitForSingleObject (profil-renderthread.md), le GameThread 58 %.
+
+Ce correctif ajoute un troisieme backend, macOS seulement, derriere les memes
+points d'entree : le serveur cree UN fichier de memoire partagee (64 Mio
+creux, dans son repertoire, supprime aussitot, le descripteur circule par
+init_first_thread comme le device ntsync) decoupe en cases de 64 octets ;
+chaque objet inproc est une case (include/wine/cidre_sync.h). Clients et
+serveur modifient l'etat par atomiques et dorment ou reveillent par adresse :
+os_sync_wait_on_address / os_sync_wake_by_address avec le drapeau SHARED,
+verifie comme traversant les processus (tests/sonde_sync_xproc.c ; le drapeau
+NONE ne traverse pas). Le serveur alloue les cases, pose l'etat initial,
+signale/remet a zero les evenements internes, abandonne les mutex d'un fil
+mort ; il n'attend jamais. Le protocole change (962 -> 963) : la reponse de
+get_inproc_sync_fd et de get_inproc_alert_fd porte l'index et la generation
+de la case au lieu d'envoyer un descripteur.
+
+Attente sur plusieurs objets : un fil ne dort que sur une adresse ; sa case
+d'alerte APC (que le serveur cree deja par fil) lui sert d'oreiller
+(wake_seq) ; il s'inscrit dans la table waiter[8] de chaque objet, et qui
+change l'etat d'un objet reveille les inscrits. Table pleine = scrutation par
+tranches de 1 ms (rare : plus de 8 fils en attente multiple sur un meme
+objet). Vie d'une case : le serveur compte les jetons distribues (refs) ; la
+case d'un objet detruit encore tenue par des clients devient orpheline,
+reste valide (attente sur handle ferme, mutex orphelin abandonne a la mort
+du proprietaire, comme ntsync) et est reprise quand refs retombe a 0.
+
+Desactive par defaut : le serveur n'active le backend que s'il demarre avec
+CIDRE_SYNC_LOCAL=1 (sinon rien ne change, hormis les deux champs de reponse
+a zero). CIDRE_SYNC_STATS=1 imprime a la sortie de chaque processus des
+compteurs silencieux (appels NtSetEvent/NtWait..., sommeils, reveils avec
+syscall, attentes multiples, scrutation, jetons perimes), dans les deux modes.
+
+Mesure (tests/banc_sync.c, x86_64 emule, M1 Max, prefixe a part) : SetEvent
+sans waiter 5,5 us -> 0,05 us ; WaitForSingleObject deja signale 7,1 -> 0,06 ;
+SetEvent auto + Wait 12,2 -> 0,12 ; mutex prendre+rendre 11,9 -> 0,12 ;
+WaitForMultipleObjects(2) 13,4 -> 0,14 ; ping-pong entre deux fils 22,7 ->
+8,1 us par tour. Validation : kernel32:sync (3440 lignes, 347 k tests)
+meme resultat qu'avant (1 echec preexistant, todo), tests/test_sync_xproc.c
+(35 cas : evenements et semaphores nommes signales depuis un autre processus,
+mutex abandonne a la mort d'un processus, attente de processus et de fil,
+minuterie, APC, MsgWait, 24 fils en attente multiple, wait-all, 64 objets,
+PulseEvent) tout bon dans les deux modes.
+
+Liberation a la Windows : SetEvent libere tous les fils qui attendaient a cet
+instant meme si ResetEvent suit aussitot (PulseEvent ne fait que cela) ;
+esync, fsync et msync perdent ce reveil (le fil relit l'etat apres la remise a
+zero et se rendort). Ici chaque signal incremente une generation par objet et
+un fil declare dormeur qui la voit changer est libere. Garde-fou : une attente
+infinie se reveille toutes les 2 s pour reverifier ; un objet trouve pris sans
+reveil est compte (« reveils manques ») et signale (ERR, 10 fois au plus).
+CIDRE_SYNC_STATS=2 imprime aussi les compteurs toutes les 60 s.
+
+Limites connues : wait-all par prise groupee avec restitution
+si un autre fil a ete plus rapide (pas atomique comme ntsync) ; un processus
+qui meurt sans rendre ses jetons laisse ses cases orphelines perdues (bornee
+par ses objets) ; 1 M de cases au plus. Licence LGPL 2.1+, code ecrit a
+partir des sources Wine ; msync (CrossOver, LGPL) a servi de reference de
+conception, aucun code repris.
+
+diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
+index fe7611e4..6f37a9df 100644
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -1694,10 +1694,20 @@ void server_init_process( struct thread_data *data )
+             startup_info_size = reply->info_size;
+             server_start_time = reply->server_start;
+             supported_machines_count = wine_server_reply_size( reply ) / sizeof(*supported_machines);
++#ifdef __APPLE__
++            cidre_sync_init_stats();
++#endif
+             if (reply->inproc_device)
+             {
+                 inproc_device_fd = wine_server_receive_fd( &handle );
+                 assert( handle == reply->inproc_device );
++#ifdef __APPLE__
++                if (!cidre_sync_map( inproc_device_fd ))   /* memoire partagee de la synchro en process */
++                {
++                    close( inproc_device_fd );
++                    inproc_device_fd = -1;
++                }
++#endif
+             }
+         }
+     }
+diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
+index 085d5189..0ae2b2d0 100644
+--- a/dlls/ntdll/unix/sync.c
++++ b/dlls/ntdll/unix/sync.c
+@@ -77,6 +77,15 @@ WINE_DEFAULT_DEBUG_CHANNEL(sync);
+ HANDLE keyed_event = 0;
+ int inproc_device_fd = -1;
+ 
++#ifdef __APPLE__
++/* Compteurs silencieux de la synchronisation (Cidre) : CIDRE_SYNC_STATS=1 les imprime a la sortie du processus.
++ * Increments non atomiques, volontairement : un compte approximatif suffit, et il ne doit rien couter. */
++unsigned int cidre_sync_stats[CIDRE_STAT_COUNT];
++#define CIDRE_STAT(n) (cidre_sync_stats[CIDRE_STAT_##n]++)
++#else
++#define CIDRE_STAT(n) do {} while (0)
++#endif
++
+ static const char *debugstr_timeout( const LARGE_INTEGER *timeout )
+ {
+     if (!timeout) return "(infinite)";
+@@ -449,6 +458,539 @@ static NTSTATUS linux_wait_objs( int device, DWORD count, const int *objs, WAIT_
+     return errno_to_status( errno );
+ }
+ 
++#elif defined(__APPLE__) && defined(MAC_OS_VERSION_14_4)
++/*
++ * Cidre : synchronisation en process par memoire partagee (macOS). Le serveur
++ * alloue une case de 64 octets par objet (include/wine/cidre_sync.h) ; ici on
++ * opere l'etat par atomiques et on dort par adresse (drapeau SHARED : traverse
++ * les processus). Le « fd » d'un objet est un jeton : index de case (20 bits)
++ * + generation (11 bits), verifie a chaque operation.
++ */
++#define CIDRE_SYNC_SHM 1
++
++#include <sys/mman.h>
++#include "wine/cidre_sync.h"
++
++static struct cidre_sync_slot *shm_slots;
++static int get_inproc_alert_fd(void);
++
++#define SHM_INDEX(tok)  ((unsigned int)(tok) & 0xfffff)
++#define SHM_GEN(tok)    (((unsigned int)(tok) >> 20) & 0x7ff)   /* 11 bits : le jeton reste positif */
++#define SHM_WAIT_FLAGS  OS_SYNC_WAIT_ON_ADDRESS_SHARED
++#define SHM_WAKE_FLAGS  OS_SYNC_WAKE_BY_ADDRESS_SHARED
++#define SHM_POLL_NS     1000000   /* scrutation quand la table d'inscription d'un objet est pleine */
++
++static inline int shm_token( unsigned int index, unsigned int generation )
++{
++    return index | ((generation & 0x7ff) << 20);
++}
++
++/* appele par server.c a la reception du descripteur de la memoire partagee */
++BOOL cidre_sync_map( int fd )
++{
++    struct cidre_sync_header *hdr;
++    void *ptr;
++
++    if (__builtin_available( macOS 14.4, * )) {}
++    else return FALSE;
++
++    ptr = mmap( NULL, (size_t)CIDRE_SYNC_MAX_SLOTS * CIDRE_SYNC_SLOT_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0 );
++    if (ptr == MAP_FAILED) return FALSE;
++    hdr = ptr;
++    if (__atomic_load_n( &hdr->magic, __ATOMIC_SEQ_CST ) != CIDRE_SYNC_MAGIC)
++    {
++        munmap( ptr, (size_t)CIDRE_SYNC_MAX_SLOTS * CIDRE_SYNC_SLOT_SIZE );
++        return FALSE;
++    }
++    shm_slots = ptr;
++    TRACE( "synchronisation en process activee (memoire partagee %p)\n", ptr );
++    return TRUE;
++}
++
++static void cidre_sync_dump_stats(void)
++{
++    static const char *names[CIDRE_STAT_COUNT] = { "NtSetEvent", "NtResetEvent", "NtReleaseSemaphore", "NtReleaseMutant",
++        "NtWaitForMultipleObjects", "NtWaitForSingleObject", "NtSignalAndWait", "sommeils (os_sync_wait)",
++        "reveils avec syscall", "attentes multiples/alertables", "tours en scrutation", "jetons perimes",
++        "reveils manques (garde-fou 2 s)" };
++    unsigned int i;
++    fprintf( stderr, "cidre sync stats (pid %u, %s) :\n", getpid(), shm_slots ? "en process" : "wineserver" );
++    for (i = 0; i < CIDRE_STAT_COUNT; i++) fprintf( stderr, "  %-32s %u\n", names[i], cidre_sync_stats[i] );
++}
++
++static ULONGLONG shm_now_ns( clockid_t clock );
++static ULONGLONG cidre_stats_next_dump;   /* CIDRE_SYNC_STATS=2 : aussi toutes les 60 s (un gel tue le processus avant la sortie) */
++
++void cidre_sync_init_stats(void)
++{
++    const char *env = getenv( "CIDRE_SYNC_STATS" );
++    if (!env || !*env || !strcmp( env, "0" )) return;
++    atexit( cidre_sync_dump_stats );
++    if (atoi( env ) >= 2) cidre_stats_next_dump = shm_now_ns( CLOCK_MONOTONIC ) + 60ull * NSECPERSEC;
++}
++
++static void cidre_sync_periodic_stats(void)
++{
++    ULONGLONG now, next = cidre_stats_next_dump;
++    if (!next) return;
++    now = shm_now_ns( CLOCK_MONOTONIC );
++    if (now < next) return;
++    if (__atomic_compare_exchange_n( &cidre_stats_next_dump, &next, now + 60ull * NSECPERSEC, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST ))
++        cidre_sync_dump_stats();
++}
++
++/* la case d'un jeton, ou NULL si la case a ete liberee ou reallouee depuis */
++static struct cidre_sync_slot *shm_slot( int tok )
++{
++    struct cidre_sync_slot *slot;
++
++    if (!shm_slots || !SHM_INDEX(tok) || SHM_INDEX(tok) >= CIDRE_SYNC_MAX_SLOTS) return NULL;
++    slot = &shm_slots[SHM_INDEX(tok)];
++    if ((__atomic_load_n( &slot->generation, __ATOMIC_SEQ_CST ) & 0x7ff) != SHM_GEN(tok)) { CIDRE_STAT( STALE ); return NULL; }
++    return slot;
++}
++
++/* le cache lache ce jeton : la case peut etre reprise par le serveur si son objet a deja disparu */
++static void shm_drop_ref( int tok )
++{
++    struct cidre_sync_slot *slot;
++    if ((slot = shm_slot( tok ))) __atomic_sub_fetch( &slot->refs, 1, __ATOMIC_SEQ_CST );
++}
++
++/* reveille ce qui dort sur une case : les attentes directes sur &state, puis les attentes multiples inscrites */
++static void shm_wake( struct cidre_sync_slot *slot, int all )
++{
++    unsigned int i, idx;
++
++    __atomic_add_fetch( &slot->wake_seq, 1, __ATOMIC_SEQ_CST );   /* generation de liberation */
++    if (__atomic_load_n( &slot->waiters, __ATOMIC_SEQ_CST ))
++    {
++        CIDRE_STAT( WAKE_SYSCALL );
++        if (all) os_sync_wake_by_address_all( &slot->state, 4, SHM_WAKE_FLAGS );
++        else os_sync_wake_by_address_any( &slot->state, 4, SHM_WAKE_FLAGS );
++    }
++    for (i = 0; i < CIDRE_SYNC_WAITER_SLOTS; i++)
++    {
++        if (!(idx = __atomic_load_n( &slot->waiter[i], __ATOMIC_SEQ_CST )) || idx >= CIDRE_SYNC_MAX_SLOTS) continue;
++        CIDRE_STAT( WAKE_SYSCALL );
++        __atomic_add_fetch( &shm_slots[idx].wake_seq, 1, __ATOMIC_SEQ_CST );
++        os_sync_wake_by_address_all( &shm_slots[idx].wake_seq, 4, SHM_WAKE_FLAGS );
++    }
++}
++
++/* dort tant que *addr == value ; 0 = infini ; rend 0, ou -1 avec errno (ETIMEDOUT, EINTR...) */
++static int shm_wait( unsigned int *addr, unsigned int value, ULONGLONG remaining_ns )
++{
++    CIDRE_STAT( SLEEP );
++    cidre_sync_periodic_stats();
++    if (!remaining_ns) return os_sync_wait_on_address( addr, value, 4, SHM_WAIT_FLAGS );
++    return os_sync_wait_on_address_with_timeout( addr, value, 4, SHM_WAIT_FLAGS, OS_CLOCK_MACH_ABSOLUTE_TIME, remaining_ns );
++}
++
++static ULONGLONG shm_now_ns( clockid_t clock )
++{
++    struct timespec ts;
++    clock_gettime( clock, &ts );
++    return (ULONGLONG)ts.tv_sec * NSECPERSEC + ts.tv_nsec;
++}
++
++struct shm_deadline
++{
++    int       infinite;
++    clockid_t clock;
++    ULONGLONG when;   /* ns sur l'horloge choisie */
++};
++
++static void shm_deadline_init( struct shm_deadline *dl, const LARGE_INTEGER *timeout )
++{
++    if (!timeout || timeout->QuadPart == TIMEOUT_INFINITE) { dl->infinite = 1; return; }
++    dl->infinite = 0;
++    if (timeout->QuadPart <= 0)
++    {
++        dl->clock = CLOCK_MONOTONIC;
++        dl->when = shm_now_ns( CLOCK_MONOTONIC ) + (ULONGLONG)(-timeout->QuadPart) * 100;
++    }
++    else
++    {
++        dl->clock = CLOCK_REALTIME;
++        dl->when = (ULONGLONG)timeout->QuadPart * 100 - (ULONGLONG)SECS_1601_TO_1970 * NSECPERSEC;
++    }
++}
++
++/* temps restant en ns ; 0 = infini ; rend FALSE si echu */
++static BOOL shm_deadline_remaining( const struct shm_deadline *dl, ULONGLONG *remaining )
++{
++    ULONGLONG now;
++
++    if (dl->infinite) { *remaining = 0; return TRUE; }
++    now = shm_now_ns( dl->clock );
++    if (now >= dl->when) return FALSE;
++    *remaining = dl->when - now;
++    return TRUE;
++}
++
++static NTSTATUS linux_release_semaphore_obj( int obj, ULONG count, ULONG *prev_count )
++{
++    struct cidre_sync_slot *slot;
++    unsigned int cur, max;
++
++    if (!(slot = shm_slot( obj ))) return STATUS_INVALID_HANDLE;
++    max = slot->aux;
++    cur = __atomic_load_n( &slot->state, __ATOMIC_SEQ_CST );
++    do
++    {
++        if (count > max - cur) return STATUS_SEMAPHORE_LIMIT_EXCEEDED;
++    } while (!__atomic_compare_exchange_n( &slot->state, &cur, cur + count, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST ));
++    if (prev_count) *prev_count = cur;
++    if (count && !cur) shm_wake( slot, count > 1 );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS linux_query_semaphore_obj( int obj, SEMAPHORE_BASIC_INFORMATION *info )
++{
++    struct cidre_sync_slot *slot;
++
++    if (!(slot = shm_slot( obj ))) return STATUS_INVALID_HANDLE;
++    info->CurrentCount = __atomic_load_n( &slot->state, __ATOMIC_SEQ_CST );
++    info->MaximumCount = slot->aux;
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS linux_set_event_obj( int obj, LONG *prev_state )
++{
++    struct cidre_sync_slot *slot;
++    unsigned int prev;
++
++    if (!(slot = shm_slot( obj ))) return STATUS_INVALID_HANDLE;
++    prev = __atomic_exchange_n( &slot->state, 1, __ATOMIC_SEQ_CST );
++    if (!prev) shm_wake( slot, slot->aux != 0 );
++    if (prev_state) *prev_state = prev;
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS linux_reset_event_obj( int obj, LONG *prev_state )
++{
++    struct cidre_sync_slot *slot;
++    unsigned int prev;
++
++    if (!(slot = shm_slot( obj ))) return STATUS_INVALID_HANDLE;
++    prev = __atomic_exchange_n( &slot->state, 0, __ATOMIC_SEQ_CST );
++    if (prev_state) *prev_state = prev;
++    return STATUS_SUCCESS;
++}
++
++/* signale, reveille, remet a zero : les fils deja declares dormeurs sont liberes par la generation (voir cidre_sync.h) */
++static NTSTATUS linux_pulse_event_obj( int obj, LONG *prev_state )
++{
++    struct cidre_sync_slot *slot;
++    unsigned int prev, one = 1;
++
++    if (!(slot = shm_slot( obj ))) return STATUS_INVALID_HANDLE;
++    prev = __atomic_exchange_n( &slot->state, 1, __ATOMIC_SEQ_CST );
++    shm_wake( slot, 1 );
++    __atomic_compare_exchange_n( &slot->state, &one, 0, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST );
++    if (prev_state) *prev_state = prev;
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS linux_query_event_obj( int obj, EVENT_BASIC_INFORMATION *info )
++{
++    struct cidre_sync_slot *slot;
++
++    if (!(slot = shm_slot( obj ))) return STATUS_INVALID_HANDLE;
++    info->EventType = slot->aux ? NotificationEvent : SynchronizationEvent;
++    info->EventState = __atomic_load_n( &slot->state, __ATOMIC_SEQ_CST );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS linux_release_mutex_obj( int obj, LONG *prev_count )
++{
++    struct cidre_sync_slot *slot;
++    unsigned int count, tid = GetCurrentThreadId();
++
++    if (!(slot = shm_slot( obj ))) return STATUS_INVALID_HANDLE;
++    if (__atomic_load_n( &slot->state, __ATOMIC_SEQ_CST ) != tid) return STATUS_MUTANT_NOT_OWNED;
++    count = slot->aux;   /* seul le proprietaire touche aux */
++    if (prev_count) *prev_count = 1 - count;
++    if (count > 1) slot->aux = count - 1;
++    else
++    {
++        slot->aux = 0;
++        __atomic_store_n( &slot->state, 0, __ATOMIC_SEQ_CST );
++        shm_wake( slot, 0 );
++    }
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS linux_query_mutex_obj( int obj, MUTANT_BASIC_INFORMATION *info )
++{
++    struct cidre_sync_slot *slot;
++    unsigned int owner;
++
++    if (!(slot = shm_slot( obj ))) return STATUS_INVALID_HANDLE;
++    if (__atomic_load_n( &slot->flags, __ATOMIC_SEQ_CST ) & CIDRE_SYNC_ABANDONED)
++    {
++        info->AbandonedState = TRUE;
++        info->OwnedByCaller = FALSE;
++        info->CurrentCount = 1;
++        return STATUS_SUCCESS;
++    }
++    owner = __atomic_load_n( &slot->state, __ATOMIC_SEQ_CST );
++    info->AbandonedState = FALSE;
++    info->OwnedByCaller = (owner == GetCurrentThreadId());
++    info->CurrentCount = owner ? 1 - slot->aux : 1;
++    return STATUS_SUCCESS;
++}
++
++/* tente de prendre l'objet ; 1 = pris (abandoned pose pour un mutex abandonne), 0 = indisponible et *observed = valeur vue */
++static int shm_try_acquire( struct cidre_sync_slot *slot, unsigned int tid, int *abandoned, unsigned int *observed )
++{
++    unsigned int v = __atomic_load_n( &slot->state, __ATOMIC_SEQ_CST );
++
++    switch (__atomic_load_n( &slot->flags, __ATOMIC_SEQ_CST ) & CIDRE_SYNC_TYPE_MASK)
++    {
++    case INPROC_SYNC_INTERNAL:
++    case INPROC_SYNC_EVENT:
++        if (!v) { *observed = 0; return 0; }
++        if (slot->aux) return 1;   /* manuel : non consomme */
++        if (__atomic_compare_exchange_n( &slot->state, &v, 0, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST )) return 1;
++        *observed = 0;   /* consomme par un autre entre-temps */
++        return 0;
++
++    case INPROC_SYNC_SEMAPHORE:
++        while (v)
++            if (__atomic_compare_exchange_n( &slot->state, &v, v - 1, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST )) return 1;
++        *observed = 0;
++        return 0;
++
++    case INPROC_SYNC_MUTEX:
++        if (v == tid) { slot->aux++; return 1; }
++        if (!v && __atomic_compare_exchange_n( &slot->state, &v, tid, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST ))
++        {
++            slot->aux = 1;
++            if (__atomic_load_n( &slot->flags, __ATOMIC_SEQ_CST ) & CIDRE_SYNC_ABANDONED)
++            {
++                __atomic_and_fetch( &slot->flags, ~CIDRE_SYNC_ABANDONED, __ATOMIC_SEQ_CST );
++                *abandoned = 1;
++            }
++            return 1;
++        }
++        *observed = v;   /* v est le proprietaire courant (non nul : le CAS n'echoue que si quelqu'un l'a pris) */
++        return 0;
++    }
++    *observed = v;
++    return 0;
++}
++
++/* un evenement manuel (ou interne) libere par generation : tout dormeur present au signal est satisfait */
++static inline int shm_releases_by_generation( const struct cidre_sync_slot *slot )
++{
++    unsigned int type = __atomic_load_n( &slot->flags, __ATOMIC_SEQ_CST ) & CIDRE_SYNC_TYPE_MASK;
++    return (type == INPROC_SYNC_EVENT || type == INPROC_SYNC_INTERNAL) && slot->aux;
++}
++
++#define SHM_WATCHDOG_NS 2000000000ull   /* garde-fou : une attente infinie se reveille toutes les 2 s pour revérifier */
++
++/* l'objet serait-il pris par tid sans attendre ? (WaitAll : verification avant la prise groupee) */
++static int shm_is_available( struct cidre_sync_slot *slot, unsigned int tid )
++{
++    unsigned int v = __atomic_load_n( &slot->state, __ATOMIC_SEQ_CST );
++
++    if ((__atomic_load_n( &slot->flags, __ATOMIC_SEQ_CST ) & CIDRE_SYNC_TYPE_MASK) == INPROC_SYNC_MUTEX)
++        return !v || v == tid;
++    return v != 0;
++}
++
++/* rend ce qu'une prise groupee avait pris avant d'echouer */
++static void shm_undo_acquire( struct cidre_sync_slot *slot, unsigned int tid )
++{
++    switch (__atomic_load_n( &slot->flags, __ATOMIC_SEQ_CST ) & CIDRE_SYNC_TYPE_MASK)
++    {
++    case INPROC_SYNC_INTERNAL:
++    case INPROC_SYNC_EVENT:
++        if (slot->aux) break;
++        if (!__atomic_exchange_n( &slot->state, 1, __ATOMIC_SEQ_CST )) shm_wake( slot, 0 );
++        break;
++    case INPROC_SYNC_SEMAPHORE:
++        if (!__atomic_fetch_add( &slot->state, 1, __ATOMIC_SEQ_CST )) shm_wake( slot, 0 );
++        break;
++    case INPROC_SYNC_MUTEX:
++        if (slot->aux > 1) slot->aux--;
++        else
++        {
++            slot->aux = 0;
++            __atomic_store_n( &slot->state, 0, __ATOMIC_SEQ_CST );
++            shm_wake( slot, 0 );
++        }
++        break;
++    }
++}
++
++/* le garde-fou a trouve l'objet pris alors qu'aucun reveil n'est arrive : compte et dit le type (10 fois au plus) */
++static void shm_late_wake( struct cidre_sync_slot *slot )
++{
++    static LONG dits;
++    CIDRE_STAT( LATE_WAKE );
++    if (InterlockedIncrement( &dits ) <= 10)
++        ERR( "reveil manque rattrape par le garde-fou : case %u type %u manuel %u etat %u waiters %u\n",
++             (unsigned int)(slot - shm_slots), slot->flags & CIDRE_SYNC_TYPE_MASK, slot->aux,
++             __atomic_load_n( &slot->state, __ATOMIC_SEQ_CST ), __atomic_load_n( &slot->waiters, __ATOMIC_SEQ_CST ) );
++}
++
++/* inscription d'un fil (sa case = me) dans la table d'un objet ; rend l'emplacement + 1, ou 0 si pleine */
++static int shm_register( struct cidre_sync_slot *slot, unsigned int me )
++{
++    unsigned int i, zero;
++
++    for (i = 0; i < CIDRE_SYNC_WAITER_SLOTS; i++)
++    {
++        zero = 0;
++        if (__atomic_compare_exchange_n( &slot->waiter[i], &zero, me, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST )) return i + 1;
++    }
++    __atomic_add_fetch( &slot->overflow, 1, __ATOMIC_SEQ_CST );
++    return 0;
++}
++
++static void shm_unregister( struct cidre_sync_slot *slot, int where, unsigned int me )
++{
++    unsigned int expected = me;
++    if (where) __atomic_compare_exchange_n( &slot->waiter[where - 1], &expected, 0, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST );
++}
++
++static NTSTATUS linux_wait_objs( int device, DWORD count, const int *objs, WAIT_TYPE type,
++                                 int alert_fd, const LARGE_INTEGER *timeout )
++{
++    struct cidre_sync_slot *slots[MAXIMUM_WAIT_OBJECTS + 1], *me = NULL;
++    int registered[MAXIMUM_WAIT_OBJECTS + 1];
++    unsigned int gens[MAXIMUM_WAIT_OBJECTS + 1];
++    unsigned int tid = GetCurrentThreadId(), total = count, i, me_index = 0;
++    struct shm_deadline dl;
++    ULONGLONG remaining;
++    int polling = 0, abandoned = 0, late = 0;
++    NTSTATUS ret;
++
++    for (i = 0; i < count; i++)
++        if (!(slots[i] = shm_slot( objs[i] ))) return STATUS_INVALID_HANDLE;
++    if (alert_fd)
++    {
++        if (!(slots[total] = shm_slot( alert_fd ))) return STATUS_INVALID_HANDLE;
++        total++;
++    }
++    shm_deadline_init( &dl, timeout );
++
++    /* chemin rapide : un seul objet, pas d'alerte : on dort directement sur son mot d'etat */
++    if (total == 1)
++    {
++        struct cidre_sync_slot *slot = slots[0];
++        unsigned int observed;
++        int rc;
++
++        int by_gen = shm_releases_by_generation( slot ), watchdog;
++        unsigned int gen;
++
++        for (;;)
++        {
++            gen = __atomic_load_n( &slot->wake_seq, __ATOMIC_SEQ_CST );
++            if (shm_try_acquire( slot, tid, &abandoned, &observed )) return abandoned ? STATUS_ABANDONED : STATUS_SUCCESS;
++            if (!shm_deadline_remaining( &dl, &remaining )) return STATUS_TIMEOUT;
++            watchdog = !remaining || remaining > SHM_WATCHDOG_NS;
++            if (watchdog) remaining = SHM_WATCHDOG_NS;
++            __atomic_add_fetch( &slot->waiters, 1, __ATOMIC_SEQ_CST );
++            /* dormeur declare : un signal arrive entre-temps nous libere (generation) ou nous reveille (waiters vu) */
++            if (by_gen && __atomic_load_n( &slot->wake_seq, __ATOMIC_SEQ_CST ) != gen) rc = 0;
++            else rc = shm_wait( &slot->state, observed, remaining );
++            __atomic_sub_fetch( &slot->waiters, 1, __ATOMIC_SEQ_CST );
++            if (!shm_slot( objs[0] )) return STATUS_INVALID_HANDLE;   /* liberee pendant l'attente */
++            if (by_gen && __atomic_load_n( &slot->wake_seq, __ATOMIC_SEQ_CST ) != gen) return STATUS_SUCCESS;
++            if (rc < 0 && errno == ETIMEDOUT)
++            {
++                if (shm_try_acquire( slot, tid, &abandoned, &observed ))
++                {
++                    if (watchdog) shm_late_wake( slot );
++                    return abandoned ? STATUS_ABANDONED : STATUS_SUCCESS;
++                }
++                if (!watchdog) return STATUS_TIMEOUT;
++            }
++        }
++    }
++
++    /* plusieurs objets (ou alerte) : on s'inscrit chez chacun et on dort sur sa propre case */
++    CIDRE_STAT( MULTI );
++    me_index = SHM_INDEX( get_inproc_alert_fd() );
++    if (me_index && me_index < CIDRE_SYNC_MAX_SLOTS) me = &shm_slots[me_index];
++    if (!me) polling = 1;   /* pas de case propre : scrutation lente */
++
++    for (i = 0; i < total; i++)
++    {
++        registered[i] = me ? shm_register( slots[i], me_index ) : 0;
++        if (!registered[i]) polling = 1;
++    }
++
++    for (i = 0; i < count; i++) gens[i] = __atomic_load_n( &slots[i]->wake_seq, __ATOMIC_SEQ_CST );
++
++    for (;;)
++    {
++        unsigned int seq = me ? __atomic_load_n( &me->wake_seq, __ATOMIC_SEQ_CST ) : 0, observed;
++        int rc, watchdog;
++
++        if (type != WaitAll)
++        {
++            for (i = 0; i < count; i++)
++            {
++                if (!shm_try_acquire( slots[i], tid, &abandoned, &observed ))
++                {
++                    /* evenement manuel signale puis remis a zero pendant notre attente : nous etions a liberer */
++                    if (!(shm_releases_by_generation( slots[i] ) &&
++                          __atomic_load_n( &slots[i]->wake_seq, __ATOMIC_SEQ_CST ) != gens[i])) continue;
++                }
++                if (late) shm_late_wake( slots[i] );
++                ret = abandoned ? STATUS_ABANDONED + i : i;
++                goto done;
++            }
++        }
++        else
++        {
++            for (i = 0; i < count; i++) if (!shm_is_available( slots[i], tid )) break;
++            if (i == count)
++            {
++                for (i = 0; i < count; i++)
++                    if (!shm_try_acquire( slots[i], tid, &abandoned, &observed )) break;
++                if (i == count) { if (late) shm_late_wake( slots[0] ); ret = abandoned ? STATUS_ABANDONED : STATUS_SUCCESS; goto done; }
++                while (i--) shm_undo_acquire( slots[i], tid );   /* un autre a ete plus rapide : on rend et on reessaie */
++                continue;
++            }
++        }
++        if (alert_fd && __atomic_load_n( &slots[count]->state, __ATOMIC_SEQ_CST )) { ret = count; goto done; }
++
++        if (!shm_deadline_remaining( &dl, &remaining )) { ret = STATUS_TIMEOUT; goto done; }
++        watchdog = !remaining || remaining > SHM_WATCHDOG_NS;
++        if (watchdog) remaining = SHM_WATCHDOG_NS;
++        if (polling && remaining > SHM_POLL_NS) { remaining = SHM_POLL_NS; CIDRE_STAT( POLL ); }
++        if (me) rc = shm_wait( &me->wake_seq, seq, remaining );
++        else
++        {
++            struct timespec ts = { 0, SHM_POLL_NS };
++            nanosleep( &ts, NULL );
++            rc = 0;
++        }
++        late = (watchdog && !polling && rc < 0 && errno == ETIMEDOUT);   /* personne ne nous a reveilles : si un objet est pris, c'est un reveil manque */
++
++        for (i = 0; i < count; i++)
++            if (!shm_slot( objs[i] )) { ret = STATUS_INVALID_HANDLE; goto done; }
++    }
++
++done:
++    for (i = 0; i < total; i++) shm_unregister( slots[i], registered[i], me_index );
++    if (ret == count && alert_fd)
++    {
++        static const LARGE_INTEGER zero;
++        ret = server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, &zero );
++        assert( ret == STATUS_USER_APC );
++        return ret;
++    }
++    return ret;
++}
++
+ #else /* NTSYNC_IOC_EVENT_READ */
+ 
+ static NTSTATUS linux_release_semaphore_obj( int obj, ULONG count, ULONG *prev_count )
+@@ -497,6 +1039,16 @@ static NTSTATUS linux_wait_objs( int device, DWORD count, const int *objs, WAIT_
+     return STATUS_NOT_IMPLEMENTED;
+ }
+ 
++#ifdef __APPLE__
++BOOL cidre_sync_map( int fd )
++{
++    return FALSE;   /* SDK sans os_sync_wait_on_address : pas de synchro en process */
++}
++void cidre_sync_init_stats(void)
++{
++}
++#endif
++
+ #endif /* NTSYNC_IOC_EVENT_READ */
+ 
+ /* It's possible for synchronization primitives to remain alive even after being
+@@ -634,7 +1186,11 @@ static void release_inproc_sync( struct inproc_sync *sync )
+     LONG ref = InterlockedDecrement( &sync->refcount );
+ 
+     assert( ref >= 0 );
++#ifdef CIDRE_SYNC_SHM
++    if (!ref) shm_drop_ref( fd );   /* rend le jeton au serveur (refs--) */
++#else
+     if (!ref) close( fd );
++#endif
+ }
+ 
+ static struct inproc_sync *get_cached_inproc_sync( HANDLE handle )
+@@ -675,8 +1231,13 @@ static NTSTATUS get_server_inproc_sync( HANDLE handle, struct inproc_sync *sync
+         {
+             obj_handle_t fd_handle;
+             sync->refcount = 1;
++#ifdef CIDRE_SYNC_SHM
++            sync->fd = shm_token( reply->shm_index, reply->shm_generation );
++            (void)fd_handle;
++#else
+             sync->fd = wine_server_receive_fd( &fd_handle );
+             assert( wine_server_ptr_handle(fd_handle) == handle );
++#endif
+             sync->access = reply->access;
+             sync->type = reply->type;
+             sync->closed = 0;
+@@ -884,8 +1445,13 @@ static int get_inproc_alert_fd(void)
+         {
+             if (!server_call_unlocked( req ))
+             {
++#ifdef CIDRE_SYNC_SHM
++                data->alert_fd = fd = shm_token( reply->shm_index, reply->shm_generation );
++                (void)token;
++#else
+                 data->alert_fd = fd = wine_server_receive_fd( &token );
+                 assert( token == reply->handle );
++#endif
+             }
+         }
+         SERVER_END_REQ;
+@@ -1067,6 +1633,7 @@ NTSTATUS WINAPI NtReleaseSemaphore( HANDLE handle, ULONG count, ULONG *previous
+     unsigned int ret;
+ 
+     TRACE( "handle %p, count %u, prev_count %p\n", handle, count, previous );
++    CIDRE_STAT( RELEASE_SEMAPHORE );
+ 
+     if ((ret = inproc_release_semaphore( handle, count, previous )) != STATUS_NOT_IMPLEMENTED)
+         return ret;
+@@ -1153,6 +1720,7 @@ NTSTATUS WINAPI NtSetEvent( HANDLE handle, LONG *prev_state )
+     unsigned int ret;
+ 
+     TRACE( "handle %p, prev_state %p\n", handle, prev_state );
++    CIDRE_STAT( SET_EVENT );
+ 
+     if ((ret = inproc_set_event( handle, prev_state )) != STATUS_NOT_IMPLEMENTED)
+         return ret;
+@@ -1186,6 +1754,7 @@ NTSTATUS WINAPI NtResetEvent( HANDLE handle, LONG *prev_state )
+     unsigned int ret;
+ 
+     TRACE( "handle %p, prev_state %p\n", handle, prev_state );
++    CIDRE_STAT( RESET_EVENT );
+ 
+     if ((ret = inproc_reset_event( handle, prev_state )) != STATUS_NOT_IMPLEMENTED)
+         return ret;
+@@ -1342,6 +1911,7 @@ NTSTATUS WINAPI NtReleaseMutant( HANDLE handle, LONG *prev_count )
+     unsigned int ret;
+ 
+     TRACE( "handle %p, prev_count %p\n", handle, prev_count );
++    CIDRE_STAT( RELEASE_MUTEX );
+ 
+     if ((ret = inproc_release_mutex( handle, prev_count )) != STATUS_NOT_IMPLEMENTED)
+         return ret;
+@@ -2316,6 +2886,7 @@ NTSTATUS WINAPI NtWaitForMultipleObjects( DWORD count, const HANDLE *handles, WA
+         for (i = 1; i < count; i++) TRACE( ", %p", handles[i] );
+         TRACE( "}, timeout %s\n", debugstr_timeout(timeout) );
+     }
++    CIDRE_STAT( WAIT_MULTIPLE );
+ 
+     /* Reject pseudo-handles up front. These are not valid for multi-object waits. */
+     for (i = 0; i < count; i++)
+@@ -2348,6 +2919,7 @@ NTSTATUS WINAPI NtWaitForSingleObject( HANDLE handle, BOOLEAN alertable, const L
+     unsigned int ret;
+ 
+     TRACE( "handle %p, alertable %u, timeout %s\n", handle, alertable, debugstr_timeout(timeout) );
++    CIDRE_STAT( WAIT_SINGLE );
+ 
+     if ((ret = inproc_wait( 1, &handle, WaitAny, alertable, timeout )) != STATUS_NOT_IMPLEMENTED)
+     {
+@@ -2375,6 +2947,7 @@ NTSTATUS WINAPI NtSignalAndWaitForSingleObject( HANDLE signal, HANDLE wait,
+     NTSTATUS ret;
+ 
+     TRACE( "signal %p, wait %p, alertable %u, timeout %s\n", signal, wait, alertable, debugstr_timeout(timeout) );
++    CIDRE_STAT( SIGNAL_AND_WAIT );
+ 
+     if (!signal) return STATUS_INVALID_HANDLE;
+ 
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index f3aab7d1..538566b1 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -231,6 +231,15 @@ extern USHORT supported_machines[8];
+ extern BOOL process_exiting;
+ extern HANDLE keyed_event;
+ extern int inproc_device_fd;
++#ifdef __APPLE__
++extern BOOL cidre_sync_map( int fd );
++extern void cidre_sync_init_stats(void);
++enum cidre_sync_stat { CIDRE_STAT_SET_EVENT, CIDRE_STAT_RESET_EVENT, CIDRE_STAT_RELEASE_SEMAPHORE, CIDRE_STAT_RELEASE_MUTEX,
++                       CIDRE_STAT_WAIT_MULTIPLE, CIDRE_STAT_WAIT_SINGLE, CIDRE_STAT_SIGNAL_AND_WAIT, CIDRE_STAT_SLEEP,
++                       CIDRE_STAT_WAKE_SYSCALL, CIDRE_STAT_MULTI, CIDRE_STAT_POLL, CIDRE_STAT_STALE, CIDRE_STAT_LATE_WAKE,
++                       CIDRE_STAT_COUNT };
++extern unsigned int cidre_sync_stats[CIDRE_STAT_COUNT];
++#endif
+ extern timeout_t server_start_time;
+ extern sigset_t server_block_set;
+ extern pthread_mutex_t fd_cache_mutex;
+diff --git a/include/wine/cidre_sync.h b/include/wine/cidre_sync.h
+new file mode 100644
+index 00000000..3a7d34c7
+--- /dev/null
++++ b/include/wine/cidre_sync.h
+@@ -0,0 +1,94 @@
++/*
++ * Synchronisation en process sur macOS : disposition de la memoire partagee
++ *
++ * Copyright 2026 Frantz Benoist (projet Cidre)
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ *
++ * Principe. Wine 11 possede deja une synchronisation « en process » (inproc
++ * sync) : le serveur cree chaque evenement, mutex ou semaphore comme un objet
++ * du pilote Linux ntsync et en passe le descripteur aux clients, qui l'operent
++ * par ioctl sans parler au serveur. macOS n'a pas de pilote equivalent. Ce
++ * fichier decrit son remplacant : le serveur cree UN fichier de memoire
++ * partagee, decoupe en cases de 64 octets ; chaque objet inproc est une case ;
++ * clients et serveur lisent et modifient l'etat par operations atomiques et
++ * dorment ou reveillent par adresse (os_sync_wait_on_address / wake, drapeau
++ * SHARED : verifie, il traverse les processus, voir tests/sonde_sync_xproc.c).
++ * Le serveur ne fait qu'allouer les cases, poser l'etat initial, signaler ou
++ * remettre a zero les evenements internes (processus, fils, fichiers, files de
++ * messages...) et abandonner les mutex d'un fil mort. Il n'attend jamais.
++ *
++ * Attente sur plusieurs objets. Un fil ne peut dormir que sur une adresse.
++ * Chaque fil possede une case (sa case d'alerte APC, que le serveur cree deja
++ * par fil) dont le mot wake_seq lui sert d'oreiller. Pour attendre sur N objets
++ * il s'inscrit dans la petite table waiter[] de chacun ; quiconque change
++ * l'etat d'un objet reveille les fils inscrits (wake_seq++ puis wake). Si la
++ * table est pleine, le fil dort par tranches bornees (scrutation lente, rare).
++ *
++ * Liberation. Sous Windows, SetEvent libere tous les fils qui attendaient a cet
++ * instant, meme si ResetEvent suit aussitot (et PulseEvent ne fait que cela).
++ * Avec un simple mot d'etat, un fil reveille qui relit l'etat apres la remise a
++ * zero se rendormirait : esync, fsync et msync ont ce defaut connu. Ici chaque
++ * signal incremente aussi wake_seq (generation) ; un fil qui s'est declare
++ * dormeur (waiters++) et voit la generation changer est libere, quel que soit
++ * l'etat relu. Les evenements auto et les semaphores restent a prise par CAS.
++ *
++ * Vie d'une case. Le serveur compte les jetons qu'il distribue (refs) ; le
++ * client en rend un quand son cache lache l'objet. A la destruction de l'objet
++ * serveur (dernier handle ferme), la case n'est liberee que si refs == 0 ;
++ * sinon elle devient orpheline : encore valide pour les fils qui la tiennent
++ * (une attente sur un handle ferme continue, comme avec ntsync, et un mutex
++ * orphelin est encore abandonne a la mort de son proprietaire), et le serveur
++ * la reprend plus tard quand refs retombe a 0. Si un processus meurt sans
++ * rendre ses jetons, ses cases orphelines restent perdues (bornee par le
++ * nombre d'objets qu'il tenait). La generation change a chaque liberation :
++ * un jeton perime recoit STATUS_INVALID_HANDLE au lieu d'operer l'objet suivant.
++ */
++
++#ifndef __WINE_WINE_CIDRE_SYNC_H
++#define __WINE_WINE_CIDRE_SYNC_H
++
++#define CIDRE_SYNC_MAGIC        0x30434e53   /* 'SNC0' */
++#define CIDRE_SYNC_SLOT_SIZE    64
++#define CIDRE_SYNC_MAX_SLOTS    (1u << 20)   /* 64 Mio, fichier creux : seules les cases touchees coutent */
++#define CIDRE_SYNC_WAITER_SLOTS 8
++
++/* flags */
++#define CIDRE_SYNC_TYPE_MASK    0x0f         /* enum inproc_sync_type */
++#define CIDRE_SYNC_ABANDONED    0x10         /* mutex : le proprietaire est mort */
++#define CIDRE_SYNC_DEAD         0x20         /* case liberee par le serveur */
++
++struct cidre_sync_slot
++{
++    unsigned int state;       /* evenement : signale (0/1) ; semaphore : compte ; mutex : tid du proprietaire (0 libre) */
++    unsigned int aux;         /* evenement : manuel ; semaphore : maximum ; mutex : compte de recursion */
++    unsigned int flags;       /* CIDRE_SYNC_* */
++    unsigned int generation;  /* incrementee par le serveur a chaque (re)allocation */
++    unsigned int waiters;     /* fils endormis directement sur &state */
++    unsigned int overflow;    /* statistique : inscriptions refusees (table pleine) */
++    unsigned int wake_seq;    /* generation de liberation : +1 a chaque signal ; cases de fil : aussi l'oreiller des attentes multiples */
++    unsigned int refs;        /* references clients (jetons distribues par le serveur, rendus par les clients) */
++    unsigned int waiter[CIDRE_SYNC_WAITER_SLOTS];  /* index des cases de fil inscrites */
++};
++
++struct cidre_sync_header     /* case 0 */
++{
++    unsigned int magic;
++    unsigned int version;
++    unsigned int slot_count;
++    unsigned int reserved[13];
++};
++
++#endif /* __WINE_WINE_CIDRE_SYNC_H */
+diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
+index e2ef2f54..bca80145 100644
+--- a/include/wine/server_protocol.h
++++ b/include/wine/server_protocol.h
+@@ -6068,6 +6068,8 @@ struct get_inproc_sync_fd_reply
+     struct reply_header __header;
+     int           type;
+     unsigned int access;
++    unsigned int shm_index;
++    unsigned int shm_generation;
+ };
+ 
+ 
+@@ -6081,7 +6083,9 @@ struct get_inproc_alert_fd_reply
+ {
+     struct reply_header __header;
+     obj_handle_t handle;
+-    char __pad_12[4];
++    unsigned int shm_index;
++    unsigned int shm_generation;
++    char __pad_20[4];
+ };
+ 
+ 
+@@ -7184,6 +7188,6 @@ union generic_reply
+     struct alpc_create_port_reply alpc_create_port_reply;
+ };
+ 
+-#define SERVER_PROTOCOL_VERSION 962
++#define SERVER_PROTOCOL_VERSION 963
+ 
+ #endif /* __WINE_WINE_SERVER_PROTOCOL_H */
+diff --git a/server/inproc_sync.c b/server/inproc_sync.c
+index 522d9a4e..69855926 100644
+--- a/server/inproc_sync.c
++++ b/server/inproc_sync.c
+@@ -36,6 +36,12 @@
+ #ifdef HAVE_LINUX_NTSYNC_H
+ # include <linux/ntsync.h>
+ #endif
++#ifdef __APPLE__
++# include <AvailabilityMacros.h>
++# ifdef MAC_OS_VERSION_14_4
++#  include <os/os_sync_wait_on_address.h>
++# endif
++#endif
+ 
+ #ifdef NTSYNC_IOC_EVENT_READ
+ 
+@@ -223,6 +229,352 @@ static int get_obj_inproc_sync( struct object *obj, int *type )
+     return fd;
+ }
+ 
++
++/* send the fd to the client (Linux ntsync) */
++void send_inproc_sync_fd( struct process *process, int fd, obj_handle_t handle,
++                          unsigned int *shm_index, unsigned int *shm_generation )
++{
++    send_client_fd( process, fd, handle );
++}
++
++void add_inproc_sync_client_ref( int fd )
++{
++}
++
++#elif defined(__APPLE__) && defined(MAC_OS_VERSION_14_4)
++/*
++ * Cidre : synchronisation en process par memoire partagee (macOS). Disposition
++ * et principe dans include/wine/cidre_sync.h. Active seulement si le serveur
++ * demarre avec CIDRE_SYNC_LOCAL=1 ; sinon tout reste comme avant (wineserver).
++ */
++#define CIDRE_SYNC_SHM 1
++
++#include <errno.h>
++#include <fcntl.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/mman.h>
++#include <sys/stat.h>
++#include <unistd.h>
++#include "wine/cidre_sync.h"
++
++static int shm_fd = -2;
++static struct cidre_sync_slot *shm_slots;        /* case 0 = en-tete */
++static unsigned int shm_high;                    /* premiere case jamais allouee */
++static unsigned int *shm_free;                   /* file FIFO des cases liberees */
++static unsigned int shm_free_head, shm_free_tail, shm_free_count;
++#define SHM_REUSE_DELAY 4096                     /* une case liberee attend autant de liberations avant d'etre reprise */
++
++struct shm_orphan                                /* objet serveur detruit, case encore tenue par des clients */
++{
++    struct list  entry;
++    unsigned int index;
++    unsigned int type;
++};
++static struct list shm_orphans = LIST_INIT( shm_orphans );
++static void shm_reap_orphans(void);
++
++int get_inproc_device_fd(void)
++{
++    const char *env;
++    int fd;
++
++    if (shm_fd != -2) return shm_fd;
++    shm_fd = -1;
++    if (!(env = getenv( "CIDRE_SYNC_LOCAL" )) || !*env || !strcmp( env, "0" )) return -1;
++    if (__builtin_available( macOS 14.4, * )) {}
++    else
++    {
++        fprintf( stderr, "cidre: synchronisation en process : macOS 14.4 requis\n" );
++        return -1;
++    }
++
++    /* dans le repertoire du serveur (cwd), supprime aussitot : seul le descripteur circule */
++    {
++        char name[] = "sync-shm-XXXXXX";
++        if ((fd = mkstemp( name )) == -1) goto error;
++        unlink( name );
++    }
++    fcntl( fd, F_SETFD, FD_CLOEXEC );
++    if (ftruncate( fd, (off_t)CIDRE_SYNC_MAX_SLOTS * CIDRE_SYNC_SLOT_SIZE ) == -1) goto error;
++    shm_slots = mmap( NULL, (size_t)CIDRE_SYNC_MAX_SLOTS * CIDRE_SYNC_SLOT_SIZE,
++                      PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0 );
++    if (shm_slots == MAP_FAILED) { shm_slots = NULL; goto error; }
++    if (!(shm_free = malloc( CIDRE_SYNC_MAX_SLOTS * sizeof(*shm_free) ))) goto error;
++
++    {
++        struct cidre_sync_header *hdr = (struct cidre_sync_header *)shm_slots;
++        hdr->version = 1;
++        hdr->slot_count = CIDRE_SYNC_MAX_SLOTS;
++        __atomic_store_n( &hdr->magic, CIDRE_SYNC_MAGIC, __ATOMIC_SEQ_CST );
++    }
++    shm_high = 1;
++    shm_fd = fd;
++    if (debug_level) fprintf( stderr, "cidre: synchronisation en process activee (memoire partagee, fd %d)\n", fd );
++    return shm_fd;
++
++error:
++    fprintf( stderr, "cidre: synchronisation en process indisponible : %s\n", strerror( errno ) );
++    if (shm_slots) munmap( shm_slots, (size_t)CIDRE_SYNC_MAX_SLOTS * CIDRE_SYNC_SLOT_SIZE );
++    shm_slots = NULL;
++    if (fd != -1) close( fd );
++    return -1;
++}
++
++struct inproc_sync
++{
++    struct object          obj;  /* object header */
++    enum inproc_sync_type  type;
++    int                    fd;   /* ici : index de la case partagee */
++    struct list            entry;
++};
++
++static struct list inproc_mutexes = LIST_INIT( inproc_mutexes );
++
++static void inproc_sync_dump( struct object *obj, int verbose );
++static int inproc_sync_signal( struct object *obj, unsigned int access, int signal );
++static void inproc_sync_destroy( struct object *obj );
++
++static const struct object_ops inproc_sync_ops =
++{
++    .size    = sizeof(struct inproc_sync),
++    .type    = &no_type,
++    .dump    = inproc_sync_dump,
++    .signal  = inproc_sync_signal,
++    .destroy = inproc_sync_destroy,
++};
++
++int get_inproc_sync_fd( struct inproc_sync *sync )
++{
++    if (!sync) return -1;
++    return sync->fd;
++}
++
++/* reveille ce qui dort sur une case : les attentes directes sur &state, puis les attentes multiples inscrites */
++static void shm_wake( struct cidre_sync_slot *slot, int all )
++{
++    unsigned int i, idx;
++
++    __atomic_add_fetch( &slot->wake_seq, 1, __ATOMIC_SEQ_CST );   /* generation de liberation */
++    if (__atomic_load_n( &slot->waiters, __ATOMIC_SEQ_CST ))
++    {
++        if (all) os_sync_wake_by_address_all( &slot->state, 4, OS_SYNC_WAKE_BY_ADDRESS_SHARED );
++        else os_sync_wake_by_address_any( &slot->state, 4, OS_SYNC_WAKE_BY_ADDRESS_SHARED );
++    }
++    for (i = 0; i < CIDRE_SYNC_WAITER_SLOTS; i++)
++    {
++        if (!(idx = __atomic_load_n( &slot->waiter[i], __ATOMIC_SEQ_CST )) || idx >= CIDRE_SYNC_MAX_SLOTS) continue;
++        __atomic_add_fetch( &shm_slots[idx].wake_seq, 1, __ATOMIC_SEQ_CST );
++        os_sync_wake_by_address_all( &shm_slots[idx].wake_seq, 4, OS_SYNC_WAKE_BY_ADDRESS_SHARED );
++    }
++}
++
++static struct cidre_sync_slot *shm_alloc( enum inproc_sync_type type, unsigned int state, unsigned int aux, int *index )
++{
++    struct cidre_sync_slot *slot;
++    unsigned int idx;
++
++    shm_reap_orphans();
++    if (shm_free_count > SHM_REUSE_DELAY || shm_high >= CIDRE_SYNC_MAX_SLOTS)
++    {
++        if (!shm_free_count) return NULL;
++        idx = shm_free[shm_free_head];
++        shm_free_head = (shm_free_head + 1) % CIDRE_SYNC_MAX_SLOTS;
++        shm_free_count--;
++    }
++    else idx = shm_high++;
++
++    slot = &shm_slots[idx];
++    memset( slot->waiter, 0, sizeof(slot->waiter) );
++    slot->waiters = 0;
++    slot->overflow = 0;
++    slot->wake_seq = 0;
++    slot->refs = 0;
++    slot->aux = aux;
++    slot->state = state;
++    __atomic_store_n( &slot->flags, (unsigned int)type, __ATOMIC_SEQ_CST );
++    __atomic_add_fetch( &slot->generation, 1, __ATOMIC_SEQ_CST );   /* publie la case : generation impaire = vivante */
++    *index = idx;
++    return slot;
++}
++
++static void shm_release( int idx )
++{
++    struct cidre_sync_slot *slot = &shm_slots[idx];
++
++    __atomic_or_fetch( &slot->flags, CIDRE_SYNC_DEAD, __ATOMIC_SEQ_CST );
++    __atomic_add_fetch( &slot->generation, 1, __ATOMIC_SEQ_CST );   /* generation paire = libre */
++    shm_wake( slot, 1 );   /* un jeton perime voit la generation changer et rend STATUS_INVALID_HANDLE */
++    shm_free[shm_free_tail] = idx;
++    shm_free_tail = (shm_free_tail + 1) % CIDRE_SYNC_MAX_SLOTS;
++    shm_free_count++;
++}
++
++/* reprend les cases orphelines que plus aucun client ne tient (borne : quelques-unes par appel) */
++static void shm_reap_orphans(void)
++{
++    struct shm_orphan *orphan, *next;
++    unsigned int budget = 16;
++
++    LIST_FOR_EACH_ENTRY_SAFE( orphan, next, &shm_orphans, struct shm_orphan, entry )
++    {
++        if (!budget--) break;
++        if (__atomic_load_n( &shm_slots[orphan->index].refs, __ATOMIC_SEQ_CST )) continue;
++        list_remove( &orphan->entry );
++        shm_release( orphan->index );
++        free( orphan );
++    }
++}
++
++/* l'objet serveur disparait : la case ne peut etre liberee que si aucun client ne la tient encore */
++static void shm_retire( int idx, unsigned int type )
++{
++    struct shm_orphan *orphan;
++
++    if (!__atomic_load_n( &shm_slots[idx].refs, __ATOMIC_SEQ_CST ) || !(orphan = malloc( sizeof(*orphan) )))
++    {
++        shm_release( idx );
++        return;
++    }
++    orphan->index = idx;
++    orphan->type = type;
++    list_add_tail( &shm_orphans, &orphan->entry );
++}
++
++static struct inproc_sync *create_inproc_sync( enum inproc_sync_type type, unsigned int state, unsigned int aux )
++{
++    struct inproc_sync *sync;
++
++    if (!(sync = alloc_object( &inproc_sync_ops ))) return NULL;
++    sync->type = type;
++    list_init( &sync->entry );
++    if (!shm_alloc( type, state, aux, &sync->fd ))
++    {
++        set_error( STATUS_TOO_MANY_OPENED_FILES );
++        release_object( sync );
++        return NULL;
++    }
++    if (type == INPROC_SYNC_MUTEX) list_add_tail( &inproc_mutexes, &sync->entry );
++    return sync;
++}
++
++struct inproc_sync *create_inproc_internal_sync( int manual, int signaled )
++{
++    return create_inproc_sync( INPROC_SYNC_INTERNAL, signaled, manual );
++}
++
++struct inproc_sync *create_inproc_event_sync( int manual, int signaled )
++{
++    return create_inproc_sync( INPROC_SYNC_EVENT, signaled, manual );
++}
++
++struct inproc_sync *create_inproc_mutex_sync( thread_id_t owner, unsigned int count )
++{
++    return create_inproc_sync( INPROC_SYNC_MUTEX, owner, count );
++}
++
++struct inproc_sync *create_inproc_semaphore_sync( unsigned int initial, unsigned int max )
++{
++    return create_inproc_sync( INPROC_SYNC_SEMAPHORE, initial, max );
++}
++
++static void inproc_sync_dump( struct object *obj, int verbose )
++{
++    struct inproc_sync *sync = (struct inproc_sync *)obj;
++    struct cidre_sync_slot *slot = &shm_slots[sync->fd];
++    assert( obj->ops == &inproc_sync_ops );
++    fprintf( stderr, "Inproc sync type=%d, slot=%d state=%u aux=%u waiters=%u\n", sync->type, sync->fd,
++             __atomic_load_n( &slot->state, __ATOMIC_SEQ_CST ), slot->aux, slot->waiters );
++}
++
++void signal_inproc_sync( struct inproc_sync *sync )
++{
++    struct cidre_sync_slot *slot = &shm_slots[sync->fd];
++    if (debug_level) fprintf( stderr, "set_inproc_event %d\n", sync->fd );
++    if (!__atomic_exchange_n( &slot->state, 1, __ATOMIC_SEQ_CST )) shm_wake( slot, slot->aux != 0 );
++}
++
++void reset_inproc_sync( struct inproc_sync *sync )
++{
++    struct cidre_sync_slot *slot = &shm_slots[sync->fd];
++    if (debug_level) fprintf( stderr, "reset_inproc_event %d\n", sync->fd );
++    __atomic_store_n( &slot->state, 0, __ATOMIC_SEQ_CST );
++}
++
++static int inproc_sync_signal( struct object *obj, unsigned int access, int signal )
++{
++    struct inproc_sync *sync = (struct inproc_sync *)obj;
++    assert( obj->ops == &inproc_sync_ops );
++
++    assert( sync->type == INPROC_SYNC_INTERNAL || sync->type == INPROC_SYNC_EVENT ); /* never called for mutex / semaphore */
++    assert( signal == 0 || signal == 1 ); /* never called from signal_object */
++
++    if (signal) signal_inproc_sync( sync );
++    else reset_inproc_sync( sync );
++    return 1;
++}
++
++static void inproc_sync_destroy( struct object *obj )
++{
++    struct inproc_sync *sync = (struct inproc_sync *)obj;
++    assert( obj->ops == &inproc_sync_ops );
++    list_remove( &sync->entry );
++    shm_retire( sync->fd, sync->type );
++}
++
++static void shm_abandon_mutex( struct cidre_sync_slot *slot, thread_id_t tid )
++{
++    unsigned int owner = tid;
++
++    if (__atomic_load_n( &slot->state, __ATOMIC_SEQ_CST ) != tid) return;
++    slot->aux = 0;
++    __atomic_or_fetch( &slot->flags, CIDRE_SYNC_ABANDONED, __ATOMIC_SEQ_CST );
++    if (__atomic_compare_exchange_n( &slot->state, &owner, 0, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST ))
++        shm_wake( slot, 0 );
++}
++
++void abandon_inproc_mutexes( thread_id_t tid )
++{
++    struct inproc_sync *mutex;
++    struct shm_orphan *orphan;
++
++    LIST_FOR_EACH_ENTRY( mutex, &inproc_mutexes, struct inproc_sync, entry )
++        shm_abandon_mutex( &shm_slots[mutex->fd], tid );
++    LIST_FOR_EACH_ENTRY( orphan, &shm_orphans, struct shm_orphan, entry )
++        if (orphan->type == INPROC_SYNC_MUTEX) shm_abandon_mutex( &shm_slots[orphan->index], tid );
++}
++
++static int get_obj_inproc_sync( struct object *obj, int *type )
++{
++    struct object *sync;
++    int fd = -1;
++
++    if (!(sync = get_obj_sync( obj ))) return -1;
++    if (sync->ops == &inproc_sync_ops)
++    {
++        struct inproc_sync *inproc = (struct inproc_sync *)sync;
++        *type = inproc->type;
++        fd = inproc->fd;
++    }
++
++    release_object( sync );
++    return fd;
++}
++
++/* repond au client : pas de descripteur, l'index et la generation de la case */
++void send_inproc_sync_fd( struct process *process, int fd, obj_handle_t handle,
++                          unsigned int *shm_index, unsigned int *shm_generation )
++{
++    *shm_index = fd;
++    *shm_generation = __atomic_load_n( &shm_slots[fd].generation, __ATOMIC_SEQ_CST );
++}
++
++/* le client va garder ce jeton dans son cache : il le rendra (refs--) quand il le lachera */
++void add_inproc_sync_client_ref( int fd )
++{
++    __atomic_add_fetch( &shm_slots[fd].refs, 1, __ATOMIC_SEQ_CST );
++}
++
+ #else /* NTSYNC_IOC_EVENT_READ */
+ 
+ int get_inproc_device_fd(void)
+@@ -272,6 +624,18 @@ static int get_obj_inproc_sync( struct object *obj, int *type )
+     return -1;
+ }
+ 
++
++/* send the fd to the client (never reached without inproc syncs) */
++void send_inproc_sync_fd( struct process *process, int fd, obj_handle_t handle,
++                          unsigned int *shm_index, unsigned int *shm_generation )
++{
++    send_client_fd( process, fd, handle );
++}
++
++void add_inproc_sync_client_ref( int fd )
++{
++}
++
+ #endif /* NTSYNC_IOC_EVENT_READ */
+ 
+ DECL_HANDLER(get_inproc_sync_fd)
+@@ -284,7 +648,11 @@ DECL_HANDLER(get_inproc_sync_fd)
+     reply->access = get_handle_access( current->process, req->handle );
+ 
+     if ((fd = get_obj_inproc_sync( obj, &reply->type )) < 0) set_error( STATUS_NOT_IMPLEMENTED );
+-    else send_client_fd( current->process, fd, req->handle );
++    else
++    {
++        add_inproc_sync_client_ref( fd );
++        send_inproc_sync_fd( current->process, fd, req->handle, &reply->shm_index, &reply->shm_generation );
++    }
+ 
+     release_object( obj );
+ }
+diff --git a/server/object.h b/server/object.h
+index 3c19d150..ac95ffdc 100644
+--- a/server/object.h
++++ b/server/object.h
+@@ -270,6 +270,9 @@ extern struct inproc_sync *create_inproc_mutex_sync( thread_id_t owner, unsigned
+ extern void abandon_inproc_mutexes( thread_id_t owner );
+ extern void signal_inproc_sync( struct inproc_sync *sync );
+ extern void reset_inproc_sync( struct inproc_sync *sync );
++extern void send_inproc_sync_fd( struct process *process, int fd, obj_handle_t handle,
++                                 unsigned int *shm_index, unsigned int *shm_generation );
++extern void add_inproc_sync_client_ref( int fd );
+ 
+ /* serial functions */
+ 
+diff --git a/server/protocol.def b/server/protocol.def
+index 59aaa22b..718a8522 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -4230,6 +4230,8 @@ enum inproc_sync_type
+ @REPLY
+     int           type;         /* inproc sync type */
+     unsigned int access;        /* handle access rights */
++    unsigned int shm_index;     /* macOS : index de la case partagee (aucun fd envoye) */
++    unsigned int shm_generation;/* macOS : generation de la case */
+ @END
+ 
+ 
+@@ -4237,6 +4239,8 @@ enum inproc_sync_type
+ @REQ(get_inproc_alert_fd)
+ @REPLY
+     obj_handle_t handle;        /* alert fd is in flight with this handle */
++    unsigned int shm_index;     /* macOS : index de la case d'alerte du fil (aucun fd envoye) */
++    unsigned int shm_generation;/* macOS : generation de la case */
+ @END
+ 
+ 
+diff --git a/server/request_handlers.h b/server/request_handlers.h
+index 950b1bb9..fa2ae901 100644
+--- a/server/request_handlers.h
++++ b/server/request_handlers.h
+@@ -2332,10 +2332,14 @@ C_ASSERT( offsetof(struct get_inproc_sync_fd_request, handle) == 12 );
+ C_ASSERT( sizeof(struct get_inproc_sync_fd_request) == 16 );
+ C_ASSERT( offsetof(struct get_inproc_sync_fd_reply, type) == 8 );
+ C_ASSERT( offsetof(struct get_inproc_sync_fd_reply, access) == 12 );
+-C_ASSERT( sizeof(struct get_inproc_sync_fd_reply) == 16 );
++C_ASSERT( offsetof(struct get_inproc_sync_fd_reply, shm_index) == 16 );
++C_ASSERT( offsetof(struct get_inproc_sync_fd_reply, shm_generation) == 20 );
++C_ASSERT( sizeof(struct get_inproc_sync_fd_reply) == 24 );
+ C_ASSERT( sizeof(struct get_inproc_alert_fd_request) == 16 );
+ C_ASSERT( offsetof(struct get_inproc_alert_fd_reply, handle) == 8 );
+-C_ASSERT( sizeof(struct get_inproc_alert_fd_reply) == 16 );
++C_ASSERT( offsetof(struct get_inproc_alert_fd_reply, shm_index) == 12 );
++C_ASSERT( offsetof(struct get_inproc_alert_fd_reply, shm_generation) == 16 );
++C_ASSERT( sizeof(struct get_inproc_alert_fd_reply) == 24 );
+ C_ASSERT( offsetof(struct d3dkmt_object_create_request, type) == 12 );
+ C_ASSERT( offsetof(struct d3dkmt_object_create_request, fd) == 16 );
+ C_ASSERT( offsetof(struct d3dkmt_object_create_request, value) == 20 );
+diff --git a/server/request_trace.h b/server/request_trace.h
+index f6acb476..0a232e64 100644
+--- a/server/request_trace.h
++++ b/server/request_trace.h
+@@ -3413,6 +3413,8 @@ static void dump_get_inproc_sync_fd_reply( const struct get_inproc_sync_fd_reply
+ {
+     fprintf( stderr, " type=%d", req->type );
+     fprintf( stderr, ", access=%08x", req->access );
++    fprintf( stderr, ", shm_index=%08x", req->shm_index );
++    fprintf( stderr, ", shm_generation=%08x", req->shm_generation );
+ }
+ 
+ static void dump_get_inproc_alert_fd_request( const struct get_inproc_alert_fd_request *req )
+@@ -3422,6 +3424,8 @@ static void dump_get_inproc_alert_fd_request( const struct get_inproc_alert_fd_r
+ static void dump_get_inproc_alert_fd_reply( const struct get_inproc_alert_fd_reply *req )
+ {
+     fprintf( stderr, " handle=%04x", req->handle );
++    fprintf( stderr, ", shm_index=%08x", req->shm_index );
++    fprintf( stderr, ", shm_generation=%08x", req->shm_generation );
+ }
+ 
+ static void dump_d3dkmt_object_create_request( const struct d3dkmt_object_create_request *req )
+diff --git a/server/thread.c b/server/thread.c
+index bdf48c4b..26f83fbd 100644
+--- a/server/thread.c
++++ b/server/thread.c
+@@ -2383,6 +2383,6 @@ DECL_HANDLER(get_inproc_alert_fd)
+     else
+     {
+         reply->handle = get_thread_id( current ) | 1; /* arbitrary token */
+-        send_client_fd( current->process, fd, reply->handle );
++        send_inproc_sync_fd( current->process, fd, reply->handle, &reply->shm_index, &reply->shm_generation );
+     }
+ }
