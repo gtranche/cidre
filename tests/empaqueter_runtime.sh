@@ -83,9 +83,16 @@ for f in etape2_pile_arm64ec.sh lancer_depuis_steam.sh brancher_jeux_steam.sh \
          installer_agent_steam.sh preparer_pont_steam_arm64.sh sync_saves_steam.sh \
          installer_fex.sh profil_cidre.sh cidre_install.sh compte_steam.sh \
          majs_steam.awk brancher_jeux_steam.awk configurer_cidre.sh langue_jeu.sh \
-         installer_steamcmd.sh installer_client_steam_windows.sh diagnostic_cidre.sh; do
+         installer_steamcmd.sh installer_client_steam_windows.sh diagnostic_cidre.sh \
+         fiche_profil.sh reglages_jeu.sh; do
    livrer "tests/$f"
 done
+# La base de profils par jeu (profils/README.md) : la copie livree, repli de
+# `cidre profils maj` quand il n'y a pas de reseau. lancer_depuis_steam.sh et
+# profil_cidre.sh la lisent en $R/profils/ (apres le cache telecharge).
+FICHES=$(git -C "$R" ls-files profils 2>/dev/null)
+[ -n "$FICHES" ] || FICHES=$(ls "$R"/profils/* | sed "s#^$R/##")
+for f in $FICHES; do livrer "$f"; done
 # La CLI `cidre` : le contrat que pilote Verger (list/info --json, play, dl, sync).
 livrer cidre
 cp -R "$R/tests/outils_fenetre" "$STAGE/tests/" 2>/dev/null || true

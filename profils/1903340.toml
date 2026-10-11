@@ -1,0 +1,55 @@
+# Clair Obscur: Expedition 33 (Unreal Engine 5, D3D11). Mesure sur M1 Max,
+# reglages du jeu au maximum, zone d'ouverture :
+#   - sans rien : ~5 min de chargement, 4 images/s, puis 0,6 quand la scene
+#     se charge de dessins indirects ;
+#   - async + 6 fils : dans l'intro en ~2 min 40 (la compilation des pipelines
+#     quitte le fil de commandes de DXVK) ;
+#   - garde_index = false : 15 images/s au meme endroit. Le fil de commandes ne
+#     lance plus une passe de calcul par dessin indirect ; il reste limite par
+#     la carte graphique. Image verifiee par le joueur sur cette zone seulement.
+# Le 2026-10-11, avec le prereglage Moyen du jeu et la resolution a 66 % :
+#   DXVK (d3d11 = "dxvk") : menu 12 fps, jeu 4 ; DXMT (d3d11 = "dxmt") : menu 90, jeu 38-43.
+[jeu]
+appid = 1903340
+nom = "Clair Obscur: Expedition 33"
+exe = "Expedition33_Steam.exe"
+moteur = "unreal"
+api = "d3d11"
+bits = 64
+anticheat = "none"
+lanceur = "steam"
+
+[cidre]
+async = true
+fils_compilation = 6
+garde_index = false
+
+# Prereglage Moyen (tous les sg.*Quality a 1) et resolution a 66 % : x2,5 mesure.
+# Pose une fois par le lanceur ; l'utilisateur est libre ensuite (voir README).
+[reglages_jeu]
+fichier = "AppData/Local/Sandfall/Saved/Config/Windows/GameUserSettings.ini"
+format = "ini"
+section = "ScalabilityGroups"
+[reglages_jeu.valeurs]
+"sg.ResolutionQuality" = "66"
+"sg.ViewDistanceQuality" = "1"
+"sg.AntiAliasingQuality" = "1"
+"sg.ShadowQuality" = "1"
+"sg.GlobalIlluminationQuality" = "1"
+"sg.ReflectionQuality" = "1"
+"sg.PostProcessQuality" = "1"
+"sg.TextureQuality" = "1"
+"sg.EffectsQuality" = "1"
+"sg.FoliageQuality" = "1"
+"sg.ShadingQuality" = "1"
+"sg.LandscapeQuality" = "1"
+
+[compat]
+etat = "argent"
+source = "cidre-test"
+date = "2026-10-11"
+machine = "M1 Max 32 Go"
+cidre_version = "1.5.0"
+fps_menu = 90
+fps_jeu = 40
+notes = "DXMT (d3d11 = dxmt), prereglage Moyen + resolution 66 % : menu 90 fps, jeu 38-43. DXVK au meme endroit : menu 12, jeu 4. Overlay Steam coupe en DXMT (fige la presentation)."

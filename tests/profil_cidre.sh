@@ -1,7 +1,10 @@
 #!/bin/sh
-# Resout le profil de lancement d'un jeu : les reglages livres
-# (outil-steam/profils.toml) surcharges par ceux de l'utilisateur
-# (~/Library/Application Support/Cidre/profils.toml, ecrit par Verger).
+# Resout le profil de lancement d'un jeu : les reglages generaux livres
+# (outil-steam/profils.toml, [defaut]), la fiche du jeu dans la base de profils
+# (profils/<appid>.toml, section [cidre] ; cache telecharge par `cidre profils
+# maj`, sinon copie livree -- cf. profils/README.md et tests/fiche_profil.sh),
+# surcharges par ceux de l'utilisateur (~/Library/Application Support/Cidre/
+# profils.toml, ecrit par `cidre set` et Verger).
 #
 #   profil_cidre.sh <id> [env|json|perso]
 #   profil_cidre.sh <id> set <cle> <valeur>     ecrit un reglage utilisateur
@@ -11,8 +14,8 @@
 # json          : un objet {"cle": valeur, ...}
 # perso         : en JSON, les seuls reglages que l'utilisateur a poses sur ce jeu
 #
-# Priorite, cle par cle : [appid] utilisateur > [appid] livre > [defaut]
-# utilisateur > [defaut] livre. Un fichier absent n'est pas une erreur.
+# Priorite, cle par cle : [appid] utilisateur > fiche de la base ([cidre]) >
+# [defaut] utilisateur > [defaut] livre. Un fichier absent n'est pas une erreur.
 set -u
 R=$(cd "$(dirname "$0")/.." && pwd)
 APPID=${1:-}; FORMAT=${2:-env}
@@ -61,9 +64,17 @@ case $FORMAT in set|unset)
    exit ;;
 esac
 
-for f in "$LIVRE" "$PERSO"; do [ -f "$f" ] && cat "$f"; printf '\n#@fichier-suivant\n'; done |
-awk -v appid="$APPID" -v format="$FORMAT" '
-   # rang d une valeur : 2 si elle vient de la section du jeu, +1 si du fichier utilisateur
+# Trois fichiers a la suite : les reglages livres, la fiche du jeu dans la base de
+# profils (sa section [cidre], aplatie par fiche_profil.sh en une section [appid]),
+# le profil utilisateur. Le rang d une valeur : 2 si elle vient de la section du
+# jeu, +1 si elle vient du fichier utilisateur ; a rang egal, le dernier gagne.
+{
+   [ -f "$LIVRE" ] && cat "$LIVRE"; printf '\n#@fichier-suivant\n'
+   case $APPID in ''|defaut) ;; *) echo "[$APPID]"; sh "$R/tests/fiche_profil.sh" plat "$APPID" 2>/dev/null ;; esac
+   printf '\n#@fichier-suivant\n'
+   [ -f "$PERSO" ] && cat "$PERSO"; printf '\n#@fichier-suivant\n'
+} |
+awk -v appid="$APPID" -v format="$FORMAT" -v perso=2 '
    /^#@fichier-suivant$/ { fichier++; section = ""; next }
    { sub(/\r$/, "") }
    /^[ \t]*(#|$)/ { next }
@@ -88,7 +99,7 @@ awk -v appid="$APPID" -v format="$FORMAT" '
          }
          val = s; chaine = 1
       } else { sub(/[ \t]*(#.*)?$/, "", val); chaine = 0 }
-      rang = (section == "defaut" ? 0 : 2) + fichier
+      rang = (section == "defaut" ? 0 : 2) + (fichier == perso)
       if (!(cle in valeur)) ordre[++n] = cle
       if (!(cle in valeur) || rang >= rangde[cle]) { valeur[cle] = val; rangde[cle] = rang; estchaine[cle] = chaine }
    }

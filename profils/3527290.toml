@@ -1,0 +1,30 @@
+# PEAK (Unity 6 DX12). Le jeu exige le Feature Level 12.1. dx12 = true : on charge
+# vkd3d-proton arm64ec + annonce des caps FL 12.1 a KosmicKrisp (drapeau fl12). Le
+# DX12 FONCTIONNE (PEAK en D3D12 12.1, menu propre, 0 crash), MAIS le gameplay
+# freeze : fl12 annonce le sparse/tiled sans backend reel, et PEAK cree de vraies
+# tiled resources pour streamer ses textures -> non-residence silencieuse -> freeze.
+# Donc dx12 = false (D3D11 fluide, jouable) tant que le VRAI backend sparse Metal
+# (TiledResourcesTier2 reel) n'est pas ecrit dans KosmicKrisp. Repasser a true quand
+# ce sera fait. La conservative raster feinte, elle, ne gene pas.
+[jeu]
+appid = 3527290
+nom = "PEAK"
+exe = "PEAK.exe"
+moteur = "unity"
+api = "d3d12"
+bits = 64
+anticheat = "none"
+lanceur = "steam"
+
+[cidre]
+dx12 = false
+
+[compat]
+etat = "bronze"
+source = "cidre-test"
+date = "2026-10-05"
+machine = "M1 Max 32 Go"
+cidre_version = ""
+fps_menu = 0
+fps_jeu = 12
+notes = "Tourne en D3D11 (repli), 8-15 fps : GPU-bound KosmicKrisp -> Metal. Le vrai D3D12 (dx12 = true) fige en jeu (tiled resources)."

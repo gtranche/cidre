@@ -1,0 +1,26 @@
+# Dead Cells (HashLink/SDL2, binaire 32 bits). CPU/traduction-bound (GPU ~20-25 %,
+# inoccupe) : mesure en jeu 75 fps -> 110 fps avec tso off (+47 %), chargement
+# aussi bien plus rapide. Peu sensible aux courses en pratique, teste lisse. Si
+# bug, tso = true.
+[jeu]
+appid = 588650
+nom = "Dead Cells"
+exe = "deadcells.exe"
+moteur = "hashlink"
+api = "opengl"
+bits = 32
+anticheat = "none"
+lanceur = "steam"
+
+[cidre]
+tso = false
+
+[compat]
+etat = "or"
+source = "cidre-test"
+date = "2026-09-20"
+machine = "M1 Max 32 Go"
+cidre_version = ""
+fps_menu = 0
+fps_jeu = 110
+notes = "75 fps par defaut, 110 avec tso = false. DRM Valve porte, plein ecran OK."

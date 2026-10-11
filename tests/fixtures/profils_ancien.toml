@@ -1,0 +1,165 @@
+# Options de lancement par jeu -- donnee, pas exception dans le code.
+#
+# Lu par tests/profil_cidre.sh (donc par lancer_depuis_steam.sh et `cidre info`).
+# Ce fichier porte les reglages LIVRES avec Cidre. L'utilisateur (ou Verger) les
+# surcharge dans ~/Library/Application Support/Cidre/profils.toml, meme format.
+#
+# Priorite, cle par cle, du plus fort au plus faible :
+#   environnement explicite (CIDRE_TSO=0...)  >  [appid] utilisateur
+#   >  [appid] livre  >  [defaut] utilisateur  >  [defaut] livre
+#
+# Sous-ensemble de TOML volontairement plat : des sections [defaut] et [<appid>],
+# des lignes `cle = valeur` (true/false, entier, ou "chaine"). Rien d'autre.
+#
+#   langue           langue du jeu : "auto" (suivre macOS et Steam, ne rien forcer)
+#                    ou un code : fr, en, de, es, it, pt, ru, pl, ja, ko, zh. Pose
+#                    la locale Windows (LC_ALL) et, pour les jeux de la table
+#                    outil-steam/langues.conf, leur fichier de reglages.
+#   journal_detaille laisse Wine ecrire ses messages d'erreur dans le journal du jeu
+#                    (WINEDEBUG=err+all), au lieu de le faire taire. Pour comprendre
+#                    un jeu qui ne demarre pas ; un peu plus lent, a couper ensuite.
+#   tso              emulation de l'ordre memoire x86 par FEX. false = gros gain
+#                    CPU (jusqu'a 3,7x mesure), risque de course sur du lock-free.
+#   vsync            false = syncInterval 0 (plus de plafond vblank ; tearing possible).
+#   hud              compteur fps + charge GPU a l'ecran (DXVK_HUD, MTL_HUD).
+#   overlay          overlay Steam en jeu (Maj+Tab, amis, succes, notifications) :
+#                    injecte la bibliotheque d'overlay du client Steam dans le jeu.
+#                    false pour un jeu qu'elle generait (jeu hors Steam : sans effet).
+#   async            compilation des pipelines en fond (DXVK gplasync) : tue le stutter.
+#   narrow_barriers  relache les barrieres de cloture d'encodeur KosmicKrisp vers
+#                    les vraies stages (au lieu de ALL->ALL) : laisse les passes
+#                    GPU se recouvrir. Gain en scene chargee (GPU-bound) ; nul en
+#                    scene legere. Valide sur VT2 (stable, image correcte) ;
+#                    prudent ailleurs -> defaut false.
+#   garde_index      garde de KosmicKrisp contre les lectures hors limites d'un
+#                    tampon d'index (ses contournements 12 et 13). true = sur, mais
+#                    chaque dessin indexe indirect coupe la passe de rendu : un
+#                    moteur qui dessine tout en indirect (Unreal Engine 5) s'effondre.
+#                    false seulement pour un jeu ou l'image a ete verifiee sans.
+#   fils_compilation nombre de fils compilateurs DXVK ; 0 = defaut DXVK (tous les coeurs).
+#   eac_untrusted    ajoute -eac-untrusted (realm « Modded » ; EAC en ligne = mur).
+#   luajit           fenetre basse 64 bits pour LuaJIT (PROTON_OUVERT_LUAJIT).
+#   plein_ecran      vrai plein ecran macOS (Space) auto quand le jeu couvre
+#                    l'ecran : couvre l'encoche, laisse macOS scaler une
+#                    resolution plus basse pour remplir, et autorise le Game Mode.
+#   gamemode         force le macOS Game Mode (gamepolicyctl set on, sans sudo) au
+#                    lancement et le rend a auto a la sortie ; n'a d'effet qu'en
+#                    vrai plein ecran, donc avec plein_ecran = true.
+#   dx12             vrai D3D12 via vkd3d-proton arm64ec (installe en system32,
+#                    force d3d12=n). false (defaut) = d3d12 builtin de Wine, qui
+#                    retombe en D3D11/DXVK. KosmicKrisp plafonne au FL 12.0 : un
+#                    jeu qui exige FL 12.1 (ex. PEAK) reste en D3D11 meme a true.
+#   d3d11            rendu Direct3D 11 : "dxvk" (defaut : DXVK -> Vulkan ->
+#                    KosmicKrisp -> Metal, deux sauts) ou "dxmt" (DXMT : D3D11 ->
+#                    Metal en un saut, builtins Wine remplaces au lancement par
+#                    ceux de DXMT). Mesure sur Expedition 33 : x3 a x4. Avec
+#                    "dxmt", l'overlay Steam est COUPE pour ce lancement : sa
+#                    bibliotheque fige la presentation DXMT a la premiere image.
+#   metalfx          agrandissement MetalFX spatial x2 de la sortie (DXMT seulement,
+#                    sans effet en dxvk) : le jeu rend a la taille du bureau en points
+#                    (1728x1117 sur un 14 pouces), MetalFX produit les pixels physiques
+#                    au lieu de l'agrandissement flou de CoreAnimation. Mesure sur
+#                    Expedition 33 : -3 fps au menu, -2 a -4 fps en jeu. Rester en
+#                    fenetre sans bordure : le plein ecran exclusif donne un ecran noir.
+#
+# --- base de compatibilite par jeu (inspiree des recettes CrossOver, cf.
+#     VEILLE_CROSSOVER.md). dll_overrides et windows_version sont APPLIQUES par le
+#     lanceur ; les autres sont des donnees (pour Verger / `cidre info --json` et
+#     les tests). Regle d'autorite : nos tests Cidre (source "cidre-test") priment
+#     sur WineHQ AppDB, qui prime sur la base CrossOver -- donnees, jamais
+#     executees a l'aveugle. ---
+#   windows_version  version de Windows du prefixe si le jeu l'exige : win7, winxp...
+#                    (win10 par defaut, non force). Applique via winecfg au lancement.
+#   dll_overrides    overrides DLL propres au jeu, format Wine "a,b=n;c=b" (n natif,
+#                    b builtin, = disable). Ajoutes aux overrides par defaut. APPLIQUE.
+#   dependances      redistribuables requis, verbes facon winetricks separes par des
+#                    espaces (ex. "vcrun2022 dotnet48"). Pour l'installeur (a venir).
+#   moteur           moteur du jeu : unity, unreal, hashlink, stingray, godot...
+#   anticheat        none, eac, battleye, denuvo. eac/battleye EN LIGNE = mur.
+#   etat             compat testee ICI : or (parfait), argent (jouable, limites),
+#                    bronze (demarre, perf/bugs), ko (non), non-teste.
+#   source           origine de la fiche : cidre-test (verifie ici, fait autorite),
+#                    winehq, crossover.
+
+[defaut]
+langue = "auto"
+journal_detaille = false
+tso = true
+vsync = true
+hud = false
+overlay = true
+async = false
+narrow_barriers = false
+garde_index = true
+fils_compilation = 0
+eac_untrusted = false
+luajit = false
+plein_ecran = true
+gamemode = true
+dx12 = false
+d3d11 = "dxvk"
+metalfx = false
+
+# DREDGE (Unity). Mesure en jeu : 40 fps defaut -> 69 avec vsync off (la vsync
+# FIFO perd un vblank et plafonne a 40) -> 84 en ajoutant TSO off (peu threade,
+# risque de course faible et teste lisse). Si bug/plantage, remettre tso = true.
+[1562430]
+vsync = false
+tso = false
+moteur = "unity"
+anticheat = "none"
+etat = "or"
+source = "cidre-test"
+
+# Warhammer: Vermintide 2. LuaJIT veut la fenetre basse (sinon plantage au boot).
+# Fils compilateurs limites : a 10 (tous les coeurs) le gros chargement du Donjon
+# affame le fil principal 16 s et le chien de garde du jeu tue le process.
+[552500]
+luajit = true
+async = true
+narrow_barriers = true
+fils_compilation = 4
+eac_untrusted = true
+moteur = "stingray"
+anticheat = "eac"
+etat = "argent"
+source = "cidre-test"
+
+# Dead Cells (HashLink/SDL2). CPU/traduction-bound (GPU ~20-25%, inoccupe) :
+# mesure en jeu 75 fps -> 110 fps avec tso off (+47%), chargement aussi bien plus
+# rapide. Peu sensible aux courses en pratique, teste lisse. Si bug, tso = true.
+[588650]
+tso = false
+moteur = "hashlink"
+anticheat = "none"
+etat = "or"
+source = "cidre-test"
+
+# PEAK (Unity 6 DX12). Le jeu exige le Feature Level 12.1. dx12 = true : on charge
+# vkd3d-proton arm64ec + annonce des caps FL 12.1 a KosmicKrisp (drapeau fl12). Le
+# DX12 FONCTIONNE (PEAK en D3D12 12.1, menu propre, 0 crash), MAIS le gameplay
+# freeze : fl12 annonce le sparse/tiled sans backend reel, et PEAK cree de vraies
+# tiled resources pour streamer ses textures -> non-residence silencieuse -> freeze.
+# Donc dx12 = false (D3D11 fluide, jouable) tant que le VRAI backend sparse Metal
+# (TiledResourcesTier2 reel) n'est pas ecrit dans KosmicKrisp. Repasser a true quand
+# ce sera fait. La conservative raster feinte, elle, ne gene pas.
+[3527290]
+dx12 = false
+moteur = "unity"
+anticheat = "none"
+etat = "bronze"
+source = "cidre-test"
+
+# Clair Obscur: Expedition 33 (Unreal Engine 5, tourne en D3D11 par DXVK).
+# Mesure sur M1 Max, reglages du jeu au maximum, zone d'ouverture :
+#   - sans rien : ~5 min de chargement, 4 images/s, puis 0,6 quand la scene
+#     se charge de dessins indirects ;
+#   - async + 6 fils : dans l'intro en ~2 min 40 (la compilation des pipelines
+#     quitte le fil de commandes de DXVK) ;
+#   - garde_index = false : 15 images/s au meme endroit. Le fil de commandes ne
+#     lance plus une passe de calcul par dessin indirect ; il reste limite par
+#     la carte graphique. Image verifiee par le joueur sur cette zone seulement.
+[1903340]
+async = true
+fils_compilation = 6
+garde_index = false

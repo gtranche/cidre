@@ -1,0 +1,29 @@
+# Index de la base de profils : une table par fiche (nom, etat, date).
+# Genere par `sh tests/fiche_profil.sh generer-index > profils/index.toml` ;
+# tests/tester_profils.sh verifie qu'il est a jour. C'est lui que `cidre profils maj`
+# telecharge d'abord, pour savoir quelles fiches prendre.
+
+[1562430]
+nom = "DREDGE"
+etat = "or"
+date = "2026-09-20"
+
+[1903340]
+nom = "Clair Obscur: Expedition 33"
+etat = "argent"
+date = "2026-10-11"
+
+[3527290]
+nom = "PEAK"
+etat = "bronze"
+date = "2026-10-05"
+
+[552500]
+nom = "Warhammer: Vermintide 2"
+etat = "argent"
+date = "2026-09-28"
+
+[588650]
+nom = "Dead Cells"
+etat = "or"
+date = "2026-09-20"

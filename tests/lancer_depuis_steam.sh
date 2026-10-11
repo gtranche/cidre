@@ -35,9 +35,11 @@ if ! pgrep -f '[v]ermintide2.exe' >/dev/null 2>&1; then
    sleep 1
 fi
 
-# Profil du jeu : options de lancement par appid, en donnees. Reglages livres
-# dans outil-steam/profils.toml, surcharges par l'utilisateur (ou Verger) dans
-# ~/Library/Application Support/Cidre/profils.toml. cf. tests/profil_cidre.sh.
+# Profil du jeu : options de lancement par appid, en donnees. Reglages generaux
+# livres dans outil-steam/profils.toml ([defaut]), fiche du jeu dans la base de
+# profils (profils/<appid>.toml, [cidre]), surcharges par l'utilisateur (ou
+# Verger) dans ~/Library/Application Support/Cidre/profils.toml.
+# cf. tests/profil_cidre.sh et profils/README.md.
 # Un jeu hors Steam n'a pas d'appid : `cidre play` donne son id dans CIDRE_JEU.
 JEU=${CIDRE_JEU:-${SteamAppId:-}}
 PROFIL=$(sh "$R/tests/profil_cidre.sh" "$JEU" 2>/dev/null || true)
@@ -421,6 +423,22 @@ if [ "$(opt gamemode CIDRE_GAME_MODE)" = true ] && [ -n "$GAMEPOLICYCTL" ]; then
       trap '"$GAMEPOLICYCTL" game-mode set auto >>"$JOURNAL" 2>&1 || true' EXIT INT TERM
    else
       echo "    game mode : gamepolicyctl a echoue, on laisse l'auto" >>"$JOURNAL"
+   fi
+fi
+
+# Reglages du jeu lui-meme ([reglages_jeu] de sa fiche dans la base de profils,
+# cf. profils/README.md) : un jeu qui n'est jouable qu'avec ses propres options
+# baissees (Expedition 33 : prereglage Moyen + resolution 66 %, x2,5). Poses une
+# fois, apres la restauration des sauvegardes (qui peut ramener ce fichier
+# d'iCloud) : des qu'ils sont ecrits -- ou deja en place -- on le note dans le
+# profil utilisateur (reglages_jeu_appliques = true) et on n'y touche plus,
+# l'utilisateur est libre de regler son jeu. Si le fichier n'existe pas encore
+# (premier lancement), on reessaie la fois suivante. Jamais bloquant.
+if [ -n "$JEU" ] && [ "$(profil reglages_jeu_appliques)" != true ]; then
+   sh "$R/tests/reglages_jeu.sh" "$JEU" >>"$JOURNAL" 2>&1 && RCR=0 || RCR=$?
+   if [ "$RCR" -eq 0 ]; then
+      sh "$R/tests/profil_cidre.sh" "$JEU" set reglages_jeu_appliques true >>"$JOURNAL" 2>&1 \
+         && echo "    reglages du jeu : notes comme appliques (cidre unset $JEU reglages_jeu_appliques pour les reposer)" >>"$JOURNAL" || true
    fi
 fi
 

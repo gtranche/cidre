@@ -152,6 +152,8 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
   cidre unset <id> [option]       revient au reglage livre (sans option : toutes)
                                   <id> = defaut : le reglage general, que suit tout jeu sans reglage propre
   cidre options [--json]          les reglages generaux
+  cidre profils [--json]          la base de profils par jeu (fiches : options, compatibilite, rapports)
+  cidre profils maj [--json]      met la base a jour depuis GitHub (sans reseau : la copie livree sert)
   cidre saves [<id>] [--json]     ou en est la synchro des sauvegardes (iCloud)
   cidre saves set <id> <dossier>  dire ou un jeu range ses sauvegardes (unset : revenir au reglage livre)
   cidre sync <id|all> [backup|restore]   sauvegarder vers iCloud, ou restaurer ce qui y est plus recent
@@ -207,7 +209,8 @@ case "$cmd" in
     opts=$(sh "$R/tests/profil_cidre.sh" "$id" json)
     [ -n "$(saves_ids | grep -x "$id")" ] && sv=true || sv=false
     if [ "$JSON" = oui ]; then
-      fiche_json "$id"; printf ',"sauvegardes":%s,"options":%s,"options_perso":%s}\n' "$sv" "$opts" "$(sh "$R/tests/profil_cidre.sh" "$id" perso)"
+      # "fiche" : la fiche de la base de profils (profils/README.md), ou null
+      fiche_json "$id"; printf ',"sauvegardes":%s,"options":%s,"options_perso":%s,"fiche":%s}\n' "$sv" "$opts" "$(sh "$R/tests/profil_cidre.sh" "$id" perso)" "$(sh "$R/tests/fiche_profil.sh" json "$id")"
     else
       echo "id          : $id"
       echo "nom         : $(nom "$id")"
@@ -217,6 +220,12 @@ case "$cmd" in
       t=$(champ "$id" SizeOnDisk); echo "taille      : $(( ${t:-0} / 1048576 )) Mo"
       echo "sauvegardes : $sv"
       echo "options     : $(sh "$R/tests/profil_cidre.sh" "$id" | tr '\n' ' ')"
+      f=$(sh "$R/tests/fiche_profil.sh" chemin "$id")
+      if [ -n "$f" ]; then
+        echo "fiche       : $f"
+        echo "compat      : $(sh "$R/tests/fiche_profil.sh" toml "$f" | awk -F"\t" '$1 == "compat" && $2 != "notes" { printf "%s=%s  ", $2, $4 }')"
+        n=$(sh "$R/tests/fiche_profil.sh" toml "$f" | awk -F"\t" '$1 == "compat" && $2 == "notes" { print $4 }'); [ -z "$n" ] || echo "notes       : $n"
+      else echo "fiche       : aucune (cidre profils maj)"; fi
     fi ;;
   play|jouer)
     id=${1:?usage: cidre play <id>}
@@ -467,7 +476,7 @@ case "$cmd" in
     [ -n "$id" ] && [ -n "$cle" ] && [ -n "$val" ] || { echo "usage: cidre set <id|defaut> <option> <valeur>" >&2; exit 2; }
     [ "$id" = defaut ] || connu "$id" || { echo "jeu inconnu : $id" >&2; exit 1; }
     case $cle in
-      journal_detaille|tso|vsync|hud|overlay|async|narrow_barriers|garde_index|dx12|metalfx|eac_untrusted|luajit|plein_ecran|gamemode)
+      journal_detaille|tso|vsync|hud|overlay|async|narrow_barriers|garde_index|dx12|metalfx|eac_untrusted|luajit|plein_ecran|gamemode|reglages_jeu_appliques)
         case $val in true|false) ;; *) echo "$cle attend true ou false" >&2; exit 2 ;; esac ;;
       fils_compilation)
         case $val in ''|*[!0-9]*) echo "fils_compilation attend un entier (0 = defaut DXVK)" >&2; exit 2 ;; esac
@@ -480,7 +489,7 @@ case "$cmd" in
         # une chaine : ecrite entre guillemets dans le profil (TOML)
         case $val in auto|fr|en|de|es|it|pt|ru|pl|ja|ko|zh) val="\"$val\"" ;;
           *) echo "langue attend auto ou un code : fr, en, de, es, it, pt, ru, pl, ja, ko, zh" >&2; exit 2 ;; esac ;;
-      *) echo "option inconnue : $cle (journal_detaille, tso, vsync, hud, overlay, async, narrow_barriers, garde_index, dx12, d3d11, metalfx, fils_compilation, eac_untrusted, luajit, plein_ecran, gamemode, langue)" >&2; exit 2 ;;
+      *) echo "option inconnue : $cle (journal_detaille, tso, vsync, hud, overlay, async, narrow_barriers, garde_index, dx12, d3d11, metalfx, fils_compilation, eac_untrusted, luajit, plein_ecran, gamemode, langue, reglages_jeu_appliques)" >&2; exit 2 ;;
     esac
     CIDRE_PROFILS=${CIDRE_PROFILS:-$CIDRE_DIR/profils.toml} sh "$R/tests/profil_cidre.sh" "$id" set "$cle" "$val" ;;
   unset)
@@ -496,6 +505,20 @@ case "$cmd" in
     else
       sh "$R/tests/profil_cidre.sh" defaut
     fi ;;
+  profils|profiles)
+    # La base de profils par jeu (profils/README.md) : la lister (cache
+    # telecharge, sinon copie livree), ou la mettre a jour depuis GitHub main.
+    case ${1:-} in
+      maj|update)
+        if [ "$JSON" = oui ]; then sh "$R/tests/fiche_profil.sh" maj json; else sh "$R/tests/fiche_profil.sh" maj; fi ;;
+      '')
+        if [ "$JSON" = oui ]; then sh "$R/tests/fiche_profil.sh" index json
+        else
+          printf "%-10s %-32s %-9s %-11s %s\n" APPID JEU ETAT DATE ORIGINE
+          sh "$R/tests/fiche_profil.sh" index | awk -F'\t' '{ printf "%-10s %-32.32s %-9s %-11s %s\n", $1, $2, $3, $4, $5 }'
+        fi ;;
+      *) echo "usage: cidre profils [maj] [--json]" >&2; exit 2 ;;
+    esac ;;
   session)
     # La session est-elle memorisee ? On le demande a SteamCMD, sans jamais
     # tenter de mot de passe (code 3 = non).
