@@ -1,0 +1,276 @@
+dxmt : compteurs par image du fil appelant, silencieux, actives par DXMT_COUNTERS
+
+Pour chiffrer ce que le RenderThread fait dans DXMT avant et apres chaque
+correctif (profil du 2026-10-11 : d3d11.dll = 9,8 % du fil, et un appel
+D3D11 depuis le code emule coute une transition FEX complete), on compte par
+image, sur le fil appelant seulement, sans atomique ni journal par appel :
+
+  appels D3D11       entrees dans le verrou du device (toutes les methodes du
+                     contexte immediat y passent, protege ou non)
+  commandes          lambdas emises vers l'encodeur (CommandChunk::emitcc)
+  GetData            appels, dont ceux repondus S_FALSE (en attente)
+  flush GetData      Flush() implicites declenches par GetData (event_stall)
+  tampons de commandes  Commit par image (command_buffer_count, existant)
+  copies hote        appels Unix updateContents faits par UpdateSubresource
+                     (un par ligne de texture quand les pitchs different)
+
+Rien ne change sans DXMT_COUNTERS dans l'environnement ; avec, une ligne
+WARN toutes les 1000 images et une a la destruction de la file (moyennes par
+image). Les champs s'ajoutent a FrameStatistics (deja remis a zero par image
+dans PresentBoundary) ; le cumul se fait dans PresentBoundary, sur le fil qui
+presente. Le HUD debug (-Ddxmt_debug) n'est pas touche.
+
+--- a/src/dxmt/dxmt_statistics.hpp
++++ b/src/dxmt/dxmt_statistics.hpp
+@@ -50,6 +50,12 @@
+   uint32_t blit_pass_count = 0;
+   uint32_t event_stall = 0;
+   uint32_t latency = 0;
++  /* Compteurs du fil appelant (voir CommandQueue::ReportCounters). */
++  uint32_t api_call_count = 0;
++  uint32_t command_count = 0;
++  uint32_t getdata_count = 0;
++  uint32_t getdata_pending_count = 0;
++  uint32_t host_copy_count = 0;
+   clock::duration encode_prepare_interval{};
+   clock::duration encode_flush_interval{};
+   clock::duration drawable_blocking_interval{};
+@@ -72,6 +78,11 @@
+     blit_pass_count = 0;
+     event_stall = 0;
+     latency = 0;
++    api_call_count = 0;
++    command_count = 0;
++    getdata_count = 0;
++    getdata_pending_count = 0;
++    host_copy_count = 0;
+     encode_prepare_interval = {};
+     encode_flush_interval = {};
+     drawable_blocking_interval = {};
+--- a/src/dxmt/dxmt_command_queue.hpp
++++ b/src/dxmt/dxmt_command_queue.hpp
+@@ -99,10 +99,13 @@
+   void *
+   allocate_cpu_heap(size_t size, size_t alignment);
+ 
++  void count_command();
++
+   template <CommandWithContext<ArgumentEncodingContext> F>
+   void
+   emitcc(F &&func) {
+     list_enc.emit(std::forward<F>(func), allocate_cpu_heap(list_enc.calculateCommandSize<F>(), 16));
++    count_command();
+   }
+ 
+   void
+@@ -166,6 +169,23 @@
+   CpuFence cpu_coherent;
+   CpuFence frame_latency_fence_;
+   std::atomic_bool stopped;
++
++  /* Compteurs cumules du fil appelant, actives par DXMT_COUNTERS (vides dans
++     le journal toutes les kCounterReportInterval images et a la destruction). */
++  struct {
++    uint64_t frames = 0;
++    uint64_t api_calls = 0;
++    uint64_t commands = 0;
++    uint64_t getdata = 0;
++    uint64_t getdata_pending = 0;
++    uint64_t event_stall = 0;
++    uint64_t command_buffers = 0;
++    uint64_t host_copies = 0;
++  } counters_;
++  bool counters_enabled_ = false;
++  static constexpr uint64_t kCounterReportInterval = 1000;
++  void AccumulateCounters(const FrameStatistics &frame);
++  void ReportCounters(const char *why);
+ 
+   std::array<CommandChunk, kCommandChunkCount> chunks;
+   uint64_t encoder_seq = 1;
+@@ -260,6 +280,8 @@
+   void
+   PresentBoundary() {
+     statistics.compute(frame_count);
++    if (unlikely(counters_enabled_))
++      AccumulateCounters(statistics.at(frame_count));
+     frame_count++;
+     statistics.at(frame_count).reset();
+     // After present N-th frame (N starts from 1), wait for (N - max_latency)-th frame to finish rendering 
+--- a/src/dxmt/dxmt_command_queue.cpp
++++ b/src/dxmt/dxmt_command_queue.cpp
+@@ -33,6 +33,39 @@
+   return queue->AllocateCommandData(size, alignment);
+ }
+ 
++void
++CommandChunk::count_command() {
++  queue->CurrentFrameStatistics().command_count++;
++}
++
++void
++CommandQueue::AccumulateCounters(const FrameStatistics &frame) {
++  counters_.frames++;
++  counters_.api_calls += frame.api_call_count;
++  counters_.commands += frame.command_count;
++  counters_.getdata += frame.getdata_count;
++  counters_.getdata_pending += frame.getdata_pending_count;
++  counters_.event_stall += frame.event_stall;
++  counters_.command_buffers += frame.command_buffer_count;
++  counters_.host_copies += frame.host_copy_count;
++  if (counters_.frames % kCounterReportInterval == 0)
++    ReportCounters("periodique");
++}
++
++void
++CommandQueue::ReportCounters(const char *why) {
++  if (!counters_enabled_ || !counters_.frames)
++    return;
++  auto n = counters_.frames;
++  WARN(
++      "DXMT_COUNTERS (", why, ") ", n, " images, par image : appels D3D11=", counters_.api_calls / n,
++      " commandes=", counters_.commands / n, " GetData=", counters_.getdata / n,
++      " (en attente=", counters_.getdata_pending / n, ") flush GetData=", counters_.event_stall / n,
++      " tampons de commandes=", counters_.command_buffers / n, " copies hote (appels Unix)=",
++      counters_.host_copies / n
++  );
++}
++
+ CommandQueue::CommandQueue(WMT::Device device) :
+     encodeThread([this]() { this->EncodingThread(); }),
+     finishThread([this]() { this->WaitForFinishThread(); }),
+@@ -62,6 +95,8 @@
+   };
+   event = device.newSharedEvent();
+ 
++  counters_enabled_ = !env::getEnvVar("DXMT_COUNTERS").empty();
++
+   std::string env = env::getEnvVar("DXMT_CAPTURE_FRAME");
+ 
+   if (!env.empty()) {
+@@ -74,6 +109,7 @@
+ 
+ CommandQueue::~CommandQueue() {
+   TRACE("Destructing command queue");
++  ReportCounters("sortie");
+   stopped.store(true);
+   ready_for_encode++;
+   ready_for_encode.notify_one();
+--- a/src/d3d11/d3d11_multithread.hpp
++++ b/src/d3d11/d3d11_multithread.hpp
+@@ -12,10 +12,19 @@
+   bool set_protected(bool Protected);
+   bool get_protected();
+ 
++  /* Nombre d'entrees depuis le dernier releve : chaque methode du contexte
++     immediat passe ici une fois, protege ou non. Simple compteur, pas atomique. */
++  uint32_t take_call_count() {
++    uint32_t ret = calls_;
++    calls_ = 0;
++    return ret;
++  }
++
+ private:
+   bool protected_ = false;
+   std::atomic_uint32_t owner_ = 0;
+   uint32_t counter_ = 0;
++  uint32_t calls_ = 0;
+ };
+ 
+ class D3D11Multithread : public ID3D11Multithread {
+--- a/src/d3d11/d3d11_multithread.cpp
++++ b/src/d3d11/d3d11_multithread.cpp
+@@ -7,6 +7,7 @@
+ namespace dxmt {
+ 
+ void d3d11_device_mutex::lock() {
++  calls_++;
+   if (!protected_)
+     return;
+   uint32_t tid = dxmt::this_thread::get_id();
+--- a/src/d3d11/d3d11_context_imm.cpp
++++ b/src/d3d11/d3d11_context_imm.cpp
+@@ -50,6 +50,12 @@
+ std::tuple<WMT::Buffer, uint64_t>
+ ImmediateContextBase::AllocateStagingBuffer(size_t size, size_t alignment) {
+   return ctx_state.cmd_queue.AllocateStagingBuffer(size, alignment);
++}
++
++template <>
++void
++ImmediateContextBase::CountHostCopies(uint32_t n) {
++  ctx_state.cmd_queue.CurrentFrameStatistics().host_copy_count += n;
+ }
+ 
+ template <>
+@@ -469,8 +475,12 @@
+       ERR("Unknown query type ", desc.Query);
+       return E_FAIL;
+     }
++    auto &frame_stats = cmd_queue.CurrentFrameStatistics();
++    frame_stats.getdata_count++;
++    if (hr == S_FALSE)
++      frame_stats.getdata_pending_count++;
+     if (hr == S_FALSE && (GetDataFlags & D3D11_ASYNC_GETDATA_DONOTFLUSH) == 0) {
+-      cmd_queue.CurrentFrameStatistics().event_stall++;
++      frame_stats.event_stall++;
+       Flush();
+     }
+     return hr;
+--- a/src/d3d11/d3d11_context_def.cpp
++++ b/src/d3d11/d3d11_context_def.cpp
+@@ -54,6 +54,10 @@
+ DeferredContextBase::AllocateStagingBuffer(size_t size, size_t alignment) {
+   return ctx_state.current_cmdlist->AllocateStagingBuffer(size, alignment);
+ }
++
++template <>
++void
++DeferredContextBase::CountHostCopies(uint32_t) {}
+ 
+ template <>
+ void DeferredContextBase::UseCopyDestination(Rc<StagingResource> &staging) {
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -1243,6 +1243,7 @@
+       } else if (auto bindable = GetResourceCommon(pDstResource)) {
+         auto [staging_buffer, offset] = AllocateStagingBuffer(copy_len, 16);
+         staging_buffer.updateContents(offset, pSrcData, copy_len);
++        CountHostCopies(1);
+         SwitchToBlitEncoder(CommandBufferState::UpdateBlitEncoderActive);
+         EmitOP([staging_buffer, offset, dst = bindable->buffer(), copy_offset, copy_len](ArgumentEncodingContext &enc) {
+           auto [dst_buffer, dst_offset] = enc.access(dst, copy_offset, copy_len, ResourceAccess::Write);
+@@ -3280,6 +3281,8 @@
+   template <typename T> moveonly_list<T> AllocateCommandData(size_t n = 1);
+ 
+   std::tuple<WMT::Buffer, uint64_t> AllocateStagingBuffer(size_t size, size_t alignment);
++
++  void CountHostCopies(uint32_t n);
+   void UseCopyDestination(Rc<StagingResource> &);
+   void UseCopySource(Rc<StagingResource> &);
+ 
+@@ -4225,6 +4228,7 @@
+           const char *src = ((const char *)pSrcData) + depthSlice * SrcDepthPitch;
+           staging_buffer.updateContents(dst_offset, src, bytes_per_depth_slice);
+         }
++        CountHostCopies(cmd.DstSize.depth);
+       } else {
+         for (unsigned depthSlice = 0; depthSlice < cmd.DstSize.depth; depthSlice++) {
+           for (unsigned row = 0; row < cmd.EffectiveRows; row++) {
+@@ -4233,6 +4237,7 @@
+             staging_buffer.updateContents(dst_offset, src,  cmd.EffectiveBytesPerRow);
+           }
+         }
++        CountHostCopies(cmd.DstSize.depth * cmd.EffectiveRows);
+       }
+       SwitchToBlitEncoder(CommandBufferState::UpdateBlitEncoderActive);
+       EmitOP([staging_buffer, offset, dst = std::move(dst), cmd = std::move(cmd),
+--- a/src/d3d11/d3d11_swapchain.cpp
++++ b/src/d3d11/d3d11_swapchain.cpp
+@@ -773,6 +773,7 @@
+                  preferred_max_frame_rate ? 1.0 / preferred_max_frame_rate : 0);
+ 
+     auto &cmd_queue = device_->GetDXMTDevice().queue();
++    cmd_queue.CurrentFrameStatistics().api_call_count += device_->mutex.take_call_count();
+     auto chunk = cmd_queue.CurrentChunk();
+     chunk->signal_frame_latency_fence_ = cmd_queue.CurrentFrameSeq();
+     if (target_) {

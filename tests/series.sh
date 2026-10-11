@@ -29,7 +29,7 @@ serie_wine11() {
       "$R"/0093-wine11-*.patch "$R"/0094-wine11-*.patch "$R"/0095-wine11-*.patch \
       "$R"/0096-wine11-*.patch "$R"/0097-wine11-*.patch \
       "$R"/0098-wine11-*.patch "$R"/0100-wine11-*.patch \
-      "$R"/0102-wine11-*.patch 2>/dev/null
+      "$R"/0102-wine11-*.patch "$R"/0103-wine11-*.patch 2>/dev/null
 }
 
 serie_vkd3d_proton() {
@@ -41,4 +41,8 @@ serie_vkd3d_proton() {
 serie_dxvk() {
    ls "$R"/0039-*.patch "$R"/0042-*.patch "$R"/0043-*.patch \
       "$R"/0061-*.patch "$R"/0071-*.patch "$R"/0085-*.patch "$R"/0086-*.patch 2>/dev/null
+}
+
+serie_dxmt() {
+   ls "$R"/0110-dxmt-*.patch 2>/dev/null
 }

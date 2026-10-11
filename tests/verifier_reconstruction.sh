@@ -10,7 +10,7 @@ set -e
 R=$(cd "$(dirname "$0")/.." && pwd)
 . "$R/tests/series.sh"
 TMP=${TMPDIR:-/tmp}/reconstruction-$$
-trap 'rm -rf "$TMP"; for t in mesa wine wine11 vkd3d-proton dxvk; do
+trap 'rm -rf "$TMP"; for t in mesa wine wine11 vkd3d-proton dxvk dxmt; do
         git -C "$R/src/$t" worktree prune 2>/dev/null || true; done' EXIT
 mkdir -p "$TMP"
 rc=0
@@ -69,6 +69,7 @@ verifier wine $(serie_wine)
 verifier wine11 $(serie_wine11)
 verifier vkd3d-proton $(serie_vkd3d_proton)
 verifier dxvk $(serie_dxvk)
+verifier dxmt $(serie_dxmt)
 
 [ $rc -eq 0 ] && echo "RECONSTRUCTION VERIFIEE" || echo "RECONSTRUCTION INCOMPLETE"
 exit $rc
