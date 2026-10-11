@@ -41,11 +41,13 @@ fi
 # Un jeu hors Steam n'a pas d'appid : `cidre play` donne son id dans CIDRE_JEU.
 JEU=${CIDRE_JEU:-${SteamAppId:-}}
 PROFIL=$(sh "$R/tests/profil_cidre.sh" "$JEU" 2>/dev/null || true)
-# Une option : l'environnement explicite (0/1) garde la main, sinon le profil.
+# Une option : l'environnement explicite garde la main (0/1 pour un booleen,
+# la valeur telle quelle pour une option a choix, ex. CIDRE_D3D11=dxmt), sinon
+# le profil.
 profil() { printf '%s\n' "$PROFIL" | sed -n "s/^$1=//p" | head -1; }
 opt() { # <cle du profil> <variable d'environnement>
    eval "v=\${$2:-}"
-   case $v in 1) echo true; return ;; 0) echo false; return ;; esac
+   case $v in 1) echo true; return ;; 0) echo false; return ;; '') ;; *) echo "$v"; return ;; esac
    profil "$1"
 }
 dxvk_config() { export DXVK_CONFIG="${DXVK_CONFIG:+$DXVK_CONFIG;}$1"; }
@@ -222,6 +224,96 @@ if [ "$(head -c 2 "$DOSSIER/$PROG" 2>/dev/null)" != "MZ" ]; then
    echo "    pas un binaire Windows : lance tel quel, sans la pile" >>"$JOURNAL"
    cd "$DOSSIER"
    exec "./$PROG" "$@"
+fi
+
+# Rendu Direct3D 11 : d3d11 = "dxvk" (defaut) ou "dxmt" (CIDRE_D3D11=dxmt).
+# DXVK est un natif pose en system32 (dxgi,d3d11=n, cf. etape2). DXMT (D3D11 ->
+# Metal en un saut, x3 a x4 mesure sur Expedition 33) est bati comme des
+# builtins Wine : ses d3d11/dxgi/d3d10core/winemetal.dll vont dans
+# lib/wine/aarch64-windows, son unixlib winemetal.so dans aarch64-unix, et ils
+# se chargent avec =b -- ajoute apres le =n d'etape2, il gagne. Les builtins
+# Wine d'origine sont sauvegardes avant d'etre remplaces, et remis des qu'un
+# jeu se lance en dxvk : l'etat pose suit toujours l'option du jeu qu'on lance,
+# meme quand deux jeux s'enchainent avec des options differentes. Les binaires
+# viennent du runtime livre ($R/dxmt) ; sur la machine de dev, a defaut, de
+# src/dxmt/build. Remplacement par mv, jamais cp par-dessus : ecraser une
+# bibliotheque encore mappee par un jeu en cours tue ce jeu.
+D3D11=$(opt d3d11 CIDRE_D3D11)
+case $D3D11 in dxmt) ;; *) D3D11=dxvk ;; esac
+WINDLL=$R/wine/wine11-arm64/lib/wine/aarch64-windows
+WINUNIX=$R/wine/wine11-arm64/lib/wine/aarch64-unix
+SYS32=$WINEPREFIX/drive_c/windows/system32
+BUILTINS_WINE=$R/wine/.wine-builtin-backup
+DXMT_DLLS="d3d11 dxgi d3d10core"
+# Un builtin Wine ne contient pas la chaine « dxmt » ; ceux de DXMT, si. (grep
+# plutot que strings : sur un Mac sans outils de developpement, strings n'est
+# qu'un relais qui propose de les installer.)
+est_dxmt() { LC_ALL=C grep -q -a dxmt "$1" 2>/dev/null; }
+poser() { # <source> <destination> : copie seulement si different, remplacement atomique
+   cmp -s "$1" "$2" && return 0
+   cp -p "$1" "$2.cidre-tmp" && mv -f "$2.cidre-tmp" "$2"
+}
+source_dxmt() { # <fichier> : le runtime livre d'abord, le build de dev a defaut
+   case $1 in
+      d3d10core.dll) dev=d3d10/$1 ;; winemetal.so) dev=winemetal/unix/$1 ;;
+      winemetal.dll) dev=winemetal/$1 ;; *) dev=${1%.dll}/$1 ;;
+   esac
+   for cand in "$R/dxmt/$1" "$R/src/dxmt/build/src/$dev"; do
+      [ -f "$cand" ] && { echo "$cand"; return 0; }
+   done
+   return 1
+}
+if [ "$D3D11" = dxmt ]; then
+   for f in d3d11.dll dxgi.dll d3d10core.dll winemetal.dll winemetal.so; do
+      source_dxmt "$f" >/dev/null || {
+         echo "    d3d11 : dxmt demande mais $f introuvable (ni $R/dxmt ni src/dxmt/build) : on reste en dxvk" >>"$JOURNAL"
+         D3D11=dxvk; break
+      }
+   done
+fi
+if [ "$D3D11" = dxmt ]; then
+   for d in $DXMT_DLLS; do
+      if [ -f "$WINDLL/$d.dll" ] && ! est_dxmt "$WINDLL/$d.dll"; then
+         mkdir -p "$BUILTINS_WINE"
+         cp -p "$WINDLL/$d.dll" "$BUILTINS_WINE/$d.dll"
+      fi
+      poser "$(source_dxmt $d.dll)" "$WINDLL/$d.dll"
+   done
+   poser "$(source_dxmt winemetal.dll)" "$WINDLL/winemetal.dll"
+   poser "$(source_dxmt winemetal.so)"  "$WINUNIX/winemetal.so"
+   # une copie en system32 pour que le chargeur resolve l'import de d3d11.dll
+   [ -d "$SYS32" ] && poser "$(source_dxmt winemetal.dll)" "$SYS32/winemetal.dll"
+   DXMT_OV="dxgi,d3d11,d3d10core,winemetal=b"
+   case ";${CIDRE_DLL_OVERRIDES:-};" in
+      *";$DXMT_OV;"*) : ;;
+      *) export CIDRE_DLL_OVERRIDES="${CIDRE_DLL_OVERRIDES:+$CIDRE_DLL_OVERRIDES;}$DXMT_OV" ;;
+   esac
+   echo "    d3d11 : dxmt pose depuis $(dirname "$(source_dxmt d3d11.dll)") (builtins Wine gardes dans $BUILTINS_WINE)" >>"$JOURNAL"
+   # L'overlay Steam (gameoverlayrenderer.dylib) accroche presentDrawable: ; avec
+   # DXMT la premiere image s'affiche puis plus rien n'avance (verifie sur
+   # Expedition 33 le 2026-10-11). On le coupe pour ce lancement, quoi que dise
+   # l'option overlay.
+   if [ -n "$OVERLAY" ]; then
+      OVERLAY=
+      echo "    d3d11 : dxmt -> overlay Steam coupe pour ce lancement (sa bibliotheque fige la presentation DXMT)" >>"$JOURNAL"
+   fi
+   if [ "$(opt journal_detaille CIDRE_JOURNAL_DETAILLE)" = true ]; then
+      export DXMT_LOG_LEVEL=${DXMT_LOG_LEVEL:-info} DXMT_LOG_PATH="${DXMT_LOG_PATH:-$(dirname "$JOURNAL")/dxmt}"
+      mkdir -p "$DXMT_LOG_PATH"
+   fi
+else
+   # dxvk : si DXMT est encore pose par un lancement precedent, on remet les
+   # builtins Wine et on retire winemetal. Sinon rien a faire.
+   for d in $DXMT_DLLS; do
+      [ -f "$WINDLL/$d.dll" ] && est_dxmt "$WINDLL/$d.dll" || continue
+      if [ -f "$BUILTINS_WINE/$d.dll" ]; then
+         poser "$BUILTINS_WINE/$d.dll" "$WINDLL/$d.dll"
+         echo "    d3d11 : dxvk -> builtin Wine $d.dll remis (DXMT etait pose)" >>"$JOURNAL"
+      else
+         echo "    d3d11 : $d.dll est celui de DXMT et le builtin Wine n'a pas de sauvegarde : reinstaller le runtime (cidre setup)" >>"$JOURNAL"
+      fi
+   done
+   rm -f "$WINDLL/winemetal.dll" "$WINUNIX/winemetal.so" "$SYS32/winemetal.dll"
 fi
 
 # Journal detaille : par defaut on fait taire Wine (WINEDEBUG=-all), ce qui rend

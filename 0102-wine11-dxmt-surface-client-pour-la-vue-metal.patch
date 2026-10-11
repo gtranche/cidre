@@ -1,0 +1,200 @@
+wine11 : DXMT trouve une vue client meme sans swapchain Vulkan
+
+Dans Wine 11.18, la vue client Cocoa d'une fenetre (data->client_view)
+n'existe que si une surface client a ete creee pour elle par winevulkan ou
+OpenGL (macdrv_CreateClientSurface), puis presentee. DXMT ne passe pas par
+winevulkan : au premier get_win_data de la table macdrv_functions (0100), la
+fenetre n'a aucune vue client, view_create_metal_view(NULL) rend nil et DXMT
+abandonne avec « Failed to create metal view, it seems like your Wine has no
+exported symbols needed by DXMT » -- le message accuse les symboles, la cause
+est la vue absente.
+
+Le shim cree donc lui-meme la surface client, comme le ferait un swapchain
+Vulkan, et la garde tant que la fenetre vit. win32u ne suit que les surfaces
+de ses propres swapchains : on recadre les notres a chaque WindowPosChanged
+(client_surface_present, qui recalcule le cadre et le presente) et on les
+libere a DestroyWindow (detach dispose la vue et efface client_view).
+
+Ordre des verrous : surfaces DXMT -> surfaces win32u -> win_data ; les deux
+hooks de window.c sont appeles sans tenir le win_data.
+
+Generated-by: LLM
+
+diff --git a/dlls/winemac.drv/dxmt.c b/dlls/winemac.drv/dxmt.c
+--- a/dlls/winemac.drv/dxmt.c
++++ b/dlls/winemac.drv/dxmt.c
+@@ -55,11 +55,113 @@
+ 
+ #include <stddef.h>
+ #include <stdlib.h>
++#include <pthread.h>
+ 
+ #include "macdrv.h"
++#include "wine/list.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(macdrv);
+ 
++/*
++ * Dans Wine 11.18, la vue client Cocoa d'une fenetre (data->client_view)
++ * n'existe que si une surface client a ete creee pour elle (chemin
++ * winevulkan / OpenGL : macdrv_CreateClientSurface), puis presentee. DXMT ne
++ * passe pas par winevulkan : a son premier get_win_data la fenetre n'a aucune
++ * vue client, et view_create_metal_view(NULL) rend nil (« Failed to create
++ * metal view »). On cree donc nous-memes la surface client, exactement comme
++ * le ferait un swapchain Vulkan, et on la garde en vie tant que la fenetre
++ * existe. win32u ne suit que les surfaces de ses propres swapchains : c'est
++ * a nous de la rafraichir quand la fenetre bouge (macdrv_WindowPosChanged) et
++ * de la liberer a la destruction (macdrv_DestroyWindow).
++ */
++struct dxmt_surface_entry
++{
++    struct list            entry;
++    HWND                   hwnd;
++    struct client_surface *surface;
++};
++
++static struct list dxmt_surfaces = LIST_INIT(dxmt_surfaces);
++static pthread_mutex_t dxmt_surfaces_mutex = PTHREAD_MUTEX_INITIALIZER;
++
++static WineContentView *dxmt_client_view(HWND hwnd)
++{
++    struct macdrv_win_data *data;
++    WineContentView *view = NULL;
++
++    if ((data = get_win_data(hwnd)))
++    {
++        view = data->client_view;
++        release_win_data(data);
++    }
++    return view;
++}
++
++/* Rend la vue client de la fenetre, en la creant si elle manque. A appeler
++ * sans tenir le verrou des win_data : la creation prend ce verrou. */
++static WineContentView *dxmt_ensure_client_view(HWND hwnd)
++{
++    struct client_surface *surface;
++    struct dxmt_surface_entry *e;
++    WineContentView *view;
++
++    if ((view = dxmt_client_view(hwnd))) return view;
++
++    /* Cree la vue, l'accroche a la fenetre et la montre (update + present). */
++    if (!(surface = macdrv_CreateClientSurface(hwnd, 0, TRUE))) return NULL;
++
++    if ((e = malloc(sizeof(*e))))
++    {
++        e->hwnd = hwnd;
++        e->surface = surface;
++        pthread_mutex_lock(&dxmt_surfaces_mutex);
++        list_add_tail(&dxmt_surfaces, &e->entry);
++        pthread_mutex_unlock(&dxmt_surfaces_mutex);
++    }
++    else client_surface_release(surface);
++
++    view = dxmt_client_view(hwnd);
++    TRACE("hwnd %p surface %p view %p\n", hwnd, surface, view);
++    return view;
++}
++
++/* La fenetre (ou sa fenetre de plus haut niveau) a bouge : recalculer le
++ * cadre de nos surfaces, comme win32u le fait pour les siennes. A appeler
++ * sans tenir le verrou des win_data. */
++void dxmt_window_pos_changed(HWND hwnd)
++{
++    struct dxmt_surface_entry *e;
++
++    if (list_empty(&dxmt_surfaces)) return;
++
++    pthread_mutex_lock(&dxmt_surfaces_mutex);
++    LIST_FOR_EACH_ENTRY(e, &dxmt_surfaces, struct dxmt_surface_entry, entry)
++    {
++        if (e->hwnd != hwnd && NtUserGetAncestor(e->hwnd, GA_ROOT) != hwnd) continue;
++        client_surface_present(e->surface);
++    }
++    pthread_mutex_unlock(&dxmt_surfaces_mutex);
++}
++
++/* La fenetre disparait : liberer nos surfaces (detach + destroy cote winemac,
++ * ce qui dispose la vue et efface data->client_view). */
++void dxmt_window_destroyed(HWND hwnd)
++{
++    struct dxmt_surface_entry *e, *next;
++
++    if (list_empty(&dxmt_surfaces)) return;
++
++    pthread_mutex_lock(&dxmt_surfaces_mutex);
++    LIST_FOR_EACH_ENTRY_SAFE(e, next, &dxmt_surfaces, struct dxmt_surface_entry, entry)
++    {
++        if (e->hwnd != hwnd) continue;
++        list_remove(&e->entry);
++        client_surface_release(e->surface);
++        free(e);
++    }
++    pthread_mutex_unlock(&dxmt_surfaces_mutex);
++}
++
+ /* Format attendu par DXMT (voir winemetal_unix.c). DXMT ne lit que
+  * client_cocoa_view (0x18) ; les autres champs existent pour respecter ce
+  * layout. */
+@@ -100,8 +202,13 @@
+     struct macdrv_win_data *data;
+     struct dxmt_macdrv_win_data *d;
+ 
++    WineContentView *client_view;
++
+     TRACE("hwnd %p\n", hwnd);
+ 
++    /* Avant de prendre le win_data : la creation de la vue le prend aussi. */
++    client_view = dxmt_ensure_client_view(hwnd);
++
+     data = get_win_data(hwnd);
+     if (!data) return NULL;
+ 
+@@ -110,7 +217,7 @@
+     {
+         d->hwnd              = data->hwnd;
+         d->cocoa_window      = data->cocoa_window;
+-        d->client_cocoa_view = data->client_view;   /* la vue lue par DXMT (0x18) */
++        d->client_cocoa_view = client_view;   /* la vue lue par DXMT (0x18) */
+     }
+ 
+     /* DXMT ne lit que la copie : relacher le win_data interne tout de suite
+diff --git a/dlls/winemac.drv/macdrv.h b/dlls/winemac.drv/macdrv.h
+--- a/dlls/winemac.drv/macdrv.h
++++ b/dlls/winemac.drv/macdrv.h
+@@ -203,6 +203,10 @@
+ extern BOOL macdrv_client_surface_acquire_metal_swapchain(struct macdrv_client_surface *surface);
+ 
+ extern struct macdrv_win_data *get_win_data(HWND hwnd);
++
++/* dxmt.c : surfaces client creees pour DXMT (pas de swapchain Vulkan) */
++extern void dxmt_window_pos_changed(HWND hwnd);
++extern void dxmt_window_destroyed(HWND hwnd);
+ extern void release_win_data(struct macdrv_win_data *data);
+ extern void init_win_context(void);
+ extern WineWindow *macdrv_get_cocoa_window(HWND hwnd, BOOL require_on_screen);
+diff --git a/dlls/winemac.drv/window.c b/dlls/winemac.drv/window.c
+--- a/dlls/winemac.drv/window.c
++++ b/dlls/winemac.drv/window.c
+@@ -1272,6 +1272,10 @@
+     struct macdrv_win_data *data;
+ 
+     TRACE("%p\n", hwnd);
++
++    /* Avant de prendre le win_data : la liberation des surfaces DXMT passe par
++     * leur detach, qui le prend aussi. */
++    dxmt_window_destroyed(hwnd);
+ 
+     if (!(data = get_win_data(hwnd))) return;
+ 
+@@ -1702,6 +1706,9 @@
+ 
+ done:
+     release_win_data(data);
++    /* Les surfaces client de DXMT ne sont pas suivies par win32u : les
++     * recadrer ici, apres avoir rendu le win_data. */
++    dxmt_window_pos_changed(hwnd);
+ }
+ 
+ 

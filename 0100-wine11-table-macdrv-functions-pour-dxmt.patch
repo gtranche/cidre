@@ -1,0 +1,178 @@
+wine11 : exposer la table macdrv_functions pour DXMT
+
+DXMT (3Shain/dxmt, D3D11->Metal direct, libre) peut presenter sur Cidre sans
+passer par DXVK/vkd3d -> KosmicKrisp. Son unixlib winemetal.so
+(_CreateMetalViewFromHWND) resout dlsym(RTLD_DEFAULT, "macdrv_functions"), une
+table de pointeurs du driver Mac ; il appelle get_win_data(hwnd), lit le seul
+champ win_data->client_cocoa_view (offset 0x18 de SA struct macdrv_win_data),
+cree la vue Metal via view_create_metal_view(cette vue, SON PROPRE MTLDevice),
+recupere la couche via view_get_metal_layer, puis release_win_data.
+
+Notre macdrv_win_data (11.18) a un layout different, d'ou ce pont : un nouveau
+fichier unix winemac.drv/dxmt.c expose la table macdrv_functions (seul symbole
+global) et un get_win_data qui renvoie une structure au format attendu par DXMT
+(hwnd, cocoa_window, cocoa_view, client_cocoa_view -- 4 pointeurs, 32 o) avec a
+l'offset 0x18 notre vue client (data->client_view, celle que winevulkan donne
+deja a DXVK). On relache le win_data interne tout de suite : DXMT ne lit que la
+copie. C_ASSERT verrouillent sizeof==32 (win_data), ==80 (table) et
+offsetof(client_cocoa_view)==0x18.
+
+L'interface (struct macdrv_win_data et struct macdrv_functions_t : ordre et
+nombre de champs) est reprise du depot open-source DXMT,
+src/winemetal/unix/winemetal_unix.c (Copyright (c) 2023-2026 Feifan He for
+CodeWeavers, LGPL 2.1). Aucune ligne derivee des sources CrossOver.
+L'implementation cote winemac est propre a Cidre. Ajoute dxmt.c aux SOURCES.
+
+--- aa/dlls/winemac.drv/dxmt.c
++++ bb/dlls/winemac.drv/dxmt.c
+@@ -0,0 +1,140 @@
++/*
++ * Pont winemac.drv -> DXMT (D3D11 -> Metal direct, libre)
++ *
++ * L'interface attendue cote driver Mac (struct macdrv_win_data et table
++ * macdrv_functions) est reprise du depot open-source DXMT :
++ *   3Shain/dxmt, src/winemetal/unix/winemetal_unix.c
++ *   Copyright (c) 2023-2026 Feifan He for CodeWeavers -- LGPL 2.1.
++ * L'implementation cote winemac (ce fichier) est ecrite pour Cidre a partir de
++ * cette interface et de notre propre macdrv_win_data (Wine 11.18). Aucune ligne
++ * derivee des sources CrossOver.
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++/*
++ * Cote DXMT (winemetal_unix.c, _CreateMetalViewFromHWND) : il resout
++ * dlsym(RTLD_DEFAULT, "macdrv_functions"), une table de pointeurs ; sinon il
++ * tombe sur des dlsym individuels. Puis il fait :
++ *     win_data = get_win_data(hwnd);
++ *     view     = macdrv_view_create_metal_view(win_data->client_cocoa_view,
++ *                                              son_propre_MTLDevice);
++ *     layer    = macdrv_view_get_metal_layer(view);
++ *     release_win_data(win_data);
++ * Le SEUL champ de win_data qu'il lit est client_cocoa_view, a l'offset 0x18 de
++ * SA definition de struct macdrv_win_data (hwnd, cocoa_window, cocoa_view,
++ * client_cocoa_view -- 4 pointeurs, 32 octets).
++ *
++ * Notre macdrv_win_data (Wine 11.18) a un layout different, donc on renvoie une
++ * structure au format attendu par DXMT, avec a l'offset 0x18 notre vue client
++ * (data->client_view : la meme vue WineContentView que winevulkan donne deja a
++ * DXVK). On relache tout de suite le win_data interne : DXMT ne lit que la
++ * copie, et la vue reste valide. Seul le symbole macdrv_functions est exporte ;
++ * les types opaques de DXMT (macdrv_view, macdrv_metal_device...) sont des
++ * pointeurs ABI-compatibles avec nos WineContentView, WineMetalView et
++ * id_MTLDevice, donc on cable directement les primitives Metal de winemac.
++ */
++
++#if 0
++#pragma makedep unix
++#endif
++
++#include "config.h"
++
++#include <stddef.h>
++#include <stdlib.h>
++
++#include "macdrv.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(macdrv);
++
++/* Format attendu par DXMT (voir winemetal_unix.c). DXMT ne lit que
++ * client_cocoa_view (0x18) ; les autres champs existent pour respecter ce
++ * layout. */
++struct dxmt_macdrv_win_data
++{
++    HWND              hwnd;               /* 0x00 */
++    WineWindow       *cocoa_window;       /* 0x08 */
++    WineContentView  *cocoa_view;         /* 0x10 */
++    WineContentView  *client_cocoa_view;  /* 0x18 <- data->client_view */
++};
++
++C_ASSERT(sizeof(struct dxmt_macdrv_win_data) == 32);
++C_ASSERT(offsetof(struct dxmt_macdrv_win_data, client_cocoa_view) == 0x18);
++
++/* Ordre et nombre de champs identiques a la struct macdrv_functions_t de DXMT
++ * (winemetal_unix.c), pour que les offsets dereferences par DXMT tombent juste :
++ * get_win_data 0x08, release_win_data 0x10, view_create_metal_view 0x30,
++ * view_get_metal_layer 0x38. Les champs que DXMT ne lit pas sont cables aux
++ * vraies fonctions winemac (ou NULL : init_display_devices, on_main_thread). */
++struct dxmt_macdrv_functions
++{
++    void                        *init_display_devices;                           /* 0x00 */
++    struct dxmt_macdrv_win_data *(*get_win_data)(HWND);                          /* 0x08 */
++    void                         (*release_win_data)(struct dxmt_macdrv_win_data *); /* 0x10 */
++    WineWindow                  *(*get_cocoa_window)(HWND, BOOL);                /* 0x18 */
++    id_MTLDevice                 (*create_metal_device)(void);                   /* 0x20 */
++    void                         (*release_metal_device)(id_MTLDevice);          /* 0x28 */
++    WineMetalView               *(*view_create_metal_view)(WineContentView *, id_MTLDevice); /* 0x30 */
++    CAMetalLayer                *(*view_get_metal_layer)(WineMetalView *);       /* 0x38 */
++    void                         (*view_release_metal_view)(WineMetalView *);    /* 0x40 */
++    void                        *on_main_thread;                                 /* 0x48 */
++};
++
++C_ASSERT(sizeof(struct dxmt_macdrv_functions) == 80);
++
++static struct dxmt_macdrv_win_data *dxmt_get_win_data(HWND hwnd)
++{
++    struct macdrv_win_data *data;
++    struct dxmt_macdrv_win_data *d;
++
++    TRACE("hwnd %p\n", hwnd);
++
++    data = get_win_data(hwnd);
++    if (!data) return NULL;
++
++    d = calloc(1, sizeof(*d));
++    if (d)
++    {
++        d->hwnd              = data->hwnd;
++        d->cocoa_window      = data->cocoa_window;
++        d->client_cocoa_view = data->client_view;   /* la vue lue par DXMT (0x18) */
++    }
++
++    /* DXMT ne lit que la copie : relacher le win_data interne tout de suite
++     * evite de tenir le verrou pendant view_create_metal_view, et la vue reste
++     * valide ensuite. */
++    release_win_data(data);
++    return d;
++}
++
++static void dxmt_release_win_data(struct dxmt_macdrv_win_data *d)
++{
++    TRACE("data %p\n", d);
++    free(d);
++}
++
++__attribute__((visibility("default")))
++struct dxmt_macdrv_functions macdrv_functions =
++{
++    .get_win_data            = dxmt_get_win_data,
++    .release_win_data        = dxmt_release_win_data,
++    .get_cocoa_window        = macdrv_get_cocoa_window,
++    .create_metal_device     = macdrv_create_metal_device,
++    .release_metal_device    = macdrv_release_metal_device,
++    .view_create_metal_view  = macdrv_view_create_metal_view,
++    .view_get_metal_layer    = macdrv_view_get_metal_layer,
++    .view_release_metal_view = macdrv_view_release_metal_view,
++};
+--- aa/dlls/winemac.drv/Makefile.in
++++ bb/dlls/winemac.drv/Makefile.in
+@@ -28,6 +28,7 @@
+ 	cocoa_window.m \
+ 	display.c \
+ 	dllmain.c \
++	dxmt.c \
+ 	event.c \
+ 	gdi.c \
+ 	image.c \
