@@ -5,8 +5,9 @@
 #   fiche_profil.sh chemin <appid>          le fichier de la fiche (cache, sinon copie livree) ; rien si aucune
 #   fiche_profil.sh plat <appid>            les options de lancement de la fiche, en lignes TOML `cle = valeur`
 #                                           ([cidre], plus moteur/anticheat de [jeu] et etat/source de [compat])
-#   fiche_profil.sh json <appid>            la fiche en JSON : {"jeu":{},"cidre":{},"compat":{},"reglages_jeu":{}|null,"rapports":n}
-#   fiche_profil.sh reglages <appid>        [reglages_jeu] en lignes TAB : fichier/format/section, puis `valeur <TAB> cle <TAB> val`
+#   fiche_profil.sh json <appid>            la fiche en JSON : {"jeu":{},"cidre":{},"compat":{},"reglages_jeu":[...],"rapports":n}
+#   fiche_profil.sh reglages <appid>        [reglages_jeu] en lignes TAB, une entree (section INI visee) par numero :
+#                                           `n TAB fichier|format|section TAB val`, puis `n TAB valeur TAB cle TAB val`
 #   fiche_profil.sh index [json]            l'index de la base : `appid <TAB> nom <TAB> etat <TAB> date <TAB> origine`
 #   fiche_profil.sh generer-index           regenere profils/index.toml depuis les fiches du depot (sur la sortie)
 #   fiche_profil.sh maj [json]              telecharge l'index puis les fiches dans le cache
@@ -65,7 +66,13 @@ toml_plat() {
       { sub(/\r$/, "") }
       /^[ \t]*(#|$)/ { next }
       /^[ \t]*\[\[/ { s = $0; gsub(/^[ \t]*\[\[[ \t]*|[ \t]*\]\].*$/, "", s); section = s "." (++tableau[s]); next }
-      /^[ \t]*\[/ { s = $0; gsub(/^[ \t]*\[[ \t]*|[ \t]*\].*$/, "", s); gsub(/"/, "", s); section = s; next }
+      /^[ \t]*\[/ {
+         s = $0; gsub(/^[ \t]*\[[ \t]*|[ \t]*\].*$/, "", s); gsub(/"/, "", s)
+         # [a.b] apres un [[a]] : la sous-table du dernier element, a.N.b
+         i = index(s, "."); t = i ? substr(s, 1, i - 1) : s
+         if (i && (t in tableau)) s = t "." tableau[t] substr(s, i)
+         section = s; next
+      }
       {
          cle = lire_cle($0, 1); j = POS
          while (j <= length($0) && substr($0, j, 1) ~ /[ \t]/) j++
@@ -114,6 +121,11 @@ toml_val() {
       *) printf '%s' "$2" ;;
    esac
 }
+# les sections de reglages d une fiche a plat : `reglages_jeu` (forme simple) ou
+# `reglages_jeu.1`, `reglages_jeu.2`... ([[reglages_jeu]]), dans l ordre
+reglages_entrees() { # <fichier a plat>
+   LC_ALL=C awk -F'\t' '$1 ~ /^reglages_jeu(\.[0-9]+)?$/ && !vu[$1]++ { print $1 }' "$1"
+}
 # un objet JSON depuis les lignes a plat d une section
 objet_json() { # <fichier a plat> <section>
    LC_ALL=C awk -F'\t' -v sec="$2" '
@@ -141,20 +153,35 @@ case $CMD in
       P=$(mktemp "${TMPDIR:-/tmp}/fiche.XXXXXX")
       toml_plat "$f" >"$P"
       printf '{"jeu":%s,"cidre":%s,"compat":%s,' "$(objet_json "$P" jeu)" "$(objet_json "$P" cidre)" "$(objet_json "$P" compat)"
-      if grep -q '^reglages_jeu	' "$P"; then
-         printf '"reglages_jeu":{"fichier":%s,"format":%s,"section":%s,"valeurs":%s},' \
-            "$(json_val s "$(awk -F'\t' '$1=="reglages_jeu" && $2=="fichier" {print $4; exit}' "$P")")" \
-            "$(json_val s "$(awk -F'\t' '$1=="reglages_jeu" && $2=="format" {print $4; exit}' "$P")")" \
-            "$(json_val s "$(awk -F'\t' '$1=="reglages_jeu" && $2=="section" {print $4; exit}' "$P")")" \
-            "$(objet_json "$P" reglages_jeu.valeurs)"
-      else printf '"reglages_jeu":null,'; fi
+      # "reglages_jeu" : toujours un tableau, une entree par section visee ([reglages_jeu]
+      # simple = une entree ; [[reglages_jeu]] = une par element), vide s il n y en a pas
+      printf '"reglages_jeu":['; sep=""
+      for e in $(reglages_entrees "$P"); do
+         printf '%s{"fichier":%s,"format":%s,"section":%s,"valeurs":%s}' "$sep" \
+            "$(json_val s "$(awk -F'\t' -v s="$e" '$1==s && $2=="fichier" {print $4; exit}' "$P")")" \
+            "$(json_val s "$(awk -F'\t' -v s="$e" '$1==s && $2=="format" {print $4; exit}' "$P")")" \
+            "$(json_val s "$(awk -F'\t' -v s="$e" '$1==s && $2=="section" {print $4; exit}' "$P")")" \
+            "$(objet_json "$P" "$e.valeurs")"
+         sep=","
+      done
+      printf '],'
       printf '"rapports":%s}\n' "$(awk -F'\t' '$1 ~ /^rapports\.[0-9]+$/ && !vu[$1]++ {n++} END {print n+0}' "$P")"
       rm -f "$P" ;;
    reglages)
+      # Une entree = une section INI visee : [reglages_jeu] simple (entree 1) ou
+      # chaque element d un [[reglages_jeu]]. Lignes `n TAB fichier|format|section
+      # TAB val` et `n TAB valeur TAB cle TAB val`.
       f=$(chemin "$ARG") || exit 0
-      toml_plat "$f" | LC_ALL=C awk -F'\t' '
-         $1 == "reglages_jeu" { print $2 "\t" $4 }
-         $1 == "reglages_jeu.valeurs" { print "valeur\t" $2 "\t" $4 }' ;;
+      P=$(mktemp "${TMPDIR:-/tmp}/fiche.XXXXXX")
+      toml_plat "$f" >"$P"
+      n=0
+      for e in $(reglages_entrees "$P"); do
+         n=$((n + 1))
+         LC_ALL=C awk -F'\t' -v s="$e" -v n="$n" '
+            $1 == s { print n "\t" $2 "\t" $4 }
+            $1 == s ".valeurs" { print n "\tvaleur\t" $2 "\t" $4 }' "$P"
+      done
+      rm -f "$P" ;;
    index)
       # L index du cache, sinon celui de la copie livree ; en texte TAB ou en JSON.
       for f in "$BASE/index.toml" "$LIVRE/index.toml"; do [ -f "$f" ] && break; done

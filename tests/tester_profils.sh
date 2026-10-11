@@ -54,9 +54,11 @@ verif "profils.toml : [defaut] toujours la" "[defaut]" "$(grep -x '\[defaut\]' "
 if sh "$R/tests/fiche_profil.sh" generer-index | cmp -s - "$R/profils/index.toml"; then ok "profils/index.toml a jour"
 else echec "profils/index.toml n'est pas a jour (sh tests/fiche_profil.sh generer-index > profils/index.toml)"; fi
 # la fiche d'Expedition 33 porte les reglages du jeu et la compat du 2026-10-11
-verif "1903340 : reglages_jeu sg.ResolutionQuality" "66" "$(sh "$R/tests/fiche_profil.sh" reglages 1903340 | awk -F'\t' '$2=="sg.ResolutionQuality"{print $3}')"
-verif "1903340 : 12 valeurs de reglages" "12" "$(sh "$R/tests/fiche_profil.sh" reglages 1903340 | grep -c '^valeur	')"
-verif "1903340 : compat fps_menu" "90" "$(sh "$R/tests/fiche_profil.sh" toml "$R/profils/1903340.toml" | awk -F'\t' '$1=="compat"&&$2=="fps_menu"{print $4}')"
+verif "1903340 : reglages_jeu sg.ShadowQuality (ScalabilityGroups)" "1" "$(sh "$R/tests/fiche_profil.sh" reglages 1903340 | awk -F"\t" "\$1==1 && \$3==\"sg.ShadowQuality\"{print \$4}")"
+verif "1903340 : sg.ResolutionQuality n est plus vise (le jeu le recalcule)" "" "$(sh "$R/tests/fiche_profil.sh" reglages 1903340 | grep sg.ResolutionQuality)"
+verif "1903340 : entree 2 = CurrentSelectedUpscalerQualityMode dans sa section" "/Script/SandFall.ConfigurableGameUserSettings" "$(sh "$R/tests/fiche_profil.sh" reglages 1903340 | awk -F"\t" "\$1==2 && \$2==\"section\"{print \$3}")"
+verif "1903340 : 12 valeurs de reglages (11 sg.* + le mode d upscaler)" "12" "$(sh "$R/tests/fiche_profil.sh" reglages 1903340 | grep -c "	valeur	")"
+verif "1903340 : compat fps_menu" "130" "$(sh "$R/tests/fiche_profil.sh" toml "$R/profils/1903340.toml" | awk -F'\t' '$1=="compat"&&$2=="fps_menu"{print $4}')"
 verif "1903340 : json rapports = 0" "0" "$(sh "$R/tests/fiche_profil.sh" json 1903340 | sed -n 's/.*"rapports":\([0-9]*\)}$/\1/p')"
 
 echo "== 2. priorite des couches"
@@ -105,9 +107,9 @@ verif "cache > copie livree (1903340 garde_index)" "true" "$(valeur 1903340 gard
 rm -f "$CIDRE_PROFILS_BASE/1903340.toml"
 # table en ligne, chaine avec guillemets echappes
 printf '[reglages_jeu]\nfichier = "x.ini"\nvaleurs = { "a.b" = "1", c = 2, "d" = "deux \\"mots\\"" }\n' >"$CIDRE_PROFILS_BASE/997.toml"
-verif "table en ligne : 3 valeurs" "3" "$(sh "$R/tests/fiche_profil.sh" reglages 997 | grep -c '^valeur	')"
-verif "table en ligne : cle nue" "2" "$(sh "$R/tests/fiche_profil.sh" reglages 997 | awk -F'\t' '$2=="c"{print $3}')"
-verif "table en ligne : guillemets echappes" 'deux "mots"' "$(sh "$R/tests/fiche_profil.sh" reglages 997 | awk -F'\t' '$2=="d"{print $3}')"
+verif "table en ligne : 3 valeurs" "3" "$(sh "$R/tests/fiche_profil.sh" reglages 997 | grep -c "	valeur	")"
+verif "table en ligne : cle nue" "2" "$(sh "$R/tests/fiche_profil.sh" reglages 997 | awk -F"\t" "\$3==\"c\"{print \$4}")"
+verif "table en ligne : guillemets echappes" 'deux "mots"' "$(sh "$R/tests/fiche_profil.sh" reglages 997 | awk -F"\t" "\$3==\"d\"{print \$4}")"
 verif "id de jeu douteux refuse" "" "$(sh "$R/tests/fiche_profil.sh" chemin '../profils/1903340')"
 
 echo "== 3. reglages du jeu sur un INI CRLF factice"
@@ -168,6 +170,33 @@ verif "fichier absent : code 3" "3" "$rc"
 verif "fichier absent : rien cree" "" "$(ls "$U/AppData/Local/Jeu/Config/" | grep Absent)"
 verif "jeu sans reglages : code 3" "3" "$(sh "$R/tests/reglages_jeu.sh" 998 >/dev/null; echo $?)"
 verif "chemin hors du dossier utilisateur refuse" "1" "$(printf '[reglages_jeu]\nfichier = "../../windows/x.ini"\nvaleurs = { "k" = "v" }\n' >"$CIDRE_PROFILS_BASE/999.toml"; sh "$R/tests/reglages_jeu.sh" 999 >/dev/null; echo $?)"
+
+# plusieurs sections visees ([[reglages_jeu]]) : chaque entree a son tour, une seule sauvegarde
+cp "$T/ini-origine" "$INI"; rm -f "$INI.avant-cidre"
+cat >"$CIDRE_PROFILS_BASE/999.toml" <<'FICHE'
+[[reglages_jeu]]
+fichier = "AppData/Local/Jeu/Config/GameUserSettings.ini"
+section = "ScalabilityGroups"
+[reglages_jeu.valeurs]
+"sg.ShadowQuality" = "1"
+[[reglages_jeu]]
+fichier = "AppData/Local/Jeu/Config/GameUserSettings.ini"
+section = "/Script/Engine.GameUserSettings"
+valeurs = { "CurrentSelectedUpscalerQualityMode" = "0", "sg.ShadowQuality" = "2" }
+[[reglages_jeu]]
+fichier = "AppData/Local/Jeu/Config/Absent.ini"
+valeurs = { "k" = "v" }
+FICHE
+verif "multi : json = 3 entrees" "3" "$(sh "$R/tests/fiche_profil.sh" json 999 | grep -o '"section":' | wc -l | tr -d ' ')"
+sortie=$(sh "$R/tests/reglages_jeu.sh" 999); rc=$?
+verif "multi : un fichier absent -> code 3 (on reessaiera), les autres posees" "3" "$rc"
+verif "multi : deux lignes « poses »" "2" "$(printf '%s\n' "$sortie" | grep -c poses)"
+verif "multi : section 1 posee" "sg.ShadowQuality=1 sg.ShadowQuality=2" "$(tr -d '\r' <"$INI" | grep '^sg.ShadowQuality=' | tr '\n' ' ' | sed 's/ $//')"
+verif "multi : cle ajoutee dans la 2e section" "CurrentSelectedUpscalerQualityMode=0" "$(tr -d '\r' <"$INI" | grep '^CurrentSelected')"
+verif "multi : une seule sauvegarde = origine" "" "$(cmp "$INI.avant-cidre" "$T/ini-origine" 2>&1)"
+verif "multi : CRLF partout" "$(wc -l <"$INI" | tr -d ' ')" "$(grep -c "$(printf '\r')\$" "$INI")"
+sortie=$(sh "$R/tests/reglages_jeu.sh" 999)
+verif "multi : relance = deja en place x2" "2" "$(printf '%s\n' "$sortie" | grep -c 'deja en place')"
 
 echo "== 4. marqueur reglages_jeu_appliques"
 verif "avant : pas de marqueur" "" "$(valeur 999 reglages_jeu_appliques)"

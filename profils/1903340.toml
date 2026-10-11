@@ -18,20 +18,24 @@ api = "d3d11"
 bits = 64
 anticheat = "none"
 lanceur = "steam"
-
 [cidre]
 async = true
 fils_compilation = 6
 garde_index = false
 
-# Prereglage Moyen (tous les sg.*Quality a 1) et resolution a 66 % : x2,5 mesure.
-# Pose une fois par le lanceur ; l'utilisateur est libre ensuite (voir README).
-[reglages_jeu]
+# Prereglage Moyen (tous les sg.*Quality a 1 ; le Bas est moche) et resolution a
+# 50 % (mode 0) : menu ~130 fps, jeu 50-55 en DXMT, mesure le 2026-10-11.
+# Poses une fois par le lanceur ; l'utilisateur est libre ensuite (voir README).
+# La resolution ne se regle PAS par sg.ResolutionQuality : le jeu la recalcule au
+# demarrage depuis CurrentSelectedUpscalerQualityMode (section
+# /Script/SandFall.ConfigurableGameUserSettings ; mesure le 2026-10-11 : mode 0 ->
+# 50, 1 -> 75, 2 -> 85, 3 -> 100). C'est cette cle que pose la 2e entree : 0,
+# le 50 % gagne nettement (decision du 2026-10-11 avec l'utilisateur).
+[[reglages_jeu]]
 fichier = "AppData/Local/Sandfall/Saved/Config/Windows/GameUserSettings.ini"
 format = "ini"
 section = "ScalabilityGroups"
 [reglages_jeu.valeurs]
-"sg.ResolutionQuality" = "66"
 "sg.ViewDistanceQuality" = "1"
 "sg.AntiAliasingQuality" = "1"
 "sg.ShadowQuality" = "1"
@@ -44,12 +48,18 @@ section = "ScalabilityGroups"
 "sg.ShadingQuality" = "1"
 "sg.LandscapeQuality" = "1"
 
+[[reglages_jeu]]
+fichier = "AppData/Local/Sandfall/Saved/Config/Windows/GameUserSettings.ini"
+format = "ini"
+section = "/Script/SandFall.ConfigurableGameUserSettings"
+valeurs = { "CurrentSelectedUpscalerQualityMode" = "0" }
+
 [compat]
 etat = "argent"
 source = "cidre-test"
 date = "2026-10-11"
 machine = "M1 Max 32 Go"
 cidre_version = "1.5.0"
-fps_menu = 90
-fps_jeu = 40
-notes = "DXMT (d3d11 = dxmt), prereglage Moyen + resolution 66 % : menu 90 fps, jeu 38-43. DXVK au meme endroit : menu 12, jeu 4. Overlay Steam coupe en DXMT (fige la presentation)."
+fps_menu = 130
+fps_jeu = 52
+notes = "DXMT (d3d11 = dxmt), prereglage Moyen + resolution 50 % (CurrentSelectedUpscalerQualityMode=0) : menu ~130 fps, jeu 50-55. A 66 % : menu 90, jeu 38-43. DXVK au meme endroit (66 %) : menu 12, jeu 4. Overlay Steam coupe en DXMT (fige la presentation)."
