@@ -55,6 +55,12 @@
 #                    ceux de DXMT). Mesure sur Expedition 33 : x3 a x4. Avec
 #                    "dxmt", l'overlay Steam est COUPE pour ce lancement : sa
 #                    bibliotheque fige la presentation DXMT a la premiere image.
+#   metalfx          agrandissement MetalFX spatial x2 de la sortie (DXMT seulement,
+#                    sans effet en dxvk) : le jeu rend a la taille du bureau en points
+#                    (1728x1117 sur un 14 pouces), MetalFX produit les pixels physiques
+#                    au lieu de l'agrandissement flou de CoreAnimation. Mesure sur
+#                    Expedition 33 : -3 fps au menu, -2 a -4 fps en jeu. Rester en
+#                    fenetre sans bordure : le plein ecran exclusif donne un ecran noir.
 #
 # --- base de compatibilite par jeu (inspiree des recettes CrossOver, cf.
 #     VEILLE_CROSSOVER.md). dll_overrides et windows_version sont APPLIQUES par le
@@ -92,6 +98,7 @@ plein_ecran = true
 gamemode = true
 dx12 = false
 d3d11 = "dxvk"
+metalfx = false
 
 # DREDGE (Unity). Mesure en jeu : 40 fps defaut -> 69 avec vsync off (la vsync
 # FIFO perd un vblank et plafonne a 40) -> 84 en ajoutant TSO off (peu threade,

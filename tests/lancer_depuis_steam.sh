@@ -297,6 +297,13 @@ if [ "$D3D11" = dxmt ]; then
       OVERLAY=
       echo "    d3d11 : dxmt -> overlay Steam coupe pour ce lancement (sa bibliotheque fige la presentation DXMT)" >>"$JOURNAL"
    fi
+   # metalfx = true : MetalFX spatial x2 sur la sortie (drawable aux pixels physiques
+   # au lieu de l'agrandissement CoreAnimation). Sans bordure seulement : le plein
+   # ecran exclusif change le mode d'affichage et donne un ecran noir.
+   if [ "$(opt metalfx CIDRE_METALFX)" = true ]; then
+      export DXMT_METALFX_SPATIAL_SWAPCHAIN=1
+      echo "    d3d11 : dxmt -> MetalFX spatial x2 sur la sortie" >>"$JOURNAL"
+   fi
    if [ "$(opt journal_detaille CIDRE_JOURNAL_DETAILLE)" = true ]; then
       export DXMT_LOG_LEVEL=${DXMT_LOG_LEVEL:-info} DXMT_LOG_PATH="${DXMT_LOG_PATH:-$(dirname "$JOURNAL")/dxmt}"
       mkdir -p "$DXMT_LOG_PATH"
