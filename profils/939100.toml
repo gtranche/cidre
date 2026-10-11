@@ -1,0 +1,47 @@
+# Darksburg -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 939100
+nom = "Darksburg"
+plateformes_steam = "windows"
+moteur = "hashlink"
+moteur_nom = "Heaps"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "moderate"
+rapports = 14
+score = 78
+lanceurs_signales = "steam:2"
+lanceur_secondaire = "non:1"
+rapports_export = 14
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/939100"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "steam:steamapps/common/Darksburg/options.ini"
+sauvegardes = "steam:steamapps/common/Darksburg/playerprofile.json"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Darksburg"

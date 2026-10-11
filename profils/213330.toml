@@ -1,0 +1,35 @@
+# LEGO® Batman™ 2: DC Super Heroes -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 213330
+nom = "LEGO® Batman™ 2: DC Super Heroes"
+plateformes_steam = "windows"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 75
+score = 65
+lanceurs_signales = "steam:53 notListed:2"
+options_lancement_1 = "PROTON_USE_WINED3D=1 %command% (x1)"
+options_lancement_2 = "DXVK_ASYNC=1 gamemoderun %command% (x1)"
+options_lancement_3 = "MANGOHUD_CONFIG=read_cfg,fps_limit=60 mangohud game-performance %command% (x1)"
+lanceur_secondaire = "non:18"
+verdicts_recents = "yes:15"
+rapports_export = 62
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/213330"

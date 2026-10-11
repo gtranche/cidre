@@ -1,0 +1,41 @@
+# Sid Meier's Ace Patrol -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 244070
+nom = "Sid Meier's Ace Patrol"
+plateformes_steam = "windows"
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "silver"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "moderate"
+rapports = 20
+score = 33
+lanceurs_signales = "steam:6"
+options_lancement_1 = "gamemoderun %command% (x1)"
+lanceur_secondaire = "non:1"
+verdicts_recents = "yes:3"
+rapports_export = 10
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/244070"
+
+[compat.pcgamingwiki]
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Sid_Meier%27s_Ace_Patrol"

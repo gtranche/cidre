@@ -1,0 +1,52 @@
+# The Gunk -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 1087760
+nom = "The Gunk"
+plateformes_steam = "windows"
+moteur = "unreal"
+moteur_nom = "Unreal Engine 4"
+api = "d3d11"
+api_disponibles = "d3d11"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 30
+score = 89
+lanceurs_signales = "steam:27 notListed:3"
+lanceur_secondaire = "non:8"
+verdicts_recents = "yes:18"
+rapports_export = 30
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/1087760"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Local/Dust/Saved/Config/WindowsNoEditor/"
+sauvegardes = "AppData/Local/Dust/Saved/SaveGames/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/The_Gunk"

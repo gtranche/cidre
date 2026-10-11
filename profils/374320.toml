@@ -1,0 +1,63 @@
+# DARK SOULS™ III -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 374320
+nom = "DARK SOULS™ III"
+plateformes_steam = "windows"
+api = "d3d11"
+api_disponibles = "d3d11"
+bits = 64
+drm = "steam"
+anticheat = "eac"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+anticheat = "protondb 2026-10-01"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 733
+score = 84
+lanceurs_signales = "steam:259 lutris:2 notListed:1"
+options_lancement_1 = "gamemoderun %command% (x5)"
+options_lancement_2 = "gamemoderun mangohud %command% (x2)"
+options_lancement_3 = "mangohud %command% (x2)"
+lanceur_secondaire = "non:26"
+anticheat_signale = "other:7 autre:1 easyAntiCheat:1"
+verdicts_recents = "yes:90 no:4"
+rapports_export = 501
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/374320"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Roaming/DarkSoulsIII/GraphicsConfig.xml"
+sauvegardes = "AppData/Roaming/DarkSoulsIII/<uid>/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Dark_Souls_III"
+
+[compat.applegamingwiki]
+crossover = "parfait"
+parallels = "jouable"
+methodes = "crossover"
+dernier_temoignage = "2021-07-13"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Dark_Souls_III"

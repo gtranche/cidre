@@ -1,0 +1,61 @@
+# Little Nightmares -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 424840
+nom = "Little Nightmares"
+plateformes_steam = "windows"
+moteur = "unreal"
+moteur_nom = "Unreal Engine 4"
+api = "d3d11"
+api_disponibles = "d3d11"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 225
+score = 85
+lanceurs_signales = "steam:110"
+options_lancement_1 = "gamemoderun PROTON_USE_WINED3D11=1 %command% -onethread (x1)"
+lanceur_secondaire = "non:23"
+verdicts_recents = "yes:27 no:1"
+rapports_export = 187
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/424840"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "jeu:Atlas/Saved/Config/WindowsNoEditor/*.ini"
+sauvegardes = "jeu:Atlas/Saved/SaveGames/*_SaveSlot*.sav ; jeu:Atlas/Saved/SaveGames/*_UserMeta.sav"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Little_Nightmares"
+
+[compat.applegamingwiki]
+crossover = "jouable"
+parallels = "parfait"
+methodes = "crossover"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Little_Nightmares"

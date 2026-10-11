@@ -1,0 +1,48 @@
+# King's Quest Collection -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 10100
+nom = "King's Quest Collection"
+plateformes_steam = "windows"
+moteur = "autre"
+moteur_nom = "SCI"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "low"
+rapports = 8
+score = 61
+lanceurs_signales = "steam:1"
+options_lancement_1 = "PROTON_ENABLE_WAYLAND=1\nPROTON_ENABLE_HDR=1\nPROTON_FSR4_UPGRADE=1\nAMD_VULKAN_ICD=RADV\nMESA_SHADER_CACHE_MAX_SIZE=12G (x1)"
+verdicts_recents = "yes:1"
+rapports_export = 3
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/10100"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "jeu:"
+sauvegardes = "jeu:KQ5SG.***"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/King%27s_Quest_V%3A_Absence_Makes_the_Heart_Go_Yonder%21"

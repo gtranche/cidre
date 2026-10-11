@@ -1,0 +1,63 @@
+# Ghostwire: Tokyo -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 1475810
+nom = "Ghostwire: Tokyo"
+plateformes_steam = "windows"
+moteur = "unreal"
+moteur_nom = "Unreal Engine 4"
+api = "d3d12"
+api_disponibles = "d3d12"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 112
+score = 71
+lanceurs_signales = "steam:83 notListed:27 bottles:1"
+options_lancement_1 = "VKD3D_CONFIG=dxr PROTON_USE_VKD3D=1 gamemoderun %command% -dx12 (x1)"
+options_lancement_2 = "Disable \"Use GameMode (Feral Game Mode needs to be installed)\" (x1)"
+options_lancement_3 = "game-performance DXVK_FRAME_RATE=100 (x1)"
+lanceur_secondaire = "non:16"
+verdicts_recents = "yes:27 no:4"
+rapports_export = 111
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/1475810"
+
+[compat.pcgamingwiki]
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Ghostwire%3A_Tokyo"
+
+[compat.applegamingwiki]
+crossover = "jouable"
+wine = "jouable"
+parallels = "demarre"
+methodes = "heroic whisky wine"
+dernier_temoignage = "2026-02-22"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Ghostwire_tokyo"

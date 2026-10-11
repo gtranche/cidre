@@ -3,14 +3,1909 @@
 # tests/tester_profils.sh verifie qu'il est a jour. C'est lui que `cidre profils maj`
 # telecharge d'abord, pour savoir quelles fiches prendre.
 
+[1000010]
+nom = "Crown Trick"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1000410]
+nom = "WRATH: Aeon of Ruin"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1004490]
+nom = "Tools Up!"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1005240]
+nom = "Pixel Puzzles Illustrations & Anime Jigsaw Puzzles"
+etat = "non-teste"
+date = "2026-10-11"
+
+[10100]
+nom = "King's Quest Collection"
+etat = "non-teste"
+date = "2026-10-11"
+
+[10110]
+nom = "Space Quest Collection"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1011190]
+nom = "SIMULACRA 2"
+etat = "non-teste"
+date = "2026-10-11"
+
+[10130]
+nom = "TimeShift"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1016790]
+nom = "West of Dead"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1030840]
+nom = "Mafia: Definitive Edition"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1035560]
+nom = "Struggling"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1038250]
+nom = "DIRT 5"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1041720]
+nom = "Kingdoms of Amalur: Re-Reckoning"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1042490]
+nom = "Call of the Sea"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1046790]
+nom = "Eternal Threads"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1053710]
+nom = "The Red Lantern"
+etat = "non-teste"
+date = "2026-10-11"
+
+[105450]
+nom = "Age of Empires® III (2007)"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1057750]
+nom = "The Suicide of Rachel Foster"
+etat = "non-teste"
+date = "2026-10-11"
+
+[105800]
+nom = "PixelJunk™ Eden"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1058200]
+nom = "Pixel Puzzles Traditional Jigsaw Puzzles"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1058650]
+nom = "Beyond The Wire"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1061880]
+nom = "Conan Chop Chop"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1061910]
+nom = "Metal: Hellsinger"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1062830]
+nom = "Embr"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1063310]
+nom = "Vane"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1063660]
+nom = "Bendy and the Dark Revival"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1069690]
+nom = "Rogue Lords"
+etat = "non-teste"
+date = "2026-10-11"
+
+[107310]
+nom = "Cthulhu Saves the World "
+etat = "non-teste"
+date = "2026-10-11"
+
+[1075200]
+nom = "TOHU"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1075740]
+nom = "Banners of Ruin"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1078920]
+nom = "Main Assembly"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1080110]
+nom = "F1 2020"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1085220]
+nom = "Figment 2: Creed Valley"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1086010]
+nom = "198X"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1087760]
+nom = "The Gunk"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1088710]
+nom = "Yakuza 3 Remastered"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1096570]
+nom = "SONG OF HORROR"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1101360]
+nom = "Rock of Ages 3: Make & Break"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1102190]
+nom = "Monster Train"
+etat = "non-teste"
+date = "2026-10-11"
+
+[11040]
+nom = "Sherlock Holmes: Nemesis"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1104660]
+nom = "MO:Astray"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1105500]
+nom = "Yakuza 4 Remastered"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1108000]
+nom = "Children of Silentown"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1108590]
+nom = "Eldest Souls"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1110100]
+nom = "Power Rangers: Battle for the Grid"
+etat = "non-teste"
+date = "2026-10-11"
+
+[11140]
+nom = "Sherlock Holmes: The Awakened (2008)"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1114290]
+nom = "Windjammers 2"
+etat = "non-teste"
+date = "2026-10-11"
+
+[11150]
+nom = "Sherlock Holmes: The Secret of the Silver Earring"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1116580]
+nom = "Shady Part of Me"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1117920]
+nom = "DaemonClaw: Origins of Nnar"
+etat = "non-teste"
+date = "2026-10-11"
+
+[11180]
+nom = "Sherlock Holmes: The Mystery of The Persian Carpet"
+etat = "non-teste"
+date = "2026-10-11"
+
+[11190]
+nom = "Sherlock Holmes versus Jack the Ripper"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1119980]
+nom = "In Sound Mind"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1120320]
+nom = "Builder Simulator"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1123770]
+nom = "Curse of the Dead Gods"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1124260]
+nom = "Snowtopia"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1130410]
+nom = "Cyber Hook"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1132980]
+nom = "There Is No Light"
+etat = "non-teste"
+date = "2026-10-11"
+
+[11340]
+nom = "Larva Mortus"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1137300]
+nom = "Sherlock Holmes Chapter One"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1139900]
+nom = "Ghostrunner"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1140890]
+nom = "Morbid: The Seven Acolytes"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1142390]
+nom = "Remothered: Broken Porcelain "
+etat = "non-teste"
+date = "2026-10-11"
+
+[1143810]
+nom = "Black Skylands"
+etat = "non-teste"
+date = "2026-10-11"
+
+[11450]
+nom = "Overlord"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1147550]
+nom = "Not For Broadcast"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1151050]
+nom = "Golf Gang"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1151340]
+nom = "Fallout 76"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1151640]
+nom = "Horizon Zero Dawn™ Complete Edition"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1154810]
+nom = "Going Under"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1157220]
+nom = "Nebuchadnezzar"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1158370]
+nom = "Aragami 2"
+etat = "non-teste"
+date = "2026-10-11"
+
+[11590]
+nom = "Hospital Tycoon"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1160220]
+nom = "Paradise Killer"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1161580]
+nom = "Hardspace: Shipbreaker"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1167140]
+nom = "Siege Survival: Gloria Victis"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1167920]
+nom = "The Dark Pictures: Man of Medan - Friend's Pass"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1170080]
+nom = "Foretales"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1171660]
+nom = "The Ambassador: Fractured Timelines"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1172620]
+nom = "Sea of Thieves"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1172710]
+nom = "Dune: Awakening"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1173200]
+nom = "Metal Unit"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1175460]
+nom = "Revita"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1179210]
+nom = "Kill It With Fire"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1182900]
+nom = "A Plague Tale: Requiem"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1186040]
+nom = "Worms Rumble"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1186640]
+nom = "Pumpkin Jack"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1190170]
+nom = "OlliOlli World"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1194630]
+nom = "The Dark Pictures Anthology: Little Hope"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1196590]
+nom = "Resident Evil Village"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1202130]
+nom = "Starship Troopers: Terran Command"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1203710]
+nom = "UnMetal"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1205170]
+nom = "Super Magbot"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1210150]
+nom = "Ageless"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1220150]
+nom = "Blue Fire"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1222370]
+nom = "Necromunda: Hired Gun"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1227530]
+nom = "Partisans 1941"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1229380]
+nom = "Everhood"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1235140]
+nom = "Yakuza: Like a Dragon"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1236300]
+nom = "Resident Evil Re:Verse"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1239690]
+nom = "Retrowave"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1243850]
+nom = "This Bed We Made"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1244460]
+nom = "Jurassic World Evolution 2"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1244950]
+nom = "Battletoads"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1245430]
+nom = "Golden Light"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1245620]
+nom = "ELDEN RING"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1249110]
+nom = "Skully"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1252830]
+nom = "A Juggler's Tale"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1266700]
+nom = "Destroy All Humans! 2 - Reprobed"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1269300]
+nom = "This Means Warp"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1269640]
+nom = "Beacon Pines"
+etat = "non-teste"
+date = "2026-10-11"
+
+[12710]
+nom = "Overlord: Raising Hell"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1271700]
+nom = "HOT WHEELS UNLEASHED™"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1272160]
+nom = "The Life and Suffering of Sir Brante"
+etat = "non-teste"
+date = "2026-10-11"
+
+[12750]
+nom = "GRID"
+etat = "non-teste"
+date = "2026-10-11"
+
+[12770]
+nom = "Rise of the Argonauts"
+etat = "non-teste"
+date = "2026-10-11"
+
+[12810]
+nom = "Overlord II"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1281590]
+nom = "The Dark Pictures Anthology: House of Ashes"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1283400]
+nom = "Steelrising"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1286350]
+nom = "BPM: BULLETS PER MINUTE"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1286680]
+nom = "Tiny Tina's Wonderlands"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1286830]
+nom = "STAR WARS™: The Old Republic™"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1287530]
+nom = "Lords and Villeins"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1287840]
+nom = "Disciples: Liberation"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1293180]
+nom = "SuchArt!"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1294420]
+nom = "Rollerdrome"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1295500]
+nom = "Warhammer 40,000: Battlesector"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1295920]
+nom = "The Mortuary Assistant"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1298140]
+nom = "Fobia - St. Dinfna Hotel"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1304680]
+nom = "Voidigo"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1304780]
+nom = "Nongunz: Doppelganger Edition"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1306970]
+nom = "Diluvian Ultra"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1311070]
+nom = "Greak: Memories of Azur"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1312960]
+nom = "Epic Chef"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1315980]
+nom = "Tin Can"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1319460]
+nom = "Fashion Police Squad"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1324350]
+nom = "Turbo Golf Racing"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1325200]
+nom = "Nioh 2 – The Complete Edition"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1325900]
+nom = "Demon Turf"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1331910]
+nom = "Morkredd"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1335790]
+nom = "Operation Tango"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1347970]
+nom = "Patch Quest"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1364100]
+nom = "Lacuna"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1367300]
+nom = "Blade Assault"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1370050]
+nom = "Trek to Yomi"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1380420]
+nom = "Grow: Song of the Evertree"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1388870]
+nom = "Arcade Paradise"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1390410]
+nom = "Midnight Fight Express"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1409200]
+nom = "HYPERVIOLENT"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1414850]
+nom = "Nickelodeon All-Star Brawl"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1419160]
+nom = "Souldiers"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1432050]
+nom = "Nobody Saves the World"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1434540]
+nom = "Zoeti"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1449560]
+nom = "Metro Exodus Enhanced Edition"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1451810]
+nom = "LEGO® 2K Drive"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1453790]
+nom = "The Serpent Rogue"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1462570]
+nom = "Lost in Random™"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1466640]
+nom = "Road 96"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1472560]
+nom = "I Am Fish"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1475810]
+nom = "Ghostwire: Tokyo"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1480560]
+nom = "Lawn Mowing Simulator"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1488200]
+nom = "Symphony of War: The Nephilim Saga"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1496790]
+nom = "Gotham Knights"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1502190]
+nom = "From Space"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1532690]
+nom = "BLACKTAIL"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1537710]
+nom = "The Dark Pictures Anthology: Little Hope - Friend's Pass"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1544020]
+nom = "The Callisto Protocol"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1549970]
+nom = "Aliens: Fireteam Elite"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1552810]
+nom = "Twin Mirror"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1562420]
+nom = "FOREWARNED"
+etat = "non-teste"
+date = "2026-10-11"
+
 [1562430]
 nom = "DREDGE"
 etat = "or"
 date = "2026-09-20"
 
+[1567020]
+nom = "The Dark Pictures Anthology: The Devil in Me"
+etat = "non-teste"
+date = "2026-10-11"
+
+[15700]
+nom = "Oddworld: Abe's Oddysee"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1577120]
+nom = "The Quarry"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1579380]
+nom = "Shadow Tactics: Blades of the Shogun - Aiko's Choice"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1583230]
+nom = "High On Life"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1592110]
+nom = "Spirit Of The Island"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1602080]
+nom = "Soulstice"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1604030]
+nom = "V Rising"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1605220]
+nom = "Dune: Spice Wars"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1608230]
+nom = "Planet of Lana"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1608640]
+nom = "OTXO"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1611910]
+nom = "Warhammer 40,000: Chaos Gate - Daemonhunters"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1622910]
+nom = "Still Wakes the Deep"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1649010]
+nom = "Miasma Chronicles"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1656780]
+nom = "Hero's Hour"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1665130]
+nom = "PAC-MAN MUSEUM+"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1672970]
+nom = "Minecraft Dungeons"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1701520]
+nom = "Afterimage"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1718130]
+nom = "SCP : Secret Files"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1775270]
+nom = "The Dark Pictures Anthology: House of Ashes - Friend's Pass"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1785150]
+nom = "Friends vs Friends"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1793350]
+nom = "Blue Fire: Void Maker"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1812390]
+nom = "The Elder Scrolls II: Daggerfall"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1815570]
+nom = "Aces and Adventures"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1817230]
+nom = "Hi-Fi RUSH"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1824220]
+nom = "Chivalry 2"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1839880]
+nom = "King Of The Castle"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1844380]
+nom = "Warhammer Age of Sigmar: Realms of Ruin"
+etat = "non-teste"
+date = "2026-10-11"
+
+[18480]
+nom = "Mata Hari"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1850570]
+nom = "DEATH STRANDING DIRECTOR'S CUT"
+etat = "non-teste"
+date = "2026-10-11"
+
 [1903340]
 nom = "Clair Obscur: Expedition 33"
 etat = "argent"
+date = "2026-10-11"
+
+[1907720]
+nom = "Autonauts vs Piratebots"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1920490]
+nom = "The Outer Worlds: Spacer's Choice Edition"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1920780]
+nom = "Stray Gods: The Roleplaying Musical"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1929610]
+nom = "Demonologist"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1949030]
+nom = "Sherlock Holmes The Awakened"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1966720]
+nom = "Lethal Company"
+etat = "non-teste"
+date = "2026-10-11"
+
+[1987080]
+nom = "Inside the Backrooms"
+etat = "non-teste"
+date = "2026-10-11"
+
+[200110]
+nom = "Nosgoth"
+etat = "non-teste"
+date = "2026-10-11"
+
+[200940]
+nom = "Sonic CD"
+etat = "non-teste"
+date = "2026-10-11"
+
+[201790]
+nom = "Orcs Must Die! 2"
+etat = "non-teste"
+date = "2026-10-11"
+
+[202200]
+nom = "Galactic Civilizations II: Ultimate Edition"
+etat = "non-teste"
+date = "2026-10-11"
+
+[202530]
+nom = "SONIC THE HEDGEHOG 4 Episode I"
+etat = "non-teste"
+date = "2026-10-11"
+
+[203650]
+nom = "SONIC THE HEDGEHOG 4 Episode II"
+etat = "non-teste"
+date = "2026-10-11"
+
+[203750]
+nom = "Binary Domain"
+etat = "non-teste"
+date = "2026-10-11"
+
+[204120]
+nom = "LEGO® Harry Potter: Years 5-7"
+etat = "non-teste"
+date = "2026-10-11"
+
+[204880]
+nom = "Sins of a Solar Empire: Rebellion"
+etat = "non-teste"
+date = "2026-10-11"
+
+[205190]
+nom = "Rocksmith"
+etat = "non-teste"
+date = "2026-10-11"
+
+[205230]
+nom = "Hell Yeah!"
+etat = "non-teste"
+date = "2026-10-11"
+
+[205650]
+nom = "The Testament of Sherlock Holmes"
+etat = "non-teste"
+date = "2026-10-11"
+
+[205950]
+nom = "Jet Set Radio"
+etat = "non-teste"
+date = "2026-10-11"
+
+[209230]
+nom = "Sherlock Holmes and The Hound of The Baskervilles"
+etat = "non-teste"
+date = "2026-10-11"
+
+[2100]
+nom = "Dark Messiah of Might & Magic Single Player"
+etat = "non-teste"
+date = "2026-10-11"
+
+[211160]
+nom = "Viking: Battle for Asgard"
+etat = "non-teste"
+date = "2026-10-11"
+
+[21130]
+nom = "LEGO® Harry Potter: Years 1-4"
+etat = "non-teste"
+date = "2026-10-11"
+
+[211400]
+nom = "Deadlight"
+etat = "non-teste"
+date = "2026-10-11"
+
+[2114740]
+nom = "Blasphemous 2"
+etat = "non-teste"
+date = "2026-10-11"
+
+[212480]
+nom = "Sonic & All-Stars Racing Transformed Collection"
+etat = "non-teste"
+date = "2026-10-11"
+
+[2130]
+nom = "Dark Messiah of Might & Magic Multi-Player"
+etat = "non-teste"
+date = "2026-10-11"
+
+[213330]
+nom = "LEGO® Batman™ 2: DC Super Heroes"
+etat = "non-teste"
+date = "2026-10-11"
+
+[213610]
+nom = "Sonic Adventure™ 2 "
+etat = "non-teste"
+date = "2026-10-11"
+
+[2138710]
+nom = "Sifu"
+etat = "non-teste"
+date = "2026-10-11"
+
+[214150]
+nom = "Galactic Civilizations I: Ultimate Edition"
+etat = "non-teste"
+date = "2026-10-11"
+
+[2144740]
+nom = "Ghostrunner 2"
+etat = "non-teste"
+date = "2026-10-11"
+
+[214510]
+nom = "LEGO® The Lord of the Rings™"
+etat = "non-teste"
+date = "2026-10-11"
+
+[214830]
+nom = "Half Minute Hero: Super Mega Neo Climax Ultimate Boy"
+etat = "non-teste"
+date = "2026-10-11"
+
+[2149010]
+nom = "Little Nightmares Enhanced Edition"
+etat = "non-teste"
+date = "2026-10-11"
+
+[215280]
+nom = "Secret World Legends"
+etat = "non-teste"
+date = "2026-10-11"
+
+[2162020]
+nom = "Strayed Lights"
+etat = "non-teste"
+date = "2026-10-11"
+
+[2166060]
+nom = "Amanda the Adventurer"
+etat = "non-teste"
+date = "2026-10-11"
+
+[21680]
+nom = "Bionic Commando Rearmed"
+etat = "non-teste"
+date = "2026-10-11"
+
+[21690]
+nom = "Resident Evil 5"
+etat = "non-teste"
+date = "2026-10-11"
+
+[2181610]
+nom = "Heretic's Fork"
+etat = "non-teste"
+date = "2026-10-11"
+
+[218620]
+nom = "PAYDAY 2"
+etat = "non-teste"
+date = "2026-10-11"
+
+[219950]
+nom = "NiGHTS into Dreams..."
+etat = "non-teste"
+date = "2026-10-11"
+
+[220440]
+nom = "DmC Devil May Cry"
+etat = "non-teste"
+date = "2026-10-11"
+
+[221380]
+nom = "Age of Empires II (2013)"
+etat = "non-teste"
+date = "2026-10-11"
+
+[221680]
+nom = "Rocksmith® 2014 Edition - Remastered"
+etat = "non-teste"
+date = "2026-10-11"
+
+[222480]
+nom = "Resident Evil Revelations"
+etat = "non-teste"
+date = "2026-10-11"
+
+[222940]
+nom = "THE KING OF FIGHTERS XIII STEAM EDITION"
+etat = "non-teste"
+date = "2026-10-11"
+
+[223470]
+nom = "POSTAL 2"
+etat = "non-teste"
+date = "2026-10-11"
+
+[224300]
+nom = "Legacy of Kain: Defiance"
+etat = "non-teste"
+date = "2026-10-11"
+
+[224420]
+nom = "Afterfall InSanity Extended Edition"
+etat = "non-teste"
+date = "2026-10-11"
+
+[224920]
+nom = "Legacy of Kain: Soul Reaver"
+etat = "non-teste"
+date = "2026-10-11"
+
+[224940]
+nom = "Legacy of Kain: Soul Reaver 2 (2001)"
+etat = "non-teste"
+date = "2026-10-11"
+
+[225080]
+nom = "Brothers - A Tale of Two Sons"
+etat = "non-teste"
+date = "2026-10-11"
+
+[225280]
+nom = "Full Mojo Rampage"
+etat = "non-teste"
+date = "2026-10-11"
+
+[226720]
+nom = "Lost Planet 3"
+etat = "non-teste"
+date = "2026-10-11"
+
+[226860]
+nom = "Galactic Civilizations III"
+etat = "non-teste"
+date = "2026-10-11"
+
+[228300]
+nom = "Remember Me"
+etat = "non-teste"
+date = "2026-10-11"
+
+[2285890]
+nom = "The Dark Pictures Anthology: The Devil in Me - Friend's Pass"
+etat = "non-teste"
+date = "2026-10-11"
+
+[229480]
+nom = "Dungeons & Dragons: Chronicles of Mystara"
+etat = "non-teste"
+date = "2026-10-11"
+
+[231160]
+nom = "The Swapper"
+etat = "non-teste"
+date = "2026-10-11"
+
+[231330]
+nom = "Deadfall Adventures"
+etat = "non-teste"
+date = "2026-10-11"
+
+[232090]
+nom = "Killing Floor 2"
+etat = "non-teste"
+date = "2026-10-11"
+
+[233290]
+nom = "MURDERED: SOUL SUSPECT™"
+etat = "non-teste"
+date = "2026-10-11"
+
+[235210]
+nom = "Strider"
+etat = "non-teste"
+date = "2026-10-11"
+
+[235540]
+nom = "Warhammer: End Times - Vermintide"
+etat = "non-teste"
+date = "2026-10-11"
+
+[236970]
+nom = "Jack Keane 2 - The Fire Within"
+etat = "non-teste"
+date = "2026-10-11"
+
+[237630]
+nom = "DuckTales Remastered"
+etat = "non-teste"
+date = "2026-10-11"
+
+[239350]
+nom = "Spelunky"
+etat = "non-teste"
+date = "2026-10-11"
+
+[241260]
+nom = "Sherlock Holmes: Crimes and Punishments"
+etat = "non-teste"
+date = "2026-10-11"
+
+[241410]
+nom = "CastleStorm"
+etat = "non-teste"
+date = "2026-10-11"
+
+[24240]
+nom = "PAYDAY: The Heist"
+etat = "non-teste"
+date = "2026-10-11"
+
+[242700]
+nom = "Injustice: Gods Among Us Ultimate Edition"
+etat = "non-teste"
+date = "2026-10-11"
+
+[242960]
+nom = "Blood Omen 2: Legacy of Kain"
+etat = "non-teste"
+date = "2026-10-11"
+
+[244070]
+nom = "Sid Meier's Ace Patrol"
+etat = "non-teste"
+date = "2026-10-11"
+
+[244090]
+nom = "Sid Meier's Ace Patrol: Pacific Skies"
+etat = "non-teste"
+date = "2026-10-11"
+
+[245050]
+nom = "SpellForce 2 - Demons of the Past"
+etat = "non-teste"
+date = "2026-10-11"
+
+[245280]
+nom = "ENSLAVED™: Odyssey to the West™ Premium Edition"
+etat = "non-teste"
+date = "2026-10-11"
+
+[246760]
+nom = "Legends of Eisenwald"
+etat = "non-teste"
+date = "2026-10-11"
+
+[248610]
+nom = "Door Kickers"
+etat = "non-teste"
+date = "2026-10-11"
+
+[252350]
+nom = "Double Dragon Neon"
+etat = "non-teste"
+date = "2026-10-11"
+
+[252850]
+nom = "Streamline"
+etat = "non-teste"
+date = "2026-10-11"
+
+[254700]
+nom = "Resident Evil 4 (2005)"
+etat = "non-teste"
+date = "2026-10-11"
+
+[255320]
+nom = "Edna & Harvey: The Breakout"
+etat = "non-teste"
+date = "2026-10-11"
+
+[255370]
+nom = "KickBeat Steam Edition"
+etat = "non-teste"
+date = "2026-10-11"
+
+[255520]
+nom = "Viscera Cleanup Detail: Shadow Warrior"
+etat = "non-teste"
+date = "2026-10-11"
+
+[258520]
+nom = "The Vanishing of Ethan Carter"
+etat = "non-teste"
+date = "2026-10-11"
+
+[259660]
+nom = "Void Destroyer"
+etat = "non-teste"
+date = "2026-10-11"
+
+[260270]
+nom = "Shadows: Price For Our Sins"
+etat = "non-teste"
+date = "2026-10-11"
+
+[260550]
+nom = "Haunted"
+etat = "non-teste"
+date = "2026-10-11"
+
+[260690]
+nom = "Dark Fall 1: The Journal"
+etat = "non-teste"
+date = "2026-10-11"
+
+[260710]
+nom = "Dark Fall 2: Lights Out"
+etat = "non-teste"
+date = "2026-10-11"
+
+[263120]
+nom = "LUDWIG"
+etat = "non-teste"
+date = "2026-10-11"
+
+[2636420]
+nom = "Graveyard Shift"
+etat = "non-teste"
+date = "2026-10-11"
+
+[265300]
+nom = "Lords Of The Fallen"
+etat = "non-teste"
+date = "2026-10-11"
+
+[265610]
+nom = "Epic Battle Fantasy 4"
+etat = "non-teste"
+date = "2026-10-11"
+
+[266050]
+nom = "Into the Dark"
+etat = "non-teste"
+date = "2026-10-11"
+
+[267900]
+nom = "Guilty Gear Isuka"
+etat = "non-teste"
+date = "2026-10-11"
+
+[269190]
+nom = "Edge Of Eternity"
+etat = "non-teste"
+date = "2026-10-11"
+
+[269370]
+nom = "Reaper - Tale of a Pale Swordsman"
+etat = "non-teste"
+date = "2026-10-11"
+
+[269790]
+nom = "DreadOut"
+etat = "non-teste"
+date = "2026-10-11"
+
+[270590]
+nom = "Long Night"
+etat = "non-teste"
+date = "2026-10-11"
+
+[2707930]
+nom = "Palia"
+etat = "non-teste"
+date = "2026-10-11"
+
+[275390]
+nom = "Guacamelee! Super Turbo Championship Edition"
+etat = "non-teste"
+date = "2026-10-11"
+
+[275570]
+nom = "Summoner"
+etat = "non-teste"
+date = "2026-10-11"
+
+[277890]
+nom = "Shantae: Risky's Revenge - Director's Cut"
+etat = "non-teste"
+date = "2026-10-11"
+
+[280200]
+nom = "Eterium"
+etat = "non-teste"
+date = "2026-10-11"
+
+[285010]
+nom = "Pixel Puzzles: UndeadZ"
+etat = "non-teste"
+date = "2026-10-11"
+
+[286360]
+nom = "Shadows on the Vatican - Act I: Greed"
+etat = "non-teste"
+date = "2026-10-11"
+
+[286460]
+nom = "Black Mirror II"
+etat = "non-teste"
+date = "2026-10-11"
+
+[286480]
+nom = "Black Mirror III"
+etat = "non-teste"
+date = "2026-10-11"
+
+[287290]
+nom = "Resident Evil Revelations 2"
+etat = "non-teste"
+date = "2026-10-11"
+
+[287630]
+nom = "The Council"
+etat = "non-teste"
+date = "2026-10-11"
+
+[288160]
+nom = "The Room"
+etat = "non-teste"
+date = "2026-10-11"
+
+[288880]
+nom = "Pineview Drive"
+etat = "non-teste"
+date = "2026-10-11"
+
+[289690]
+nom = "Lara Croft and the Temple of Osiris"
+etat = "non-teste"
+date = "2026-10-11"
+
+[290790]
+nom = "Grey Goo"
+etat = "non-teste"
+date = "2026-10-11"
+
+[292200]
+nom = "Crazy Plant Shop"
+etat = "non-teste"
+date = "2026-10-11"
+
+[292930]
+nom = "Black Mirror I"
+etat = "non-teste"
+date = "2026-10-11"
+
+[2963870]
+nom = "Metal Slug: Awakening"
+etat = "non-teste"
+date = "2026-10-11"
+
+[297000]
+nom = "Heroes of Might & Magic III - HD Edition"
+etat = "non-teste"
+date = "2026-10-11"
+
+[298140]
+nom = "Rhiannon: Curse of the Four Branches"
+etat = "non-teste"
+date = "2026-10-11"
+
+[2989180]
+nom = "Darwin's Paradox"
+etat = "non-teste"
+date = "2026-10-11"
+
+[2995470]
+nom = "Dune: Awakening Public Test Client"
+etat = "non-teste"
+date = "2026-10-11"
+
+[299950]
+nom = "GET EVEN"
+etat = "non-teste"
+date = "2026-10-11"
+
+[300200]
+nom = "Urban Legends"
+etat = "non-teste"
+date = "2026-10-11"
+
+[300510]
+nom = "Them - The Summoning"
+etat = "non-teste"
+date = "2026-10-11"
+
+[302110]
+nom = "Small Town Terrors Pilgrim's Hook Collector's Edition"
+etat = "non-teste"
+date = "2026-10-11"
+
+[302370]
+nom = "Tex Murphy: Overseer"
+etat = "non-teste"
+date = "2026-10-11"
+
+[302390]
+nom = "Necronomicon: The Dawning of Darkness"
+etat = "non-teste"
+date = "2026-10-11"
+
+[302690]
+nom = "Metal Dead"
+etat = "non-teste"
+date = "2026-10-11"
+
+[304430]
+nom = "INSIDE"
+etat = "non-teste"
+date = "2026-10-11"
+
+[3064370]
+nom = "Dark Hours: Prologue"
+etat = "non-teste"
+date = "2026-10-11"
+
+[3069340]
+nom = "Blasterbug: Last Bug Standing! "
+etat = "non-teste"
+date = "2026-10-11"
+
+[307780]
+nom = "Mortal Kombat X"
+etat = "non-teste"
+date = "2026-10-11"
+
+[310810]
+nom = "Shiftlings"
+etat = "non-teste"
+date = "2026-10-11"
+
+[310950]
+nom = "Street Fighter V"
+etat = "non-teste"
+date = "2026-10-11"
+
+[311850]
+nom = "Zombie Solitaire"
+etat = "non-teste"
+date = "2026-10-11"
+
+[312520]
+nom = "Rain World"
+etat = "non-teste"
+date = "2026-10-11"
+
+[312530]
+nom = "Duck Game"
+etat = "non-teste"
+date = "2026-10-11"
+
+[312670]
+nom = "Strange Brigade"
+etat = "non-teste"
+date = "2026-10-11"
+
+[313140]
+nom = "Blackbay Asylum"
+etat = "non-teste"
+date = "2026-10-11"
+
+[313400]
+nom = "REVOLVER360 RE:ACTOR"
+etat = "non-teste"
+date = "2026-10-11"
+
+[314030]
+nom = "Guilty Gear X2 #Reload"
+etat = "non-teste"
+date = "2026-10-11"
+
+[3144950]
+nom = "Pet Lands"
+etat = "non-teste"
+date = "2026-10-11"
+
+[316160]
+nom = "Broken Sword 4 - the Angel of Death (2006)"
+etat = "non-teste"
+date = "2026-10-11"
+
+[323190]
+nom = "Frostpunk"
+etat = "non-teste"
+date = "2026-10-11"
+
+[32350]
+nom = "STAR WARS™ Starfighter™"
+etat = "non-teste"
+date = "2026-10-11"
+
+[32360]
+nom = "The Secret of Monkey Island: Special Edition"
+etat = "non-teste"
+date = "2026-10-11"
+
+[32380]
+nom = "STAR WARS™ Jedi Knight: Dark Forces II"
+etat = "non-teste"
+date = "2026-10-11"
+
+[3241660]
+nom = "R.E.P.O."
+etat = "non-teste"
+date = "2026-10-11"
+
+[32460]
+nom = "Monkey Island 2: Special Edition"
+etat = "non-teste"
+date = "2026-10-11"
+
+[32470]
+nom = "STAR WARS™ Empire at War: Gold Pack"
+etat = "non-teste"
+date = "2026-10-11"
+
+[32500]
+nom = "STAR WARS™: The Force Unleashed™ II"
+etat = "non-teste"
+date = "2026-10-11"
+
+[3260]
+nom = "Safecracker: The Ultimate Puzzle Adventure"
+etat = "non-teste"
+date = "2026-10-11"
+
+[327510]
+nom = "WASTED"
+etat = "non-teste"
+date = "2026-10-11"
+
+[328600]
+nom = "Frozen Synapse Prime"
+etat = "non-teste"
+date = "2026-10-11"
+
+[329200]
+nom = "Astray"
+etat = "non-teste"
+date = "2026-10-11"
+
+[329440]
+nom = "Sonic Lost World"
+etat = "non-teste"
+date = "2026-10-11"
+
+[3311740]
+nom = "The Cabin Factory"
+etat = "non-teste"
+date = "2026-10-11"
+
+[331710]
+nom = "Why So Evil"
+etat = "non-teste"
+date = "2026-10-11"
+
+[332310]
+nom = "LEGO® Worlds"
+etat = "non-teste"
+date = "2026-10-11"
+
+[332500]
+nom = "GRAV"
+etat = "non-teste"
+date = "2026-10-11"
+
+[334190]
+nom = "Insanity's Blade"
+etat = "non-teste"
+date = "2026-10-11"
+
+[335300]
+nom = "DARK SOULS™ II: Scholar of the First Sin"
+etat = "non-teste"
+date = "2026-10-11"
+
+[33610]
+nom = "Broken Sword 3 - the Sleeping Dragon (2003)"
+etat = "non-teste"
+date = "2026-10-11"
+
+[336420]
+nom = "Bloodsports.TV"
+etat = "non-teste"
+date = "2026-10-11"
+
+[337180]
+nom = "Velocity 2X"
+etat = "non-teste"
+date = "2026-10-11"
+
+[34190]
+nom = "Sonic and SEGA All Stars Racing"
+etat = "non-teste"
+date = "2026-10-11"
+
+[345390]
+nom = "King's Quest"
+etat = "non-teste"
+date = "2026-10-11"
+
+[345820]
+nom = "Shantae and the Pirate's Curse"
+etat = "non-teste"
+date = "2026-10-11"
+
+[345860]
+nom = "Super Galaxy Squadron EX Turbo"
+etat = "non-teste"
+date = "2026-10-11"
+
+[347290]
+nom = "Rise & Shine"
+etat = "non-teste"
+date = "2026-10-11"
+
+[348250]
+nom = "Google Earth VR"
+etat = "non-teste"
+date = "2026-10-11"
+
+[348550]
+nom = "GUILTY GEAR XX ACCENT CORE PLUS R"
+etat = "non-teste"
+date = "2026-10-11"
+
+[349730]
+nom = "Popup Dungeon"
+etat = "non-teste"
+date = "2026-10-11"
+
+[350640]
+nom = "Sherlock Holmes: The Devil's Daughter"
+etat = "non-teste"
+date = "2026-10-11"
+
+[352400]
+nom = "LEGO® Jurassic World"
+etat = "non-teste"
 date = "2026-10-11"
 
 [3527290]
@@ -18,12 +1913,1582 @@ nom = "PEAK"
 etat = "bronze"
 date = "2026-10-05"
 
+[35420]
+nom = "Killing Floor Mod: Defence Alliance 2"
+etat = "non-teste"
+date = "2026-10-11"
+
+[354850]
+nom = "Why So Evil 2: Dystopia"
+etat = "non-teste"
+date = "2026-10-11"
+
+[3550490]
+nom = "Overcome Your Fears - Caretaker"
+etat = "non-teste"
+date = "2026-10-11"
+
+[356190]
+nom = "Middle-earth™: Shadow of War™"
+etat = "non-teste"
+date = "2026-10-11"
+
+[3564740]
+nom = "Where Winds Meet"
+etat = "non-teste"
+date = "2026-10-11"
+
+[356500]
+nom = "STAR WARS™ Galactic Battlegrounds Saga"
+etat = "non-teste"
+date = "2026-10-11"
+
+[356650]
+nom = "Death's Gambit: Afterlife"
+etat = "non-teste"
+date = "2026-10-11"
+
+[359100]
+nom = "Q.U.B.E. 2"
+etat = "non-teste"
+date = "2026-10-11"
+
+[359580]
+nom = "Uncanny Valley"
+etat = "non-teste"
+date = "2026-10-11"
+
+[359960]
+nom = "Choice Chamber"
+etat = "non-teste"
+date = "2026-10-11"
+
+[361670]
+nom = "STAR WARS™: X-Wing Alliance™"
+etat = "non-teste"
+date = "2026-10-11"
+
+[361690]
+nom = "STAR WARS™ X-Wing vs TIE Fighter: Balance of Power Campaigns™"
+etat = "non-teste"
+date = "2026-10-11"
+
+[368080]
+nom = "Aurion: Legacy of the Kori-Odan"
+etat = "non-teste"
+date = "2026-10-11"
+
+[368260]
+nom = "Marvel's Midnight Suns"
+etat = "non-teste"
+date = "2026-10-11"
+
+[368900]
+nom = "Brilliant Bob"
+etat = "non-teste"
+date = "2026-10-11"
+
+[370870]
+nom = "Dark Future: Blood Red States"
+etat = "non-teste"
+date = "2026-10-11"
+
+[3717340]
+nom = "Yakuza Kiwami 2"
+etat = "non-teste"
+date = "2026-10-11"
+
+[374320]
+nom = "DARK SOULS™ III"
+etat = "non-teste"
+date = "2026-10-11"
+
+[376300]
+nom = "GUILTY GEAR Xrd -SIGN-"
+etat = "non-teste"
+date = "2026-10-11"
+
+[381210]
+nom = "Dead by Daylight"
+etat = "non-teste"
+date = "2026-10-11"
+
+[383120]
+nom = "Empyrion - Galactic Survival"
+etat = "non-teste"
+date = "2026-10-11"
+
+[383180]
+nom = "Dead Island Riptide Definitive Edition"
+etat = "non-teste"
+date = "2026-10-11"
+
+[38400]
+nom = "Fallout"
+etat = "non-teste"
+date = "2026-10-11"
+
+[385760]
+nom = "NBA 2K17"
+etat = "non-teste"
+date = "2026-10-11"
+
+[386360]
+nom = "SMITE"
+etat = "non-teste"
+date = "2026-10-11"
+
+[389730]
+nom = "TEKKEN 7"
+etat = "non-teste"
+date = "2026-10-11"
+
+[390040]
+nom = "Small Radios Big Televisions"
+etat = "non-teste"
+date = "2026-10-11"
+
+[3908270]
+nom = "Letherfall"
+etat = "non-teste"
+date = "2026-10-11"
+
+[3910]
+nom = "Sid Meier's Civilization III: Complete"
+etat = "non-teste"
+date = "2026-10-11"
+
+[3920]
+nom = "Sid Meier's Pirates!"
+etat = "non-teste"
+date = "2026-10-11"
+
+[39630]
+nom = "AquaNox"
+etat = "non-teste"
+date = "2026-10-11"
+
+[39640]
+nom = "AquaNox 2: Revelation"
+etat = "non-teste"
+date = "2026-10-11"
+
+[396900]
+nom = "GRIP: Combat Racing"
+etat = "non-teste"
+date = "2026-10-11"
+
+[397540]
+nom = "Borderlands 3"
+etat = "non-teste"
+date = "2026-10-11"
+
+[399810]
+nom = "Call of Cthulhu"
+etat = "non-teste"
+date = "2026-10-11"
+
+[400430]
+nom = "The Vanishing of Ethan Carter Redux"
+etat = "non-teste"
+date = "2026-10-11"
+
+[4015530]
+nom = "MyVoiceZoo"
+etat = "non-teste"
+date = "2026-10-11"
+
+[40330]
+nom = "Secret Files: Tunguska"
+etat = "non-teste"
+date = "2026-10-11"
+
+[40380]
+nom = "Nail'd"
+etat = "non-teste"
+date = "2026-10-11"
+
+[404680]
+nom = "Hob"
+etat = "non-teste"
+date = "2026-10-11"
+
+[405310]
+nom = "LEGO® MARVEL's Avengers"
+etat = "non-teste"
+date = "2026-10-11"
+
+[408410]
+nom = "X-Morph: Defense"
+etat = "non-teste"
+date = "2026-10-11"
+
+[410710]
+nom = "System Shock: Enhanced Edition"
+etat = "non-teste"
+date = "2026-10-11"
+
+[411300]
+nom = "ELEX"
+etat = "non-teste"
+date = "2026-10-11"
+
+[414340]
+nom = "Hellblade: Senua's Sacrifice"
+etat = "non-teste"
+date = "2026-10-11"
+
+[417290]
+nom = "Ghost of a Tale"
+etat = "non-teste"
+date = "2026-10-11"
+
+[418950]
+nom = "DreadOut: Keepers of The Dark"
+etat = "non-teste"
+date = "2026-10-11"
+
+[423230]
+nom = "Furi"
+etat = "non-teste"
+date = "2026-10-11"
+
+[424840]
+nom = "Little Nightmares"
+etat = "non-teste"
+date = "2026-10-11"
+
+[425220]
+nom = "ONE PIECE BURNING BLOOD"
+etat = "non-teste"
+date = "2026-10-11"
+
+[427290]
+nom = "Vampyr"
+etat = "non-teste"
+date = "2026-10-11"
+
+[427680]
+nom = "Zwei: The Arges Adventure"
+etat = "non-teste"
+date = "2026-10-11"
+
+[427700]
+nom = "Zwei: The Ilvard Insurrection"
+etat = "non-teste"
+date = "2026-10-11"
+
+[42910]
+nom = "Magicka"
+etat = "non-teste"
+date = "2026-10-11"
+
+[4293620]
+nom = "GOBLiiNS6"
+etat = "non-teste"
+date = "2026-10-11"
+
+[429660]
+nom = "Tales of Berseria"
+etat = "non-teste"
+date = "2026-10-11"
+
+[430070]
+nom = "Never Again"
+etat = "non-teste"
+date = "2026-10-11"
+
+[43110]
+nom = "Metro 2033"
+etat = "non-teste"
+date = "2026-10-11"
+
+[431940]
+nom = "Wildfire"
+etat = "non-teste"
+date = "2026-10-11"
+
+[4333200]
+nom = "Lost & Found: A This Bed We Made Story"
+etat = "non-teste"
+date = "2026-10-11"
+
+[435100]
+nom = "2Dark"
+etat = "non-teste"
+date = "2026-10-11"
+
+[437000]
+nom = "GUILTY GEAR 2 -OVERTURE-"
+etat = "non-teste"
+date = "2026-10-11"
+
+[438640]
+nom = "LEGO® STAR WARS™: The Force Awakens"
+etat = "non-teste"
+date = "2026-10-11"
+
+[438740]
+nom = "Friday the 13th: The Game"
+etat = "non-teste"
+date = "2026-10-11"
+
+[439190]
+nom = "Stories: The Path of Destinies"
+etat = "non-teste"
+date = "2026-10-11"
+
+[441550]
+nom = "STAR WARS™ Rebellion"
+etat = "non-teste"
+date = "2026-10-11"
+
+[444090]
+nom = "Paladins"
+etat = "non-teste"
+date = "2026-10-11"
+
+[447530]
+nom = "VA-11 Hall-A: Cyberpunk Bartender Action"
+etat = "non-teste"
+date = "2026-10-11"
+
+[448510]
+nom = "Overcooked"
+etat = "non-teste"
+date = "2026-10-11"
+
+[4540]
+nom = "Titan Quest"
+etat = "non-teste"
+date = "2026-10-11"
+
+[4550]
+nom = "Titan Quest: Immortal Throne"
+etat = "non-teste"
+date = "2026-10-11"
+
+[45740]
+nom = "Dead Rising 2"
+etat = "non-teste"
+date = "2026-10-11"
+
+[45760]
+nom = "Ultra Street Fighter IV"
+etat = "non-teste"
+date = "2026-10-11"
+
+[460700]
+nom = "Song of the Deep"
+etat = "non-teste"
+date = "2026-10-11"
+
+[462780]
+nom = "Darksiders Warmastered Edition"
+etat = "non-teste"
+date = "2026-10-11"
+
+[46500]
+nom = "Syberia"
+etat = "non-teste"
+date = "2026-10-11"
+
+[468650]
+nom = "Super ComboMan: Smash Edition"
+etat = "non-teste"
+date = "2026-10-11"
+
+[4720]
+nom = "Condemned: Criminal Origins"
+etat = "non-teste"
+date = "2026-10-11"
+
+[475150]
+nom = "Titan Quest Anniversary Edition"
+etat = "non-teste"
+date = "2026-10-11"
+
+[484900]
+nom = "Aven Colony"
+etat = "non-teste"
+date = "2026-10-11"
+
+[489630]
+nom = "Warhammer 40,000: Gladius - Relics of War"
+etat = "non-teste"
+date = "2026-10-11"
+
+[494740]
+nom = "Police Quest Collection"
+etat = "non-teste"
+date = "2026-10-11"
+
+[495700]
+nom = "Gabriel Knight: Sins of the Fathers"
+etat = "non-teste"
+date = "2026-10-11"
+
+[496760]
+nom = "Gabriel Knight 2: The Beast Within"
+etat = "non-teste"
+date = "2026-10-11"
+
+[497360]
+nom = "Gabriel Knight 3: Blood of the Sacred, Blood of the Damned"
+etat = "non-teste"
+date = "2026-10-11"
+
+[500810]
+nom = "Arcanum"
+etat = "non-teste"
+date = "2026-10-11"
+
+[501970]
+nom = "Phantasmagoria 2"
+etat = "non-teste"
+date = "2026-10-11"
+
+[501990]
+nom = "Phantasmagoria"
+etat = "non-teste"
+date = "2026-10-11"
+
+[502750]
+nom = "Quest for Glory Collection"
+etat = "non-teste"
+date = "2026-10-11"
+
+[503940]
+nom = "Railway Empire"
+etat = "non-teste"
+date = "2026-10-11"
+
+[505230]
+nom = "Pathologic 2"
+etat = "non-teste"
+date = "2026-10-11"
+
+[50620]
+nom = "Darksiders"
+etat = "non-teste"
+date = "2026-10-11"
+
+[50650]
+nom = "Darksiders II"
+etat = "non-teste"
+date = "2026-10-11"
+
+[506610]
+nom = "Five Nights at Freddy's: Sister Location"
+etat = "non-teste"
+date = "2026-10-11"
+
+[507490]
+nom = "Ashes of the Singularity: Escalation"
+etat = "non-teste"
+date = "2026-10-11"
+
+[508530]
+nom = "HackyZack"
+etat = "non-teste"
+date = "2026-10-11"
+
+[517790]
+nom = "Caesar 3"
+etat = "non-teste"
+date = "2026-10-11"
+
+[517810]
+nom = "Caesar 4"
+etat = "non-teste"
+date = "2026-10-11"
+
+[518060]
+nom = "Chess Ultra"
+etat = "non-teste"
+date = "2026-10-11"
+
+[520440]
+nom = "GUILTY GEAR Xrd REV 2"
+etat = "non-teste"
+date = "2026-10-11"
+
+[521890]
+nom = "Hello Neighbor"
+etat = "non-teste"
+date = "2026-10-11"
+
+[525480]
+nom = ".hack//G.U. Last Recode"
+etat = "non-teste"
+date = "2026-10-11"
+
+[526160]
+nom = "The Wild Eight"
+etat = "non-teste"
+date = "2026-10-11"
+
+[529660]
+nom = "Mages of Mystralia"
+etat = "non-teste"
+date = "2026-10-11"
+
+[536270]
+nom = "Ancestors: The Humankind Odyssey "
+etat = "non-teste"
+date = "2026-10-11"
+
+[539470]
+nom = "Police Stories"
+etat = "non-teste"
+date = "2026-10-11"
+
+[544330]
+nom = "Snake Pass"
+etat = "non-teste"
+date = "2026-10-11"
+
+[544610]
+nom = "Battlestar Galactica Deadlock"
+etat = "non-teste"
+date = "2026-10-11"
+
+[544750]
+nom = "SOULCALIBUR VI"
+etat = "non-teste"
+date = "2026-10-11"
+
+[548430]
+nom = "Deep Rock Galactic"
+etat = "non-teste"
+date = "2026-10-11"
+
+[55100]
+nom = "Homefront"
+etat = "non-teste"
+date = "2026-10-11"
+
+[55110]
+nom = "Red Faction: Armageddon"
+etat = "non-teste"
+date = "2026-10-11"
+
+[55140]
+nom = "MX vs. ATV Reflex"
+etat = "non-teste"
+date = "2026-10-11"
+
+[55150]
+nom = "Warhammer 40,000: Space Marine - Anniversary Edition"
+etat = "non-teste"
+date = "2026-10-11"
+
 [552500]
 nom = "Warhammer: Vermintide 2"
 etat = "argent"
 date = "2026-09-28"
 
+[555000]
+nom = "GOAT OF DUTY"
+etat = "non-teste"
+date = "2026-10-11"
+
+[557340]
+nom = "My Friend Pedro"
+etat = "non-teste"
+date = "2026-10-11"
+
+[559100]
+nom = "Phantom Doctrine"
+etat = "non-teste"
+date = "2026-10-11"
+
+[570050]
+nom = "Raiden V: Director's Cut"
+etat = "non-teste"
+date = "2026-10-11"
+
+[577940]
+nom = "Killer Instinct"
+etat = "non-teste"
+date = "2026-10-11"
+
+[578650]
+nom = "The Outer Worlds"
+etat = "non-teste"
+date = "2026-10-11"
+
+[582660]
+nom = "Black Desert"
+etat = "non-teste"
+date = "2026-10-11"
+
+[585420]
+nom = "Trailmakers"
+etat = "non-teste"
+date = "2026-10-11"
+
+[585450]
+nom = "Shadows: Awakening"
+etat = "non-teste"
+date = "2026-10-11"
+
+[58560]
+nom = "Runaway: A Twist of Fate"
+etat = "non-teste"
+date = "2026-10-11"
+
+[587620]
+nom = "Okami HD"
+etat = "non-teste"
+date = "2026-10-11"
+
 [588650]
 nom = "Dead Cells"
 etat = "or"
 date = "2026-09-20"
+
+[596350]
+nom = "Paladins - Public Test"
+etat = "non-teste"
+date = "2026-10-11"
+
+[597820]
+nom = "BIOMUTANT"
+etat = "non-teste"
+date = "2026-10-11"
+
+[598780]
+nom = "Boreal Blade"
+etat = "non-teste"
+date = "2026-10-11"
+
+[6000]
+nom = "STAR WARS™ Republic Commando"
+etat = "non-teste"
+date = "2026-10-11"
+
+[600130]
+nom = "Valfaris"
+etat = "non-teste"
+date = "2026-10-11"
+
+[603930]
+nom = "Battle Princess Madelyn"
+etat = "non-teste"
+date = "2026-10-11"
+
+[6060]
+nom = "Star Wars: Battlefront 2 (Classic, 2005)"
+etat = "non-teste"
+date = "2026-10-11"
+
+[606280]
+nom = "Darksiders III"
+etat = "non-teste"
+date = "2026-10-11"
+
+[606880]
+nom = "GreedFall"
+etat = "non-teste"
+date = "2026-10-11"
+
+[607050]
+nom = "Wargroove"
+etat = "non-teste"
+date = "2026-10-11"
+
+[609920]
+nom = "Hotshot Racing"
+etat = "non-teste"
+date = "2026-10-11"
+
+[611500]
+nom = "Quake Champions"
+etat = "non-teste"
+date = "2026-10-11"
+
+[61700]
+nom = "Might & Magic: Clash of Heroes"
+etat = "non-teste"
+date = "2026-10-11"
+
+[617290]
+nom = "Remnant: From the Ashes"
+etat = "non-teste"
+date = "2026-10-11"
+
+[618740]
+nom = "Beat Hazard 2"
+etat = "non-teste"
+date = "2026-10-11"
+
+[621060]
+nom = "PC Building Simulator"
+etat = "non-teste"
+date = "2026-10-11"
+
+[627270]
+nom = "Injustice™ 2"
+etat = "non-teste"
+date = "2026-10-11"
+
+[628200]
+nom = "The Invisible Hand"
+etat = "non-teste"
+date = "2026-10-11"
+
+[629090]
+nom = "Horace"
+etat = "non-teste"
+date = "2026-10-11"
+
+[629760]
+nom = "MORDHAU"
+etat = "non-teste"
+date = "2026-10-11"
+
+[629820]
+nom = "Maneater"
+etat = "non-teste"
+date = "2026-10-11"
+
+[63110]
+nom = "Alter Ego"
+etat = "non-teste"
+date = "2026-10-11"
+
+[632360]
+nom = "Risk of Rain 2"
+etat = "non-teste"
+date = "2026-10-11"
+
+[633230]
+nom = "NARUTO TO BORUTO: SHINOBI STRIKER"
+etat = "non-teste"
+date = "2026-10-11"
+
+[633360]
+nom = "Remothered: Tormented Fathers"
+etat = "non-teste"
+date = "2026-10-11"
+
+[635320]
+nom = "Last Day of June"
+etat = "non-teste"
+date = "2026-10-11"
+
+[640120]
+nom = "Youropa"
+etat = "non-teste"
+date = "2026-10-11"
+
+[640590]
+nom = "The LEGO® NINJAGO® Movie Video Game"
+etat = "non-teste"
+date = "2026-10-11"
+
+[644830]
+nom = "The Surge 2"
+etat = "non-teste"
+date = "2026-10-11"
+
+[648350]
+nom = "Jurassic World Evolution"
+etat = "non-teste"
+date = "2026-10-11"
+
+[65500]
+nom = "Aura: Fate of the Ages"
+etat = "non-teste"
+date = "2026-10-11"
+
+[65800]
+nom = "Dungeon Defenders"
+etat = "non-teste"
+date = "2026-10-11"
+
+[661450]
+nom = "The Lighthouse"
+etat = "non-teste"
+date = "2026-10-11"
+
+[668550]
+nom = "8Doors: Arum's Afterlife Adventure"
+etat = "non-teste"
+date = "2026-10-11"
+
+[671510]
+nom = "Desolate"
+etat = "non-teste"
+date = "2026-10-11"
+
+[674500]
+nom = "Total Tank Simulator"
+etat = "non-teste"
+date = "2026-10-11"
+
+[677280]
+nom = "Sigi - A Fart for Melusina"
+etat = "non-teste"
+date = "2026-10-11"
+
+[678900]
+nom = "Farmer's Dynasty - Final Harvest Edition"
+etat = "non-teste"
+date = "2026-10-11"
+
+[678960]
+nom = "CODE VEIN"
+etat = "non-teste"
+date = "2026-10-11"
+
+[684450]
+nom = "Surviving the Aftermath"
+etat = "non-teste"
+date = "2026-10-11"
+
+[690140]
+nom = "Sword Legacy Omen"
+etat = "non-teste"
+date = "2026-10-11"
+
+[690640]
+nom = "Trine 4: The Nightmare Prince"
+etat = "non-teste"
+date = "2026-10-11"
+
+[692850]
+nom = "Bloodstained: Ritual of the Night"
+etat = "non-teste"
+date = "2026-10-11"
+
+[692890]
+nom = "Roboquest"
+etat = "non-teste"
+date = "2026-10-11"
+
+[698670]
+nom = "Scorn"
+etat = "non-teste"
+date = "2026-10-11"
+
+[703080]
+nom = "Planet Zoo"
+etat = "non-teste"
+date = "2026-10-11"
+
+[703860]
+nom = "GRID (2019)"
+etat = "non-teste"
+date = "2026-10-11"
+
+[704270]
+nom = "Generation Zero®"
+etat = "non-teste"
+date = "2026-10-11"
+
+[710920]
+nom = "Darksiders Genesis"
+etat = "non-teste"
+date = "2026-10-11"
+
+[712190]
+nom = "Genesis Alpha One Deluxe Edition"
+etat = "non-teste"
+date = "2026-10-11"
+
+[71230]
+nom = "Crazy Taxi"
+etat = "non-teste"
+date = "2026-10-11"
+
+[71240]
+nom = "SEGA Bass Fishing"
+etat = "non-teste"
+date = "2026-10-11"
+
+[71250]
+nom = "Sonic Adventure DX"
+etat = "non-teste"
+date = "2026-10-11"
+
+[71260]
+nom = "Space Channel 5: Part 2"
+etat = "non-teste"
+date = "2026-10-11"
+
+[71340]
+nom = "Sonic Generations"
+etat = "non-teste"
+date = "2026-10-11"
+
+[715400]
+nom = "Frozen Flame"
+etat = "non-teste"
+date = "2026-10-11"
+
+[7210]
+nom = "Runaway: A Road Adventure"
+etat = "non-teste"
+date = "2026-10-11"
+
+[7220]
+nom = "Runaway: The Dream of the Turtle"
+etat = "non-teste"
+date = "2026-10-11"
+
+[722560]
+nom = "RAD"
+etat = "non-teste"
+date = "2026-10-11"
+
+[725480]
+nom = "Slap City"
+etat = "non-teste"
+date = "2026-10-11"
+
+[727130]
+nom = "Between the Stars"
+etat = "non-teste"
+date = "2026-10-11"
+
+[727850]
+nom = "ELDERBORN"
+etat = "non-teste"
+date = "2026-10-11"
+
+[730390]
+nom = "Raji: An Ancient Epic"
+etat = "non-teste"
+date = "2026-10-11"
+
+[731040]
+nom = "The Invincible"
+etat = "non-teste"
+date = "2026-10-11"
+
+[733790]
+nom = "Not Tonight"
+etat = "non-teste"
+date = "2026-10-11"
+
+[736820]
+nom = "Knights of Honor II: Sovereign"
+etat = "non-teste"
+date = "2026-10-11"
+
+[737800]
+nom = "F1 2018"
+etat = "non-teste"
+date = "2026-10-11"
+
+[738540]
+nom = "Tales of Vesperia: Definitive Edition"
+etat = "non-teste"
+date = "2026-10-11"
+
+[739630]
+nom = "Phasmophobia"
+etat = "non-teste"
+date = "2026-10-11"
+
+[739650]
+nom = "Drake Hollow"
+etat = "non-teste"
+date = "2026-10-11"
+
+[742420]
+nom = "Saints Row"
+etat = "non-teste"
+date = "2026-10-11"
+
+[745920]
+nom = "Temtem"
+etat = "non-teste"
+date = "2026-10-11"
+
+[747350]
+nom = "Hellblade: Senua's Sacrifice VR Edition"
+etat = "non-teste"
+date = "2026-10-11"
+
+[750130]
+nom = "The Sinking City Remastered"
+etat = "non-teste"
+date = "2026-10-11"
+
+[751780]
+nom = "Forager"
+etat = "non-teste"
+date = "2026-10-11"
+
+[751820]
+nom = "Black Future '88"
+etat = "non-teste"
+date = "2026-10-11"
+
+[752590]
+nom = "A Plague Tale: Innocence"
+etat = "non-teste"
+date = "2026-10-11"
+
+[753640]
+nom = "Outer Wilds"
+etat = "non-teste"
+date = "2026-10-11"
+
+[753650]
+nom = "Due Process"
+etat = "non-teste"
+date = "2026-10-11"
+
+[757320]
+nom = "Atomicrops"
+etat = "non-teste"
+date = "2026-10-11"
+
+[760650]
+nom = "Hammerting"
+etat = "non-teste"
+date = "2026-10-11"
+
+[764790]
+nom = "The Messenger"
+etat = "non-teste"
+date = "2026-10-11"
+
+[7650]
+nom = "X-COM: Terror from the Deep"
+etat = "non-teste"
+date = "2026-10-11"
+
+[765880]
+nom = "The Occupation"
+etat = "non-teste"
+date = "2026-10-11"
+
+[7660]
+nom = "X-COM: Apocalypse"
+etat = "non-teste"
+date = "2026-10-11"
+
+[768520]
+nom = "Red Solstice 2: Survivors"
+etat = "non-teste"
+date = "2026-10-11"
+
+[7730]
+nom = "X-COM: Interceptor"
+etat = "non-teste"
+date = "2026-10-11"
+
+[774201]
+nom = "Heaven's Vault"
+etat = "non-teste"
+date = "2026-10-11"
+
+[774241]
+nom = "Warhammer: Chaosbane"
+etat = "non-teste"
+date = "2026-10-11"
+
+[774861]
+nom = "Project Winter"
+etat = "non-teste"
+date = "2026-10-11"
+
+[7760]
+nom = "X-COM: UFO Defense"
+etat = "non-teste"
+date = "2026-10-11"
+
+[7770]
+nom = "X-COM: Enforcer"
+etat = "non-teste"
+date = "2026-10-11"
+
+[7800]
+nom = "Stubbs the Zombie in Rebel Without a Pulse"
+etat = "non-teste"
+date = "2026-10-11"
+
+[782330]
+nom = "DOOM Eternal"
+etat = "non-teste"
+date = "2026-10-11"
+
+[787810]
+nom = "Rogue Heroes: Ruins of Tasos"
+etat = "non-teste"
+date = "2026-10-11"
+
+[788100]
+nom = "Neon Abyss"
+etat = "non-teste"
+date = "2026-10-11"
+
+[790820]
+nom = "Valkyria Chronicles 4 Complete Edition"
+etat = "non-teste"
+date = "2026-10-11"
+
+[792300]
+nom = "The Beast Inside"
+etat = "non-teste"
+date = "2026-10-11"
+
+[792710]
+nom = "Levelhead"
+etat = "non-teste"
+date = "2026-10-11"
+
+[794260]
+nom = "Outward"
+etat = "non-teste"
+date = "2026-10-11"
+
+[797400]
+nom = "Railroad Corporation"
+etat = "non-teste"
+date = "2026-10-11"
+
+[797410]
+nom = "Headsnatchers"
+etat = "non-teste"
+date = "2026-10-11"
+
+[798490]
+nom = "Othercide"
+etat = "non-teste"
+date = "2026-10-11"
+
+[803050]
+nom = "Per Aspera"
+etat = "non-teste"
+date = "2026-10-11"
+
+[803330]
+nom = "Destroy All Humans!"
+etat = "non-teste"
+date = "2026-10-11"
+
+[809890]
+nom = "Shining Resonance Refrain"
+etat = "non-teste"
+date = "2026-10-11"
+
+[812140]
+nom = "Assassin's Creed Odyssey"
+etat = "non-teste"
+date = "2026-10-11"
+
+[812160]
+nom = "Etherborn"
+etat = "non-teste"
+date = "2026-10-11"
+
+[812550]
+nom = "The King's Bird"
+etat = "non-teste"
+date = "2026-10-11"
+
+[813630]
+nom = "Supraland"
+etat = "non-teste"
+date = "2026-10-11"
+
+[820520]
+nom = "Deceive Inc."
+etat = "non-teste"
+date = "2026-10-11"
+
+[824000]
+nom = "Hokko Life"
+etat = "non-teste"
+date = "2026-10-11"
+
+[826630]
+nom = "Iron Harvest"
+etat = "non-teste"
+date = "2026-10-11"
+
+[826940]
+nom = "Maid of Sker"
+etat = "non-teste"
+date = "2026-10-11"
+
+[828740]
+nom = "Tales of the Neon Sea"
+etat = "non-teste"
+date = "2026-10-11"
+
+[834530]
+nom = "Yakuza Kiwami (Legacy)"
+etat = "non-teste"
+date = "2026-10-11"
+
+[834800]
+nom = "SolSeraph"
+etat = "non-teste"
+date = "2026-10-11"
+
+[835960]
+nom = "The Talos Principle 2"
+etat = "non-teste"
+date = "2026-10-11"
+
+[838310]
+nom = "Bloodstained: Curse of the Moon"
+etat = "non-teste"
+date = "2026-10-11"
+
+[841190]
+nom = "Honey, I Joined a Cult"
+etat = "non-teste"
+date = "2026-10-11"
+
+[844260]
+nom = "Rustler"
+etat = "non-teste"
+date = "2026-10-11"
+
+[846870]
+nom = "Yooka-Laylee and the Impossible Lair"
+etat = "non-teste"
+date = "2026-10-11"
+
+[848350]
+nom = "Katamari Damacy REROLL"
+etat = "non-teste"
+date = "2026-10-11"
+
+[850980]
+nom = "GUILTY GEAR"
+etat = "non-teste"
+date = "2026-10-11"
+
+[858820]
+nom = "Tribes of Midgard"
+etat = "non-teste"
+date = "2026-10-11"
+
+[859570]
+nom = "Secret Neighbor"
+etat = "non-teste"
+date = "2026-10-11"
+
+[860510]
+nom = "Little Nightmares II"
+etat = "non-teste"
+date = "2026-10-11"
+
+[863550]
+nom = "HITMAN™ 2"
+etat = "non-teste"
+date = "2026-10-11"
+
+[864680]
+nom = "Rover Mechanic Simulator"
+etat = "non-teste"
+date = "2026-10-11"
+
+[867660]
+nom = "NYKRA: Before"
+etat = "non-teste"
+date = "2026-10-11"
+
+[868020]
+nom = "Aperture Hand Lab"
+etat = "non-teste"
+date = "2026-10-11"
+
+[874260]
+nom = "The Forgotten City"
+etat = "non-teste"
+date = "2026-10-11"
+
+[878670]
+nom = "Shenmue III"
+etat = "non-teste"
+date = "2026-10-11"
+
+[882100]
+nom = "XCOM: Chimera Squad"
+etat = "non-teste"
+date = "2026-10-11"
+
+[889910]
+nom = "Hell Pie"
+etat = "non-teste"
+date = "2026-10-11"
+
+[893180]
+nom = "Catherine Classic"
+etat = "non-teste"
+date = "2026-10-11"
+
+[893680]
+nom = "Project Warlock"
+etat = "non-teste"
+date = "2026-10-11"
+
+[895870]
+nom = "Project Wingman"
+etat = "non-teste"
+date = "2026-10-11"
+
+[897450]
+nom = "The Survivalists"
+etat = "non-teste"
+date = "2026-10-11"
+
+[899310]
+nom = "Iron Danger"
+etat = "non-teste"
+date = "2026-10-11"
+
+[899440]
+nom = "GOD EATER 3"
+etat = "non-teste"
+date = "2026-10-11"
+
+[900040]
+nom = "ELEX II"
+etat = "non-teste"
+date = "2026-10-11"
+
+[903950]
+nom = "Last Oasis"
+etat = "non-teste"
+date = "2026-10-11"
+
+[904360]
+nom = "Family Man"
+etat = "non-teste"
+date = "2026-10-11"
+
+[910490]
+nom = "Killsquad"
+etat = "non-teste"
+date = "2026-10-11"
+
+[914010]
+nom = "Train Station Renovation"
+etat = "non-teste"
+date = "2026-10-11"
+
+[914750]
+nom = "Bee Simulator"
+etat = "non-teste"
+date = "2026-10-11"
+
+[917720]
+nom = "Gamedec - Definitive Edition"
+etat = "non-teste"
+date = "2026-10-11"
+
+[921800]
+nom = "Encased"
+etat = "non-teste"
+date = "2026-10-11"
+
+[927380]
+nom = "Yakuza Kiwami 2 (Legacy)"
+etat = "non-teste"
+date = "2026-10-11"
+
+[929010]
+nom = "Swag and Sorcery"
+etat = "non-teste"
+date = "2026-10-11"
+
+[933820]
+nom = "Endzone - A World Apart"
+etat = "non-teste"
+date = "2026-10-11"
+
+[934780]
+nom = "American Fugitive"
+etat = "non-teste"
+date = "2026-10-11"
+
+[9350]
+nom = "Supreme Commander"
+etat = "non-teste"
+date = "2026-10-11"
+
+[936790]
+nom = "Life is Strange: True Colors"
+etat = "non-teste"
+date = "2026-10-11"
+
+[938380]
+nom = "Townsmen - A Kingdom Rebuilt"
+etat = "non-teste"
+date = "2026-10-11"
+
+[939100]
+nom = "Darksburg"
+etat = "non-teste"
+date = "2026-10-11"
+
+[939850]
+nom = "The Dark Pictures Anthology: Man of Medan"
+etat = "non-teste"
+date = "2026-10-11"
+
+[940710]
+nom = "Colt Canyon"
+etat = "non-teste"
+date = "2026-10-11"
+
+[940910]
+nom = "Minoria"
+etat = "non-teste"
+date = "2026-10-11"
+
+[941570]
+nom = "Relicta"
+etat = "non-teste"
+date = "2026-10-11"
+
+[9420]
+nom = "Supreme Commander: Forged Alliance"
+etat = "non-teste"
+date = "2026-10-11"
+
+[943370]
+nom = "Bravery and Greed"
+etat = "non-teste"
+date = "2026-10-11"
+
+[944010]
+nom = "SWINE HD Remaster"
+etat = "non-teste"
+date = "2026-10-11"
+
+[945360]
+nom = "Among Us"
+etat = "non-teste"
+date = "2026-10-11"
+
+[953880]
+nom = "First Class Trouble"
+etat = "non-teste"
+date = "2026-10-11"
+
+[959520]
+nom = "Fantasy Blacksmith"
+etat = "non-teste"
+date = "2026-10-11"
+
+[965680]
+nom = "Boomerang Fu"
+etat = "non-teste"
+date = "2026-10-11"
+
+[969760]
+nom = "Omno"
+etat = "non-teste"
+date = "2026-10-11"
+
+[969990]
+nom = "SpongeBob SquarePants: Battle for Bikini Bottom - Rehydrated"
+etat = "non-teste"
+date = "2026-10-11"
+
+[973580]
+nom = "Sniper Ghost Warrior Contracts"
+etat = "non-teste"
+date = "2026-10-11"
+
+[973760]
+nom = "Thronebreaker: The Witcher Tales"
+etat = "non-teste"
+date = "2026-10-11"
+
+[975510]
+nom = "Panzer Paladin"
+etat = "non-teste"
+date = "2026-10-11"
+
+[975950]
+nom = "Effie"
+etat = "non-teste"
+date = "2026-10-11"
+
+[976700]
+nom = "Size Matters"
+etat = "non-teste"
+date = "2026-10-11"
+
+[979070]
+nom = "Just Die Already"
+etat = "non-teste"
+date = "2026-10-11"
+
+[979120]
+nom = "Autonauts"
+etat = "non-teste"
+date = "2026-10-11"
+
+[979640]
+nom = "Cepheus Protocol"
+etat = "non-teste"
+date = "2026-10-11"
+
+[979690]
+nom = "The Ascent"
+etat = "non-teste"
+date = "2026-10-11"
+
+[980300]
+nom = "One Finger Death Punch 2"
+etat = "non-teste"
+date = "2026-10-11"
+
+[982720]
+nom = "Paradise Lost"
+etat = "non-teste"
+date = "2026-10-11"
+
+[984800]
+nom = "Automachef"
+etat = "non-teste"
+date = "2026-10-11"
+
+[987840]
+nom = "Expeditions: Rome"
+etat = "non-teste"
+date = "2026-10-11"
+
+[990080]
+nom = "Hogwarts Legacy"
+etat = "non-teste"
+date = "2026-10-11"
+
+[99300]
+nom = "Renegade Ops"
+etat = "non-teste"
+date = "2026-10-11"
+
+[994140]
+nom = "Lightmatter"
+etat = "non-teste"
+date = "2026-10-11"
+
+[995980]
+nom = "Fae Tactics"
+etat = "non-teste"
+date = "2026-10-11"
+
+[996770]
+nom = "Moving Out"
+etat = "non-teste"
+date = "2026-10-11"
+
+[999220]
+nom = "Amnesia: Rebirth"
+etat = "non-teste"
+date = "2026-10-11"

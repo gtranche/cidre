@@ -1,0 +1,52 @@
+# LEGO® The Lord of the Rings™ -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 214510
+nom = "LEGO® The Lord of the Rings™"
+plateformes_steam = "windows"
+moteur = "autre"
+moteur_nom = "Nu2"
+api_disponibles = "d3d9 opengl"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 171
+score = 67
+lanceurs_signales = "steam:96 bottles:1 notListed:1"
+options_lancement_1 = "PROTON_USE_WINED3D=1 %command% (x2)"
+options_lancement_2 = "gamemoderun (x1)"
+lanceur_secondaire = "non:36"
+verdicts_recents = "yes:24 no:1"
+rapports_export = 120
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/214510"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Roaming/Warner Bros. Interactive Entertainment/LEGO The Lord of the Rings/"
+sauvegardes = "steam:userdata/<uid>/214510/remote/savedgames/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Lego_The_Lord_of_the_Rings"

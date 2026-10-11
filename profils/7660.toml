@@ -1,0 +1,44 @@
+# X-COM: Apocalypse -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 7660
+nom = "X-COM: Apocalypse"
+plateformes_steam = "windows"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "low"
+rapports = 7
+score = 40
+lanceurs_signales = "steam:3 notListed:1"
+lanceur_secondaire = "non:1"
+verdicts_recents = "yes:1"
+rapports_export = 4
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/7660"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "jeu:"
+sauvegardes = "jeu:XCOMA/SAVEGAME/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/X-COM%3A_Apocalypse"

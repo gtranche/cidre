@@ -1,0 +1,51 @@
+# Sid Meier's Pirates! -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 3920
+nom = "Sid Meier's Pirates!"
+plateformes_steam = "windows"
+moteur = "autre"
+moteur_nom = "Gamebryo"
+api_disponibles = "d3d9 opengl"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 62
+score = 69
+lanceurs_signales = "steam:23 notListed:1"
+options_lancement_1 = "PROTON_USE_WINED3D=1 %command% (x2)"
+options_lancement_2 = "DXVK_FRAME_RATE=30 %command% (x1)"
+options_lancement_3 = "DXVK_FRAME_RATE=30 fullscreen=0 PROTON_USE_WINED3D=1 %command% (x1)"
+lanceur_secondaire = "non:2"
+verdicts_recents = "yes:7"
+rapports_export = 34
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/3920"
+
+[compat.pcgamingwiki]
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Sid_Meier%27s_Pirates%21_%282004%29"

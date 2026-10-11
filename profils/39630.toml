@@ -1,0 +1,52 @@
+# AquaNox -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 39630
+nom = "AquaNox"
+plateformes_steam = "windows"
+moteur = "autre"
+moteur_nom = "KRASS Engine"
+api = "d3d8"
+api_disponibles = "d3d8"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "moderate"
+rapports = 11
+score = 60
+lanceurs_signales = "steam:6"
+options_lancement_1 = "gamescope -w 1280 -h 720 -W 2560 -H 1440 -f -- %command% (x1)"
+lanceur_secondaire = "non:1"
+verdicts_recents = "yes:2"
+rapports_export = 7
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/39630"
+
+[compat.pcgamingwiki]
+sauvegardes = "AppData/Roaming/AquaNox"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/AquaNox"

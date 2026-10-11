@@ -1,0 +1,65 @@
+# Risk of Rain 2 -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 632360
+nom = "Risk of Rain 2"
+plateformes_steam = "windows"
+moteur = "unity"
+moteur_nom = "Unity"
+api = "d3d11"
+api_disponibles = "d3d11"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 1150
+score = 90
+lanceurs_signales = "steam:551 lutris:1 notListed:1"
+options_lancement_1 = "gamemoderun %command% (x10)"
+options_lancement_2 = "game-performance %command% (x2)"
+options_lancement_3 = "gamemoderun %command (x2)"
+lanceur_secondaire = "non:33 oui:1"
+anticheat_signale = "other:1"
+verdicts_recents = "yes:192 no:17"
+rapports_export = 897
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/632360"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "jeu:Risk of Rain 2_Data/Config/ ; registre:HKEY_CURRENT_USER/Software/Hopoo Games, LLC/Risk of Rain 2/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Risk_of_Rain_2"
+
+[compat.applegamingwiki]
+crossover = "parfait"
+wine = "parfait"
+parallels = "demarre"
+methodes = "crossover gptk"
+dernier_temoignage = "2023-10-08"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Risk_of_Rain_2"

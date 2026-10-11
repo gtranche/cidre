@@ -1,0 +1,65 @@
+# Killing Floor 2 -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 232090
+nom = "Killing Floor 2"
+plateformes_steam = "windows"
+moteur = "unreal"
+moteur_nom = "Unreal Engine 3"
+api = "d3d11"
+api_disponibles = "d3d11"
+bits = 64
+anticheat = "vac"
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+anticheat = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 459
+score = 82
+lanceurs_signales = "steam:177 lutris:4 notListed:1"
+options_lancement_1 = "-nostartupmovies (x4)"
+options_lancement_2 = "mangohud %command%  -nostartupmovies (x3)"
+options_lancement_3 = "gamemoderun %command% -nostartupmovies (x3)"
+lanceur_secondaire = "non:14"
+anticheat_signale = "other:3"
+verdicts_recents = "yes:45 no:3"
+rapports_export = 281
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/232090"
+
+[compat.pcgamingwiki]
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Killing_Floor_2"
+
+[compat.applegamingwiki]
+crossover = "parfait"
+parallels = "parfait"
+methodes = "crossover"
+dernier_temoignage = "2023-03-14"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Killing_Floor_2"

@@ -1,0 +1,53 @@
+# OTXO -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 1608640
+nom = "OTXO"
+plateformes_steam = "windows"
+moteur = "autre"
+moteur_nom = "GameMaker"
+api = "d3d11"
+api_disponibles = "d3d11"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "good"
+rapports = 23
+score = 86
+lanceurs_signales = "steam:22 notListed:2"
+options_lancement_1 = "manghoud %command% (x1)"
+lanceur_secondaire = "non:8 oui:1"
+verdicts_recents = "yes:5"
+rapports_export = 24
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/1608640"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Local/OTXO_Release/Settings.ini"
+sauvegardes = "AppData/Local/OTXO_Release/Save*"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/OTXO"

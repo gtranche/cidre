@@ -1,0 +1,62 @@
+# Resident Evil Village -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 1196590
+nom = "Resident Evil Village"
+plateformes_steam = "windows"
+moteur = "autre"
+moteur_nom = "RE Engine"
+api_disponibles = "d3d12 metal"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 270
+score = 73
+lanceurs_signales = "steam:203 bottles:1"
+options_lancement_1 = "WINEDLLOVERRIDES=\"dinput8.dll=n,b\" %command% (x2)"
+options_lancement_2 = "game-performance mangohud %command% (x2)"
+options_lancement_3 = "PROTON_MEDIA_USE_GST=1  %command% (x2)"
+lanceur_secondaire = "non:18"
+verdicts_recents = "yes:75 no:17"
+rapports_export = 274
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/1196590"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "jeu:config.ini"
+sauvegardes = "steam:userdata/<uid>/1196590/remote/win64_save"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Resident_Evil_Village"
+
+[compat.applegamingwiki]
+natif = "parfait"
+crossover = "ko"
+wine = "ko"
+parallels = "ko"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Resident_Evil_Village"

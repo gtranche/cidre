@@ -1,0 +1,28 @@
+{
+ "date": "2026-01-01",
+ "statut": 200,
+ "corps": {
+  "batchcomplete": true,
+  "query": {
+   "pages": [
+    {
+     "pageid": 1,
+     "ns": 0,
+     "title": "Jeu Fictif",
+     "revisions": [
+      {
+       "timestamp": "2025-06-01T00:00:00Z",
+       "slots": {
+        "main": {
+         "contentmodel": "wikitext",
+         "contentformat": "text/x-wiki",
+         "content": "{{Infobox game\n|steam appid  = 990000001\n}}\n{{Compatibility/macOS\n|native               = na\n|crossover            = playable\n|crossover notes      = Texte editorial a ne pas recopier. <ref>{{Refdevice|user=x|date=2025-03-02|device=MacBook Air M2|os=macOS 15|method=CrossOver 24|comment=}}</ref>\n|wine                 = perfect\n|wine notes           = Autre texte. <ref>{{Refdevice|user=y|date=2025-05-09|device=Mac mini M4|os=macOS 15.4|method=Whisky 2.3.3|comment=GPTK 2.1}}</ref>\n|parallels            = unplayable\n}}\n"
+        }
+       }
+      }
+     ]
+    }
+   ]
+  }
+ }
+}

@@ -1,0 +1,66 @@
+# Sniper Ghost Warrior Contracts -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 973580
+nom = "Sniper Ghost Warrior Contracts"
+plateformes_steam = "windows"
+moteur = "autre"
+moteur_nom = "CryEngine V"
+api = "d3d11"
+api_disponibles = "d3d11"
+bits = 64
+anticheat = "eac"
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+anticheat = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 51
+score = 82
+lanceurs_signales = "steam:16 lutris:5 notListed:2 bottles:2"
+options_lancement_1 = "-vulkan (x1)"
+options_lancement_2 = "Standard for Heroic: ESYNC, FSYNC, MangoHUD, Steam Runtime (x1)"
+lanceur_secondaire = "non:2"
+anticheat_signale = "easyAntiCheat:6"
+verdicts_recents = "yes:11"
+rapports_export = 52
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/973580"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "Saved Games/Sniper Ghost Warrior Contracts/Profiles/default/"
+sauvegardes = "Saved Games/Sniper Ghost Warrior Contracts/SaveGames/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Sniper%3A_Ghost_Warrior_Contracts"
+
+[compat.applegamingwiki]
+crossover = "parfait"
+parallels = "parfait"
+methodes = "crossover parallels"
+dernier_temoignage = "2021-05-10"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Sniper%3A_Ghost_Warrior_Contracts"

@@ -1,0 +1,48 @@
+# Necronomicon: The Dawning of Darkness -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 302390
+nom = "Necronomicon: The Dawning of Darkness"
+plateformes_steam = "windows"
+moteur = "autre"
+moteur_nom = "Phoenix VR"
+bits = 64
+bits_32_aussi = true
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+bits_32_aussi = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "low"
+rapports = 5
+score = 30
+lanceurs_signales = "steam:3"
+verdicts_recents = "yes:1"
+rapports_export = 5
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/302390"
+
+[compat.pcgamingwiki]
+sauvegardes = "jeu:"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Necronomicon%3A_The_Dawning_of_Darkness"

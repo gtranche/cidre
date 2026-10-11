@@ -1,0 +1,15 @@
+{
+ "date": "2026-01-01",
+ "statut": 200,
+ "corps": {
+  "query": {
+   "search": [
+    {
+     "ns": 0,
+     "title": "Jeu Fictif",
+     "pageid": 1
+    }
+   ]
+  }
+ }
+}

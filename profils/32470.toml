@@ -1,0 +1,64 @@
+# STAR WARS™ Empire at War: Gold Pack -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 32470
+nom = "STAR WARS™ Empire at War: Gold Pack"
+plateformes_steam = "windows"
+moteur = "autre"
+moteur_nom = "Alamo Game Engine"
+api_disponibles = "d3d9 opengl"
+bits = 64
+bits_32_aussi = true
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+bits_32_aussi = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 146
+score = 79
+lanceurs_signales = "steam:62 lutris:1"
+options_lancement_1 = "PROTON_FORCE_LARGE_ADDRESS_AWARE=1 gamemoderun %command% (x1)"
+options_lancement_2 = "PROTON_FORCE_LARGE_ADDRESS_AWARE=1 gamemoderun %command% MODPATH=Mods/1976399102 (x1)"
+options_lancement_3 = "STEAM_COMPAT_DATA_PATH=\"$HOME/.steam/debian-installation/steamapps/compatdata/32470\" %command% Modpath=Mods/\"mod name\" (x1)"
+lanceur_secondaire = "non:6"
+verdicts_recents = "yes:26 no:2"
+rapports_export = 102
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/32470"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "registre:HKEY_CURRENT_USER/Software/Petroglyph/StarWars"
+sauvegardes = "Saved Games/Petroglyph/Empire At War/Save/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Star_Wars%3A_Empire_at_War"
+
+[compat.applegamingwiki]
+crossover = "parfait"
+wine = "ko"
+parallels = "parfait"
+dernier_temoignage = "2021-04-30"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Star_Wars%3A_Empire_at_War"

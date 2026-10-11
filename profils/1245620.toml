@@ -1,0 +1,63 @@
+# ELDEN RING -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 1245620
+nom = "ELDEN RING"
+plateformes_steam = "windows"
+api = "d3d12"
+api_disponibles = "d3d12"
+bits = 64
+anticheat = "eac"
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+anticheat = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 2105
+score = 79
+lanceurs_signales = "steam:2096 notListed:9 bottles:3"
+options_lancement_1 = "gamemoderun %command% (x17)"
+options_lancement_2 = "mangohud %command% (x7)"
+options_lancement_3 = "gamemoderun mangohud %command% (x6)"
+lanceur_secondaire = "non:77 oui:2"
+verdicts_recents = "yes:368 no:25"
+rapports_export = 2110
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/1245620"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Roaming/EldenRing/GraphicsConfig.xml"
+sauvegardes = "AppData/Roaming/EldenRing/<uid>/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Elden_Ring"
+
+[compat.applegamingwiki]
+crossover = "jouable"
+wine = "parfait"
+parallels = "ko"
+methodes = "crossover"
+dernier_temoignage = "2025-05-12"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Elden_Ring"

@@ -1,0 +1,59 @@
+# Roboquest -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 692890
+nom = "Roboquest"
+plateformes_steam = "windows"
+moteur = "unreal"
+moteur_nom = "Unreal Engine 4"
+bits = 64
+drm = "drm-free"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 92
+score = 75
+lanceurs_signales = "steam:81 notListed:2 bottles:1"
+options_lancement_1 = "taskset -c 0,2,4,6,8,10,12 %command% (x3)"
+options_lancement_2 = "game-performance %command% (x1)"
+options_lancement_3 = "game-performance prime-run %command% (x1)"
+lanceur_secondaire = "non:10"
+anticheat_signale = "autre:1"
+verdicts_recents = "yes:24 no:1"
+rapports_export = 93
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/692890"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Local/RoboQuest"
+sauvegardes = "AppData/Local/RoboQuest"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Roboquest"
+
+[compat.applegamingwiki]
+natif = "ko"
+crossover = "parfait"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Roboquest"

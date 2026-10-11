@@ -1,0 +1,40 @@
+# Jeu Fictif : fiche de test (fixture). moteur et anticheat sont ecrits a la
+# main et contredits par les fixtures : l'import doit les laisser et le dire.
+[jeu]
+appid = 990000001
+nom = "Jeu Fictif"
+exe = "JeuFictif.exe"
+moteur = "hashlink"   # commentaire en fin de ligne, a garder
+anticheat = "none"
+
+[cidre]
+# commentaire interne : l'import ne doit pas le perdre
+tso = false
+fils_compilation = 4
+
+[[reglages_jeu]]
+fichier = "AppData/Local/Fictif/settings.ini"
+format = "ini"
+section = "Video"
+[reglages_jeu.valeurs]
+"r.Quality" = "1"
+
+[[reglages_jeu]]
+fichier = "AppData/Local/Fictif/settings.ini"
+section = "Audio"
+valeurs = { "Volume" = "0.5" }
+
+[compat]
+etat = "or"
+source = "cidre-test"
+date = "2025-12-31"
+machine = "M1 Max 32 Go"
+cidre_version = "1.5.0"
+fps_menu = 0
+fps_jeu = 60
+notes = "Fiche de test."
+
+[[rapports]]
+date = "2026-01-02"
+etat = "or"
+notes = "Remontee de test."

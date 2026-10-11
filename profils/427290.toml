@@ -1,0 +1,64 @@
+# Vampyr -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 427290
+nom = "Vampyr"
+plateformes_steam = "windows"
+moteur = "unreal"
+moteur_nom = "Unreal Engine 4"
+api = "d3d11"
+api_disponibles = "d3d11"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 107
+score = 82
+lanceurs_signales = "steam:48 notListed:7 lutris:1"
+options_lancement_1 = "__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia %command% __GL_THREADED_OPTIMIZATION=1 __GL_SHADER_DISK_CACHE=1 gamemoderun %command% (x1)"
+options_lancement_2 = "gamemoderun %command% (x1)"
+options_lancement_3 = "PROTON_ENABLE_HDR=1 PROTON_ENABLE_WAYLAND=1 %command% (x1)"
+lanceur_secondaire = "non:15"
+verdicts_recents = "yes:19 no:1"
+rapports_export = 83
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/427290"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Local/AVGame/Saved/Config/WindowsNoEditor"
+sauvegardes = "AppData/Local/AVGame/Saved/SaveGames"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Vampyr"
+
+[compat.applegamingwiki]
+wine = "jouable"
+parallels = "jouable"
+methodes = "gptk heroic"
+dernier_temoignage = "2023-06-14"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Vampyr"

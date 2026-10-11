@@ -1,0 +1,55 @@
+# Catherine Classic -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 893180
+nom = "Catherine Classic"
+plateformes_steam = "windows"
+moteur = "autre"
+moteur_nom = "Gamebryo"
+api = "d3d9"
+api_disponibles = "d3d9"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "silver"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 198
+score = 45
+lanceurs_signales = "steam:131"
+options_lancement_1 = "PROTON_USE_WINE3D=1 gamemoderun %command% (x2)"
+options_lancement_2 = "PROTON_FORCE_LARGE_ADDRESS_AWARE=1 PROTON_USE_WINED3D=0 PROTON_NO_ESYNC=1 PROTON_NO_FSYNC=1 %command% (x2)"
+options_lancement_3 = "gamemoderun %command% (x1)"
+lanceur_secondaire = "non:32"
+verdicts_recents = "yes:38 no:10"
+rapports_export = 166
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/893180"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Roaming/TheEccentricApe/Catherine/AppSettings.ini"
+sauvegardes = "AppData/Roaming/TheEccentricApe/Catherine/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Catherine_Classic"

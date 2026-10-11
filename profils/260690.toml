@@ -1,0 +1,40 @@
+# Dark Fall 1: The Journal -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 260690
+nom = "Dark Fall 1: The Journal"
+plateformes_steam = "windows"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "silver"
+tendance = "silver"
+meilleur_palier = "platinum"
+confiance = "low"
+rapports = 7
+score = 20
+lanceurs_signales = "steam:2 notListed:1"
+rapports_export = 3
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/260690"
+
+[compat.pcgamingwiki]
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Dark_Fall%3A_The_Journal"

@@ -1,0 +1,53 @@
+# Sonic and SEGA All Stars Racing -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 34190
+nom = "Sonic and SEGA All Stars Racing"
+plateformes_steam = "windows"
+moteur = "autre"
+moteur_nom = "Sunshine Engine"
+api = "d3d9"
+api_disponibles = "d3d9"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 50
+score = 59
+lanceurs_signales = "steam:29"
+options_lancement_1 = "PROTON_VERSION=proton-8-0-5 %command (x1)"
+lanceur_secondaire = "non:8"
+verdicts_recents = "yes:6 no:2"
+rapports_export = 40
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/34190"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "jeu:settings.ini"
+sauvegardes = "jeu:ssr_save.bin"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Sonic_%26_Sega_All-Stars_Racing"

@@ -1,0 +1,65 @@
+# Among Us -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 945360
+nom = "Among Us"
+plateformes_steam = "windows"
+moteur = "unity"
+moteur_nom = "Unity"
+api = "d3d11"
+api_disponibles = "d3d11"
+bits = 64
+drm = "drm-free"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 1197
+score = 84
+lanceurs_signales = "steam:390 notListed:13"
+options_lancement_1 = "PROTON_USE_WINED3D=1 %command% (x12)"
+options_lancement_2 = "PROTON_NO_ESYNC=1 PROTON_USE_WINED3D=1 %command% (x3)"
+options_lancement_3 = "HOST_LANG=ru_RU.UTF-8 HOST_LC_ALL=ru_RU.UTF-8 %command% (x3)"
+lanceur_secondaire = "non:13 oui:1"
+anticheat_signale = "other:8 autre:2"
+verdicts_recents = "yes:111 no:9"
+rapports_export = 1199
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/945360"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "registre:HKEY_CURRENT_USER/Software/InnerSloth/Among Us/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Among_Us"
+
+[compat.applegamingwiki]
+crossover = "jouable"
+wine = "jouable"
+parallels = "parfait"
+methodes = "heroic wine"
+dernier_temoignage = "2025-03-15"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Among_Us"

@@ -1,0 +1,54 @@
+# Last Oasis -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 903950
+nom = "Last Oasis"
+plateformes_steam = "windows"
+moteur = "unreal"
+moteur_nom = "Unreal Engine 4"
+api = "d3d11"
+api_disponibles = "d3d11"
+bits = 64
+anticheat = "eac"
+drm = "online ; steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+anticheat = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "bronze"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "good"
+rapports = 18
+score = 16
+lanceurs_signales = "steam:12"
+options_lancement_1 = "~/lsfg %command% (x1)"
+lanceur_secondaire = "oui:1 non:1"
+verdicts_recents = "yes:6 no:1"
+rapports_export = 18
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/903950"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Local/Mist/Saved/Config/WindowsClient/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Last_Oasis"

@@ -1,0 +1,53 @@
+# Chivalry 2 -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 1824220
+nom = "Chivalry 2"
+plateformes_steam = "windows"
+moteur = "unreal"
+moteur_nom = "Unreal Engine 4"
+bits = 64
+anticheat = "eac"
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+anticheat = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 192
+score = 67
+lanceurs_signales = "steam:175 notListed:18"
+options_lancement_1 = "gamemoderun %command% (x11)"
+options_lancement_2 = "eval $(echo \"%command%\" | sed 's/Chivalry2Launcher.exe/TBL\\/Binaries\\/Win64\\/Chivalry2-Win64-Shipping.exe/') (x4)"
+options_lancement_3 = "SteamDeck=1 (x4)"
+lanceur_secondaire = "non:9"
+anticheat_signale = "easyAntiCheat:1"
+verdicts_recents = "yes:58 no:12"
+rapports_export = 194
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/1824220"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Local/Chivalry 2/Saved/Config/WindowsNoEditor"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Chivalry_2"

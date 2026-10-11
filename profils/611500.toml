@@ -1,0 +1,57 @@
+# Quake Champions -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 611500
+nom = "Quake Champions"
+plateformes_steam = "windows"
+moteur = "autre"
+moteur_nom = "Saber3D Engine ; id Tech 5"
+api = "d3d11"
+api_disponibles = "d3d11"
+bits = 64
+drm = "account ; online ; steam"
+anticheat = "eac"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+anticheat = "protondb 2026-10-01"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "silver"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 471
+score = 56
+lanceurs_signales = "steam:157 lutris:2 notListed:1"
+options_lancement_1 = "DXVK_ASYNC=1 gamemoderun mangohud %command% (x2)"
+options_lancement_2 = "gamemoderun PULSE_LATENCY_MSEC=60 PROTON_USE_NTSYNC=1 PROTON_USE_WOW64=1 %command% (x1)"
+options_lancement_3 = "__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia %command% (x1)"
+lanceur_secondaire = "non:7"
+anticheat_signale = "other:15 autre:4 easyAntiCheat:1"
+verdicts_recents = "yes:23 no:8"
+rapports_export = 302
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/611500"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Local/id Software/Quake Champions/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Quake_Champions"

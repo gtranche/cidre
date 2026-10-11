@@ -1,0 +1,53 @@
+# DEATH STRANDING DIRECTOR'S CUT -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 1850570
+nom = "DEATH STRANDING DIRECTOR'S CUT"
+plateformes_steam = "windows"
+moteur = "autre"
+moteur_nom = "Decima"
+api_disponibles = "d3d12 metal"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 357
+score = 85
+lanceurs_signales = "steam:331 notListed:24 bottles:1"
+options_lancement_1 = "gamemoderun %command% (x3)"
+options_lancement_2 = "PROTON_ENABLE_NVAPI=1 VKD3D_CONFIG=dxr gamemoderun %command% -dx12 (x3)"
+options_lancement_3 = "gamemoderun mangohud %command% (x2)"
+lanceur_secondaire = "non:68 oui:1"
+verdicts_recents = "yes:155 no:11"
+rapports_export = 356
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/1850570"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "jeu:settings.cfg"
+sauvegardes = "AppData/Local/KojimaProductions/DeathStrandingDC/<uid>/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Death_Stranding_Director%27s_Cut"

@@ -1,0 +1,69 @@
+# Phasmophobia -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 739630
+nom = "Phasmophobia"
+plateformes_steam = "windows"
+moteur = "unity"
+moteur_nom = "Unity"
+api = "d3d11"
+api_disponibles = "d3d11"
+bits = 64
+anticheat = "autre"
+anticheat_nom = "GuardingPearSoftware's Anti Cheat Pro"
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+anticheat = "pcgamingwiki 2026-10-11"
+anticheat_nom = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 706
+score = 84
+lanceurs_signales = "steam:533 notListed:2"
+options_lancement_1 = "SteamDeck=1 %command% (x59)"
+options_lancement_2 = "SteamDeck=1 gamemoderun %command% (x6)"
+options_lancement_3 = "STEAMDECK=1 %command% (x4)"
+lanceur_secondaire = "non:15"
+verdicts_recents = "yes:202 no:23"
+rapports_export = 714
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/739630"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "registre:HKEY_CURRENT_USER/SOFTWARE/Kinetic Games/Phasmophobia/"
+sauvegardes = "AppData/LocalLow/Kinetic Games/Phasmophobia/*.txt"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Phasmophobia"
+
+[compat.applegamingwiki]
+rosetta = "parfait"
+crossover = "parfait"
+parallels = "jouable"
+methodes = "crossover parallels"
+dernier_temoignage = "2021-04-15"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Phasmophobia"

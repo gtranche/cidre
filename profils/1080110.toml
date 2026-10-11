@@ -1,0 +1,61 @@
+# F1 2020 -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 1080110
+nom = "F1 2020"
+plateformes_steam = "windows"
+moteur = "autre"
+moteur_nom = "EGO"
+api_disponibles = "d3d11 d3d12"
+bits = 64
+drm = "steam"
+anticheat = "battleye"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+anticheat = "protondb 2026-10-01"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 96
+score = 69
+lanceurs_signales = "steam:33"
+lanceur_secondaire = "non:4"
+anticheat_signale = "other:6 autre:1 battleEye:1"
+verdicts_recents = "yes:5"
+rapports_export = 96
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/1080110"
+
+[compat.pcgamingwiki]
+sauvegardes = "steam:userdata/<uid>/1080110/remote/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/F1_2020"
+
+[compat.applegamingwiki]
+crossover = "parfait"
+wine = "parfait"
+parallels = "jouable"
+dernier_temoignage = "2024-03-22"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/F1_2020"

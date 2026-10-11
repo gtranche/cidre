@@ -1,0 +1,50 @@
+# Binary Domain -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 203750
+nom = "Binary Domain"
+plateformes_steam = "windows"
+api = "d3d9"
+api_disponibles = "d3d9"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 50
+score = 69
+lanceurs_signales = "steam:23"
+options_lancement_1 = "gamescope -w 3840 -h 2160 -r 60 -f -- %command% (x2)"
+options_lancement_2 = "DXVK_ASYNC=1 gamemoderun %command% (x1)"
+lanceur_secondaire = "non:9 oui:1"
+verdicts_recents = "yes:11"
+rapports_export = 32
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/203750"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "jeu:savedata/UserCFG.txt"
+sauvegardes = "jeu:savedata/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Binary_Domain"

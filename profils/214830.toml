@@ -1,0 +1,45 @@
+# Half Minute Hero: Super Mega Neo Climax Ultimate Boy -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 214830
+nom = "Half Minute Hero: Super Mega Neo Climax Ultimate Boy"
+plateformes_steam = "windows"
+api_disponibles = "d3d7 d3d9"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 32
+score = 66
+lanceurs_signales = "steam:16"
+lanceur_secondaire = "non:10"
+verdicts_recents = "yes:1"
+rapports_export = 21
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/214830"
+
+[compat.pcgamingwiki]
+sauvegardes = "steam:userdata/<uid>/214830/remote/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Half-Minute_Hero%3A_Super_Mega_Neo_Climax_Ultimate_Boy"

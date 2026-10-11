@@ -1,0 +1,28 @@
+{
+ "date": "2026-01-01",
+ "statut": 200,
+ "corps": {
+  "batchcomplete": true,
+  "query": {
+   "pages": [
+    {
+     "pageid": 1,
+     "ns": 0,
+     "title": "Jeu Fictif",
+     "revisions": [
+      {
+       "timestamp": "2025-06-01T00:00:00Z",
+       "slots": {
+        "main": {
+         "contentmodel": "wikitext",
+         "contentformat": "text/x-wiki",
+         "content": "{{Infobox game\n|cover        = Jeu Fictif cover.png\n|developers   = \n{{Infobox game/row/developer|Studio Fictif}}\n|engines      = \n{{Infobox game/row/engine|Unity|ref=<ref>{{Refurl|url=https://example.invalid|title=x|date=2025-01-01}}</ref>}}\n|steam appid  = 990000001\n|steam appid side = 990000002\n}}\n\n==Game data==\n===Configuration file(s) location===\n{{Game data|\n{{Game data/config|Windows|{{p|localappdata}}\\StudioFictif\\JeuFictif\\settings.cfg}}\n{{Game data/config|macOS (OS X)|{{p|osxhome}}/Library/Application Support/JeuFictif}}\n}}\n===Save game data location===\n{{Game data|\n{{Game data/saves|Windows|{{p|game}}\\save\\*.sav|{{p|hkcu}}\\Software\\StudioFictif}}\n}}\n\n==Availability==\n{{Availability|\n{{Availability/row| Steam | 990000001 | Steam, Denuvo Anti-Tamper | | | Windows }}\n}}\n\n==API==\n{{API\n|direct3d versions      = 11, 12\n|vulkan versions        = \n|opengl versions        = \n|windows 32-bit exe     = true\n|windows 64-bit exe     = true\n|macos arm app          = unknown\n}}\n\n==Middleware==\n{{Middleware\n|anticheat        = Easy Anti-Cheat\n|anticheat notes  = \n}}\n"
+        }
+       }
+      }
+     ]
+    }
+   ]
+  }
+ }
+}

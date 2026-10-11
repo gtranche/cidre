@@ -1,0 +1,58 @@
+# Yakuza 3 Remastered -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 1088710
+nom = "Yakuza 3 Remastered"
+plateformes_steam = "windows"
+api = "d3d11"
+api_disponibles = "d3d11"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 79
+score = 81
+lanceurs_signales = "steam:49 notListed:1 bottles:1"
+options_lancement_1 = "gamescope -W 1920 -H 1080 -r 165 --fullscreen -- gamemoderun DXVK_ASYNC=1 %command% (x1)"
+options_lancement_2 = "gamemoderun mangohud %command% (x1)"
+options_lancement_3 = "gamemoderun %command% (x1)"
+lanceur_secondaire = "non:12"
+verdicts_recents = "yes:13"
+rapports_export = 80
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/1088710"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Roaming/Sega/Yakuza3/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Yakuza_3_Remastered"
+
+[compat.applegamingwiki]
+crossover = "parfait"
+methodes = "crossover"
+dernier_temoignage = "2025-03-06"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Yakuza_3_Remastered"

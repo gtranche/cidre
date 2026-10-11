@@ -1,0 +1,64 @@
+# DOOM Eternal -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 782330
+nom = "DOOM Eternal"
+plateformes_steam = "windows"
+moteur = "autre"
+moteur_nom = "id Tech 7"
+api = "vulkan"
+api_disponibles = "vulkan"
+bits = 64
+drm = "account ; steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 1247
+score = 75
+lanceurs_signales = "steam:691 notListed:8 lutris:6"
+options_lancement_1 = "+com_skipIntroVideo 1 (x3)"
+options_lancement_2 = "mangohud %command% (x3)"
+options_lancement_3 = "LD_PRELOAD=\"\" %command% +com_skipIntroVideo 1 +com_skipSignInManager 1 (x2)"
+lanceur_secondaire = "non:29"
+anticheat_signale = "other:61 autre:17 easyAntiCheat:7 battleEye:1"
+verdicts_recents = "yes:175 no:15"
+rapports_export = 1275
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/782330"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "Saved Games/id Software/DOOMEternal/base/DOOMEternalConfig.cfg ; Saved Games/id Software/DOOMEternal/base/DOOMEternalConfig.local"
+sauvegardes = "Saved Games/id Software/DOOMEternal/base/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Doom_Eternal"
+
+[compat.applegamingwiki]
+crossover = "ko"
+wine = "ko"
+parallels = "ko"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Doom_Eternal"

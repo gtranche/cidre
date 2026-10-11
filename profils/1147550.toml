@@ -1,0 +1,50 @@
+# Not For Broadcast -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 1147550
+nom = "Not For Broadcast"
+plateformes_steam = "windows"
+moteur = "unity"
+moteur_nom = "Unity"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 84
+score = 52
+lanceurs_signales = "steam:70 lutris:2 notListed:2"
+options_lancement_1 = "gamemoderun %command% (x3)"
+options_lancement_2 = "mangohud gamemoderun %command% (x1)"
+lanceur_secondaire = "non:9"
+verdicts_recents = "yes:16 no:7"
+rapports_export = 86
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/1147550"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "registre:HKEY_CURRENT_USER/Software/NotGames/NotForBroadcast"
+sauvegardes = "AppData/LocalLow/NotGames/NotForBroadcast"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Not_for_Broadcast"

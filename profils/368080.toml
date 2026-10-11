@@ -1,0 +1,43 @@
+# Aurion: Legacy of the Kori-Odan -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 368080
+nom = "Aurion: Legacy of the Kori-Odan"
+plateformes_steam = "windows"
+moteur = "autre"
+moteur_nom = "XNA"
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "bronze"
+tendance = "bronze"
+meilleur_palier = "platinum"
+confiance = "moderate"
+rapports = 17
+score = 2
+lanceurs_signales = "steam:3"
+lanceur_secondaire = "non:1"
+rapports_export = 9
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/368080"
+
+[compat.pcgamingwiki]
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Aurion%3A_Legacy_of_the_Kori-Odan"

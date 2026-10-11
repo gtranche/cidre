@@ -1,0 +1,35 @@
+# Dark Messiah of Might & Magic Single Player -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 2100
+nom = "Dark Messiah of Might & Magic Single Player"
+plateformes_steam = "windows"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 95
+score = 62
+lanceurs_signales = "steam:49"
+options_lancement_1 = "PROTON_FORCE_LARGE_ADDRESS_AWARE=1 %command% -novid -w 2560 -h 1440 (x2)"
+options_lancement_2 = "PROTON_FORCE_LARGE_ADDRESS_AWARE=1 PROTON_PRIORITY_HIGH=1 PROTON_USE_WOW64=1 %command% (x2)"
+options_lancement_3 = "RADV_FORCE_VRS=2x2 RADV_PERFTEST=\"dccmsaa,sam,nircache,transfer_queue\" gamemoderun %command% (x1)"
+lanceur_secondaire = "non:6"
+verdicts_recents = "yes:15 no:4"
+rapports_export = 74
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/2100"

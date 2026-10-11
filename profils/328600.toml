@@ -1,0 +1,40 @@
+# Frozen Synapse Prime -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 328600
+nom = "Frozen Synapse Prime"
+plateformes_steam = "windows"
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "bronze"
+tendance = "bronze"
+meilleur_palier = "platinum"
+confiance = "low"
+rapports = 7
+score = 10
+lanceurs_signales = "steam:3"
+lanceur_secondaire = "non:1"
+verdicts_recents = "yes:1"
+rapports_export = 4
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/328600"
+
+[compat.pcgamingwiki]
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Frozen_Synapse_Prime"

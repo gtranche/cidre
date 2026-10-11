@@ -1,0 +1,17 @@
+# Lost & Found: A This Bed We Made Story -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 4333200
+nom = "Lost & Found: A This Bed We Made Story"
+plateformes_steam = "windows"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"

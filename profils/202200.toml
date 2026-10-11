@@ -1,0 +1,47 @@
+# Galactic Civilizations II: Ultimate Edition -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 202200
+nom = "Galactic Civilizations II: Ultimate Edition"
+plateformes_steam = "windows"
+api = "d3d9"
+api_disponibles = "d3d9"
+bits = 32
+drm = "drm-free"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "good"
+rapports = 29
+score = 72
+lanceurs_signales = "steam:9 notListed:1"
+options_lancement_1 = "PROTON_USE_WINED3D=1 %command% (x1)"
+lanceur_secondaire = "non:2"
+verdicts_recents = "yes:3"
+rapports_export = 15
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/202200"
+
+[compat.pcgamingwiki]
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Galactic_Civilizations_II%3A_Dread_Lords"

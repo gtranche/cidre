@@ -1,0 +1,60 @@
+# System Shock: Enhanced Edition -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 410710
+nom = "System Shock: Enhanced Edition"
+plateformes_steam = "windows"
+moteur = "autre"
+moteur_nom = "Kex Engine"
+api_disponibles = "opengl vulkan"
+bits = 64
+drm = "drm-free"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 56
+score = 56
+lanceurs_signales = "steam:30 notListed:3"
+options_lancement_1 = "LD_PRELOAD=/usr/lib/libcurl.so.4 timidity -iA -B2,8 -Os -EFreverb=0 2>&1 & %command% ; killall -9 timidity (x1)"
+options_lancement_2 = "fluidsynth -is -a pulseaudio ~/Music/Soundfonts/SystemShock_MusicAugmentationProject.sf2 & %command% ; pkill -9 \"fluidsynth\" (x1)"
+lanceur_secondaire = "non:12"
+verdicts_recents = "yes:5 no:1"
+rapports_export = 42
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/410710"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Roaming/Nightdive Studios/System Shock EE/kexengine.cfg"
+sauvegardes = "AppData/Roaming/Nightdive Studios/System Shock EE/savegame/archive/savgam**.dat ; AppData/Roaming/Nightdive Studios/System Shock EE/savegame/archive/currsave.dat"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/System_Shock%3A_Enhanced_Edition"
+
+[compat.applegamingwiki]
+wine = "parfait"
+methodes = "whisky"
+dernier_temoignage = "2024-09-06"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/System_Shock%3A_Enhanced_Edition"

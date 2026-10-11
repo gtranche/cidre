@@ -1,0 +1,58 @@
+# Overcooked -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 448510
+nom = "Overcooked"
+plateformes_steam = "windows"
+moteur = "unity"
+moteur_nom = "Unity"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 126
+score = 76
+lanceurs_signales = "steam:27 notListed:3 lutris:1"
+options_lancement_1 = "LD_PRELOAD=\"\" gamemoderun %command% (x1)"
+lanceur_secondaire = "non:3"
+verdicts_recents = "yes:12"
+rapports_export = 49
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/448510"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "registre:HKEY_CURRENT_USER/SOFTWARE/Ghost Town Games/Overcooked/"
+sauvegardes = "AppData/LocalLow/Ghost Town Games/Overcooked/*.save"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Overcooked%21"
+
+[compat.applegamingwiki]
+crossover = "jouable"
+parallels = "parfait"
+methodes = "crossover"
+dernier_temoignage = "2022-05-24"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Overcooked"

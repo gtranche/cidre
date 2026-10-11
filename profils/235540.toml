@@ -1,0 +1,54 @@
+# Warhammer: End Times - Vermintide -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 235540
+nom = "Warhammer: End Times - Vermintide"
+plateformes_steam = "windows"
+moteur = "stingray"
+moteur_nom = "Autodesk Stingray Engine"
+api = "d3d11"
+api_disponibles = "d3d11"
+bits = 32
+drm = "online ; steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 99
+score = 63
+lanceurs_signales = "steam:34"
+options_lancement_1 = "game-performance mangohud %command% (x1)"
+options_lancement_2 = "Run without Launcher (NOT OFFICIALLY SUPORTED) (x1)"
+lanceur_secondaire = "non:3 oui:1"
+verdicts_recents = "yes:7 no:1"
+rapports_export = 64
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/235540"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Roaming/Fatshark/Warhammer End Times Vermintide/*.config"
+sauvegardes = "AppData/Roaming/Fatshark/Warhammer End Times Vermintide/*.sav"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Warhammer%3A_End_Times_-_Vermintide"

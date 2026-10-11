@@ -1,0 +1,33 @@
+# The Cabin Factory -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 3311740
+nom = "The Cabin Factory"
+plateformes_steam = "windows"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "moderate"
+rapports = 11
+score = 62
+lanceurs_signales = "steam:11"
+options_lancement_1 = "gamescope -h 1080 -H 2160 --force-grab-cursor -- %command% (x1)"
+lanceur_secondaire = "non:2"
+verdicts_recents = "yes:10 no:1"
+rapports_export = 11
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/3311740"

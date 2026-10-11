@@ -1,0 +1,61 @@
+# Resident Evil 5 -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 21690
+nom = "Resident Evil 5"
+plateformes_steam = "windows"
+moteur = "autre"
+moteur_nom = "MT Framework"
+api_disponibles = "d3d9 d3d10"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 186
+score = 78
+lanceurs_signales = "steam:146 notListed:1"
+options_lancement_1 = "WINEDLLOVERRIDES=\"dinput8=n,b\" %command% (x2)"
+options_lancement_2 = "PROTON_USE_WOW64=1 %command% WINEDLLOVERRIDES=\"xinput1_3=n,b\" %command% (x2)"
+options_lancement_3 = "MANGOHUD=1 %command% (x1)"
+lanceur_secondaire = "non:33 oui:1"
+anticheat_signale = "other:1"
+verdicts_recents = "yes:50 no:3"
+rapports_export = 159
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/21690"
+
+[compat.pcgamingwiki]
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Resident_Evil_5"
+
+[compat.applegamingwiki]
+wine = "ko"
+parallels = "jouable"
+methodes = "crossover gptk"
+dernier_temoignage = "2021-04-16"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Resident_Evil_5"

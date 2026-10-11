@@ -1,0 +1,59 @@
+# Tales of Berseria -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 429660
+nom = "Tales of Berseria"
+plateformes_steam = "windows"
+api = "d3d9"
+api_disponibles = "d3d9"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 145
+score = 72
+lanceurs_signales = "steam:66"
+options_lancement_1 = "gamemoderun %command% (x1)"
+options_lancement_2 = "PROTON_SET_GAME_DRIVE=1 %command% (x1)"
+options_lancement_3 = "PROTON_SET_GAME_DRIVE=1 WINEDLLOVERRIDES=\"d3d9=n,b,tbfix=n,b,bink2w64=n,b\" gamemoderun mangohud %command% (x1)"
+lanceur_secondaire = "non:23"
+verdicts_recents = "yes:13 no:3"
+rapports_export = 118
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/429660"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Local/BANDAI NAMCO Entertainment/Tales of Berseria/"
+sauvegardes = "steam:userdata/<uid>/429660/remote/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Tales_of_Berseria"
+
+[compat.applegamingwiki]
+crossover = "ko"
+methodes = "parallels wine"
+dernier_temoignage = "2023-02-04"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Tales_of_Berseria"

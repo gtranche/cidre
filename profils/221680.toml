@@ -1,0 +1,61 @@
+# Rocksmith® 2014 Edition - Remastered -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 221680
+nom = "Rocksmith® 2014 Edition - Remastered"
+plateformes_steam = "windows"
+moteur = "autre"
+moteur_nom = "Gamebryo"
+api = "d3d9"
+api_disponibles = "d3d9"
+bits = 32
+drm = "steam ; uplay"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 159
+score = 64
+lanceurs_signales = "steam:100 notListed:3"
+options_lancement_1 = "PIPEWIRE_LATENCY=256/48000 gamemoderun %command% (x3)"
+options_lancement_2 = "PROTON_USE_WOW64=1 WINEDLLPATH=/home/[username]/.local/lib/wine %command% (x2)"
+options_lancement_3 = "LD_PRELOAD=/usr/lib32/libjack.so %command% (x1)"
+lanceur_secondaire = "non:2"
+verdicts_recents = "yes:22 no:9"
+rapports_export = 117
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/221680"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "jeu:Rocksmith.ini"
+sauvegardes = "steam:userdata/<uid>/221680/remote/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Rocksmith_2014"
+
+[compat.applegamingwiki]
+rosetta = "ko"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Rocksmith_2014"

@@ -1,0 +1,55 @@
+# Yakuza: Like a Dragon -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 1235140
+nom = "Yakuza: Like a Dragon"
+plateformes_steam = "windows"
+moteur = "autre"
+moteur_nom = "Dragon Engine"
+api = "d3d11"
+api_disponibles = "d3d11"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 144
+score = 81
+lanceurs_signales = "steam:120 notListed:3 lutris:1 bottles:1"
+options_lancement_1 = "gamemoderun %command% (x4)"
+options_lancement_2 = "gamemoderun mangohud %command% (x1)"
+options_lancement_3 = "mangohud gamemoderun PROTON_NO_ESYNC=1 %command% (x1)"
+lanceur_secondaire = "non:28"
+verdicts_recents = "yes:43 no:3"
+rapports_export = 149
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/1235140"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Roaming/Sega/YakuzaLikeADragon/*.ini"
+sauvegardes = "AppData/Roaming/Sega/YakuzaLikeADragon/<uid>/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Yakuza%3A_Like_a_Dragon"

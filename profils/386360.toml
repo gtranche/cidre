@@ -1,0 +1,56 @@
+# SMITE -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 386360
+nom = "SMITE"
+plateformes_steam = "windows"
+moteur = "unreal"
+moteur_nom = "Unreal Engine 3"
+api_disponibles = "d3d9 d3d11"
+bits = 64
+bits_32_aussi = true
+anticheat = "eac"
+drm = "account ; online ; steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+bits_32_aussi = "pcgamingwiki 2026-10-11"
+anticheat = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "silver"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 411
+score = 49
+lanceurs_signales = "steam:287"
+options_lancement_1 = "gamemoderun %command% (x2)"
+options_lancement_2 = "gamemoderun %command% -high (x1)"
+options_lancement_3 = "gamemoderun  -high (x1)"
+lanceur_secondaire = "non:14"
+anticheat_signale = "easyAntiCheat:69 autre:1"
+verdicts_recents = "yes:10 no:3"
+rapports_export = 392
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/386360"
+
+[compat.pcgamingwiki]
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Smite"

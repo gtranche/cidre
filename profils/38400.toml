@@ -1,0 +1,61 @@
+# Fallout -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 38400
+nom = "Fallout"
+plateformes_steam = "windows"
+moteur = "autre"
+moteur_nom = "Fallout Engine"
+api_disponibles = "d3d9 ddraw opengl"
+bits = 32
+drm = "drm-free"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 164
+score = 75
+lanceurs_signales = "steam:63 notListed:2"
+options_lancement_1 = "$(echo %command% | sed -e s/falloutw/falloutwHR/) (x1)"
+options_lancement_2 = "cd \"../Fallout 2/Fallout1in2\" && WINEDLLOVERRIDES=\"ddraw=n,b\" eval $(echo \"%command%\" | sed 's#Fallout/FalloutLauncher.exe#Fallout 2/Fallout1in2/Fallout2.exe#') (x1)"
+options_lancement_3 = "MANGOHUD=1 MANGOHUD_CONFIG=fps_limit=180,fps_limit_method=early WINE_FULLSCREEN_INTEGER_SCALING=1 PROTON_DXVK_GPLASYNC=1 PROTON_NO_STEAMINPUT=1 WINEDLLOVERRIDES=\"ddraw=n,b\" game-performance %command% (x1)"
+lanceur_secondaire = "non:7"
+verdicts_recents = "yes:19 no:1"
+rapports_export = 89
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/38400"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "jeu:fallout.cfg"
+sauvegardes = "jeu:data/SAVEGAME/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Fallout"
+
+[compat.applegamingwiki]
+natif = "parfait"
+crossover = "ko"
+parallels = "parfait"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Fallout"

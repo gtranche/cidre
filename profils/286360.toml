@@ -1,0 +1,52 @@
+# Shadows on the Vatican - Act I: Greed -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 286360
+nom = "Shadows on the Vatican - Act I: Greed"
+plateformes_steam = "windows"
+moteur = "autre"
+moteur_nom = "Wintermute"
+api = "d3d9"
+api_disponibles = "d3d9"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "moderate"
+rapports = 9
+score = 35
+lanceurs_signales = "steam:6"
+lanceur_secondaire = "non:2"
+verdicts_recents = "yes:1"
+rapports_export = 6
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/286360"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "registre:HKEY_CURRENT_USER/Software/Adventure Productions/SotV1 (SD version) ; registre:HKEY_CURRENT_USER/Software/Adventure Productions/SotV1_HD (HD version)"
+sauvegardes = "Saved Games/Shadows on the Vatican Act I/ (SD version) ; Saved Games/Shadows on the Vatican Act I HD/ (HD version)"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Shadows_on_the_Vatican_-_Act_I%3A_Greed"

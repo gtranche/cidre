@@ -1,0 +1,12 @@
+{
+ "date": "2026-01-01",
+ "statut": 200,
+ "corps": {
+  "bestReportedTier": "platinum",
+  "confidence": "strong",
+  "score": 0.61,
+  "tier": "gold",
+  "total": 42,
+  "trendingTier": "gold"
+ }
+}

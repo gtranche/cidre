@@ -1,0 +1,54 @@
+# The Room -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 288160
+nom = "The Room"
+plateformes_steam = "windows"
+moteur = "unity"
+moteur_nom = "Unity"
+api = "d3d9"
+api_disponibles = "d3d9"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 86
+score = 87
+lanceurs_signales = "steam:40"
+options_lancement_1 = "gamemoderun PROTON_USE_D9VK=1 %command% (x1)"
+options_lancement_2 = "PROTON_NO_D3D11=1 %command% (x1)"
+options_lancement_3 = "PROTON_USE_WINED3D=1 %command% (x1)"
+lanceur_secondaire = "non:10"
+verdicts_recents = "yes:16 no:2"
+rapports_export = 60
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/288160"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "registre:HKEY_CURRENT_USER/Software/Fireproof Games/The Room/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/The_Room"

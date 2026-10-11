@@ -1,0 +1,63 @@
+# CODE VEIN -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 678960
+nom = "CODE VEIN"
+plateformes_steam = "windows"
+moteur = "unreal"
+moteur_nom = "Unreal Engine 4"
+api = "d3d11"
+api_disponibles = "d3d11"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 219
+score = 74
+lanceurs_signales = "steam:117"
+options_lancement_1 = "WINE_CPU_TOPOLOGY=8:0,1,2,3,4,5,6,7 %command% (x9)"
+options_lancement_2 = "-windowed (x2)"
+options_lancement_3 = "PROTON_NO_ESYNC=1 PROTON_USE_WINED3D=1 %command% (x1)"
+lanceur_secondaire = "non:11"
+verdicts_recents = "yes:32 no:25"
+rapports_export = 186
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/678960"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Local/CodeVein/Saved/Config/WindowsNoEditor"
+sauvegardes = "AppData/Local/CodeVein/Saved/SaveGames"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Code_Vein"
+
+[compat.applegamingwiki]
+crossover = "ko"
+wine = "ko"
+parallels = "ko"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Code_Vein"

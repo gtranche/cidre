@@ -1,0 +1,62 @@
+# A Plague Tale: Innocence -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 752590
+nom = "A Plague Tale: Innocence"
+plateformes_steam = "windows"
+moteur = "autre"
+moteur_nom = "Zouna"
+api = "d3d11"
+api_disponibles = "d3d11"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 269
+score = 88
+lanceurs_signales = "steam:111 notListed:22 lutris:2 bottles:1"
+options_lancement_1 = "DXVK_FRAME_RATE=120 (x2)"
+options_lancement_2 = "game-performance mangohud %command% (x1)"
+options_lancement_3 = "DXVK_FRAME_RATE=120 game-performance %command% (x1)"
+lanceur_secondaire = "non:24"
+verdicts_recents = "yes:44 no:2"
+rapports_export = 227
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/752590"
+
+[compat.pcgamingwiki]
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/A_Plague_Tale%3A_Innocence"
+
+[compat.applegamingwiki]
+crossover = "parfait"
+parallels = "parfait"
+methodes = "crossover gptk heroic parallels"
+dernier_temoignage = "2024-12-26"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/A_Plague_Tale%3A_Innocence"

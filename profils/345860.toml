@@ -1,0 +1,45 @@
+# Super Galaxy Squadron EX Turbo -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 345860
+nom = "Super Galaxy Squadron EX Turbo"
+plateformes_steam = "windows"
+moteur = "autre"
+moteur_nom = "GameMaker"
+drm = "drm-free"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "pending"
+tendance = "pending"
+meilleur_palier = "platinum"
+confiance = "inadequate"
+rapports = 1
+score = 21
+lanceurs_signales = "steam:1"
+verdicts_recents = "yes:1"
+rapports_export = 1
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/345860"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Local/Super_Galaxy_Squadron_EX_Turbo/cfg.sav"
+sauvegardes = "AppData/Local/Super_Galaxy_Squadron_EX_Turbo/ with  for the original Super Galaxy Squadron.}}"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Super_Galaxy_Squadron_EX"

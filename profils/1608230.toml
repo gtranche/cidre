@@ -1,0 +1,62 @@
+# Planet of Lana -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 1608230
+nom = "Planet of Lana"
+plateformes_steam = "windows"
+moteur = "unity"
+moteur_nom = "Unity"
+api = "d3d11"
+api_disponibles = "d3d11"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 36
+score = 90
+lanceurs_signales = "steam:33 notListed:3"
+options_lancement_1 = "PROTON_USE_WINED3D=1 STEAM_COMPAT_MOUNTS=/dev/input %command% (x1)"
+lanceur_secondaire = "non:7"
+verdicts_recents = "yes:18"
+rapports_export = 36
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/1608230"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "registre:HKEY_CURRENT_USER/Software/Wishfully/Planet of Lana/ ; AppData/LocalLow/Wishfully/Planet of Lana/settings"
+sauvegardes = "AppData/LocalLow/Wishfully/Planet of Lana/*.sav"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Planet_of_Lana"
+
+[compat.applegamingwiki]
+rosetta = "parfait"
+crossover = "parfait"
+wine = "parfait"
+methodes = "crossover gptk kegworks whisky wine"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Planet_of_Lana"

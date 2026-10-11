@@ -1,0 +1,62 @@
+# The Callisto Protocol -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 1544020
+nom = "The Callisto Protocol"
+plateformes_steam = "windows"
+moteur = "unreal"
+moteur_nom = "Unreal Engine 4"
+api_disponibles = "d3d11 d3d12"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 68
+score = 88
+lanceurs_signales = "steam:58 notListed:9 bottles:1"
+options_lancement_1 = "Used version from epic games launched via heroic game laucher (x1)"
+options_lancement_2 = "gamemoderun %command% (x1)"
+options_lancement_3 = "VKD3D_CONFIG=dxr11,dxr PROTON_ENABLE_NVAPI=1 PROTON_ENABLE_NGX_UPDATER=1 %command% (x1)"
+lanceur_secondaire = "non:8"
+verdicts_recents = "yes:19 no:2"
+rapports_export = 69
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/1544020"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Local/CallistoProtocol/Saved/Config/WindowsNoEditor"
+sauvegardes = "AppData/Local/CallistoProtocol/Saved/SaveGames"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/The_Callisto_Protocol"
+
+[compat.applegamingwiki]
+crossover = "parfait"
+wine = "parfait"
+methodes = "kegworks wine"
+dernier_temoignage = "2025-06-14"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/The_Callisto_Protocol"

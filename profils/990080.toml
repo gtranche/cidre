@@ -1,0 +1,64 @@
+# Hogwarts Legacy -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 990080
+nom = "Hogwarts Legacy"
+plateformes_steam = "windows"
+moteur = "unreal"
+moteur_nom = "Unreal Engine 4"
+api = "d3d12"
+api_disponibles = "d3d12"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 801
+score = 81
+lanceurs_signales = "steam:777 notListed:27"
+options_lancement_1 = "gamemoderun %command% (x11)"
+options_lancement_2 = "gamemoderun mangohud %command% (x5)"
+options_lancement_3 = "MANGOHUD=1 gamemoderun %command% (x3)"
+lanceur_secondaire = "non:83"
+verdicts_recents = "yes:284 no:36"
+rapports_export = 804
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/990080"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Local/Hogwarts Legacy/Saved/Config/WindowsNoEditor ; AppData/Local/Hogwarts/Saved/Config/WindowNoEditor<uid> when streaming to other devices.}} ; AppData/Local/Phoenix/Saved/Config/WindowsNoEditor"
+sauvegardes = "AppData/Local/Hogwarts Legacy/Saved/SaveGames/<uid> ; AppData/Local/HogwartsLegacy/Saved/SaveGames/<uid> ; AppData/Local/Hogwarts/Saved/SaveGames/<uid> when streaming to other devices.}} ; AppData/Local/Phoenix/Saved/SaveGames/<uid>"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Hogwarts_Legacy"
+
+[compat.applegamingwiki]
+crossover = "parfait"
+wine = "parfait"
+parallels = "ko"
+methodes = "crossover"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Hogwarts_Legacy"

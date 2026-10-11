@@ -1,0 +1,65 @@
+# Resident Evil Revelations 2 -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 287290
+nom = "Resident Evil Revelations 2"
+plateformes_steam = "windows"
+moteur = "autre"
+moteur_nom = "MT Framework"
+api = "d3d9"
+api_disponibles = "d3d9"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 82
+score = 63
+lanceurs_signales = "steam:62 lutris:2 bottles:1 notListed:1"
+options_lancement_1 = "PROTON_USE_WINED3D %command% (x1)"
+options_lancement_2 = "WINEDLLOVERRIDES=\"dinput8=n,b\" mangohud gamemoderun %command% (x1)"
+options_lancement_3 = "PROTON_NO_ESYNC=1 RADV_PERFTEST=aco %command% (x1)"
+lanceur_secondaire = "non:13"
+verdicts_recents = "yes:17 no:4"
+rapports_export = 69
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/287290"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Local/capcom/RESIDENT EVIL REVELATIONS2/config.ini"
+sauvegardes = "steam:userdata/<uid>/287290/remote/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Resident_Evil%3A_Revelations_2"
+
+[compat.applegamingwiki]
+crossover = "ko"
+wine = "ko"
+parallels = "demarre"
+methodes = "crossover gptk"
+dernier_temoignage = "2021-07-14"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Resident_Evil_Revelations_2"

@@ -1,0 +1,48 @@
+# STAR WARS™ Rebellion -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 441550
+nom = "STAR WARS™ Rebellion"
+plateformes_steam = "windows"
+api = "ddraw"
+api_disponibles = "ddraw"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "silver"
+tendance = "silver"
+meilleur_palier = "platinum"
+confiance = "moderate"
+rapports = 18
+score = 27
+lanceurs_signales = "steam:8 notListed:1"
+options_lancement_1 = "WINEDLLOVERRIDES=\"d3d8.dll,d3d9.dll,d3dimm.dll,ddraw.dll=n,b\" %command% (x1)"
+lanceur_secondaire = "non:5"
+verdicts_recents = "yes:2 no:1"
+rapports_export = 11
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/441550"
+
+[compat.pcgamingwiki]
+sauvegardes = "jeu:SaveGame"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Star_Wars%3A_Rebellion"

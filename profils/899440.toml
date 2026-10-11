@@ -1,0 +1,44 @@
+# GOD EATER 3 -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 899440
+nom = "GOD EATER 3"
+plateformes_steam = "windows"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 38
+score = 57
+lanceurs_signales = "steam:22"
+options_lancement_1 = "systemd-inhibit game-performance %command% (x1)"
+lanceur_secondaire = "non:3"
+verdicts_recents = "yes:6"
+rapports_export = 29
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/899440"
+
+[compat.pcgamingwiki]
+sauvegardes = "steam:userdata/<uid>/899440/remote/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/God_Eater_3"

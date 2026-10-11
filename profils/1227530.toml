@@ -1,0 +1,48 @@
+# Partisans 1941 -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 1227530
+nom = "Partisans 1941"
+plateformes_steam = "windows"
+moteur = "unreal"
+moteur_nom = "Unreal Engine 4"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 31
+score = 67
+lanceurs_signales = "steam:17"
+options_lancement_1 = "mangohud game-performance %command% (x1)"
+verdicts_recents = "yes:2"
+rapports_export = 31
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/1227530"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Local/Partisans/Saved/Config/WindowsNoEditor"
+sauvegardes = "AppData/Local/Partisans/Saved/SaveGames"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Partisans_1941"

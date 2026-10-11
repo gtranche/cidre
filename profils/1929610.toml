@@ -1,0 +1,34 @@
+# Demonologist -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 1929610
+nom = "Demonologist"
+plateformes_steam = "windows"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 43
+score = 53
+lanceurs_signales = "steam:43"
+options_lancement_1 = "gamemoderun %command% (x1)"
+options_lancement_2 = "gamemoderun %command% -dx11 (x1)"
+lanceur_secondaire = "non:4"
+verdicts_recents = "yes:11 no:1"
+rapports_export = 43
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/1929610"

@@ -1,0 +1,61 @@
+# Sea of Thieves -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 1172620
+nom = "Sea of Thieves"
+plateformes_steam = "windows"
+moteur = "unreal"
+moteur_nom = "Unreal Engine 4"
+api_disponibles = "d3d11 d3d12"
+bits = 64
+drm = "account ; online ; steam"
+anticheat = "eac"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+anticheat = "protondb 2026-10-01"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 793
+score = 75
+lanceurs_signales = "steam:603 notListed:2 bottles:1"
+options_lancement_1 = "gamemoderun %command% (x16)"
+options_lancement_2 = "-d3d11 (x6)"
+options_lancement_3 = "mangohud %command% (x5)"
+lanceur_secondaire = "non:17 oui:3"
+anticheat_signale = "other:7 easyAntiCheat:1"
+verdicts_recents = "yes:165 no:33"
+rapports_export = 802
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/1172620"
+
+[compat.pcgamingwiki]
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Sea_of_Thieves"
+
+[compat.applegamingwiki]
+crossover = "ko"
+parallels = "jouable"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Sea_of_Thieves"

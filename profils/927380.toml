@@ -1,0 +1,62 @@
+# Yakuza Kiwami 2 (Legacy) -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 927380
+nom = "Yakuza Kiwami 2 (Legacy)"
+plateformes_steam = "windows"
+moteur = "autre"
+moteur_nom = "Dragon Engine"
+api = "d3d11"
+api_disponibles = "d3d11"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 108
+score = 85
+lanceurs_signales = "steam:55 notListed:2"
+options_lancement_1 = "gamemoderun mangohud %comand% (x1)"
+options_lancement_2 = "gamemoderun %command% (x1)"
+options_lancement_3 = "LD_PRELOAD=\"\" gamescope -W 1920 -H 1080 -f --adaptive-sync --mangoapp -- %command% (x1)"
+lanceur_secondaire = "non:14"
+verdicts_recents = "yes:15"
+rapports_export = 85
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/927380"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Roaming/Sega/YakuzaKiwami2/"
+sauvegardes = "AppData/Roaming/Sega/YakuzaKiwami2/<uid>/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Yakuza_Kiwami_2"
+
+[compat.applegamingwiki]
+crossover = "jouable"
+dernier_temoignage = "2025-03-06"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Yakuza_Kiwami_2"

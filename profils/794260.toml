@@ -1,0 +1,62 @@
+# Outward -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 794260
+nom = "Outward"
+plateformes_steam = "windows"
+moteur = "unity"
+moteur_nom = "Unity"
+api = "d3d11"
+api_disponibles = "d3d11"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 111
+score = 82
+lanceurs_signales = "steam:44"
+options_lancement_1 = "WINEDLLOVERRIDES=\"winhttp.dll=n,b\" %command% (x1)"
+lanceur_secondaire = "non:6"
+anticheat_signale = "other:1"
+verdicts_recents = "yes:14"
+rapports_export = 79
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/794260"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "jeu:OptionSettings.oos ; jeu:Player0_Keymappings.xml ; jeu:Outward_Defed/OptionSettings.oos ; jeu:Outward_Defed/Player0_Keymappings.xml"
+sauvegardes = "jeu:SaveGames/ ; jeu:Outward_Defed/SaveGames/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Outward"
+
+[compat.applegamingwiki]
+crossover = "parfait"
+parallels = "parfait"
+methodes = "crossover"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Outward"

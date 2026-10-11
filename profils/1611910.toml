@@ -1,0 +1,49 @@
+# Warhammer 40,000: Chaos Gate - Daemonhunters -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 1611910
+nom = "Warhammer 40,000: Chaos Gate - Daemonhunters"
+plateformes_steam = "windows"
+moteur = "unity"
+moteur_nom = "Unity"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 53
+score = 77
+lanceurs_signales = "steam:53"
+options_lancement_1 = "PULSE_LATENCY_MSEC=60 %command% (x1)"
+options_lancement_2 = "PROTON 10 (x1)"
+lanceur_secondaire = "non:17"
+verdicts_recents = "yes:11 no:1"
+rapports_export = 53
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/1611910"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "In Registry : HKCU/SOFTWARE/Complex Games Inc./GreyKnights"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Warhammer_40%2C000%3A_Chaos_Gate_-_Daemonhunters"

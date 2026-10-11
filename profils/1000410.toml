@@ -1,0 +1,52 @@
+# WRATH: Aeon of Ruin -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 1000410
+nom = "WRATH: Aeon of Ruin"
+plateformes_steam = "windows"
+moteur = "autre"
+moteur_nom = "DarkPlaces"
+api = "opengl"
+api_disponibles = "opengl"
+bits = 64
+drm = "drm-free"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "good"
+rapports = 27
+score = 86
+lanceurs_signales = "steam:9"
+lanceur_secondaire = "non:1"
+verdicts_recents = "yes:4"
+rapports_export = 27
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/1000410"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "jeu:kp1/wrath.cfg"
+sauvegardes = "jeu:kp1/data/profiles"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Wrath%3A_Aeon_of_Ruin"

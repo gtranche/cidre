@@ -1,0 +1,29 @@
+{
+ "total": 40,
+ "recents": 12,
+ "verdicts_recents": {
+  "yes": 10,
+  "no": 2
+ },
+ "lanceurs": {
+  "steam": 38,
+  "bottles": 2
+ },
+ "options_lancement": [
+  {
+   "options": "-dx11 %command%",
+   "n": 5
+  },
+  {
+   "options": "gamemoderun %command%",
+   "n": 2
+  }
+ ],
+ "anticheat": {
+  "easyAntiCheat": 6
+ },
+ "lanceur_secondaire": {
+  "non": 7,
+  "oui": 1
+ }
+}

@@ -1,0 +1,63 @@
+# Aliens: Fireteam Elite -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 1549970
+nom = "Aliens: Fireteam Elite"
+plateformes_steam = "windows"
+moteur = "unreal"
+moteur_nom = "Unreal Engine 4"
+api = "d3d11"
+api_disponibles = "d3d11"
+bits = 64
+drm = "drm-free"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 79
+score = 84
+lanceurs_signales = "steam:49"
+options_lancement_1 = "gamemoderun %command% (x1)"
+options_lancement_2 = "DXVK_FRAME_RATE=90 PROTON_ENABLE_WAYLAND=1 gamemoderun mangohud %command% (x1)"
+lanceur_secondaire = "non:10"
+verdicts_recents = "yes:18"
+rapports_export = 80
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/1549970"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Local/Endeavor/Saved/Config/WindowsNoEditor/"
+sauvegardes = "AppData/Local/Endeavor/Saved/SaveGames/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Aliens%3A_Fireteam_Elite"
+
+[compat.applegamingwiki]
+crossover = "jouable"
+wine = "parfait"
+parallels = "parfait"
+methodes = "whisky"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Aliens%3A_Fireteam_Elite"

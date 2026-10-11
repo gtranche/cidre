@@ -1,0 +1,65 @@
+# Empyrion - Galactic Survival -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 383120
+nom = "Empyrion - Galactic Survival"
+plateformes_steam = "windows"
+moteur = "unity"
+moteur_nom = "Unity"
+api = "d3d11"
+api_disponibles = "d3d11"
+bits = 64
+anticheat = "eac"
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+anticheat = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 160
+score = 59
+lanceurs_signales = "steam:69 lutris:1"
+options_lancement_1 = "LD_PRELOAD=\"\" PULSE_LATENCY_MSEC=60 %command% (x1)"
+options_lancement_2 = "$(cat ~/.empyrion-launch-options.txt) (x1)"
+options_lancement_3 = "MANGOHUD=1 PROTON_NO_ESYNC=1 PROTON_NO_FSYNC=0 %command% -force-d3d11 -high -malloc=system (x1)"
+lanceur_secondaire = "non:6"
+anticheat_signale = "easyAntiCheat:28 autre:2 battleEye:1 other:1"
+verdicts_recents = "yes:13 no:2"
+rapports_export = 120
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/383120"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "registre:HKEY_CURRENT_USER/SOFTWARE/Eleon Game Studios/Empyrion - Galactic Survival/"
+sauvegardes = "jeu:Saves/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Empyrion_-_Galactic_Survival"
+
+[compat.applegamingwiki]
+crossover = "jouable"
+parallels = "jouable"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Empyrion_-_Galactic_Survival"

@@ -1,0 +1,10 @@
+[
+ {
+  "appid": 990000001,
+  "nom": "Jeu Fictif",
+  "plateformes": [
+   "windows"
+  ],
+  "installe": false
+ }
+]

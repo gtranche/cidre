@@ -1,0 +1,55 @@
+# Tribes of Midgard -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 858820
+nom = "Tribes of Midgard"
+plateformes_steam = "windows"
+moteur = "unreal"
+moteur_nom = "Unreal Engine 4"
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 46
+score = 71
+lanceurs_signales = "steam:22"
+lanceur_secondaire = "non:2"
+verdicts_recents = "yes:1"
+rapports_export = 46
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/858820"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Local/TOM/Saved/Config/WindowsNoEditor"
+sauvegardes = "AppData/Local/TOM/Saved/SaveGames"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Tribes_of_Midgard"
+
+[compat.applegamingwiki]
+crossover = "ko"
+parallels = "jouable"
+methodes = "crossover"
+dernier_temoignage = "2022-02-23"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Tribes_of_Midgard"

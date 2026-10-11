@@ -1,0 +1,57 @@
+# STAR WARS™ Galactic Battlegrounds Saga -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 356500
+nom = "STAR WARS™ Galactic Battlegrounds Saga"
+plateformes_steam = "windows"
+moteur = "autre"
+moteur_nom = "Genie"
+api_disponibles = "ddraw opengl"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 50
+score = 60
+lanceurs_signales = "steam:26 notListed:4"
+options_lancement_1 = "WINEPREFIX=\"prefix location\" WINEARCH=win32 gamemoderun wine battlegrounds_x2.exe (x1)"
+lanceur_secondaire = "non:4 oui:3"
+verdicts_recents = "yes:12 no:1"
+rapports_export = 34
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/356500"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "jeu:Game/player.nfx ; jeu:Game/player.nf1 ; registre:HKEY_CURRENT_USER/Software/LucasArts Entertainment Company LLC/Star Wars Galactic Battlegrounds: Clone Campaigns/1.0"
+sauvegardes = "jeu:Game/SaveGame"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Star_Wars%3A_Galactic_Battlegrounds"
+
+[compat.applegamingwiki]
+parallels = "parfait"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Star_Wars%3A_Galactic_Battlegrounds_Saga"

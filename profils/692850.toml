@@ -1,0 +1,62 @@
+# Bloodstained: Ritual of the Night -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 692850
+nom = "Bloodstained: Ritual of the Night"
+plateformes_steam = "windows"
+moteur = "unreal"
+moteur_nom = "Unreal Engine 4"
+api = "d3d11"
+api_disponibles = "d3d11"
+bits = 64
+drm = "drm-free"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 217
+score = 86
+lanceurs_signales = "steam:76 notListed:2 lutris:1"
+lanceur_secondaire = "non:21"
+verdicts_recents = "yes:17"
+rapports_export = 136
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/692850"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Local/BloodstainedRotN/Saved/Config/WindowsNoEditor/"
+sauvegardes = "AppData/Local/BloodstainedRotN/Saved/SaveGames/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Bloodstained%3A_Ritual_of_the_Night"
+
+[compat.applegamingwiki]
+crossover = "ko"
+wine = "parfait"
+parallels = "parfait"
+methodes = "gptk kegworks wine"
+dernier_temoignage = "2025-01-30"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Bloodstained%3A_Ritual_of_the_Night"

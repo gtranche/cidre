@@ -1,0 +1,49 @@
+# GUILTY GEAR Xrd REV 2 -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 520440
+nom = "GUILTY GEAR Xrd REV 2"
+plateformes_steam = "windows"
+moteur = "unreal"
+moteur_nom = "Unreal Engine 3"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 83
+score = 77
+lanceurs_signales = "steam:36"
+lanceur_secondaire = "non:5"
+anticheat_signale = "other:1"
+verdicts_recents = "yes:7"
+rapports_export = 58
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/520440"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "jeu:REDGame/Config"
+sauvegardes = "jeu:SAVE"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Guilty_Gear_Xrd_-Revelator-"
