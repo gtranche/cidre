@@ -44,5 +44,5 @@ serie_dxvk() {
 }
 
 serie_dxmt() {
-   ls "$R"/0110-dxmt-*.patch 2>/dev/null
+   ls "$R"/011[0-9]-dxmt-*.patch 2>/dev/null
 }

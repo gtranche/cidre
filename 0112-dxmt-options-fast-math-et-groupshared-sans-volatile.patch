@@ -1,0 +1,247 @@
+dxmt : options d3d11.fastMath et d3d11.relaxedGroupshared pour les shaders convertis
+
+Deux constats sur l'AIR produit par airconv pour les 1174 shaders
+d'Expedition 33 (cache DXMT desassemble par llvm-dis 15) :
+
+  - aucune operation flottante des etages vertex ne porte de drapeau
+    contract/reassoc (choix amont : eviter le z-fighting entre pre-passe et
+    passe de base), et dans les etages pixel 55 % des operations n'en ont
+    pas parce que le DXBC d'UE5 porte le bit « precise » ; un mul+add reste
+    alors deux instructions au lieu d'un fma. L'UE5 natif Metal compile tout
+    avec -ffast-math (r.Shaders.FastMath=1 par defaut).
+  - tout acces a la memoire de groupe (groupshared, addrspace 3) est emis
+    volatile (3658 loads + 2509 stores dans 111 shaders de calcul), ce qui
+    interdit au compilateur Metal de factoriser ou vectoriser ces acces ;
+    les barrieres air.wg.barrier (convergent, sans readnone) suffisent a
+    ordonner la memoire.
+
+Deux drapeaux de compilation, SM50_SHADER_FLAG_FAST_MATH et
+SM50_SHADER_FLAG_TGSM_NO_VOLATILE, portes par AIRBuilderOptions et poses par
+les options de configuration d3d11.fastMath et d3d11.relaxedGroupshared
+(fausses par defaut : rien ne change sans elles). Les drapeaux entrent deja
+dans le digest de variante (getGlobalShaderFlag) : chaque combinaison a ses
+entrees de cache, rien a effacer, mais les shaders sont recompiles au premier
+lancement d'une variante.
+
+diff --git a/dxmt.conf b/dxmt.conf
+index f283aa4..b283f91 100644
+--- a/dxmt.conf
++++ b/dxmt.conf
+@@ -92,6 +92,25 @@
+ 
+ # d3d11.defuseFma = False
+ 
++# Fast-math partout dans les shaders convertis : contraction (fma), reassociation
++# et reciproque sur toutes les operations flottantes, tous etages compris (par
++# defaut : etage pixel et calcul seulement, et jamais sur une operation que le
++# DXBC marque « precise »). C'est ce que fait l'UE5 natif Metal (-ffast-math).
++# Risque : scintillement de profondeur si pre-passe et passe de base ne
++# contractent pas pareil.
++#
++# Supported values: True, False
++
++# d3d11.fastMath = False
++
++# Acces a la memoire de groupe (groupshared) sans qualificatif volatile : les
++# barrieres (air.wg.barrier) suffisent a ordonner les acces, et le compilateur
++# Metal peut alors vectoriser et factoriser les chargements.
++#
++# Supported values: True, False
++
++# d3d11.relaxedGroupshared = False
++
+ # Override the maximum feature level of created d3d11 device.
+ #
+ # Supported values: 9_1, 9_2, 9_3, 10_0, 10_1, 11_0, 11_1, 12_0, 12_1
+diff --git a/src/airconv/airconv_public.h b/src/airconv/airconv_public.h
+index e167ae4..e577c42 100644
+--- a/src/airconv/airconv_public.h
++++ b/src/airconv/airconv_public.h
+@@ -237,6 +237,11 @@ enum SM50_SHADER_METAL_VERSION {
+ enum SM50_SHADER_FLAG {
+   SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO = 1 << 0,
+   SM50_SHADER_FLAG_DEFUSE_FMA = 1 << 1,
++  /* fast-math (contraction, reassociation, reciproque) sur toutes les operations
++     flottantes et tous les etages, y compris celles que DXBC marque « precise ». */
++  SM50_SHADER_FLAG_FAST_MATH = 1 << 2,
++  /* acces a la memoire de groupe (TGSM) sans volatile : les barrieres suffisent. */
++  SM50_SHADER_FLAG_TGSM_NO_VOLATILE = 1 << 3,
+ };
+ 
+ struct SM50_SHADER_COMMON_DATA {
+diff --git a/src/airconv/dxbc_converter.cpp b/src/airconv/dxbc_converter.cpp
+index b0704ac..2b6172b 100644
+--- a/src/airconv/dxbc_converter.cpp
++++ b/src/airconv/dxbc_converter.cpp
+@@ -406,6 +406,8 @@ llvm::Error convert_dxbc_pixel_shader(
+       {
+           .sampleNaNToZero = bool(shader_flags & SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO),
+           .defuseFma = bool(shader_flags & SM50_SHADER_FLAG_DEFUSE_FMA),
++          .fastMath = bool(shader_flags & SM50_SHADER_FLAG_FAST_MATH),
++          .tgsmNoVolatile = bool(shader_flags & SM50_SHADER_FLAG_TGSM_NO_VOLATILE),
+       },
+       builder, nulldbg
+   );
+@@ -531,6 +533,8 @@ llvm::Error convert_dxbc_compute_shader(
+       {
+           .sampleNaNToZero = bool(shader_flags & SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO),
+           .defuseFma = bool(shader_flags & SM50_SHADER_FLAG_DEFUSE_FMA),
++          .fastMath = bool(shader_flags & SM50_SHADER_FLAG_FAST_MATH),
++          .tgsmNoVolatile = bool(shader_flags & SM50_SHADER_FLAG_TGSM_NO_VOLATILE),
+       },
+       builder, nulldbg
+   );
+@@ -733,6 +737,8 @@ llvm::Error convert_dxbc_vertex_shader(
+       {
+           .sampleNaNToZero = bool(shader_flags & SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO),
+           .defuseFma = bool(shader_flags & SM50_SHADER_FLAG_DEFUSE_FMA),
++          .fastMath = bool(shader_flags & SM50_SHADER_FLAG_FAST_MATH),
++          .tgsmNoVolatile = bool(shader_flags & SM50_SHADER_FLAG_TGSM_NO_VOLATILE),
+       },
+       builder, nulldbg
+   );
+diff --git a/src/airconv/dxbc_converter_gs.cpp b/src/airconv/dxbc_converter_gs.cpp
+index d237b9d..69a3626 100644
+--- a/src/airconv/dxbc_converter_gs.cpp
++++ b/src/airconv/dxbc_converter_gs.cpp
+@@ -179,6 +179,8 @@ convert_dxbc_geometry_shader(
+       {
+           .sampleNaNToZero = bool(shader_flags & SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO),
+           .defuseFma = bool(shader_flags & SM50_SHADER_FLAG_DEFUSE_FMA),
++          .fastMath = bool(shader_flags & SM50_SHADER_FLAG_FAST_MATH),
++          .tgsmNoVolatile = bool(shader_flags & SM50_SHADER_FLAG_TGSM_NO_VOLATILE),
+       },
+       builder, nulldbg
+   );
+@@ -619,6 +621,8 @@ convert_dxbc_vertex_for_geometry_shader(
+       {
+           .sampleNaNToZero = bool(shader_flags & SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO),
+           .defuseFma = bool(shader_flags & SM50_SHADER_FLAG_DEFUSE_FMA),
++          .fastMath = bool(shader_flags & SM50_SHADER_FLAG_FAST_MATH),
++          .tgsmNoVolatile = bool(shader_flags & SM50_SHADER_FLAG_TGSM_NO_VOLATILE),
+       },
+       builder, nulldbg
+   );
+diff --git a/src/airconv/dxbc_converter_ts.cpp b/src/airconv/dxbc_converter_ts.cpp
+index fd32c70..c0641f6 100644
+--- a/src/airconv/dxbc_converter_ts.cpp
++++ b/src/airconv/dxbc_converter_ts.cpp
+@@ -334,6 +334,8 @@ convert_dxbc_vertex_hull_shader(
+       {
+           .sampleNaNToZero = bool(shader_flags & SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO),
+           .defuseFma = bool(shader_flags & SM50_SHADER_FLAG_DEFUSE_FMA),
++          .fastMath = bool(shader_flags & SM50_SHADER_FLAG_FAST_MATH),
++          .tgsmNoVolatile = bool(shader_flags & SM50_SHADER_FLAG_TGSM_NO_VOLATILE),
+       },
+       builder, nulldbg
+   );
+@@ -873,6 +875,8 @@ convert_dxbc_tesselator_domain_shader(
+       {
+           .sampleNaNToZero = bool(shader_flags & SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO),
+           .defuseFma = bool(shader_flags & SM50_SHADER_FLAG_DEFUSE_FMA),
++          .fastMath = bool(shader_flags & SM50_SHADER_FLAG_FAST_MATH),
++          .tgsmNoVolatile = bool(shader_flags & SM50_SHADER_FLAG_TGSM_NO_VOLATILE),
+       },
+       builder, nulldbg
+   );
+diff --git a/src/airconv/nt/air_builder.hpp b/src/airconv/nt/air_builder.hpp
+index 509e3bf..4fb3eea 100644
+--- a/src/airconv/nt/air_builder.hpp
++++ b/src/airconv/nt/air_builder.hpp
+@@ -107,6 +107,8 @@ class AIRBuilderOptions {
+ public:
+   bool sampleNaNToZero = false;
+   bool defuseFma = false;
++  bool fastMath = false;
++  bool tgsmNoVolatile = false;
+ };
+ 
+ class AIRBuilder {
+@@ -543,6 +545,11 @@ public:
+ 
+   std::string getTypeOverloadSuffix(Type *Ty, Signedness Sign = Signedness::DontCare);
+ 
++  const AIRBuilderOptions &
++  getOptions() const {
++    return options;
++  }
++
+ protected:
+   raw_ostream &debug;
+   AIRBuilderOptions options;
+diff --git a/src/airconv/nt/dxbc_converter_base.cpp b/src/airconv/nt/dxbc_converter_base.cpp
+index 58a101c..b9b72b5 100644
+--- a/src/airconv/nt/dxbc_converter_base.cpp
++++ b/src/airconv/nt/dxbc_converter_base.cpp
+@@ -2245,7 +2245,7 @@ Converter::operator()(const InstLoadRaw &load) {
+     return;
+ 
+   mask_t Mask = GetMask(load.dst);
+-  bool Volatile = cast<llvm::PointerType>(Buf->Pointer->getType())->getAddressSpace() == 3;
++  bool Volatile = cast<llvm::PointerType>(Buf->Pointer->getType())->getAddressSpace() == 3 && !air.getOptions().tgsmNoVolatile;
+ 
+   auto Index = ir.CreateLShr(LoadOperand(load.src_byte_offset, kMaskComponentX), 2);
+ 
+@@ -2275,7 +2275,7 @@ Converter::operator()(const InstLoadStructured &load) {
+     return;
+ 
+   mask_t Mask = GetMask(load.dst);
+-  bool Volatile = cast<llvm::PointerType>(Buf->Pointer->getType())->getAddressSpace() == 3;
++  bool Volatile = cast<llvm::PointerType>(Buf->Pointer->getType())->getAddressSpace() == 3 && !air.getOptions().tgsmNoVolatile;
+ 
+   auto IndexStruct =
+       ir.CreateMul(ir.getInt32(Buf->StructureStride >> 2), LoadOperand(load.src_address, kMaskComponentX));
+@@ -2315,7 +2315,7 @@ Converter::operator()(const InstStoreRaw &store) {
+     return;
+   }
+ 
+-  bool Volatile = cast<llvm::PointerType>(Buf->Pointer->getType())->getAddressSpace() == 3;
++  bool Volatile = cast<llvm::PointerType>(Buf->Pointer->getType())->getAddressSpace() == 3 && !air.getOptions().tgsmNoVolatile;
+ 
+   auto Index = ir.CreateLShr(LoadOperand(store.dst_byte_offset, kMaskComponentX), 2);
+ 
+@@ -2347,7 +2347,7 @@ Converter::operator()(const InstStoreStructured &store) {
+     return;
+   }
+ 
+-  bool Volatile = cast<llvm::PointerType>(Buf->Pointer->getType())->getAddressSpace() == 3;
++  bool Volatile = cast<llvm::PointerType>(Buf->Pointer->getType())->getAddressSpace() == 3 && !air.getOptions().tgsmNoVolatile;
+ 
+   auto IndexStruct =
+       ir.CreateMul(ir.getInt32(Buf->StructureStride >> 2), LoadOperand(store.dst_address, kMaskComponentX));
+@@ -2928,7 +2928,10 @@ Converter::CreateGEPInt32WithBoundCheck(AtomicBufferResourceHandle &Buffer, llvm
+ 
+ std::unique_ptr<llvm::IRBuilder<>::FastMathFlagGuard>
+ Converter::UseFastMath(bool OptOut) {
+-  if (OptOut)
++  /* fastMath (option d3d11.fastMath) : ce que fait l'UE5 natif Metal (-ffast-math) : on ignore
++     les bits « precise » de DXBC et on contracte aussi avant rasterisation. */
++  bool Force = air.getOptions().fastMath;
++  if (OptOut && !Force)
+     return nullptr;
+   auto Guard = std::make_unique<llvm::IRBuilder<>::FastMathFlagGuard>(ir);
+   llvm::FastMathFlags FMF;
+@@ -2939,7 +2942,7 @@ Converter::UseFastMath(bool OptOut) {
+   chance of depth prepass z-fighting. However if the game (e.g. SotTR) uses two versions of expression (mul+add vs. fma)
+   this is not handled yet (need further investigation, probably need a pass for un-fuse/re-fuse)
+   */
+-  if (ctx.shader_type == microsoft::D3D11_SB_COMPUTE_SHADER || ctx.shader_type == microsoft::D3D10_SB_PIXEL_SHADER) {
++  if (Force || ctx.shader_type == microsoft::D3D11_SB_COMPUTE_SHADER || ctx.shader_type == microsoft::D3D10_SB_PIXEL_SHADER) {
+     FMF.setAllowContract();
+     FMF.setAllowReassoc();
+     FMF.setAllowReciprocal();
+diff --git a/src/d3d11/d3d11_shader.cpp b/src/d3d11/d3d11_shader.cpp
+index e11d16c..7f564c0 100644
+--- a/src/d3d11/d3d11_shader.cpp
++++ b/src/d3d11/d3d11_shader.cpp
+@@ -18,6 +18,10 @@ getGlobalShaderFlag() {
+       shader_flag |= SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO;
+     if (Config::getInstance().getOption<bool>("d3d11.defuseFma", false))
+       shader_flag |= SM50_SHADER_FLAG_DEFUSE_FMA;
++    if (Config::getInstance().getOption<bool>("d3d11.fastMath", false))
++      shader_flag |= SM50_SHADER_FLAG_FAST_MATH;
++    if (Config::getInstance().getOption<bool>("d3d11.relaxedGroupshared", false))
++      shader_flag |= SM50_SHADER_FLAG_TGSM_NO_VOLATILE;
+   });
+   return shader_flag;
+ };

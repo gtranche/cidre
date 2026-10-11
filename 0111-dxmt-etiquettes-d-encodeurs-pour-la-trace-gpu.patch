@@ -1,0 +1,225 @@
+dxmt : etiquette descriptive sur chaque encodeur Metal, activee par DXMT_ENCODER_LABELS
+
+Instruments (gabarit Metal System Trace, export par xctrace) donne le temps
+GPU de chaque encodeur avec son numero d'image, mais DXMT ne nomme que ses
+passes internes (ClearPass, ResolvePass, scaler, SampleTimestamp) : les
+passes de rendu, de calcul et de copie du jeu sont anonymes dans la trace,
+et on ne peut pas dire ou passe le temps GPU d'une image.
+
+Avec DXMT_ENCODER_LABELS=1, chaque encodeur recoit, au moment ou il est cree
+sur dxmt-encode-thr, une etiquette qui resume la passe :
+
+  R <largeur>x<hauteur>[x<couches>] c<i>=<format>:<chargement><stockage> ...
+    d=<format>:<chargement><stockage> s=<chargement><stockage> draws=<n>
+    [vis] [ts] [gs]
+  C disp=<n>          passe de calcul, nombre de dispatch
+  B cmds=<n>          copies, mipmaps, remplissages
+
+chargement : x sans importance, L charge, C efface ; stockage : x sans
+importance, S stocke, R resout, SR stocke et resout. Le nombre de dessins
+est compte en parcourant la liste de commandes de l'encodeur, deja en
+memoire, juste avant de l'encoder.
+
+Cout : deux appels Unix (creation de la NSString, setLabel) par encodeur,
+sur le fil d'encodage seulement ; rien sans la variable (un booleen lu une
+fois a la construction du contexte).
+
+diff --git a/src/dxmt/dxmt_context.cpp b/src/dxmt/dxmt_context.cpp
+index 7b29f1e..dd6ee77 100644
+--- a/src/dxmt/dxmt_context.cpp
++++ b/src/dxmt/dxmt_context.cpp
+@@ -24,11 +24,146 @@
+ #include "dxmt_occlusion_query.hpp"
+ #include "dxmt_presenter.hpp"
+ #include "wsi_platform.hpp"
++#include "dxmt_names.hpp"
++#include "util_env.hpp"
++#include "util_likely.hpp"
++#include <sstream>
+ #include <cstdint>
+ #include <cfloat>
+ 
+ namespace dxmt {
+ 
++/*
++ * Etiquettes d'encodeur pour la trace GPU (DXMT_ENCODER_LABELS=1).
++ *
++ * Instruments (Metal System Trace, xctrace export) donne le temps GPU de chaque
++ * encodeur mais ne sait rien de ce qu'il dessine. L'etiquette resume la passe :
++ *   R <largeur>x<hauteur>[x<couches>] c<i>=<format>:<chargement><stockage> ...
++ *     d=<format>:<chargement><stockage> s=<chargement><stockage> draws=<n> [vis] [ts] [gs]
++ *   C disp=<n>        (passes de calcul : nombre de dispatch)
++ *   B cmds=<n>        (copies, mipmaps, remplissages)
++ * chargement : x = sans importance, L = charge, C = efface ;
++ * stockage   : x = sans importance, S = stocke, R = resout, SR = stocke et resout.
++ * Deux appels Unix par encodeur quand c'est actif, rien sinon.
++ */
++namespace {
++
++const char *
++abrege_chargement(WMTLoadAction a) {
++  switch (a) {
++  case WMTLoadActionDontCare: return "x";
++  case WMTLoadActionLoad: return "L";
++  case WMTLoadActionClear: return "C";
++  }
++  return "?";
++}
++
++const char *
++abrege_stockage(WMTStoreAction a) {
++  switch (a) {
++  case WMTStoreActionDontCare: return "x";
++  case WMTStoreActionStore: return "S";
++  case WMTStoreActionMultisampleResolve: return "R";
++  case WMTStoreActionStoreAndMultisampleResolve: return "SR";
++  default: break;
++  }
++  return "?";
++}
++
++std::string
++nom_format(dxmt::TextureViewRef const &vue) {
++  std::ostringstream os;
++  os << vue->allocation->descriptor->pixelFormat(vue->key);
++  auto s = os.str();
++  if (s.starts_with("WMTPixelFormat"))
++    s.erase(0, 14);
++  return s;
++}
++
++template <typename Tete, typename Pred>
++unsigned
++compter_commandes(Tete &tete, Pred pred) {
++  unsigned n = 0;
++  for (auto c = (wmtcmd_base *)tete.next.get(); c; c = (wmtcmd_base *)c->next.get())
++    if (pred(c->type))
++      n++;
++  return n;
++}
++
++std::string
++etiquette_render(dxmt::RenderEncoderData *data) {
++  std::ostringstream os;
++  os << "R " << data->render_target_width << "x" << data->render_target_height;
++  if (data->render_target_array_length > 1)
++    os << "x" << data->render_target_array_length;
++  for (unsigned i = 0; i < std::size(data->colors); i++) {
++    auto &c = data->colors[i];
++    if (!c.attachment)
++      continue;
++    os << " c" << i << "=" << nom_format(c.attachment) << ":" << abrege_chargement(c.load_action)
++       << abrege_stockage(c.store_action);
++  }
++  if (data->depth.attachment)
++    os << " d=" << nom_format(data->depth.attachment) << ":" << abrege_chargement(data->depth.load_action)
++       << abrege_stockage(data->depth.store_action);
++  if (data->stencil.attachment)
++    os << " s=" << abrege_chargement(data->stencil.load_action) << abrege_stockage(data->stencil.store_action);
++  os << " draws=" << compter_commandes(data->cmd_head, [](uint16_t t) {
++    switch (t) {
++    case WMTRenderCommandDraw:
++    case WMTRenderCommandDrawIndexed:
++    case WMTRenderCommandDrawIndirect:
++    case WMTRenderCommandDrawIndexedIndirect:
++    case WMTRenderCommandDrawMeshThreadgroups:
++    case WMTRenderCommandDrawMeshThreadgroupsIndirect:
++    case WMTRenderCommandDXMTGeometryDraw:
++    case WMTRenderCommandDXMTGeometryDrawIndexed:
++    case WMTRenderCommandDXMTGeometryDrawIndirect:
++    case WMTRenderCommandDXMTGeometryDrawIndexedIndirect: return true;
++    default: return false;
++    }
++  });
++  if (data->use_visibility_result)
++    os << " vis";
++  if (data->use_tessellation)
++    os << " ts";
++  if (data->use_geometry)
++    os << " gs";
++  return os.str();
++}
++
++std::string
++etiquette_compute(dxmt::ComputeEncoderData *data) {
++  std::ostringstream os;
++  os << "C disp=" << compter_commandes(data->cmd_head, [](uint16_t t) {
++    switch (t) {
++    case WMTComputeCommandDispatch:
++    case WMTComputeCommandDispatchIndirect:
++    case WMTComputeCommandDispatchThreads:
++    case WMTComputeCommandExecuteCommandsInBuffer: return true;
++    default: return false;
++    }
++  });
++  return os.str();
++}
++
++std::string
++etiquette_blit(dxmt::BlitEncoderData *data) {
++  std::ostringstream os;
++  os << "B cmds=" << compter_commandes(data->cmd_head, [](uint16_t t) {
++    switch (t) {
++    case WMTBlitCommandWaitForFence:
++    case WMTBlitCommandUpdateFence:
++    case WMTBlitCommandNop: return false;
++    default: return true;
++    }
++  });
++  return os.str();
++}
++
++} // namespace
++
++
+ ArgumentEncodingContext::ArgumentEncodingContext(CommandQueue &queue, WMT::Device device, InternalCommandLibrary &lib) :
+     device_(device),
+     lib(lib),
+@@ -40,6 +175,7 @@ ArgumentEncodingContext::ArgumentEncodingContext(CommandQueue &queue, WMT::Devic
+     tile_barrier_cmd(device, lib, *this),
+     timestamp_state_(device),
+     queue_(queue) {
++  encoder_labels_ = env::getEnvVar("DXMT_ENCODER_LABELS") == "1";
+   dummy_sampler_info_.support_argument_buffers = true;
+   dummy_sampler_info_.border_color = WMTSamplerBorderColorTransparentBlack;
+   dummy_sampler_info_.compare_function = WMTCompareFunctionNever;
+@@ -963,6 +1099,8 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
+       }
+       auto gpu_buffer_ = data->allocated_argbuf;
+       auto encoder = cmdbuf.renderCommandEncoder(render_pass_info);
++      if (unlikely(encoder_labels_))
++        encoder.setLabel(WMT::String::string(etiquette_render(data).c_str(), WMTUTF8StringEncoding));
+       data->fence_wait.forEach(
+           data->fence_wait_vertex, // if a fence is waited pre-raster, no need to wait again at fragment
+           [&](auto id) { encoder.waitForFence(fence_pool_[id], WMTRenderStagePreRaster); },
+@@ -1058,6 +1196,8 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
+     case EncoderType::Compute: {
+       auto data = static_cast<ComputeEncoderData *>(current);
+       auto encoder = cmdbuf.computeCommandEncoder(true);
++      if (unlikely(encoder_labels_))
++        encoder.setLabel(WMT::String::string(etiquette_compute(data).c_str(), WMTUTF8StringEncoding));
+       data->fence_wait.forEach([&](auto id) { encoder.waitForFence(fence_pool_[id]); });
+       struct wmtcmd_compute_setbuffer setcmd;
+       setcmd.type = WMTComputeCommandSetBuffer;
+@@ -1077,6 +1217,8 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
+     case EncoderType::Blit: {
+       auto data = static_cast<BlitEncoderData *>(current);
+       auto encoder = cmdbuf.blitCommandEncoder();
++      if (unlikely(encoder_labels_))
++        encoder.setLabel(WMT::String::string(etiquette_blit(data).c_str(), WMTUTF8StringEncoding));
+       data->fence_wait.forEach([&](auto id) { encoder.waitForFence(fence_pool_[id]); });
+       encoder.encodeCommands(&data->cmd_head);
+       data->fence_update.forEach([&](auto id) { encoder.updateFence(fence_pool_[id]); });
+diff --git a/src/dxmt/dxmt_context.hpp b/src/dxmt/dxmt_context.hpp
+index eabe872..bae1e77 100644
+--- a/src/dxmt/dxmt_context.hpp
++++ b/src/dxmt/dxmt_context.hpp
+@@ -911,6 +911,8 @@ private:
+   };
+   std::vector<chunk> cpu_buffer_chunks_;
+   uint32_t current_buffer_chunk_ = 0;
++  /* DXMT_ENCODER_LABELS=1 : etiquette descriptive sur chaque encodeur (trace GPU). */
++  bool encoder_labels_ = false;
+   void *cpu_buffer_;
+   uint64_t cpu_buffer_offset_;
+ 
