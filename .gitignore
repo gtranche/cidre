@@ -39,3 +39,4 @@ tests/bench_bindless.c
 tests/bench_bindless_metal.m
 tests/bench_argbuf_metal.m
 tests/build_bench_bindless.sh
+dxmt/
