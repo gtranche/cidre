@@ -167,6 +167,17 @@ fi
 if [ -z "${CIDRE_NARROW_BARRIERS:-}" ] && [ "$(profil narrow_barriers)" = true ]; then
    export CIDRE_NARROW_BARRIERS=1
 fi
+# Garde d'index de KosmicKrisp (ses contournements 12 et 13) : faute de pouvoir
+# se fier a Metal pour les lectures hors limites d'un tampon d'index, le pilote
+# « deroule » chaque dessin indexe indirect par une passe de calcul -- ce qui
+# coupe la passe de rendu en cours, a chaque dessin. Un moteur qui dessine tout
+# en indirect (Unreal Engine 5) s'y effondre : Clair Obscur: Expedition 33
+# passait de 0,6 a 15 images par seconde en la coupant. Sans elle, un dessin
+# qui lirait au-dela de son tampon d'index n'a plus de filet : a n'oter que
+# pour un jeu ou cela a ete essaye. Un environnement explicite garde la main.
+if [ -z "${MESA_KK_DISABLE_WORKAROUNDS:-}" ] && [ "$(profil garde_index)" = false ]; then
+   export MESA_KK_DISABLE_WORKAROUNDS=12,13
+fi
 FILS=${CIDRE_FILS_COMPILATION:-$(profil fils_compilation)}
 case $FILS in ''|0|*[!0-9]*) : ;; *) dxvk_config "dxvk.numCompilerThreads=$FILS" ;; esac
 

@@ -31,6 +31,11 @@
 #                    GPU se recouvrir. Gain en scene chargee (GPU-bound) ; nul en
 #                    scene legere. Valide sur VT2 (stable, image correcte) ;
 #                    prudent ailleurs -> defaut false.
+#   garde_index      garde de KosmicKrisp contre les lectures hors limites d'un
+#                    tampon d'index (ses contournements 12 et 13). true = sur, mais
+#                    chaque dessin indexe indirect coupe la passe de rendu : un
+#                    moteur qui dessine tout en indirect (Unreal Engine 5) s'effondre.
+#                    false seulement pour un jeu ou l'image a ete verifiee sans.
 #   fils_compilation nombre de fils compilateurs DXVK ; 0 = defaut DXVK (tous les coeurs).
 #   eac_untrusted    ajoute -eac-untrusted (realm « Modded » ; EAC en ligne = mur).
 #   luajit           fenetre basse 64 bits pour LuaJIT (PROTON_OUVERT_LUAJIT).
@@ -73,6 +78,7 @@ hud = false
 overlay = true
 async = false
 narrow_barriers = false
+garde_index = true
 fils_compilation = 0
 eac_untrusted = false
 luajit = false
@@ -129,3 +135,17 @@ moteur = "unity"
 anticheat = "none"
 etat = "bronze"
 source = "cidre-test"
+
+# Clair Obscur: Expedition 33 (Unreal Engine 5, tourne en D3D11 par DXVK).
+# Mesure sur M1 Max, reglages du jeu au maximum, zone d'ouverture :
+#   - sans rien : ~5 min de chargement, 4 images/s, puis 0,6 quand la scene
+#     se charge de dessins indirects ;
+#   - async + 6 fils : dans l'intro en ~2 min 40 (la compilation des pipelines
+#     quitte le fil de commandes de DXVK) ;
+#   - garde_index = false : 15 images/s au meme endroit. Le fil de commandes ne
+#     lance plus une passe de calcul par dessin indirect ; il reste limite par
+#     la carte graphique. Image verifiee par le joueur sur cette zone seulement.
+[1903340]
+async = true
+fils_compilation = 6
+garde_index = false
