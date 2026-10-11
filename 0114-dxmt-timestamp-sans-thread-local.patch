@@ -1,0 +1,49 @@
+dxmt : plus de thread_local dans la relecture des timestamps (faute x18 sur macOS)
+
+Le destructeur de TimestampReadbackCBuf (fil dxmt-finish-thr) gardait le
+dernier gpuEndTime dans une variable thread_local. Sur macOS arm64ec (Wine 11
++ FEX), une variable TLS native se lit par « ldr [x18, #0x58] »
+(TEB->ThreadLocalStoragePointer) et x18 n'est pas maintenu par macOS : des
+que le fil a ete preempte, la lecture faute sur un pointeur nul (code
+c0000005, info[1]=0x58, journal +seh de la manche vtx-diag du 2026-10-12).
+Le gestionnaire de plantage d'UE5 attend alors le CrashReportClient : jeu
+fige, 7-9 % CPU, rien dans le journal DXMT. Le declencheur est l'emission de
+requetes timestamp par le jeu ; c'est la signature des gels observes avec
+0104, 0105, la capture Metal et la manche B de 0113 (recompilation des
+shaders = images lentes).
+
+Un atomique partage par tous les fils remplace le TLS ; la monotonie des
+timestamps est conservee (compare_exchange vers le maximum). Les seules
+lectures x18 restantes dans d3d11.dll sont __cxa_get_globals de libc++abi
+(chemin des exceptions C++).
+
+diff --git a/src/dxmt/dxmt_occlusion_query.hpp b/src/dxmt/dxmt_occlusion_query.hpp
+--- a/src/dxmt/dxmt_occlusion_query.hpp
++++ b/src/dxmt/dxmt_occlusion_query.hpp
+@@ -277,12 +277,21 @@
+     There is no implicit relationship between `gpuEndTime` and order of commit, but we still want a later issued query
+     to return a timestamp greater or equal to previous ones, so check and use maximum.
+ 
+-    `thread_local` makes sense because this destructor is only called on 1. finishing thread 2. (abnormal) device
+-    destruction
++    This destructor is only called on 1. finishing thread 2. (abnormal) device destruction.
++
++    Pas de `thread_local` ici : sur macOS arm64ec (Wine 11 + FEX), une variable TLS native se lit par
++    `ldr [x18, #0x58]` (TEB->ThreadLocalStoragePointer) et x18 n'est pas maintenu par macOS, ce qui faute
++    sur un pointeur nul des que le jeu emet des requetes timestamp (gel dans le gestionnaire de plantage
++    UE5, fil dxmt-finish-thr). Un atomique partage par tous les fils donne la meme monotonie.
+     */
+-    thread_local uint64_t latest_ts_on_finish_thread = 0;
+-    latest_ts_on_finish_thread = std::max(cmdbuf_.gpuEndTime(), latest_ts_on_finish_thread);
+-    std::fill(results.begin(), results.end(), latest_ts_on_finish_thread);
++    static std::atomic<uint64_t> latest_ts_on_finish_thread{0};
++    uint64_t end = cmdbuf_.gpuEndTime();
++    uint64_t latest = latest_ts_on_finish_thread.load(std::memory_order_relaxed);
++    while (latest < end &&
++           !latest_ts_on_finish_thread.compare_exchange_weak(latest, end, std::memory_order_relaxed)) {
++    }
++    latest = std::max(latest, end);
++    std::fill(results.begin(), results.end(), latest);
+     for (const auto &[query, sample_index] : queries_) {
+       query->issue(results[sample_index]);
+     }
