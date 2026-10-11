@@ -46,15 +46,19 @@ for d in d3d12core d3d12; do
 done
 
 # DXMT arm64ec (D3D11 -> Metal en un saut, option d3d11 = "dxmt"). Bati contre
-# notre Wine comme des builtins (meson, src/dxmt/build) : lancer_depuis_steam.sh
-# les pose dans lib/wine/aarch64-windows et aarch64-unix au lancement d'un jeu
-# en dxmt, et remet les builtins Wine au lancement suivant en dxvk. Il les cherche
-# dans $R/dxmt/ ; la licence (LGPL 2.1) et le README de DXMT partent avec.
+# notre Wine comme des builtins (tests/construire_dxmt.sh, qui pose le build
+# valide dans $R/dxmt/) : lancer_depuis_steam.sh les pose dans
+# lib/wine/aarch64-windows et aarch64-unix au lancement d'un jeu en dxmt, et
+# remet les builtins Wine au lancement suivant en dxvk. On embarque $R/dxmt/ en
+# priorite (le build valide), a defaut src/dxmt/build ; la licence (LGPL 2.1) et
+# le README de DXMT partent avec.
 DXMT=$R/src/dxmt
 mkdir -p "$STAGE/dxmt"
 for f in d3d11/d3d11.dll dxgi/dxgi.dll d3d10/d3d10core.dll winemetal/winemetal.dll winemetal/unix/winemetal.so; do
-   if [ -f "$DXMT/build/src/$f" ]; then cp "$DXMT/build/src/$f" "$STAGE/dxmt/"
-   else echo "  dxmt : $f ABSENT (meson compile -C src/dxmt/build) ; l'option d3d11=dxmt retombera en dxvk"; fi
+   b=$(basename "$f")
+   if [ -f "$R/dxmt/$b" ]; then cp "$R/dxmt/$b" "$STAGE/dxmt/"
+   elif [ -f "$DXMT/build/src/$f" ]; then cp "$DXMT/build/src/$f" "$STAGE/dxmt/"
+   else echo "  dxmt : $b ABSENT (sh tests/construire_dxmt.sh poser) ; l'option d3d11=dxmt retombera en dxvk"; fi
 done
 for f in COPYING.LIB LICENSE README.md; do cp "$DXMT/$f" "$STAGE/dxmt/$f" 2>/dev/null || true; done
 
