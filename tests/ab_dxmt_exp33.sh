@@ -56,6 +56,8 @@ case "$MODE" in
    dxvk)
       restaurer
       unset CIDRE_DLL_OVERRIDES
+      # le lanceur lit l'option d3d11 du profil : on lui dit le mode de CE run
+      export CIDRE_D3D11=dxvk
       ;;
    dxmt)
       verifier_winemac
@@ -72,6 +74,7 @@ case "$MODE" in
       cp -p "$B/winemetal/winemetal.dll"  "$SYS32/winemetal.dll"
       # =b gagne sur le dxgi,d3d11=n d'etape2 (ajoute apres, separe par ';')
       export CIDRE_DLL_OVERRIDES="dxgi,d3d11,d3d10core,winemetal=b"
+      export CIDRE_D3D11=dxmt   # le lanceur sait maintenant poser DXMT lui-meme (option d3d11)
       export DXMT_LOG_LEVEL=info DXMT_LOG_PATH="$LOGS" MTL_HUD_ENABLED=1
       # L'overlay Steam (gameoverlayrenderer.dylib, injecte par DYLD_INSERT_LIBRARIES)
       # accroche presentDrawable: ; avec DXMT la premiere image s'affiche puis plus

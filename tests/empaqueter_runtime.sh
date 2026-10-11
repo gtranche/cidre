@@ -45,6 +45,19 @@ for d in d3d12core d3d12; do
    cp "$R/build/vkd3d-winarm64ec/libs/$d/$d.dll" "$STAGE/vkd3d/" 2>/dev/null || true
 done
 
+# DXMT arm64ec (D3D11 -> Metal en un saut, option d3d11 = "dxmt"). Bati contre
+# notre Wine comme des builtins (meson, src/dxmt/build) : lancer_depuis_steam.sh
+# les pose dans lib/wine/aarch64-windows et aarch64-unix au lancement d'un jeu
+# en dxmt, et remet les builtins Wine au lancement suivant en dxvk. Il les cherche
+# dans $R/dxmt/ ; la licence (LGPL 2.1) et le README de DXMT partent avec.
+DXMT=$R/src/dxmt
+mkdir -p "$STAGE/dxmt"
+for f in d3d11/d3d11.dll dxgi/dxgi.dll d3d10/d3d10core.dll winemetal/winemetal.dll winemetal/unix/winemetal.so; do
+   if [ -f "$DXMT/build/src/$f" ]; then cp "$DXMT/build/src/$f" "$STAGE/dxmt/"
+   else echo "  dxmt : $f ABSENT (meson compile -C src/dxmt/build) ; l'option d3d11=dxmt retombera en dxvk"; fi
+done
+for f in COPYING.LIB LICENSE README.md; do cp "$DXMT/$f" "$STAGE/dxmt/$f" 2>/dev/null || true; done
+
 # Outils de generation de code de Mesa : ils ne servent qu'a construire, et
 # mesa_clc tirerait tout LLVM dans le runtime.
 rm -f "$STAGE/prefix/bin/mesa_clc" "$STAGE/prefix/bin/kk_clc" "$STAGE/prefix/bin/vtn_bindgen2"

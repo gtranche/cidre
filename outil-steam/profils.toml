@@ -49,6 +49,12 @@
 #                    force d3d12=n). false (defaut) = d3d12 builtin de Wine, qui
 #                    retombe en D3D11/DXVK. KosmicKrisp plafonne au FL 12.0 : un
 #                    jeu qui exige FL 12.1 (ex. PEAK) reste en D3D11 meme a true.
+#   d3d11            rendu Direct3D 11 : "dxvk" (defaut : DXVK -> Vulkan ->
+#                    KosmicKrisp -> Metal, deux sauts) ou "dxmt" (DXMT : D3D11 ->
+#                    Metal en un saut, builtins Wine remplaces au lancement par
+#                    ceux de DXMT). Mesure sur Expedition 33 : x3 a x4. Avec
+#                    "dxmt", l'overlay Steam est COUPE pour ce lancement : sa
+#                    bibliotheque fige la presentation DXMT a la premiere image.
 #
 # --- base de compatibilite par jeu (inspiree des recettes CrossOver, cf.
 #     VEILLE_CROSSOVER.md). dll_overrides et windows_version sont APPLIQUES par le
@@ -85,6 +91,7 @@ luajit = false
 plein_ecran = true
 gamemode = true
 dx12 = false
+d3d11 = "dxvk"
 
 # DREDGE (Unity). Mesure en jeu : 40 fps defaut -> 69 avec vsync off (la vsync
 # FIFO perd un vblank et plafonne a 40) -> 84 en ajoutant TSO off (peu threade,

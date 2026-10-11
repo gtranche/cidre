@@ -472,11 +472,15 @@ case "$cmd" in
       fils_compilation)
         case $val in ''|*[!0-9]*) echo "fils_compilation attend un entier (0 = defaut DXVK)" >&2; exit 2 ;; esac
         [ "$val" -le 64 ] || { echo "fils_compilation : 64 au plus" >&2; exit 2; } ;;
+      d3d11)
+        # rendu Direct3D 11 : dxvk (defaut) ou dxmt ; une chaine, entre guillemets
+        case $val in dxvk|dxmt) val="\"$val\"" ;;
+          *) echo "d3d11 attend dxvk ou dxmt" >&2; exit 2 ;; esac ;;
       langue)
         # une chaine : ecrite entre guillemets dans le profil (TOML)
         case $val in auto|fr|en|de|es|it|pt|ru|pl|ja|ko|zh) val="\"$val\"" ;;
           *) echo "langue attend auto ou un code : fr, en, de, es, it, pt, ru, pl, ja, ko, zh" >&2; exit 2 ;; esac ;;
-      *) echo "option inconnue : $cle (journal_detaille, tso, vsync, hud, overlay, async, narrow_barriers, garde_index, dx12, fils_compilation, eac_untrusted, luajit, plein_ecran, gamemode, langue)" >&2; exit 2 ;;
+      *) echo "option inconnue : $cle (journal_detaille, tso, vsync, hud, overlay, async, narrow_barriers, garde_index, dx12, d3d11, fils_compilation, eac_untrusted, luajit, plein_ecran, gamemode, langue)" >&2; exit 2 ;;
     esac
     CIDRE_PROFILS=${CIDRE_PROFILS:-$CIDRE_DIR/profils.toml} sh "$R/tests/profil_cidre.sh" "$id" set "$cle" "$val" ;;
   unset)
