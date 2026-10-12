@@ -289,6 +289,10 @@ case "$cmd" in
     fi
     export WINEPREFIX="${WINEPREFIX:-$R/wine/pfx-arm64ec}"
     WS="$R/wine/wine11-arm64/bin/wineserver"
+    # Le lanceur verra le jeu sortir en erreur : qu'il sache que c'est voulu
+    # (tests/expliquer_sortie.sh), sinon il cherche une cause dans le journal.
+    mkdir -p "$R/build/logs"; touch "$R/build/logs/arret-demande-${id:-tous}"
+    [ -z "$id" ] || touch "$R/build/logs/arret-demande-$id"
     # un chemin, en motif pour pgrep (les points et les espaces y comptent)
     motif() { printf '%s' "$1" | sed 's/[][\.*^$()+?{}|]/\\&/g'; }
     LANCEURS="$(motif "$R/tests/")(lancer_depuis_steam|etape2_pile_arm64ec)\\.sh"

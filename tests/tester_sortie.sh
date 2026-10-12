@@ -64,6 +64,17 @@ contient "a faire" "d3d11 = dxvk" "$r"
 echo "== anti-triche"
 r=$(expliquer 1 "$(journal 'EasyAntiCheat: launcher error')")
 contient "cause" "anti-triche" "$r"
+r=$(expliquer 1 "$(journal '    profil  : langue=auto tso=false moteur=unreal anticheat=none etat=argent source=cidre')")
+absent "anticheat=none n'est pas un anti-triche" "anti-triche" "$r"
+r=$(expliquer 1 "$(journal '    profil  : moteur=unreal anticheat=eac etat=bronze')")
+contient "anticheat=eac en est un" "anti-triche" "$r"
+
+echo "== arret demande par cidre stop"
+mkdir -p "$R/build/logs"; touch "$R/build/logs/arret-demande-1"
+r=$(expliquer 1 "$(journal 'EasyAntiCheat: launcher error')")
+contient "cause" "arrete a la demande" "$r"
+absent "pas d'autre diagnostic" "anti-triche" "$r"
+[ -f "$R/build/logs/arret-demande-1" ] && echec "marqueur d'arret non consomme" || ok "marqueur d'arret consomme"
 
 echo "== GPU"
 r=$(expliquer 1 "$(journal 'err:   Device error at frame 5379: Error Domain=MTLCommandBufferErrorDomain Code=2 "Caused GPU Timeout Error (00000002:kIOGPUCommandBufferCallbackErrorTimeout)"')")

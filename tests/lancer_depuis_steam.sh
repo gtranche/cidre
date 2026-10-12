@@ -481,7 +481,7 @@ CIDRE_OVERLAY_DYLIB=$OVERLAY sh "$R/tests/etape2_pile_arm64ec.sh" "$PROG" "$@" >
 if [ $RC -ne 0 ]; then
    echo "    le jeu s'est termine sur le code $RC" | tee -a "$JOURNAL"
    [ "${CIDRE_SANS_STEAM:-}" != 1 ] || export CIDRE_CLIENT_STEAM_ETAT=inconnu
-   sh "$R/tests/expliquer_sortie.sh" "$RC" "$JOURNAL" 2>/dev/null | tee -a "$JOURNAL" || true
+   CIDRE_JEU="$JEU" sh "$R/tests/expliquer_sortie.sh" "$RC" "$JOURNAL" 2>/dev/null | tee -a "$JOURNAL" || true
 fi
 
 # Sauvegarde vers le dossier synchronise apres la sortie du jeu (meme en cas de

@@ -82,7 +82,17 @@ if a "Failed to create metal view" || { a "winemetal" && a "err:"; }; then
    exit 0
 fi
 
-if a "EasyAntiCheat" || a "BattlEye" || a "anti-cheat" || a "anticheat"; then
+# Un arret demande par `cidre stop` (Verger) : rien a expliquer.
+JEU_ID=${CIDRE_JEU:-${SteamAppId:-}}
+if [ -f "$R/build/logs/arret-demande-$JEU_ID" ] || [ -f "$R/build/logs/arret-demande-tous" ]; then
+   rm -f "$R/build/logs/arret-demande-$JEU_ID" "$R/build/logs/arret-demande-tous"
+   dire "le jeu a ete arrete a la demande (cidre stop)" "rien a faire"
+   exit 0
+fi
+
+# « anticheat=none » de la ligne de profil n'est pas un anti-triche : on ne
+# retient que les modules eux-memes, ou un anticheat declare autre que none.
+if a "EasyAntiCheat" || a "BattlEye" || printf '%s\n' "$S" | grep -qE 'anticheat=(eac|battleye|easy|be)'; then
    dire "le jeu demande un anti-triche (EasyAntiCheat ou BattlEye) qui ne tourne pas sous Cidre" \
         "chercher un mode sans anti-triche (serveurs moddes, hors ligne) ; sinon ce jeu n'est pas jouable ici"
    exit 0
