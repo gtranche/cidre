@@ -30,7 +30,8 @@ cache les fiches qui ne sont plus dans l'index.
 ## Schéma d'une fiche
 
 Sous-ensemble de TOML volontairement simple : des tables `[nom]` et
-`[nom.sous_table]`, des tableaux de tables `[[rapports]]`, des lignes
+`[nom.sous_table]`, des tableaux de tables `[[rapports]]` (et, sous un
+`[[machine]]`, `[machine.cidre]` et `[[machine.reglages_jeu]]`), des lignes
 `cle = valeur` où la valeur est `true`/`false`, un entier, ou une chaîne entre
 guillemets doubles (`\"` et `\\` sont les seuls échappements ; pas de retour à la
 ligne dans une chaîne). Une table en ligne `valeurs = { "a" = "1", "b" = "2" }`
@@ -65,8 +66,9 @@ garde_index = false
 # Une entrée par section INI visée ; une fiche qui n'en vise qu'une peut
 # écrire une table simple `[reglages_jeu]` au lieu du tableau.
 fichier = "AppData/Local/Sandfall/Saved/Config/Windows/GameUserSettings.ini"
-format = "ini"                     # seul format pour l'instant
+format = "ini"                     # ini (défaut) ou gvas (sauvegarde Unreal), voir plus bas
 section = "ScalabilityGroups"      # optionnel : la section INI où vivent les clés
+                                   # (exemple de forme : ce jeu-ci relit sa qualité ailleurs, voir plus bas)
 [reglages_jeu.valeurs]             # ou, en ligne : valeurs = { "sg.ShadowQuality" = "1" }
 "sg.ShadowQuality" = "1"
 "sg.TextureQuality" = "1"
@@ -75,6 +77,16 @@ section = "ScalabilityGroups"      # optionnel : la section INI où vivent les c
 fichier = "AppData/Local/Sandfall/Saved/Config/Windows/GameUserSettings.ini"
 section = "/Script/SandFall.ConfigurableGameUserSettings"
 valeurs = { "CurrentSelectedUpscalerQualityMode" = "0" }
+
+[[machine]]
+# Variante par machine (voir plus bas) : ce bloc ne vaut que si `si` est vraie.
+si = "coeurs_gpu <= 10 et ecran_largeur >= 1920"
+[machine.cidre]                    # options de lancement en plus de [cidre], ou à sa place clé par clé
+metalfx = true
+[[machine.reglages_jeu]]           # réglages du jeu en plus de [[reglages_jeu]], ou à leur place clé par clé
+fichier = "AppData/Local/Sandfall/Saved/Config/Windows/GameUserSettings.ini"
+section = "ScalabilityGroups"
+valeurs = { "sg.ShadowQuality" = "0" }
 
 [compat]
 etat = "argent"                    # or, argent, bronze, ko, non-teste
@@ -105,6 +117,8 @@ Sens des champs :
 - `[cidre]` : les options de lancement. `moteur`, `anticheat` (de `[jeu]`),
   `etat` et `source` (de `[compat]`) sont aussi rendus par `profil_cidre.sh`,
   à plat, comme avant la migration.
+- `[[machine]]` : une variante de la fiche pour certaines machines ; voir
+  « Variantes par machine ».
 - `[compat]` : l'état de compatibilité qui fait autorité (nos tests, source
   `cidre-test`, priment sur un import). `etat` : or (parfait), argent (jouable,
   limites), bronze (démarre, perf/bugs), ko (non), non-teste.
@@ -128,9 +142,33 @@ les pose, une fois :
 - Attention aux clés que le jeu recalcule : Expedition 33 réécrit
   `sg.ResolutionQuality` au démarrage depuis sa propre clé
   `CurrentSelectedUpscalerQualityMode` (section
-  `/Script/SandFall.ConfigurableGameUserSettings`). Il faut viser la clé
-  source, pas la clé dérivée.
-- Chaque clé de `valeurs` est écrite si elle n'est pas déjà à cette valeur ;
+  `/Script/SandFall.ConfigurableGameUserSettings`), et **tous** ses
+  `sg.*Quality` depuis une sauvegarde Unreal,
+  `Saved/SaveGames/<compte>/SharedGameUserSettings.sav` (mesuré le 2026-10-12 :
+  des `sg.*` posés à 0 dans l'INI reviennent à 1 au lancement, le jeu tourne
+  en Moyen). Il faut viser la source, pas la clé dérivée — d'où le format
+  `gvas`.
+- `fichier` peut contenir un `*` à la place d'un dossier dont on ne connaît pas
+  le nom d'avance (`AppData/Local/Sandfall/Saved/SaveGames/*/SharedGameUserSettings.sav`,
+  un dossier par compte Steam) : chaque fichier qui correspond est traité.
+- `format = "gvas"` : le fichier est une sauvegarde Unreal (`SaveGame`, en-tête
+  `GVAS`). Chaque clé de `valeurs` est le nom d'une propriété **entière**
+  (`IntProperty`), sa valeur un entier positif ; elle est remplacée sur place
+  (4 octets, la taille et le reste du fichier ne bougent pas). Une propriété
+  n'est touchée que si son en-tête est exactement celui attendu et qu'elle
+  n'apparaît qu'une fois dans le fichier ; sinon elle est laissée, le journal
+  le dit, et les autres sont posées. Pas de `section`, pas d'ajout de
+  propriété, pas d'autre type (les flottants et les chaînes changent de forme
+  d'une version d'Unreal à l'autre). Même copie `.avant-cidre` avant la
+  première écriture.
+- Un runtime d'avant ces deux ajouts (Cidre ≤ 1.5.4) répond « format inconnu »
+  ou « fichier absent » et réessaie à chaque lancement, sans jamais poser le
+  marqueur : une entrée `gvas` ou à `*` ne se met donc **que dans un bloc
+  `[[machine]]`**, que ces runtimes ignorent, tant qu'ils circulent. Pour une
+  entrée qui vaut sur toute machine, la condition toujours vraie est
+  `si = "coeurs_gpu >= 1"` (fiche d'Expedition 33).
+- Format `ini` : chaque clé de `valeurs` est écrite si elle n'est pas déjà à
+  cette valeur ;
   les autres lignes sont intactes, les fins de ligne CRLF sont respectées, les
   guillemets d'une valeur sont gardés, l'espacement autour du `=` aussi. Avec
   `section`, la clé n'est cherchée que dans cette section INI, et une clé
@@ -143,6 +181,99 @@ les pose, une fois :
   et n'y touche plus : l'utilisateur est libre de changer ses réglages dans le
   jeu. Pour les reposer : `cidre unset <appid> reglages_jeu_appliques`.
 - Une ligne de journal dit ce qui a été fait (`cidre log <appid>`).
+- Le témoin (`[reglages_jeu_temoin]`, optionnel : `fichier` INI et `cle`).
+  Certains jeux refont leur détection du matériel quand la carte graphique
+  qu'ils voient change — passage de DXVK à DXMT, autre machine — et remettent
+  alors leurs réglages à leurs propres valeurs, après que le lanceur a posé
+  ceux de la fiche et noté le marqueur. Expedition 33 le fait quand
+  `UserConfigHardwareProfile` change : il réécrit sa sauvegarde de réglages et
+  son INI une minute après le lancement. Le lanceur relève la valeur du témoin
+  avant le jeu et la compare à la sortie : si elle a changé, il retire le
+  marqueur et le dit au journal ; les réglages de la fiche sont reposés au
+  lancement suivant, et tiennent (le témoin ne bouge plus). La partie où la
+  détection a eu lieu se joue avec les réglages du jeu.
+
+  ```toml
+  [reglages_jeu_temoin]
+  fichier = "AppData/Local/Sandfall/Saved/Config/Windows/GameUserSettings.ini"
+  cle = "UserConfigHardwareProfile"
+  ```
+
+## Variantes par machine (`[[machine]]`)
+
+Un jeu limité par la carte graphique ne se règle pas pareil partout :
+Expedition 33 tient 50 images/s sur un M1 Max avec le préréglage Moyen à 50 %
+de résolution, et ~35 sur un iMac M4 (10 cœurs GPU, écran 4,5K) avec les mêmes
+réglages. Une fiche peut donc porter, après sa partie commune, des blocs qui ne
+valent que sur certaines machines. (Pour ce jeu-là la mesure du 2026-10-12 a
+rendu le même réglage sur les deux : sa fiche n'a pas de bloc propre au M4.
+Mesurer avant d'écrire une variante.)
+
+```toml
+[cidre]                            # commun à toutes les machines
+d3d11 = "dxmt"
+
+[[reglages_jeu]]                   # commun : le réglage de référence
+fichier = "…/GameUserSettings.ini"
+section = "ScalabilityGroups"
+valeurs = { "sg.ShadowQuality" = "1", "sg.FoliageQuality" = "1" }
+
+[[machine]]
+si = "coeurs_gpu <= 10 et ecran_largeur >= 1920"
+[machine.cidre]
+metalfx = true
+[[machine.reglages_jeu]]
+fichier = "…/GameUserSettings.ini"
+section = "ScalabilityGroups"
+valeurs = { "sg.ShadowQuality" = "0" }
+```
+
+- `si` est une condition sur des faits de la machine : `fait op nombre`, `op`
+  parmi `<=`, `>=`, `<`, `>`, `==`, `!=`, plusieurs termes reliés par ` et `
+  (tous vrais). Pas de `ou` : deux blocs font l'affaire.
+- Les faits (`sh tests/machine.sh`) :
+
+  | fait | sens | M1 Max (MacBook Pro 16") | M4 (iMac 24") |
+  |---|---|---|---|
+  | `coeurs_gpu` | cœurs de la carte graphique | 24 | 10 |
+  | `memoire_go` | mémoire vive, en Go | 32 | 24 |
+  | `ecran_largeur`, `ecran_hauteur` | l'écran principal en **points**, c'est-à-dire la résolution que le jeu voit en plein écran | 1728 × 1117 | 2240 × 1260 |
+  | `puce` | le nom de la puce, pour l'affichage (ne se compare pas) | Apple M1 Max | Apple M4 |
+
+  Le nombre de cœurs GPU ne compare pas deux générations (un cœur de M4 vaut
+  plus qu'un cœur de M1), mais il sépare les puces de base (8 à 10 cœurs) des
+  Pro (14 à 20) et des Max (24 à 40) ; croisé avec la taille de l'écran, il dit
+  si la carte est petite pour ce qu'elle doit remplir.
+- Tous les blocs dont la condition est vraie s'appliquent, dans l'ordre de la
+  fiche, après la partie commune. Une condition qu'on ne sait pas évaluer (fait
+  inconnu, valeur illisible, faute de frappe) est fausse : la partie commune
+  sert seule.
+- `[machine.cidre]` : chaque clé remplace celle de `[cidre]` ou s'y ajoute. La
+  priorité des couches ne change pas (l'utilisateur garde la main).
+- `[[machine.reglages_jeu]]` : même forme que `[[reglages_jeu]]`. Une entrée qui
+  vise le même `fichier` et la même `section` qu'une entrée déjà vue s'y fond
+  (chaque clé de `valeurs` remplace la précédente ou s'ajoute) ; sinon c'est une
+  entrée de plus. On n'écrit donc dans la variante que ce qui diffère.
+- Les réglages du jeu ne sont posés qu'une fois (marqueur
+  `reglages_jeu_appliques`) : une fiche qui gagne une variante n'atteint une
+  machine déjà marquée qu'après `cidre unset <appid> reglages_jeu_appliques`.
+  Un fait qui change ensuite (un autre écran branché) ne les repose pas non
+  plus.
+- Le journal du lancement dit quelle variante a joué
+  (`fiche : variante pour cette machine (si …)`), `cidre info <appid> --json`
+  aussi (`"fiche": {… "variantes": ["…"]}`), et `cidre doctor` affiche les
+  faits. `CIDRE_MACHINE="coeurs_gpu=10 ecran_largeur=2240"` remplace les faits
+  nommés, pour voir ce qu'une fiche donne ailleurs :
+
+  ```sh
+  CIDRE_MACHINE="coeurs_gpu=10 ecran_largeur=2240" sh tests/fiche_profil.sh reglages 1903340
+  ```
+- Compatibilité : un runtime d'avant ce mécanisme (Cidre ≤ 1.5.4) ignore les
+  blocs `[[machine]]` et applique la partie commune. C'est pour cela que la
+  variante est un bloc à part et non une condition posée sur une entrée de
+  `[[reglages_jeu]]` : la partie commune doit rester le bon réglage pour qui
+  ne sait pas lire le reste. Les mesures d'une autre machine vont dans un
+  `[[rapports]]`, `[compat]` reste celui de la machine de référence.
 
 ## Index
 
@@ -162,14 +293,20 @@ sh tests/fiche_profil.sh generer-index > profils/index.toml
 cidre profils                 # la base (cache ou copie livrée) : appid, nom, état, date
 cidre profils --json
 cidre profils maj             # télécharge l'index puis les fiches depuis GitHub main
-cidre info <appid> --json     # ... "fiche": {"jeu":{}, "cidre":{}, "compat":{}, "reglages_jeu":[{fichier, format, section, valeurs}], "rapports": n}
-sh tests/fiche_profil.sh <commande> ...   # chemin, plat, json, reglages, index, generer-index, maj
+cidre info <appid> --json     # ... "fiche": {"jeu":{}, "cidre":{}, "compat":{}, "reglages_jeu":[{fichier, format, section, valeurs}], "variantes":["si …"], "rapports": n}
+sh tests/fiche_profil.sh <commande> ...   # chemin, plat, json, reglages, variantes, index, generer-index, maj
+sh tests/machine.sh [json | si "<condition>"]   # les faits de la machine, une condition
 ```
+
+`cidre info`, `plat`, `json` et `reglages` rendent la fiche telle qu'elle vaut
+sur cette machine (variantes fondues) ; `fiche_profil.sh toml <fichier>` rend
+le fichier tel quel.
 
 Variables d'environnement : `CIDRE_PROFILS_BASE` (dossier du cache),
 `CIDRE_PROFILS_URL` (origine des téléchargements, par défaut
 `https://raw.githubusercontent.com/gtranche/cidre/main/profils/` ; un
-`file:///…/` sert aux tests), `CIDRE_PROFILS` (profil utilisateur).
+`file:///…/` sert aux tests), `CIDRE_PROFILS` (profil utilisateur),
+`CIDRE_MACHINE` (faits de la machine imposés, pour les tests et les essais).
 
 ## Import des bases externes (`tests/outils/importer_profils.py`)
 

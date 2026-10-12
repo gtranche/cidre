@@ -216,6 +216,10 @@ esac
    echo "    dossier : $DOSSIER"
    echo "    args    : $*"
    echo "    profil  : $(echo $PROFIL)"
+   # Une fiche peut porter des variantes par machine (blocs [[machine]] de
+   # profils/README.md, deja fondus dans le profil ci-dessus) : dire lesquelles jouent.
+   VARIANTES=$(sh "$R/tests/fiche_profil.sh" variantes "$JEU" 2>/dev/null | tr '\n' ';' | sed 's/;$//; s/;/ ; /g')
+   [ -z "$VARIANTES" ] || echo "    fiche   : variante pour cette machine (si $VARIANTES)"
 } >>"$JOURNAL"
 
 # Ce que Steam nous donne n'est pas forcement un binaire Windows : un jeu peut
@@ -454,6 +458,11 @@ if [ -n "$JEU" ] && [ "$(profil reglages_jeu_appliques)" != true ]; then
          && echo "    reglages du jeu : notes comme appliques (cidre unset $JEU reglages_jeu_appliques pour les reposer)" >>"$JOURNAL" || true
    fi
 fi
+# Le temoin de la fiche ([reglages_jeu_temoin]) : releve avant le jeu, compare a
+# la sortie. S'il a change, le jeu a refait sa detection du materiel et repris
+# ses propres reglages : on les reposera au lancement suivant (cf. reglages_jeu.sh).
+TEMOIN=
+[ -z "$JEU" ] || TEMOIN=$(sh "$R/tests/reglages_jeu.sh" "$JEU" temoin 2>/dev/null || true)
 
 cd "$DOSSIER"
 # Langue dans le fichier de reglages du jeu (outil-steam/langues.conf). Apres la
@@ -463,6 +472,7 @@ cd "$DOSSIER"
 # `&& ... ||` : ce script est en `set -e`, et un jeu qui sort sur un code d'erreur
 # (un plantage, un arret force) l'arretait ici meme, AVANT la sauvegarde ci-dessous.
 CIDRE_OVERLAY_DYLIB=$OVERLAY sh "$R/tests/etape2_pile_arm64ec.sh" "$PROG" "$@" >>"$JOURNAL" 2>&1 && RC=0 || RC=$?
+[ -z "$TEMOIN" ] || sh "$R/tests/reglages_jeu.sh" "$JEU" temoin-change "$TEMOIN" >>"$JOURNAL" 2>&1 || true
 # Sorti sur une erreur : le code seul n'aide personne. tests/expliquer_sortie.sh
 # lit le journal de ce lancement, reconnait les signatures connues (client Steam
 # ferme, pas d'affichage, DLL manquante, prefixe abime, plantage...) et ecrit

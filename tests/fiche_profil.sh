@@ -5,13 +5,19 @@
 #   fiche_profil.sh chemin <appid>          le fichier de la fiche (cache, sinon copie livree) ; rien si aucune
 #   fiche_profil.sh plat <appid>            les options de lancement de la fiche, en lignes TOML `cle = valeur`
 #                                           ([cidre], plus moteur/anticheat de [jeu] et etat/source de [compat])
-#   fiche_profil.sh json <appid>            la fiche en JSON : {"jeu":{},"cidre":{},"compat":{},"reglages_jeu":[...],"rapports":n}
+#   fiche_profil.sh json <appid>            la fiche en JSON : {"jeu":{},"cidre":{},"compat":{},"reglages_jeu":[...],"variantes":[...],"rapports":n}
 #   fiche_profil.sh reglages <appid>        [reglages_jeu] en lignes TAB, une entree (section INI visee) par numero :
 #                                           `n TAB fichier|format|section TAB val`, puis `n TAB valeur TAB cle TAB val`
+#   fiche_profil.sh variantes <appid>       les conditions `si` des blocs [[machine]] qui s'appliquent ici, une par ligne
 #   fiche_profil.sh index [json]            l'index de la base : `appid <TAB> nom <TAB> etat <TAB> date <TAB> origine`
 #   fiche_profil.sh generer-index           regenere profils/index.toml depuis les fiches du depot (sur la sortie)
 #   fiche_profil.sh maj [json]              telecharge l'index puis les fiches dans le cache
 #   fiche_profil.sh toml <fichier>          (outil) le fichier a plat : `section <TAB> cle <TAB> type <TAB> valeur`
+#
+# `plat`, `json` et `reglages` rendent la fiche telle qu'elle vaut sur CETTE
+# machine : les blocs [[machine]] dont la condition `si` est vraie (tests/machine.sh)
+# sont fondus dans [cidre] et [[reglages_jeu]], les autres ignores. `toml` rend
+# le fichier tel quel.
 #
 # Le cache (CIDRE_PROFILS_BASE, par defaut ~/Library/Application Support/Cidre/
 # profils-base/) prime sur la copie livree ($R/profils/). Pas de python : awk et curl.
@@ -25,9 +31,10 @@ CMD=${1:-}; ARG=${2:-}; FORMAT=${3:-}
 
 # Le sous-ensemble de TOML des fiches, a plat : une ligne `section TAB cle TAB
 # type TAB valeur` par cle (type : s chaine, b booleen, n nombre). [[rapports]]
-# donne les sections rapports.1, rapports.2... Une table en ligne `k = { a = 1 }`
-# donne la section `section.k`. LC_ALL=C : on travaille en octets, les accents
-# des notes passent tels quels.
+# donne les sections rapports.1, rapports.2... ; sous un [[machine]], [machine.cidre]
+# donne machine.N.cidre et [[machine.reglages_jeu]] machine.N.reglages_jeu.1, .2...
+# Une table en ligne `k = { a = 1 }` donne la section `section.k`. LC_ALL=C : on
+# travaille en octets, les accents des notes passent tels quels.
 toml_plat() {
    LC_ALL=C awk '
       # chaine entre guillemets a partir de v[j] ; POS = indice apres le guillemet fermant
@@ -63,15 +70,20 @@ toml_plat() {
          POS = j; return s
       }
       function emettre(sec, cle, type, val) { print sec "\t" cle "\t" type "\t" val }
+      # le chemin d une section, chaque tableau de tables deja ouvert sur ce chemin
+      # remplace par son dernier element : [a.b] apres un [[a]] est a.N.b, et
+      # [a.b.c] apres un [[a.b]] est a.N.b.M.c
+      function chemin(s,   n, c, k, p) {
+         n = split(s, c, "."); p = ""
+         for (k = 1; k <= n; k++) { p = (k == 1 ? c[k] : p "." c[k]); if (k < n && (p in tableau)) p = p "." tableau[p] }
+         return p
+      }
       { sub(/\r$/, "") }
       /^[ \t]*(#|$)/ { next }
-      /^[ \t]*\[\[/ { s = $0; gsub(/^[ \t]*\[\[[ \t]*|[ \t]*\]\].*$/, "", s); section = s "." (++tableau[s]); next }
+      /^[ \t]*\[\[/ { s = $0; gsub(/^[ \t]*\[\[[ \t]*|[ \t]*\]\].*$/, "", s); s = chemin(s); section = s "." (++tableau[s]); next }
       /^[ \t]*\[/ {
          s = $0; gsub(/^[ \t]*\[[ \t]*|[ \t]*\].*$/, "", s); gsub(/"/, "", s)
-         # [a.b] apres un [[a]] : la sous-table du dernier element, a.N.b
-         i = index(s, "."); t = i ? substr(s, 1, i - 1) : s
-         if (i && (t in tableau)) s = t "." tableau[t] substr(s, i)
-         section = s; next
+         section = chemin(s); next
       }
       {
          cle = lire_cle($0, 1); j = POS
@@ -97,6 +109,72 @@ toml_plat() {
          emettre(section, cle, TYPE, v)
       }
    ' "$1"
+}
+
+# Une fiche a plat telle qu elle vaut sur cette machine. Un bloc [[machine]] porte
+# une condition `si` (tests/machine.sh) ; s il s applique, son [machine.cidre]
+# s ajoute a [cidre] et ses [[machine.reglages_jeu]] aux [[reglages_jeu]], dans
+# l ordre de la fiche : la derniere valeur d une cle gagne, et les entrees de
+# reglages qui visent le meme fichier et la meme section n en font qu une. Les
+# sections machine.* ne sortent pas ; `machine.N TAB si` reste pour les blocs
+# appliques (commande `variantes`). Sans bloc [[machine]], rien ne change.
+fiche_plat() { # <fiche>
+   B=$(mktemp "${TMPDIR:-/tmp}/fiche.XXXXXX")
+   toml_plat "$1" >"$B"
+   if ! LC_ALL=C grep -q '^machine\.' "$B"; then cat "$B"; rm -f "$B"; return; fi
+   ok=" "
+   for n in $(LC_ALL=C awk -F'\t' '$1 ~ /^machine\.[0-9]+$/ && $2 == "si" { print substr($1, 9) }' "$B"); do
+      si=$(LC_ALL=C awk -F'\t' -v s="machine.$n" '$1 == s && $2 == "si" { print $4; exit }' "$B")
+      sh "$R/tests/machine.sh" si "$si" 2>/dev/null && ok="$ok$n "
+   done
+   LC_ALL=C awk -F'\t' -v ok="$ok" '
+      {
+         sec = $1
+         if (sec ~ /^machine\./) {
+            n = sec; sub(/^machine\./, "", n); sub(/\..*$/, "", n)
+            if (index(ok, " " n " ") == 0) next
+            if (sec == "machine." n) { if ($2 == "si") print; next }
+            sub(/^machine\.[0-9]+\./, "", sec)
+            if (sec != "cidre" && sec !~ /^reglages_jeu(\.[0-9]+)?(\.valeurs)?$/) next
+            sec = sec "@" n    # les entrees d un bloc ne se confondent pas avec celles de la base
+         }
+         if (sec ~ /^cidre(@|$)/) {
+            # une cle de [cidre] : place de sa premiere apparition, valeur de la derniere
+            if (!($2 in cv)) co[++cn] = $2
+            cv[$2] = $4; ct[$2] = $3; next
+         }
+         if (sec ~ /^reglages_jeu(\.[0-9]+)?(\.valeurs)?(@[0-9]+)?$/) {
+            val = sub(/\.valeurs/, "", sec)
+            if (!(sec in vue)) { vue[sec] = 1; ordre[++no] = sec }
+            if (val) { cles[sec, ++nc[sec]] = $2; vals[sec, nc[sec]] = $4; types[sec, nc[sec]] = $3 }
+            else attr[sec, $2] = $4
+            next
+         }
+         print
+      }
+      END {
+         for (k = 1; k <= cn; k++) print "cidre\t" co[k] "\t" ct[co[k]] "\t" cv[co[k]]
+         # les entrees de reglages, dans l ordre : celles qui visent le meme fichier et
+         # la meme section INI n en font qu une, la derniere valeur d une cle gagne
+         for (k = 1; k <= no; k++) {
+            sec = ordre[k]; id = attr[sec, "fichier"] SUBSEP attr[sec, "section"]
+            if (!(id in parid)) { parid[id] = ++en; ef[en] = attr[sec, "fichier"]; es[en] = attr[sec, "section"] }
+            e = parid[id]
+            if (attr[sec, "format"] != "") efo[e] = attr[sec, "format"]
+            for (j = 1; j <= nc[sec]; j++) {
+               c = cles[sec, j]
+               if (!((e, c) in vv)) vo[e, ++vn[e]] = c
+               vv[e, c] = vals[sec, j]; vt[e, c] = types[sec, j]
+            }
+         }
+         for (e = 1; e <= en; e++) {
+            if (ef[e] != "") print "reglages_jeu." e "\tfichier\ts\t" ef[e]
+            if (efo[e] != "") print "reglages_jeu." e "\tformat\ts\t" efo[e]
+            if (es[e] != "") print "reglages_jeu." e "\tsection\ts\t" es[e]
+            for (k = 1; k <= vn[e]; k++) print "reglages_jeu." e ".valeurs\t" vo[e, k] "\t" vt[e, vo[e, k]] "\t" vv[e, vo[e, k]]
+         }
+      }' "$B"
+   rm -f "$B"
 }
 
 # un identifiant de jeu sur : chiffres, ou local-... ; rien d autre dans un chemin
@@ -142,7 +220,7 @@ case $CMD in
    chemin) chemin "$ARG" ;;
    plat)
       f=$(chemin "$ARG") || exit 0
-      toml_plat "$f" | LC_ALL=C awk -F'\t' '
+      fiche_plat "$f" | LC_ALL=C awk -F'\t' '
          $1 == "cidre" || ($1 == "jeu" && ($2 == "moteur" || $2 == "anticheat")) || ($1 == "compat" && ($2 == "etat" || $2 == "source")) {
             v = $4
             if ($3 == "s") { gsub(/\\/, "\\\\", v); gsub(/"/, "\\\"", v); v = "\"" v "\"" }
@@ -151,7 +229,7 @@ case $CMD in
    json)
       f=$(chemin "$ARG") || { echo null; exit 0; }
       P=$(mktemp "${TMPDIR:-/tmp}/fiche.XXXXXX")
-      toml_plat "$f" >"$P"
+      fiche_plat "$f" >"$P"
       printf '{"jeu":%s,"cidre":%s,"compat":%s,' "$(objet_json "$P" jeu)" "$(objet_json "$P" cidre)" "$(objet_json "$P" compat)"
       # "reglages_jeu" : toujours un tableau, une entree par section visee ([reglages_jeu]
       # simple = une entree ; [[reglages_jeu]] = une par element), vide s il n y en a pas
@@ -164,6 +242,11 @@ case $CMD in
             "$(objet_json "$P" "$e.valeurs")"
          sep=","
       done
+      printf '],"variantes":['; sep=""
+      # les conditions des blocs [[machine]] appliques ici (vide le plus souvent)
+      LC_ALL=C awk -F'\t' '$1 ~ /^machine\.[0-9]+$/ && $2 == "si" { print $4 }' "$P" >"$P.v"
+      while IFS= read -r v; do printf '%s%s' "$sep" "$(json_val s "$v")"; sep=","; done <"$P.v"
+      rm -f "$P.v"
       printf '],'
       printf '"rapports":%s}\n' "$(awk -F'\t' '$1 ~ /^rapports\.[0-9]+$/ && !vu[$1]++ {n++} END {print n+0}' "$P")"
       rm -f "$P" ;;
@@ -173,7 +256,7 @@ case $CMD in
       # TAB val` et `n TAB valeur TAB cle TAB val`.
       f=$(chemin "$ARG") || exit 0
       P=$(mktemp "${TMPDIR:-/tmp}/fiche.XXXXXX")
-      toml_plat "$f" >"$P"
+      fiche_plat "$f" >"$P"
       n=0
       for e in $(reglages_entrees "$P"); do
          n=$((n + 1))
@@ -182,6 +265,9 @@ case $CMD in
             $1 == s ".valeurs" { print n "\tvaleur\t" $2 "\t" $4 }' "$P"
       done
       rm -f "$P" ;;
+   variantes)
+      f=$(chemin "$ARG") || exit 0
+      fiche_plat "$f" | LC_ALL=C awk -F'\t' '$1 ~ /^machine\.[0-9]+$/ && $2 == "si" { print $4 }' ;;
    index)
       # L index du cache, sinon celui de la copie livree ; en texte TAB ou en JSON.
       for f in "$BASE/index.toml" "$LIVRE/index.toml"; do [ -f "$f" ] && break; done

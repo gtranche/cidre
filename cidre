@@ -225,6 +225,7 @@ case "$cmd" in
         echo "fiche       : $f"
         echo "compat      : $(sh "$R/tests/fiche_profil.sh" toml "$f" | awk -F"\t" '$1 == "compat" && $2 != "notes" { printf "%s=%s  ", $2, $4 }')"
         n=$(sh "$R/tests/fiche_profil.sh" toml "$f" | awk -F"\t" '$1 == "compat" && $2 == "notes" { print $4 }'); [ -z "$n" ] || echo "notes       : $n"
+        n=$(sh "$R/tests/fiche_profil.sh" variantes "$id" | tr '\n' ';' | sed 's/;$//; s/;/ ; /g'); [ -z "$n" ] || echo "variante    : pour cette machine (si $n)"
       else echo "fiche       : aucune (cidre profils maj)"; fi
     fi ;;
   play|jouer)

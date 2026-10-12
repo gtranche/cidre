@@ -30,36 +30,63 @@ d3d11 = "dxmt"
 vsync = false
 tso = false
 
-# Prereglage Moyen (tous les sg.*Quality a 1 ; le Bas est moche) et resolution a
-# 50 % (mode 0) : menu ~130 fps, jeu 50-55 en DXMT, mesure le 2026-10-11.
-# Poses une fois par le lanceur ; l'utilisateur est libre ensuite (voir README).
-# La resolution ne se regle PAS par sg.ResolutionQuality : le jeu la recalcule au
-# demarrage depuis CurrentSelectedUpscalerQualityMode (section
-# /Script/SandFall.ConfigurableGameUserSettings ; mesure le 2026-10-11 : mode 0 ->
-# 50, 1 -> 75, 2 -> 85, 3 -> 100). C'est cette cle que pose la 2e entree : 0,
-# le 50 % gagne nettement (decision du 2026-10-11 avec l'utilisateur).
-[[reglages_jeu]]
-fichier = "AppData/Local/Sandfall/Saved/Config/Windows/GameUserSettings.ini"
-format = "ini"
-section = "ScalabilityGroups"
-[reglages_jeu.valeurs]
-"sg.ViewDistanceQuality" = "1"
-"sg.AntiAliasingQuality" = "1"
-"sg.ShadowQuality" = "1"
-"sg.GlobalIlluminationQuality" = "1"
-"sg.ReflectionQuality" = "1"
-"sg.PostProcessQuality" = "1"
-"sg.TextureQuality" = "1"
-"sg.EffectsQuality" = "1"
-"sg.FoliageQuality" = "1"
-"sg.ShadingQuality" = "1"
-"sg.LandscapeQuality" = "1"
-
+# Reglages du jeu, poses une fois par le lanceur ; l'utilisateur est libre ensuite
+# (voir README). Ou le jeu lit quoi (mesure sur M1 Max le 2026-10-11 et sur iMac M4
+# le 2026-10-12) :
+#   - la resolution : CurrentSelectedUpscalerQualityMode dans l'INI (0 -> 50 %,
+#     1 -> 75, 2 -> 85, 3 -> 100) ; sg.ResolutionQuality en est recalcule ;
+#   - la qualite (Bas 0, Moyen 1, Eleve 2, Epique 3) : dans sa sauvegarde de
+#     reglages SharedGameUserSettings.sav, PAS dans l'INI -- au demarrage il recopie
+#     la sauvegarde sur tous les sg.*Quality de l'INI (des sg.* poses a 0 reviennent
+#     a 1 et le jeu tourne en Moyen). D'ou le format gvas plus bas ;
+#   - la taille de fenetre : ResolutionSizeX/Y sont reecrits par le jeu (384x2520
+#     sous Wine) ; le mode fenetre (FullscreenMode=2) donne une fenetre inutilisable.
+# Reference : resolution a 50 % (decision du 2026-10-11 avec l'utilisateur, le 50 %
+# gagne nettement), qualite Moyen. C'est aussi le meilleur reglage sur l'iMac M4
+# (10 coeurs GPU, 2240x1260 points), en jeu, meme scene :
+#     Moyen 75 % (ce que le jeu choisit seul en DXMT)   22 fps   GPU 47 ms
+#     Moyen 50 %                                        35 fps   GPU 30 ms
+#     Bas   50 %                                        37 fps   GPU 28 ms
+#     Moyen 50 % + metalfx = true                       30 fps   GPU 37 ms
+# Le Bas n'achete que 5 % (et il est moche) : on reste en Moyen partout. MetalFX
+# coute 7 ms sur cette carte (sortie 4480x2520) : metalfx reste a false.
 [[reglages_jeu]]
 fichier = "AppData/Local/Sandfall/Saved/Config/Windows/GameUserSettings.ini"
 format = "ini"
 section = "/Script/SandFall.ConfigurableGameUserSettings"
 valeurs = { "CurrentSelectedUpscalerQualityMode" = "0" }
+
+# Le jeu refait sa detection du materiel quand cette cle change -- la carte vue
+# n'est pas la meme en DXVK et en DXMT -- et remet alors qualite et resolution a
+# ses propres valeurs, une minute apres le lancement (Moyen 75 % en DXMT, Bas 75 %
+# en DXVK sur l'iMac M4). Le lanceur la releve avant et apres la partie : si elle
+# a change, les reglages ci-dessus sont reposes au lancement suivant.
+[reglages_jeu_temoin]
+fichier = "AppData/Local/Sandfall/Saved/Config/Windows/GameUserSettings.ini"
+cle = "UserConfigHardwareProfile"
+
+# La qualite Moyen, la ou le jeu la lit. Vraie sur toute machine : la condition
+# ne sert qu'a ranger l'entree dans un bloc [[machine]], qu'un runtime d'avant le
+# format gvas (Cidre <= 1.5.4) ignore -- il reessaierait cette entree a chaque
+# lancement sans jamais noter les reglages comme poses. Sans ce bloc la qualite
+# est celle que le jeu choisit seul : Moyen en DXMT sur M1 Max comme sur M4.
+[[machine]]
+si = "coeurs_gpu >= 1"
+[[machine.reglages_jeu]]
+fichier = "AppData/Local/Sandfall/Saved/SaveGames/*/SharedGameUserSettings.sav"
+format = "gvas"
+[machine.reglages_jeu.valeurs]
+"OverallScalabilityLevel" = "1"
+"ViewDistanceQuality" = "1"
+"AntiAliasingQuality" = "1"
+"ShadowQuality" = "1"
+"GlobalIlluminationQuality" = "1"
+"ReflectionQuality" = "1"
+"PostProcessQuality" = "1"
+"TextureQuality" = "1"
+"EffectsQuality" = "1"
+"FoliageQuality" = "1"
+"ShadingQuality" = "1"
 
 [compat]
 etat = "argent"
@@ -70,3 +97,12 @@ cidre_version = "1.5.0"
 fps_menu = 130
 fps_jeu = 52
 notes = "DXMT (d3d11 = dxmt), prereglage Moyen + resolution 50 % (CurrentSelectedUpscalerQualityMode=0) : menu ~130 fps, jeu 50-55. A 66 % : menu 90, jeu 38-43. DXVK au meme endroit (66 %) : menu 12, jeu 4. Overlay Steam coupe en DXMT (fige la presentation)."
+
+[[rapports]]
+date = "2026-10-12"
+machine = "iMac M4 24 Go (10 coeurs GPU, ecran 4480x2520)"
+cidre_version = "1.5.3"
+etat = "argent"
+fps_menu = 77
+fps_jeu = 35
+notes = "DXMT sans vsync ni TSO, Moyen + resolution 50 % : menu 72-80 fps, jeu 33-37 (GPU 30 ms, carte a 99 %). Moyen 75 % : menu 42, jeu 22. Bas 50 % : menu 84, jeu 37. Moyen 50 % + MetalFX : menu 62, jeu 30. Eleve 50 % : menu 70. Memoire : 4,7 Go pour le jeu, 6 Go alloues par la carte, pas de swap. En DXVK le jeu se regle seul en Bas."
