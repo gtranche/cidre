@@ -22,6 +22,13 @@ lanceur = "steam"
 async = true
 fils_compilation = 6
 garde_index = false
+# DXMT (D3D11 -> Metal en un saut) : x3-4 sur DXVK sur ce jeu (mesure ci-dessus),
+# valide sur M1 Max (macOS 26) et M4 (macOS 27, 2026-10-12). Sans vsync (le FIFO
+# plafonne les fps sous la frequence de l'ecran) ni TSO (l'ordre memoire x86 emule
+# coute jusqu'a x3 sur le CPU ; pas de course vue sur ce jeu).
+d3d11 = "dxmt"
+vsync = false
+tso = false
 
 # Prereglage Moyen (tous les sg.*Quality a 1 ; le Bas est moche) et resolution a
 # 50 % (mode 0) : menu ~130 fps, jeu 50-55 en DXMT, mesure le 2026-10-11.
