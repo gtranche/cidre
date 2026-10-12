@@ -463,13 +463,15 @@ cd "$DOSSIER"
 # `&& ... ||` : ce script est en `set -e`, et un jeu qui sort sur un code d'erreur
 # (un plantage, un arret force) l'arretait ici meme, AVANT la sauvegarde ci-dessous.
 CIDRE_OVERLAY_DYLIB=$OVERLAY sh "$R/tests/etape2_pile_arm64ec.sh" "$PROG" "$@" >>"$JOURNAL" 2>&1 && RC=0 || RC=$?
-[ $RC -eq 0 ] || echo "    le jeu s'est termine sur le code $RC" >>"$JOURNAL"
-# Sorti sur une erreur, et le client Steam ne tourne pas (ou plus) : c'est la
-# premiere chose a regarder, le jeu lui-meme n'en dit rien.
-if [ $RC -ne 0 ] && [ -n "${SteamAppId:-}" ] && [ "${CIDRE_SANS_STEAM:-}" != 1 ]; then
-   case $(sh "$R/tests/client_steam_natif.sh" 2>/dev/null || true) in
-      ferme|absent) echo "    client Steam : pas en cours a la sortie du jeu -- un jeu protege par Steam se ferme aussitot sans lui (code 53)" | tee -a "$JOURNAL" ;;
-   esac
+# Sorti sur une erreur : le code seul n'aide personne. tests/expliquer_sortie.sh
+# lit le journal de ce lancement, reconnait les signatures connues (client Steam
+# ferme, pas d'affichage, DLL manquante, prefixe abime, plantage...) et ecrit
+# « cause probable » et « a faire », au journal et sur la sortie (Verger les
+# affiche a la place du code).
+if [ $RC -ne 0 ]; then
+   echo "    le jeu s'est termine sur le code $RC" | tee -a "$JOURNAL"
+   [ "${CIDRE_SANS_STEAM:-}" != 1 ] || export CIDRE_CLIENT_STEAM_ETAT=inconnu
+   sh "$R/tests/expliquer_sortie.sh" "$RC" "$JOURNAL" 2>/dev/null | tee -a "$JOURNAL" || true
 fi
 
 # Sauvegarde vers le dossier synchronise apres la sortie du jeu (meme en cas de
