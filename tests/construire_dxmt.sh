@@ -56,9 +56,18 @@ if [ -f "$CROSS" ] && cmp -s "$CROSS" "$CROSS.tmp"; then rm -f "$CROSS.tmp"; els
 grep "args" "$CROSS"
 
 echo "== DXMT -> $BLD =="
-if [ ! -f "$BLD/build.ninja" ]; then
+configurer() {
    meson setup "$BLD" "$SRC" --cross-file "$CROSS" --buildtype release \
       -Dnative_llvm_path="$NATIVE_LLVM" -Dwine_install_path="$WINE_INSTALL"
+}
+if [ ! -f "$BLD/build.ninja" ]; then
+   configurer
+elif ! grep -qF "cross_file = ['$CROSS']" "$BLD/meson-private/cmd_line.txt" 2>/dev/null; then
+   # Build-dir configure avec un autre cross-file (celui d'amont, sans emulated-tls) :
+   # meson ignore un --cross-file passe a --reconfigure, il faut repartir a neuf.
+   echo "build-dir configure avec un autre cross-file : reconfiguration a neuf"
+   rm -rf "$BLD"
+   configurer
 elif [ "$CROSS" -nt "$BLD/build.ninja" ]; then
    # drapeaux ou objets changes : meson ne relit le cross-file que sur demande
    meson setup --reconfigure "$BLD" "$SRC" --cross-file "$CROSS"
