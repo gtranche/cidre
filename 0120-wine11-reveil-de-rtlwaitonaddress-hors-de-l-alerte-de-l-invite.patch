@@ -1,0 +1,465 @@
+wine11 : le reveil de RtlWaitOnAddress ne passe plus par l'alerte de l'invite
+
+Sous l'emulateur, une alerte recue par un fil de l'invite pouvait disparaitre
+avant qu'il l'attende. Le temoin h32alerte / h64alerte (un fil s'alerte par
+NtAlertThreadByThreadId puis attend par NtWaitForAlertByThreadId) le disait par
+« INJOIGNABLE » sur 1 a 3 % des passes en i386 ; un vrai invite le paie par un
+verrou dont le reveil se perd : cinq secondes de gel sur une section critique,
+pour toujours sur un verrou SRW ou un WaitOnAddress.
+
+Cause, prise sur le fait par une sonde silencieuse (anneau en memoire dans
+NtAlertThreadByThreadId / NtWaitForAlertByThreadId, vide a la perte seulement ;
+meme reprise dans les 29 captures a froid et dans les captures sous charge) :
+
+  A fil 028c cible 028c drapeau 0 -> 1   l'invite s'alerte (relais wow64)
+  W fil 028c            drapeau 1 -> 0   11,7 us apres : RtlWaitOnAddress NATIF
+       FEXCore::Context::ContextImpl::CompileBlock
+       -> FEXCore::LookupCache::FindBlock
+       -> FEXCore::Utils::WritePriorityMutex::lock_shared
+       -> WaitOnAddress -> RtlWaitOnAddress -> NtWaitForAlertByThreadId
+  S fil 028c                             l'attente de l'invite : rien, expire
+
+L'alerte de Nt*AlertByThreadId est un drapeau unique par fil. Le
+RtlWaitOnAddress de Wine (amont, inchange a ce jour) s'en sert pour dormir, et
+tous les verrous du ntdll natif passent par lui : verrous SRW, sections
+critiques, variables de condition, et les verrous de FEX (WritePriorityMutex,
+std::mutex). Or le fil qui execute l'invite execute aussi l'emulateur, qui prend
+ces verrous entre deux instructions de l'invite -- ici pour chercher le bloc
+qui suit l'appel systeme. Si le verrou est dispute, son attente trouve le
+drapeau pose pour l'invite, le reprend, rend un reveil surnumeraire a FEX (qui
+boucle, sans dommage) et laisse l'invite sans son alerte. Le defaut ne se voit
+qu'a froid, quand les fils se disputent le cache de blocs : 0 perte sur 19
+passes de 200 manches a chaud, contre 1 a 3 % des passes sur la premiere manche.
+
+Le ntdll 32 bits de l'invite fait dormir ses propres verrous sur la meme alerte :
+c'est son reveil a lui qui se perd alors, son entree deja retiree de la file.
+Vu dans les captures : une section critique de l'invite qui expire apres 5 s,
+puis l'alerte en retard qui reste sur le drapeau (« alerte fantome » du temoin,
+3 captures : 5,00 s d'attente a chaque fois).
+
+Correctif : le ntdll natif (_WIN64 : arm64 et arm64ec) ne dort plus sur l'alerte
+de l'invite. Il a son propre drapeau par fil, a cote de l'autre dans la table
+des alertes cote unix, atteint par deux appels unix prives
+(unix_wait_on_address_sleep / unix_wait_on_address_wake) et non par les appels
+systeme Nt*AlertByThreadId, qui restent ceux de l'invite et de lui seul. Le
+ntdll i386 est du code de l'invite : il garde l'alerte, comme sur Windows. Sans
+futex cote hote (ni Linux ni macOS), les deux appels retombent sur l'alerte.
+
+Ce que ca change pour un programme : NtAlertThreadByThreadId ne reveille plus
+un fil endormi dans le RtlWaitOnAddress natif (sur Windows il lui donne un
+reveil surnumeraire). Rien dans Wine ne s'en sert ; wined3d, qui attend sur
+l'alerte nue, y gagne la meme protection que l'invite.
+
+Mesure, M1 Max, binaires definitifs, passes entrelacees, FEX 0070 + 0118, Wine
+0117 + 0119, reference = le meme arbre sans ce correctif :
+
+                                             reference            avec 0120
+  h32alerte (i386), a froid                  19 ECHEC / 1000      0 / 3000
+  h64alerte (x86-64), a froid                 0 ECHEC / 1000      0 / 3000
+  h64alerte, a froid, 3 flux en parallele     0 ECHEC / 2100      0 / 2100
+  h32alerte 30 4 (4 fils de charge)         115 ECHEC / 150       0 / 150
+  h64alerte 30 4                            150 ECHEC / 150       0 / 150
+
+  En fils : sous charge la reference perd 222 alertes (i386) et 875 (x86-64)
+  sur ~595 000 fils chacune ; avec le correctif, 0 sur 595 350 et 0 sur 595 350.
+  Les references x86-64 et sous charge portent la sonde silencieuse (elle ne
+  masque pas : 25 ECHEC / 800 en i386 avec elle). En x86-64 le defaut ne sort
+  pas a froid ici (0 sur 3600 ; 2 sur 1200 pour la session d'avant, autres
+  binaires) : c'est la charge du temoin qui le rend mesurable, et la capture
+  x86-64 montre la meme pile (xtajit64 : CompileBlock -> FindBlock ->
+  lock_shared -> WaitOnAddress, 11,7 us apres l'alerte).
+
+Les 29 temoins habituels passent (h32smc, h32bord, h32seh, banc_x64
+inchanges). h32futex, qui eprouve ces attentes, fait ses 3 210 000 tours en
+i386, en x86-64 et en arm64 natif (ces deux derniers passent par le nouveau
+drapeau), au meme temps qu'avant. ntdll.dll ARM64X, pas de x18 de plus.
+
+Amont : Wine amont a le meme RtlWaitOnAddress et FEX amont le meme
+WritePriorityMutex -- le couple amont perd l'alerte de la meme facon. Rien n'est
+envoye a FEX. Cote Wine la forme est a discuter (elle ecarte le reveil
+surnumeraire de Windows) ; le constat, lui, est a signaler.
+
+Fichiers : dlls/ntdll/sync.c, dlls/ntdll/unixlib.h, dlls/ntdll/unix/sync.c,
+dlls/ntdll/unix/loader.c, dlls/ntdll/unix/unix_private.h.
+Temoin : tests/h32alerte.c (meme source pour h64alerte ; arguments = manches,
+fils de charge qui font traduire du code neuf a l'emulateur).
+
+diff -ruN a/dlls/ntdll/sync.c b/dlls/ntdll/sync.c
+--- a/dlls/ntdll/sync.c	2026-09-29 14:44:53
++++ b/dlls/ntdll/sync.c	2026-10-12 18:58:05
+@@ -872,6 +872,50 @@
+     return FALSE;
+ }
+ 
++/* Dormir et reveiller. Le ntdll natif n'emprunte pas l'alerte de
++ * Nt*AlertByThreadId, que l'amont utilise ici : sous un emulateur ses attentes
++ * sont aussi celles de l'emulateur (verrous du JIT, tas, chargeur), prises sur
++ * le fil de l'invite entre deux de ses instructions, et elles reprenaient
++ * l'alerte destinee a l'invite. Il a son propre drapeau, cote unix. Le ntdll
++ * 32 bits, lui, est du code de l'invite : il garde l'alerte. */
++#ifdef _WIN64
++static NTSTATUS futex_sleep( const LARGE_INTEGER *timeout )
++{
++    struct wait_on_address_sleep_params params = { timeout };
++
++    return WINE_UNIX_CALL( unix_wait_on_address_sleep, &params );
++}
++
++static NTSTATUS futex_wake( HANDLE *tids, unsigned int count )
++{
++    struct wait_on_address_wake_params params = { tids, count };
++
++    return WINE_UNIX_CALL( unix_wait_on_address_wake, &params );
++}
++
++static NTSTATUS futex_wake_one( DWORD tid )
++{
++    HANDLE handle = (HANDLE)(DWORD_PTR)tid;
++
++    return futex_wake( &handle, 1 );
++}
++#else
++static NTSTATUS futex_sleep( const LARGE_INTEGER *timeout )
++{
++    return NtWaitForAlertByThreadId( NULL, timeout );
++}
++
++static NTSTATUS futex_wake( HANDLE *tids, unsigned int count )
++{
++    return NtAlertMultipleThreadByThreadId( tids, count, NULL, NULL );
++}
++
++static NTSTATUS futex_wake_one( DWORD tid )
++{
++    return NtAlertThreadByThreadId( (HANDLE)(DWORD_PTR)tid );
++}
++#endif
++
+ /***********************************************************************
+  *           RtlWaitOnAddress   (NTDLL.@)
+  */
+@@ -928,7 +972,7 @@
+ 
+         for (;;)
+         {
+-            ret = NtWaitForAlertByThreadId( NULL, &tranche );
++            ret = futex_sleep( &tranche );
+             if (ret != STATUS_TIMEOUT) break;
+             if (!entry.addr)
+             {
+@@ -944,7 +988,7 @@
+                  */
+                 LARGE_INTEGER grace = { .QuadPart = -1000000ll };  /* cent ms */
+ 
+-                if (NtWaitForAlertByThreadId( NULL, &grace ) == STATUS_ALERTED)
++                if (futex_sleep( &grace ) == STATUS_ALERTED)
+                 {
+                     ret = STATUS_ALERTED;
+                     break;
+@@ -983,7 +1027,7 @@
+     }
+     else
+ #endif
+-    ret = NtWaitForAlertByThreadId( NULL, timeout );
++    ret = futex_sleep( timeout );
+ 
+     /* We may have already been removed by a call to RtlWakeAddressSingle() or RtlWakeAddressAll(). */
+     if (entry.addr)
+@@ -1006,7 +1050,7 @@
+ static void sonde_alerte_groupee( HANDLE *tids, unsigned int count, const void *addr )
+ {
+ #ifdef SONDE_GEL
+-    NTSTATUS st = NtAlertMultipleThreadByThreadId( tids, count, NULL, NULL );
++    NTSTATUS st = futex_wake( tids, count );
+ 
+     if (st)
+     {
+@@ -1017,7 +1061,7 @@
+                  " tous sont deja retires de la file\n", count, addr, (unsigned long)st );
+     }
+ #else
+-    NtAlertMultipleThreadByThreadId( tids, count, NULL, NULL );
++    futex_wake( tids, count );
+     (void)addr;
+ #endif
+ }
+@@ -1108,7 +1152,7 @@
+      */
+     if (tid)
+     {
+-        NTSTATUS st = NtAlertThreadByThreadId( (HANDLE)(DWORD_PTR)tid );
++        NTSTATUS st = futex_wake_one( tid );
+ 
+         if (st)
+         {
+@@ -1120,7 +1164,7 @@
+         }
+     }
+ #else
+-    if (tid) NtAlertThreadByThreadId( (HANDLE)(DWORD_PTR)tid );
++    if (tid) futex_wake_one( tid );
+ #endif
+ }
+ 
+diff -ruN a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+--- a/dlls/ntdll/unix/loader.c	2026-10-01 08:45:26
++++ b/dlls/ntdll/unix/loader.c	2026-10-12 18:58:05
+@@ -1071,6 +1071,8 @@
+     unixcall_wine_server_handle_to_fd,
+     unixcall_wine_spawnvp,
+     system_time_precise,
++    wait_on_address_sleep,
++    wait_on_address_wake,
+ };
+ 
+ 
+@@ -1078,6 +1080,8 @@
+ 
+ static NTSTATUS wow64_load_so_dll( void *args ) { return STATUS_INVALID_IMAGE_FORMAT; }
+ static NTSTATUS wow64_unwind_builtin_dll( void *args ) { return STATUS_UNSUCCESSFUL; }
++/* le ntdll 32 bits est du code de l'invite : il garde l'alerte de l'invite */
++static NTSTATUS wow64_wait_on_address( void *args ) { return STATUS_NOT_SUPPORTED; }
+ 
+ const unixlib_entry_t unix_call_wow64_funcs[] =
+ {
+@@ -1089,6 +1093,8 @@
+     wow64_wine_server_handle_to_fd,
+     wow64_wine_spawnvp,
+     system_time_precise,
++    wow64_wait_on_address,
++    wow64_wait_on_address,
+ };
+ 
+ #endif  /* _WIN64 */
+diff -ruN a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
+--- a/dlls/ntdll/unix/sync.c	2026-10-11 17:52:49
++++ b/dlls/ntdll/unix/sync.c	2026-10-12 18:58:05
+@@ -3974,7 +3974,10 @@
+ union tid_alert_entry
+ {
+ #ifdef USE_FUTEX
+-    LONG futex;
++    /* [0] : l'alerte de Nt*AlertByThreadId, celle que voit l'invite ;
++     * [1] : le reveil des attentes de RtlWaitOnAddress du ntdll natif
++     *       (wait_on_address_sleep), que l'invite ne doit jamais voir. */
++    LONG futex[2];
+ #elif defined(HAVE_KQUEUE)
+     int kq;
+ #else
+@@ -4118,7 +4121,7 @@
+ #endif
+ #ifdef USE_FUTEX
+     {
+-        LONG *futex = &entry->futex;
++        LONG *futex = &entry->futex[0];
+         if (!InterlockedExchange( futex, 1 ))
+             futex_wake_one( futex );
+         return STATUS_SUCCESS;
+@@ -4166,7 +4169,42 @@
+ }
+ #endif
+ 
++#ifdef USE_FUTEX
++/* attendre qu'un drapeau d'alerte soit pose, et le reprendre */
++static NTSTATUS wait_alert_futex( LONG *futex, const LARGE_INTEGER *timeout )
++{
++    ULONGLONG end;
++    int ret;
+ 
++    if (timeout)
++    {
++        if (timeout->QuadPart == TIMEOUT_INFINITE)
++            timeout = NULL;
++        else
++            end = get_absolute_timeout( timeout );
++    }
++
++    while (!InterlockedExchange( futex, 0 ))
++    {
++        if (timeout)
++        {
++            LONGLONG timeleft = update_timeout( end );
++            struct timespec timespec;
++
++            timespec.tv_sec = timeleft / (ULONGLONG)TICKSPERSEC;
++            timespec.tv_nsec = (timeleft % TICKSPERSEC) * 100;
++            ret = futex_wait( futex, 0, &timespec );
++        }
++        else
++            ret = futex_wait( futex, 0, NULL );
++
++        if (ret == -1 && errno == ETIMEDOUT) return STATUS_TIMEOUT;
++    }
++    return STATUS_ALERTED;
++}
++#endif
++
++
+ /***********************************************************************
+  *             NtWaitForAlertByThreadId (NTDLL.@)
+  */
+@@ -4180,53 +4218,27 @@
+ 
+ #ifdef USE_FUTEX
+     {
+-        LONG *futex = &entry->futex;
+-        ULONGLONG end;
+-        int ret;
++        LONG *futex = &entry->futex[0];
++        NTSTATUS status;
+ #ifdef SONDE_GEL
+         const ULONG sonde_tid = get_thread_data()->tid;
+         const LONG sonde_avant = sonde_envois[sonde_indice( sonde_tid )];
+ #endif
+ 
+-        if (timeout)
++        status = wait_alert_futex( futex, timeout );
++#ifdef SONDE_GEL
++        if (status == STATUS_TIMEOUT)
+         {
+-            if (timeout->QuadPart == TIMEOUT_INFINITE)
+-                timeout = NULL;
+-            else
+-                end = get_absolute_timeout( timeout );
+-        }
++            LONG apres = sonde_envois[sonde_indice( sonde_tid )];
++            static LONG dits;
+ 
+-        while (!InterlockedExchange( futex, 0 ))
+-        {
+-            if (timeout)
+-            {
+-                LONGLONG timeleft = update_timeout( end );
+-                struct timespec timespec;
+-
+-                timespec.tv_sec = timeleft / (ULONGLONG)TICKSPERSEC;
+-                timespec.tv_nsec = (timeleft % TICKSPERSEC) * 100;
+-                ret = futex_wait( futex, 0, &timespec );
+-            }
+-            else
+-                ret = futex_wait( futex, 0, NULL );
+-
+-            if (ret == -1 && errno == ETIMEDOUT)
+-            {
+-#ifdef SONDE_GEL
+-                {
+-                    LONG apres = sonde_envois[sonde_indice( sonde_tid )];
+-                    static LONG dits;
+-
+-                    if (apres != sonde_avant && InterlockedIncrement( &dits ) <= 20)
+-                        ERR( "SONDE gel : fil %04x, %ld alertes comptees pendant l'attente mais"
+-                             " drapeau=%ld -- l'alerte n'est pas arrivee jusqu'ici\n",
+-                             (int)sonde_tid, (long)(apres - sonde_avant), (long)*futex );
+-                }
+-#endif
+-                return STATUS_TIMEOUT;
+-            }
++            if (apres != sonde_avant && InterlockedIncrement( &dits ) <= 20)
++                ERR( "SONDE gel : fil %04x, %ld alertes comptees pendant l'attente mais"
++                     " drapeau=%ld -- l'alerte n'est pas arrivee jusqu'ici\n",
++                     (int)sonde_tid, (long)(apres - sonde_avant), (long)*futex );
+         }
+-        return STATUS_ALERTED;
++#endif
++        return status;
+     }
+ #elif defined(HAVE_KQUEUE)
+     {
+@@ -4275,6 +4287,54 @@
+         return status;
+     }
+ #endif
++}
++
++
++/***********************************************************************
++ *           wait_on_address_sleep
++ *
++ * L'attente de RtlWaitOnAddress du ntdll natif. Elle ne passe pas par l'alerte
++ * de NtWaitForAlertByThreadId : ce drapeau-la appartient a l'invite. Sous un
++ * emulateur, le fil qui execute l'invite execute aussi l'emulateur, et celui-ci
++ * prend ses verrous entre deux instructions de l'invite. Une attente de
++ * l'emulateur qui partagerait le drapeau reprendrait l'alerte que l'invite
++ * vient de recevoir -- le reveil de son RtlWaitOnAddress a lui, deja retire de
++ * sa file -- et l'invite s'endormirait ensuite pour de bon.
++ */
++NTSTATUS wait_on_address_sleep( void *args )
++{
++    const struct wait_on_address_sleep_params *params = args;
++#ifdef USE_FUTEX
++    union tid_alert_entry *entry = get_tid_alert_entry( ULongToHandle(get_thread_data()->tid) );
++
++    if (!entry) return STATUS_INVALID_CID;
++    return wait_alert_futex( &entry->futex[1], params->timeout );
++#else
++    return NtWaitForAlertByThreadId( NULL, params->timeout );
++#endif
++}
++
++
++/***********************************************************************
++ *           wait_on_address_wake
++ */
++NTSTATUS wait_on_address_wake( void *args )
++{
++    const struct wait_on_address_wake_params *params = args;
++    unsigned int i;
++
++    for (i = 0; i < params->count; i++)
++    {
++#ifdef USE_FUTEX
++        union tid_alert_entry *entry = get_tid_alert_entry( params->tids[i] );
++
++        if (entry && !InterlockedExchange( &entry->futex[1], 1 ))
++            futex_wake_one( &entry->futex[1] );
++#else
++        NtAlertThreadByThreadId( params->tids[i] );
++#endif
++    }
++    return STATUS_SUCCESS;
+ }
+ 
+ 
+diff -ruN a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+--- a/dlls/ntdll/unix/unix_private.h	2026-10-11 17:52:03
++++ b/dlls/ntdll/unix/unix_private.h	2026-10-12 18:58:05
+@@ -314,6 +314,8 @@
+ extern unsigned int alloc_object_attributes( const OBJECT_ATTRIBUTES *attr, struct object_attributes **ret,
+                                              data_size_t *ret_len );
+ extern NTSTATUS system_time_precise( void *args );
++extern NTSTATUS wait_on_address_sleep( void *args );
++extern NTSTATUS wait_on_address_wake( void *args );
+ 
+ extern void *anon_mmap_fixed( void *start, size_t size, int prot, int flags );
+ extern void *anon_mmap_alloc( size_t size, int prot );
+diff -ruN a/dlls/ntdll/unixlib.h b/dlls/ntdll/unixlib.h
+--- a/dlls/ntdll/unixlib.h	2026-09-21 22:22:13
++++ b/dlls/ntdll/unixlib.h	2026-10-12 18:58:05
+@@ -66,6 +66,18 @@
+     CONTEXT                    *context;
+ };
+ 
++/* Attentes de RtlWaitOnAddress : voir le commentaire de dlls/ntdll/sync.c. */
++struct wait_on_address_sleep_params
++{
++    const LARGE_INTEGER *timeout;
++};
++
++struct wait_on_address_wake_params
++{
++    const HANDLE *tids;
++    unsigned int  count;
++};
++
+ enum ntdll_unix_funcs
+ {
+     unix_load_so_dll,
+@@ -76,6 +88,8 @@
+     unix_wine_server_handle_to_fd,
+     unix_wine_spawnvp,
+     unix_system_time_precise,
++    unix_wait_on_address_sleep,
++    unix_wait_on_address_wake,
+ };
+ 
+ extern unixlib_handle_t __wine_unixlib_handle;
