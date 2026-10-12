@@ -1,0 +1,265 @@
+wine11 : la recherche d'adresse libre ne balaie plus l'espace de l'hote
+
+Chaque fil recoit de ntdll 1,1 Mo de donnees (pile de signal et pile noyau,
+virtual_alloc_thread_data), demandes « au-dessus de 4 Gio » comme les blocs de
+TEB et les images 64 bits. Toute borne envoie la demande a map_free_area, qui
+part du plancher et avance d'un pas de 64 Kio a chaque refus du noyau : un
+appel systeme par pas. C'est le code de Wine amont. Sur Linux l'espace
+au-dessus de 4 Gio est vide et le premier essai reussit. Sur macOS arm64 c'est
+la que le noyau place tout -- binaire, allocateur, tampons de Metal, fichiers
+mappes, et les vues de Wine qu'on lui laisse choisir --, puis le cache partage
+des bibliotheques du systeme a 6 Gio.
+
+Mesure, Expedition 33 (DXMT) sur un Mac M4 sous macOS 27, a 3 min 34 du
+lancement : GameThread 1091 echantillons sur 1120 (sample de 3 s) dans
+NtCreateThreadEx -> virtual_alloc_thread_data -> map_view -> map_free_area ->
+try_map_free_area -> anon_mmap_tryfixed -> mach_vm_map (et autant par
+virtual_alloc_thread_stack : deux recherches par fil). vmmap au meme moment :
+[4 Gio, 6 Gio) occupe a 95 % par 6697 regions, puis le cache partage de 6 a
+13,4 Gio d'un seul tenant, soit 121 000 pas refuses un par un.
+
+Et sans aucune saturation : __PAGEZERO glisse avec l'ASLR, tout
+[4 Gio, 4 Gio + glissement) est refuse (KERN_INVALID_ADDRESS) et chaque fil
+commencait par un millier d'appels perdus, sur toutes les machines.
+
+Deux changements, dans dlls/ntdll/unix/virtual.c :
+
+- map_view : un plancher que le noyau garantit deja n'est plus une borne.
+  virtual_init lit la fin de __PAGEZERO et le glissement dans l'en-tete du
+  binaire (plancher_hote) ; une demande dont le plancher est en dessous
+  devient « n'importe ou », servie d'un mmap ou le noyau choisit le premier
+  trou. Les donnees de fil, les piles, les TEB et les images 64 bits ne
+  cherchent plus.
+- try_map_free_area : sur un refus, candidat_suivant demande au noyau
+  (mach_vm_region) quelle region occupe la place et reprend apres elle, ou
+  avant elle de haut en bas. Un appel par region au lieu d'un par pas ; meme
+  adresse rendue qu'avant. Pour les recherches vraiment bornees (VirtualAlloc2
+  et ses bornes, invite sans fenetre reservee).
+
+CIDRE_RECHERCHE_PAS_A_PAS rend l'ancien comportement pour comparer : 1 = pas
+de saut, 2 = plancher pris au mot, 3 = les deux.
+
+Temoin hors jeu, tests/sonde_fils.sh (invite x86-64 ; une page de l'hote
+posee tous les megaoctets au-dessus de 4 Gio par tests/fragmenter_espace.c),
+mediane par CreateThread :
+
+                          avant      saut seul   correctif entier
+  M1 Max, macOS 26
+    sans saturation       1,4 ms     0,15 ms     0,13 ms
+    2 Gio satures         43 ms      2,8 ms      0,15 ms
+    9,4 Gio satures       50 ms      4,8 ms      0,11 ms
+  M4, macOS 27
+    sans saturation       0,50 ms    0,07 ms     0,06 ms
+    2 Gio satures         1,5 s      1,6 ms      0,08 ms
+    9,4 Gio satures       1,5 s      1,6 ms      0,06 ms
+
+Recherche bornee dans la zone de l'hote (VirtualAlloc2) : 21 ms (M1) et 0,75 s
+(M4) avant, 1,2 et 0,8 ms apres. Dans une zone saturee a dessein les six
+adresses attendues sont rendues a l'octet, dans les deux sens, par l'ancienne
+recherche comme par la nouvelle. Temoin VirtualAlloc( NULL ) inchange.
+
+En jeu, sur le M4 (Expedition 33, DXMT, quatre premieres minutes, memes
+binaires, CIDRE_RECHERCHE_PAS_A_PAS=3 contre rien) : le fil qui cree les fils
+passait 46,8 % de son temps dans NtCreateThreadEx (26 575 echantillons sur
+56 777, moitie donnees de fil, moitie pile), 0,0 % apres (12 echantillons) ;
+24 000 images presentees avant, 43 000 apres.
+
+Risque connu. Un blocage qui existait deja se montre plus souvent : un fil
+neuf prend une violation d'acces dans FEXCore::LookupCache::FindBlock (lecture
+de son cache L1), personne ne la traite, et call_seh_handlers deroule sans fin
+un contexte dont le pc est dans le code emis. Il demande qu'un fil soit cree
+dans la milliseconde qui suit la sortie d'un autre, ce que la creation lente
+empechait presque. tests/h32alerte.c, 100 passes entrelacees par cas : 7 a
+10 % de passes bloquees avant, 22 a 23 % apres ; le meme programme en x86-64 :
+3 % et 7 % (300 passes). Avec Sleep( 1 ) avant chaque CreateThread : 0 sur
+100. La cause n'est pas trouvee (l'ordre liberer/demarquer de ~LookupCache,
+essaye, n'y change rien) ; elle n'est pas dans ce correctif.
+
+Ne reconstruire que ntdll.so (build/wine11-arm64-ec, les deux drapeaux TEB).
+---
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -71,6 +71,8 @@
+ # include <mach/task.h>
+ # include <mach/thread_state.h>
+ # include <mach/vm_map.h>
++# include <mach-o/loader.h>
++# include <crt_externs.h>
+ #undef host_page_size
+ #endif
+ 
+@@ -317,6 +319,11 @@
+ static BOOL enable_write_exceptions;  /* raise exception on writes to executable memory */
+ static BOOL bascule_wx;  /* l'hote refuse ecriture et execution ensemble */
+ static BOOL wx_dans_signal;  /* donner le droit d'executer dans le gestionnaire (CIDRE_WX_DANS_SIGNAL) */
++#ifdef __APPLE__
++static void *plancher_hote;   /* le noyau ne place rien sous cette adresse (__PAGEZERO), voir map_view */
++static BOOL pas_a_pas;        /* recherche d'adresse libre d'origine, un pas de 64 Kio par appel systeme */
++static BOOL plancher_au_mot;  /* une demande « au-dessus de 4 Gio » reste une recherche bornee, comme a l'origine */
++#endif
+ 
+ struct range_entry
+ {
+@@ -1681,7 +1688,63 @@
+     *end_ptr = end;
+     return first;
+ }
++
++
++#ifdef __APPLE__
++/***********************************************************************
++ *           candidat_suivant
++ *
++ * Le noyau vient de refuser `start` : ou reprendre la recherche ?
++ *
++ * Avancer d'un pas et redemander, comme le fait le code commun, coute un appel
++ * systeme par pas de 64 Kio de tout ce que l'hote a mappe sur le chemin. Sur
++ * macOS l'hote vit la ou Wine cherche (juste au-dessus de 4 Gio : binaire,
++ * allocateur, tampons de Metal, fichiers mappes, puis le cache partage des
++ * bibliotheques du systeme, plusieurs gigaoctets d'un seul tenant), et la
++ * zone se remplit a mesure qu'un jeu tourne. Mesure sur un Mac M4 sous
++ * macOS 27, Expedition 33 apres trois minutes et demie : plus de trois
++ * secondes pour placer les donnees d'un fil, le GameThread fige dedans.
++ *
++ * On demande donc au noyau quelle region occupe la place et on saute par-dessus
++ * d'un coup : un appel par region au lieu d'un par pas. mach_vm_region ne
++ * descend pas dans les sous-cartes ; le cache partage est une seule region.
++ *
++ * Sous le plancher de l'hote (la page zero, que l'ASLR fait glisser avec le
++ * binaire) le noyau refuse tout sans que rien n'occupe la place : on reprend
++ * au plancher. Et s'il dit libre ailleurs une place qu'il vient de refuser,
++ * on retombe sur le pas simple.
++ */
++static void *candidat_suivant( void *base, void *end, ptrdiff_t step, void *start, size_t size )
++{
++    const size_t align_mask = (step > 0 ? step : -step) - 1;
++    char *essai = start;
+ 
++    while (essai >= (char *)base && essai + size <= (char *)end)
++    {
++        mach_vm_address_t adresse = (mach_vm_address_t)essai;
++        mach_vm_size_t taille = 0;
++        vm_region_basic_info_data_64_t info;
++        mach_msg_type_number_t compte = VM_REGION_BASIC_INFO_COUNT_64;
++        mach_port_t objet = MACH_PORT_NULL;
++
++        if (essai < (char *)plancher_hote)
++        {
++            if (step < 0) return NULL;
++            essai = ROUND_ADDR( (char *)plancher_hote + align_mask, align_mask );
++            continue;
++        }
++        /* la region qui contient l'adresse, ou a defaut la premiere au-dessus */
++        if (mach_vm_region( mach_task_self(), &adresse, &taille, VM_REGION_BASIC_INFO_64,
++                            (vm_region_info_t)&info, &compte, &objet )) break;
++        if (adresse >= (mach_vm_address_t)essai + size) break;  /* rien ici */
++        if (step > 0) essai = ROUND_ADDR( adresse + taille + align_mask, align_mask );
++        else if (adresse < size) return NULL;
++        else essai = ROUND_ADDR( adresse - size, align_mask );
++    }
++    if (essai == (char *)start) essai += step;
++    return essai;
++}
++#endif
+ 
+ /***********************************************************************
+  *           try_map_free_area
+@@ -1706,6 +1769,10 @@
+             (step < 0 && (char *)start - (char *)base < -step) ||
+             step == 0)
+             break;
++#ifdef __APPLE__
++        if (!pas_a_pas) start = candidat_suivant( base, end, step, start, size );
++        else
++#endif
+         start = (char *)start + step;
+     }
+ 
+@@ -2544,6 +2611,7 @@
+     {
+         void *start = address_space_start;
+         void *end = min( user_space_limit, host_addr_space_limit );
++        void *plancher = address_space_start;  /* un plancher plus bas ne contraint rien */
+         size_t host_size = ROUND_SIZE( 0, size, host_page_mask );
+         size_t unmap_size, view_size = host_size + align_mask + 1;
+ 
+@@ -2578,6 +2646,23 @@
+         if (limit_low && (void *)limit_low > start) start = (void *)limit_low;
+         if (limit_high && (void *)limit_high < end) end = (char *)limit_high + 1;
+ 
++#ifdef __APPLE__
++        /*
++         * Un plancher que le noyau garantit deja n'est pas une contrainte.
++         *
++         * Les donnees de chaque fil, les blocs de TEB et les images 64 bits
++         * sont demandes « au-dessus de 4 Gio », pour laisser l'espace bas aux
++         * programmes 32 bits. Toute borne envoie la demande a map_free_area,
++         * qui cherche de bas en haut depuis le plancher : sur macOS arm64 c'est
++         * l'endroit ou vit l'hote, le plus encombre de tout l'espace, et la
++         * recherche s'allonge avec la partie. Or rien n'y existe sous 4 Gio
++         * (plancher_hote, lu dans __PAGEZERO) : la demande revient a « n'importe
++         * ou », que le noyau sert d'un appel en choisissant lui-meme le premier
++         * trou qui convient -- le meme que la recherche aurait trouve.
++         */
++        if (!plancher_au_mot && (char *)plancher_hote > (char *)plancher) plancher = plancher_hote;
++#endif
++
+ #ifdef MAP_JIT
+         /*
+          * Ecriture et execution ensemble : seul MAP_JIT les accorde sur macOS,
+@@ -2614,7 +2699,7 @@
+             void *debut = (void *)user_space_wow_base, *fin = (char *)debut + limit_4g;
+             void *bas[2] = { start, min( end, debut ) }, *haut[2] = { max( start, fin ), end };
+             void **premier = top_down ? haut : bas, **second = top_down ? bas : haut;
+-            const BOOL bornee = start > address_space_start || end < host_addr_space_limit || top_down;
++            const BOOL bornee = start > plancher || end < host_addr_space_limit || top_down;
+ 
+             ptr = NULL;
+             if (premier[0] < premier[1])
+@@ -2647,7 +2732,7 @@
+             goto done;
+         }
+ 
+-        if (start > address_space_start || end < host_addr_space_limit || top_down)
++        if (start > plancher || end < host_addr_space_limit || top_down)
+         {
+             if (!(ptr = map_free_area( start, end, host_size, top_down, unix_prot, align_mask )))
+                 return STATUS_NO_MEMORY;
+@@ -4057,6 +4142,37 @@
+     }
+ 
+ #ifdef __APPLE__
++    /* Ou commence l'espace que le noyau accorde ? Sous la fin de __PAGEZERO
++     * tout est interdit, et un binaire arm64 n'est pas charge si le sien fait
++     * moins de 4 Gio ; l'ASLR le fait glisser avec le binaire, de plusieurs
++     * dizaines de megaoctets. On le lit plutot que de le supposer : une demande
++     * « au-dessus de 4 Gio » n'est alors plus une contrainte (map_view), et
++     * une recherche n'a rien a essayer en dessous (candidat_suivant).
++     * CIDRE_RECHERCHE_PAS_A_PAS rend l'ancien comportement, pour comparer :
++     * 1 = balayage par pas de 64 Kio, 2 = plancher de 4 Gio pris au mot, 3 = les deux. */
++    {
++        const struct mach_header_64 *binaire = (const struct mach_header_64 *)_NSGetMachExecuteHeader();
++        const struct load_command *cmd = (const struct load_command *)(binaire + 1);
++        const char *ancien = getenv( "CIDRE_RECHERCHE_PAS_A_PAS" );
++        int quoi = ancien ? atoi( ancien ) : 0;
++        ULONG_PTR fin_zero = 0, glissement = 0;
++        unsigned int n;
++
++        for (n = 0; n < binaire->ncmds; n++, cmd = (const struct load_command *)((const char *)cmd + cmd->cmdsize))
++        {
++            const struct segment_command_64 *seg = (const struct segment_command_64 *)cmd;
++
++            if (cmd->cmd != LC_SEGMENT_64) continue;
++            if (!strcmp( seg->segname, SEG_PAGEZERO ) && !seg->vmaddr) fin_zero = seg->vmsize;
++            else if (!seg->fileoff && seg->filesize) glissement = (ULONG_PTR)binaire - seg->vmaddr;
++        }
++        if (fin_zero) plancher_hote = (void *)(fin_zero + glissement);
++        pas_a_pas = (quoi & 1) != 0;
++        plancher_au_mot = (quoi & 2) != 0;
++        TRACE( "plancher de l'hote %p%s%s\n", plancher_hote, pas_a_pas ? ", recherche pas a pas" : "",
++               plancher_au_mot ? ", plancher demande pris au mot" : "" );
++    }
++
+     /* Le noyau interdit toute adresse sous 4 Gio a un processus arm64 natif :
+      * la fenetre d'un invite 32 bits va donc au-dela. Pas a 4 Gio exactement,
+      * ou macOS charge le binaire hote -- mesure : « map_fixed_area out of memory
