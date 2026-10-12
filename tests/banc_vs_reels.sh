@@ -8,6 +8,10 @@
 #
 #   sh tests/banc_vs_reels.sh                 tout : extraction, variantes, mesures, rapport
 #   sh tests/banc_vs_reels.sh rapport         refait seulement build/banc-vs-reels/rapport.md
+#   sh tests/banc_vs_reels.sh etroit          d3d11.narrowVaryings (patch 0116) : mesure, pour chaque
+#                                             variante reduite du cache, le shader d'amont et le shader
+#                                             reduit (rapport-etroit.md). Le jeu doit avoir tourne avec
+#                                             l'option a True puis a False (ou l'inverse).
 #
 # Variables : BANC_EXE (defaut SandFall-Win64-Shipping.exe, Expedition 33),
 #   BANC_DB (cache SQLite de DXMT), BANC_OUT (defaut build/banc-vs-reels),
@@ -43,6 +47,14 @@ clang -arch arm64 -fobjc-arc -O2 -Wall -framework Metal -framework Foundation \
    "$DIR/banc_vs_reels_metal.m" -o "$BANC"
 
 $PY extraire --db "$DB" --out "$OUT"
+
+if [ "$1" = etroit ]; then
+   rm -rf "$OUT/var-etroit"
+   $PY etroit --out "$OUT"
+   caffeinate -i "$BANC" "$OUT/manifeste-etroit.tsv" --tours "$TOURS" --passes 3 --rejets 50 --remplissages 1 \
+      --configs p90:74:74:1 --sortie "$OUT/mesures-etroit.tsv"
+   exec $PY rapport-etroit --out "$OUT"
+fi
 
 # 1. Tous les shaders, variantes a b c d e, deux tailles de dessin, deux remplissages.
 rm -rf "$OUT/var"

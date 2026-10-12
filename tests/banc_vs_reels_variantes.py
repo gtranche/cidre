@@ -32,8 +32,24 @@
 #   qN  q avec seulement N composantes definies par varying (le reste undef)
 #   tN  q avec des varyings declares a N composantes (type de sortie du VS et
 #       entree du fragment shader)
+#   lN  a, mais le fragment shader ne lit que les N premieres composantes de
+#       chaque varying float4 (Metal elague-t-il de lui-meme les voies non lues ?)
+#   gN  a avec ses vraies valeurs, varyings declares a N composantes des deux
+#       cotes (ce que fait d3d11.narrowVaryings, patch 0116, pour un masque xy.. )
 #   rX  variante X avec le puits accumule dans l'ordre inverse des sorties
 #   zX  variante X repassee par opt -O2 de LLVM 15 avant l'assemblage
+#
+# Variantes reelles de d3d11.narrowVaryings (patch 0116), sous-commande `etroit` :
+# une fois le jeu lance avec l'option, le cache contient pour un meme DXBC la
+# variante d'amont (varyings float4) et des variantes reduites (une par masque
+# de composantes lues, varyings nommes regN_CmM, M = masque, m0 = non lu). Pour
+# chaque variante reduite, deux mesures du shader complet (comme a) :
+#   u  variante d'amont, liee a un fragment shader qui lit exactement les
+#      composantes du masque (ce que fait le vrai pixel shader sans l'option)
+#   n  variante reduite, liee a un fragment shader qui lit ses varyings entiers
+# La variante d'amont associee est celle du meme DXBC dont la disposition
+# d'entree tire le nombre d'attributs le plus proche (le cache ne dit pas
+# laquelle va avec laquelle ; l'ecart ne touche que la part « lecture »).
 #
 # Controle du puits : banc_vs_reels_metal --masque 0xffffffff --remplissages 1 ;
 # la geometrie doit changer (temps de fragments different) pour a, b, c et d,
@@ -49,6 +65,8 @@
 #   banc_vs_reels_variantes.py variantes --out DOSSIER [--seulement h1,h2] [--max N]
 #                                        [--variantes a,b,k4,p] [--suffixe=-essais]
 #   banc_vs_reels_variantes.py rapport --out DOSSIER   (tableaux a partir des mesures)
+#   banc_vs_reels_variantes.py etroit --out DOSSIER [--max N]   (paires u/n, manifeste-etroit.tsv)
+#   banc_vs_reels_variantes.py rapport-etroit --out DOSSIER     (rapport-etroit.md)
 # Sorties : DOSSIER/src (metallib, .ll d'origine), DOSSIER/var (variantes,
 # fragment shaders), DOSSIER/inventaire.tsv, DOSSIER/manifeste.tsv.
 import argparse
@@ -69,6 +87,7 @@ VARIANTES = ["a", "b", "c", "d", "e"]
 # de DXMT : table des cbuffers, table d'arguments, table des tampons de sommets).
 BANC_INDEX = 30   # mot de masque (0) puis une position float4 par sommet
 BANCD_INDEX = 29  # donnees lues par la variante e a la place des texture_buffer
+ETROIT = re.compile(r"user\((reg\d+_\d)m(\d+)\)")  # varying reduit par d3d11.narrowVaryings
 
 
 def run(cmd, **kw):
@@ -122,6 +141,8 @@ def inventaire(out):
         # Variantes d'options ecartees : fastMath (drapeaux sur les operations
         # flottantes) et l'essai 0113 (champs raw_t en queue de table).
         if "raw_t" in s or re.search(r"= f(add|mul|sub|div) [a-z ]*(reassoc|contract|fast)", s):
+            continue
+        if ETROIT.search(s):  # variantes de d3d11.narrowVaryings : sous-commande etroit
             continue
         try:
             m = Module(s)
@@ -342,6 +363,12 @@ def variante(m, v):
     essai = v
     voies = 4
     largeur = 4
+    lues = 4
+    etroit = False
+    if v[0] == "l":  # essai lN : a, le fragment shader ne lit que N composantes des float4
+        lues, v = int(v[1:]), "a"
+    if v[0] == "g":  # essai gN : a, varyings declares (et ecrits) a N composantes
+        largeur, etroit, v = int(v[1:]), True, "a"
     if v[0] == "t":  # essai tN : q avec des varyings declares a N composantes (type de sortie et entree du fragment)
         largeur, v = int(v[1:]), "q"
     if v[0] == "q" and len(v) > 1:  # essai qN : q avec N composantes definies par varying, le reste undef
@@ -453,6 +480,12 @@ def variante(m, v):
             ep.append("  %%banc.x%d = extractvalue %s %s, %d" % (i, m.ret, val_ret, i))
             if s["genre"] == "vertex_output" and i in garde and v not in "pq":
                 valeurs[i] = "%%banc.x%d" % i
+                if etroit:
+                    et = "i32" if m.elems[i] == "<4 x i32>" else "float"
+                    ep.append("  %%banc.l%d = shufflevector <4 x %s> %%banc.x%d, <4 x %s> undef, <%d x i32> <%s>" % (
+                        i, et, i, et, largeur, ", ".join("i32 %d" % k for k in range(largeur))))
+                    valeurs[i] = "%%banc.l%d" % i
+                    types_etroits[i] = "<%d x %s>" % (largeur, et)
             if not (s["genre"] == "vertex_output" and i in garde) or v in "wpq":
                 x = vers_4i32(ep, "%%banc.x%d" % i, m.elems[i], "banc.p%d" % i)
                 if x is None:
@@ -555,10 +588,10 @@ def variante(m, v):
     passes = "sroa" if v in "pq" else "sroa,adce,simplifycfg" if passthrough else None
     if essai[0] == "z":
         passes = "default<O2>"
-    return texte, passes, nb_tb, garde, largeur
+    return texte, passes, nb_tb, garde, largeur, lues
 
 
-def fragment(m, garde, largeur=4):
+def fragment(m, garde, largeur=4, lues=4):
     """Fragment shader MSL qui consomme tous les varyings (aucune sortie du VS ne peut etre elaguee a la liaison)."""
     champs = ["    float4 p [[position]];"]
     somme = []
@@ -566,7 +599,10 @@ def fragment(m, garde, largeur=4):
         if s["genre"] != "vertex_output" or i not in garde:
             continue
         ext = "" if largeur == 4 else ", " + ", ".join(["0"] * (4 - largeur))
-        if s["type"] == "float4":
+        if s["type"] == "float4" and lues < 4:
+            champs.append("    float4 v%d [[%s]];" % (i, s["user"]))
+            somme.append("float4(e.v%d.%s, %s)" % (i, "xyzw"[:lues], ", ".join(["0"] * (4 - lues))))
+        elif s["type"] == "float4":
             champs.append("    float%d v%d [[%s]];" % (largeur, i, s["user"]))
             somme.append("float4(e.v%d%s)" % (i, ext))
         elif s["type"] in ("uint4", "int4"):
@@ -579,6 +615,175 @@ def fragment(m, garde, largeur=4):
             % ("\n".join(champs), " + ".join(somme) if somme else "float4(e.p.z)"))
 
 
+def fragment_lu(m, lus):
+    """Fragment shader MSL qui lit, pour chaque sortie i de lus, les composantes du masque lus[i]."""
+    champs = ["    float4 p [[position]];"]
+    somme = []
+    for i, s in enumerate(m.sorties):
+        if s["genre"] != "vertex_output" or i not in lus:
+            continue
+        ty = s["type"]
+        base = ty.rstrip("234")
+        n = int(ty[-1]) if ty[-1] in "234" else 1
+        champs.append("    %s v%d [[%s%s]];" % (ty, i, s["user"], "" if base == "float" else ", flat"))
+        x = "e.v%d" % i
+        if n == 4 and lus[i] != 15:
+            voies = "".join("xyzw"[k] for k in range(4) if lus[i] & (1 << k))
+            x, n = x + "." + voies, len(voies)
+        if base != "float":
+            x = "float%s(%s)" % ("" if n == 1 else n, x)
+        somme.append("float4(%s%s)" % (x, ", 0" * (4 - n)))
+    return ("#include <metal_stdlib>\nusing namespace metal;\nstruct E {\n%s\n};\n"
+            "fragment float4 f(E e [[stage_in]]) {\n    float4 s = %s;\n    return s * 1e-30f;\n}\n"
+            % ("\n".join(champs), " + ".join(somme) if somme else "float4(e.p.z)"))
+
+
+def ecrire_variante(base, texte, fs, var):
+    env = dict(os.environ, DEVELOPER_DIR=DEVELOPER_DIR)
+    open(base + ".ll", "w").write(texte)
+    run([LLVM + "/llvm-as", base + ".ll", "-o", base + ".bc"])
+    run(["xcrun", "metallib", base + ".bc", "-o", base + ".metallib"], env=env)
+    os.remove(base + ".bc")
+    fnom = os.path.join(var, "fs_%s.metal" % hashlib.sha1(fs.encode()).hexdigest()[:12])
+    if not os.path.exists(fnom):
+        open(fnom, "w").write(fs)
+    corps = texte[texte.index("define "):texte.index("\n}\n")]
+    return [base + ".metallib", fnom, str(sum(1 for l in corps.split("\n") if l.startswith("  "))),
+            str(corps.count("@air.read_texture_buffer") + corps.count("@air.sample_") + corps.count("@air.gather_")),
+            str(len(re.findall(r"= load [^\n]*addrspace\(1\)\* %", corps)))]
+
+
+def fabriquer_paire(tache):
+    src, var, nom_n, nom_u, candidats = tache
+    mn = Module(open(os.path.join(src, nom_n + ".ll")).read())
+    mu = Module(open(os.path.join(src, nom_u + ".ll")).read())
+    masques = {}   # nom de base du varying -> masque lu (0 : non lu)
+    lus_n = {}
+    for i, s in enumerate(mn.sorties):
+        if s["genre"] != "vertex_output" or not s["user"] or not s["user"].startswith("user(reg"):
+            continue  # distances de decoupe : le pixel shader ne les lit pas
+        mo = ETROIT.match(s["user"])
+        if mo:
+            masques[mo.group(1)] = int(mo.group(2))
+            if int(mo.group(2)):
+                lus_n[i] = 15
+        else:
+            masques[s["user"][5:-1]] = 15
+            lus_n[i] = 15
+    lus_u = {}
+    for i, s in enumerate(mu.sorties):
+        if s["genre"] == "vertex_output" and s["user"] and masques.get(s["user"][5:-1]):
+            lus_u[i] = masques[s["user"][5:-1]]
+    if sorted(masques) != sorted(s["user"][5:-1] for s in mu.sorties
+                                 if s["genre"] == "vertex_output" and s["user"] and s["user"].startswith("user(reg")):
+        raise ValueError("%s et %s n'ont pas les memes varyings" % (nom_n, nom_u))
+    lignes = []
+    for v, m, lus in (("u", mu, lus_u), ("n", mn, lus_n)):
+        texte = variante(m, "a")[0].replace("@%s_a" % m.nom, "@%s_%s%s" % (m.nom, v, nom_n[-6:]))
+        lignes.append([nom_n, mu.classe(), str(mu.nvar()), v]
+                      + ecrire_variante(os.path.join(var, "%s.%s" % (nom_n, v)), texte, fragment_lu(m, lus), var))
+    avant = 4 * sum(1 for x in masques.values() if x)
+    apres = sum(bin(x).count("1") for x in masques.values())
+    paire = [nom_n, nom_u, str(candidats), str(len(masques)), str(sum(1 for x in masques.values() if x)),
+             str(avant), str(apres), " ".join("%s:%x" % (k[3:], x) for k, x in sorted(masques.items()))]
+    return lignes, paire
+
+
+def etroit(out, maxi):
+    src, var = os.path.join(out, "src"), os.path.join(out, "var-etroit")
+    os.makedirs(var, exist_ok=True)
+    amont, reduits = collections.defaultdict(list), []
+    for f in sorted(os.listdir(src)):
+        if not f.endswith(".ll"):
+            continue
+        s = open(os.path.join(src, f)).read()
+        if "raw_t" in s or re.search(r"= f(add|mul|sub|div) [a-z ]*(reassoc|contract|fast)", s):
+            continue
+        nom = f[:-3]
+        tirages = len(re.findall(r"load i8 addrspace\(1\)\*, i8 addrspace\(1\)\* addrspace\(2\)\*", s))
+        if ETROIT.search(s):
+            reduits.append((nom, tirages))
+        else:
+            amont[nom.split("_")[1]].append((nom, tirages))
+    taches = []
+    for nom, tirages in reduits:
+        cands = amont.get(nom.split("_")[1])
+        if not cands:
+            print("  %s : pas de variante d'amont dans le cache (lancer le jeu une fois avec l'option a False)" % nom, file=sys.stderr)
+            continue
+        # une sortie non lue peut emporter la lecture d'un attribut : la variante reduite tire au plus autant
+        choix = min(cands, key=lambda c: (c[1] < tirages, abs(c[1] - tirages), c[0]))
+        taches.append((src, var, nom, choix[0], len(cands)))
+    if maxi:
+        taches = taches[:maxi]
+    lignes, paires, rates = [], [], 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count()) as ex:
+        futs = {ex.submit(fabriquer_paire, t): t[2] for t in taches}
+        for fu in concurrent.futures.as_completed(futs):
+            try:
+                l, p = fu.result()
+                lignes += l
+                paires.append(p)
+            except Exception as e:
+                rates += 1
+                print("echec %s : %s" % (futs[fu], str(e)[:600]), file=sys.stderr)
+    lignes.sort(key=lambda l: (l[0], l[3] != "u"))
+    with open(os.path.join(out, "manifeste-etroit.tsv"), "w") as f:
+        f.write("nom\tclasse\tvaryings\tvariante\tmetallib\tfragment\tinstr\tlectures_texture\tchargements_device\n")
+        for l in lignes:
+            f.write("\t".join(l) + "\n")
+    with open(os.path.join(out, "paires-etroit.tsv"), "w") as f:
+        f.write("nom\tamont\tcandidats\tvaryings\tlus\tcomposantes_avant\tcomposantes_apres\tmasques\n")
+        for p in sorted(paires):
+            f.write("\t".join(p) + "\n")
+    print("%d variantes reduites (%d DXBC), %d paires, %d echecs -> %s/manifeste-etroit.tsv"
+          % (len(reduits), len(set(n.split("_")[1] for n, _ in reduits)), len(paires), rates, out))
+
+
+def rapport_etroit(out):
+    mes = lire_tsv(os.path.join(out, "mesures-etroit.tsv"))
+    paires = {l["nom"]: l for l in lire_tsv(os.path.join(out, "paires-etroit.tsv"))}
+    t = collections.defaultdict(dict)
+    for l in mes:
+        t[l["nom"]][l["variante"]] = float(l["us_par_Msommets"])
+        paires[l["nom"]]["classe"] = l["classe"]
+    lignes = []
+    for nom, v in t.items():
+        if "u" not in v or "n" not in v:
+            continue
+        p = paires[nom]
+        av, ap = int(p["composantes_avant"]), int(p["composantes_apres"])
+        lignes.append(dict(nom=nom, classe=p["classe"], u=v["u"], n=v["n"], av=av, ap=ap, lus=int(p["lus"]),
+                           varyings=int(p["varyings"]), masques=p["masques"], candidats=int(p["candidats"])))
+    L = ["# Banc des vrais vertex shaders : variantes reelles de d3d11.narrowVaryings (patch 0116)\n",
+         "Unite : microsecondes d'etage sommets par million de sommets uniques (p90, remplissage 1, rejet 50 %).",
+         "u = variante d'amont (float4), fragment shader lisant les composantes du masque ; n = variante reduite du "
+         "meme DXBC pour ce masque. Composantes = celles des varyings que le pixel shader lit (4 par varying en amont).\n"]
+    L.append("| classe | paires | DXBC | composantes avant | apres | u moyen | n moyen | n/u a usage uniforme | n/u mediane | p10 | p90 | gain par composante retiree (mediane) |")
+    L.append("|---|---|---|---|---|---|---|---|---|---|---|---|")
+    for classe in ("base", "autre", "ombres", "profondeur", "toutes"):
+        sel = [l for l in lignes if classe == "toutes" or l["classe"] == classe]
+        if not sel:
+            continue
+        r = [l["n"] / l["u"] for l in sel]
+        g = [(1 - l["n"] / l["u"]) / (l["av"] - l["ap"]) for l in sel if l["av"] > l["ap"]]
+        L.append("| %s | %d | %d | %.1f | %.1f | %.0f | %.0f | %.3f | %.3f | %.3f | %.3f | %.1f %% |" % (
+            classe, len(sel), len(set(l["nom"].split("_")[1] for l in sel)),
+            sum(l["av"] for l in sel) / len(sel), sum(l["ap"] for l in sel) / len(sel),
+            sum(l["u"] for l in sel) / len(sel), sum(l["n"] for l in sel) / len(sel),
+            sum(l["n"] for l in sel) / sum(l["u"] for l in sel), quantile(r, 0.5), quantile(r, 0.1), quantile(r, 0.9),
+            100 * quantile(g, 0.5) if g else float("nan")))
+    L.append("\n## Par paire, des plus couteuses aux moins couteuses\n")
+    L.append("| vertex shader | variante reduite | classe | varyings (lus) | composantes avant -> apres | u | n | n/u | masques lus (registre_composante:masque) |")
+    L.append("|---|---|---|---|---|---|---|---|---|")
+    for l in sorted(lignes, key=lambda l: -l["u"]):
+        L.append("| vs_%s | %s | %s | %d (%d) | %d -> %d | %.0f | %.0f | %.2f | %s |" % (
+            l["nom"].split("_")[1], l["nom"].split("_")[2][:8], l["classe"], l["varyings"], l["lus"], l["av"], l["ap"],
+            l["u"], l["n"], l["n"] / l["u"], l["masques"]))
+    open(os.path.join(out, "rapport-etroit.md"), "w").write("\n".join(L) + "\n")
+    print("%s/rapport-etroit.md (%d paires)" % (out, len(lignes)))
+
+
 def fabriquer(tache):
     src, var, nom, liste = tache
     m = Module(open(os.path.join(src, nom + ".ll")).read())
@@ -586,7 +791,7 @@ def fabriquer(tache):
     env = dict(os.environ, DEVELOPER_DIR=DEVELOPER_DIR)
     for v in liste:
         base = os.path.join(var, "%s.%s" % (nom, v))
-        texte, opt, nb_tb, garde, largeur = variante(m, v)
+        texte, opt, nb_tb, garde, largeur, lues = variante(m, v)
         if v.endswith("e") and nb_tb == 0:
             continue  # aucun texture_buffer : e serait a
         if opt:
@@ -603,7 +808,7 @@ def fabriquer(tache):
         run(["xcrun", "metallib", base + ".bc", "-o", base + ".metallib"], env=env)
         os.remove(base + ".bc")
         corps = reste[reste.index("define "):reste.index("\n}\n")]
-        fs = fragment(m, garde, largeur)
+        fs = fragment(m, garde, largeur, lues)
         fnom = os.path.join(var, "fs_%s.metal" % hashlib.sha1(fs.encode()).hexdigest()[:12])
         if not os.path.exists(fnom):
             open(fnom, "w").write(fs)
@@ -821,9 +1026,18 @@ def main():
     p = sp.add_parser("rapport")
     p.add_argument("--out", required=True)
     p.add_argument("--top", type=int, default=10)
+    p = sp.add_parser("etroit")
+    p.add_argument("--out", required=True)
+    p.add_argument("--max", type=int, default=0)
+    p = sp.add_parser("rapport-etroit")
+    p.add_argument("--out", required=True)
     a = ap.parse_args()
     if a.cmd == "extraire":
         extraire(a.db, a.out)
+    elif a.cmd == "etroit":
+        etroit(a.out, a.max)
+    elif a.cmd == "rapport-etroit":
+        rapport_etroit(a.out)
     elif a.cmd == "rapport":
         rapport(a.out, a.top)
     else:

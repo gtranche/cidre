@@ -1,0 +1,761 @@
+dxmt : varyings declares a la largeur lue par le pixel shader (d3d11.narrowVaryings)
+
+airconv declare chaque sortie ordinaire d'un vertex shader, et chaque entree
+d'un pixel shader, comme un float4 (ou int4/uint4), quel que soit le nombre
+de composantes que le pixel shader lit. Or sur GPU Apple le temps de l'etage
+sommets croit avec le nombre de composantes de varyings declarees (banc des
+vrais vertex shaders d'Expedition 33, tests/banc_vs_reels.sh : ~5 % de
+l'arithmetique du shader par composante, 56-59 % du cout d'un vertex shader
+de passe de base), et Metal n'elague a la liaison du pipeline que les
+varyings entiers : un float4 dont le fragment shader ne lit que .xy coute
+autant qu'un float4 lu en entier (essai lN du banc : l2/a = 1,00), alors que
+le declarer float2 des deux cotes rend 13 a 60 % du temps du shader (essai
+g2). Deux elements de signature tasses dans un meme registre (float2 +
+float2) etaient meme declares comme deux float4.
+
+Avec d3d11.narrowVaryings (True par defaut, False = code d'amont, a regler
+par DXMT_CONFIG pour un A/B), le pipeline ordinaire vertex shader + pixel
+shader -- pas de geometry shader, meme transparent, pas de tessellation, pas
+de stream-output, pas de trame desactivee -- compile ses deux shaders a la
+largeur lue :
+
+  - SM50Initialize note dans MTL_SHADER_REFLECTION, par registre et par
+    element de signature, le masque de signature de chaque sortie du vertex
+    shader et le masque declare (dcl_input_ps) de chaque entree du pixel
+    shader ; VaryingsNarrowable tombe a 0 pour toute forme inattendue
+    (elements qui se chevauchent, entree declaree deux fois, interpolation
+    tiree par EvaluateAttribute*).
+  - a la creation du pipeline, SM50NarrowVaryingMasks() verifie que chaque
+    entree du pixel shader a sa sortie de vertex shader (meme registre, meme
+    premiere composante, masque inclus) et rend 4 bits par registre de
+    sortie. Tout ecart, ou rien a reduire : variantes d'amont.
+  - la variante de vertex shader est rangee par (shader, disposition
+    d'entree, masque) : nouvel argument de compilation
+    SM50_SHADER_NARROW_VARYINGS, le masque n'entrant dans le condense de la
+    variante que s'il reduit quelque chose (les entrees de cache existantes
+    restent valables, les deux variantes cohabitent). Chaque sortie devient
+    float/float2/float3 (ou int, uint) des seules composantes lues, dans
+    l'ordre ; une sortie que le pixel shader ne lit pas devient un flottant
+    jamais ecrit, et le code qui ne servait qu'a elle disparait des passes
+    d'airconv.
+  - la variante de pixel shader (un booleen de plus dans sa cle) declare
+    chaque entree a la largeur de son dcl_input_ps et remet les composantes
+    recues a leur place dans le registre.
+  - un varying reduit s'appelle regN_CmM (M = masque) des deux cotes : deux
+    shaders qui ne reduiraient pas aux memes composantes ne se lient pas,
+    au lieu d'echanger des voies en silence.
+
+Le meme pixel shader sert non reduit derriere un geometry shader ou la
+tessellation, dont les sorties restent des float4. Le thunk 32 bits de
+winemetal traduit le nouvel argument. airconv (outil natif) :
+--narrow-varyings-with=<autre.dxbc> compile un vertex shader reduit pour le
+pixel shader donne (ou l'inverse), --entry=<nom> nomme la fonction.
+
+Verification hors jeu : tests/sonde_varyings.sh (probe_d3d11_varyings.c, 11
+cas, shaders compiles par le d3dcompiler de Microsoft : masques partiels,
+registres tasses, entiers, noperspective, geometry shader, passe de
+profondeur, interpolation tiree) rend des cibles flottantes identiques au
+bit pres avec et sans l'option, 93 varyings reduits dans le cache de la
+sonde ; une inversion volontaire de l'ordre des composantes fait echouer 7
+cas sur 11.
+
+Mesures sur Expedition 33 (M1 Max, Moyen 75 %, 2026-10-12) :
+  - banc sur les variantes reelles du cache du jeu (sh tests/banc_vs_reels.sh
+    etroit, 211 variantes reduites de 180 vertex shaders) : les pixel shaders
+    lisent 15,5 composantes sur 22,8 declarees pour un vertex shader de passe
+    de base, et le shader reduit coute 0,82 fois le shader d'amont (mediane
+    0,84 ; p10 0,68 ; p90 0,90) ;
+  - en jeu, traces xctrace de 10 s, meme build, option a False puis a True :
+    etage sommets de la passe de base 5,35 -> 4,78 ms par image en mediane
+    (quartiles 5,27-5,44 contre 4,39-4,96) avec 8 % de dessins en plus, soit
+    6,31 -> 5,19 us par dessin (-18 %) ; pre-passe 1,17 -> 0,99 us par dessin ;
+    aucun pipeline refuse en 12 min, image normale. Le gain sur l'image
+    entiere (au plus ~0,6-0,9 ms sur ~22 ms de GPU) reste sous le bruit entre
+    deux lancements (41 et 43 fps au HUD).
+
+diff --git a/dxmt.conf b/dxmt.conf
+--- a/dxmt.conf
++++ b/dxmt.conf
+@@ -103,6 +103,18 @@
+ 
+ # d3d11.fastMath = False
+ 
++# Varyings declares a la largeur lue par le pixel shader. Sans l'option chaque
++# sortie de vertex shader est un float4 ; or le temps de l'etage sommets croit
++# avec le nombre de composantes declarees (~5 % de l'arithmetique par
++# composante), et Metal n'elague a la liaison que les varyings entiers. Avec
++# l'option, le vertex shader d'un pipeline VS + PS (sans GS, tessellation ni
++# stream-output) est compile par masque de composantes lues, et le pixel
++# shader recoit des entrees de meme largeur. False = comportement d'amont.
++#
++# Supported values: True, False
++
++# d3d11.narrowVaryings = True
++
+ # Acces a la memoire de groupe (groupshared) sans qualificatif volatile : les
+ # barrieres (air.wg.barrier) suffisent a ordonner les acces, et le compilateur
+ # Metal peut alors vectoriser et factoriser les chargements.
+diff --git a/src/airconv/air_signature.hpp b/src/airconv/air_signature.hpp
+--- a/src/airconv/air_signature.hpp
++++ b/src/airconv/air_signature.hpp
+@@ -624,6 +624,11 @@
+    */
+   uint32_t DefineInput(const FunctionInput &input);
+   uint32_t DefineOutput(const FunctionOutput &output);
++  /* d3d11.narrowVaryings : renomme et retype une sortie de vertex shader deja definie */
++  void RedefineVertexOutput(uint32_t index, const OutputVertex &output) {
++    if (index < outputs.size() && std::holds_alternative<OutputVertex>(outputs[index]))
++      outputs[index] = output;
++  }
+   uint32_t DefineMeshVertexOutput(const MeshVertexOutput &output);
+   uint32_t DefineMeshPrimitiveOutput(const MeshPrimitiveOutput &output);
+   void UseEarlyFragmentTests() { early_fragment_tests = true; }
+diff --git a/src/airconv/airconv_cli.cpp b/src/airconv/airconv_cli.cpp
+--- a/src/airconv/airconv_cli.cpp
++++ b/src/airconv/airconv_cli.cpp
+@@ -46,6 +46,14 @@
+ static cl::opt<std::string>
+   GeometryAfterVertex("geometry-after-vertex", cl::desc("Compile vertex shader with supplied geometry shader"));
+ 
++static cl::opt<std::string> NarrowVaryingsWith(
++  "narrow-varyings-with",
++  cl::desc("Compile a vertex (or pixel) shader with varyings narrowed to what the supplied pixel (or vertex) shader pairs with")
++);
++
++static cl::opt<std::string>
++  EntryName("entry", cl::desc("Name of the generated function"), cl::init("shader_main"));
++
+ static cl::opt<bool>
+   EmitLLVM("S", cl::init(false), cl::desc("Write output as LLVM assembly"));
+ 
+@@ -207,8 +215,9 @@
+ 
+   sm50_shader_t sm50;
+   sm50_error_t err;
++  MTL_SHADER_REFLECTION reflection;
+   if (SM50Initialize(
+-        MemRef.getBufferStart(), MemRef.getBufferSize(), &sm50, nullptr, &err
++        MemRef.getBufferStart(), MemRef.getBufferSize(), &sm50, &reflection, &err
+       )) {
+     errs() << SM50GetErrorMessageString(err) << '\n';
+     SM50FreeError(err);
+@@ -220,6 +229,43 @@
+   data.flags = {};
+   data.next = 0;
+   data.type = SM50_SHADER_COMMON;
++
++  SM50_SHADER_NARROW_VARYINGS_DATA narrow_varyings;
++  SM50_SHADER_COMPILATION_ARGUMENT_DATA *args = (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&data;
++  if (!NarrowVaryingsWith.getValue().empty()) {
++    ErrorOr<std::unique_ptr<MemoryBuffer>> FileOrErr =
++      MemoryBuffer::getFile(NarrowVaryingsWith, /*IsText=*/false);
++    if (std::error_code EC = FileOrErr.getError()) {
++      SMDiagnostic(
++        NarrowVaryingsWith, SourceMgr::DK_Error,
++        "Could not open input file: " + EC.message()
++      )
++        .print(argv[0], errs());
++      return 1;
++    }
++    auto MemRef = FileOrErr->get()->getMemBufferRef();
++    sm50_shader_t sm50_other;
++    MTL_SHADER_REFLECTION reflection_other;
++    if (SM50Initialize(
++          MemRef.getBufferStart(), MemRef.getBufferSize(), &sm50_other, &reflection_other,
++          &err
++        )) {
++      errs() << SM50GetErrorMessageString(err) << '\n';
++      SM50FreeError(err);
++      return 1;
++    }
++    bool is_vertex = ((dxmt::dxbc::SM50ShaderInternal *)sm50)->shader_type == microsoft::D3D10_SB_VERTEX_SHADER;
++    narrow_varyings.type = SM50_SHADER_NARROW_VARYINGS;
++    narrow_varyings.next = &data;
++    if (SM50NarrowVaryingMasks(
++          is_vertex ? reflection : reflection_other, is_vertex ? reflection_other : reflection,
++          narrow_varyings.read_mask
++        ))
++      args = (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&narrow_varyings;
++    else
++      errs() << "varyings not narrowed" << '\n';
++    SM50Destroy(sm50_other);
++  }
+ 
+   if (!HullBeforeDomain.getValue().empty()) {
+     ErrorOr<std::unique_ptr<MemoryBuffer>> FileOrErr =
+@@ -363,7 +409,7 @@
+     }
+   } else {
+     if (auto err =
+-          dxmt::dxbc::convertDXBC(sm50, "shader_main", Context, M, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&data)) {
++          dxmt::dxbc::convertDXBC(sm50, EntryName.c_str(), Context, M, args)) {
+       errs() << err << '\n';
+       return 1;
+     }
+diff --git a/src/airconv/airconv_public.h b/src/airconv/airconv_public.h
+--- a/src/airconv/airconv_public.h
++++ b/src/airconv/airconv_public.h
+@@ -123,6 +123,14 @@
+   uint32_t NumOutputElement;
+   uint32_t ThreadsPerPatch;
+   uint32_t ArgumentTableQwords;
++  /* Varyings par registre (d3d11.narrowVaryings) : 4 bits par element de
++     signature, ranges au quartet de sa premiere composante. Vertex shader :
++     masque de signature de chaque sortie ordinaire. Pixel shader : composantes
++     que chaque entree ordinaire declare lire (dcl_input_ps). */
++  uint16_t VaryingMasks[32];
++  /* 0 : forme inattendue (elements qui se chevauchent, interpolation tiree
++     par le shader...), les varyings restent des float4. */
++  uint32_t VaryingsNarrowable;
+ };
+ 
+ #if defined(__LP64__) || defined(_WIN64)
+@@ -204,6 +212,7 @@
+   SM50_SHADER_PSO_TESSELLATOR = 7,
+   SM50_SHADER_ROOT_SIGNATURE = 8,
+   SM50_SHADER_ROOT_SIGNATURE2 = 9,
++  SM50_SHADER_NARROW_VARYINGS = 10,
+   SM50_SHADER_ARGUMENT_TYPE_MAX = 0xffffffff,
+ };
+ 
+@@ -316,6 +325,19 @@
+   size_t bytecode_length;
+ };
+ 
++/* Varyings declares a la largeur lue par le pixel shader (pipeline VS + PS sans
++   GS, tessellation ni stream-output). Vertex shader : read_mask porte 4 bits par
++   registre de sortie (les composantes lues) et chaque varying est reduit a ces
++   composantes ; un varying dont rien n'est lu n'est plus calcule. Pixel
++   shader : la presence de l'argument suffit, chaque entree prend la largeur de
++   son dcl_input_ps. Les deux cotes doivent etre compiles ainsi, avec le masque
++   de SM50NarrowVaryingMasks(). */
++struct SM50_SHADER_NARROW_VARYINGS_DATA {
++  void *next;
++  enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE type;
++  uint32_t read_mask[4];
++};
++
+ AIRCONV_API int SM50Initialize(
+   const void *pBytecode, size_t BytecodeSize, sm50_shader_t *ppShader,
+   struct MTL_SHADER_REFLECTION *pRefl, sm50_error_t *ppError
+@@ -362,6 +384,35 @@
+ #ifdef __cplusplus
+ };
+ 
++/* Masque des composantes de varyings lues par le pixel shader, par registre de
++   sortie du vertex shader. Renvoie false quand il n'y a rien a reduire ou quand
++   les deux signatures ne se correspondent pas element par element : le pipeline
++   garde alors ses varyings float4. */
++inline bool SM50NarrowVaryingMasks(
++  const struct MTL_SHADER_REFLECTION &VertexShader, const struct MTL_SHADER_REFLECTION &PixelShader,
++  uint32_t ReadMask[4]
++) {
++  ReadMask[0] = ReadMask[1] = ReadMask[2] = ReadMask[3] = 0;
++  if (!VertexShader.VaryingsNarrowable || !PixelShader.VaryingsNarrowable)
++    return false;
++  bool narrowed = false;
++  for (unsigned reg = 0; reg < 32; reg++) {
++    uint32_t read = 0;
++    for (unsigned first = 0; first < 4; first++) {
++      uint32_t ps = (PixelShader.VaryingMasks[reg] >> (first * 4)) & 0xf;
++      uint32_t vs = (VertexShader.VaryingMasks[reg] >> (first * 4)) & 0xf;
++      if (!ps)
++        continue;
++      if (!vs || (ps & ~vs))
++        return false;
++      narrowed |= ps != 0xf;
++      read |= ps;
++    }
++    ReadMask[reg / 8] |= read << ((reg % 8) * 4);
++  }
++  return narrowed;
++};
++
+ inline std::string SM50GetErrorMessageString(sm50_error_t pError) {
+   std::string str;
+   str.resize(256);
+diff --git a/src/airconv/dxbc_converter.cpp b/src/airconv/dxbc_converter.cpp
+--- a/src/airconv/dxbc_converter.cpp
++++ b/src/airconv/dxbc_converter.cpp
+@@ -349,6 +349,8 @@
+   }
+   SM50_SHADER_ROOT_SIGNATURE_DATA *rootsig = nullptr;
+   args_get_data<SM50_SHADER_ROOT_SIGNATURE, SM50_SHADER_ROOT_SIGNATURE_DATA>(pArgs, &rootsig);
++  SM50_SHADER_NARROW_VARYINGS_DATA *narrow_varyings = nullptr;
++  args_get_data<SM50_SHADER_NARROW_VARYINGS, SM50_SHADER_NARROW_VARYINGS_DATA>(pArgs, &narrow_varyings);
+ 
+   IREffect prologue([](auto) { return std::monostate(); });
+   IRValue epilogue([](struct context ctx) -> pvalue {
+@@ -364,6 +366,8 @@
+ 
+   {
+     SignatureContext sig_ctx(prologue, epilogue, func_signature, resource_map);
++    sig_ctx.narrow_inputs = narrow_varyings != nullptr && pShaderInternal->varyings_narrowable &&
++                            !shader_info->pull_mode_reg_mask;
+     sig_ctx.dual_source_blending = pso_dual_source_blending;
+     sig_ctx.disable_depth_output = pso_disable_depth_output;
+     sig_ctx.pull_mode_reg_mask = shader_info->pull_mode_reg_mask;
+@@ -612,6 +616,12 @@
+   }
+   SM50_SHADER_ROOT_SIGNATURE_DATA *rootsig = nullptr;
+   args_get_data<SM50_SHADER_ROOT_SIGNATURE, SM50_SHADER_ROOT_SIGNATURE_DATA>(pArgs, &rootsig);
++  /* varyings a la largeur lue : seulement devant un pixel shader, sans rien entre les deux */
++  SM50_SHADER_NARROW_VARYINGS_DATA *narrow_varyings = nullptr;
++  if (args_get_data<SM50_SHADER_NARROW_VARYINGS, SM50_SHADER_NARROW_VARYINGS_DATA>(pArgs, &narrow_varyings) &&
++      (rasterization_disabled || !pShaderInternal->varyings_narrowable ||
++       (gs_passthrough && gs_passthrough->DataEncoded != ~0u)))
++    narrow_varyings = nullptr;
+ 
+   IREffect prologue([](auto) { return std::monostate(); });
+   IRValue epilogue([](struct context ctx) -> pvalue {
+@@ -629,12 +639,21 @@
+     SignatureContext sig_ctx(prologue, epilogue, func_signature, resource_map);
+     sig_ctx.ia_layout = ia_layout;
+     sig_ctx.skip_vertex_output = rasterization_disabled;
++    if (narrow_varyings)
++      sig_ctx.varying_read_mask = narrow_varyings->read_mask;
+     for (auto &p : pShaderInternal->signature_handlers) {
+       p(sig_ctx);
+     }
+ 
+     for (auto& out : pShaderInternal->output_signature) {
+       if(out.isSystemValue()) continue;
++      if (auto narrow_mask = sig_ctx.narrowed_output_mask(out.reg(), out.mask()); narrow_mask >= 0) {
++        func_signature.DefineOutput(air::OutputVertex{
++          .user = to_narrow_attribute_name(out.consistentAttributeName(), narrow_mask),
++          .type = to_narrow_msl_type(out.componentType(), std::popcount((uint32_t)narrow_mask)),
++        });
++        continue;
++      }
+       func_signature.DefineOutput(air::OutputVertex{
+         .user = out.consistentAttributeName(),
+         .type = to_msl_type(out.componentType()),
+@@ -1054,6 +1073,13 @@
+   }
+ 
+   sm50_shader->bbs = read_control_flow(CodeParser, sm50_shader, inputParser, outputParser);
++
++  if (sm50_shader->shader_type == microsoft::D3D10_SB_VERTEX_SHADER) {
++    for (auto &out : sm50_shader->output_signature) {
++      if (!out.isSystemValue())
++        sm50_shader->add_varying(out.reg(), out.mask(), out.mask());
++    }
++  }
+ 
+   auto &binding_table = shader_info->binding_table;
+   auto &binding_table_cbuffer = shader_info->binding_table_cbuffer;
+@@ -1315,6 +1341,10 @@
+     }
+     pRefl->NumOutputElement = sm50_shader->max_output_register;
+     pRefl->ArgumentTableQwords = binding_table.Size();
++    memcpy(pRefl->VaryingMasks, sm50_shader->varying_masks, sizeof(pRefl->VaryingMasks));
++    pRefl->VaryingsNarrowable = sm50_shader->varyings_narrowable && !shader_info->pull_mode_reg_mask &&
++                                (sm50_shader->shader_type == microsoft::D3D10_SB_VERTEX_SHADER ||
++                                 sm50_shader->shader_type == microsoft::D3D10_SB_PIXEL_SHADER);
+   }
+ 
+   *ppShader = sm50_shader;
+diff --git a/src/airconv/dxbc_converter.hpp b/src/airconv/dxbc_converter.hpp
+--- a/src/airconv/dxbc_converter.hpp
++++ b/src/airconv/dxbc_converter.hpp
+@@ -270,6 +270,13 @@
+ 
+ std::function<IRValue(pvalue)>
+ pop_output_reg(uint32_t from_reg, uint32_t mask, uint32_t to_element);
++
++/* d3d11.narrowVaryings : la sortie ne porte que les composantes de narrow_mask */
++std::function<IRValue(pvalue)>
++pop_output_reg_narrow(uint32_t from_reg, uint32_t mask, uint32_t narrow_mask, uint32_t to_element);
++
++/* d3d11.narrowVaryings : l'argument ne porte que les composantes de mask */
++IREffect init_input_reg_narrow(uint32_t with_fnarg_at, uint32_t to_reg, uint32_t mask);
+ 
+ std::function<IRValue(pvalue)>
+ pop_output_reg_fix_unorm(uint32_t from_reg, uint32_t mask, uint32_t to_element);
+@@ -307,8 +314,28 @@
+     return air::msl_float4;
+     break;
+   }
++}
++
++/* d3d11.narrowVaryings : type d'un varying reduit a `components` composantes
++   (0 : sortie que le pixel shader ne lit pas, un flottant jamais ecrit que
++   Metal elague a la liaison) */
++inline air::MSLScalerOrVectorType to_narrow_msl_type(RegisterComponentType type, uint32_t components) {
++  air::MSLScalerType scaler = air::msl_float;
++  if (type == RegisterComponentType::Uint && components)
++    scaler = air::msl_uint;
++  if (type == RegisterComponentType::Int && components)
++    scaler = air::msl_int;
++  if (components <= 1)
++    return std::visit([](auto s) -> air::MSLScalerOrVectorType { return s; }, scaler);
++  return air::MSLVector{components, scaler};
+ }
+ 
++/* le masque fait partie du nom : deux cotes qui ne reduisent pas aux memes
++   composantes ne peuvent pas se lier (plutot qu'echanger des voies en silence). */
++inline std::string to_narrow_attribute_name(const std::string &name, uint32_t narrow_mask) {
++  return name + "m" + std::to_string(narrow_mask);
++}
++
+ struct ScalarInfo {
+   uint8_t component : 2;
+   uint8_t reg : 6;
+@@ -333,7 +360,21 @@
+   uint32_t unorm_output_reg_mask;
+   // it is considered optional (as a hint)
+   air::MTLPixelFormat pixel_formats[8];
++  /* d3d11.narrowVaryings : vertex shader, composantes lues par le pixel shader
++     (4 bits par registre de sortie), nullptr sans reduction */
++  const uint32_t *varying_read_mask = nullptr;
++  /* d3d11.narrowVaryings : pixel shader, entrees a la largeur declaree */
++  bool narrow_inputs = false;
+ 
++  /* composantes gardees d'une sortie de vertex shader (0 : le pixel shader n'en
++     lit aucune), ou -1 si elle reste le float4 d'amont */
++  int narrowed_output_mask(uint32_t reg, uint32_t sig_mask) const {
++    if (!varying_read_mask || reg >= 32)
++      return -1;
++    uint32_t narrowed = (varying_read_mask[reg / 8] >> ((reg % 8) * 4)) & sig_mask & 0xf;
++    return narrowed == 0xf ? -1 : (int)narrowed;
++  }
++
+   SignatureContext(
+       IREffect &prologue, IRValue &epilogue, air::FunctionSignatureBuilder &func_signature, io_binding_map &resource
+   ) :
+@@ -448,7 +489,29 @@
+   uint32_t gs_max_vertex_output = 0;
+   uint32_t gs_instance_count = 1;
+   uint32_t ps_has_coverage_output = 0;
++  /* cf. MTL_SHADER_REFLECTION::VaryingMasks */
++  uint16_t varying_masks[32] = {};
++  bool varyings_narrowable = true;
+ 
++  /* note l'element de varying (registre, masque de signature) et les
++     composantes `mask` qu'il porte ; tout chevauchement interdit la reduction */
++  void add_varying(uint32_t reg, uint32_t sig_mask, uint32_t mask) {
++    sig_mask &= 0xf;
++    if (reg >= 32 || !sig_mask || !mask || (mask & ~sig_mask)) {
++      varyings_narrowable = false;
++      return;
++    }
++    uint32_t shift = std::countr_zero(sig_mask) * 4;
++    uint32_t others = 0;
++    for (uint32_t first = 0; first < 16; first += 4)
++      if (first != shift)
++        others |= (varying_masks[reg] >> first) & 0xf;
++    uint32_t known = (varying_masks[reg] >> shift) & 0xf;
++    if ((known && known != mask) || (others & mask))
++      varyings_narrowable = false;
++    varying_masks[reg] |= mask << shift;
++  }
++
+   BasicBlock *entry() const {
+     return bbs.front().get();
+   }
+diff --git a/src/airconv/dxbc_converter_basicblock.cpp b/src/airconv/dxbc_converter_basicblock.cpp
+--- a/src/airconv/dxbc_converter_basicblock.cpp
++++ b/src/airconv/dxbc_converter_basicblock.cpp
+@@ -305,9 +305,59 @@
+                  return ctx.builder.CreateInsertValue(ret, value, {to_element});
+                };
+       };
++    });
++  };
++}
++
++std::function<IRValue(pvalue)>
++pop_output_reg_narrow(uint32_t from_reg, uint32_t mask, uint32_t narrow_mask, uint32_t to_element) {
++  return [=](pvalue ret) {
++    return make_irvalue_bind([=](context ctx) -> IRValue {
++      auto const_index = llvm::ConstantInt::get(ctx.llvm, llvm::APInt{32, from_reg, false});
++      pvalue vec4 = co_yield load_from_array_at(ctx.resource.output.ptr_int4, const_index);
++      auto desired_type = ctx.function->getReturnType()->getStructElementType(to_element);
++      if (desired_type->getScalarType()->isFloatTy())
++        vec4 = ctx.builder.CreateBitCast(vec4, ctx.types._float4);
++      /* comme pop_output_reg : une composante que le shader n'a pas declaree reste undef */
++      llvm::SmallVector<int, 4> kept;
++      for (int i = 0; i < 4; i++) {
++        if (narrow_mask & (1 << i))
++          kept.push_back((mask & (1 << i)) ? i : llvm::UndefMaskElem);
++      }
++      pvalue value;
++      if (kept.size() == 1)
++        value = kept[0] == llvm::UndefMaskElem
++                    ? (pvalue)llvm::UndefValue::get(desired_type)
++                    : ctx.builder.CreateExtractElement(vec4, (uint64_t)kept[0]);
++      else
++        value = ctx.builder.CreateShuffleVector(vec4, kept);
++      co_return ctx.builder.CreateInsertValue(ret, value, {to_element});
+     });
+   };
+ }
++
++IREffect
++init_input_reg_narrow(uint32_t with_fnarg_at, uint32_t to_reg, uint32_t mask) {
++  return make_effect_bind([=](context ctx) {
++    pvalue arg = ctx.function->getArg(with_fnarg_at);
++    auto const_index = llvm::ConstantInt::get(ctx.llvm, llvm::APInt{32, to_reg, false});
++    auto array = arg->getType()->getScalarType()->isFloatTy() ? ctx.resource.input.ptr_float4
++                                                              : ctx.resource.input.ptr_int4;
++    /* chaque composante recue retourne a sa place dans le registre */
++    pvalue vec4;
++    if (!arg->getType()->isVectorTy()) {
++      vec4 = ctx.builder.CreateInsertElement(
++          llvm::UndefValue::get(llvm::FixedVectorType::get(arg->getType(), 4)), arg, (uint64_t)__builtin_ctz(mask)
++      );
++    } else {
++      int placed[4], next = 0;
++      for (int i = 0; i < 4; i++)
++        placed[i] = (mask & (1 << i)) ? next++ : llvm::UndefMaskElem;
++      vec4 = ctx.builder.CreateShuffleVector(arg, {placed[0], placed[1], placed[2], placed[3]});
++    }
++    return store_at_vec4_array_masked(array, const_index, vec4, mask);
++  });
++};
+ 
+ std::function<IRValue(pvalue)> pop_output_reg_fix_unorm(uint32_t from_reg, uint32_t mask, uint32_t to_element) {
+   return [=](pvalue ret) {
+diff --git a/src/airconv/dxbc_signature.cpp b/src/airconv/dxbc_signature.cpp
+--- a/src/airconv/dxbc_signature.cpp
++++ b/src/airconv/dxbc_signature.cpp
+@@ -258,9 +258,20 @@
+         .user = sig.consistentAttributeName(),
+         .type = to_msl_type(sig.componentType()),
+       });
+-      signature_handlers.push_back([=](SignatureContext &ctx) {
++      sm50_shader->add_varying(reg, sig.mask(), sig.mask());
++      signature_handlers.push_back([=, sig_mask = sig.mask(), type = sig.componentType(),
++                                    name = sig.consistentAttributeName()](SignatureContext &ctx) {
+         if (ctx.skip_vertex_output)
++          return;
++        if (auto narrow_mask = ctx.narrowed_output_mask(reg, sig_mask); narrow_mask >= 0) {
++          ctx.func_signature.RedefineVertexOutput(assigned_index, OutputVertex{
++            .user = to_narrow_attribute_name(name, narrow_mask),
++            .type = to_narrow_msl_type(type, std::popcount((uint32_t)narrow_mask)),
++          });
++          if (narrow_mask)
++            ctx.epilogue >> pop_output_reg_narrow(reg, mask, narrow_mask, assigned_index);
+           return;
++        }
+         ctx.epilogue >> pop_output_reg(reg, mask, assigned_index);
+       });
+       break;
+@@ -438,9 +449,18 @@
+     });
+     max_input_register = std::max(reg + 1, max_input_register);
+     if (sig.mask() == 0) break;
++    sm50_shader->add_varying(reg, sig.mask(), mask);
+     signature_handlers.push_back([=, type = sig.componentType(), name = sig.consistentAttributeName()]
+     (SignatureContext &ctx) {
+       bool pull_mode = bool(ctx.pull_mode_reg_mask & (1 << reg)) && interpolation != air::Interpolation::flat;
++      if (ctx.narrow_inputs && !pull_mode && mask != 0xf) {
++        auto assigned_index = ctx.func_signature.DefineInput(InputFragmentStageIn{
++          .user = to_narrow_attribute_name(name, mask), .type = to_narrow_msl_type(type, std::popcount(mask)),
++          .interpolation = interpolation, .pull_mode = false
++        });
++        ctx.prologue << init_input_reg_narrow(assigned_index, reg, mask);
++        return;
++      }
+       auto assigned_index = ctx.func_signature.DefineInput(InputFragmentStageIn{
+         .user = name, .type = to_msl_type(type), .interpolation = interpolation, .pull_mode = pull_mode
+       });
+diff --git a/src/d3d11/d3d11_pipeline.cpp b/src/d3d11/d3d11_pipeline.cpp
+--- a/src/d3d11/d3d11_pipeline.cpp
++++ b/src/d3d11/d3d11_pipeline.cpp
+@@ -4,10 +4,20 @@
+ #include "d3d11_device.hpp"
+ #include "d3d11_shader.hpp"
+ #include "log/log.hpp"
++#include "config/config.hpp"
+ #include <atomic>
++#include <mutex>
+ 
+ namespace dxmt {
+ 
++static bool
++narrowVaryingsEnabled() {
++  static bool enabled;
++  static std::once_flag once;
++  std::call_once(once, []() { enabled = Config::getInstance().getOption<bool>("d3d11.narrowVaryings", true); });
++  return enabled;
++}
++
+ class MTLCompiledGraphicsPipelineImpl
+     : public MTLCompiledGraphicsPipeline {
+ public:
+@@ -25,20 +35,34 @@
+       unorm_output_reg_mask |= (uint32_t(IsUnorm8RenderTargetFormat(pDesc->ColorAttachmentFormats[i])) << i);
+     }
+ 
++    /* Varyings a la largeur lue par le pixel shader : le cout de l'etage sommets
++       croit avec le nombre de composantes declarees, et Metal n'elague que les
++       varyings entiers. Seulement pour un vertex shader lie directement a un
++       pixel shader (pas de stream-output ni de GS, meme transparent). */
++    std::array<uint32_t, 4> varying_read_mask = {};
++    bool narrow_varyings =
++        narrowVaryingsEnabled() && pDesc->PixelShader && !pDesc->SOLayout && pDesc->RasterizationEnabled &&
++        pDesc->GSPassthrough == ~0u &&
++        SM50NarrowVaryingMasks(
++            pDesc->VertexShader->reflection(), pDesc->PixelShader->reflection(), varying_read_mask.data()
++        );
++    if (!narrow_varyings)
++      varying_read_mask = {};
++
+     if (pDesc->SOLayout) {
+       VertexShader =
+           pDesc->VertexShader->get_shader(ShaderVariantVertexStreamOutput{
+               pDesc->InputLayout, (uint64_t)pDesc->SOLayout});
+     } else {
+       VertexShader = pDesc->VertexShader->get_shader(ShaderVariantVertex{
+-          pDesc->InputLayout, pDesc->GSPassthrough, !pDesc->RasterizationEnabled});
++          pDesc->InputLayout, pDesc->GSPassthrough, !pDesc->RasterizationEnabled, varying_read_mask});
+     }
+ 
+     if (pDesc->PixelShader) {
+       PixelShader = pDesc->PixelShader->get_shader(ShaderVariantPixel{
+           pDesc->SampleMask, pDesc->BlendState->IsDualSourceBlending(),
+           depth_stencil_format == WMTPixelFormatInvalid,
+-          unorm_output_reg_mask});
++          unorm_output_reg_mask, narrow_varyings});
+       ps_valid_render_targets = pDesc->PixelShader->reflection().PSValidRenderTargets;
+     } else {
+       PixelShader = nullptr;
+diff --git a/src/d3d11/d3d11_shader.cpp b/src/d3d11/d3d11_shader.cpp
+--- a/src/d3d11/d3d11_shader.cpp
++++ b/src/d3d11/d3d11_shader.cpp
+@@ -130,20 +130,33 @@
+   h.update(variant.rasterization_disabled);
+   if (variant.input_layout_handle)
+     h.update(variant.input_layout_handle->sha1());
++  /* le masque n'entre dans le condense que s'il reduit quelque chose : la
++     variante float4 garde son entree de cache */
++  bool narrow_varyings = variant.varying_read_mask != std::array<uint32_t, 4>{};
++  if (narrow_varyings)
++    h.update(variant.varying_read_mask);
+   auto variant_digest = h.final();
+   std::string func_name = "vs_" + shader->sha1().string().substr(0, 8) + "_" + variant_digest.string();
+ 
+   auto proc = [=](const char *func_name, SM50_SHADER_COMMON_DATA *common) -> sm50_bitcode_t  {
+     SM50_SHADER_IA_INPUT_LAYOUT_DATA data_ia_layout;
+     SM50_SHADER_GS_PASS_THROUGH_DATA data_gs_passthrough;
++    SM50_SHADER_NARROW_VARYINGS_DATA data_narrow_varyings;
++    SM50_SHADER_COMPILATION_ARGUMENT_DATA *tail = (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)common;
++    if (narrow_varyings) {
++      data_narrow_varyings.type = SM50_SHADER_NARROW_VARYINGS;
++      data_narrow_varyings.next = common;
++      memcpy(data_narrow_varyings.read_mask, variant.varying_read_mask.data(), sizeof(data_narrow_varyings.read_mask));
++      tail = (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&data_narrow_varyings;
++    }
+     data_gs_passthrough.type = SM50_SHADER_GS_PASS_THROUGH;
+     data_gs_passthrough.DataEncoded = variant.gs_passthrough;
+     data_gs_passthrough.RasterizationDisabled = variant.rasterization_disabled;
+-    data_gs_passthrough.next = common;
++    data_gs_passthrough.next = tail;
+     if (variant.input_layout_handle) {
+       data_gs_passthrough.next = &data_ia_layout;
+       data_ia_layout.type = SM50_SHADER_IA_INPUT_LAYOUT;
+-      data_ia_layout.next = common;
++      data_ia_layout.next = tail;
+       data_ia_layout.slot_mask = variant.input_layout_handle->input_slot_mask();
+       data_ia_layout
+           .num_elements = variant.input_layout_handle->input_layout_element(
+@@ -176,13 +189,22 @@
+   h.update(variant.unorm_output_reg_mask);
+   h.update(variant.dual_source_blending);
+   h.update(variant.disable_depth_output);
++  if (variant.narrow_varyings)
++    h.update(variant.narrow_varyings);
+   auto variant_digest = h.final();
+   std::string func_name = "ps_" + shader->sha1().string().substr(0, 8) + "_" + variant_digest.string();
+ 
+   auto proc = [=](const char *func_name, SM50_SHADER_COMMON_DATA *common) -> sm50_bitcode_t  {
+     SM50_SHADER_PSO_PIXEL_SHADER_DATA data;
++    SM50_SHADER_NARROW_VARYINGS_DATA data_narrow_varyings;
+     data.type = SM50_SHADER_PSO_PIXEL_SHADER;
+     data.next = common;
++    if (variant.narrow_varyings) {
++      data_narrow_varyings.type = SM50_SHADER_NARROW_VARYINGS;
++      data_narrow_varyings.next = common;
++      memset(data_narrow_varyings.read_mask, 0, sizeof(data_narrow_varyings.read_mask));
++      data.next = &data_narrow_varyings;
++    }
+     data.sample_mask = variant.sample_mask;
+     data.dual_source_blending = variant.dual_source_blending;
+     data.disable_depth_output = variant.disable_depth_output;
+diff --git a/src/d3d11/d3d11_shader.hpp b/src/d3d11/d3d11_shader.hpp
+--- a/src/d3d11/d3d11_shader.hpp
++++ b/src/d3d11/d3d11_shader.hpp
+@@ -7,6 +7,7 @@
+ #include "d3d11_input_layout.hpp"
+ #include "sha1/sha1_util.hpp"
+ #include "log/log.hpp"
++#include <array>
+ #include <variant>
+ 
+ struct MTL_COMPILED_SHADER {
+@@ -91,10 +92,14 @@
+   ManagedInputLayout input_layout_handle;
+   uint32_t gs_passthrough;
+   bool rasterization_disabled;
++  /* d3d11.narrowVaryings : composantes lues par le pixel shader, 4 bits par
++     registre de sortie ; tout a zero = varyings float4 */
++  std::array<uint32_t, 4> varying_read_mask = {};
+   bool operator==(const this_type &rhs) const {
+     return input_layout_handle == rhs.input_layout_handle &&
+            gs_passthrough == rhs.gs_passthrough &&
+-           rasterization_disabled == rhs.rasterization_disabled;
++           rasterization_disabled == rhs.rasterization_disabled &&
++           varying_read_mask == rhs.varying_read_mask;
+   }
+ };
+ 
+@@ -104,11 +109,14 @@
+   bool dual_source_blending;
+   bool disable_depth_output;
+   uint32_t unorm_output_reg_mask;
++  /* d3d11.narrowVaryings : entrees a la largeur lue (devant un vertex shader reduit de meme) */
++  bool narrow_varyings = false;
+   bool operator==(const this_type &rhs) const {
+     return sample_mask == rhs.sample_mask &&
+            dual_source_blending == rhs.dual_source_blending &&
+            disable_depth_output == rhs.disable_depth_output &&
+-           unorm_output_reg_mask == rhs.unorm_output_reg_mask;
++           unorm_output_reg_mask == rhs.unorm_output_reg_mask &&
++           narrow_varyings == rhs.narrow_varyings;
+   }
+ };
+ 
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -1924,6 +1924,12 @@
+   uint32_t unorm_output_reg_mask;
+   /** MTLPixelFormat */
+   uint32_t pixel_formats[8];
++};
++
++struct SM50_SHADER_NARROW_VARYINGS_DATA32 {
++  uint32_t next;
++  enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE type;
++  uint32_t read_mask[4];
+ };
+ 
+ struct SM50_SHADER_GS_PASS_THROUGH_DATA32 {
+@@ -2062,6 +2068,16 @@
+       data->type = src->type;
+       data->bytecode = UInt32ToPtr(src->bytecode);
+       data->bytecode_length = src->bytecode_length;
++      break;
++    }
++    case SM50_SHADER_NARROW_VARYINGS: {
++      struct SM50_SHADER_NARROW_VARYINGS_DATA32 *src = (void *)args32;
++      struct SM50_SHADER_NARROW_VARYINGS_DATA *data = malloc(sizeof(struct SM50_SHADER_NARROW_VARYINGS_DATA));
++      last_arg->next = data;
++      last_arg = (void *)data;
++      last_arg->next = NULL;
++      data->type = src->type;
++      memcpy(data->read_mask, src->read_mask, sizeof(data->read_mask));
+       break;
+     }
+     case SM50_SHADER_ARGUMENT_TYPE_MAX:
