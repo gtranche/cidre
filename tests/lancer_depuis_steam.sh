@@ -338,6 +338,19 @@ if [ "$(opt journal_detaille CIDRE_JOURNAL_DETAILLE)" = true ]; then
    echo "    journal detaille : WINEDEBUG=$WINEDEBUG" >>"$JOURNAL"
 fi
 
+# Le client Steam de macOS : c'est lui qui repond derriere le pont, et rien ne
+# dit qu'il tourne quand le jeu est lance par `cidre play` (Verger) plutot que
+# par le bouton de Steam. Ferme, un jeu protege par le DRM de Steam demande
+# steam://run/<appid> et sort aussitot (Expedition 33 : code 53, sans une ligne
+# au journal). On l'ouvre donc et on attend qu'il soit connecte ; ce qu'on a
+# fait va au journal et a la sortie (le journal de lancement de Verger). Jamais
+# bloquant : sans client, le jeu est lance quand meme, la trace dit pourquoi il
+# tombera. CIDRE_SANS_STEAM=1 : on ne touche pas au client. Cf.
+# tests/client_steam_natif.sh.
+if [ -n "${SteamAppId:-}" ] && [ "${CIDRE_SANS_STEAM:-}" != 1 ]; then
+   sh "$R/tests/client_steam_natif.sh" assurer 2>&1 | tee -a "$JOURNAL" || true
+fi
+
 # Le client de service : un seul a la fois, reutilise s'il tourne deja.
 if ! pgrep -f 'c:\\faux_steam.exe' >/dev/null 2>&1; then
    WINEDEBUG=$JOURNAL_WINE CIDRE_OVERLAY_DYLIB= sh "$R/tests/etape2_pile_arm64ec.sh" 'c:\faux_steam.exe' >>"$JOURNAL" 2>&1 &
@@ -451,6 +464,13 @@ cd "$DOSSIER"
 # (un plantage, un arret force) l'arretait ici meme, AVANT la sauvegarde ci-dessous.
 CIDRE_OVERLAY_DYLIB=$OVERLAY sh "$R/tests/etape2_pile_arm64ec.sh" "$PROG" "$@" >>"$JOURNAL" 2>&1 && RC=0 || RC=$?
 [ $RC -eq 0 ] || echo "    le jeu s'est termine sur le code $RC" >>"$JOURNAL"
+# Sorti sur une erreur, et le client Steam ne tourne pas (ou plus) : c'est la
+# premiere chose a regarder, le jeu lui-meme n'en dit rien.
+if [ $RC -ne 0 ] && [ -n "${SteamAppId:-}" ] && [ "${CIDRE_SANS_STEAM:-}" != 1 ]; then
+   case $(sh "$R/tests/client_steam_natif.sh" 2>/dev/null || true) in
+      ferme|absent) echo "    client Steam : pas en cours a la sortie du jeu -- un jeu protege par Steam se ferme aussitot sans lui (code 53)" | tee -a "$JOURNAL" ;;
+   esac
+fi
 
 # Sauvegarde vers le dossier synchronise apres la sortie du jeu (meme en cas de
 # crash : on sauve l'etat tel quel). Non bloquant.

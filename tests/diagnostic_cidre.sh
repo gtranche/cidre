@@ -166,6 +166,9 @@ for f in steamclient.dll steamclient64.dll Steam.dll; do
    if [ -s "$C/Program Files (x86)/Steam/$f" ]; then printf '  %-40s %s octets\n' "Steam/$f" "$(stat -f %z "$C/Program Files (x86)/Steam/$f")"; else printf '  %-40s ABSENT\n' "Steam/$f"; fi
 done
 echo "  client Steam designe au registre : $(LC_ALL=C grep -a '^"SteamClientDll64"=' "$WINEPREFIX/user.reg" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d '"' | sed 's/\\\\/\\/g')"
+# Et le client Steam de macOS derriere le pont : ferme ou pas connecte, un jeu
+# protege se ferme aussitot (code 53). Le lanceur l'ouvre de lui-meme.
+echo "  client Steam de macOS : $(sh "$R/tests/client_steam_natif.sh" 2>/dev/null)"
 
 titre "Processus"
 ps -axo pid=,etime=,command= | grep -E "lancer_depuis_steam|etape2_pile|wineserver|[A-Za-z]:\\\\" | grep -v grep \
