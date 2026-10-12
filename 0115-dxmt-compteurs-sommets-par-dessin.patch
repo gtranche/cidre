@@ -1,0 +1,466 @@
+dxmt : dessins et sommets par passe de rendu, dans les compteurs DXMT_COUNTERS
+
+Le chantier airconv « lecture directe des tampons types » (0113) donnait
+x3-4,6 par lecture sur banc et rien en jeu : la passe de base d'Expedition 33
+fait ~800-2000 dessins de quelques centaines a quelques milliers de sommets,
+et on ne savait pas si son cout vertex (4,5-9 ms par image) est par sommet
+ou par dessin. Avant tout nouveau travail sur l'etage sommets il faut
+compter les sommets par dessin, par passe.
+
+Avec DXMT_COUNTERS=1 (le meme interrupteur que les compteurs du fil
+appelant, 0110), le fil d'encodage compte, pour chaque encodeur de rendu,
+en parcourant sa liste de commandes juste avant de l'encoder (deja en
+memoire, comme pour l'etiquette 0111) :
+
+  dessins            toutes les commandes de dessin
+  sommets            (sommets ou index) x instances, dessins directs
+  distribution       histogramme en quarts d'octave des sommets par dessin
+                     -> p10/p50/p90 (a ~20 % pres), parts < 64, < 256,
+                     < 1024 (exactes)
+  nature             indexes, instancies (instance_count > 1), indirects
+                     (arguments sur le GPU : comptes sans sommets),
+                     geometrie (gs) et tessellation (ts), dont les arguments
+                     sont lus dans le tampon d'arguments encore mappe
+
+et les cumule par passe, la passe etant la signature de l'encodeur de 0111
+(cibles, formats, chargement/stockage, vis/ts/gs) sans le nombre de dessins.
+Toutes les 1000 images (DXMT_COUNTERS_INTERVAL=<n> pour changer ; tranche,
+remise a zero : pas de cumul a soustraire) et a la destruction du contexte,
+une ligne WARN de synthese puis une ligne par passe, triees par sommets :
+
+  DXMT_DESSINS (periodique) tranche de 1000 images (4000-4999), par image :
+    encodeurs de rendu=31 dessins=2310 sommets=4300000 (sommets/dessin direct=1861)
+  DXMT_DESSINS   R 1296x816 c0=... d=...:LS s=LS | enc/img=1 dessins/img=1296
+    sommets/img=2900000 | sommets/dessin p10=96 p50=812 p90=9216 moy=2238
+    <64=12% <256=25% <1024=58% | indexes=99% instancies=31% (inst/dessin=2
+    sommets/instance=1100) indirects=0% gs=0% ts=0%
+
+L'etiquette d'encodeur (DXMT_ENCODER_LABELS=1) porte en plus v=<sommets>
+apres draws=<n> (vis/ts/gs passent avant), pour que la trace xctrace donne,
+par encodeur, le temps GPU vertex en face des dessins et des sommets : la
+regression du temps vertex sur (dessins, sommets) departage le cout par
+dessin du cout par sommet.
+
+Cout : un parcours de la liste de commandes par encodeur de rendu sur
+dxmt-encode-thr quand une des deux variables est posee (un seul parcours
+pour l'etiquette et les compteurs), rien sinon ; l'etat n'existe que si
+DXMT_COUNTERS est pose (unique_ptr).
+
+Verifie hors jeu par tests/probe_d3d11_dessins.c (PE x86-64, deux passes au
+contenu connu : dessins directs, indexes, instancies, indirects) : les
+lignes DXMT_DESSINS donnent exactement les valeurs attendues.
+
+diff --git a/src/dxmt/dxmt_context.cpp b/src/dxmt/dxmt_context.cpp
+--- a/src/dxmt/dxmt_context.cpp
++++ b/src/dxmt/dxmt_context.cpp
+@@ -30,6 +30,9 @@
+ #include <sstream>
+ #include <cstdint>
+ #include <cfloat>
++#include <algorithm>
++#include <map>
++#include <memory>
+ 
+ namespace dxmt {
+ 
+@@ -39,7 +42,7 @@
+  * Instruments (Metal System Trace, xctrace export) donne le temps GPU de chaque
+  * encodeur mais ne sait rien de ce qu'il dessine. L'etiquette resume la passe :
+  *   R <largeur>x<hauteur>[x<couches>] c<i>=<format>:<chargement><stockage> ...
+- *     d=<format>:<chargement><stockage> s=<chargement><stockage> draws=<n> [vis] [ts] [gs]
++ *     d=<format>:<chargement><stockage> s=<chargement><stockage> [vis] [ts] [gs] draws=<n> v=<sommets>
+  *   C disp=<n>        (passes de calcul : nombre de dispatch)
+  *   B cmds=<n>        (copies, mipmaps, remplissages)
+  * chargement : x = sans importance, L = charge, C = efface ;
+@@ -91,7 +94,7 @@
+ }
+ 
+ std::string
+-etiquette_render(dxmt::RenderEncoderData *data) {
++signature_render(dxmt::RenderEncoderData *data) {
+   std::ostringstream os;
+   os << "R " << data->render_target_width << "x" << data->render_target_height;
+   if (data->render_target_array_length > 1)
+@@ -108,27 +111,290 @@
+        << abrege_stockage(data->depth.store_action);
+   if (data->stencil.attachment)
+     os << " s=" << abrege_chargement(data->stencil.load_action) << abrege_stockage(data->stencil.store_action);
+-  os << " draws=" << compter_commandes(data->cmd_head, [](uint16_t t) {
+-    switch (t) {
+-    case WMTRenderCommandDraw:
+-    case WMTRenderCommandDrawIndexed:
+-    case WMTRenderCommandDrawIndirect:
+-    case WMTRenderCommandDrawIndexedIndirect:
+-    case WMTRenderCommandDrawMeshThreadgroups:
+-    case WMTRenderCommandDrawMeshThreadgroupsIndirect:
+-    case WMTRenderCommandDXMTGeometryDraw:
+-    case WMTRenderCommandDXMTGeometryDrawIndexed:
+-    case WMTRenderCommandDXMTGeometryDrawIndirect:
+-    case WMTRenderCommandDXMTGeometryDrawIndexedIndirect: return true;
+-    default: return false;
+-    }
+-  });
+   if (data->use_visibility_result)
+     os << " vis";
+   if (data->use_tessellation)
+     os << " ts";
+   if (data->use_geometry)
+     os << " gs";
++  return os.str();
++}
++
++} // namespace
++
++/*
++ * Compteurs de dessins par passe de rendu (DXMT_COUNTERS=1).
++ *
++ * Pour savoir si le cout de l'etage sommets est par sommet ou par dessin, il
++ * faut, par passe (signature de l'encodeur ci-dessus, sans le nombre de
++ * dessins) : le nombre de dessins, le nombre de sommets soumis (sommets ou
++ * index x instances), leur distribution par dessin, et la part des dessins
++ * indexes, instancies, indirects, geometrie (gs) ou tessellation (ts).
++ *
++ * Tout se compte sur dxmt-encode-thr, en parcourant la liste de commandes de
++ * l'encodeur juste avant de l'encoder (deja en memoire, comme pour
++ * l'etiquette). Les dessins indirects ont leurs arguments sur le GPU : on les
++ * compte, sans sommets. Les dessins geometrie/tessellation lisent leurs
++ * arguments dans le tampon d'arguments, encore mappe a ce moment.
++ *
++ * La distribution des sommets par dessin est un histogramme en quarts d'octave
++ * (bornes 1, 1.25, 1.5, 1.75, 2, 2.5, ... : exactes en entier), d'ou l'on tire
++ * p10/p50/p90 (borne basse de la classe, donc a ~20 % pres) ; les parts < 64,
++ * < 256, < 1024 sont exactes. Une ligne de journal par passe toutes les
++ * 1000 images (DXMT_COUNTERS_INTERVAL pour changer ; tranche, pas cumul : les
++ * compteurs sont remis a zero apres chaque rapport) et a la destruction du
++ * contexte. Rien sans la variable.
++ */
++struct CompteursDessins {
++  static constexpr unsigned kClasses = 1 + 4 * 41; /* 0, puis quarts d'octave jusqu'a 2^41 */
++  uint64_t encodeurs = 0;
++  uint64_t dessins = 0;            /* toutes les commandes de dessin */
++  uint64_t directs = 0;            /* dessins dont le nombre de sommets est connu */
++  uint64_t sommets = 0;            /* somme (sommets ou index) x instances, dessins directs */
++  uint64_t sommets_par_instance = 0;
++  uint64_t instances = 0;
++  uint64_t indexes = 0;
++  uint64_t instancies = 0;         /* instance_count > 1 */
++  uint64_t indirects = 0;
++  uint64_t geometrie = 0;
++  uint64_t tessellation = 0;
++  uint64_t sous64 = 0, sous256 = 0, sous1024 = 0; /* dessins directs, sommets x instances */
++  std::array<uint64_t, kClasses> histo{};
++
++  static unsigned
++  classe(uint64_t n) {
++    if (!n)
++      return 0;
++    unsigned e = 63 - __builtin_clzll(n);
++    unsigned frac = e >= 2 ? (unsigned)((n >> (e - 2)) & 3) : (unsigned)((n << (2 - e)) & 3);
++    return std::min(1 + 4 * e + frac, kClasses - 1);
++  }
++
++  static uint64_t
++  borne_basse(unsigned classe) {
++    if (!classe)
++      return 0;
++    unsigned e = (classe - 1) / 4, frac = (classe - 1) % 4;
++    return ((uint64_t)(4 + frac) << e) >> 2;
++  }
++
++  void
++  direct(uint64_t compte, uint32_t instance_count, bool indexe, uint64_t drapeaux) {
++    uint64_t n = compte * (uint64_t)instance_count;
++    dessins++;
++    directs++;
++    sommets += n;
++    sommets_par_instance += compte;
++    instances += instance_count;
++    indexes += indexe;
++    instancies += instance_count > 1;
++    geometrie += drapeaux & 1;
++    tessellation += (drapeaux >> 1) & 1;
++    sous64 += n < 64;
++    sous256 += n < 256;
++    sous1024 += n < 1024;
++    histo[classe(n)]++;
++  }
++
++  void
++  indirect(bool indexe, uint64_t drapeaux) {
++    dessins++;
++    indirects++;
++    indexes += indexe;
++    geometrie += drapeaux & 1;
++    tessellation += (drapeaux >> 1) & 1;
++  }
++
++  void
++  autre() {
++    dessins++;
++  }
++
++  void
++  ajouter(const CompteursDessins &o) {
++    encodeurs += o.encodeurs;
++    dessins += o.dessins;
++    directs += o.directs;
++    sommets += o.sommets;
++    sommets_par_instance += o.sommets_par_instance;
++    instances += o.instances;
++    indexes += o.indexes;
++    instancies += o.instancies;
++    indirects += o.indirects;
++    geometrie += o.geometrie;
++    tessellation += o.tessellation;
++    sous64 += o.sous64;
++    sous256 += o.sous256;
++    sous1024 += o.sous1024;
++    for (unsigned i = 0; i < kClasses; i++)
++      histo[i] += o.histo[i];
++  }
++
++  /* Borne basse de la classe ou le cumul atteint la fraction p des dessins directs. */
++  uint64_t
++  percentile(double p) const {
++    if (!directs)
++      return 0;
++    uint64_t seuil = (uint64_t)(p * (double)directs), cumul = 0;
++    for (unsigned i = 0; i < kClasses; i++) {
++      cumul += histo[i];
++      if (cumul > seuil)
++        return borne_basse(i);
++    }
++    return borne_basse(kClasses - 1);
++  }
++};
++
++struct CompteursDessinsEtat {
++  uint64_t intervalle = 1000; /* DXMT_COUNTERS_INTERVAL */
++  std::map<std::string, CompteursDessins> par_passe;
++  CompteursDessins total;
++  uint64_t premiere_image = ~0ull;
++  uint64_t derniere_image = ~0ull; /* derniere image de la tranche qui a dessine */
++  uint64_t image_courante = ~0ull;
++
++  void
++  remettre_a_zero(uint64_t image) {
++    par_passe.clear();
++    total = {};
++    premiere_image = image;
++    derniere_image = image;
++  }
++
++  void
++  rapporter(const char *pourquoi) {
++    if (premiere_image == ~0ull)
++      return;
++    uint64_t images = derniere_image - premiere_image + 1;
++    WARN(
++        "DXMT_DESSINS (", pourquoi, ") tranche de ", images, " images (", premiere_image, "-", derniere_image,
++        "), par image : encodeurs de rendu=", total.encodeurs / images, " dessins=", total.dessins / images,
++        " sommets=", total.sommets / images, " (sommets/dessin direct=",
++        total.directs ? total.sommets / total.directs : 0, ")"
++    );
++    std::vector<std::pair<const std::string *, const CompteursDessins *>> lignes;
++    for (auto &[signature, c] : par_passe)
++      lignes.emplace_back(&signature, &c);
++    std::sort(lignes.begin(), lignes.end(), [](auto &a, auto &b) { return a.second->sommets > b.second->sommets; });
++    for (auto &[signature, c] : lignes) {
++      auto pct = [&](uint64_t n, uint64_t d) { return d ? (unsigned)((100 * n + d / 2) / d) : 0u; };
++      WARN(
++          "DXMT_DESSINS   ", *signature, " | enc/img=", c->encodeurs / images, " dessins/img=", c->dessins / images,
++          " sommets/img=", c->sommets / images, " | sommets/dessin p10=", c->percentile(0.10), " p50=",
++          c->percentile(0.50), " p90=", c->percentile(0.90), " moy=", c->directs ? c->sommets / c->directs : 0,
++          " <64=", pct(c->sous64, c->directs), "% <256=", pct(c->sous256, c->directs), "% <1024=",
++          pct(c->sous1024, c->directs), "% | indexes=", pct(c->indexes, c->dessins), "% instancies=",
++          pct(c->instancies, c->dessins), "% (inst/dessin=", c->directs ? c->instances / c->directs : 0,
++          " sommets/instance=", c->directs ? c->sommets_par_instance / c->directs : 0,
++          ") indirects=", pct(c->indirects, c->dessins), "% gs=", pct(c->geometrie, c->dessins), "% ts=",
++          pct(c->tessellation, c->dessins), "%"
++      );
++    }
++  }
++
++  /* Appele a chaque flush avec le numero d'image du chunk (fil d'encodage). */
++  void
++  image(uint64_t image) {
++    if (image == image_courante)
++      return;
++    image_courante = image;
++    if (premiere_image == ~0ull) {
++      premiere_image = image;
++      derniere_image = image;
++      return;
++    }
++    if (image - premiere_image >= intervalle) {
++      /* les dessins accumules appartiennent tous aux images < image */
++      derniere_image = image - 1;
++      rapporter("periodique");
++      remettre_a_zero(image);
++    }
++  }
++
++  /* Une image sans encodeur de rendu en fin de tranche (le flush d'apres le
++     dernier Present) n'allonge pas la tranche. */
++  void
++  accumuler(std::string signature, const CompteursDessins &c) {
++    derniere_image = image_courante;
++    par_passe[std::move(signature)].ajouter(c);
++    total.ajouter(c);
++  }
++};
++
++namespace {
++
++/* Miroirs de DXMT_DRAW_ARGUMENTS / DXMT_DRAW_INDEXED_ARGUMENTS (d3d11_context_impl.cpp),
++   tels que les dessins geometrie/tessellation les ecrivent dans le tampon d'arguments. */
++struct ArgumentsDessin {
++  uint32_t VertexCount, InstanceCount, StartVertex, StartInstance;
++};
++struct ArgumentsDessinIndexe {
++  uint32_t IndexCount, InstanceCount, StartIndex;
++  int32_t BaseVertex;
++  uint32_t StartInstance;
++};
++
++CompteursDessins
++compter_dessins(RenderEncoderData *data) {
++  CompteursDessins c;
++  c.encodeurs = 1;
++  auto arguments = [&](uint64_t offset_final) {
++    return (const char *)data->allocated_argbuf_mapping + (offset_final - data->allocated_argbuf_offset);
++  };
++  for (auto cmd = (wmtcmd_base *)data->cmd_head.next.get(); cmd; cmd = (wmtcmd_base *)cmd->next.get()) {
++    switch (cmd->type) {
++    case WMTRenderCommandDraw: {
++      auto d = (wmtcmd_render_draw *)cmd;
++      c.direct(d->vertex_count, d->instance_count, false, 0);
++      break;
++    }
++    case WMTRenderCommandDrawIndexed: {
++      auto d = (wmtcmd_render_draw_indexed *)cmd;
++      c.direct(d->index_count, d->instance_count, true, 0);
++      break;
++    }
++    case WMTRenderCommandDrawIndirect: c.indirect(false, 0); break;
++    case WMTRenderCommandDrawIndexedIndirect: c.indirect(true, 0); break;
++    case WMTRenderCommandDXMTGeometryDraw: {
++      auto d = (wmtcmd_render_dxmt_geometry_draw *)cmd;
++      auto a = (const ArgumentsDessin *)arguments(d->draw_arguments_offset);
++      c.direct(a->VertexCount, d->instance_count, false, 1);
++      break;
++    }
++    case WMTRenderCommandDXMTGeometryDrawIndexed: {
++      auto d = (wmtcmd_render_dxmt_geometry_draw_indexed *)cmd;
++      auto a = (const ArgumentsDessinIndexe *)arguments(d->draw_arguments_offset);
++      c.direct(a->IndexCount, d->instance_count, true, 1);
++      break;
++    }
++    case WMTRenderCommandDXMTGeometryDrawIndirect: c.indirect(false, 1); break;
++    case WMTRenderCommandDXMTGeometryDrawIndexedIndirect: c.indirect(true, 1); break;
++    case WMTRenderCommandDXMTTessellationMeshDraw: {
++      auto d = (wmtcmd_render_dxmt_tessellation_mesh_draw *)cmd;
++      auto a = (const ArgumentsDessin *)arguments(d->draw_arguments_offset);
++      c.direct(a->VertexCount, d->instance_count, false, 2);
++      break;
++    }
++    case WMTRenderCommandDXMTTessellationMeshDrawIndexed: {
++      auto d = (wmtcmd_render_dxmt_tessellation_mesh_draw_indexed *)cmd;
++      auto a = (const ArgumentsDessinIndexe *)arguments(d->draw_arguments_offset);
++      c.direct(a->IndexCount, d->instance_count, true, 2);
++      break;
++    }
++    case WMTRenderCommandDXMTTessellationMeshDrawIndirect: c.indirect(false, 2); break;
++    case WMTRenderCommandDXMTTessellationMeshDrawIndexedIndirect: c.indirect(true, 2); break;
++    case WMTRenderCommandDrawMeshThreadgroups:
++    case WMTRenderCommandDrawMeshThreadgroupsIndirect: c.autre(); break;
++    default: break;
++    }
++  }
++  return c;
++}
++
++std::string
++etiquette_render(const std::string &signature, const CompteursDessins &c) {
++  std::ostringstream os;
++  os << signature << " draws=" << c.dessins << " v=" << c.sommets;
+   return os.str();
+ }
+ 
+@@ -176,6 +442,12 @@
+     timestamp_state_(device),
+     queue_(queue) {
+   encoder_labels_ = env::getEnvVar("DXMT_ENCODER_LABELS") == "1";
++  if (!env::getEnvVar("DXMT_COUNTERS").empty()) {
++    dessins_ = std::make_unique<CompteursDessinsEtat>();
++    auto intervalle = std::strtoull(env::getEnvVar("DXMT_COUNTERS_INTERVAL").c_str(), nullptr, 10);
++    if (intervalle)
++      dessins_->intervalle = intervalle;
++  }
+   dummy_sampler_info_.support_argument_buffers = true;
+   dummy_sampler_info_.border_color = WMTSamplerBorderColorTransparentBlack;
+   dummy_sampler_info_.compare_function = WMTCompareFunctionNever;
+@@ -206,6 +478,8 @@
+ };
+ 
+ ArgumentEncodingContext::~ArgumentEncodingContext() {
++  if (dessins_)
++    dessins_->rapporter("sortie");
+   wsi::aligned_free(dummy_cbuffer_host_);
+ };
+ 
+@@ -999,6 +1273,8 @@
+ QueryReadbacks
+ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId, uint64_t event_seq_id) {
+   assert(!encoder_current);
++  if (unlikely(dessins_ != nullptr))
++    dessins_->image(frame_id_);
+ 
+   unsigned encoder_count = encoder_count_;
+   unsigned encoder_index = 0;
+@@ -1099,8 +1375,14 @@
+       }
+       auto gpu_buffer_ = data->allocated_argbuf;
+       auto encoder = cmdbuf.renderCommandEncoder(render_pass_info);
+-      if (unlikely(encoder_labels_))
+-        encoder.setLabel(WMT::String::string(etiquette_render(data).c_str(), WMTUTF8StringEncoding));
++      if (unlikely(encoder_labels_ || dessins_)) {
++        auto signature = signature_render(data);
++        auto dessins = compter_dessins(data);
++        if (encoder_labels_)
++          encoder.setLabel(WMT::String::string(etiquette_render(signature, dessins).c_str(), WMTUTF8StringEncoding));
++        if (dessins_)
++          dessins_->accumuler(std::move(signature), dessins);
++      }
+       data->fence_wait.forEach(
+           data->fence_wait_vertex, // if a fence is waited pre-raster, no need to wait again at fragment
+           [&](auto id) { encoder.waitForFence(fence_pool_[id], WMTRenderStagePreRaster); },
+diff --git a/src/dxmt/dxmt_context.hpp b/src/dxmt/dxmt_context.hpp
+--- a/src/dxmt/dxmt_context.hpp
++++ b/src/dxmt/dxmt_context.hpp
+@@ -35,6 +35,7 @@
+ #include "rc/util_rc_ptr.hpp"
+ #include "airconv_public.h"
+ #include <cassert>
++#include <memory>
+ 
+ #define DXMT_IMPLEMENT_ME __builtin_unreachable();
+ #define DXMT_UNREACHABLE __builtin_unreachable();
+@@ -331,6 +332,8 @@
+   uint64_t gpu_address;
+ };
+ 
++struct CompteursDessinsEtat;
++
+ class ArgumentEncodingContext {
+   friend struct SimpleCommandContext<ArgumentEncodingContext>;
+ private:
+@@ -913,6 +916,8 @@
+   uint32_t current_buffer_chunk_ = 0;
+   /* DXMT_ENCODER_LABELS=1 : etiquette descriptive sur chaque encodeur (trace GPU). */
+   bool encoder_labels_ = false;
++  /* DXMT_COUNTERS=1 : dessins et sommets par passe de rendu (fil d'encodage). */
++  std::unique_ptr<CompteursDessinsEtat> dessins_;
+   void *cpu_buffer_;
+   uint64_t cpu_buffer_offset_;
+ 
