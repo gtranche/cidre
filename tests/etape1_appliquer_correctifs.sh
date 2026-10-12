@@ -113,13 +113,24 @@ fi
 # FEX : meme raison, et le correctif reste chez nous. Voir NOTES paragraphe 237.
 if [ -d "$R/third_party/FEX" ]; then
    echo "== FEX =="
-   if grep -q FEX_TEB_SANS_X18 "$R/third_party/FEX/Source/Windows/ARM64EC/Module.S"; then
-      echo "   0070 deja applique"
-   elif patch -d "$R/third_party/FEX" -p1 --silent < "$R"/0070-*.patch; then
-      echo "   1 correctif applique"
-   else
-      echo "   ECHEC sur 0070" >&2; exit 1
-   fi
+   # Idempotent, correctif par correctif : chacun est reconnu a une ligne qu'il
+   # est seul a poser.
+   n=0
+   for f in $(serie_fex); do
+      case "$(basename "$f")" in
+         0070-*) temoin=FEX_TEB_SANS_X18;           ou=Source/Windows/ARM64EC/Module.S ;;
+         0118-*) temoin="Demarquer AVANT de liberer"; ou=FEXCore/Source/Interface/Core/LookupCache.cpp ;;
+         *) echo "   correctif FEX sans temoin : $(basename "$f")" >&2; exit 1 ;;
+      esac
+      if grep -q "$temoin" "$R/third_party/FEX/$ou"; then
+         echo "   $(basename "$f" | cut -c1-4) deja applique"
+      elif patch -d "$R/third_party/FEX" -p1 --silent < "$f"; then
+         n=$((n + 1))
+      else
+         echo "   ECHEC sur $(basename "$f")" >&2; exit 1
+      fi
+   done
+   echo "   $n correctifs appliques"
 fi
 
 echo

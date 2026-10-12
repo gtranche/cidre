@@ -1,0 +1,65 @@
+fex : demarquer le cache de blocs avant de le liberer (blocage d'un fil neuf)
+
+Chaque fil de FEX a un cache de blocs (LookupCache) de 272 Mo, reserve sans etre
+engage ; la plage est « marquee » aupres du suivi d'overcommit
+(OvercommitTracker), qui l'engage a la premiere faute. A la mort du fil,
+~LookupCache liberait la plage PUIS la demarquait.
+
+Entre les deux, un fil qui nait recoit du noyau la meme adresse pour son propre
+cache (allocation de haut en bas : le trou qui vient de s'ouvrir est le premier
+qui convient) et la marque. Le fil mourant demarque alors la plage du fil neuf.
+La premiere lecture du cache L1 par le fil neuf (FEXCore::LookupCache::FindBlock,
+appele par CompileBlock pour son tout premier bloc) faute sur une plage que
+plus personne ne reconnait : ResetToConsistentState laisse passer l'exception,
+et le deroulement de Wine tourne sans fin sur le code emis (voir 0119).
+
+Pris sur le fait par une sonde dans OvercommitTracker (anneau silencieux des
+marquages, vide a la faute non reconnue), invite x86-64, temoin h64alerte :
+
+  M fil 037c debut 7ffd664e0000 t=7818604275252    le fil neuf marque
+  D fil 070c debut 7ffd664e0000 t=7818604278274    le fil mourant demarque (0,3 ms apres)
+  faute fil 037c en 7ffd764f6108, hors de toute plage marquee   (L1 = debut + 256 Mo + 0x16108)
+
+et dans un processus bloque (lldb) : la liste des plages marquees ne contient
+que le cache du fil principal, celui du fil bloque est reserve et jamais engage.
+
+Il faut qu'un fil naisse dans la fraction de milliseconde ou un autre meurt :
+la creation de fil lente de Wine (0,5 a 1,4 ms, corrigee par 0117) le cachait
+en grande partie.
+
+Mesure (M1 Max, Wine avec 0117, passes entrelacees, invite bloque tue) :
+
+                              sans          avec
+  h64alerte (x86-64), 300     10 bloquees   0
+  h32alerte (i386),   150     18 bloquees   0
+
+Piege de mesure : Wine charge la copie de xtajit64.dll / xtajit.dll posee dans
+system32 du prefixe, pas celle de l'arbre. Un essai de ce meme changement fait
+le 2026-10-12 dans un arbre a part, prefixe partage, n'avait « rien change » :
+il n'etait pas charge.
+
+Le code est celui de FEX amont (72b2ff88aec8), et la branche main d'amont
+porte toujours le meme ordre au 2026-10-12. Ce correctif reste ici : le projet
+FEX refuse les contributions ecrites par une IA (un humain peut signaler le
+defaut).
+
+S'applique avec patch -p1 sur third_party/FEX apres 0070.
+
+diff --git a/FEXCore/Source/Interface/Core/LookupCache.cpp b/FEXCore/Source/Interface/Core/LookupCache.cpp
+index 0b23030..4c650f7 100644
+--- a/FEXCore/Source/Interface/Core/LookupCache.cpp
++++ b/FEXCore/Source/Interface/Core/LookupCache.cpp
+@@ -71,8 +71,12 @@ LookupCache::LookupCache(FEXCore::Context::ContextImpl* CTX)
+ }
+ 
+ LookupCache::~LookupCache() {
+-  FEXCore::Allocator::VirtualFree(reinterpret_cast<void*>(PagePointer), TotalCacheSize);
++  // Demarquer AVANT de liberer. Une fois la plage rendue, un fil qui nait au meme instant peut recevoir la meme
++  // adresse pour son propre cache et la marquer ; demarquer ensuite effacerait SA marque. Sa premiere lecture du
++  // cache L1 (reserve, jamais engage) faute alors sur une plage que plus personne ne reconnait : l'exception
++  // traverse FEX sans etre traitee.
+   ctx->SyscallHandler->UnmarkOvercommitRange(PagePointer, TotalCacheSize);
++  FEXCore::Allocator::VirtualFree(reinterpret_cast<void*>(PagePointer), TotalCacheSize);
+ 
+   // No need to free BlockLinks map.
+   // These will get freed when their memory allocators are deallocated.

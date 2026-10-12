@@ -1704,3 +1704,49 @@ index 8eb1acb..332c559 100644
    }
  }
  
+diff --git a/Source/Windows/Common/Guest32.h b/Source/Windows/Common/Guest32.h
+new file mode 100644
+index 0000000..e220fad
+--- /dev/null
++++ b/Source/Windows/Common/Guest32.h
+@@ -0,0 +1,40 @@
++// SPDX-License-Identifier: MIT
++#pragma once
++
++#include <cstdint>
++
++/*
++ * macOS refuse a un processus arm64 toute adresse sous 4 Gio (__PAGEZERO est
++ * le plancher du vm_map, pas une reservation qu'on puisse rendre). La fenetre
++ * 32 bits de l'invite est donc posee ailleurs dans l'espace de l'hote, et deux
++ * mondes cohabitent : FEXCore raisonne en adresses d'invite (RIP, intervalles
++ * executables, caches de code), Windows en adresses d'hote
++ * (NtProtectVirtualMemory, RtlImageNtHeader, VirtualQuery).
++ *
++ * Guest32Base vaut zero partout ailleurs, ou les deux mondes se confondent et
++ * ou toutes les conversions ci-dessous sont l'identite.
++ */
++namespace FEXCore::IR {
++extern uint64_t Guest32Base;
++}
++
++namespace FEX::Windows {
++// Zero reste zero : c'est le pointeur nul, pas une adresse.
++static inline uint64_t ToGuest32(uint64_t HostAddress) {
++  return HostAddress ? HostAddress - FEXCore::IR::Guest32Base : 0;
++}
++
++static inline uint64_t ToHost32(uint64_t GuestAddress) {
++  return GuestAddress ? GuestAddress + FEXCore::IR::Guest32Base : 0;
++}
++
++static inline void* HostPtr32(uint64_t GuestAddress) {
++  return reinterpret_cast<void*>(GuestAddress + FEXCore::IR::Guest32Base);
++}
++
++// Une adresse d'hote appartient-elle a la fenetre de l'invite ?
++static inline bool InGuest32Window(uint64_t HostAddress) {
++  return !FEXCore::IR::Guest32Base ||
++         (HostAddress >= FEXCore::IR::Guest32Base && HostAddress - FEXCore::IR::Guest32Base < 0x100000000ULL);
++}
++} // namespace FEX::Windows

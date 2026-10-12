@@ -11,13 +11,16 @@ R=$(cd "$(dirname "$0")/.." && pwd)
 . "$R/tests/series.sh"
 TMP=${TMPDIR:-/tmp}/reconstruction-$$
 trap 'rm -rf "$TMP"; for t in mesa wine wine11 vkd3d-proton dxvk dxmt; do
-        git -C "$R/src/$t" worktree prune 2>/dev/null || true; done' EXIT
+        git -C "$R/src/$t" worktree prune 2>/dev/null || true; done
+        git -C "$R/third_party/FEX" worktree prune 2>/dev/null || true' EXIT
 mkdir -p "$TMP"
 rc=0
 
 verifier() {
    arbre=$1; shift
    src="$R/src/$arbre"
+   # FEX n'est pas sous src/.
+   [ "$arbre" = FEX ] && src="$R/third_party/FEX"
    [ -e "$src/.git" ] || { echo "$arbre : absent, ignore"; return 0; }
    dst="$TMP/$arbre"
    git -C "$src" worktree add -q --detach "$dst" "$(git -C "$src" rev-parse HEAD)"
@@ -70,6 +73,7 @@ verifier wine11 $(serie_wine11)
 verifier vkd3d-proton $(serie_vkd3d_proton)
 verifier dxvk $(serie_dxvk)
 verifier dxmt $(serie_dxmt)
+verifier FEX $(serie_fex)
 
 [ $rc -eq 0 ] && echo "RECONSTRUCTION VERIFIEE" || echo "RECONSTRUCTION INCOMPLETE"
 exit $rc

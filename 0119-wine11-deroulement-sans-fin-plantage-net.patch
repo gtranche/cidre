@@ -1,0 +1,105 @@
+wine11 : un deroulement d'exception qui n'avance plus devient un plantage net
+
+Quand une exception n'est traitee par personne et que la pile a derouler passe
+par du code emis par l'emulateur (FEX : son repartiteur appelle son propre code
+C++, CompileBlock, FindBlock...), call_seh_handlers ne finissait jamais : le
+fil tournait a 100 % dans virtual_unwind, le processus restait la, sans message.
+Un plantage devenait un gel.
+
+Mecanisme (code de Wine amont, dans les deux repartiteurs d'exceptions) : un pc
+sans table de deroulement est pris pour une fonction feuille, donc pc = lr et
+pile inchangee. Apres avoir deroule le cadre C++ de FEX, lr designe deja ce
+meme cadre (l'adresse de retour dans le code emis) : pc = lr ne change rien, et
+on recommence. RtlVirtualUnwind2 a bien une garde (« invalid leaf function »,
+pc == lr), mais l'appelant lui passe pc - 4 pour un cadre deja deroule
+(CONTEXT_UNWOUND_TO_CALL) : elle ne voit jamais l'egalite.
+
+Correctif, a l'identique dans dlls/ntdll/signal_arm64ec.c (invites x86-64) et
+dlls/ntdll/signal_arm64.c (processus wow64, emulateur 32 bits) : si un cadre
+sans table laisse pc et sp tels quels, on s'arrete comme pour un cadre hors de
+la pile (EXCEPTION_STACK_INVALID) ; l'exception part en seconde chance et le
+processus se termine avec son code. Un cadre feuille legitime change toujours
+pc ; un cadre x86-64 sans table avance toujours rsp : ni l'un ni l'autre ne
+declenche la garde.
+
+Verifie avec un FEX non corrige (course du cache de blocs, 0118), Wine avec
+0117, M1 Max, invite bloque tue apres 10 s :
+
+                             avant        apres
+  h64alerte (x86-64), 150    gels         18 plantages nets, 0 gel
+  h32alerte (i386),   100    gels         19 plantages nets, 0 gel
+
+  err:seh:call_seh_handlers deroulement sans fin a pc 1047f0338 sp 7ffe6a8f0000
+    (code sans table de deroulement) : exception c0000005 a 00006FFFFAE57DD8 non traitee
+  err:seh:NtRaiseException Exception frame is not in stack limits => unable to dispatch exception.
+
+et le processus sort avec le code c0000005. Temoins h32temps, banc_x64, h32seh,
+h64tls inchanges.
+
+Ne corrige pas la cause d'une exception non traitee (pour celle qui a revele le
+defaut, voir 0118) : il en fait un plantage qu'on voit. La garde d'amont de
+RtlVirtualUnwind2 reste a corriger en amont (comparer aussi pc + 4 quand le
+cadre est deja deroule) ; ici on ne touche pas unwind.c.
+
+S'applique avec patch -p1 sur Wine 11.18 apres 0117.
+
+diff -ruN a/dlls/ntdll/signal_arm64.c b/dlls/ntdll/signal_arm64.c
+--- a/dlls/ntdll/signal_arm64.c	2026-10-12 17:39:20
++++ b/dlls/ntdll/signal_arm64.c	2026-10-12 17:39:20
+@@ -246,8 +246,26 @@
+ 
+     for (;;)
+     {
++        ULONG64 pc_avant = context.Pc, sp_avant = context.Sp;
++
+         status = virtual_unwind( UNW_FLAG_EHANDLER, &dispatch, &context );
+         if (status != STATUS_SUCCESS) return status;
++
++        /* Un cadre sans table de deroulement est pris pour une fonction
++         * feuille : pc = lr, pile inchangee. Quand lr designe ce meme cadre --
++         * le code emis par l'emulateur 32 bits, d'ou il appelle son propre code
++         * C++ -- rien n'avance et la boucle ne finit jamais. La garde d'amont
++         * (RtlVirtualUnwind2, pc == lr) ne le voit pas, puisqu'on lui passe
++         * pc - 4 pour un cadre deja deroule. On s'arrete ici : exception non
++         * traitee, le processus tombe. */
++        if (!dispatch.FunctionEntry && context.Pc == pc_avant && context.Sp == sp_avant)
++        {
++            ERR( "deroulement sans fin a pc %I64x sp %I64x (code sans table de deroulement) :"
++                 " exception %lx a %p non traitee\n",
++                 pc_avant, sp_avant, rec->ExceptionCode, rec->ExceptionAddress );
++            rec->ExceptionFlags |= EXCEPTION_STACK_INVALID;
++            break;
++        }
+ 
+     unwind_done:
+         if (!dispatch.EstablisherFrame) break;
+diff -ruN a/dlls/ntdll/signal_arm64ec.c b/dlls/ntdll/signal_arm64ec.c
+--- a/dlls/ntdll/signal_arm64ec.c	2026-10-12 17:39:20
++++ b/dlls/ntdll/signal_arm64ec.c	2026-10-12 17:39:20
+@@ -1209,8 +1209,26 @@
+ 
+     for (;;)
+     {
++        ULONG64 pc_avant = context.Pc, sp_avant = context.Sp;
++
+         status = virtual_unwind( UNW_FLAG_EHANDLER, &dispatch, &context );
+         if (status != STATUS_SUCCESS) return status;
++
++        /* Un cadre sans table de deroulement est pris pour une fonction
++         * feuille : pc = lr, pile inchangee. Quand lr designe ce meme cadre --
++         * le code emis par l'emulateur, d'ou il appelle son propre code C++ --
++         * rien n'avance et la boucle ne finit jamais : le fil tourne a 100 %
++         * au lieu de planter. La garde d'amont (RtlVirtualUnwind2, pc == lr) ne
++         * le voit pas, puisqu'on lui passe pc - 4 pour un cadre deja deroule.
++         * On s'arrete ici : exception non traitee, le processus tombe. */
++        if (!dispatch.FunctionEntry && context.Pc == pc_avant && context.Sp == sp_avant)
++        {
++            ERR( "deroulement sans fin a pc %I64x sp %I64x (code sans table de deroulement) :"
++                 " exception %lx a %p non traitee\n",
++                 pc_avant, sp_avant, rec->ExceptionCode, rec->ExceptionAddress );
++            rec->ExceptionFlags |= EXCEPTION_STACK_INVALID;
++            break;
++        }
+ 
+     unwind_done:
+         if (!dispatch.EstablisherFrame) break;
