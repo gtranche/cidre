@@ -211,6 +211,7 @@ case $EXE in
    *)  DOSSIER=$(pwd);            PROG=$EXE ;;
 esac
 
+DEBUT_EPOCH=$(date +%s)
 {
    echo "=== $(date '+%F %T')  appid=${SteamAppId:-?}  jeu=$PROG"
    echo "    dossier : $DOSSIER"
@@ -487,6 +488,6 @@ fi
 # Sauvegarde vers le dossier synchronise apres la sortie du jeu (meme en cas de
 # crash : on sauve l'etat tel quel). Non bloquant.
 if [ -n "$JEU" ]; then
-   sh "$R/tests/sync_saves_steam.sh" "$JEU" backup >>"$JOURNAL" 2>&1 || true
+   CIDRE_SAVES_DEPUIS=$DEBUT_EPOCH sh "$R/tests/sync_saves_steam.sh" "$JEU" backup >>"$JOURNAL" 2>&1 || true
 fi
 exit $RC

@@ -25,6 +25,21 @@ MAXSZ=104857600   # 100 Mo : au-dela ce n'est pas une sauvegarde
 reldir=$(cat "$CIDRE_DIR/saves.conf" "$R/outil-steam/saves.conf" 2>/dev/null \
          | awk -F'\t' -v a="$APPID" '$1==a {print $2; exit}')
 non_configure() { [ "$SENS" = etat ] && printf '{"id":"%s","configure":false}\n' "$APPID"; exit 0; }
+# Aucune ligne : on essaie de deviner (la fiche de la base de profils ; apres
+# une partie, CIDRE_SAVES_DEPUIS = date de lancement en secondes, les dossiers
+# que les moteurs connus viennent d'ecrire). Trouve : memorise dans le
+# saves.conf de l'utilisateur (`cidre saves unset` l'oublie), pour que Verger
+# n'ait pas a demander.
+if [ -z "$reldir" ]; then
+   reldir=$(sh "$R/tests/deviner_saves.sh" "$APPID" ${CIDRE_SAVES_DEPUIS:+"$CIDRE_SAVES_DEPUIS"} 2>/dev/null || true)
+   if [ -n "$reldir" ]; then
+      mkdir -p "$CIDRE_DIR"; touch "$CIDRE_DIR/saves.conf"
+      awk -F'\t' -v i="$APPID" '$1!=i' "$CIDRE_DIR/saves.conf" >"$CIDRE_DIR/saves.conf.tmp"
+      printf '%s\t%s\n' "$APPID" "$reldir" >>"$CIDRE_DIR/saves.conf.tmp"
+      mv "$CIDRE_DIR/saves.conf.tmp" "$CIDRE_DIR/saves.conf"
+      [ "$SENS" = etat ] || echo "    sauvegardes : dossier trouve tout seul : $reldir (cidre saves unset $APPID pour l'oublier)"
+   fi
+fi
 [ -n "$reldir" ] || non_configure
 
 # Le dossier des sauvegardes : sous le dossier utilisateur du prefixe Wine, ou

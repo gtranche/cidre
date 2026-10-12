@@ -88,7 +88,7 @@ for f in etape2_pile_arm64ec.sh lancer_depuis_steam.sh brancher_jeux_steam.sh \
          installer_fex.sh profil_cidre.sh cidre_install.sh compte_steam.sh \
          majs_steam.awk brancher_jeux_steam.awk configurer_cidre.sh langue_jeu.sh \
          installer_steamcmd.sh installer_client_steam_windows.sh diagnostic_cidre.sh \
-         fiche_profil.sh reglages_jeu.sh machine.sh client_steam_natif.sh expliquer_sortie.sh; do
+         fiche_profil.sh reglages_jeu.sh machine.sh client_steam_natif.sh expliquer_sortie.sh deviner_saves.sh; do
    livrer "tests/$f"
 done
 # La base de profils par jeu (profils/README.md) : la copie livree, repli de
