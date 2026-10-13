@@ -47,3 +47,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/The_Wild_Eight"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinMyDocuments/TheWildEight"
+motifs = "*.byte (recursif)"
+dossier_windows = "Documents/TheWildEight"
+source = "steam"
+date = "2026-10-13"

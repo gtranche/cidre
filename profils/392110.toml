@@ -34,3 +34,15 @@ rapports_export = 133
 source = "protondb"
 date = "2026-10-01"
 url = "https://www.protondb.com/app/392110"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "steam-lien"
+racine_windows = "WinMyDocuments/Endless Space 2/Save Files/Cloud ; WinMyDocuments/Endless space 2/End Game Summaries"
+motifs = "*.zip ; *.sav ; *.bin"
+dossier_windows = "Documents/Endless Space 2/Save Files/Cloud ; Documents/Endless space 2/End Game Summaries"
+racine_macos = "MacAppSupport/Endless Space 2/Save Files/Cloud ; MacAppSupport/Endless space 2/End Game Summaries"
+partage = "par-plateforme"
+liens = "Documents/Endless Space 2/Save Files/Cloud => Library/Application Support/Endless Space 2/Save Files/Cloud ; Documents/Endless space 2/End Game Summaries => Library/Application Support/Endless space 2/End Game Summaries"
+source = "steam"
+date = "2026-10-13"

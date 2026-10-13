@@ -30,3 +30,12 @@ rapports_export = 6
 source = "protondb"
 date = "2026-10-01"
 url = "https://www.protondb.com/app/4015530"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/DefaultCompany/MyVoiceZoo"
+motifs = "* (recursif)"
+dossier_windows = "AppData/LocalLow/DefaultCompany/MyVoiceZoo"
+source = "steam"
+date = "2026-10-13"

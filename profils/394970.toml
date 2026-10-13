@@ -50,3 +50,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Deadbolt"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/deadbolt_game ; WinAppDataLocal/deadbolt_map_editor"
+motifs = "*.sav ; *.nc"
+dossier_windows = "AppData/Local/deadbolt_game ; AppData/Local/deadbolt_map_editor"
+source = "steam"
+date = "2026-10-13"

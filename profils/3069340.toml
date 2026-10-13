@@ -30,3 +30,12 @@ rapports_export = 3
 source = "protondb"
 date = "2026-10-01"
 url = "https://www.protondb.com/app/3069340"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/Blasterbug/GameProgress"
+motifs = "game_progress.sav"
+dossier_windows = "AppData/Local/Blasterbug/GameProgress"
+source = "steam"
+date = "2026-10-13"

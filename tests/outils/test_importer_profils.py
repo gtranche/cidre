@@ -15,7 +15,12 @@ cache de l'outil : il tourne dessus sans reseau (--sans-reseau). On verifie :
     que l'archive publique) : seules les valeurs techniques sortent, la recette
     en vigueur est la plus haute version, les profils d'une autre plateforme
     sont ecartes, [cidre] recoit dll_overrides et dependances avec leur
-    provenance sans ecraser ce qui y est, crossover reste au dernier rang.
+    provenance sans ecraser ce qui y est, crossover reste au dernier rang ;
+  - l'inventaire Steam Cloud ([compat.steam_cloud], section `ufs` des
+    metadonnees Steam) : methode, racines par systeme apres `rootoverrides`,
+    liens proposes seulement quand la meme regle vaut sur macOS ou que les
+    motifs se repondent, jamais vers le dossier du jeu ni une racine entiere ;
+    et la lecture de SteamCMD, sur un faux SteamCMD.
 """
 import gzip
 import importlib.util
@@ -125,6 +130,137 @@ def unitaires_crossover(tmp):
         assert m._verbe(nom) == verbe, (nom, m._verbe(nom))
 
 
+def charger_outil():
+    sys.dont_write_bytecode = True  # pas de __pycache__ a cote de l'outil
+    spec = importlib.util.spec_from_file_location("importer_profils", OUTIL)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def unitaires_steam_cloud(tmp):
+    """La section `ufs` de Steam -> [compat.steam_cloud], et la lecture de SteamCMD."""
+    m = charger_outil()
+    v = m.steam_cloud_valeurs
+
+    # pas de Steam Cloud ; API Remote Storage (un quota, aucun dossier declare)
+    assert v(None) == {"methode": "aucune", "synchro": "aucune"}
+    assert v({"quota": "0", "maxnumfiles": "0"}) == {"methode": "aucune", "synchro": "aucune"}
+    assert v({"quota": "10000000", "maxnumfiles": "100"}) == {"methode": "api", "synchro": "steam-api"}
+
+    # Auto-Cloud, Windows seulement : Steam ne sait pas resoudre la racine sur macOS
+    x = v({"quota": "1", "savefiles": {"0": {"root": "WinAppDataLocal", "path": "Studio/Saved/SaveGames/{64BitSteamID}",
+                                             "pattern": "*.sav", "recursive": "1"}}})
+    assert x == {"methode": "auto", "synchro": "copie", "racine_windows": "WinAppDataLocal/Studio/Saved/SaveGames/{64BitSteamID}",
+                 "motifs": "*.sav (recursif)", "dossier_windows": "AppData/Local/Studio/Saved/SaveGames"}, x
+
+    # la meme regle sur les deux systemes, par rootoverrides (useinstead, addpath, pathtransforms)
+    x = v({"quota": "1", "savefiles": {"1": {"root": "WinAppDataLocalLow", "path": "Editeur/Jeu/saves", "pattern": "*.bin"}},
+           "rootoverrides": {"0": {"root": "WinAppDataLocalLow", "os": "MacOS", "oscompare": "=", "useinstead": "MacAppSupport",
+                                   "pathtransforms": {"0": {"find": "Editeur/Jeu/saves", "replace": "Editeur/Jeu/saves"}}},
+                             "1": {"root": "WinAppDataLocalLow", "os": "linux", "oscompare": "=", "useinstead": "LinuxXdgConfigHome",
+                                   "addpath": "unity3d"}}})
+    assert x["synchro"] == "steam-lien" and x["partage"] == "multiplateforme", x
+    assert x["liens"] == "AppData/LocalLow/Editeur/Jeu/saves => Library/Application Support/Editeur/Jeu/saves", x
+    assert x["racine_macos"] == "MacAppSupport/Editeur/Jeu/saves" and "motifs_macos" not in x and "sans_lien" not in x, x
+    x = v({"quota": "1", "savefiles": {"0": {"root": "WinSavedGames", "path": "Jeu\\Saves", "pattern": "*"}},
+           "rootoverrides": {"0": {"root": "WinSavedGames", "os": "macos", "oscompare": "=", "useinstead": "MacHome",
+                                   "addpath": "Library/Preferences"}}})
+    assert x["liens"] == "Saved Games/Jeu/Saves => Library/Preferences/Jeu/Saves", x
+
+    # une regle par systeme, memes motifs : lien, mais Steam garde des fichiers distincts par systeme
+    par_systeme = {"quota": "1", "savefiles": {
+        "0": {"root": "WinAppDataLocalLow", "path": "Dev/Jeu", "pattern": "*.jeu", "platforms": {"1": "Windows"}},
+        "1": {"root": "LinuxXdgConfigHome", "path": "unity3d/Dev/Jeu", "pattern": "*.jeu", "platforms": {"1": "Linux"}},
+        "2": {"root": "MacAppSupport", "path": "unity.Dev.Jeu", "pattern": "*.jeu", "platforms": {"1": "MacOS"}}}}
+    x = v(par_systeme)
+    assert x["synchro"] == "steam-lien" and x["partage"] == "par-plateforme", x
+    assert x["liens"] == "AppData/LocalLow/Dev/Jeu => Library/Application Support/unity.Dev.Jeu", x
+    # ... motifs differents = formats differents : pas de lien
+    par_systeme["savefiles"]["2"]["pattern"] = "*.plist"
+    x = v(par_systeme)
+    assert x["synchro"] == "copie" and x["sans_lien"] == "motifs differents" and "liens" not in x, x
+    assert x["motifs"] == "*.jeu" and x["motifs_macos"] == "*.plist", x
+
+    # jamais vers le dossier du jeu (le client le cherche dans SA bibliotheque), ni une racine entiere
+    x = v({"quota": "1", "savefiles": {"0": {"root": "gameinstall", "path": "save", "pattern": "*", "recursive": "1"}}})
+    assert x["synchro"] == "copie" and x["sans_lien"] == "fichiers dans le dossier du jeu", x
+    assert x["dossier_windows"] == "jeu:save" and x["racine_macos"] == "gameinstall/save", x
+    # ... et on ne deplace jamais un dossier du jeu Windows, meme vers un vrai dossier macOS
+    x = v({"quota": "1", "savefiles": {"0": {"root": "gameinstall", "path": "Binaries/Win32", "pattern": "*.sav"}},
+           "rootoverrides": {"0": {"root": "gameinstall", "os": "MacOS", "oscompare": "=", "useinstead": "MacAppSupport",
+                                   "pathtransforms": {"0": {"find": "Binaries/Win32", "replace": "com.studio.jeu/SaveDir"}}}}})
+    assert x["synchro"] == "copie" and x["sans_lien"] == "fichiers dans le dossier du jeu" and "liens" not in x, x
+    # l'inverse (racine du jeu redirigee vers AppData sous Windows) se lie
+    x = v({"quota": "1", "savefiles": {"1": {"root": "gameinstall", "path": "", "pattern": "*", "recursive": "1"}},
+           "rootoverrides": {"0": {"root": "gameinstall", "os": "Windows", "oscompare": "=", "useinstead": "WinAppDataLocalLow",
+                                   "pathtransforms": {"0": {"find": "", "replace": "Studio/Jeu/"}}},
+                             "1": {"root": "gameinstall", "os": "MacOS", "oscompare": "=", "useinstead": "MacAppSupport",
+                                   "pathtransforms": {"0": {"find": "", "replace": "Studio/Jeu/"}}}}})
+    assert x["liens"] == "AppData/LocalLow/Studio/Jeu => Library/Application Support/Studio/Jeu", x
+    x = v({"quota": "1", "savefiles": {"0": {"root": "WinMyDocuments", "path": "./", "pattern": "*.sav"}},
+           "rootoverrides": {"0": {"root": "WinMyDocuments", "os": "MacOS", "oscompare": "=", "useinstead": "MacDocuments"}}})
+    assert x["synchro"] == "copie" and x["sans_lien"] == "racine entiere" and "dossier_windows" not in x, x
+    # une regle Windows que rien ne reprend sur macOS : tout ou rien, pas de lien partiel
+    x = v({"quota": "1", "savefiles": {"0": {"root": "WinAppDataRoaming", "path": "Vieux", "pattern": "*", "platforms": {"1": "Windows"}},
+                                       "1": {"root": "WinAppDataRoaming", "path": "Studio/Jeu", "pattern": "*"}},
+           "rootoverrides": {"0": {"root": "WinAppDataRoaming", "os": "MacOS", "oscompare": "=", "useinstead": "MacAppSupport"}}})
+    assert x["synchro"] == "copie" and x["sans_lien"] == "regle Windows sans equivalent macOS", x
+    # un chemin qui remonte est ignore ; une racine inconnue aussi
+    x = v({"quota": "1", "savefiles": {"0": {"root": "WinAppDataRoaming", "path": "../../x", "pattern": "*"},
+                                       "1": {"root": "RacineInconnue", "path": "x", "pattern": "*"}}})
+    assert x == {"methode": "auto", "synchro": "copie"}, x
+
+    # le format texte de Valve, et le decoupage de la sortie de SteamCMD
+    assert m.vdf_lire('"a"\n{\n\t"b"\t\t"c \\"d\\""\n\t"e"\n\t{\n\t}\n}\n') == {"a": {"b": 'c "d"', "e": {}}}
+    sortie = ("Steam>\r\nAppID : 11, change number : 5/5, last change : x\r\n\"11\"\r\n{\r\n\t\"common\"\r\n\t{\r\n"
+              "\t\t\"name\"\t\t\"Onze\"\r\n\t}\r\n}\r\nNo app info for AppID 12 found, requesting...\r\n")
+    assert m.steam_appinfo_decouper(sortie) == {"11": {"common": {"name": "Onze"}}}
+
+    # un faux SteamCMD : le jeu 12 ne sort qu'au second passage, le 13 n'est pas public
+    faux = os.path.join(tmp, "steamcmd.sh")
+    with open(faux, "w", encoding="utf-8") as f:
+        f.write("""#!/bin/sh
+n=$(cat "$HOME/passes" 2>/dev/null || echo 0); n=$((n + 1)); echo $n >"$HOME/passes"
+echo "$@" >>"$HOME/appels"
+bloc() { printf 'AppID : %s, change number : 1/1, last change : x\\n"%s"\\n{\\n%s}\\n' "$1" "$1" "$2"; }
+for a in "$@"; do case $a in
+   11) bloc 11 '\t"common"\n\t{\n\t\t"name"\t\t"Onze"\n\t\t"oslist"\t\t"windows,macos"\n\t}\n\t"ufs"\n\t{\n\t\t"quota"\t\t"1000"\n\t}\n' ;;
+   12) [ $n -ge 2 ] && bloc 12 '\t"common"\n\t{\n\t\t"name"\t\t"Douze"\n\t}\n' || echo "No app info for AppID 12 found, requesting..." ;;
+   13) bloc 13 '\t"extended"\n\t{\n\t}\n' ;;
+esac; done
+""")
+    os.chmod(faux, 0o755)
+    cidre_dir = os.path.join(tmp, "cidre")
+    ancien = os.environ.get("CIDRE_DIR")
+    os.environ["CIDRE_DIR"] = cidre_dir
+    try:
+        toile = m.Toile(os.path.join(tmp, "cache-steam"))
+        assert m.steam_appinfo_charger(toile, ["11", "12", "13", "local-x"], faux) == 3
+        foyer = os.path.join(cidre_dir, "steamcmd-anonyme")  # son dossier a lui, jamais celui du client
+        appels = open(os.path.join(foyer, "appels"), encoding="utf-8").read().splitlines()
+        assert len(appels) == 2 and appels[0].startswith("+login anonymous ") and appels[0].endswith(" +quit"), appels
+        assert "+app_info_print 11" in appels[0] and "+app_info_print 11" not in appels[1] and "+app_info_print 12" in appels[1]
+        assert m._steam_appinfo(toile, "11")["corps"] == {"ufs": {"quota": "1000"}, "nom": "Onze", "oslist": "windows,macos"}
+        assert m._steam_appinfo(toile, "12")["statut"] == 200 and m._steam_appinfo(toile, "13")["statut"] == 403
+        assert m.steam_appinfo_charger(toile, ["11", "12", "13"], faux) == 0 and len(open(os.path.join(foyer, "appels")).readlines()) == 2
+        # dans la fiche : le jeu public oui, celui que Steam ne montre pas sans compte non
+        fiche = m.Fiche({"jeu": {"appid": 11}})
+        assert m.importer_steam_cloud(fiche, "11", toile)["synchro"] == "steam-api"
+        assert fiche.doc["compat"]["steam_cloud"] == {"methode": "api", "synchro": "steam-api", "source": "steam",
+                                                      "date": m.aujourdhui()}, fiche.doc
+        fiche = m.Fiche({"jeu": {"appid": 13}})
+        assert m.importer_steam_cloud(fiche, "13", toile) is None and "compat" not in fiche.doc
+        # hors reseau : SteamCMD n'est pas lance
+        hors = m.Toile(os.path.join(tmp, "cache-vide"), sans_reseau=True)
+        assert m.steam_appinfo_charger(hors, ["11"], faux) == 0 and len(open(os.path.join(foyer, "appels")).readlines()) == 2
+    finally:
+        if ancien is None:
+            del os.environ["CIDRE_DIR"]
+        else:
+            os.environ["CIDRE_DIR"] = ancien
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="test-importer-")
     try:
@@ -155,6 +291,16 @@ def main():
         assert d["jeu"]["bits"] == 64 and d["jeu"]["bits_32_aussi"] is True
         assert d["jeu"]["api_disponibles"] == "d3d11 d3d12" and "api" not in d["jeu"], d["jeu"]
         assert d["jeu"]["moteur_nom"] == "Unity"
+        # ... dont l'inventaire Steam Cloud (source steam, date de la lecture)
+        sc = d["compat"]["steam_cloud"]
+        assert sc == {"methode": "auto", "synchro": "steam-lien", "partage": "multiplateforme",
+                      "racine_windows": "WinAppDataLocalLow/Studio Fictif/Jeu Fictif/saves/{64BitSteamID}",
+                      "motifs": "*.sav (recursif)", "dossier_windows": "AppData/LocalLow/Studio Fictif/Jeu Fictif/saves",
+                      "racine_macos": "MacAppSupport/com.studiofictif.jeufictif/saves/{64BitSteamID}",
+                      "liens": "AppData/LocalLow/Studio Fictif/Jeu Fictif/saves/{64BitSteamID} => "
+                               "Library/Application Support/com.studiofictif.jeufictif/saves/{64BitSteamID}",
+                      "source": "steam", "date": DATE}, sc
+        assert rapport["steam_cloud"] == {"steam-lien": 1}, rapport
         assert d["jeu"]["drm"] == "denuvo anti-tamper ; steam"
         assert d["jeu"]["plateformes_steam"] == "windows"
         assert d["jeu"]["sources"]["bits"] == f"pcgamingwiki {DATE}", d["jeu"]["sources"]
@@ -275,6 +421,7 @@ def main():
         else:
             print("fiche_profil.sh absent : lecture shell non verifiee", file=sys.stderr)
         unitaires_crossover(tmp)
+        unitaires_steam_cloud(tmp)
         print("test_importer_profils : OK")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

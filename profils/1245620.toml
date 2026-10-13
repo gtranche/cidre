@@ -74,3 +74,12 @@ bouteille = "win10_64"
 graphismes = "d3dmetal"
 environnement = "WINED3DMETAL=1"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=18041"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataRoaming/EldenRing/{64BitSteamID}"
+motifs = "ER0000.sl2"
+dossier_windows = "AppData/Roaming/EldenRing"
+source = "steam"
+date = "2026-10-13"

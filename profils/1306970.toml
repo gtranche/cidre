@@ -47,3 +47,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Diluvian_Ultra"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/DiluvianUltra/Saved/SaveGames"
+motifs = "* (recursif)"
+dossier_windows = "AppData/Local/DiluvianUltra/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

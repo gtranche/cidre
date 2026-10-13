@@ -43,3 +43,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Red_Solstice_2%3A_Survivors"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/RedSolstice2/Save/Campaigns ; WinAppDataLocal/RedSolstice2/Save/Profiles ; WinAppDataLocal/RedSolstice2/Save/Suits ; WinAppDataLocal/RedSolstice2/Saved/Savegames/UserProfiles ; WinAppDataLocal/RedSolstice2/Saved/Savegames/Campaigns"
+motifs = "*.campaign (recursif) ; *.json (recursif) ; *.profile (recursif) ; *.sav (recursif)"
+dossier_windows = "AppData/Local/RedSolstice2/Save/Campaigns ; AppData/Local/RedSolstice2/Save/Profiles ; AppData/Local/RedSolstice2/Save/Suits ; AppData/Local/RedSolstice2/Saved/Savegames/UserProfiles ; AppData/Local/RedSolstice2/Saved/Savegames/Campaigns"
+source = "steam"
+date = "2026-10-13"

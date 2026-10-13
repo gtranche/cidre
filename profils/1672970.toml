@@ -75,3 +75,9 @@ bouteille = "win7_64"
 dependances = "dotnet40 vcrun2015 directx_jun2010"
 graphismes = "dxvk"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=16663"
+
+[compat.steam_cloud]
+methode = "aucune"
+synchro = "aucune"
+source = "steam"
+date = "2026-10-13"

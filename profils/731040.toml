@@ -53,3 +53,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/The_Invincible"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/TheInvincible/Saved/SaveGames"
+motifs = "*.sav"
+dossier_windows = "AppData/Local/TheInvincible/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

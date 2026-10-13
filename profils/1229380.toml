@@ -48,3 +48,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Everhood"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Foreign Gnomes/Everhood"
+motifs = "file1* ; config*"
+dossier_windows = "AppData/LocalLow/Foreign Gnomes/Everhood"
+source = "steam"
+date = "2026-10-13"

@@ -45,3 +45,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Tabletop_Playground"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/TabletopPlayground/Saved/SavedStates ; WinAppDataLocal/TabletopPlayground/Saved/StoredObjects"
+motifs = "*.vts ; *.tpo (recursif)"
+dossier_windows = "AppData/Local/TabletopPlayground/Saved/SavedStates ; AppData/Local/TabletopPlayground/Saved/StoredObjects"
+source = "steam"
+date = "2026-10-13"

@@ -48,3 +48,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Through_the_Darkest_of_Times"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "gameinstall/TtDoT_Data/StreamingAssets/SaveGames"
+motifs = "*.json (recursif)"
+dossier_windows = "jeu:TtDoT_Data/StreamingAssets/SaveGames"
+source = "steam"
+date = "2026-10-13"

@@ -73,3 +73,12 @@ bouteille = "win10_64"
 graphismes = "dxvk"
 registre = "Direct3D:renderer=vulkan"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=17602"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinSavedGames/Frontier Developments/Planet Zoo/{64BitSteamID}/Saves ; WinSavedGames/Frontier Developments/Planet Coaster/{64BitSteamID}/Config"
+motifs = "*.* (recursif) ; *_remote.config.xml"
+dossier_windows = "Saved Games/Frontier Developments/Planet Zoo ; Saved Games/Frontier Developments/Planet Coaster"
+source = "steam"
+date = "2026-10-13"

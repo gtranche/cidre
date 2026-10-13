@@ -1,0 +1,41 @@
+{
+ "date": "2026-01-01",
+ "statut": 200,
+ "corps": {
+  "ufs": {
+   "quota": "100000000",
+   "maxnumfiles": "50",
+   "savefiles": {
+    "0": {
+     "root": "WinAppDataLocalLow",
+     "path": "Studio Fictif/Jeu Fictif/saves/{64BitSteamID}",
+     "pattern": "*.sav",
+     "recursive": "1"
+    }
+   },
+   "rootoverrides": {
+    "0": {
+     "root": "WinAppDataLocalLow",
+     "os": "MacOS",
+     "oscompare": "=",
+     "useinstead": "MacAppSupport",
+     "pathtransforms": {
+      "0": {
+       "find": "Studio Fictif/Jeu Fictif",
+       "replace": "com.studiofictif.jeufictif"
+      }
+     }
+    },
+    "1": {
+     "root": "WinAppDataLocalLow",
+     "os": "Linux",
+     "oscompare": "=",
+     "useinstead": "LinuxXdgConfigHome",
+     "addpath": "unity3d"
+    }
+   }
+  },
+  "nom": "Jeu Fictif",
+  "oslist": "windows,macos,linux"
+ }
+}

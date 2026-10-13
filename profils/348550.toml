@@ -55,3 +55,12 @@ recette_date = "2015-05-28"
 crossover_version = "14.1.3"
 bouteille = "win7_64"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=13700"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinMyDocuments/ARC SYSTEM WORKS/GGXXAC/save"
+motifs = "* (recursif)"
+dossier_windows = "Documents/ARC SYSTEM WORKS/GGXXAC/save"
+source = "steam"
+date = "2026-10-13"

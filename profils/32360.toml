@@ -70,3 +70,12 @@ bouteille = "win10_64"
 dll_overrides = "x3daudio1_6=n ; xaudio2_4=n ; xactengine3_4=n"
 dependances = "directx_jun2010"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=6082"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataRoaming/LucasArts/The Secret of Monkey Island Special Edition"
+motifs = "*.*"
+dossier_windows = "AppData/Roaming/LucasArts/The Secret of Monkey Island Special Edition"
+source = "steam"
+date = "2026-10-13"

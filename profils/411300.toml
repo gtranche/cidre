@@ -64,3 +64,12 @@ crossover_version = "22"
 bouteille = "win10_64"
 graphismes = "dxvk"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=16249"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinSavedGames/ELEX/SaveGames"
+motifs = "*.save"
+dossier_windows = "Saved Games/ELEX/SaveGames"
+source = "steam"
+date = "2026-10-13"

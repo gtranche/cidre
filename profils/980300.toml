@@ -61,3 +61,12 @@ recette_date = "2025-08-03"
 crossover_version = "25"
 bouteille = "win10_64"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=20949"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Silver Dollar Games/One Finger Death Punch 2"
+motifs = "*.dat"
+dossier_windows = "AppData/LocalLow/Silver Dollar Games/One Finger Death Punch 2"
+source = "steam"
+date = "2026-10-13"

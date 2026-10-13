@@ -46,3 +46,9 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Sherlock_Holmes%3A_Secret_of_the_Silver_Earring"
+
+[compat.steam_cloud]
+methode = "aucune"
+synchro = "aucune"
+source = "steam"
+date = "2026-10-13"

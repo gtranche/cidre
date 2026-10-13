@@ -71,3 +71,12 @@ crossover_version = "22"
 bouteille = "win10_64"
 dependances = "vcrun2019"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=19872"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/Oregon/Saved/SaveGames"
+motifs = "Slot*.sav"
+dossier_windows = "AppData/Local/Oregon/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

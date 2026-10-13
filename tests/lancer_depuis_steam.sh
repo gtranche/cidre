@@ -14,6 +14,13 @@
 # Le faux client n'est la que pour une chose : occuper ActiveProcess\pid dans le
 # registre du prefixe, sans quoi SteamAPI_Init attend un client Windows qui
 # n'existera jamais. C'est le vrai client natif qui repond derriere.
+# Tout le corps est entre accolades, ferme par `exit` : le shell lit ainsi le
+# fichier ENTIER avant d'executer quoi que ce soit, et n'y revient jamais. Sans
+# cela, il lit au fil de l'execution : un fichier modifie pendant qu'un jeu
+# tourne (mise a jour, edition) est repris a l'ancien decalage, au milieu d'une
+# autre commande -- le 2026-10-13, `cidre play` a ainsi fini dans la
+# desinstallation et efface le jeu. tests/tester_profils.sh verifie l'enveloppe.
+{
 set -e
 R=$(cd "$(dirname "$0")" && cd .. && pwd)
 
@@ -417,10 +424,13 @@ if [ "$(opt eac_untrusted CIDRE_EAC_UNTRUSTED)" = true ]; then
    echo "    profil : +-eac-untrusted" >>"$JOURNAL"
 fi
 
-# Restauration des sauvegardes depuis le dossier synchronise (iCloud), si plus
-# recentes (ex. jouees sur une autre machine). Non destructif, non bloquant.
-# Steam Cloud ne peut pas le faire pour un jeu Windows sur macOS (roots non
-# resolus) ; on replique sa logique. cf. tests/sync_saves_steam.sh.
+# Sauvegardes. Steam d'abord : si le jeu ecrit par l'API Remote Storage, ou
+# declare a Steam Cloud un dossier pour macOS (le dossier du prefixe y est lie
+# ici, avant le lancement), le client Steam de macOS synchronise lui-meme et
+# Cidre ne copie rien. Sinon (Auto-Cloud declare pour Windows seulement : le
+# client macOS ne resout pas ces racines), restauration depuis le dossier des
+# copies de Cidre de ce qui y est plus recent. Non destructif, non bloquant.
+# cf. tests/sync_saves_steam.sh, tests/lier_saves_steam.sh.
 if [ -n "$JEU" ]; then
    sh "$R/tests/sync_saves_steam.sh" "$JEU" restore >>"$JOURNAL" 2>&1 || true
 fi
@@ -455,7 +465,7 @@ fi
 # cf. profils/README.md) : un jeu qui n'est jouable qu'avec ses propres options
 # baissees (Expedition 33 : prereglage Moyen + resolution 66 %, x2,5). Poses une
 # fois, apres la restauration des sauvegardes (qui peut ramener ce fichier
-# d'iCloud) : des qu'ils sont ecrits -- ou deja en place -- on le note dans le
+# de la copie) : des qu'ils sont ecrits -- ou deja en place -- on le note dans le
 # profil utilisateur (reglages_jeu_appliques = true) et on n'y touche plus,
 # l'utilisateur est libre de regler son jeu. Si le fichier n'existe pas encore
 # (premier lancement), on reessaie la fois suivante. Jamais bloquant.
@@ -474,7 +484,7 @@ TEMOIN=
 
 cd "$DOSSIER"
 # Langue dans le fichier de reglages du jeu (outil-steam/langues.conf). Apres la
-# restauration des sauvegardes, qui peut ramener ce meme fichier d'iCloud.
+# restauration des sauvegardes, qui peut ramener ce meme fichier de la copie.
 [ "$LANGUE" = auto ] || sh "$R/tests/langue_jeu.sh" "$JEU" "$LANGUE" >>"$JOURNAL" 2>&1 || true
 # On ne fait PLUS exec : on attend la fin du jeu pour sauvegarder apres coup.
 # `&& ... ||` : ce script est en `set -e`, et un jeu qui sort sur un code d'erreur
@@ -500,9 +510,11 @@ if [ $RC -ne 0 ] || [ -n "$REPLI" ]; then
    CIDRE_JEU="$JEU" sh "$R/tests/expliquer_sortie.sh" "$RC" "$JOURNAL" 2>/dev/null | tee -a "$JOURNAL" || true
 fi
 
-# Sauvegarde vers le dossier synchronise apres la sortie du jeu (meme en cas de
-# crash : on sauve l'etat tel quel). Non bloquant.
+# Apres la sortie du jeu (meme en cas de crash : l'etat tel quel) : copie vers
+# le dossier de Cidre, ou, si Steam synchronise ce jeu, ce que son client dit
+# avoir envoye. Non bloquant.
 if [ -n "$JEU" ]; then
    CIDRE_SAVES_DEPUIS=$DEBUT_EPOCH sh "$R/tests/sync_saves_steam.sh" "$JEU" backup >>"$JOURNAL" 2>&1 || true
 fi
 exit $RC
+}

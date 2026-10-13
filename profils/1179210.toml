@@ -50,3 +50,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Kill_It_with_Fire"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/Kani/Saved/SaveGames ; WinAppDataLocalLow/Kani/Saved/SaveGames ; WinAppDataRoaming/Kani/Saved/SaveGames"
+motifs = "ArachnophobiaSettings_KIWF_*.sav ; AudioSettings_KIWF_*.sav ; DefaultSlot_KIWF_*.sav ; InputSettings_KIWF_*.sav ; ArachnophobiaSettings_KIWF_ ; AudioSettings_KIWF_"
+dossier_windows = "AppData/Local/Kani/Saved/SaveGames ; AppData/LocalLow/Kani/Saved/SaveGames ; AppData/Roaming/Kani/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

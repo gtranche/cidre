@@ -72,3 +72,12 @@ recette_date = "2023-09-08"
 crossover_version = "19"
 bouteille = "win10_64"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=15576"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/TekkenGame/Saved/SaveGames/TEKKEN7/{Steam3AccountID}"
+motifs = "*.sav"
+dossier_windows = "AppData/Local/TekkenGame/Saved/SaveGames/TEKKEN7"
+source = "steam"
+date = "2026-10-13"

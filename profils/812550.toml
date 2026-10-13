@@ -51,3 +51,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/The_King%27s_Bird"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Serenity Forge/The King's Bird"
+motifs = "*.dat"
+dossier_windows = "AppData/LocalLow/Serenity Forge/The King's Bird"
+source = "steam"
+date = "2026-10-13"

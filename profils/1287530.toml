@@ -48,3 +48,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Lords_and_Villeins"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Honestly Games/Lords and Villeins/SaveData/{64BitSteamID} ; WinAppDataLocalLow/Honestly Games/Lords and Villeins/ConfigData/{64BitSteamID} ; WinAppDataLocalLow/Honestly Games/Lords and Villeins/BuildableTemplates/{64BitSteamID}"
+motifs = "*.sgz ; *.ini ; *.png ; *.bt"
+dossier_windows = "AppData/LocalLow/Honestly Games/Lords and Villeins/SaveData ; AppData/LocalLow/Honestly Games/Lords and Villeins/ConfigData ; AppData/LocalLow/Honestly Games/Lords and Villeins/BuildableTemplates"
+source = "steam"
+date = "2026-10-13"

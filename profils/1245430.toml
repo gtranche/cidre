@@ -46,3 +46,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Golden_Light"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/MrPink/Golden Light"
+motifs = "*.spook"
+dossier_windows = "AppData/LocalLow/MrPink/Golden Light"
+source = "steam"
+date = "2026-10-13"

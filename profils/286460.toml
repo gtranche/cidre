@@ -55,3 +55,12 @@ recette_date = "2013-12-22"
 crossover_version = "13.0"
 bouteille = "winxp"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=6898"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinMyDocuments/BlackMirror2/Savegames"
+motifs = "*.sav (recursif)"
+dossier_windows = "Documents/BlackMirror2/Savegames"
+source = "steam"
+date = "2026-10-13"

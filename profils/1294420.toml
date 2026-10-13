@@ -50,3 +50,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Rollerdrome"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Roll7/ROLLERDROME"
+motifs = "*Save*.*"
+dossier_windows = "AppData/LocalLow/Roll7/ROLLERDROME"
+source = "steam"
+date = "2026-10-13"

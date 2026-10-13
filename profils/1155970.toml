@@ -47,3 +47,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Roadwarden"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataRoaming/RenPy/Roadwarden-Saves"
+motifs = "*"
+dossier_windows = "AppData/Roaming/RenPy/Roadwarden-Saves"
+source = "steam"
+date = "2026-10-13"

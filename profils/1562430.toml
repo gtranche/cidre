@@ -24,3 +24,15 @@ cidre_version = ""
 fps_menu = 0
 fps_jeu = 84
 notes = "40 fps par defaut, 69 avec vsync = false, 84 avec tso = false en plus."
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "steam-lien"
+racine_windows = "WinAppDataLocalLow/Black Salt Games/DREDGE/saves"
+motifs = "*.bin (recursif)"
+dossier_windows = "AppData/LocalLow/Black Salt Games/DREDGE/saves"
+racine_macos = "MacAppSupport/Black Salt Games/DREDGE/saves"
+partage = "multiplateforme"
+liens = "AppData/LocalLow/Black Salt Games/DREDGE/saves => Library/Application Support/Black Salt Games/DREDGE/saves"
+source = "steam"
+date = "2026-10-13"

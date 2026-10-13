@@ -57,3 +57,12 @@ recette_date = "2022-03-29"
 crossover_version = "21.1"
 bouteille = "win10_64"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=18192"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/1M Bits Horde"
+motifs = "* (recursif)"
+dossier_windows = "AppData/LocalLow/1M Bits Horde"
+source = "steam"
+date = "2026-10-13"

@@ -49,3 +49,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Lacuna"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/DigiTales Interactive/Lacuna/saves"
+motifs = "* (recursif)"
+dossier_windows = "AppData/LocalLow/DigiTales Interactive/Lacuna/saves"
+source = "steam"
+date = "2026-10-13"

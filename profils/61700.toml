@@ -47,3 +47,9 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Might_%26_Magic%3A_Clash_of_Heroes"
+
+[compat.steam_cloud]
+methode = "api"
+synchro = "steam-api"
+source = "steam"
+date = "2026-10-13"

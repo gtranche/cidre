@@ -51,3 +51,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/SpongeBob_SquarePants%3A_Battle_for_Bikini_Bottom_-_Rehydrated"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/Pineapple/Saved/SaveGames"
+motifs = "*.* (recursif)"
+dossier_windows = "AppData/Local/Pineapple/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

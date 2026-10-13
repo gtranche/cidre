@@ -47,3 +47,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Black_Future_%2788"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Super Scary Snakes/Black Future '88"
+motifs = "*xml"
+dossier_windows = "AppData/LocalLow/Super Scary Snakes/Black Future '88"
+source = "steam"
+date = "2026-10-13"

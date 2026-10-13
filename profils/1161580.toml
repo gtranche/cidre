@@ -63,3 +63,12 @@ recette_date = "2024-01-09"
 crossover_version = "23.5"
 bouteille = "win10_64"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=17253"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Blackbird Interactive/Hardspace_ Shipbreaker/Saves"
+motifs = "*.* (recursif)"
+dossier_windows = "AppData/LocalLow/Blackbird Interactive/Hardspace_ Shipbreaker/Saves"
+source = "steam"
+date = "2026-10-13"

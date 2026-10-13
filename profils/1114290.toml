@@ -44,3 +44,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Windjammers_2"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinSavedGames/Windjammers 2"
+motifs = "Stats.bin"
+dossier_windows = "Saved Games/Windjammers 2"
+source = "steam"
+date = "2026-10-13"

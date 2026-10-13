@@ -50,3 +50,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Aces_and_Adventures"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Triple B Titles/Aces and Adventures/{64BitSteamID}"
+motifs = "*.bytes (recursif) ; *.bytes.backup (recursif)"
+dossier_windows = "AppData/LocalLow/Triple B Titles/Aces and Adventures"
+source = "steam"
+date = "2026-10-13"

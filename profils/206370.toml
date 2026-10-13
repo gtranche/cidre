@@ -48,3 +48,9 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Tales_from_Space%3A_Mutant_Blobs_Attack"
+
+[compat.steam_cloud]
+methode = "api"
+synchro = "steam-api"
+source = "steam"
+date = "2026-10-13"

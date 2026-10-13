@@ -42,3 +42,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/There_Is_No_Light"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/ZelartGames/ThereIsNoLight"
+motifs = "*.es3"
+dossier_windows = "AppData/LocalLow/ZelartGames/ThereIsNoLight"
+source = "steam"
+date = "2026-10-13"

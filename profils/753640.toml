@@ -76,3 +76,12 @@ bouteille = "win10_64"
 graphismes = "d3dmetal"
 environnement = "WINED3DMETAL=1"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=16893"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Mobius Digital/Outer Wilds/SteamSaves"
+motifs = "*.owprofile ; *.owsave (recursif) ; input.owsett (recursif) ; player.owsett (recursif)"
+dossier_windows = "AppData/LocalLow/Mobius Digital/Outer Wilds/SteamSaves"
+source = "steam"
+date = "2026-10-13"

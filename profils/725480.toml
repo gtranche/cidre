@@ -48,3 +48,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Slap_City"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Ludosity/Slap City"
+motifs = "objective.json ; save.json"
+dossier_windows = "AppData/LocalLow/Ludosity/Slap City"
+source = "steam"
+date = "2026-10-13"

@@ -50,3 +50,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Stories%3A_The_Path_of_Destinies"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/Stories/Saved/SaveGames"
+motifs = "*.sav"
+dossier_windows = "AppData/Local/Stories/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

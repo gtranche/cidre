@@ -47,3 +47,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Forewarned"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Dreambyte Games/FOREWARNED"
+motifs = "*.save"
+dossier_windows = "AppData/LocalLow/Dreambyte Games/FOREWARNED"
+source = "steam"
+date = "2026-10-13"

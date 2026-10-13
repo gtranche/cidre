@@ -55,3 +55,9 @@ rosetta = "parfait"
 source = "applegamingwiki"
 date = "2026-10-11"
 url = "https://www.applegamingwiki.com/wiki/Golf_with_Your_Friends"
+
+[compat.steam_cloud]
+methode = "api"
+synchro = "steam-api"
+source = "steam"
+date = "2026-10-13"

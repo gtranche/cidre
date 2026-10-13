@@ -50,3 +50,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Hellblade%3A_Senua%27s_Sacrifice_VR_Edition"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/HellbladeGame/Saved/SaveGames_VR"
+motifs = "*.sav"
+dossier_windows = "AppData/Local/HellbladeGame/Saved/SaveGames_VR"
+source = "steam"
+date = "2026-10-13"

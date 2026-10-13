@@ -46,3 +46,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Partisans_1941"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/Partisans/Saved/SaveGames"
+motifs = "*.sav ; *.png"
+dossier_windows = "AppData/Local/Partisans/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

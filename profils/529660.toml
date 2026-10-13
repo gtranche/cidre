@@ -51,3 +51,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Mages_of_Mystralia"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Borealys Games Inc_/Mages of Mystralia"
+motifs = "*.save (recursif)"
+dossier_windows = "AppData/LocalLow/Borealys Games Inc_/Mages of Mystralia"
+source = "steam"
+date = "2026-10-13"

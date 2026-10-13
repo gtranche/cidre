@@ -101,6 +101,18 @@ fps_menu = 90                      # entier, 0 = non mesuré
 fps_jeu = 40
 notes = "..."
 
+[compat.steam_cloud]               # comment Steam Cloud range les sauvegardes du jeu (import, source steam)
+methode = "auto"                   # aucune, api (ISteamRemoteStorage), auto (Auto-Cloud : dossiers déclarés)
+synchro = "steam-lien"             # qui synchronise sous Cidre : steam-api, steam-lien, copie, aucune
+racine_windows = "WinAppDataLocalLow/LandCrab/PEAK"    # racine Steam/chemin, tels que déclarés
+motifs = "*.peak"
+dossier_windows = "AppData/LocalLow/LandCrab/PEAK"     # le même, convention Cidre (sert à la copie)
+racine_macos = "MacAppSupport/unity.LandCrab.PEAK"     # absent : le jeu ne déclare rien pour macOS
+partage = "par-plateforme"         # multiplateforme (mêmes fichiers sur tous les systèmes) ou par-plateforme
+liens = "AppData/LocalLow/LandCrab/PEAK => Library/Application Support/unity.LandCrab.PEAK"
+source = "steam"
+date = "2026-10-13"
+
 [[rapports]]                       # une remontée d'utilisateur (Verger) ; zéro, une ou plusieurs
 date = "2026-10-11"
 machine = "M1 Max 32 Go"
@@ -125,6 +137,9 @@ Sens des champs :
 - `[compat]` : l'état de compatibilité qui fait autorité (nos tests, source
   `cidre-test`, priment sur un import). `etat` : or (parfait), argent (jouable,
   limites), bronze (démarre, perf/bugs), ko (non), non-teste.
+- `[compat.steam_cloud]` : la configuration Steam Cloud du jeu, relevée par
+  l'import ; le lanceur s'en sert pour laisser Steam synchroniser les
+  sauvegardes lui-même quand il le peut (voir « Sauvegardes »).
 - `[[rapports]]` : les remontées, dans l'ordre d'arrivée. Format stable, c'est
   celui que Verger envoie. Une remontée ne change pas `[compat]` toute seule :
   c'est une relecture qui met `[compat]` à jour (voir « Rapports
@@ -291,6 +306,85 @@ sh tests/fiche_profil.sh generer-index > profils/index.toml
 
 `tests/tester_profils.sh` vérifie qu'il est à jour.
 
+## Sauvegardes : Steam Cloud d'abord (`[compat.steam_cloud]`)
+
+Le client Steam de macOS synchronise lui-même, à la sortie d'un jeu lancé par
+Cidre, tout ce qu'il sait trouver (son `logs/cloud_log.txt` : « Starting sync
+(up,AC Exit,) »). Ce qu'il sait trouver dépend de la façon dont le jeu a
+déclaré ses sauvegardes à Steam (section `ufs` de ses métadonnées), que
+l'import relève dans la fiche :
+
+| `methode` | `synchro` | Ce qui se passe sous Cidre |
+|---|---|---|
+| `api` : le jeu écrit par l'API Remote Storage, aucun dossier déclaré | `steam-api` | Les appels passent par le pont ; les fichiers arrivent dans `userdata/<compte>/<appid>/remote` du client macOS, qui les envoie. Cidre ne copie rien, sauf un dossier de sauvegardes locales désigné par `saves.conf` (`api` dit que le jeu *peut* écrire par l'API, pas que tout y passe : Vermintide 2 garde tout en local en Modded Realm). |
+| `auto` : Auto-Cloud, et le jeu déclare un dossier **pour macOS** | `steam-lien` | Avant le lancement, le dossier de sauvegarde du préfixe Wine devient un lien symbolique vers le dossier macOS déclaré (`liens`) : le client macOS y trouve les fichiers et les envoie. Cidre ne copie rien. |
+| `auto`, dossiers déclarés pour Windows seulement (ou non liables : `sans_lien`) | `copie` | Steam ne peut pas : le client macOS ne sait pas résoudre une racine Windows (« Unable to resolve path with root WinAppDataLocal »), et Steam pour macOS n'a pas d'outil de compatibilité à qui déléguer. Cidre copie le dossier lui-même. |
+| `aucune` : pas de Steam Cloud | `aucune` | Cidre copie, s'il sait où sont les sauvegardes. |
+
+**Le lien** (`tests/lier_saves_steam.sh`) n'est proposé que si la même règle
+vaut sur les deux systèmes (`partage = "multiplateforme"` : le jeu déclare un
+`rootoverrides` pour macOS, ce sont les mêmes fichiers dans le nuage, partagés
+avec un PC), ou si une règle Windows et une règle macOS de **même motif** se
+répondent (`par-plateforme` : Steam garde alors des fichiers distincts par
+système — la synchro se fait entre Mac, et avec la version macOS du jeu, pas
+avec un PC). Des motifs différents sont des formats différents : pas de lien
+(`sans_lien = "motifs differents"`). Pas de lien non plus vers le dossier du
+jeu (côté macOS, le client le cherche dans sa propre bibliothèque, où le jeu
+Windows n'est pas ; côté Windows, on ne déplace jamais un dossier du jeu), ni
+d'une racine entière (`Documents`), ni partiel (une règle Windows que
+rien ne reprend sur macOS : tout le jeu reste en copie).
+
+Poser le lien ne détruit rien : le dossier d'origine du préfixe est déplacé,
+entier, dans `<Cidre>/saves/<appid>/.history/avant-lien-<date>/` ; ses fichiers
+sont copiés dans le dossier macOS sans rien y écraser (un fichier déjà présent
+côté macOS reste : c'est celui que Steam synchronise) ; le dossier macOS, s'il
+n'était pas vide, est lui aussi copié là avant le premier lien. Les variables
+`{64BitSteamID}` et `{Steam3AccountID}` sont résolues avec le compte connecté
+au client ; sans compte, pas de lien (la copie Cidre sert).
+
+Limites, à connaître :
+
+- le client macOS **envoie à la sortie** du jeu, mais ne **télécharge au
+  lancement** que les jeux qu'il lance lui-même (« AC Launch, down ») : pour un
+  jeu lancé par Cidre, ce qui a été joué sur une autre machine arrive à la
+  synchro suivante du client, pas avant la partie ;
+- `par-plateforme` avec un motif passe-partout (`*`) : rien ne prouve que les
+  deux versions écrivent le même format ; la copie datée d'avant le lien permet
+  de revenir en arrière ;
+- `CIDRE_SAVES_STEAM=0` rend tout à la copie Cidre.
+
+**La copie Cidre** (`tests/sync_saves_steam.sh`, pour le reste) va dans un
+dossier de ce Mac, `~/Library/Application Support/Cidre/saves/<appid>/`. iCloud
+n'est plus le défaut ; qui le veut le choisit :
+
+```sh
+cidre saves                      # par jeu : Steam Cloud (API ou dossier lié), ou copie Cidre et son état
+cidre saves <appid> --json       # {"etat":"steam","steam":"api"|"lien","lie":…} ou l'état de la copie
+cidre saves dossier              # le dossier des copies
+cidre saves dossier icloud       # iCloud Drive/CidreSaves (ou un chemin absolu ; `defaut` pour revenir)
+```
+
+`cidre saves <appid> --json` dit qui synchronise, pour une interface (Verger),
+par deux champs ajoutés aux champs existants (inchangés) :
+
+| `synchro` | Sens | Champs utiles |
+|---|---|---|
+| `steam_api` | le jeu écrit par l'API Remote Storage, par le pont : Steam s'en charge | `dossier` (le `remote` du client) ; si `copie` n'est pas vide, Cidre copie **en plus** le dossier local `dossier` désigné par `saves.conf`, et `etat` est celui de cette copie |
+| `steam_macos` | dossier du préfixe lié à celui que le jeu déclare pour macOS : le client Steam s'en charge | `dossier` (le dossier macOS), `lie` (`true` ; `false` tant que le jeu n'a pas été lancé) |
+| `copie` | Cidre copie lui-même | `copie` (le dossier de la copie), `icloud`, `etat` (`a_jour`, `a_sauvegarder`, `a_restaurer`, `divergent`, `jamais_sauvegarde`, `vide`) |
+| `aucune` | dossier de sauvegarde inconnu : rien n'est synchronisé | `configure` est `false` |
+
+`synchro_detail` le dit en une phrase, en français. `etat` vaut `steam` quand
+Steam seul synchronise ; `steam` (`api`, `lien` ou vide) et `lie` restent, mais
+c'est `synchro` qui fait contrat.
+
+Les copies faites dans iCloud Drive par les versions précédentes sont reprises
+une fois dans le nouveau dossier (celles d'iCloud restent en place). Le dossier
+à copier vient de `outil-steam/saves.conf`, de `cidre saves set`, sinon de la
+fiche : `[compat.steam_cloud] dossier_windows` (ce que le jeu déclare lui-même
+à Steam) puis `[compat.pcgamingwiki] sauvegardes`, sinon de ce que le jeu vient
+d'écrire (`tests/deviner_saves.sh`).
+
 ## Commandes
 
 ```sh
@@ -374,7 +468,12 @@ python3 -I tests/outils/test_importer_profils.py      # le test (jeu fictif, ré
 
 `--sources` choisit les sources (`steam`, `protondb`, `pcgamingwiki`,
 `applegamingwiki`, `crossover` ; toutes par défaut) : les blocs des autres ne
-bougent pas. `--fiches-existantes` prend les appids des fiches du dossier au
+bougent pas. La source `steam` lit aussi les métadonnées publiques de chaque
+jeu avec SteamCMD, sans compte (`+login anonymous +app_info_print`, dans le
+dossier `steamcmd-anonyme` de Cidre, jamais celui du client ; `--steamcmd`
+pour en désigner un autre que `tools/steamcmd/`), par lots de 60 :
+`python3 -I tests/outils/importer_profils.py --sources steam --fiches-existantes --index`
+refait l'inventaire Steam Cloud de toute la base. `--fiches-existantes` prend les appids des fiches du dossier au
 lieu de la bibliothèque du compte.
 
 Les réponses sont mises en cache dans `build/cache-profils/` (ignoré par git) :
@@ -398,9 +497,9 @@ qu'une valeur `crossover`.
 Provenance : chaque valeur importée porte sa source et sa date. Dans `[jeu]`
 et dans `[cidre]`, clé par clé, tables `[jeu.sources]` et `[cidre.sources]`
 (`bits = "pcgamingwiki 2026-10-11"`, `dll_overrides = "crossover 2026-10-13"`) ;
-pour les blocs `[compat.protondb]`, `[compat.pcgamingwiki]`,
-`[compat.applegamingwiki]`, `[compat.crossover]`, une `source` et une `date`
-pour tout le bloc. `[cidre.sources]` n'est pas une option de lancement : le
+pour les blocs `[compat.steam_cloud]`, `[compat.protondb]`,
+`[compat.pcgamingwiki]`, `[compat.applegamingwiki]`, `[compat.crossover]`, une
+`source` et une `date` pour tout le bloc. `[cidre.sources]` n'est pas une option de lancement : le
 lanceur ne lit que `[cidre]`. Le sous-ensemble TOML du README est respecté :
 les listes sont des chaînes séparées par ` ; `, les compteurs des chaînes
 `cle:n cle:n`.
@@ -419,6 +518,7 @@ Proton) ou le verdict AppleGamingWiki (CrossOver, GPTK) ne sont pas notre
 | Source (licence) | Donnée | Champ de la fiche |
 |---|---|---|
 | Bibliothèque Steam (`cidre library`) | nom, plateformes du dépôt | `[jeu] nom`, `plateformes_steam` (`"windows"` ou `"macos windows"`) |
+| Steam, métadonnées publiques du jeu (`app_info_print`, section `ufs` : la configuration Steam Cloud) | méthode (API Remote Storage ou Auto-Cloud), règles `savefiles` (racine, chemin, motif, plateformes) et `rootoverrides` par système | `[compat.steam_cloud] methode` (`aucune`, `api`, `auto`), `racine_windows` et `racine_macos` (`Racine/chemin`, après `rootoverrides`), `motifs` (+ `motifs_macos` s'ils diffèrent), `dossier_windows` (convention Cidre), `partage`, `liens` (`dossier du préfixe => dossier sous le dossier personnel`) ou `sans_lien` (pourquoi pas), `synchro` (`steam-api`, `steam-lien`, `copie`, `aucune`) ; voir « Sauvegardes » |
 | ProtonDB, API publique des résumés (données utilisateurs) | palier, tendance, meilleur palier, confiance, score, nombre de rapports | `[compat.protondb] palier`, `tendance`, `meilleur_palier`, `confiance`, `score` (0-100), `rapports`, `url` |
 | ProtonDB, export JSON public des rapports (dépôt `bdefore/protondb-data`) | options de lancement les plus citées (2 ans), lanceur utilisé, « lanceur secondaire » (le jeu a son propre lanceur), anti-triche signalé, verdicts récents | `options_lancement_1..3` (`"… (xN)"`), `lanceurs_signales`, `lanceur_secondaire` (`"non:7 oui:1"`), `anticheat_signale`, `verdicts_recents`, `rapports_export` ; et `[jeu] anticheat` si PCGW est muet et qu'un seul anti-triche est signalé |
 | PCGamingWiki, API MediaWiki, wikitexte des modèles (CC BY-NC-SA) | `{{Infobox game}}` moteur, appid ; `{{API}}` versions Direct3D/Vulkan/OpenGL, exécutable 32/64 bits ; `{{Middleware}}` anti-triche ; `{{Availability/row}}` DRM Steam | `[jeu] moteur` (vocabulaire de la fiche, sinon `autre`) + `moteur_nom`, `api` (seulement si une seule API), `api_disponibles` (`"d3d11 d3d12"`), `bits` (64 si un exécutable 64 bits existe) + `bits_32_aussi`, `anticheat` (none, eac, battleye, denuvo, vac, sinon `autre` + `anticheat_nom`), `drm` |

@@ -66,3 +66,9 @@ recette_date = "2015-05-12"
 crossover_version = "14.1.1"
 bouteille = "win7_64"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=8887"
+
+[compat.steam_cloud]
+methode = "api"
+synchro = "steam-api"
+source = "steam"
+date = "2026-10-13"

@@ -27,3 +27,9 @@ cidre_version = ""
 fps_menu = 0
 fps_jeu = 110
 notes = "75 fps par defaut, 110 avec tso = false. DRM Valve porte, plein ecran OK."
+
+[compat.steam_cloud]
+methode = "api"
+synchro = "steam-api"
+source = "steam"
+date = "2026-10-13"

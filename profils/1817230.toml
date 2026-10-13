@@ -62,3 +62,12 @@ recette_date = "2025-03-03"
 crossover_version = "24.0.7"
 bouteille = "win10_64"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=20226"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinSavedGames/TangoGameworks/Hi-Fi RUSH (STEAM)/Saved/SaveGames ; WinSavedGames/TangoGameworks/Hi-Fi RUSH (STEAM)/Saved/Config/WindowsNoEditor"
+motifs = "*.sav (recursif) ; *.ini (recursif)"
+dossier_windows = "Saved Games/TangoGameworks/Hi-Fi RUSH (STEAM)/Saved/SaveGames ; Saved Games/TangoGameworks/Hi-Fi RUSH (STEAM)/Saved/Config/WindowsNoEditor"
+source = "steam"
+date = "2026-10-13"

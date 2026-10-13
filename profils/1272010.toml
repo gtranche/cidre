@@ -53,3 +53,12 @@ bouteille = "win10_64"
 source = "crossover"
 date = "2026-10-13"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=20228"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Daedalic Entertainment GmbH/Destroyer The U-Boat Hunter"
+motifs = "*.dat"
+dossier_windows = "AppData/LocalLow/Daedalic Entertainment GmbH/Destroyer The U-Boat Hunter"
+source = "steam"
+date = "2026-10-13"

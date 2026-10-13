@@ -50,3 +50,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Minoria"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/BOMBSERVICE/Minoria/saves"
+motifs = "*"
+dossier_windows = "AppData/LocalLow/BOMBSERVICE/Minoria/saves"
+source = "steam"
+date = "2026-10-13"

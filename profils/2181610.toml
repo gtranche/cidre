@@ -30,3 +30,12 @@ rapports_export = 15
 source = "protondb"
 date = "2026-10-01"
 url = "https://www.protondb.com/app/2181610"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/Heretic_s_Fork/FULL"
+motifs = "* (recursif)"
+dossier_windows = "AppData/Local/Heretic_s_Fork/FULL"
+source = "steam"
+date = "2026-10-13"

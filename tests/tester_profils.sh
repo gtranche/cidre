@@ -469,6 +469,28 @@ for s in cidre tests/profil_cidre.sh tests/fiche_profil.sh tests/reglages_jeu.sh
    sh -n "$R/$s" 2>/dev/null && ok "sh -n $s" || echec "sh -n $s"
 done
 
+# Les scripts qui attendent la fin d'un jeu sont entierement entre accolades et
+# se ferment par `exit` : le shell les lit en entier avant de commencer. Sinon,
+# un fichier modifie pendant la partie est repris au milieu d'une autre
+# commande (2026-10-13 : `cidre play` a fini dans la desinstallation).
+enveloppe() { # <script> : 1re commande `{`, puis ... `exit`, `}` en dernier
+   awk 'NR == 1 && /^#!/ { next } /^[ \t]*(#|$)/ { next }
+        !debut { debut = $0 } { avant = dernier; dernier = $0 }
+        END { exit !(debut == "{" && dernier == "}" && avant ~ /^exit( |$)/) }' "$1"
+}
+for s in cidre tests/lancer_depuis_steam.sh tests/etape2_pile_arm64ec.sh; do
+   enveloppe "$R/$s" && ok "lu en entier avant d'executer : $s" || echec "$s n'est pas enveloppe dans { ... exit; } : une modification pendant un jeu peut executer n'importe quoi"
+done
+printf '#!/bin/sh\nset -u\necho a\nexit 0\n' >"$T/nu.sh"; printf '#!/bin/sh\n# x\n{\nset -u\necho a\nexit $?\n}\n' >"$T/enveloppe.sh"
+enveloppe "$T/nu.sh" && echec "la verification laisse passer un script nu" || ok "la verification refuse un script nu"
+enveloppe "$T/enveloppe.sh" && ok "la verification accepte un script enveloppe" || echec "la verification refuse un script enveloppe"
+# ... et l'enveloppe protege bien : un script allonge pendant qu'il attend ne
+# reprend pas au milieu de ce qu'on y a ajoute.
+printf '#!/bin/sh\n{\nsleep 1\nexit 0\n}\n' >"$T/attend.sh"
+sh "$T/attend.sh" >"$T/attend.sortie" 2>&1 & pid=$!
+printf 'echo AJOUT-EXECUTE\n' >>"$T/attend.sh"; wait $pid
+verif "script enveloppe allonge pendant qu'il attend : rien d'ajoute n'est execute" "" "$(cat "$T/attend.sortie")"
+
 echo
 echo "$nb verifications, $ko en echec"
 [ $ko -eq 0 ]

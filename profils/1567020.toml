@@ -48,3 +48,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/The_Devil_in_Me"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/TheDevilInMe/Saved/SaveGames"
+motifs = "OptionSettings.sav ; SP*.sav ; MP*.sav ; PP*.sav ; ST*.sav"
+dossier_windows = "AppData/Local/TheDevilInMe/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

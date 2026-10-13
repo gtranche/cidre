@@ -50,3 +50,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/American_Fugitive"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Fallen Tree Games Ltd/American Fugitive/SaveGame/Profile ; WinAppDataLocalLow/Fallen Tree Games Ltd/American Fugitive/SaveGame/SceneMap_default"
+motifs = "*.bson (recursif)"
+dossier_windows = "AppData/LocalLow/Fallen Tree Games Ltd/American Fugitive/SaveGame/Profile ; AppData/LocalLow/Fallen Tree Games Ltd/American Fugitive/SaveGame/SceneMap_default"
+source = "steam"
+date = "2026-10-13"

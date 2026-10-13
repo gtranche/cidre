@@ -29,3 +29,15 @@ rapports_export = 2
 source = "protondb"
 date = "2026-10-01"
 url = "https://www.protondb.com/app/3144950"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinSavedGames/Pet Lands ; gameinstall/PetLands/Saved/SaveGames"
+motifs = "* (recursif)"
+dossier_windows = "Saved Games/Pet Lands ; jeu:PetLands/Saved/SaveGames"
+racine_macos = "gameinstall/PetLands/Saved/SaveGames"
+partage = "par-plateforme"
+sans_lien = "regle Windows sans equivalent macOS ; fichiers dans le dossier du jeu"
+source = "steam"
+date = "2026-10-13"

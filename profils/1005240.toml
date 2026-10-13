@@ -36,3 +36,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Pixel_Puzzles_Illustrations_%26_Anime"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/Pixel_Puzzles_Illustrations_And_Anime"
+motifs = "*.INI (recursif)"
+dossier_windows = "AppData/Local/Pixel_Puzzles_Illustrations_And_Anime"
+source = "steam"
+date = "2026-10-13"

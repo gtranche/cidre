@@ -44,3 +44,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Tools_Up%21"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/The Knights Of Unity/Tools Up"
+motifs = "SaveFile.dat ; SaveFile.txt"
+dossier_windows = "AppData/LocalLow/The Knights Of Unity/Tools Up"
+source = "steam"
+date = "2026-10-13"

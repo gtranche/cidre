@@ -58,3 +58,12 @@ dernier_temoignage = "2021-04-15"
 source = "applegamingwiki"
 date = "2026-10-11"
 url = "https://www.applegamingwiki.com/wiki/Monster_Train"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Shiny Shoe/MonsterTrain ; WinAppDataLocalLow/Shiny Shoe/MonsterTrain/saves ; WinAppDataLocalLow/Shiny Shoe/MonsterTrain/run-history"
+motifs = "save.json ; preferences.json ; metagameSave.json ; *.json ; metagameSaveBackup.json ; *.db"
+dossier_windows = "AppData/LocalLow/Shiny Shoe/MonsterTrain ; AppData/LocalLow/Shiny Shoe/MonsterTrain/saves ; AppData/LocalLow/Shiny Shoe/MonsterTrain/run-history"
+source = "steam"
+date = "2026-10-13"

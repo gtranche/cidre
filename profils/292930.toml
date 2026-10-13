@@ -46,3 +46,11 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/The_Black_Mirror"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "gameinstall"
+motifs = "save.* ; savnames.txt"
+source = "steam"
+date = "2026-10-13"

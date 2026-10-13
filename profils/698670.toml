@@ -57,3 +57,12 @@ methodes = "gptk whisky"
 source = "applegamingwiki"
 date = "2026-10-11"
 url = "https://www.applegamingwiki.com/wiki/Scorn"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/Scorn/Saved/SaveGames"
+motifs = "*"
+dossier_windows = "AppData/Local/Scorn/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

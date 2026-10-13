@@ -57,3 +57,12 @@ crossover = "jouable"
 source = "applegamingwiki"
 date = "2026-10-11"
 url = "https://www.applegamingwiki.com/wiki/Call_of_the_Sea"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/COTS/Saved/SaveGames"
+motifs = "*.sav"
+dossier_windows = "AppData/Local/COTS/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

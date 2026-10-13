@@ -80,3 +80,12 @@ crossover_version = "22.1"
 bouteille = "win10_64"
 dependances = "vcrun2022"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=17405"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinSavedGames/The Outer Worlds"
+motifs = "* (recursif)"
+dossier_windows = "Saved Games/The Outer Worlds"
+source = "steam"
+date = "2026-10-13"

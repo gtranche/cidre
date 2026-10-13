@@ -32,3 +32,12 @@ rapports_export = 43
 source = "protondb"
 date = "2026-10-01"
 url = "https://www.protondb.com/app/1929610"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/Shivers/Saved/SaveGames"
+motifs = "*.sav"
+dossier_windows = "AppData/Local/Shivers/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

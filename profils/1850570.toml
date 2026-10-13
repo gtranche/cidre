@@ -69,3 +69,12 @@ crossover_version = "22"
 bouteille = "win10_64"
 dependances = "vcrun2022"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=17826"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/KojimaProductions/DeathStrandingDC/{Steam3AccountID}"
+motifs = "*.* (recursif)"
+dossier_windows = "AppData/Local/KojimaProductions/DeathStrandingDC"
+source = "steam"
+date = "2026-10-13"

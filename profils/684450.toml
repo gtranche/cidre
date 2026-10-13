@@ -44,3 +44,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Surviving_the_Aftermath"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinMyDocuments/Paradox Interactive/Surviving the Aftermath/SaveGames"
+motifs = "*.save"
+dossier_windows = "Documents/Paradox Interactive/Surviving the Aftermath/SaveGames"
+source = "steam"
+date = "2026-10-13"

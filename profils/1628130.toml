@@ -31,3 +31,9 @@ rapports_export = 7
 source = "protondb"
 date = "2026-10-01"
 url = "https://www.protondb.com/app/1628130"
+
+[compat.steam_cloud]
+methode = "api"
+synchro = "steam-api"
+source = "steam"
+date = "2026-10-13"

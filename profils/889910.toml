@@ -48,3 +48,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Hell_Pie"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/HellPie/Saved/SaveGames ; gameinstall/HellPie/Saved/SaveGames"
+motifs = "SG_Achievements.sav ; SG_Collected_0.sav ; SG_GameState_0.sav ; SG_General.sav ; SG_Collected_1.sav ; SG_Collected_2.sav ; SG_GameState_1.sav ; SG_GameState_2.sav"
+dossier_windows = "AppData/Local/HellPie/Saved/SaveGames ; jeu:HellPie/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

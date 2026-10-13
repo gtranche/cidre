@@ -44,3 +44,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Lawn_Mowing_Simulator"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Curve Digital/Lawn Mowing Simulator"
+motifs = "*.DAT"
+dossier_windows = "AppData/LocalLow/Curve Digital/Lawn Mowing Simulator"
+source = "steam"
+date = "2026-10-13"

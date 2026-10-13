@@ -50,3 +50,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Shadows_on_the_Vatican_-_Act_I%3A_Greed"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinSavedGames/Shadows on the Vatican Act I ; WinSavedGames/Shadows on the Vatican Act I HD ; WinMyDocuments/Shadows on the Vatican Act I ; WinMyDocuments/Shadows on the Vatican Act I HD"
+motifs = "*.wsg ; *.sv1"
+dossier_windows = "Saved Games/Shadows on the Vatican Act I ; Saved Games/Shadows on the Vatican Act I HD ; Documents/Shadows on the Vatican Act I ; Documents/Shadows on the Vatican Act I HD"
+source = "steam"
+date = "2026-10-13"

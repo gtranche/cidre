@@ -46,3 +46,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/The_Testament_of_Sherlock_Holmes"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataRoaming/Frogwares/The Testament of Sherlock Holmes/save"
+motifs = "* (recursif)"
+dossier_windows = "AppData/Roaming/Frogwares/The Testament of Sherlock Holmes/save"
+source = "steam"
+date = "2026-10-13"

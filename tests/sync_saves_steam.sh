@@ -1,12 +1,29 @@
 #!/bin/sh
-# Sauvegarde/restauration des saves des jeux Windows lances par Cidre, vers un
-# dossier synchronise (iCloud par defaut : CIDRE_SAVES_DIR). Steam Cloud ne peut
-# pas resoudre les roots Windows sur macOS, donc on replique sa logique. Mode
-# DOSSIER : on sauve tout le dossier du jeu sauf le superflu. JAMAIS destructif :
-# copie horodatee en .history/ avant toute ecriture. Non bloquant.
+# Les sauvegardes des jeux Windows lances par Cidre.
+#
+# Steam d'abord, quand il peut (tests/lier_saves_steam.sh, d'apres la fiche du
+# jeu) : le client Steam de macOS synchronise lui-meme ce que le jeu ecrit par
+# l'API Remote Storage (par le pont) et les dossiers Auto-Cloud que le jeu
+# declare pour macOS (le dossier du prefixe y est lie). Cidre ne copie alors
+# rien.
+# Le reste -- Auto-Cloud declare pour Windows seulement : le client macOS ne
+# sait pas resoudre une racine Windows -- est copie par Cidre vers un dossier
+# de ce Mac : ~/Library/Application Support/Cidre/saves par defaut, ou celui
+# que choisit `cidre saves dossier <chemin>` (iCloud Drive, par exemple), ou
+# CIDRE_SAVES_DIR. Mode DOSSIER : tout le dossier du jeu sauf le superflu.
+# JAMAIS destructif : copie horodatee en .history/ avant toute ecriture. Non
+# bloquant.
 #
 #   sync_saves_steam.sh <id> <restore|backup>
 #   sync_saves_steam.sh <id> etat        ou en est la synchro, en JSON
+#        "synchro" dit QUI synchronise, a valeurs stables (c'est ce qu'affiche
+#        Verger) : "steam_api" (le jeu ecrit par l'API Remote Storage, par le
+#        pont : Steam s'en charge), "steam_macos" (dossier lie a celui que le jeu
+#        declare pour macOS : le client Steam s'en charge), "copie" (Cidre copie
+#        vers le dossier "copie"), "aucune" (dossier inconnu : rien n'est
+#        synchronise) ; "synchro_detail" le dit en une phrase. "copie" non vide
+#        avec "steam_api" : Cidre copie EN PLUS le dossier local "dossier".
+#   sync_saves_steam.sh - dossier        le dossier des copies
 #
 # Ou sont les sauvegardes d'un jeu : outil-steam/saves.conf (livre), surcharge
 # par ~/Library/Application Support/Cidre/saves.conf (`cidre saves set`).
@@ -17,14 +34,71 @@ R=$(cd "$(dirname "$0")/.." && pwd)
 PFX=${WINEPREFIX:-$R/wine/pfx-arm64ec}
 CIDRE_DIR=${CIDRE_DIR:-$HOME/Library/Application Support/Cidre}
 ICLOUD="$HOME/Library/Mobile Documents/com~apple~CloudDocs"
-DEST=${CIDRE_SAVES_DIR:-$ICLOUD/CidreSaves}
+# Le dossier des copies : la variable, sinon le choix de l'utilisateur (`cidre
+# saves dossier`), sinon un dossier de ce Mac. iCloud n'est plus le defaut.
+DEST=${CIDRE_SAVES_DIR:-}
+[ -n "$DEST" ] || DEST=$(head -1 "$CIDRE_DIR/saves.dossier" 2>/dev/null)
+DEFAUT=non; [ -n "$DEST" ] || { DEST="$CIDRE_DIR/saves"; DEFAUT=oui; }
+[ "$SENS" = dossier ] && { printf '%s\n' "$DEST"; exit 0; }
+json() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"; }
+
+# --- Steam synchronise-t-il ce jeu lui-meme ? ---------------------------------
+STEAM_MODE=$(sh "$R/tests/lier_saves_steam.sh" "$APPID" mode 2>/dev/null || true)
+if [ "$STEAM_MODE" = lien ] && [ "$SENS" != etat ]; then
+   # Le lien se pose (ou se verifie) avant chaque lancement et apres : s'il ne
+   # peut pas l'etre, la copie Cidre reprend la main.
+   sh "$R/tests/lier_saves_steam.sh" "$APPID" lier || STEAM_MODE=
+fi
+# Par l'API, Steam ne synchronise que ce que le jeu lui confie : un dossier de
+# sauvegardes locales designe par saves.conf (Vermintide 2 : tout est local en
+# Modded Realm) reste copie par Cidre, en plus. Sans ligne, on ne devine rien.
+LIGNE=$(cat "$CIDRE_DIR/saves.conf" "$R/outil-steam/saves.conf" 2>/dev/null \
+        | awk -F'\t' -v a="$APPID" '$1==a {print $2; exit}')
+STEAM_ET_COPIE=
+if [ "$STEAM_MODE" = api ] && [ -n "$LIGNE" ]; then
+   STEAM_ET_COPIE=api; STEAM_MODE=
+   [ "$SENS" = restore ] && echo "    saves: Steam Cloud pour ce que le jeu ecrit par l'API ; copie Cidre du dossier $LIGNE"
+fi
+if [ -n "$STEAM_MODE" ]; then
+   case $SENS in
+      restore)
+         [ $STEAM_MODE = api ] && echo "    saves: Steam Cloud (le jeu ecrit par l'API Remote Storage, le client Steam synchronise)" \
+                               || echo "    saves: Steam Cloud (dossier lie a celui que le jeu declare pour macOS)" ;;
+      backup)
+         sh "$R/tests/lier_saves_steam.sh" "$APPID" envoi "${CIDRE_SAVES_DEPUIS:-}" ;;
+      etat)
+         d=
+         if [ $STEAM_MODE = lien ]; then
+            d=$(sh "$R/tests/lier_saves_steam.sh" "$APPID" dossiers 2>/dev/null | head -1 | cut -f2)
+            lie=true; sh "$R/tests/lier_saves_steam.sh" "$APPID" dossiers 2>/dev/null | while IFS="$(printf '\t')" read -r a b; do
+               [ -L "$a" ] && [ "$(readlink "$a")" = "$b" ] || exit 1; done || lie=false
+         else
+            d=$(ls -d "$HOME/Library/Application Support/Steam/userdata/"*"/$APPID/remote" 2>/dev/null | head -1); lie=null
+         fi
+         set -- 0 0 0
+         [ -n "$d" ] && [ -d "$d" ] && set -- $(find "$d" -type f 2>/dev/null | while IFS= read -r f; do stat -f '%m %z' "$f"; done \
+            | awk '{ n++; o += $2; if ($1 > m) m = $1 } END { printf "%d %d %d\n", n, o, m }')
+         printf '{"id":"%s","configure":true,"etat":"steam","steam":"%s","lie":%s,"dossier":%s,"copie":"","icloud":false,' \
+            "$APPID" "$STEAM_MODE" "$lie" "$(json "$d")"
+         printf '"local":{"fichiers":%s,"octets":%s,"modifie":%s},"sauvegarde":{"fichiers":0,"octets":0,"modifie":0},' "$1" "$2" "$3"
+         if [ $STEAM_MODE = api ]; then sy=steam_api; sd="Steam Cloud : le jeu écrit par l'API de Steam, le client Steam synchronise"
+         elif [ $lie = true ]; then sy=steam_macos; sd="Steam Cloud : dossier lié à celui que le jeu déclare pour macOS, le client Steam synchronise"
+         else sy=steam_macos; sd="Steam Cloud : le dossier sera lié au prochain lancement à celui que le jeu déclare pour macOS"; fi
+         printf '"a_sauvegarder":0,"a_restaurer":0,"historique":%s,"synchro":"%s","synchro_detail":%s}\n' \
+            "$(ls "$DEST/$APPID/.history" 2>/dev/null | wc -l | tr -d ' ')" "$sy" "$(json "$sd")" ;;
+   esac
+   exit 0
+fi
 JUNK='/cache/|/logs/|/crash|dumps/|image_cache/|/shader|PopsFeed|PopsMods|EarlyCrashReports|/Temp/|\.log$'
 MAXSZ=104857600   # 100 Mo : au-dela ce n'est pas une sauvegarde
 
 # La ligne du jeu : celle de l'utilisateur passe avant celle qu'on livre.
-reldir=$(cat "$CIDRE_DIR/saves.conf" "$R/outil-steam/saves.conf" 2>/dev/null \
-         | awk -F'\t' -v a="$APPID" '$1==a {print $2; exit}')
-non_configure() { [ "$SENS" = etat ] && printf '{"id":"%s","configure":false}\n' "$APPID"; exit 0; }
+reldir=$LIGNE
+non_configure() {
+   [ "$SENS" = etat ] && printf '{"id":"%s","configure":false,"synchro":"aucune","synchro_detail":%s}\n' "$APPID" \
+      "$(json "Dossier de sauvegarde inconnu : rien n'est synchronisé (cidre saves set pour le désigner)")"
+   exit 0
+}
 # Aucune ligne : on essaie de deviner (la fiche de la base de profils ; apres
 # une partie, CIDRE_SAVES_DEPUIS = date de lancement en secondes, les dossiers
 # que les moteurs connus viennent d'ecrire). Trouve : memorise dans le
@@ -58,7 +132,7 @@ BAK="$DEST/$APPID"
 
 # liste des fichiers "save" sous un dossier (exclut le superflu et les gros)
 lister() { # <racine>
-   find "$1" -type f 2>/dev/null | grep -avE "$JUNK" | while IFS= read -r f; do
+   find -H "$1" -type f 2>/dev/null | grep -avE "$JUNK" | while IFS= read -r f; do
       sz=$(wc -c <"$f" 2>/dev/null || echo 0)
       [ "$sz" -le "$MAXSZ" ] && printf '%s\n' "$f"
    done
@@ -70,7 +144,14 @@ copie() { # <src> <dst> : archive l'ancien dst s'il differe, puis copie
    fi
    mkdir -p "$(dirname "$2")" 2>/dev/null && cp -p "$1" "$2" 2>/dev/null
 }
-json() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"; }
+
+# Le defaut etait iCloud Drive (CidreSaves) jusqu'a la v1.5.8 : ce qui s'y
+# trouve pour ce jeu est repris une fois dans le nouveau dossier. Rien n'est
+# retire d'iCloud.
+if [ $DEFAUT = oui ] && [ -z "$(ls "$BAK" 2>/dev/null)" ] && [ -d "$ICLOUD/CidreSaves/$APPID" ] && [ "$SENS" != etat ]; then
+   mkdir -p "$BAK" && cp -Rp "$ICLOUD/CidreSaves/$APPID/." "$BAK/" 2>/dev/null \
+      && echo "    saves: copies reprises d'iCloud Drive dans $BAK (celles d'iCloud restent en place)"
+fi
 
 TS=$(date '+%Y%m%d-%H%M%S')
 case "$SENS" in
@@ -79,7 +160,8 @@ case "$SENS" in
       lister "$SRC" | while IFS= read -r f; do
          copie "$f" "$BAK/${f#$SRC/}" "$BAK/.history/cloud-$TS" "$BAK"
       done
-      echo "    saves: backup $APPID -> iCloud" ;;
+      echo "    saves: backup $APPID -> $BAK"
+      [ -z "$STEAM_ET_COPIE" ] || sh "$R/tests/lier_saves_steam.sh" "$APPID" envoi "${CIDRE_SAVES_DEPUIS:-}" ;;
    restore)
       [ -d "$BAK" ] || exit 0
       find "$BAK" -type f 2>/dev/null | grep -av "/.history/" | while IFS= read -r dst; do
@@ -121,10 +203,13 @@ case "$SENS" in
       h=$(ls "$BAK/.history" 2>/dev/null | wc -l | tr -d ' ')
       # la copie part-elle vraiment sur iCloud ?
       ic=false; case $DEST in "$ICLOUD"/*) [ -d "$ICLOUD" ] && ic=true ;; esac
-      printf '{"id":"%s","configure":true,"etat":"%s","dossier":%s,"copie":%s,"icloud":%s,' \
-         "$APPID" "$e" "$(json "$SRC")" "$(json "$BAK")" "$ic"
+      printf '{"id":"%s","configure":true,"etat":"%s","steam":"%s","dossier":%s,"copie":%s,"icloud":%s,' \
+         "$APPID" "$e" "$STEAM_ET_COPIE" "$(json "$SRC")" "$(json "$BAK")" "$ic"
       printf '"local":{"fichiers":%s,"octets":%s,"modifie":%s},"sauvegarde":{"fichiers":%s,"octets":%s,"modifie":%s},' \
          "$nl" "$ol" "$ml" "$nc" "$oc" "$mc"
-      printf '"a_sauvegarder":%s,"a_restaurer":%s,"historique":%s}\n' "$as" "$ar" "$h" ;;
+      [ $ic = true ] && ou="dans iCloud Drive" || ou="dans un dossier de ce Mac"
+      if [ -n "$STEAM_ET_COPIE" ]; then sy=steam_api; sd="Steam Cloud pour ce que le jeu écrit par l'API de Steam ; Cidre copie en plus son dossier local $ou"
+      else sy=copie; sd="Copie Cidre $ou (Steam Cloud ne sait pas synchroniser ce jeu sur macOS)"; fi
+      printf '"a_sauvegarder":%s,"a_restaurer":%s,"historique":%s,"synchro":"%s","synchro_detail":%s}\n' "$as" "$ar" "$h" "$sy" "$(json "$sd")" ;;
 esac
 exit 0

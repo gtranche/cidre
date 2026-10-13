@@ -15,3 +15,9 @@ plateformes_steam = "steam 2026-10-11"
 [compat]
 etat = "non-teste"
 date = "2026-10-11"
+
+[compat.steam_cloud]
+methode = "aucune"
+synchro = "aucune"
+source = "steam"
+date = "2026-10-13"

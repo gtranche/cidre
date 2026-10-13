@@ -8,8 +8,10 @@
 #                                       rend 0 ; rien et 1 si on ne sait pas.
 #
 # Deux sources, dans l'ordre :
-# 1. La fiche de la base de profils ([compat.pcgamingwiki] sauvegardes, releve
-#    de PCGamingWiki) quand c'est un dossier sous le dossier utilisateur
+# 1. La fiche de la base de profils : d'abord [compat.steam_cloud]
+#    dossier_windows (ce que le jeu declare lui-meme a Steam Cloud : le plus
+#    sur), puis [compat.pcgamingwiki] sauvegardes (releve de PCGamingWiki)
+#    quand c'est un dossier sous le dossier utilisateur
 #    (AppData/..., Documents/..., Saved Games/...) ou dans le jeu (jeu:...) ;
 #    un motif de fichiers (`jeu:*.sav`) est tronque a son dossier. Les formes
 #    `steam:` (Steam Cloud) et `registre:` ne sont pas des dossiers : ignorees.
@@ -24,7 +26,8 @@
 #
 # Pour les essais : CIDRE_PREFIXE_UTIL (dossier utilisateur du prefixe),
 # CIDRE_JEU_DOSSIER (dossier du jeu), CIDRE_FICHE_SAUVEGARDES (valeur de la
-# fiche, `-` pour aucune).
+# fiche, `-` pour aucune), CIDRE_FICHE_DOSSIERS_STEAM (dossier_windows de la
+# fiche, `-` pour aucun).
 set -u
 APPID=${1:?usage: deviner_saves.sh <appid> [depuis]}
 DEPUIS=${2:-}
@@ -40,15 +43,18 @@ JEUDIR=${CIDRE_JEU_DOSSIER:-}
 [ -n "$JEUDIR" ] || JEUDIR=$(sh "$R/cidre" chemin "$APPID" 2>/dev/null || true)
 
 # --- 1. la fiche ----------------------------------------------------------------
-fiche_sauvegardes() {
-   if [ -n "${CIDRE_FICHE_SAUVEGARDES:-}" ]; then
-      [ "$CIDRE_FICHE_SAUVEGARDES" = - ] || printf '%s\n' "$CIDRE_FICHE_SAUVEGARDES"; return 0
+fiche_valeur() { # <section> <cle> <variable d'essai>
+   eval "essai=\${$3:-}"
+   if [ -n "$essai" ]; then
+      [ "$essai" = - ] || printf '%s\n' "$essai"; return 0
    fi
    f=$(sh "$R/tests/fiche_profil.sh" chemin "$APPID" 2>/dev/null) || return 0
    [ -n "$f" ] || return 0
    sh "$R/tests/fiche_profil.sh" toml "$f" 2>/dev/null \
-      | awk -F'\t' '$1 == "compat.pcgamingwiki" && $2 == "sauvegardes" { print $4; exit }'
+      | awk -F'\t' -v s="$1" -v c="$2" '$1 == s && $2 == c { print $4; exit }'
 }
+fiche_sauvegardes() { fiche_valeur compat.pcgamingwiki sauvegardes CIDRE_FICHE_SAUVEGARDES; }
+fiche_dossiers_steam() { fiche_valeur compat.steam_cloud dossier_windows CIDRE_FICHE_DOSSIERS_STEAM; }
 # un chemin de la fiche -> dossier relatif saves.conf, ou rien
 normaliser() { # <valeur>
    v=$(printf '%s' "$1" | sed 's|\\|/|g; s|^ *||; s| *$||')
@@ -74,6 +80,14 @@ absolu() { # <relatif> -> chemin absolu
       *)     [ -n "$UTIL" ] && printf '%s\n' "$UTIL/$1" ;;
    esac
 }
+# ce que le jeu declare a Steam Cloud : le premier de ses dossiers qui existe
+fiche_dossiers_steam | awk '{ n = split($0, d, / ; /); for (i = 1; i <= n; i++) print d[i] }' >"${TMPDIR:-/tmp}/deviner-steam.$$"
+while IFS= read -r v; do
+   rel=$(normaliser "$v") || continue
+   d=$(absolu "$rel")
+   if [ -n "$d" ] && [ -d "$d" ]; then rm -f "${TMPDIR:-/tmp}/deviner-steam.$$"; printf '%s\n' "$rel"; exit 0; fi
+done <"${TMPDIR:-/tmp}/deviner-steam.$$"
+rm -f "${TMPDIR:-/tmp}/deviner-steam.$$"
 v=$(fiche_sauvegardes)
 if rel=$(normaliser "$v"); then
    d=$(absolu "$rel")

@@ -61,3 +61,12 @@ dernier_temoignage = "2025-05-04"
 source = "applegamingwiki"
 date = "2026-10-11"
 url = "https://www.applegamingwiki.com/wiki/The_Sinking_City"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/TSCGame/Saved/SaveGames"
+motifs = "*.sav"
+dossier_windows = "AppData/Local/TSCGame/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

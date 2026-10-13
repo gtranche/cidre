@@ -48,3 +48,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Not_for_Broadcast"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/NotGames/NotForBroadcast/Profiles ; WinAppDataLocalLow/NotGames/NotForBroadcast"
+motifs = "*.json (recursif) ; *.dat"
+dossier_windows = "AppData/LocalLow/NotGames/NotForBroadcast/Profiles ; AppData/LocalLow/NotGames/NotForBroadcast"
+source = "steam"
+date = "2026-10-13"

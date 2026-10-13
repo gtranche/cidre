@@ -64,3 +64,12 @@ bouteille = "win10_64"
 graphismes = "d3dmetal"
 environnement = "WINED3DMETAL=1"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=17247"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinMyDocuments/KoeiTecmo/NIOH2/Savedata/{Steam3AccountID}"
+motifs = "savedata.bin (recursif)"
+dossier_windows = "Documents/KoeiTecmo/NIOH2/Savedata"
+source = "steam"
+date = "2026-10-13"

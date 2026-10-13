@@ -46,3 +46,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Patch_Quest"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Lychee Game Labs/Patch Quest/SaveData/Users ; WinAppDataLocalLow/Lychee Game Labs/Patch Quest/SaveData/Shared"
+motifs = "*.sav (recursif) ; *.sav"
+dossier_windows = "AppData/LocalLow/Lychee Game Labs/Patch Quest/SaveData/Users ; AppData/LocalLow/Lychee Game Labs/Patch Quest/SaveData/Shared"
+source = "steam"
+date = "2026-10-13"

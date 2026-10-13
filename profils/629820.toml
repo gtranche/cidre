@@ -59,3 +59,12 @@ crossover = "jouable"
 source = "applegamingwiki"
 date = "2026-10-11"
 url = "https://www.applegamingwiki.com/wiki/Maneater"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/Maneater/Saved/SaveGames"
+motifs = "*.sav"
+dossier_windows = "AppData/Local/Maneater/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

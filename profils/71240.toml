@@ -44,3 +44,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Sega_Bass_Fishing_%28Steam%29"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinMyDocuments/SEGA/SEGA Bass Fishing ; WinMyDocuments/SEGA/Dreamcast Collection/SEGA Bass Fishing"
+motifs = "*.* (recursif)"
+dossier_windows = "Documents/SEGA/SEGA Bass Fishing ; Documents/SEGA/Dreamcast Collection/SEGA Bass Fishing"
+source = "steam"
+date = "2026-10-13"

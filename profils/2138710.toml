@@ -60,3 +60,12 @@ parallels = "jouable"
 source = "applegamingwiki"
 date = "2026-10-11"
 url = "https://www.applegamingwiki.com/wiki/Sifu"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/Sifu/Saved/SaveGames/{64bitsteamid} ; WinAppDataLocal/Sifu/Saved/SaveGames/development/{64bitsteamid}"
+motifs = "*.sav (recursif)"
+dossier_windows = "AppData/Local/Sifu/Saved/SaveGames ; AppData/Local/Sifu/Saved/SaveGames/development"
+source = "steam"
+date = "2026-10-13"

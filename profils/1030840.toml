@@ -61,3 +61,12 @@ dernier_temoignage = "2025-03-26"
 source = "applegamingwiki"
 date = "2026-10-11"
 url = "https://www.applegamingwiki.com/wiki/Mafia%3A_Definitive_Edition"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinMyDocuments/My Games/Mafia Definitive Edition/Data/{64BitSteamID}"
+motifs = "*.sav (recursif) ; *.pf (recursif)"
+dossier_windows = "Documents/My Games/Mafia Definitive Edition/Data"
+source = "steam"
+date = "2026-10-13"

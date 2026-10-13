@@ -72,3 +72,12 @@ recette_date = "2024-01-14"
 crossover_version = "23.5"
 bouteille = "win10_64"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=17655"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/Endeavor/Saved/SaveGames ; WinAppDataLocal/Endeavor/Saved/SaveGames/{64BitSteamID}"
+motifs = "char.sav ; char_knowngood.sav ; SharedSettings.sav ; CrossplaySocial.sav ; hardcore.sav ; hardcore_knowngood.sav ; graveyard.sav"
+dossier_windows = "AppData/Local/Endeavor/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

@@ -57,3 +57,12 @@ parallels = "jouable"
 source = "applegamingwiki"
 date = "2026-10-11"
 url = "https://www.applegamingwiki.com/wiki/Life_Is_Strange%3A_True_Colors"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/LifeIsStrange3/Saved ; WinMyDocuments/My Games/LifeIsStrange3/Steam"
+motifs = "*.sav (recursif)"
+dossier_windows = "AppData/Local/LifeIsStrange3/Saved ; Documents/My Games/LifeIsStrange3/Steam"
+source = "steam"
+date = "2026-10-13"

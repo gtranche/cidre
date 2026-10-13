@@ -80,3 +80,12 @@ crossover_version = "15.0.1"
 bouteille = "win10_64"
 dependances = "msxml3 directx_jun2010 vcrun2013 vcrun2022"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=17574"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/Ghostrunner/Saved/SaveGames/{64BitSteamID} ; gameinstall/Ghostrunner/Saved/SaveGames/{64BitSteamID}"
+motifs = "*.sav"
+dossier_windows = "AppData/Local/Ghostrunner/Saved/SaveGames ; jeu:Ghostrunner/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

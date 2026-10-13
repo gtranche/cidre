@@ -44,3 +44,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Founders%27_Fortune"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Oachkatzlschwoaf Interactive/Founders Fortune/saves"
+motifs = "*.sav (recursif)"
+dossier_windows = "AppData/LocalLow/Oachkatzlschwoaf Interactive/Founders Fortune/saves"
+source = "steam"
+date = "2026-10-13"

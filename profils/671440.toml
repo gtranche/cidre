@@ -56,3 +56,12 @@ rosetta = "parfait"
 source = "applegamingwiki"
 date = "2026-10-11"
 url = "https://www.applegamingwiki.com/wiki/Rise_of_Industry"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataRoaming/RiseOfIndustry"
+motifs = "*.sav"
+dossier_windows = "AppData/Roaming/RiseOfIndustry"
+source = "steam"
+date = "2026-10-13"

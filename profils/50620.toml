@@ -69,3 +69,12 @@ crossover_version = "12.5"
 bouteille = "win7_64"
 dependances = "directx_jun2010"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=9238"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinMyDocuments/My Games/Darksiders"
+motifs = "*.dsav"
+dossier_windows = "Documents/My Games/Darksiders"
+source = "steam"
+date = "2026-10-13"

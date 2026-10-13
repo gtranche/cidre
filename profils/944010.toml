@@ -46,3 +46,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/S.W.I.N.E._HD_Remaster"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/Kite Games/Swine/savegames ; WinAppDataLocal/Kite Games/Swine/armies ; WinAppDataLocal/Kite Games/Swine/multimaps"
+motifs = "*.save ; *.army ; *.scene"
+dossier_windows = "AppData/Local/Kite Games/Swine/savegames ; AppData/Local/Kite Games/Swine/armies ; AppData/Local/Kite Games/Swine/multimaps"
+source = "steam"
+date = "2026-10-13"

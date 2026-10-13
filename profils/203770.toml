@@ -76,3 +76,9 @@ dependances = "dotnet20sp2 vcrun2010"
 source = "crossover"
 date = "2026-10-13"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=10236"
+
+[compat.steam_cloud]
+methode = "api"
+synchro = "steam-api"
+source = "steam"
+date = "2026-10-13"

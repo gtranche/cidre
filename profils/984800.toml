@@ -50,3 +50,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Automachef"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/HermesInteractive/Automachef/Saves/{64BitSteamID}/contracts ; WinAppDataLocalLow/HermesInteractive/Automachef/Saves/{64BitSteamID}/blueprints ; WinAppDataLocalLow/HermesInteractive/Automachef/Saves/{64BitSteamID}/testsites ; WinAppDataLocalLow/HermesInteractive/Automachef/Saves/{64BitSteamID}/levels ; WinAppDataLocalLow/HermesInteractive/Automachef/Saves/{64BitSteamID} ; WinAppDataLocalLow/HermesInteractive/Automachef/Saves/{64BitSteamID}/scenarios ; WinAppDataLocalLow/HermesInteractive/Automachef/Saves/{64BitSteamID}/workshop-images ; WinAppDataLocalLow/HermesInteractive/Automachef/Saves/{64BitSteamID}/workshop-uploads"
+motifs = "* ; * (recursif) ; results*.*"
+dossier_windows = "AppData/LocalLow/HermesInteractive/Automachef/Saves"
+source = "steam"
+date = "2026-10-13"

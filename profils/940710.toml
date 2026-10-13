@@ -51,3 +51,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Colt_Canyon"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/ColtCanyon/userdata ; WinAppDataLocal/ColtCanyon ; WinAppDataLocal/ColtCanyon/userdata/savefiles/autosave"
+motifs = "save.sav ; demo ; demo.* ; * (recursif)"
+dossier_windows = "AppData/Local/ColtCanyon/userdata ; AppData/Local/ColtCanyon ; AppData/Local/ColtCanyon/userdata/savefiles/autosave"
+source = "steam"
+date = "2026-10-13"

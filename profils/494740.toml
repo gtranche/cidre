@@ -54,3 +54,9 @@ recette_date = "2015-06-24"
 crossover_version = "14.0.0"
 bouteille = "winxp"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=3927"
+
+[compat.steam_cloud]
+methode = "aucune"
+synchro = "aucune"
+source = "steam"
+date = "2026-10-13"

@@ -52,3 +52,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Gotham_Knights"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/WB Games/Gotham Knights/Steam/Saved/SaveGames/{64BitSteamID}"
+motifs = "*.sav"
+dossier_windows = "AppData/Local/WB Games/Gotham Knights/Steam/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

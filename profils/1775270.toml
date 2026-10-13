@@ -30,3 +30,12 @@ rapports_export = 1
 source = "protondb"
 date = "2026-10-01"
 url = "https://www.protondb.com/app/1775270"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/HouseOfAshes/Saved/SaveGames"
+motifs = "OptionSettings.sav ; SP*.sav ; MP*.sav ; PP*.sav ; ST*.sav"
+dossier_windows = "AppData/Local/HouseOfAshes/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

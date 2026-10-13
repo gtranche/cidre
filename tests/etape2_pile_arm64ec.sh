@@ -6,6 +6,13 @@
 #   etape2_pile_arm64ec.sh <programme.exe> [args...]
 #
 # WINEPREFIX doit exister ; le creer avec « wineboot --init » une premiere fois.
+# Tout le corps est entre accolades, ferme par `exit` : le shell lit ainsi le
+# fichier ENTIER avant d'executer quoi que ce soit, et n'y revient jamais. Sans
+# cela, il lit au fil de l'execution : un fichier modifie pendant qu'un jeu
+# tourne (mise a jour, edition) est repris a l'ancien decalage, au milieu d'une
+# autre commande -- le 2026-10-13, `cidre play` a ainsi fini dans la
+# desinstallation et efface le jeu. tests/tester_profils.sh verifie l'enveloppe.
+{
 set -e
 R=$(cd "$(dirname "$0")/.." && pwd)
 WINE=${WINE:-$R/wine/wine11-arm64/bin/wine}
@@ -70,3 +77,5 @@ if [ -n "${CIDRE_OVERLAY_DYLIB:-}" ] && [ -f "$CIDRE_OVERLAY_DYLIB" ]; then
 fi
 
 exec "$WINE" "$@"
+exit $?
+}

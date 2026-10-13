@@ -28,3 +28,15 @@ cidre_version = "1.5.8"
 fps_menu = 0
 fps_jeu = 110
 notes = "En D3D11 (repli du DX12) avec DXMT, le defaut depuis la 1.5.8 : 110 fps en jeu plein ecran (114 en fenetre), 10 ms GPU. En DXVK (jusqu'a la 1.5.7) : 8-15 fps, GPU-bound KosmicKrisp -> Metal. Le vrai D3D12 (dx12 = true) fige en jeu (tiled resources)."
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "steam-lien"
+racine_windows = "WinAppDataLocalLow/LandCrab/PEAK"
+motifs = "*.peak"
+dossier_windows = "AppData/LocalLow/LandCrab/PEAK"
+racine_macos = "MacAppSupport/unity.LandCrab.PEAK"
+partage = "par-plateforme"
+liens = "AppData/LocalLow/LandCrab/PEAK => Library/Application Support/unity.LandCrab.PEAK"
+source = "steam"
+date = "2026-10-13"

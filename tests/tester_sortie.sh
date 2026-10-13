@@ -11,6 +11,9 @@ trap 'rm -rf "$T"' EXIT
 nb=0; ko=0
 ok()   { nb=$((nb + 1)); echo "  ok   $1"; }
 echec() { nb=$((nb + 1)); ko=$((ko + 1)); echo "  KO   $1" >&2; }
+verif() { # <libelle> <attendu> <obtenu>
+   if [ "$2" = "$3" ]; then ok "$1"; else echec "$1 : attendu « $2 », obtenu « $3 »"; fi
+}
 contient() { # <libelle> <motif> <texte>
    case $3 in *"$2"*) ok "$1" ;; *) echec "$1 : « $2 » absent de « $3 »" ;; esac
 }

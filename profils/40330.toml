@@ -56,3 +56,9 @@ recette_date = "2023-04-25"
 crossover_version = "9.0.0"
 bouteille = "winvista"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=4615"
+
+[compat.steam_cloud]
+methode = "aucune"
+synchro = "aucune"
+source = "steam"
+date = "2026-10-13"

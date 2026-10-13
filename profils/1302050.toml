@@ -48,3 +48,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Milky_Way_Prince_%E2%80%93_The_Vampire_Star"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Santa Ragione/MILKY WAY PRINCE/Saves"
+motifs = "*.dat"
+dossier_windows = "AppData/LocalLow/Santa Ragione/MILKY WAY PRINCE/Saves"
+source = "steam"
+date = "2026-10-13"

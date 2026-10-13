@@ -54,3 +54,12 @@ natif = "parfait"
 source = "applegamingwiki"
 date = "2026-10-11"
 url = "https://www.applegamingwiki.com/wiki/ELEX_II"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinSavedGames/ELEX2/SaveGames"
+motifs = "*.save"
+dossier_windows = "Saved Games/ELEX2/SaveGames"
+source = "steam"
+date = "2026-10-13"

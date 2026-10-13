@@ -51,3 +51,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Fashion_Police_Squad"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Mopeful Games/Fashion Police Squad"
+motifs = "*.json"
+dossier_windows = "AppData/LocalLow/Mopeful Games/Fashion Police Squad"
+source = "steam"
+date = "2026-10-13"

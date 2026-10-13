@@ -51,3 +51,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Warhammer_40%2C000%3A_Battlesector"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinMyDocuments/Black Lab Games/Warhammer 40,000 Battlesector/Saves ; WinMyDocuments/Black Lab Games/Warhammer 40,000 Battlesector/Skirmish ; WinMyDocuments/Black Lab Games/Warhammer 40,000 Battlesector ; WinMyDocuments/Black Lab Games/Warhammer 40,000 Battlesector/Maps ; WinMyDocuments/Black Lab Games/Warhammer 40,000 Battlesector/Campaigns"
+motifs = "*.bssave ; * ; *.txt ; * (recursif)"
+dossier_windows = "Documents/Black Lab Games/Warhammer 40,000 Battlesector/Saves ; Documents/Black Lab Games/Warhammer 40,000 Battlesector/Skirmish ; Documents/Black Lab Games/Warhammer 40,000 Battlesector ; Documents/Black Lab Games/Warhammer 40,000 Battlesector/Maps ; Documents/Black Lab Games/Warhammer 40,000 Battlesector/Campaigns"
+source = "steam"
+date = "2026-10-13"

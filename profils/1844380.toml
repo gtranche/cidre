@@ -45,3 +45,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Warhammer_Age_of_Sigmar%3A_Realms_of_Ruin"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinSavedGames/Frontier Developments/Warhammer Age of Sigmar Realms of Ruin/{64BitSteamID}/Saves ; WinSavedGames/Frontier Developments/Warhammer Age of Sigmar Realms of Ruin/{64BitSteamID}/Config"
+motifs = "* (recursif) ; *.config.xml"
+dossier_windows = "Saved Games/Frontier Developments/Warhammer Age of Sigmar Realms of Ruin"
+source = "steam"
+date = "2026-10-13"

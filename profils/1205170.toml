@@ -29,3 +29,12 @@ rapports_export = 7
 source = "protondb"
 date = "2026-10-01"
 url = "https://www.protondb.com/app/1205170"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/SuperMagbot/Saved/SaveGames"
+motifs = "*.sav"
+dossier_windows = "AppData/Local/SuperMagbot/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

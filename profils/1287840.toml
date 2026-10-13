@@ -43,3 +43,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Disciples%3A_Liberation"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataRoaming/Kalypso Media/Disciples Liberation/Saves/{64BitSteamID}"
+motifs = "*.*"
+dossier_windows = "AppData/Roaming/Kalypso Media/Disciples Liberation/Saves"
+source = "steam"
+date = "2026-10-13"

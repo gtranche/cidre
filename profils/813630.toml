@@ -67,3 +67,12 @@ bouteille = "win10_64"
 dependances = "vcrun2022"
 graphismes = "dxvk"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=18253"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/Supraland/Saved/SaveGames"
+motifs = "*.sav ; *.exr"
+dossier_windows = "AppData/Local/Supraland/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

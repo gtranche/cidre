@@ -49,3 +49,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Starship_Troopers%3A_Terran_Command"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinMyDocuments/My Games/Starship Troopers/Saves ; WinMyDocuments/My Games/Starship Troopers/PlayerData ; WinAppDataLocalLow/The Artistocrats/Starship Troopers/Player"
+motifs = "* (recursif) ; *"
+dossier_windows = "Documents/My Games/Starship Troopers/Saves ; Documents/My Games/Starship Troopers/PlayerData ; AppData/LocalLow/The Artistocrats/Starship Troopers/Player"
+source = "steam"
+date = "2026-10-13"

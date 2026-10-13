@@ -52,3 +52,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Soulcalibur_VI"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/SoulcaliburVI/Saved/SaveGames/{64BitSteamID}"
+motifs = "*.sav (recursif)"
+dossier_windows = "AppData/Local/SoulcaliburVI/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

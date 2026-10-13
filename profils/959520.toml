@@ -42,3 +42,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Fantasy_Blacksmith"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/FantasyBlacksmith/Saved/SaveGames"
+motifs = "*.sav (recursif)"
+dossier_windows = "AppData/Local/FantasyBlacksmith/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

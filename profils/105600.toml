@@ -72,3 +72,9 @@ dependances_non_traduites = "com.codeweavers.c4.10596"
 source = "crossover"
 date = "2026-10-13"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=9218"
+
+[compat.steam_cloud]
+methode = "api"
+synchro = "steam-api"
+source = "steam"
+date = "2026-10-13"

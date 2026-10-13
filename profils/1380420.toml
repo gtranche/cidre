@@ -47,3 +47,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Grow%3A_Song_of_the_Evertree"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/505 Games/Grow_ Song of the Evertree"
+motifs = "*.dat ; *.prefs"
+dossier_windows = "AppData/LocalLow/505 Games/Grow_ Song of the Evertree"
+source = "steam"
+date = "2026-10-13"

@@ -43,3 +43,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Total_Tank_Simulator"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Noobz From Poland/Total Tank Simulator/{64BitSteamID}"
+motifs = "*.pobj (recursif)"
+dossier_windows = "AppData/LocalLow/Noobz From Poland/Total Tank Simulator"
+source = "steam"
+date = "2026-10-13"

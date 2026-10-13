@@ -48,3 +48,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Blue_Fire"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/Blue Fire/Saved/SaveGames"
+motifs = "*.sav (recursif)"
+dossier_windows = "AppData/Local/Blue Fire/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

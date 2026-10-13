@@ -48,3 +48,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Blade_Assault"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/TeamSuneat/BladeAssault"
+motifs = "*.dat"
+dossier_windows = "AppData/LocalLow/TeamSuneat/BladeAssault"
+source = "steam"
+date = "2026-10-13"

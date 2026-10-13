@@ -64,3 +64,9 @@ crossover_version = "20"
 bouteille = "win10_64"
 graphismes = "dxvk"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=17338"
+
+[compat.steam_cloud]
+methode = "api"
+synchro = "steam-api"
+source = "steam"
+date = "2026-10-13"

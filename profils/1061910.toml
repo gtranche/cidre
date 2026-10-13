@@ -51,3 +51,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Metal%3A_Hellsinger"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/TheOutsiders/Metal/Save"
+motifs = "SaveData"
+dossier_windows = "AppData/LocalLow/TheOutsiders/Metal/Save"
+source = "steam"
+date = "2026-10-13"

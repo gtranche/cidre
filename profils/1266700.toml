@@ -48,3 +48,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Destroy_All_Humans%21_2_-_Reprobed"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/DH2/Saved/SaveGames"
+motifs = "*.sav"
+dossier_windows = "AppData/Local/DH2/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

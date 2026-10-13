@@ -65,3 +65,12 @@ recette_date = "2023-11-22"
 crossover_version = "23"
 bouteille = "win10_64"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=18426"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Stunlock Studios/VRising/CloudSaves/{64BitSteamID}"
+motifs = "* (recursif)"
+dossier_windows = "AppData/LocalLow/Stunlock Studios/VRising/CloudSaves"
+source = "steam"
+date = "2026-10-13"

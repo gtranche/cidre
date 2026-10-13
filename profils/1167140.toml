@@ -40,3 +40,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Siege_Survival%3A_Gloria_Victis"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Black Eye Games/Siege Survival - Gloria Victis/Saves"
+motifs = "*.siege (recursif) ; *.xml (recursif)"
+dossier_windows = "AppData/LocalLow/Black Eye Games/Siege Survival - Gloria Victis/Saves"
+source = "steam"
+date = "2026-10-13"

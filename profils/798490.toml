@@ -50,3 +50,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Othercide"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "gameinstall/_saves_/u{64BitSteamID}/_save_0 ; gameinstall/_saves_/u{64BitSteamID}/_save_1 ; gameinstall/_saves_/u{64BitSteamID}/_save_2"
+motifs = "*"
+dossier_windows = "jeu:_saves_"
+source = "steam"
+date = "2026-10-13"

@@ -57,3 +57,9 @@ rosetta = "parfait"
 source = "applegamingwiki"
 date = "2026-10-11"
 url = "https://www.applegamingwiki.com/wiki/Agent_A%3A_A_Puzzle_in_Disguise"
+
+[compat.steam_cloud]
+methode = "aucune"
+synchro = "aucune"
+source = "steam"
+date = "2026-10-13"

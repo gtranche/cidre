@@ -48,3 +48,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Whispers_of_a_Machine"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinSavedGames/Whispers of a Machine"
+motifs = "agssave.* (recursif)"
+dossier_windows = "Saved Games/Whispers of a Machine"
+source = "steam"
+date = "2026-10-13"

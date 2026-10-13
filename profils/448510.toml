@@ -67,3 +67,12 @@ recette_date = "2025-03-03"
 crossover_version = "24.0.7"
 bouteille = "win10_64"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=18088"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Ghost Town Games/Overcooked"
+motifs = "*.save"
+dossier_windows = "AppData/LocalLow/Ghost Town Games/Overcooked"
+source = "steam"
+date = "2026-10-13"

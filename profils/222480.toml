@@ -70,3 +70,9 @@ crossover_version = "13.2.0"
 bouteille = "win7"
 dependances = "vcrun2005 vcrun2008 wmp9"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=12516"
+
+[compat.steam_cloud]
+methode = "api"
+synchro = "steam-api"
+source = "steam"
+date = "2026-10-13"

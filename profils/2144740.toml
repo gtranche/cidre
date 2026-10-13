@@ -70,3 +70,12 @@ bouteille = "win10_64"
 graphismes = "d3dmetal"
 environnement = "WINED3DMETAL=1"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=20185"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/Ghostrunner2/Saved/SaveGames/{64BitSteamID} ; gameinstall/Ghostrunner2/Saved/SaveGames/{64BitSteamID}"
+motifs = "*.sav"
+dossier_windows = "AppData/Local/Ghostrunner2/Saved/SaveGames ; jeu:Ghostrunner2/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

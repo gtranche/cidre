@@ -50,3 +50,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Little_Misfortune"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Killmonday Games/Little Misfortune"
+motifs = "*"
+dossier_windows = "AppData/LocalLow/Killmonday Games/Little Misfortune"
+source = "steam"
+date = "2026-10-13"

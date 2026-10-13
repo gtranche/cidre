@@ -71,3 +71,12 @@ recette_date = "2023-06-27"
 crossover_version = "22"
 bouteille = "win10_64"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=19228"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataRoaming/Sega/YakuzaKiwami2/{Steam3AccountID}"
+motifs = "*.sav (recursif) ; *.sys (recursif) ; *.dds (recursif)"
+dossier_windows = "AppData/Roaming/Sega/YakuzaKiwami2"
+source = "steam"
+date = "2026-10-13"

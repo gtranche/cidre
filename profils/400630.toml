@@ -48,3 +48,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Wuppo"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/Wuppo/savedata"
+motifs = "savefile.ini (recursif) ; autosave.ini (recursif) ; bucketsave.png (recursif) ; savefile.ini_backup (recursif) ; autosave.ini_backup (recursif) ; autosave.ini_tmp (recursif)"
+dossier_windows = "AppData/Local/Wuppo/savedata"
+source = "steam"
+date = "2026-10-13"

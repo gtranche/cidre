@@ -51,3 +51,12 @@ crossover_version = "13.1"
 bouteille = "winxp"
 dependances = "directx_jun2010"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=10465"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataRoaming/Warner Bros. Interactive Entertainment/LEGO Batman 2/SavedGames"
+motifs = "* (recursif)"
+dossier_windows = "AppData/Roaming/Warner Bros. Interactive Entertainment/LEGO Batman 2/SavedGames"
+source = "steam"
+date = "2026-10-13"

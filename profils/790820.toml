@@ -56,3 +56,12 @@ dernier_temoignage = "2022-12-15"
 source = "applegamingwiki"
 date = "2026-10-11"
 url = "https://www.applegamingwiki.com/wiki/Valkyria_Chronicles_4"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinMyDocuments/SEGA/VC4/gamesaves"
+motifs = "*.vc4save"
+dossier_windows = "Documents/SEGA/VC4/gamesaves"
+source = "steam"
+date = "2026-10-13"

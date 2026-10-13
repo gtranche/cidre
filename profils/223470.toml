@@ -60,3 +60,12 @@ dernier_temoignage = "2021-04-15"
 source = "applegamingwiki"
 date = "2026-10-11"
 url = "https://www.applegamingwiki.com/wiki/Postal_2"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "gameinstall/Save ; gameinstall/System ; gameinstall/Paradise Lost/PLSave ; gameinstall/Paradise Lost/System"
+motifs = "*.usa ; SavedGameInfo.ini"
+dossier_windows = "jeu:Save ; jeu:System ; jeu:Paradise Lost/PLSave ; jeu:Paradise Lost/System"
+source = "steam"
+date = "2026-10-13"

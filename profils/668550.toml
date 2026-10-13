@@ -48,3 +48,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/8Doors%3A_Arum%27s_Afterlife_Adventure"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Rootless/8Doors/Cloud"
+motifs = "*.txt"
+dossier_windows = "AppData/LocalLow/Rootless/8Doors/Cloud"
+source = "steam"
+date = "2026-10-13"

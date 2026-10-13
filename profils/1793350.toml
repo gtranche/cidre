@@ -29,3 +29,12 @@ rapports_export = 3
 source = "protondb"
 date = "2026-10-01"
 url = "https://www.protondb.com/app/1793350"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/VoidMaker/Saved/SaveGames"
+motifs = "*.sav"
+dossier_windows = "AppData/Local/VoidMaker/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

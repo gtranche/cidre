@@ -77,3 +77,12 @@ crossover_version = "13"
 bouteille = "win7_64"
 dependances = "directx_jun2010 dotnet40 vcrun2005"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=3451"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "gameinstall/DATA/SAVEGAME"
+motifs = "*.sav (recursif) ; *.dat (recursif)"
+dossier_windows = "jeu:DATA/SAVEGAME"
+source = "steam"
+date = "2026-10-13"

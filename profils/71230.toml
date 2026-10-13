@@ -57,3 +57,12 @@ recette_date = "2014-07-19"
 crossover_version = "13.2.0"
 bouteille = "win7_64"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=12517"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinMyDocuments/SEGA/Crazy Taxi ; WinMyDocuments/SEGA/Dreamcast Collection/Crazy Taxi"
+motifs = "*.* (recursif)"
+dossier_windows = "Documents/SEGA/Crazy Taxi ; Documents/SEGA/Dreamcast Collection/Crazy Taxi"
+source = "steam"
+date = "2026-10-13"

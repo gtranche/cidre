@@ -51,3 +51,12 @@ recette_date = "2015-11-19"
 crossover_version = "14.0"
 bouteille = "win7_64"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=12252"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/Eisenwald"
+motifs = "*.sav"
+dossier_windows = "AppData/Local/Eisenwald"
+source = "steam"
+date = "2026-10-13"

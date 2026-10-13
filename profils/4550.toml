@@ -41,3 +41,12 @@ correspondance = "appid-side"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Titan_Quest"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinMyDocuments/My Games/Titan Quest - Immortal Throne/SaveData/Main"
+motifs = "Player.chr (recursif) ; Saving.txt (recursif) ; *.myw (recursif) ; *.dat (recursif) ; *.que (recursif)"
+dossier_windows = "Documents/My Games/Titan Quest - Immortal Throne/SaveData/Main"
+source = "steam"
+date = "2026-10-13"

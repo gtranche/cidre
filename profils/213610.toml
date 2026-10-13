@@ -67,3 +67,9 @@ recette_date = "2014-07-18"
 crossover_version = "13.2.0"
 bouteille = "win7_64"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=12519"
+
+[compat.steam_cloud]
+methode = "aucune"
+synchro = "aucune"
+source = "steam"
+date = "2026-10-13"

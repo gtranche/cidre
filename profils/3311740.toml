@@ -31,3 +31,12 @@ rapports_export = 11
 source = "protondb"
 date = "2026-10-01"
 url = "https://www.protondb.com/app/3311740"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/CabinFactory/Saved/SaveGames/{Steam3AccountID}"
+motifs = "*.sav"
+dossier_windows = "AppData/Local/CabinFactory/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

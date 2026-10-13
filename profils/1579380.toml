@@ -52,3 +52,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Shadow_Tactics%3A_Blades_of_the_Shogun_-_Aiko%27s_Choice"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/Daedalic Entertainment GmbH/Shadow Tactics Blades of the Shogun Aikos Choice ; WinAppDataLocal/Daedalic Entertainment GmbH/Shadow Tactics Blades of the Shogun Aikos Choice/user"
+motifs = "*.png ; * (recursif)"
+dossier_windows = "AppData/Local/Daedalic Entertainment GmbH/Shadow Tactics Blades of the Shogun Aikos Choice ; AppData/Local/Daedalic Entertainment GmbH/Shadow Tactics Blades of the Shogun Aikos Choice/user"
+source = "steam"
+date = "2026-10-13"

@@ -66,3 +66,12 @@ recette_date = "2023-12-27"
 crossover_version = "22"
 bouteille = "win10_64"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=17675"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Denki Ltd/Autonauts/Saves"
+motifs = "* (recursif)"
+dossier_windows = "AppData/LocalLow/Denki Ltd/Autonauts/Saves"
+source = "steam"
+date = "2026-10-13"

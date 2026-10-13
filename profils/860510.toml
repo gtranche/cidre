@@ -49,3 +49,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Little_Nightmares_II"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/Helios/Saved/SaveGames ; gameinstall/EnhancedEdition/Helios/Saved/SaveGames ; gameinstall/Helios/Saved/SaveGames"
+motifs = "*.sav"
+dossier_windows = "AppData/Local/Helios/Saved/SaveGames ; jeu:EnhancedEdition/Helios/Saved/SaveGames ; jeu:Helios/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

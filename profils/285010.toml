@@ -46,3 +46,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Pixel_Puzzles%3A_UndeadZ"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/Pixel_Puzzles___UndeadZ"
+motifs = "*.ini (recursif)"
+dossier_windows = "AppData/Local/Pixel_Puzzles___UndeadZ"
+source = "steam"
+date = "2026-10-13"

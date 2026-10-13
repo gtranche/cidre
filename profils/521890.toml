@@ -53,3 +53,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Hello_Neighbor"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/HelloNeighbor/Saved"
+motifs = "*.hnb"
+dossier_windows = "AppData/Local/HelloNeighbor/Saved"
+source = "steam"
+date = "2026-10-13"

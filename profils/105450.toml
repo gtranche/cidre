@@ -64,3 +64,9 @@ crossover_version = "25.0.0"
 bouteille = "win10_64"
 dependances = "msxml4 vcrun6 directx_jun2010"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=1666"
+
+[compat.steam_cloud]
+methode = "aucune"
+synchro = "aucune"
+source = "steam"
+date = "2026-10-13"

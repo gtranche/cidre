@@ -66,3 +66,12 @@ recette_date = "2022-12-20"
 crossover_version = "13"
 bouteille = "win7_64"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=7254"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinMyDocuments/4A Games/Metro 2033"
+motifs = "auto_save ; *.player"
+dossier_windows = "Documents/4A Games/Metro 2033"
+source = "steam"
+date = "2026-10-13"

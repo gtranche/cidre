@@ -56,3 +56,12 @@ wine = "jouable"
 source = "applegamingwiki"
 date = "2026-10-11"
 url = "https://www.applegamingwiki.com/wiki/Necromunda%3A_Hired_Gun"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/Streumon/Necromunda/Saved/SaveGames"
+motifs = "*.sav"
+dossier_windows = "AppData/Local/Streumon/Necromunda/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

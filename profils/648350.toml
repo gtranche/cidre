@@ -58,3 +58,12 @@ parallels = "jouable"
 source = "applegamingwiki"
 date = "2026-10-11"
 url = "https://www.applegamingwiki.com/wiki/Jurassic_World_Evolution"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinSavedGames/Frontier Developments/Jurassic World Evolution/{64BitSteamID}/Saves ; WinSavedGames/Frontier Developments/Jurassic World Evolution/{64BitSteamID}/Config"
+motifs = "* (recursif) ; *_remote.config.xml"
+dossier_windows = "Saved Games/Frontier Developments/Jurassic World Evolution"
+source = "steam"
+date = "2026-10-13"

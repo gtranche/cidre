@@ -53,3 +53,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Catherine_Classic"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataRoaming/TheEccentricApe/Catherine"
+motifs = "SaveGame.bin"
+dossier_windows = "AppData/Roaming/TheEccentricApe/Catherine"
+source = "steam"
+date = "2026-10-13"

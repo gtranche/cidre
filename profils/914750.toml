@@ -50,3 +50,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Bee_Simulator"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/BeBee/Saved/SaveGames"
+motifs = "*.sav (recursif)"
+dossier_windows = "AppData/Local/BeBee/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

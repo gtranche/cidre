@@ -50,3 +50,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Voidigo"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/voidigo ; WinAppDataLocal/voidigo/Saves"
+motifs = "* (recursif)"
+dossier_windows = "AppData/Local/voidigo ; AppData/Local/voidigo/Saves"
+source = "steam"
+date = "2026-10-13"

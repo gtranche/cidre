@@ -57,3 +57,12 @@ recette_date = "2014-07-18"
 crossover_version = "13.2.0"
 bouteille = "win7_64"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=4357"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinMyDocuments/SEGA/Sonic Adventure DX ; WinMyDocuments/SEGA/Dreamcast Collection/Sonic Adventure DX"
+motifs = "*.* (recursif)"
+dossier_windows = "Documents/SEGA/Sonic Adventure DX ; Documents/SEGA/Dreamcast Collection/Sonic Adventure DX"
+source = "steam"
+date = "2026-10-13"

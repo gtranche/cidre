@@ -15,3 +15,15 @@ plateformes_steam = "steam 2026-10-13"
 [compat]
 etat = "non-teste"
 date = "2026-10-13"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "steam-lien"
+racine_windows = "WinAppDataLocalLow/Bonus Level Entertainment/Saga of Sins"
+motifs = "*.dat"
+dossier_windows = "AppData/LocalLow/Bonus Level Entertainment/Saga of Sins"
+racine_macos = "MacAppSupport/Bonus Level Entertainment/Saga of Sins"
+partage = "multiplateforme"
+liens = "AppData/LocalLow/Bonus Level Entertainment/Saga of Sins => Library/Application Support/Bonus Level Entertainment/Saga of Sins"
+source = "steam"
+date = "2026-10-13"

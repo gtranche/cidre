@@ -79,3 +79,9 @@ crossover_version = "12.0"
 bouteille = "win7_64"
 dependances = "dotnet35sp1 xna31"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=8466"
+
+[compat.steam_cloud]
+methode = "aucune"
+synchro = "aucune"
+source = "steam"
+date = "2026-10-13"

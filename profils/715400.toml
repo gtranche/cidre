@@ -39,3 +39,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Frozen_Flame"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/FrozenFlame/Saved/SaveGames"
+motifs = "*.sav (recursif)"
+dossier_windows = "AppData/Local/FrozenFlame/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

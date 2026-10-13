@@ -58,3 +58,12 @@ recette_date = "2023-03-16"
 crossover_version = "22"
 bouteille = "win10_64"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=19509"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/BlackSeaGames/Sovereign/Saves"
+motifs = "*.* (recursif)"
+dossier_windows = "AppData/LocalLow/BlackSeaGames/Sovereign/Saves"
+source = "steam"
+date = "2026-10-13"

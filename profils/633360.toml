@@ -50,3 +50,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Remothered%3A_Tormented_Fathers"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/Remothered/Saved/SaveGames"
+motifs = "*.sav"
+dossier_windows = "AppData/Local/Remothered/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

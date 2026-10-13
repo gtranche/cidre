@@ -45,3 +45,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Drake_Hollow"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/DrakeHollow/Saved/SaveGames"
+motifs = "*profile*.sav ; *hollow*.sav"
+dossier_windows = "AppData/Local/DrakeHollow/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

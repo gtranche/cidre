@@ -41,3 +41,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Bravery_%26_Greed"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Rekka/Bravery and Greed"
+motifs = "*.json (recursif)"
+dossier_windows = "AppData/LocalLow/Rekka/Bravery and Greed"
+source = "steam"
+date = "2026-10-13"

@@ -55,3 +55,12 @@ crossover = "jouable"
 source = "applegamingwiki"
 date = "2026-10-11"
 url = "https://www.applegamingwiki.com/wiki/Encased"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Dark Crystal Games/Encased/UserProfiles ; gameinstall/Dark Crystal Games/Encased/UserProfiles"
+motifs = "*.sav (recursif) ; UserName.txt (recursif) ; Settings.bin (recursif) ; Stats.bin (recursif)"
+dossier_windows = "AppData/LocalLow/Dark Crystal Games/Encased/UserProfiles ; jeu:Dark Crystal Games/Encased/UserProfiles"
+source = "steam"
+date = "2026-10-13"

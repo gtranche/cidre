@@ -47,3 +47,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Golf_Gang"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Lazy Monday Games/Golf Gang"
+motifs = "*.sav (recursif)"
+dossier_windows = "AppData/LocalLow/Lazy Monday Games/Golf Gang"
+source = "steam"
+date = "2026-10-13"

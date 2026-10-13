@@ -49,3 +49,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Guilty_Gear_Xrd_-SIGN-"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "gameinstall/SAVE/ADVENT ; gameinstall/SAVE/LANG ; gameinstall/SAVE/SYSTEM"
+motifs = "* (recursif)"
+dossier_windows = "jeu:SAVE/ADVENT ; jeu:SAVE/LANG ; jeu:SAVE/SYSTEM"
+source = "steam"
+date = "2026-10-13"

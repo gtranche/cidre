@@ -56,3 +56,12 @@ parallels = "jouable"
 source = "applegamingwiki"
 date = "2026-10-11"
 url = "https://www.applegamingwiki.com/wiki/Condemned%3A_Criminal_Origins"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinMyDocuments/Monolith Productions/Condemned"
+motifs = "* (recursif)"
+dossier_windows = "Documents/Monolith Productions/Condemned"
+source = "steam"
+date = "2026-10-13"

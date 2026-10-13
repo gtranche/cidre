@@ -47,3 +47,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Epic_Chef"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Infinigon/EpicChef/{64BitSteamID}"
+motifs = "*.infi (recursif)"
+dossier_windows = "AppData/LocalLow/Infinigon/EpicChef"
+source = "steam"
+date = "2026-10-13"

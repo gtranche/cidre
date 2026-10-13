@@ -59,3 +59,12 @@ wine = "parfait"
 source = "applegamingwiki"
 date = "2026-10-11"
 url = "https://www.applegamingwiki.com/wiki/R.E.P.O."
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/semiwork/Repo ; WinAppDataLocalLow/semiwork/Repo/Cache/Icons/CosmeticsPresets"
+motifs = "*.es3 (recursif) ; *.png"
+dossier_windows = "AppData/LocalLow/semiwork/Repo ; AppData/LocalLow/semiwork/Repo/Cache/Icons/CosmeticsPresets"
+source = "steam"
+date = "2026-10-13"

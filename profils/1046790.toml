@@ -48,3 +48,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Eternal_Threads"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Cosmonaut Studios Limited/EternalThreads"
+motifs = "*.sav"
+dossier_windows = "AppData/LocalLow/Cosmonaut Studios Limited/EternalThreads"
+source = "steam"
+date = "2026-10-13"

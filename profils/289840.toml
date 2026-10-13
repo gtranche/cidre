@@ -52,3 +52,9 @@ bouteille = "winxp"
 source = "crossover"
 date = "2026-10-13"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=6757"
+
+[compat.steam_cloud]
+methode = "aucune"
+synchro = "aucune"
+source = "steam"
+date = "2026-10-13"

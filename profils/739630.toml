@@ -78,3 +78,12 @@ recette_date = "2023-09-14"
 crossover_version = "19"
 bouteille = "win10_64"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=16772"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Kinetic Games/Phasmophobia"
+motifs = "saveData.txt ; SaveFile.es3 ; SaveFile.es3.bac ; SaveFile.txt ; SaveFile.txt.bac"
+dossier_windows = "AppData/LocalLow/Kinetic Games/Phasmophobia"
+source = "steam"
+date = "2026-10-13"

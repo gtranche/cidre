@@ -50,3 +50,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Hob"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinMyDocuments/my games/runic games/hob/saves/{64BitSteamID} ; WinMyDocuments/my games/runic games/hob/saves/{64BitSteamID}/BACKUPS"
+motifs = "*.hob ; settings.txt ; player_controls.txt ; *.BCK"
+dossier_windows = "Documents/my games/runic games/hob/saves"
+source = "steam"
+date = "2026-10-13"

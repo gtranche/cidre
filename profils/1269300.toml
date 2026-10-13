@@ -43,3 +43,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/This_Means_Warp"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Outlier/This Means Warp"
+motifs = "*.es3"
+dossier_windows = "AppData/LocalLow/Outlier/This Means Warp"
+source = "steam"
+date = "2026-10-13"

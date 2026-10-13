@@ -2,6 +2,13 @@
 # Cidre launcher (CLI MVP) : installer / lancer / gerer tes jeux Steam, natif OU
 # via Cidre, sans jongler avec la console Steam. Les jeux restent dans Steam
 # (amis/succes/overlay via le Steam natif + notre pont). Install auto via SteamCMD.
+# Tout le corps est entre accolades, ferme par `exit` : le shell lit ainsi le
+# fichier ENTIER avant d'executer quoi que ce soit, et n'y revient jamais. Sans
+# cela, il lit au fil de l'execution : un fichier modifie pendant qu'un jeu
+# tourne (mise a jour, edition) est repris a l'ancien decalage, au milieu d'une
+# autre commande -- le 2026-10-13, `cidre play` a ainsi fini dans la
+# desinstallation et efface le jeu. tests/tester_profils.sh verifie l'enveloppe.
+{
 set -u
 R=$(cd "$(dirname "$0")" && pwd)
 STEAM="$HOME/Library/Application Support/Steam"
@@ -52,6 +59,10 @@ temoin_en_cours() { # <id>
 # l'utilisateur (`cidre saves set`), qui passe avant.
 SAVES_PERSO="$CIDRE_DIR/saves.conf"
 saves_ids() { cat "$SAVES_PERSO" "$R/outil-steam/saves.conf" 2>/dev/null | awk -F'\t' '!/^#/ && NF>=2 && !vu[$1]++ {print $1}'; }
+# Steam synchronise-t-il lui-meme les sauvegardes de ce jeu (`api`, `lien`) ?
+saves_steam() { est_local "$1" && return 1; sh "$R/tests/lier_saves_steam.sh" "$1" mode 2>/dev/null; }
+# les jeux dont les sauvegardes sont suivies : par Steam, ou par la copie Cidre
+saves_suivis() { { saves_ids; for a in $(appids); do [ -n "$(saves_steam "$a")" ] && echo "$a"; done; } | awk '!vu[$0]++'; }
 
 # chaine JSON (echappe \ " et tabulation)
 json() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g')"; }
@@ -154,9 +165,18 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
   cidre options [--json]          les reglages generaux
   cidre profils [--json]          la base de profils par jeu (fiches : options, compatibilite, rapports)
   cidre profils maj [--json]      met la base a jour depuis GitHub (sans reseau : la copie livree sert)
-  cidre saves [<id>] [--json]     ou en est la synchro des sauvegardes (iCloud)
+  cidre saves [<id>] [--json]     les sauvegardes : synchronisees par Steam Cloud quand il le peut (le jeu
+                                  ecrit par l'API de Steam, ou declare un dossier macOS : Cidre y lie le
+                                  sien), sinon copiees par Cidre dans un dossier de ce Mac
+                                  --json : "synchro" dit qui synchronise -- steam_api (API de Steam, par le
+                                  pont), steam_macos (dossier lie, le client Steam s'en charge), copie (Cidre,
+                                  vers le dossier "copie"), aucune (dossier inconnu) -- et "synchro_detail"
+                                  le dit en une phrase
   cidre saves set <id> <dossier>  dire ou un jeu range ses sauvegardes (unset : revenir au reglage livre)
-  cidre sync <id|all> [backup|restore]   sauvegarder vers iCloud, ou restaurer ce qui y est plus recent
+  cidre saves dossier [<chemin>|icloud|defaut] [--json]
+                                  ou vont les copies de Cidre (defaut : ~/Library/Application Support/Cidre/saves ;
+                                  icloud : iCloud Drive/CidreSaves ; sans argument : le dossier actuel)
+  cidre sync <id|all> [backup|restore]   copier les sauvegardes dans ce dossier, ou reprendre ce qui y est plus recent
   cidre status [--json]           version du runtime, prerequis, etat de l'installation
   cidre doctor                    diagnostic : ce qui est la, ce qui tourne, et si Wine demarre (texte a copier)
   cidre setup                     configure le runtime apres une installation ou une mise a jour
@@ -207,7 +227,7 @@ case "$cmd" in
     id=${1:?usage: cidre info <id> [--json]}
     connu "$id" || { echo "jeu inconnu : $id" >&2; exit 1; }
     opts=$(sh "$R/tests/profil_cidre.sh" "$id" json)
-    [ -n "$(saves_ids | grep -x "$id")" ] && sv=true || sv=false
+    { [ -n "$(saves_ids | grep -x "$id")" ] || [ -n "$(saves_steam "$id")" ]; } && sv=true || sv=false
     if [ "$JSON" = oui ]; then
       # "fiche" : la fiche de la base de profils (profils/README.md), ou null
       fiche_json "$id"; printf ',"sauvegardes":%s,"options":%s,"options_perso":%s,"fiche":%s}\n' "$sv" "$opts" "$(sh "$R/tests/profil_cidre.sh" "$id" perso)" "$(sh "$R/tests/fiche_profil.sh" json "$id")"
@@ -256,7 +276,9 @@ case "$cmd" in
     else
       echo "lancement de $(nom "$id") ($id) via Steam..."
       open "steam://run/$id"
-    fi ;;
+    fi
+    # `play` a attendu le jeu : on sort ici, sans rien lire de plus.
+    exit $? ;;
   running|en-cours)
     # Les jeux en cours, par leur id. Deux sources : le jeu que Steam dit avoir
     # lance (natif, ou Windows par notre wrapper), et les temoins de `cidre play`.
@@ -372,6 +394,29 @@ case "$cmd" in
         printf '%s\t%s\n' "$id" "$rel" >>"$SAVES_PERSO.tmp"
         mv "$SAVES_PERSO.tmp" "$SAVES_PERSO"
         [ "$JSON" = oui ] && sh "$R/tests/sync_saves_steam.sh" "$id" etat || echo "sauvegardes de $id : $rel" ;;
+      dossier)
+        # Ou vont les copies de Cidre. Le choix est garde dans saves.dossier ;
+        # les copies deja faites ne sont pas deplacees.
+        F="$CIDRE_DIR/saves.dossier"
+        case ${2:-} in
+          '') ;;
+          defaut) rm -f "$F" ;;
+          *)
+            d=$2; [ "$d" = icloud ] && d="$HOME/Library/Mobile Documents/com~apple~CloudDocs/CidreSaves"
+            case $d in /*) ;; *) echo "donne un chemin absolu, \`icloud\` ou \`defaut\`" >&2; exit 2 ;; esac
+            # iCloud Drive doit exister (iCloud active) : on ne le fabrique pas
+            case $d in "$HOME/Library/Mobile Documents/"*)
+              [ -d "$HOME/Library/Mobile Documents/com~apple~CloudDocs" ] || { echo "iCloud Drive n'est pas active sur ce Mac" >&2; exit 1; } ;;
+            esac
+            mkdir -p "$d" 2>/dev/null && [ -w "$d" ] || { echo "dossier inutilisable : $d" >&2; exit 1; }
+            mkdir -p "$CIDRE_DIR" && printf '%s\n' "$d" >"$F" ;;
+        esac
+        d=$(sh "$R/tests/sync_saves_steam.sh" - dossier)
+        if [ "$JSON" = oui ]; then
+          case $d in "$HOME/Library/Mobile Documents/"*) ic=true ;; *) ic=false ;; esac
+          [ -s "$F" ] && c=true || c=false
+          printf '{"dossier":%s,"icloud":%s,"choisi":%s}\n' "$(json "$d")" "$ic" "$c"
+        else echo "$d"; fi ;;
       unset)
         # Oublier le reglage de l'utilisateur : on revient a ce que livre Cidre.
         id=${2:?usage: cidre saves unset <id>}
@@ -381,12 +426,20 @@ case "$cmd" in
         # l'etat de tous les jeux configures et presents
         if [ "$JSON" = oui ]; then
           sep='['
-          for a in $(saves_ids); do connu "$a" || continue; printf '%s\n  %s' "$sep" "$(sh "$R/tests/sync_saves_steam.sh" "$a" etat)"; sep=','; done
+          for a in $(saves_suivis); do connu "$a" || continue; printf '%s\n  %s' "$sep" "$(sh "$R/tests/sync_saves_steam.sh" "$a" etat)"; sep=','; done
           [ "$sep" = '[' ] && echo '[]' || printf '\n]\n'
         else
-          for a in $(saves_ids); do
+          for a in $(saves_suivis); do
             connu "$a" || continue
-            printf '%-18s %-26.26s %s\n' "$a" "$(nom "$a")" "$(sh "$R/tests/sync_saves_steam.sh" "$a" etat | sed -n 's/.*"etat":"\([a-z_]*\)".*/\1/p')"
+            e=$(sh "$R/tests/sync_saves_steam.sh" "$a" etat)
+            case $e in
+              *'"etat":"steam","steam":"api"'*)  t="Steam Cloud (API du jeu)" ;;
+              *'"steam":"api"'*)  t="Steam Cloud (API du jeu) + copie Cidre : $(printf '%s' "$e" | sed -n 's/.*"etat":"\([a-z_]*\)".*/\1/p')" ;;
+              *'"steam":"lien","lie":true'*) t="Steam Cloud (dossier lie)" ;;
+              *'"steam":"lien"'*) t="Steam Cloud (dossier lie au prochain lancement)" ;;
+              *) t="copie Cidre : $(printf '%s' "$e" | sed -n 's/.*"etat":"\([a-z_]*\)".*/\1/p')" ;;
+            esac
+            printf '%-18s %-26.26s %s\n' "$a" "$(nom "$a")" "$t"
           done
         fi ;;
       *)
@@ -634,9 +687,12 @@ case "$cmd" in
       [ -d "$CIDRE_GAMES/$id" ] || { echo "$id n'est pas dans le dossier Cidre ; un jeu du client Steam se desinstalle depuis Steam." >&2; exit 1; }
       # Certains jeux rangent leurs sauvegardes dans leur propre dossier : on
       # les met a l'abri avant de l'effacer.
-      WINEPREFIX="${WINEPREFIX:-$R/wine/pfx-arm64ec}" sh "$R/tests/sync_saves_steam.sh" "$id" backup
+      # (une copie Cidre meme si Steam synchronise ce jeu : ceinture et bretelles)
+      CIDRE_SAVES_STEAM=0 WINEPREFIX="${WINEPREFIX:-$R/wine/pfx-arm64ec}" sh "$R/tests/sync_saves_steam.sh" "$id" backup
       rm -rf "${CIDRE_GAMES:?}/${id:?}"
       echo "desinstalle : $CIDRE_GAMES/$id"
     fi ;;
   help|*) usage ;;
 esac
+exit $?
+}

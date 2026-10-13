@@ -73,3 +73,12 @@ bouteille = "win10_64"
 graphismes = "d3dmetal"
 environnement = "WINED3DMETAL=1"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=17236"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinMyDocuments/Horizon Zero Dawn/Saved Game"
+motifs = "* (recursif)"
+dossier_windows = "Documents/Horizon Zero Dawn/Saved Game"
+source = "steam"
+date = "2026-10-13"

@@ -50,3 +50,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Fae_Tactics"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/fae_tactics"
+motifs = "lofconfig.ini ; lofsav.ini ; lofres1.ini ; lofres2.ini ; lofres3.ini ; lofres4.ini"
+dossier_windows = "AppData/Local/fae_tactics"
+source = "steam"
+date = "2026-10-13"

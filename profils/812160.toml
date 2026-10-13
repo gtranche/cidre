@@ -62,3 +62,12 @@ recette_date = "2026-09-03"
 crossover_version = "26"
 bouteille = "win11_64"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=22396"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Altered Matter/Etherborn/{Steam3AccountID}"
+motifs = "*"
+dossier_windows = "AppData/LocalLow/Altered Matter/Etherborn"
+source = "steam"
+date = "2026-10-13"

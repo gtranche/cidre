@@ -46,3 +46,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Star_Wars%3A_Rebellion"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "gameinstall/SaveGame"
+motifs = "*"
+dossier_windows = "jeu:SaveGame"
+source = "steam"
+date = "2026-10-13"

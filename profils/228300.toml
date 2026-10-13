@@ -59,3 +59,12 @@ parallels = "jouable"
 source = "applegamingwiki"
 date = "2026-10-11"
 url = "https://www.applegamingwiki.com/wiki/Remember_Me"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinSavedGames/UnrealEngine3/RememberMeGame/Config"
+motifs = "RememberMeSave0.sav (recursif) ; RememberMeSave1.sav ; RememberMeSave.sav"
+dossier_windows = "Saved Games/UnrealEngine3/RememberMeGame/Config"
+source = "steam"
+date = "2026-10-13"

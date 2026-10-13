@@ -19,6 +19,12 @@ Chaque valeur importee porte sa source et sa date : par cle dans [jeu.sources]
 Sous-ensemble TOML du README : ni tableau, ni table en ligne (hors
 [reglages_jeu]), ni date TOML -- les listes sont des chaines separees par " ; ".
 
+Source `steam` : le nom et les plateformes viennent de la bibliotheque du
+compte ; la configuration Steam Cloud du jeu ([compat.steam_cloud] : methode,
+racines par systeme, motifs, et qui synchronise sous Cidre) vient de ses
+metadonnees publiques, lues par SteamCMD sans compte (`app_info_print`,
+section `ufs`) -- voir steam_cloud_valeurs et « Sauvegardes » du README.
+
 Les reponses sont mises en cache (dossier ignore par git, --cache) : une
 seconde execution ne retelecharge rien, --refresh force. Les textes des wikis
 (CC BY-NC-SA) ne sont jamais recopies : on n'en tire que des donnees
@@ -660,6 +666,329 @@ def bibliotheque_steam(fichier=None):
         dire("cidre library --json a echoue :", sortie.stderr.strip()[:300])
         return []
     return json.loads(sortie.stdout)
+
+
+# --------------------------------------------------- Steam Cloud (app info)
+# Ce que Steam publie de chaque jeu (« app info », section `ufs`) dit comment
+# ses sauvegardes vont dans Steam Cloud. SteamCMD le lit sans compte
+# (`+login anonymous +app_info_print`), dans son propre dossier, comme
+# `cidre updates` : rien n'est demande au client Steam ni au compte.
+STEAM_LOT = 60  # appids par lancement de SteamCMD
+STEAM_ENTETE = re.compile(r"^AppID : (\d+), change number : (\d+)")
+# Racine Steam -> dossier, dans la convention Cidre : sous drive_c/users/<utilisateur>/
+# pour Windows (`jeu:` = dossier du jeu), sous le dossier personnel pour macOS.
+RACINES_WINDOWS = {"winmydocuments": "Documents", "winappdatalocal": "AppData/Local",
+                   "winappdatalocallow": "AppData/LocalLow", "winappdataroaming": "AppData/Roaming",
+                   "winsavedgames": "Saved Games", "windowshome": "", "gameinstall": "jeu:"}
+RACINES_MACOS = {"machome": "", "macappsupport": "Library/Application Support", "macdocuments": "Documents",
+                 "gameinstall": "jeu:"}
+OS_STEAM = {"windows": "windows", "macos": "macos", "macosx": "macos", "mac": "macos", "linux": "linux"}
+CLES_STEAM_CLOUD = ("methode", "synchro", "racine_windows", "motifs", "dossier_windows", "racine_macos",
+                    "motifs_macos", "partage", "liens", "sans_lien")
+
+
+def vdf_lire(texte):
+    """Le format texte de Valve (KeyValues) : "cle" "valeur" ou "cle" { ... }.
+    Rend un dict (les cles en double : la derniere gagne)."""
+    jetons = re.findall(r'"((?:[^"\\]|\\.)*)"|([{}])', texte)
+    pos = 0
+
+    def bloc():
+        nonlocal pos
+        d = {}
+        while pos < len(jetons):
+            chaine, accolade = jetons[pos]
+            pos += 1
+            if accolade == "}":
+                return d
+            if accolade == "{":
+                raise ValueError("accolade sans cle")
+            if pos >= len(jetons):
+                raise ValueError("cle sans valeur")
+            v, acc = jetons[pos]
+            pos += 1
+            cle = re.sub(r"\\(.)", r"\1", chaine)
+            if acc == "{":
+                d[cle] = bloc()
+            elif acc == "}":
+                raise ValueError("cle sans valeur")
+            else:
+                d[cle] = re.sub(r"\\(.)", r"\1", v)
+        return d
+
+    return bloc()
+
+
+def steamcmd_trouver(indique=None):
+    for c in (indique, os.path.join(RACINE, "tools", "steamcmd", "steamcmd.sh"), os.environ.get("STEAMCMD"),
+              "/opt/homebrew/bin/steamcmd"):
+        if c and os.access(c, os.X_OK):
+            return c
+    return None
+
+
+def steam_appinfo_decouper(sortie):
+    """La sortie de `app_info_print` -> {appid: bloc VDF decode}."""
+    lignes = sortie.replace("\r", "").split("\n")
+    blocs, i = {}, 0
+    while i < len(lignes):
+        m = STEAM_ENTETE.match(lignes[i])
+        i += 1
+        if not m:
+            continue
+        j = i
+        while j < len(lignes) and lignes[j] != "}" and not STEAM_ENTETE.match(lignes[j]):
+            j += 1
+        if j < len(lignes) and lignes[j] == "}":
+            try:
+                doc = vdf_lire("\n".join(lignes[i:j + 1]))
+            except ValueError:
+                doc = {}
+            corps = doc.get(m.group(1))
+            if isinstance(corps, dict):
+                blocs[m.group(1)] = corps
+            i = j + 1
+    return blocs
+
+
+def steam_appinfo_charger(toile, appids, steamcmd=None):
+    """Met en cache (steam/appinfo/<appid>.json) ce que Steam publie des jeux
+    qui n'y sont pas encore. On ne garde que ce qui sert : la section `ufs`, le
+    nom, les plateformes. Un jeu que Steam ne montre pas sans compte est note
+    (statut 403) et n'ecrit rien dans la fiche."""
+    manquants = [a for a in appids if str(a).isdigit() and (toile.refresh or _steam_appinfo(toile, a) is None)]
+    if not manquants or toile.sans_reseau:
+        return 0
+    scmd = steamcmd_trouver(steamcmd)
+    if not scmd:
+        dire("Steam Cloud : SteamCMD introuvable (tools/steamcmd/, STEAMCMD, --steamcmd) : inventaire saute")
+        return 0
+    cidre_dir = os.environ.get("CIDRE_DIR") or os.path.expanduser("~/Library/Application Support/Cidre")
+    foyer = os.path.join(cidre_dir, "steamcmd-anonyme")  # le dossier de `cidre updates` : pas celui du client
+    os.makedirs(foyer, exist_ok=True)
+    env = dict(os.environ, HOME=foyer)
+    lus = 0
+    for debut in range(0, len(manquants), STEAM_LOT):
+        lot = manquants[debut:debut + STEAM_LOT]
+        restants = list(lot)
+        for essai in range(3):  # un jeu pas encore en cache local est « demande » : il sort au passage suivant
+            cmd = [scmd, "+login", "anonymous", "+app_info_update", "1"]
+            for a in restants:
+                cmd += ["+app_info_print", a]
+            try:
+                r = subprocess.run(cmd + ["+quit"], capture_output=True, text=True, errors="replace",
+                                   stdin=subprocess.DEVNULL, env=env, timeout=600, check=False)
+            except (OSError, subprocess.TimeoutExpired) as e:
+                dire(f"Steam Cloud : SteamCMD a echoue ({type(e).__name__}) sur un lot de {len(restants)}")
+                break
+            toile.requetes += 1
+            for a, corps in steam_appinfo_decouper(r.stdout).items():
+                if a not in restants:
+                    continue
+                commun = corps.get("common") if isinstance(corps.get("common"), dict) else None
+                garde = {"ufs": corps.get("ufs") if isinstance(corps.get("ufs"), dict) else None,
+                         "nom": (commun or {}).get("name"), "oslist": (commun or {}).get("oslist")}
+                toile.ecrire_cache(f"steam/appinfo/{a}.json",
+                                   {"date": aujourdhui(), "statut": 200 if commun else 403, "corps": garde})
+                restants.remove(a)
+                lus += 1
+            if not restants:
+                break
+        for a in restants:
+            dire(f"Steam Cloud : pas de reponse de Steam pour {a}")
+        dire(f"Steam Cloud : {min(debut + STEAM_LOT, len(manquants))}/{len(manquants)} jeux demandes a SteamCMD")
+    return lus
+
+
+def _steam_appinfo(toile, appid):
+    """L'entree du cache, meme sous --refresh (le lot vient d'etre redemande)."""
+    try:
+        with open(toile.chemin(f"steam/appinfo/{appid}.json"), "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _vdf_liste(d):
+    """Un bloc VDF numerote ("0" {...} "1" {...}) -> ses valeurs, dans l'ordre."""
+    if not isinstance(d, dict):
+        return []
+    return [d[k] for k in sorted(d, key=lambda k: (not k.isdigit(), int(k) if k.isdigit() else 0, k))]
+
+
+def _steam_os(d):
+    """Le bloc `platforms` d'une regle -> {"windows", "macos", ...} ; vide = toutes."""
+    noms = _vdf_liste(d) if isinstance(d, dict) else ([d] if isinstance(d, str) else [])
+    plats = {OS_STEAM.get(str(n).strip().lower(), str(n).strip().lower()) for n in noms if str(n).strip()}
+    return set() if "all" in plats else plats
+
+
+def _steam_regle(regle, surcharges, os_):
+    """Ou une regle `savefiles` range ses fichiers sur un systeme : (racine,
+    chemin) apres `rootoverrides`, ou None si la regle ne vaut pas la."""
+    plats = _steam_os(regle.get("platforms"))
+    if plats and os_ not in plats:
+        return None
+    racine, chemin = str(regle.get("root", "")), str(regle.get("path", "")).replace("\\", "/")
+    for s in surcharges:
+        if str(s.get("root", "")).lower() != racine.lower():
+            continue
+        cible = OS_STEAM.get(str(s.get("os", "")).strip().lower())
+        comparaison = str(s.get("oscompare", "=")).strip()
+        if not ((comparaison == "=" and cible == os_) or (comparaison in ("!=", "<>") and cible != os_)):
+            continue
+        racine = str(s.get("useinstead") or racine)
+        for t in _vdf_liste(s.get("pathtransforms")):
+            cherche, remplace = str(t.get("find", "")).replace("\\", "/"), str(t.get("replace", "")).replace("\\", "/")
+            if cherche:
+                chemin = chemin.replace(cherche, remplace, 1)
+            elif remplace:
+                chemin = remplace.rstrip("/") + "/" + chemin
+        if s.get("addpath"):
+            chemin = str(s["addpath"]).replace("\\", "/").rstrip("/") + "/" + chemin
+        break
+    chemin = "/".join(p for p in chemin.split("/") if p not in ("", "."))
+    table = RACINES_WINDOWS if os_ == "windows" else RACINES_MACOS
+    if racine.lower() not in table or ".." in chemin.split("/"):
+        return None  # racine d'un autre systeme : Steam ne sait pas la resoudre ici
+    return racine, chemin
+
+
+def _dossier(table, racine, chemin):
+    base = table[racine.lower()]
+    if base.endswith(":"):
+        return base + chemin
+    return "/".join(p for p in (base, chemin) if p)
+
+
+def steam_cloud_valeurs(ufs):
+    """La section `ufs` d'un jeu -> les valeurs de [compat.steam_cloud].
+
+    methode : `aucune` (pas de Steam Cloud), `api` (le jeu ecrit par
+    ISteamRemoteStorage : aucun dossier declare), `auto` (Auto-Cloud : Steam
+    ramasse des fichiers dans des dossiers declares par systeme).
+    synchro, qui synchronise sous Cidre : `steam-api` (le client macOS, par le
+    pont), `steam-lien` (le client macOS, une fois le dossier du prefixe lie au
+    dossier macOS declare), `copie` (Cidre : Steam ne sait pas resoudre une
+    racine Windows sur macOS), `aucune`.
+    `steam-api` dit que le jeu PEUT ecrire par l'API, pas que tout y passe : un
+    dossier de sauvegardes locales designe par saves.conf reste copie par Cidre.
+    Un lien n'est propose que si la meme regle vaut sur les deux systemes
+    (`partage = "multiplateforme"`), ou si une regle Windows et une regle macOS
+    de meme motif se repondent (`par-plateforme` : Steam garde alors des
+    fichiers distincts par systeme, la synchro ne se fait qu'entre Mac). Des
+    motifs differents sont des formats differents : pas de lien."""
+    ufs = ufs if isinstance(ufs, dict) else {}
+    regles = [r for r in _vdf_liste(ufs.get("savefiles")) if isinstance(r, dict)]
+    surcharges = [s for s in _vdf_liste(ufs.get("rootoverrides")) if isinstance(s, dict)]
+    try:
+        quota = int(ufs.get("quota", 0) or 0)
+    except ValueError:
+        quota = 0
+    if not regles:
+        if quota <= 0:
+            return {"methode": "aucune", "synchro": "aucune"}
+        return {"methode": "api", "synchro": "steam-api"}
+
+    def motif(r):
+        return str(r.get("pattern", "*")) + (" (recursif)" if str(r.get("recursive", "0")) == "1" else "")
+
+    win, mac = [], []  # (indice de la regle, racine, chemin, motif)
+    for i, r in enumerate(regles):
+        for os_, liste in (("windows", win), ("macos", mac)):
+            ou = _steam_regle(r, surcharges, os_)
+            if ou:
+                liste.append((i, ou[0], ou[1], motif(r)))
+    v = {"methode": "auto"}
+    if win:
+        v["racine_windows"] = " ; ".join(dict.fromkeys(f"{r}/{c}".rstrip("/") for _, r, c, _ in win))
+        v["motifs"] = " ; ".join(dict.fromkeys(m for *_, m in win))
+        # les memes dossiers dans la convention Cidre, pour la copie : coupes avant
+        # une variable ({64BitSteamID}), et jamais une racine entiere
+        dossiers = []
+        for _, r, c, _ in win:
+            fixe = []
+            for part in c.split("/"):
+                if "{" in part:
+                    break
+                fixe.append(part)
+            if fixe and fixe != [""]:
+                dossiers.append(_dossier(RACINES_WINDOWS, r, "/".join(fixe)))
+        if dossiers:
+            v["dossier_windows"] = " ; ".join(dict.fromkeys(dossiers))
+    if mac:
+        v["racine_macos"] = " ; ".join(dict.fromkeys(f"{r}/{c}".rstrip("/") for _, r, c, _ in mac))
+        motifs_macos = " ; ".join(dict.fromkeys(m for *_, m in mac))
+        if motifs_macos != v.get("motifs"):
+            v["motifs_macos"] = motifs_macos
+    if not win or not mac:
+        v["synchro"] = "copie"
+        return v
+
+    # apparier chaque regle Windows a la regle macOS qui lui repond
+    communs = {i for i, *_ in win} & {i for i, *_ in mac}
+    paires, raisons = [], []
+    for w in win:
+        if w[0] in communs:
+            paires.append((w, next(m for m in mac if m[0] == w[0])))
+    win_seuls = [w for w in win if w[0] not in communs]
+    mac_seuls = [m for m in mac if m[0] not in communs]
+    v["partage"] = "multiplateforme" if not win_seuls else "par-plateforme"
+    if win_seuls:
+        if len(win_seuls) == len(mac_seuls) and all(w[3].lower() == m[3].lower() for w, m in zip(win_seuls, mac_seuls)):
+            paires += list(zip(win_seuls, mac_seuls))
+        else:
+            for w in win_seuls:
+                memes = [m for m in mac_seuls if m[3].lower() == w[3].lower()]
+                if len(memes) == 1:
+                    paires.append((w, memes[0]))
+                elif not mac_seuls:
+                    raisons.append("regle Windows sans equivalent macOS")
+                else:
+                    raisons.append("motifs differents" if not memes else "regles non appariables")
+    liens = {}
+    for w, m in paires:
+        dw, dm = _dossier(RACINES_WINDOWS, w[1], w[2]), _dossier(RACINES_MACOS, m[1], m[2])
+        if dm.startswith("jeu:") or dw.startswith("jeu:"):
+            # cote macOS, le client les cherche dans SA bibliotheque, ou le jeu Windows n'est
+            # pas ; cote Windows, on ne deplace jamais un dossier du jeu (ses binaires y sont)
+            raisons.append("fichiers dans le dossier du jeu")
+        elif not w[2] or not m[2]:
+            raisons.append("racine entiere")  # on ne lie jamais Documents ou AppData entiers
+        elif liens.get(dw, dm) != dm:
+            raisons.append("un dossier Windows pour plusieurs dossiers macOS")
+        else:
+            liens[dw] = dm
+    # un dossier deja couvert par le lien de son parent n'a pas besoin du sien
+    for dw in sorted(liens, key=len):
+        parent = next((p for p in liens if p != dw and dw.startswith(p + "/")), None)
+        if parent:
+            if liens[dw] != liens[parent] + dw[len(parent):]:
+                raisons.append("dossiers imbriques")
+            del liens[dw]
+    if liens and not raisons:
+        v["liens"] = " ; ".join(f"{a} => {b}" for a, b in liens.items())
+        v["synchro"] = "steam-lien"
+    else:
+        v["sans_lien"] = " ; ".join(dict.fromkeys(raisons)) or "aucune regle a lier"
+        v["synchro"] = "copie"
+    return v
+
+
+def importer_steam_cloud(fiche, appid, toile):
+    vu = _steam_appinfo(toile, appid)
+    if not vu or vu.get("statut") != 200 or not isinstance(vu.get("corps"), dict):
+        return None
+    v = steam_cloud_valeurs(vu["corps"].get("ufs"))
+    for k in CLES_STEAM_CLOUD:
+        if k in v:
+            fiche.poser("compat.steam_cloud", k, v[k], "steam", vu["date"], appid)
+        else:
+            fiche.retirer("compat.steam_cloud", k, "steam")
+    # dans une fiche retouchee, `source` et `date` ferment le bloc, comme dans une fiche neuve
+    fin = [o for o in fiche.ops if o[0] == "compat.steam_cloud" and o[1] in ("source", "date")]
+    fiche.ops = [o for o in fiche.ops if o not in fin] + fin
+    return v
 
 
 # ------------------------------------------------------------------ ProtonDB
@@ -1370,7 +1699,7 @@ def _compteur(d, n=5):
 
 
 def importer(appid, nom_steam, plateformes, toile, index_dir, date_export, profils, aujourd,
-             sources=SOURCES, crossover=None, bilan_crossover=None):
+             sources=SOURCES, crossover=None, bilan_crossover=None, bilan_steam=None):
     chemin = os.path.join(profils, f"{appid}.toml")
     doc = lire_toml(chemin) if os.path.exists(chemin) else {}
     fiche = Fiche(doc)
@@ -1382,6 +1711,10 @@ def importer(appid, nom_steam, plateformes, toile, index_dir, date_export, profi
         fiche.poser("jeu", "nom", nom_steam, "steam", aujourd, appid)
     if plateformes and "steam" in sources:
         fiche.poser("jeu", "plateformes_steam", " ".join(sorted(plateformes)), "steam", aujourd, appid)
+    if "steam" in sources:
+        cloud = importer_steam_cloud(fiche, appid, toile)
+        if cloud and bilan_steam is not None:
+            bilan_steam[cloud["synchro"]] = bilan_steam.get(cloud["synchro"], 0) + 1
     signaux = {}
 
     # --- ProtonDB : resume public (palier) + export des rapports (index local)
@@ -1528,7 +1861,7 @@ def _ranger(doc):
             return t
         fin = ("source", "date", "url") if bloc_import else ()
         cles = [k for k in t if k != "sources" and k not in fin] + [k for k in fin if k in t] + (["sources"] if "sources" in t else [])
-        nouveau = {k: ranger_table(t[k], bloc_import=(k in ("protondb", "pcgamingwiki", "applegamingwiki", "crossover"))) for k in cles}
+        nouveau = {k: ranger_table(t[k], bloc_import=(k in ("protondb", "pcgamingwiki", "applegamingwiki", "crossover", "steam_cloud"))) for k in cles}
         t.clear()
         t.update(nouveau)
         return t
@@ -1568,6 +1901,7 @@ def main(argv=None):
     ap.add_argument("--crossover-windows-version", action="store_true",
                     help="poser aussi [cidre] windows_version depuis les recettes CrossOver (coupe par defaut : "
                          "le lanceur ne remet pas win10 sur le prefixe partage)")
+    ap.add_argument("--steamcmd", help="le SteamCMD qui lit la configuration Steam Cloud des jeux (defaut : tools/steamcmd/, STEAMCMD)")
     ap.add_argument("--fiches-existantes", action="store_true",
                     help="sans appid : les fiches deja dans --profils, au lieu de la bibliotheque Steam")
     ap.add_argument("--rapport", help="ecrire le rapport (JSON) des contradictions ici")
@@ -1608,13 +1942,16 @@ def main(argv=None):
     index_crossover, date_crossover = crossover_charger(toile, aujourd) if "crossover" in sources else (None, None)
     crossover = {"index": index_crossover, "date": date_crossover, "poser_windows_version": a.crossover_windows_version}
     bilan_crossover = bilan_crossover_vide()
+    bilan_steam = {}
+    if "steam" in sources:
+        steam_appinfo_charger(toile, appids, a.steamcmd)
 
     ecrites, contradictions, erreurs = 0, [], []
     for i, appid in enumerate(appids, 1):
         g = par_appid.get(appid, {})
         try:
             mod, contra = importer(appid, g.get("nom"), g.get("plateformes"), toile, index_dir, date_export,
-                                   a.profils, aujourd, sources, crossover, bilan_crossover)
+                                   a.profils, aujourd, sources, crossover, bilan_crossover, bilan_steam)
         except Exception as e:  # une fiche cassee ne doit pas arreter les 1200 autres
             erreurs.append({"appid": appid, "erreur": f"{type(e).__name__}: {e}"})
             dire(f"[{i}/{len(appids)}] {appid} {g.get('nom', '')} : ERREUR {type(e).__name__}: {e}")
@@ -1635,6 +1972,9 @@ def main(argv=None):
              + (", ".join(f"{k} sur {n} fiche(s)" for k, n in sorted(b["cidre"].items())) or "rien")
              + (f" ; windows_version retenue sur {len(b['windows_version_retenues'])} fiche(s) (--crossover-windows-version)"
                 if b["windows_version_retenues"] else ""))
+    if bilan_steam:
+        rapport["steam_cloud"] = dict(sorted(bilan_steam.items()))
+        dire("Steam Cloud : " + ", ".join(f"{k} {n}" for k, n in sorted(bilan_steam.items())))
     if a.rapport:
         with open(a.rapport, "w", encoding="utf-8") as f:
             json.dump(rapport, f, ensure_ascii=False, indent=1)

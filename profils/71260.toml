@@ -45,3 +45,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Space_Channel_5%3A_Part_2"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinMyDocuments/SEGA/Space Channel 5 Part 2 ; WinMyDocuments/SEGA/Dreamcast Collection/Space Channel 5 Part 2"
+motifs = "*.* (recursif)"
+dossier_windows = "Documents/SEGA/Space Channel 5 Part 2 ; Documents/SEGA/Dreamcast Collection/Space Channel 5 Part 2"
+source = "steam"
+date = "2026-10-13"

@@ -51,3 +51,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Between_the_Stars"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Isolated Games/Between the Stars"
+motifs = "SaveFile.es3"
+dossier_windows = "AppData/LocalLow/Isolated Games/Between the Stars"
+source = "steam"
+date = "2026-10-13"

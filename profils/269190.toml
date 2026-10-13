@@ -69,3 +69,9 @@ bouteille = "win8_64"
 dependances = "vcrun2022"
 graphismes = "dxvk"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=17393"
+
+[compat.steam_cloud]
+methode = "api"
+synchro = "steam-api"
+source = "steam"
+date = "2026-10-13"

@@ -62,3 +62,12 @@ crossover_version = "22"
 bouteille = "win10_64"
 graphismes = "dxvk"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=17492"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/THQ Nordic/Darksiders Genesis/Saved/SaveGames/{64BitSteamID}"
+motifs = "*.sav*"
+dossier_windows = "AppData/Local/THQ Nordic/Darksiders Genesis/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"

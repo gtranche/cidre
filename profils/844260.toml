@@ -48,3 +48,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Rustler"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/JutsuGames/Rustler"
+motifs = "*.json"
+dossier_windows = "AppData/LocalLow/JutsuGames/Rustler"
+source = "steam"
+date = "2026-10-13"

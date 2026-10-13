@@ -54,3 +54,12 @@ methodes = "crossover"
 source = "applegamingwiki"
 date = "2026-10-11"
 url = "https://www.applegamingwiki.com/wiki/Main_Assembly"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/RoboBuild/Saved/bots ; WinAppDataLocal/RoboBuild/Saved/SaveGames ; WinAppDataLocal/RoboBuild/Saved/levels ; WinAppDataLocal/RoboBuild/Saved/kits"
+motifs = "* (recursif) ; *.sav"
+dossier_windows = "AppData/Local/RoboBuild/Saved/bots ; AppData/Local/RoboBuild/Saved/SaveGames ; AppData/Local/RoboBuild/Saved/levels ; AppData/Local/RoboBuild/Saved/kits"
+source = "steam"
+date = "2026-10-13"

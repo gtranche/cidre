@@ -48,3 +48,12 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Steelrising"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinMyDocuments/Steelrising"
+motifs = "*.fsav"
+dossier_windows = "Documents/Steelrising"
+source = "steam"
+date = "2026-10-13"

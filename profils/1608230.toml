@@ -60,3 +60,12 @@ methodes = "crossover gptk kegworks whisky wine"
 source = "applegamingwiki"
 date = "2026-10-11"
 url = "https://www.applegamingwiki.com/wiki/Planet_of_Lana"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/Wishfully/Planet of Lana"
+motifs = "*.sav"
+dossier_windows = "AppData/LocalLow/Wishfully/Planet of Lana"
+source = "steam"
+date = "2026-10-13"

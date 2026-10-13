@@ -59,3 +59,12 @@ recette_date = "2024-02-29"
 crossover_version = "24"
 bouteille = "win10_64"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=20526"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocalLow/HungryCouch/BlackSkylands/ReleaseSaves"
+motifs = "* (recursif)"
+dossier_windows = "AppData/LocalLow/HungryCouch/BlackSkylands/ReleaseSaves"
+source = "steam"
+date = "2026-10-13"

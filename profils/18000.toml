@@ -45,3 +45,9 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Penny_Arcade%27s_On_the_Rain-Slick_Precipice_of_Darkness%3A_Episode_One"
+
+[compat.steam_cloud]
+methode = "aucune"
+synchro = "aucune"
+source = "steam"
+date = "2026-10-13"

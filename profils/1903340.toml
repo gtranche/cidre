@@ -121,3 +121,12 @@ recette_date = "2026-09-14"
 crossover_version = "26.3"
 bouteille = "win11_64"
 url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=21737"
+
+[compat.steam_cloud]
+methode = "auto"
+synchro = "copie"
+racine_windows = "WinAppDataLocal/Sandfall/Saved/SaveGames/{64BitSteamID}"
+motifs = "*.sav (recursif)"
+dossier_windows = "AppData/Local/Sandfall/Saved/SaveGames"
+source = "steam"
+date = "2026-10-13"
