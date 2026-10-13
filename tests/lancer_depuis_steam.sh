@@ -233,7 +233,7 @@ if [ "$(head -c 2 "$DOSSIER/$PROG" 2>/dev/null)" != "MZ" ]; then
    exec "./$PROG" "$@"
 fi
 
-# Rendu Direct3D 11 : d3d11 = "dxvk" (defaut) ou "dxmt" (CIDRE_D3D11=dxmt).
+# Rendu Direct3D 11 : d3d11 = "dxmt" (defaut depuis la 1.5.8) ou "dxvk" (CIDRE_D3D11=dxvk, repli).
 # DXVK est un natif pose en system32 (dxgi,d3d11=n, cf. etape2). DXMT (D3D11 ->
 # Metal en un saut, x3 a x4 mesure sur Expedition 33) est bati comme des
 # builtins Wine : ses d3d11/dxgi/d3d10core/winemetal.dll vont dans
