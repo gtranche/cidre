@@ -24,6 +24,12 @@ bits = "pcgamingwiki 2026-10-11"
 bits_32_aussi = "pcgamingwiki 2026-10-11"
 drm = "pcgamingwiki 2026-10-11"
 
+[cidre]
+dependances = "corefonts msxml3"
+
+[cidre.sources]
+dependances = "crossover 2026-10-13"
+
 [compat]
 etat = "non-teste"
 date = "2026-10-11"
@@ -50,3 +56,15 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/The_Secret_World"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.10356"
+source = "crossover"
+date = "2026-10-13"
+correspondance = "steamid"
+confiance = "haute"
+recette_date = "2025-07-14"
+crossover_version = "22.0.1"
+bouteille = "win7"
+dependances = "corefonts msxml3"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=10356"

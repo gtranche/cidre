@@ -32,3 +32,14 @@ rapports_export = 29
 source = "protondb"
 date = "2026-10-01"
 url = "https://www.protondb.com/app/332310"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.13710"
+source = "crossover"
+date = "2026-10-13"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2025-03-03"
+crossover_version = "24.0.7"
+bouteille = "win10_64"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=13710"

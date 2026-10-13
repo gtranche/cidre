@@ -23,10 +23,48 @@ Les reponses sont mises en cache (dossier ignore par git, --cache) : une
 seconde execution ne retelecharge rien, --refresh force. Les textes des wikis
 (CC BY-NC-SA) ne sont jamais recopies : on n'en tire que des donnees
 structurees (modeles), et la fiche cite l'URL de la page.
+
+Source `crossover` : les recettes CrossTie de CodeWeavers. Constat (2026-10-13) :
+  - Ou : une seule archive publique, sans compte ni cle, remise a jour chaque
+    jour, que CrossOver telecharge lui-meme :
+      https://media.codeweavers.com/pub/crossover/tie/crossover.tie.gz
+    (3 Mo, 24 Mo de XML, 4 489 recettes ; miroir ftp.codeweavers.com, meme
+    chemin). Racine <c4p>, puis <applications><app appid="com.codeweavers.c4.N">,
+    une entree par version minimale de CrossOver (<cxversion>) : la plus haute
+    est la recette en vigueur. 1 574 Steam ID (<appprofile><steamid>). Les
+    .tie unitaires se prennent sur le site, page par page, derriere un
+    controle anti-robot (robots.txt : 100 s entre deux requetes) : on n'y va pas.
+    Page d'une recette, citee dans la fiche, jamais telechargee :
+      https://www.codeweavers.com/compatibility/browse/name/?app_id=N
+  - Licence : aucune n'accompagne l'archive. Le site porte « Copyright (c)
+    1999-2026 All Rights Reserved », sans conditions d'utilisation publiees ;
+    la licence de CrossOver (codeweavers.com/crossover/eula) ne vise que « the
+    software accompanying this License » et ne dit rien des recettes ni de la
+    base. Aucune autorisation de reprise, donc : l'archive n'est ni
+    redistribuee ni versee au depot (cache local, hors depot), et aucun texte
+    n'en sort -- ni <description>, ni <installnotes>, ni <comment>, ni
+    medailles, ni contributeurs.
+  - Ce qu'on reprend : des valeurs techniques, qui sont des faits de
+    configuration de Wine et pas une oeuvre -- gabarit de bouteille (version de
+    Windows), DLL forcees (HKCU/Software/Wine/DllOverrides), autres cles sous
+    Software/Wine, variables d'environnement de la bouteille, identifiants des
+    dependances (traduits en verbes facon winetricks par NOTRE table) -- et
+    seulement pour les jeux qui ont une fiche (une part non substantielle de la
+    base). Les recettes n'ont pas d'options de lancement. Chaque fiche cite la
+    recette (identifiant, URL, date) dans [compat.crossover].
+  - Rang : le dernier. Une valeur CrossOver n'ecrase jamais celle d'une autre
+    source ; elle ne remplace qu'une valeur CrossOver. Fondue dans [cidre]
+    (dll_overrides, dependances ; windows_version sur demande seulement) avec
+    sa provenance par cle dans [cidre.sources], sous garde-fous (voir
+    crossover_valeurs et importer_crossover).
+Ce constat n'est pas un avis juridique : si CodeWeavers publie des conditions
+qui l'interdisent, `--sources` sans crossover et le retrait des blocs
+[compat.crossover] suffisent a revenir en arriere.
 """
 import argparse
 import collections
 import datetime as dt
+import gzip
 import json
 import os
 import re
@@ -35,9 +73,11 @@ import sys
 import tarfile
 import time
 import tomllib
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 
 ICI = os.path.dirname(os.path.abspath(__file__))
 RACINE = os.path.abspath(os.path.join(ICI, "..", ".."))
@@ -55,7 +95,16 @@ PCGW_PAGE = "https://www.pcgamingwiki.com/wiki/{titre}"
 AGW_API = "https://www.applegamingwiki.com/w/api.php"
 AGW_PAGE = "https://www.applegamingwiki.com/wiki/{titre}"
 
+CROSSOVER_ARCHIVE = "https://media.codeweavers.com/pub/crossover/tie/crossover.tie.gz"
+CROSSOVER_PAGE = "https://www.codeweavers.com/compatibility/browse/name/?app_id={n}"
+CROSSOVER_TAILLE_MAX = 200 * 1024 * 1024  # XML decompresse : 24 Mo aujourd'hui
+
+SOURCES = ("steam", "protondb", "pcgamingwiki", "applegamingwiki", "crossover")
 SOURCES_PROTEGEES = ("cidre-test", "utilisateur")
+# Rang d'autorite (cf. README) : une source n'ecrase que son rang ou plus bas.
+RANG = {"cidre-test": 0, "utilisateur": 1, "winehq": 2, "steam": 3, "protondb": 3,
+        "applegamingwiki": 3, "pcgamingwiki": 3, "crossover": 4}
+RANG_DEFAUT = 3
 MOTEURS_FICHE = ("unity", "unreal", "hashlink", "stingray", "godot", "source")
 ANTICHEAT_FICHE = ("none", "eac", "battleye", "denuvo", "vac")
 
@@ -276,9 +325,10 @@ def _sections_texte(lignes):
 
 
 def _fin_utile(lignes, debut, fin):
-    """Indice apres la derniere ligne non vide du bloc [debut, fin)."""
+    """Indice apres la derniere cle du bloc [debut, fin) : les lignes vides et
+    les commentaires qui le terminent annoncent la section suivante."""
     j = fin
-    while j > debut + 1 and not lignes[j - 1].strip():
+    while j > debut + 1 and (not lignes[j - 1].strip() or lignes[j - 1].lstrip().startswith("#")):
         j -= 1
     return j
 
@@ -292,11 +342,27 @@ def retoucher_toml(texte, ops, doc_attendu):
     for section, cle, valeur in ops:
         secs = _sections_texte(lignes)
         bloc = [x for x in secs if x[0] == section and not x[1]]
+        motif = re.compile(r"^\s*(" + re.escape(cle) + r"|" + re.escape(json.dumps(cle, ensure_ascii=False)) + r")\s*=")
+        if valeur is None:  # retrait d'une cle (Fiche.retirer)
+            if bloc:
+                debut, fin = bloc[-1][2], bloc[-1][3]
+                for i in range(debut + 1, fin):
+                    if motif.match(lignes[i]):
+                        del lignes[i]
+                        fin -= 1
+                        break
+                if not any(l.strip() for l in lignes[debut + 1:fin]):
+                    del lignes[debut:fin]  # section videe : son en-tete part avec elle
+            continue
         if not bloc:
             parent = section.rsplit(".", 1)[0] if "." in section else None
             apres = [x for x in secs if parent and (x[0] == parent or x[0].startswith(parent + ".")) and not x[1]]
+            jeu = [x for x in secs if (x[0] == "jeu" or x[0].startswith("jeu.")) and not x[1]]
             if section.endswith(".sources") and apres:
                 pos = _fin_utile(lignes, apres[-1][2], apres[-1][3])
+            elif section == "cidre" and jeu:
+                # [cidre] a sa place dans l'ordre du README : apres [jeu], pas en fin de fiche
+                pos = _fin_utile(lignes, jeu[-1][2], jeu[-1][3])
             else:
                 pos = len(lignes)
             lignes[pos:pos] = ["", f"[{section}]"]
@@ -304,7 +370,6 @@ def retoucher_toml(texte, ops, doc_attendu):
             bloc = [x for x in secs if x[0] == section and not x[1]]
         nom, _, debut, fin = bloc[-1]
         ligne = f"{_toml_cle(cle)} = {_toml_valeur(valeur)}"
-        motif = re.compile(r"^\s*(" + re.escape(cle) + r"|" + re.escape(json.dumps(cle, ensure_ascii=False)) + r")\s*=")
         for i in range(debut + 1, fin):
             if motif.match(lignes[i]):
                 lignes[i] = ligne
@@ -321,7 +386,8 @@ def retoucher_toml(texte, ops, doc_attendu):
 
 def _sans_vides(d):
     if isinstance(d, dict):
-        return {k: _sans_vides(v) for k, v in d.items() if not (isinstance(v, dict) and not v)}
+        r = {k: _sans_vides(v) for k, v in d.items()}
+        return {k: v for k, v in r.items() if not (isinstance(v, dict) and not v)}
     if isinstance(d, list):
         return [_sans_vides(x) for x in d]
     return d
@@ -385,6 +451,16 @@ class Fiche:
                     "import": valeur, "source_import": source,
                 })
             return False
+        if cle in sec:
+            # une source de rang plus haut a deja parle : on ne l'ecrase pas
+            en_place = self.source_de(section, cle)[0]
+            if RANG.get(en_place, RANG_DEFAUT) < RANG.get(source, RANG_DEFAUT):
+                if _differe(sec[cle], valeur):
+                    self.contradictions.append({
+                        "appid": appid, "champ": f"{section}.{cle}", "fiche": sec[cle], "source_fiche": en_place,
+                        "import": valeur, "source_import": source,
+                    })
+                return False
         if cle in sec and not _differe(sec[cle], valeur):
             return False  # rien de neuf : la date d'origine reste
         sec[cle] = valeur
@@ -393,9 +469,25 @@ class Fiche:
         self.modifiee = True
         return True
 
+    def retirer(self, section, cle, source):
+        """Retire une cle que `source` avait posee et qu'elle ne donne plus
+        (recette changee) ; une cle d'une autre source, ou a la main, reste."""
+        sec = self.doc
+        for p in section.split("."):  # sans creer la section au passage
+            sec = sec.get(p) if isinstance(sec, dict) else None
+        if not isinstance(sec, dict) or cle not in sec or self.source_de(section, cle)[0] != source:
+            return False
+        del sec[cle]
+        self.ops.append((section, cle, None))
+        if isinstance(sec.get("sources"), dict) and cle in sec["sources"]:
+            del sec["sources"][cle]
+            self.ops.append((f"{section}.sources", cle, None))
+        self.modifiee = True
+        return True
+
     def poser_provenance(self, section, cle, source, date):
         sec = self.section(section)
-        if section == "jeu":
+        if section in ("jeu", "cidre"):
             sec.setdefault("sources", {})[cle] = f"{source} {date}"
             self.ops.append((f"{section}.sources", cle, f"{source} {date}"))
         else:
@@ -874,27 +966,426 @@ def agw_extraire(texte):
     return out
 
 
+# ---------------------------------------------------------------- CrossOver
+# Gabarit de bouteille CrossOver -> nom de version de winecfg (`winecfg -v`).
+GABARITS = {"win11": "win11", "win10": "win10", "win8": "win8", "win7": "win7", "winvista": "vista",
+            "winxp": "winxp", "win2000": "win2k", "win98": "win98"}
+# A partir de CrossOver 23, win10_64 (puis win11_64) est le gabarit de 86 % des
+# recettes de jeu (archive du 2026-10-12 ; win7_64 ou winxp dominent avant la
+# 21) : un autre gabarit y est un choix. Avant, c'est le defaut de l'epoque.
+CROSSOVER_GABARIT_CHOISI = 23
+# Les DLL du chemin graphique sont celles de Cidre (DXVK, DXMT, vkd3d) : une
+# recette ne les force pas.
+DLL_GRAPHIQUES = re.compile(r"^(dxgi|d3d(8|9|10|10_1|10core|11|12|12core)|winemetal|nvapi(64)?)$")
+DLL_NOM = re.compile(r"^\*?[A-Za-z0-9_.+-]{1,64}$")
+DLL_MODES = {"native": "n", "builtin": "b", "disable": "", "disabled": ""}
+CLE_DLL = re.compile(r"^(?:HKEY_CURRENT_USER|HKCU)\\Software\\Wine\\DllOverrides$", re.I)
+CLE_DLL_EXE = re.compile(r"^(?:HKEY_CURRENT_USER|HKCU)\\Software\\Wine\\AppDefaults\\([^\\]{1,64})\\DllOverrides$", re.I)
+CLE_WINE = re.compile(r"^(?:HKEY_CURRENT_USER|HKCU)\\Software\\Wine\\(.{1,80})$", re.I)
+VALEUR_SURE = re.compile(r"^[A-Za-z0-9 _.:+*/-]{0,60}$")
+# Nom (anglais) d'un composant CrossOver -> verbe facon winetricks. La table est
+# la notre ; un composant qui n'y est pas reste cite par son identifiant.
+VERBES = [
+    (r"^core fonts$", "corefonts"),
+    (r"^directx for modern games$", "directx_jun2010"),      # directx_Jun2010_redist.exe
+    (r"^directx for pre-windows xp games$", "directx_feb2010"),
+    (r"visual c\+\+ redistributable \(latest\)", "vcrun2022"),
+    (r"visual c\+\+ (20\d\d)\b", r"vcrun\1"),
+    (r"visual c\+\+ 6\.0", "vcrun6"),
+    (r"\.net framework (\d)\.(\d)(?:\.(\d))?(?: service pack (\d))?$", None),  # voir _verbe
+    (r"xml parser \(msxml\) (\d)", r"msxml\1"),
+    (r"^windows gdi\+", "gdiplus"),
+    (r"visual basic 6 runtime", "vb6run"),
+    (r"\(mdac\) 2\.8", "mdac28"),
+    (r"^microsoft jet 4\.0", "jet40"),
+    (r"^internet explorer ([678])$", r"ie\1"),
+    (r"^direct music$", "directmusic"),
+    (r"^nvidia physx$", "physx"),
+    (r"^xna framework (\d)\.(\d)$", r"xna\1\2"),
+    (r"^xact engine", "xact"),
+    (r"^d3dcompiler_(4[37])\b", r"d3dcompiler_\1"),
+    (r"^openal$", "openal"),
+    (r"^microsoft rich edit 2\.0$", "riched20"),
+    (r"^microsoft rich edit 4\.1", "msftedit"),
+    (r"^windows script 5\.7$", "wsh57"),
+    (r"^truetype font: (arial|courier|georgia|impact|times|trebuchet|verdana|webdings)\b", r"\1"),
+    (r"^adobe source han sans", "sourcehansans"),
+    (r"^msls31$", "msls31"),
+    (r"^microsoft media player sound engine 9$", "wmp9"),
+    (r"^windows media player (9|10)$", r"wmp\1"),
+]
+
+
+def _tie_lire(chemin):
+    """Racine XML d'un .tie ou .tie.gz. Donnee telechargee : taille bornee, et
+    ni DOCTYPE ni entite (un .tie n'en a pas ; on ne laisse rien se deployer)."""
+    with open(chemin, "rb") as f:
+        if f.read(2) == b"\x1f\x8b":
+            f.seek(0)
+            with gzip.GzipFile(fileobj=f) as g:
+                brut = g.read(CROSSOVER_TAILLE_MAX + 1)
+        else:
+            f.seek(0)
+            brut = f.read(CROSSOVER_TAILLE_MAX + 1)
+    if len(brut) > CROSSOVER_TAILLE_MAX:
+        raise ValueError(f"{chemin} : plus de {CROSSOVER_TAILLE_MAX} octets une fois decompresse")
+    if b"<!DOCTYPE" in brut or b"<!ENTITY" in brut:
+        raise ValueError(f"{chemin} : DOCTYPE ou entite dans un .tie, refuse")
+    return ET.fromstring(brut)
+
+
+def titre_norme(s):
+    """Titre compare « exactement » : casse, marques deposees, apostrophes et
+    tirets typographiques, espaces. Rien d'autre (ni sous-titre, ni edition)."""
+    s = re.sub(r"[®™©]", "", s or "")  # avant NFKC, qui ferait de « ™ » les lettres TM
+    s = unicodedata.normalize("NFKC", s)
+    for a, b in (("’", "'"), ("‘", "'"), ("–", "-"), ("—", "-")):
+        s = s.replace(a, b)
+    return re.sub(r"\s+", " ", s).strip().casefold()
+
+
+def _version(s):
+    return tuple(int(x) for x in re.findall(r"\d+", s or "")) or (0,)
+
+
+def _condition(e, faits):
+    """Un <useif> : True, False, ou None quand un fait nous est inconnu (langue
+    de la bouteille, fichier d'installation...). Un motif <match> n'est jamais
+    compile (donnee telechargee) : seuls `.*_64` et `.*_64$` sont reconnus."""
+    if e.tag in ("useif", "and", "or"):
+        vals = [_condition(c, faits) for c in e]
+        if e.tag == "or":
+            return True if True in vals else (None if None in vals else False)
+        return False if False in vals else (None if None in vals else True)
+    if e.tag == "not":
+        vals = [_condition(c, faits) for c in e]
+        return None if len(vals) != 1 or vals[0] is None else not vals[0]
+    fait = faits.get((e.get("name") or "").strip().lower())
+    texte = (e.text or "").strip()
+    if fait is None:
+        return None
+    if e.tag == "equal":
+        return fait.lower() == texte.lower()
+    if e.tag == "match" and texte in (".*_64", ".*_64$"):
+        return fait.endswith("_64")
+    return None
+
+
+def crossover_recette(ident, entrees):
+    """Reduit les entrees <app> d'une recette a ses valeurs techniques : aucun
+    texte (description, notes, commentaire) n'est lu."""
+    def pour(a):  # version minimale de CrossOver visee par l'entree
+        return max([_version(v.text) for v in a.findall("cxversion")] or [(0,)])
+    entrees = [a for a in entrees if pour(a)[0] < 100]  # 200 : entree desactivee
+    if not entrees:
+        return None
+    app = max(entrees, key=lambda a: (pour(a), a.get("timestamp") or ""))
+    profil = app.find("appprofile")
+    if profil is None:
+        return None
+    titres = list(dict.fromkeys((n.text or "").strip() for a in entrees for n in a.findall("name")
+                                if n.get("lang") in (None, "en") and (n.text or "").strip()))
+    gabarits = [(b.text or "").strip() for b in profil.findall("bottletemplate") if b.get("purpose") in (None, "use")]
+    r = {
+        "id": ident, "titres": titres, "titres_normes": {titre_norme(t) for t in titres},
+        "steamids": sorted({(s.text or "").strip() for a in entrees for s in a.findall("appprofile/steamid")} - {""}),
+        "jeu": (profil.findtext("category") or "").startswith("Games") and "application" in [f.text for f in profil.findall("flag")],
+        "version": ".".join(map(str, pour(app))),
+        "date": (app.get("timestamp") or "")[:10],
+        "gabarit": gabarits[0] if gabarits else None,
+        "dependances": [], "dll": [], "dll_exe": [], "registre": [], "environnement": [],
+    }
+    faits = {"platform": "Mac", "sourcetype": "steam", "bottletemplate": r["gabarit"], "vulkan.present": "yes"}
+    for ip in app.findall("installprofile"):
+        if ip.get("appid"):
+            continue  # reglages poses pour une AUTRE application de la bouteille
+        cond = ip.find("useif")
+        if cond is not None and _condition(cond, faits) is not True:
+            continue
+        for tag in ("predependency", "postdependency"):
+            r["dependances"] += [(d.text or "").strip() for d in ip.findall(tag) if (d.text or "").strip()]
+        for tag in ("preinstallregistry", "postinstallregistry"):
+            for reg in ip.findall(tag):
+                cle = (reg.findtext("key") or "").strip()
+                for v in reg.findall("value"):
+                    nom, donnee = (v.findtext("name") or "").strip(), (v.findtext("data") or "").strip()
+                    exe = CLE_DLL_EXE.match(cle)
+                    wine = CLE_WINE.match(cle)
+                    if CLE_DLL.match(cle):
+                        r["dll"].append((nom, donnee))
+                    elif exe:
+                        r["dll_exe"].append((exe.group(1), nom, donnee))
+                    elif wine:
+                        r["registre"].append((wine.group(1).replace("\\", "/"), nom, donnee))
+        # variables de la bouteille (durables) ; <installerenvironment> ne vaut que pour l'installeur
+        for env in ip.findall("preinstallenvironment"):
+            r["environnement"].append(((env.findtext("name") or "").strip(), (env.findtext("value") or "").strip()))
+    for k in ("dependances", "dll", "dll_exe", "registre", "environnement"):
+        r[k] = list(dict.fromkeys(r[k]))
+    return r
+
+
+def crossover_indexer(racines):
+    """{recettes par identifiant, par Steam ID, par titre norme (jeux seulement)}."""
+    par_id = collections.defaultdict(list)
+    for racine in racines:
+        for app in racine.iter("app"):
+            if app.get("appid"):
+                par_id[app.get("appid")].append(app)
+    recettes, par_steam, par_titre = {}, collections.defaultdict(list), collections.defaultdict(list)
+    for ident, entrees in par_id.items():
+        r = crossover_recette(ident, entrees)
+        if not r:
+            continue
+        recettes[ident] = r
+        for s in r["steamids"]:
+            par_steam[s].append(r)
+        if r["jeu"]:
+            for t in r["titres_normes"]:
+                par_titre[t].append(r)
+    return {"recettes": recettes, "par_steam": par_steam, "par_titre": par_titre}
+
+
+def crossover_charger(toile, aujourd):
+    """Telecharge (une fois) l'archive des recettes dans <cache>/crossover/ et
+    indexe tous les .tie et .tie.gz du dossier. Rend (index, date) ou (None, None)."""
+    dossier = os.path.join(toile.cache, "crossover")
+    archive = os.path.join(dossier, os.path.basename(CROSSOVER_ARCHIVE))
+    marque = os.path.join(dossier, "archive.json")
+    if (not os.path.exists(archive) or toile.refresh) and not toile.sans_reseau:
+        dire("CrossOver : telechargement de l'archive des recettes (~3 Mo)...")
+        r = toile.get(CROSSOVER_ARCHIVE, "", binaire=True)
+        if r["statut"] == 200 and r["corps"][:2] == b"\x1f\x8b":
+            os.makedirs(dossier, exist_ok=True)
+            with open(archive + ".tmp", "wb") as f:
+                f.write(r["corps"])
+            os.replace(archive + ".tmp", archive)
+            with open(marque + ".tmp", "w", encoding="utf-8") as f:
+                json.dump({"date": r["date"], "url": CROSSOVER_ARCHIVE, "octets": len(r["corps"])}, f)
+            os.replace(marque + ".tmp", marque)
+        else:
+            dire("CrossOver : archive indisponible (", r["statut"], ")")
+    fichiers = sorted(os.path.join(dossier, n) for n in (os.listdir(dossier) if os.path.isdir(dossier) else [])
+                      if n.endswith((".tie", ".tie.gz")))
+    if not fichiers:
+        dire("CrossOver : pas de recette en cache, on continue sans")
+        return None, None
+    racines = []
+    for p in fichiers:
+        try:
+            racines.append(_tie_lire(p))
+        except (ValueError, OSError, EOFError, ET.ParseError) as e:
+            dire(f"CrossOver : {os.path.basename(p)} illisible ({e}), ignore")
+    date = aujourd
+    if os.path.exists(marque):
+        with open(marque, "r", encoding="utf-8") as f:
+            date = json.load(f).get("date") or aujourd
+    return crossover_indexer(racines), date
+
+
+def crossover_trouver(index, appid, nom):
+    """(recette, correspondance, confiance) : par Steam ID quand la recette en
+    porte un (confiance haute), sinon par titre exact d'un jeu (moyenne). Deux
+    recettes pour un meme jeu sans titre pour les departager : (None, "ambigu",
+    identifiants). Rien trouve : (None, None, None)."""
+    titre = titre_norme(nom)
+    candidats = index["par_steam"].get(str(appid), [])
+    if candidats:
+        exacts = [r for r in candidats if titre and titre in r["titres_normes"]]
+        if len(exacts) == 1:
+            return exacts[0], "steamid+titre", "haute"
+        if len(candidats) == 1:
+            return candidats[0], "steamid", "haute"
+        return None, "ambigu", " ".join(sorted(r["id"] for r in candidats))
+    # une recette qui porte un AUTRE Steam ID est un autre jeu (autre edition, remaster)
+    candidats = [r for r in index["par_titre"].get(titre, []) if not r["steamids"]] if titre else []
+    if len(candidats) == 1:
+        return candidats[0], "titre", "moyenne"
+    if candidats:
+        return None, "ambigu", " ".join(sorted(r["id"] for r in candidats))
+    return None, None, None
+
+
+def _verbe(nom):
+    n = (nom or "").strip().lower()
+    for motif, verbe in VERBES:
+        m = re.search(motif, n)
+        if not m:
+            continue
+        if verbe is None:  # .NET : 4.6.2 -> dotnet462, 3.5 Service Pack 1 -> dotnet35sp1
+            return "dotnet" + m.group(1) + m.group(2) + (m.group(3) or "") + (f"sp{m.group(4)}" if m.group(4) else "")
+        return m.expand(verbe)
+    return None
+
+
+def crossover_valeurs(r, index, bits=None):
+    """Les valeurs d'une recette, en deux parts : `bloc` pour [compat.crossover]
+    (la recette telle qu'elle est, sans prose) et `cidre` pour [cidre] (ce que
+    le lanceur applique). Garde-fous de la seconde :
+      - windows_version : seulement si le gabarit est un choix (recette pour
+        CrossOver >= 23, voir CROSSOVER_GABARIT_CHOISI), plus ancien que
+        win10 (win10 est notre defaut, win11 l'autre defaut des recettes pour
+        CrossOver 26), et pas un gabarit 32 bits pour un jeu dont la fiche dit
+        64 bits (recette d'avant l'executable 64 bits). importer_crossover ne
+        le pose que sur demande (--crossover-windows-version) ;
+      - dll_overrides : `native` seul devient `n,b` -- la recette installe la
+        DLL native par une dependance, nous pas encore : sans elle, `n` seul
+        empecherait le jeu de demarrer, `n,b` retombe sur celle de Wine ; les
+        DLL du chemin graphique (dxgi, d3d11...) restent celles de Cidre ;
+      - dependances : les composants que notre table sait nommer."""
+    bloc, cidre = {}, {}
+    bloc["recette"] = r["id"]
+    bloc["recette_date"] = r["date"]
+    bloc["crossover_version"] = r["version"]
+    gabarit = r["gabarit"] if r["gabarit"] and re.fullmatch(r"win[a-z0-9]+(_64)?", r["gabarit"]) else None
+    if gabarit:
+        bloc["bouteille"] = gabarit
+        version = "winxp64" if gabarit == "winxp_64" else GABARITS.get(gabarit.removesuffix("_64"))
+        choisi = _version(r["version"])[0] >= CROSSOVER_GABARIT_CHOISI
+        trop_vieux = bits == 64 and not gabarit.endswith("_64")
+        if version and version not in ("win10", "win11") and choisi and not trop_vieux:
+            cidre["windows_version"] = version
+    # DLL forcees
+    brutes, par_mode = [], collections.OrderedDict()
+    for nom, donnee in r["dll"]:
+        modes = [DLL_MODES.get(x.strip().lower()) for x in donnee.split(",")] if donnee else [""]
+        if not DLL_NOM.match(nom) or None in modes or len(modes) > 2:
+            continue
+        brutes.append(f"{nom}={','.join(modes)}")
+        if DLL_GRAPHIQUES.match(nom.lower().removesuffix(".dll")):
+            continue
+        if modes == ["n"]:
+            modes = ["n", "b"]
+        par_mode.setdefault(",".join(modes), []).append(nom)
+    if brutes:
+        bloc["dll_overrides"] = " ; ".join(brutes)
+    if par_mode:
+        cidre["dll_overrides"] = ";".join(f"{','.join(noms)}={mode}" for mode, noms in par_mode.items())
+    par_exe = [f"{exe}:{nom}={','.join(DLL_MODES[x.strip().lower()] for x in donnee.split(','))}"
+               for exe, nom, donnee in r["dll_exe"]
+               if DLL_NOM.match(exe) and DLL_NOM.match(nom) and all(x.strip().lower() in DLL_MODES for x in donnee.split(","))]
+    if par_exe:
+        bloc["dll_overrides_par_exe"] = " ; ".join(par_exe)
+    # dependances : nos verbes, et les identifiants de ce qu'on ne sait pas nommer
+    verbes, inconnues, graphismes = [], [], None
+    for ident in r["dependances"]:
+        dep = index["recettes"].get(ident)
+        nom = dep["titres"][0] if dep and dep["titres"] else ""
+        if nom.lower().startswith("dxvk"):
+            graphismes = "dxvk"
+            continue
+        if nom.lower() == "steam":
+            continue  # le client Steam n'est pas un redistribuable
+        v = _verbe(nom)
+        if v:
+            verbes.append(v)
+        elif re.fullmatch(r"com\.codeweavers\.c4\.[A-Za-z0-9]+", ident):
+            inconnues.append(ident)
+    verbes = list(dict.fromkeys(verbes))
+    if verbes:
+        bloc["dependances"] = " ".join(verbes)
+        cidre["dependances"] = " ".join(verbes)
+    if inconnues:
+        bloc["dependances_non_traduites"] = " ".join(dict.fromkeys(inconnues))
+    # environnement de la bouteille, autres cles Wine : des donnees, pas appliquees
+    env = [(n, v) for n, v in r["environnement"] if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,40}", n) and VALEUR_SURE.match(v)]
+    for n, v in env:
+        if n.upper() in ("WINED3DMETAL", "D3DMETAL") and v == "1":
+            graphismes = "d3dmetal"
+        elif n == "CX_GRAPHICS_BACKEND" and v in ("dxvk", "dxmt", "d3dmetal", "wined3d") and graphismes != "d3dmetal":
+            graphismes = v
+    if env:
+        bloc["environnement"] = " ; ".join(f"{n}={v}" for n, v in env)
+    if graphismes:
+        bloc["graphismes"] = graphismes
+    reg = [f"{cle}:{nom}={donnee}" for cle, nom, donnee in r["registre"]
+           if VALEUR_SURE.match(cle) and VALEUR_SURE.match(nom) and VALEUR_SURE.match(donnee)]
+    if reg:
+        bloc["registre"] = " ; ".join(reg)
+    return bloc, cidre
+
+
+CLES_CROSSOVER = ("recette", "correspondance", "confiance", "recette_date", "crossover_version", "bouteille",
+                  "dll_overrides", "dll_overrides_par_exe", "dependances", "dependances_non_traduites",
+                  "graphismes", "environnement", "registre", "url")
+CLES_CIDRE_CROSSOVER = ("windows_version", "dll_overrides", "dependances")
+
+
+def bilan_crossover_vide():
+    return {"recettes": 0, "ambigus": [], "titres_differents": [], "windows_version_retenues": [], "cidre": {}}
+
+
+def importer_crossover(fiche, appid, nom, crossover, bilan):
+    """Fond la recette CrossOver du jeu dans la fiche. `bilan` (dict du rapport)
+    compte ce qui a ete trouve et pose ; les desaccords vont, comme pour les
+    autres sources, dans fiche.contradictions.
+    Dans [cidre], rien n'est pose depuis une recette rapprochee par le titre
+    seul (confiance moyenne : meme jeu, mais autre boutique ou edition CD), et
+    windows_version ne l'est que si crossover["poser_windows_version"] : le
+    lanceur l'applique par `winecfg -v` au prefixe partage sans jamais revenir
+    a win10, un jeu en win7 y laisserait donc tous les autres. Ce que la
+    recette aurait donne sort dans bilan["windows_version_retenues"]."""
+    index, date = crossover["index"], crossover["date"]
+    r, comment, confiance = crossover_trouver(index, appid, nom)
+    if r is None:
+        if comment == "ambigu":
+            bilan["ambigus"].append({"appid": appid, "nom": nom, "recettes": confiance})
+        return
+    bilan["recettes"] += 1
+    bilan["par_" + comment.replace("+", "_")] = bilan.get("par_" + comment.replace("+", "_"), 0) + 1
+    if titre_norme(nom) not in r["titres_normes"]:
+        bilan["titres_differents"].append({"appid": appid, "nom": nom, "recette": r["id"], "titre_recette": r["titres"][0] if r["titres"] else ""})
+    bits = fiche.section("jeu").get("bits")
+    bloc, cidre = crossover_valeurs(r, index, bits)
+    bloc["correspondance"], bloc["confiance"] = comment, confiance
+    bloc["url"] = CROSSOVER_PAGE.format(n=urllib.parse.quote(r["id"].rsplit(".", 1)[-1]))
+    S = "compat.crossover"
+    for k in CLES_CROSSOVER:
+        if k in bloc:
+            fiche.poser(S, k, bloc[k], "crossover", date, appid)
+        else:
+            fiche.retirer(S, k, "crossover")
+    if confiance != "haute":
+        cidre = {}
+    if "windows_version" in cidre and not crossover.get("poser_windows_version"):
+        bilan["windows_version_retenues"].append({"appid": appid, "nom": nom, "windows_version": cidre.pop("windows_version"),
+                                                  "recette": r["id"]})
+    for k in CLES_CIDRE_CROSSOVER:
+        if k in cidre:
+            if fiche.poser("cidre", k, cidre[k], "crossover", date, appid) or fiche.source_de("cidre", k)[0] == "crossover":
+                bilan["cidre"][k] = bilan["cidre"].get(k, 0) + 1
+        else:
+            fiche.retirer("cidre", k, "crossover")
+    gabarit = bloc.get("bouteille")
+    if gabarit and bits == 64 and not gabarit.endswith("_64"):
+        fiche.contradictions.append({
+            "appid": appid, "champ": "jeu.bits", "fiche": bits, "source_fiche": fiche.source_de("jeu", "bits")[0] or "fiche (a la main)",
+            "import": f"bouteille {gabarit} (32 bits)", "source_import": "crossover"})
+
+
 # ------------------------------------------------------------------- import
 def _compteur(d, n=5):
     """{'steam': 97, 'bottles': 2} -> "steam:97 bottles:2" (le README interdit les tables en ligne)."""
     return " ".join(f"{k}:{v}" for k, v in sorted(d.items(), key=lambda kv: -kv[1])[:n])
 
 
-def importer(appid, nom_steam, plateformes, toile, index_dir, date_export, profils, aujourd):
+def importer(appid, nom_steam, plateformes, toile, index_dir, date_export, profils, aujourd,
+             sources=SOURCES, crossover=None, bilan_crossover=None):
     chemin = os.path.join(profils, f"{appid}.toml")
     doc = lire_toml(chemin) if os.path.exists(chemin) else {}
     fiche = Fiche(doc)
     jeu = fiche.section("jeu")
+    nom_connu = nom_steam or jeu.get("nom")  # sans bibliotheque : le nom deja dans la fiche
     if "appid" not in jeu:
         fiche.ecrire("jeu", "appid", int(appid) if str(appid).isdigit() else str(appid))
-    if nom_steam:
+    if nom_steam and "steam" in sources:
         fiche.poser("jeu", "nom", nom_steam, "steam", aujourd, appid)
-    if plateformes:
+    if plateformes and "steam" in sources:
         fiche.poser("jeu", "plateformes_steam", " ".join(sorted(plateformes)), "steam", aujourd, appid)
     signaux = {}
 
     # --- ProtonDB : resume public (palier) + export des rapports (index local)
-    resume, date_r = protondb_resume(toile, appid)
+    resume, date_r = protondb_resume(toile, appid) if "protondb" in sources else (None, None)
     if resume:
         for k_src, k in (("tier", "palier"), ("trendingTier", "tendance"), ("bestReportedTier", "meilleur_palier"),
                          ("confidence", "confiance"), ("total", "rapports")):
@@ -904,7 +1395,7 @@ def importer(appid, nom_steam, plateformes, toile, index_dir, date_export, profi
             fiche.poser("compat.protondb", "score", int(round(float(resume["score"]) * 100)), "protondb", date_r, appid)
         fiche.poser("compat.protondb", "url", PROTONDB_PAGE.format(appid=appid), "protondb", date_r, appid)
         signaux["protondb_palier"] = resume.get("tier")
-    idx = protondb_index(index_dir, appid)
+    idx = protondb_index(index_dir, appid) if "protondb" in sources else None
     if idx and idx.get("total"):
         d = date_export or aujourd
         if idx.get("lanceurs"):
@@ -928,7 +1419,8 @@ def importer(appid, nom_steam, plateformes, toile, index_dir, date_export, profi
         fiche.poser("compat.protondb", "rapports_export", idx["total"], "protondb", d, appid)
 
     # --- PCGamingWiki : infobox, modele API, Middleware, Game data, Availability
-    titre, texte, date_p, comment = trouver_page(toile, PCGW_API, "pcgw", appid, nom_steam)
+    titre, texte, date_p, comment = (trouver_page(toile, PCGW_API, "pcgw", appid, nom_steam)
+                                     if "pcgamingwiki" in sources else (None, None, None, None))
     ex = {}
     if texte:
         ex = pcgw_extraire(texte)
@@ -947,14 +1439,14 @@ def importer(appid, nom_steam, plateformes, toile, index_dir, date_export, profi
     # --- AppleGamingWiki : meme titre que PCGW en general
     titres = [t for t in (titre, nom_steam, re.sub(r"[®™©]", "", nom_steam or "").strip()) if t]
     titre_a, texte_a, date_a = None, None, None
-    for t in dict.fromkeys(titres):
+    for t in dict.fromkeys(titres) if "applegamingwiki" in sources else ():
         titre_a, texte_a, date_a = wiki_page(toile, AGW_API, "agw", t)
         if texte_a:
             principal, _ = infobox_appids(texte_a)
             if str(appid) in principal or not principal:
                 break
         titre_a, texte_a = None, None
-    if not texte_a:
+    if not texte_a and "applegamingwiki" in sources:
         for t in wiki_chercher_appid(toile, AGW_API, "agw", appid)[:2]:
             titre_a, texte_a, date_a = wiki_page(toile, AGW_API, "agw", t)
             if texte_a and str(appid) in infobox_appids(texte_a)[0]:
@@ -974,6 +1466,11 @@ def importer(appid, nom_steam, plateformes, toile, index_dir, date_export, profi
         acs = signaux["protondb_anticheat"]
         if len(acs) == 1:
             fiche.poser("jeu", "anticheat", next(iter(acs)), "protondb", date_export or aujourd, appid)
+
+    # --- CrossOver : la recette CrossTie du jeu, dernier rang
+    if "crossover" in sources and crossover and crossover.get("index"):
+        importer_crossover(fiche, appid, nom_connu, crossover, bilan_crossover if bilan_crossover is not None
+                           else bilan_crossover_vide())
 
     # --- [compat] : jamais touche s'il existe ; sinon « non teste » date du jour
     if "etat" not in fiche.section("compat"):
@@ -1031,7 +1528,7 @@ def _ranger(doc):
             return t
         fin = ("source", "date", "url") if bloc_import else ()
         cles = [k for k in t if k != "sources" and k not in fin] + [k for k in fin if k in t] + (["sources"] if "sources" in t else [])
-        nouveau = {k: ranger_table(t[k], bloc_import=(k in ("protondb", "pcgamingwiki", "applegamingwiki"))) for k in cles}
+        nouveau = {k: ranger_table(t[k], bloc_import=(k in ("protondb", "pcgamingwiki", "applegamingwiki", "crossover"))) for k in cles}
         t.clear()
         t.update(nouveau)
         return t
@@ -1066,16 +1563,31 @@ def main(argv=None):
     ap.add_argument("--sans-export", action="store_true", help="ne pas telecharger l'export ProtonDB (resumes seulement)")
     ap.add_argument("--neuves-seulement", action="store_true", help="ne pas toucher aux fiches qui existent deja (ecrites a la main)")
     ap.add_argument("--windows-seulement", action="store_true", help="ignorer les jeux qui ont une version macOS native")
+    ap.add_argument("--sources", default=",".join(SOURCES),
+                    help="sources a interroger, separees par des virgules (defaut : toutes) : " + ", ".join(SOURCES))
+    ap.add_argument("--crossover-windows-version", action="store_true",
+                    help="poser aussi [cidre] windows_version depuis les recettes CrossOver (coupe par defaut : "
+                         "le lanceur ne remet pas win10 sur le prefixe partage)")
+    ap.add_argument("--fiches-existantes", action="store_true",
+                    help="sans appid : les fiches deja dans --profils, au lieu de la bibliotheque Steam")
     ap.add_argument("--rapport", help="ecrire le rapport (JSON) des contradictions ici")
     ap.add_argument("--date", help="date a inscrire (defaut : aujourd'hui ; pour les tests)")
     ap.add_argument("--index", action="store_true", help="regenerer profils/index.toml a la fin (tests/fiche_profil.sh generer-index)")
     a = ap.parse_args(argv)
 
     aujourd = a.date or aujourdhui()
+    sources = tuple(x.strip() for x in a.sources.split(",") if x.strip())
+    inconnues = [x for x in sources if x not in SOURCES]
+    if inconnues:
+        ap.error(f"source(s) inconnue(s) : {' '.join(inconnues)} (connues : {' '.join(SOURCES)})")
     toile = Toile(a.cache, refresh=a.refresh, sans_reseau=a.sans_reseau)
-    biblio = bibliotheque_steam(a.bibliotheque) if (not a.appids or a.bibliotheque) else []
+    existantes = a.fiches_existantes and not a.appids
+    biblio = bibliotheque_steam(a.bibliotheque) if ((not a.appids and not existantes) or a.bibliotheque) else []
     par_appid = {str(g["appid"]): g for g in biblio if g.get("appid")}
     appids = [str(x) for x in a.appids] if a.appids else list(par_appid)
+    if existantes:
+        appids = sorted((n[:-5] for n in os.listdir(a.profils) if n.endswith(".toml") and n != "index.toml"),
+                        key=lambda x: (not x.isdigit(), int(x) if x.isdigit() else 0, x))
     if a.windows_seulement:  # ... sauf ceux qui ont deja une fiche (version Windows testee sous Cidre)
         appids = [x for x in appids if x not in par_appid or "macos" not in par_appid[x].get("plateformes", [])
                   or os.path.exists(os.path.join(a.profils, f"{x}.toml"))]
@@ -1091,15 +1603,18 @@ def main(argv=None):
         return 2
 
     index_dir, date_export = (None, None)
-    if not a.sans_export:
+    if not a.sans_export and "protondb" in sources:
         index_dir, date_export = protondb_export_indexer(toile, appids)
+    index_crossover, date_crossover = crossover_charger(toile, aujourd) if "crossover" in sources else (None, None)
+    crossover = {"index": index_crossover, "date": date_crossover, "poser_windows_version": a.crossover_windows_version}
+    bilan_crossover = bilan_crossover_vide()
 
     ecrites, contradictions, erreurs = 0, [], []
     for i, appid in enumerate(appids, 1):
         g = par_appid.get(appid, {})
         try:
             mod, contra = importer(appid, g.get("nom"), g.get("plateformes"), toile, index_dir, date_export,
-                                   a.profils, aujourd)
+                                   a.profils, aujourd, sources, crossover, bilan_crossover)
         except Exception as e:  # une fiche cassee ne doit pas arreter les 1200 autres
             erreurs.append({"appid": appid, "erreur": f"{type(e).__name__}: {e}"})
             dire(f"[{i}/{len(appids)}] {appid} {g.get('nom', '')} : ERREUR {type(e).__name__}: {e}")
@@ -1112,6 +1627,14 @@ def main(argv=None):
         generer_index(a.profils)
     rapport = {"date": aujourd, "appids": len(appids), "fiches_modifiees": ecrites,
                "contradictions": contradictions, "erreurs": erreurs, "requetes": toile.requetes}
+    if crossover["index"]:
+        b = bilan_crossover
+        b["date_archive"] = crossover["date"]
+        rapport["crossover"] = b
+        dire(f"CrossOver : {b['recettes']} recette(s) trouvee(s), {len(b['ambigus'])} ambigue(s) ; [cidre] : "
+             + (", ".join(f"{k} sur {n} fiche(s)" for k, n in sorted(b["cidre"].items())) or "rien")
+             + (f" ; windows_version retenue sur {len(b['windows_version_retenues'])} fiche(s) (--crossover-windows-version)"
+                if b["windows_version_retenues"] else ""))
     if a.rapport:
         with open(a.rapport, "w", encoding="utf-8") as f:
             json.dump(rapport, f, ensure_ascii=False, indent=1)

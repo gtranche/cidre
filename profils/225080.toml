@@ -24,6 +24,12 @@ api_disponibles = "pcgamingwiki 2026-10-11"
 bits = "pcgamingwiki 2026-10-11"
 drm = "pcgamingwiki 2026-10-11"
 
+[cidre]
+dependances = "vcrun2010 dotnet40 physx"
+
+[cidre.sources]
+dependances = "crossover 2026-10-13"
+
 [compat]
 etat = "non-teste"
 date = "2026-10-11"
@@ -54,3 +60,15 @@ crossover = "jouable"
 source = "applegamingwiki"
 date = "2026-10-11"
 url = "https://www.applegamingwiki.com/wiki/Brothers%3A_A_Tale_of_Two_Sons"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.12106"
+source = "crossover"
+date = "2026-10-13"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2023-09-01"
+crossover_version = "22.0.1"
+bouteille = "win7_64"
+dependances = "vcrun2010 dotnet40 physx"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=12106"

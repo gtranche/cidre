@@ -1,0 +1,329 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Recettes CrossTie FABRIQUEES pour tests/outils/test_importer_profils.py, a la
+     forme de l'archive publique crossover.tie.gz (racine c4p, une entree <app>
+     par version minimale de CrossOver). Rien ici ne vient de CodeWeavers. -->
+<c4p>
+  <highlightedapps>
+    <highlightedapp appid="com.codeweavers.c4.90001" platform="Mac"/>
+  </highlightedapps>
+  <disabledlicenses>
+    <id>FixtureSansValeur</id>
+  </disabledlicenses>
+  <applications>
+    <!-- Jeu Fictif, recette d'avant : remplacee par l'entree 24, rien n'en sort -->
+    <app appid="com.codeweavers.c4.90001" timestamp="2015-03-01T10:00:00-06:00">
+      <cxversion product="cxoffice">13.0</cxversion>
+      <name>Jeu Fictif</name>
+      <appprofile>
+        <description>Prose CrossOver perimee</description>
+        <category>Games/Action Games</category>
+        <flag>application</flag>
+        <bottletemplate>winxp</bottletemplate>
+        <steamid>990000001</steamid>
+      </appprofile>
+      <installprofile>
+        <predependency>com.codeweavers.c4.90015</predependency>
+        <preinstallregistry>
+          <key>HKEY_CURRENT_USER\Software\Wine\DllOverrides</key>
+          <value>
+            <name>perimee</name>
+            <data>native</data>
+          </value>
+        </preinstallregistry>
+      </installprofile>
+    </app>
+    <!-- Jeu Fictif, recette en vigueur -->
+    <app appid="com.codeweavers.c4.90001" timestamp="2024-05-02T09:30:00-05:00">
+      <cxversion product="cxoffice">24</cxversion>
+      <name>Jeu Fictif</name>
+      <name lang="en">Jeu Fictif</name>
+      <name lang="de">Erfundenes Spiel</name>
+      <appprofile>
+        <description>Prose CrossOver : description</description>
+        <description lang="en">Prose CrossOver : description</description>
+        <comment>Prose CrossOver : commentaire</comment>
+        <medal rating="5" platform="Mac" version="24.0.0" num="3" last="2024-06-01T00:00:00-05:00">gold</medal>
+        <category>Games/Action Games</category>
+        <flag>application</flag>
+        <installeddisplaypattern>Jeu Fictif</installeddisplaypattern>
+        <bottletemplate purpose="install">winxp</bottletemplate>
+        <bottletemplate purpose="use">win7_64</bottletemplate>
+        <bottletemplate purpose="use">win10_64</bottletemplate>
+        <steamid>990000001</steamid>
+      </appprofile>
+      <installprofile>
+        <comment>Prose CrossOver : commentaire d'installation</comment>
+        <installnotes lang="en">Prose CrossOver : notes d'installation</installnotes>
+        <predependency>com.codeweavers.c4.90010</predependency>
+        <predependency>com.codeweavers.c4.90011</predependency>
+        <predependency>com.codeweavers.c4.90012</predependency>
+        <predependency>com.codeweavers.c4.90013</predependency>
+        <postdependency>com.codeweavers.c4.90014</postdependency>
+        <installerdlloverrides>msi,*msiexec.exe=b</installerdlloverrides>
+        <installerenvironment>
+          <name>WINE_WAIT_CHILD_PIPE_IGNORE</name>
+          <value>installeur.exe</value>
+        </installerenvironment>
+        <preinstallregistry>
+          <key>HKEY_CURRENT_USER\Software\Wine\Direct3D</key>
+          <value>
+            <name>renderer</name>
+            <data>vulkan</data>
+          </value>
+        </preinstallregistry>
+        <preinstallregistry>
+          <key>HKCU\Software\Wine\AppDefaults\JeuFictif.exe\DllOverrides</key>
+          <value>
+            <name>dinput8</name>
+            <data>native,builtin</data>
+          </value>
+        </preinstallregistry>
+        <preinstallregistry>
+          <key>HKEY_LOCAL_MACHINE\Software\StudioFictif</key>
+          <value>
+            <name>Installe</name>
+            <data>dword:1</data>
+          </value>
+        </preinstallregistry>
+        <postinstallregistry>
+          <key>HKEY_CURRENT_USER\Software\Wine\DllOverrides</key>
+          <value>
+            <name>xaudio2_7</name>
+            <data>native</data>
+          </value>
+        </postinstallregistry>
+        <postinstallregistry>
+          <key>HKCU\Software\Wine\DllOverrides</key>
+          <value>
+            <name>x3daudio1_7</name>
+            <data>native</data>
+          </value>
+        </postinstallregistry>
+        <postinstallregistry>
+          <key>HKCU\Software\Wine\DllOverrides</key>
+          <value>
+            <name>msvcp140</name>
+            <data>native, builtin</data>
+          </value>
+        </postinstallregistry>
+        <postinstallregistry>
+          <key>HKCU\Software\Wine\DllOverrides</key>
+          <value>
+            <name>mfplay</name>
+            <data>disable</data>
+          </value>
+        </postinstallregistry>
+        <postinstallregistry>
+          <key>HKCU\Software\Wine\DllOverrides</key>
+          <value>
+            <name>d3d11</name>
+            <data>builtin</data>
+          </value>
+        </postinstallregistry>
+        <postinstallregistry>
+          <key>HKCU\Software\Wine\DllOverrides</key>
+          <value>
+            <name>piege;winemenubuilder.exe=</name>
+            <data>native</data>
+          </value>
+        </postinstallregistry>
+        <postinstallregistry>
+          <key>HKCU\Software\Wine\DllOverrides</key>
+          <value>
+            <name>inconnue</name>
+            <data>mode-invente</data>
+          </value>
+        </postinstallregistry>
+      </installprofile>
+      <installprofile>
+        <useif>
+          <equal name="platform">Mac</equal>
+        </useif>
+        <preinstallenvironment>
+          <name>WINED3DMETAL</name>
+          <value>1</value>
+        </preinstallenvironment>
+      </installprofile>
+      <installprofile>
+        <useif>
+          <equal name="platform">Linux</equal>
+        </useif>
+        <postinstallregistry>
+          <key>HKCU\Software\Wine\DllOverrides</key>
+          <value>
+            <name>linuxseulement</name>
+            <data>native</data>
+          </value>
+        </postinstallregistry>
+      </installprofile>
+      <installprofile>
+        <useif>
+          <not>
+            <equal name="sourcetype">steam</equal>
+          </not>
+        </useif>
+        <predependency>com.codeweavers.c4.90015</predependency>
+      </installprofile>
+      <installprofile>
+        <useif>
+          <equal name="locale">ja</equal>
+        </useif>
+        <predependency>com.codeweavers.c4.90015</predependency>
+      </installprofile>
+      <installprofile>
+        <useif>
+          <and>
+            <or>
+              <equal name="vulkan.present">yes</equal>
+              <equal name="platform">Android</equal>
+            </or>
+            <match name="bottletemplate">.*_64$</match>
+          </and>
+        </useif>
+        <preinstallenvironment>
+          <name>VKD3D_CONFIG</name>
+          <value>heap_multi_bind</value>
+        </preinstallenvironment>
+      </installprofile>
+      <installprofile>
+        <useif>
+          <match name="bottletemplate">(a+)+$</match>
+        </useif>
+        <predependency>com.codeweavers.c4.90015</predependency>
+      </installprofile>
+      <installprofile appid="com.codeweavers.c4.90010">
+        <postinstallregistry>
+          <key>HKCU\Software\Wine\DllOverrides</key>
+          <value>
+            <name>pouruneautreappli</name>
+            <data>native</data>
+          </value>
+        </postinstallregistry>
+      </installprofile>
+    </app>
+    <!-- entree desactivee (version 200) : ignoree -->
+    <app appid="com.codeweavers.c4.90001" timestamp="2026-01-01T00:00:00-06:00">
+      <cxversion product="cxoffice">200</cxversion>
+      <name>Jeu Fictif</name>
+      <appprofile>
+        <category>Games/Action Games</category>
+        <flag>application</flag>
+        <bottletemplate>win98</bottletemplate>
+        <steamid>990000001</steamid>
+      </appprofile>
+    </app>
+
+    <!-- les composants : le nom anglais est la cle de notre table de verbes -->
+    <app appid="com.codeweavers.c4.90010" timestamp="2020-01-01T00:00:00-06:00">
+      <cxversion product="cxoffice">14.0</cxversion>
+      <name>Microsoft Visual C++ 2015 (14.0) Redistributable Runtime (64-bit)</name>
+      <appprofile>
+        <category>Non-Applications/Components</category>
+        <flag>component</flag>
+        <bottletemplate>win7_64</bottletemplate>
+      </appprofile>
+    </app>
+    <app appid="com.codeweavers.c4.90011" timestamp="2020-01-01T00:00:00-06:00">
+      <cxversion product="cxoffice">17.0</cxversion>
+      <name>Microsoft .NET Framework 4.6.2</name>
+      <appprofile>
+        <category>Non-Applications/Components</category>
+        <flag>component</flag>
+        <bottletemplate>win7</bottletemplate>
+      </appprofile>
+    </app>
+    <app appid="com.codeweavers.c4.90012" timestamp="2021-02-14T00:00:00-06:00">
+      <cxversion product="cxoffice">21.0.0</cxversion>
+      <name>DXVK (Builtin)</name>
+      <appprofile>
+        <category>Non-Applications/Components</category>
+        <flag>component</flag>
+        <flag>virtual</flag>
+        <bottletemplate>win10_64</bottletemplate>
+      </appprofile>
+    </app>
+    <app appid="com.codeweavers.c4.90013" timestamp="2021-02-14T00:00:00-06:00">
+      <cxversion product="cxoffice">21</cxversion>
+      <name>Composant Que Notre Table Ignore</name>
+      <appprofile>
+        <category>Non-Applications/Components</category>
+        <flag>component</flag>
+        <bottletemplate>win10_64</bottletemplate>
+      </appprofile>
+    </app>
+    <app appid="com.codeweavers.c4.90014" timestamp="2021-02-03T00:00:00-06:00">
+      <cxversion product="cxoffice">12.0</cxversion>
+      <name>DirectX for Modern Games</name>
+      <appprofile>
+        <category>Non-Applications/Components</category>
+        <flag>component</flag>
+        <bottletemplate>winxp</bottletemplate>
+      </appprofile>
+    </app>
+    <app appid="com.codeweavers.c4.90015" timestamp="2020-01-01T00:00:00-06:00">
+      <cxversion product="cxoffice">9.0</cxversion>
+      <name>Microsoft .NET Framework 3.5 Service Pack 1</name>
+      <appprofile>
+        <category>Non-Applications/Components</category>
+        <flag>component</flag>
+        <bottletemplate>winxp</bottletemplate>
+      </appprofile>
+    </app>
+
+    <!-- rapprochement par le titre seul : pas de Steam ID dans la recette -->
+    <app appid="com.codeweavers.c4.90020" timestamp="2025-02-01T00:00:00-06:00">
+      <cxversion product="cxoffice">25</cxversion>
+      <name>Jeu Sans Identifiant®: L’Édition</name>
+      <appprofile>
+        <category>Games/Adventure Games</category>
+        <flag>application</flag>
+        <bottletemplate>winxp</bottletemplate>
+      </appprofile>
+      <installprofile>
+        <predependency>com.codeweavers.c4.90010</predependency>
+      </installprofile>
+    </app>
+    <!-- meme titre qu'un jeu Steam, mais la recette porte un AUTRE Steam ID : un autre jeu -->
+    <app appid="com.codeweavers.c4.90021" timestamp="2025-02-01T00:00:00-06:00">
+      <cxversion product="cxoffice">25</cxversion>
+      <name>Jeu Refait</name>
+      <appprofile>
+        <category>Games/Adventure Games</category>
+        <flag>application</flag>
+        <bottletemplate>win10_64</bottletemplate>
+        <steamid>990000777</steamid>
+      </appprofile>
+    </app>
+    <!-- meme titre qu'un jeu, mais ce n'est pas un jeu : pas de rapprochement par titre -->
+    <app appid="com.codeweavers.c4.90022" timestamp="2025-02-01T00:00:00-06:00">
+      <cxversion product="cxoffice">25</cxversion>
+      <name>Tableur Homonyme</name>
+      <appprofile>
+        <category>Productivity/Office Suites</category>
+        <flag>application</flag>
+        <bottletemplate>win10_64</bottletemplate>
+      </appprofile>
+    </app>
+    <!-- deux recettes pour un meme Steam ID, aucune au titre du jeu : ambigu -->
+    <app appid="com.codeweavers.c4.90030" timestamp="2025-02-01T00:00:00-06:00">
+      <cxversion product="cxoffice">25</cxversion>
+      <name>Jeu Double</name>
+      <appprofile>
+        <category>Games/Strategy Games</category>
+        <flag>application</flag>
+        <bottletemplate>win10_64</bottletemplate>
+        <steamid>990000030</steamid>
+      </appprofile>
+    </app>
+    <app appid="com.codeweavers.c4.90031" timestamp="2025-02-01T00:00:00-06:00">
+      <cxversion product="cxoffice">25</cxversion>
+      <name>Jeu Double: Complet</name>
+      <appprofile>
+        <category>Games/Strategy Games</category>
+        <flag>application</flag>
+        <bottletemplate>win98</bottletemplate>
+        <steamid>990000030</steamid>
+      </appprofile>
+    </app>
+  </applications>
+</c4p>

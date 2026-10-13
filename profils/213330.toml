@@ -12,6 +12,12 @@ plateformes_steam = "windows"
 nom = "steam 2026-10-11"
 plateformes_steam = "steam 2026-10-11"
 
+[cidre]
+dependances = "directx_jun2010"
+
+[cidre.sources]
+dependances = "crossover 2026-10-13"
+
 [compat]
 etat = "non-teste"
 date = "2026-10-11"
@@ -33,3 +39,15 @@ rapports_export = 62
 source = "protondb"
 date = "2026-10-01"
 url = "https://www.protondb.com/app/213330"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.10465"
+source = "crossover"
+date = "2026-10-13"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2025-10-23"
+crossover_version = "13.1"
+bouteille = "winxp"
+dependances = "directx_jun2010"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=10465"

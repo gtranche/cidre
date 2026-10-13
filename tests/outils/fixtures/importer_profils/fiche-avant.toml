@@ -11,6 +11,7 @@ anticheat = "none"
 # commentaire interne : l'import ne doit pas le perdre
 tso = false
 fils_compilation = 4
+dependances = "vcrun2019"   # a la main : la recette CrossOver en dit d'autres, l'import le signale
 
 [[reglages_jeu]]
 fichier = "AppData/Local/Fictif/settings.ini"

@@ -317,13 +317,21 @@ runtime) qui amorce ou complète les fiches depuis les bases publiques :
 python3 tests/outils/importer_profils.py              # toute la bibliothèque (`cidre library --json`)
 python3 tests/outils/importer_profils.py 552500 ...   # ces appids
 python3 tests/outils/importer_profils.py --index --rapport build/rapport.json   # + index.toml, contradictions en JSON
+python3 -I tests/outils/importer_profils.py --sources crossover --fiches-existantes --index \
+        --rapport build/rapport-import-crossover.json  # une seule source, sur les fiches déjà là (sans bibliothèque Steam)
 python3 -I tests/outils/test_importer_profils.py      # le test (jeu fictif, réponses figées)
 ```
+
+`--sources` choisit les sources (`steam`, `protondb`, `pcgamingwiki`,
+`applegamingwiki`, `crossover` ; toutes par défaut) : les blocs des autres ne
+bougent pas. `--fiches-existantes` prend les appids des fiches du dossier au
+lieu de la bibliothèque du compte.
 
 Les réponses sont mises en cache dans `build/cache-profils/` (ignoré par git) :
 une seconde exécution ne retélécharge rien ; `--refresh` force, `--sans-reseau`
 n'utilise que le cache. L'export ProtonDB (~70 Mo, mensuel) est téléchargé une
-fois et réduit à un index par appid.
+fois et réduit à un index par appid ; l'archive des recettes CrossOver (3 Mo,
+quotidienne) est téléchargée une fois dans `build/cache-profils/crossover/`.
 
 ### Règle de fusion
 
@@ -333,16 +341,24 @@ Autorité : `cidre-test` > `utilisateur` > `winehq` > `protondb` /
 une valeur dont la source est `cidre-test` ou `utilisateur`, ni une valeur sans
 provenance (écrite à la main) : si l'import dit autre chose, la fiche reste et
 le désaccord sort dans le rapport (`--rapport`). Il n'écrase que ce qu'il a
-lui-même écrit (même source, nouvelle date).
+lui-même écrit (même source, nouvelle date), ou ce qu'une source de rang égal
+ou inférieur a écrit : une valeur `crossover`, dernier rang, ne remplace donc
+qu'une valeur `crossover`.
 
-Provenance : chaque valeur importée porte sa source et sa date. Dans `[jeu]`,
-clé par clé, table `[jeu.sources]` (`bits = "pcgamingwiki 2026-10-11"`) ;
+Provenance : chaque valeur importée porte sa source et sa date. Dans `[jeu]`
+et dans `[cidre]`, clé par clé, tables `[jeu.sources]` et `[cidre.sources]`
+(`bits = "pcgamingwiki 2026-10-11"`, `dll_overrides = "crossover 2026-10-13"`) ;
 pour les blocs `[compat.protondb]`, `[compat.pcgamingwiki]`,
-`[compat.applegamingwiki]`, une `source` et une `date` pour tout le bloc. Le
-sous-ensemble TOML du README est respecté : les listes sont des chaînes
-séparées par ` ; `, les compteurs des chaînes `cle:n cle:n`.
+`[compat.applegamingwiki]`, `[compat.crossover]`, une `source` et une `date`
+pour tout le bloc. `[cidre.sources]` n'est pas une option de lancement : le
+lanceur ne lit que `[cidre]`. Le sous-ensemble TOML du README est respecté :
+les listes sont des chaînes séparées par ` ; `, les compteurs des chaînes
+`cle:n cle:n`.
 
-`[cidre]`, `[compat]` (état, machine, fps, notes), `[reglages_jeu]` et
+`[cidre]` n'est touché que par la source `crossover`, pour trois clés
+(`dll_overrides`, `dependances`, `windows_version`) et sous les garde-fous
+décrits plus bas ; une clé qui s'y trouve déjà, écrite à la main, reste.
+`[compat]` (état, machine, fps, notes), `[reglages_jeu]` et
 `[[rapports]]` ne sont **pas** touchés par l'import. Une fiche neuve reçoit
 `[compat] etat = "non-teste"` et la date du jour : le palier ProtonDB (Linux,
 Proton) ou le verdict AppleGamingWiki (CrossOver, GPTK) ne sont pas notre
@@ -358,6 +374,7 @@ Proton) ou le verdict AppleGamingWiki (CrossOver, GPTK) ne sont pas notre
 | PCGamingWiki, API MediaWiki, wikitexte des modèles (CC BY-NC-SA) | `{{Infobox game}}` moteur, appid ; `{{API}}` versions Direct3D/Vulkan/OpenGL, exécutable 32/64 bits ; `{{Middleware}}` anti-triche ; `{{Availability/row}}` DRM Steam | `[jeu] moteur` (vocabulaire de la fiche, sinon `autre`) + `moteur_nom`, `api` (seulement si une seule API), `api_disponibles` (`"d3d11 d3d12"`), `bits` (64 si un exécutable 64 bits existe) + `bits_32_aussi`, `anticheat` (none, eac, battleye, denuvo, vac, sinon `autre` + `anticheat_nom`), `drm` |
 | PCGamingWiki, `{{Game data/config}}` et `{{Game data/saves}}` (Windows) | emplacement des fichiers de réglages et des sauvegardes | `[compat.pcgamingwiki] fichiers_reglages`, `sauvegardes` (chemins traduits dans la convention Cidre : relatifs à `drive_c/users/<utilisateur>/`, `jeu:` = dossier du jeu, `registre:` = clé de registre), `url`, `correspondance` (`appid`, `appid-side`, `titre` : comment la page a été trouvée) |
 | AppleGamingWiki, `{{Compatibility/macOS}}` (CC BY-NC-SA) | verdicts natif, Rosetta 2, CrossOver, Wine (GPTK/Whisky/Kegworks), Parallels ; méthode et date des témoignages | `[compat.applegamingwiki] natif`, `rosetta`, `crossover`, `wine`, `parallels` (`parfait`, `jouable`, `demarre`, `ko`), `methodes` (`"gptk whisky"`), `dernier_temoignage`, `url` |
+| CrossOver, archive publique des recettes CrossTie `crossover.tie.gz` (aucune licence publiée : valeurs techniques seulement, voir plus bas) | recette en vigueur du jeu : gabarit de bouteille, DLL forcées (`HKCU\Software\Wine\DllOverrides`), dépendances, variables d'environnement de la bouteille, autres clés sous `Software\Wine` | `[compat.crossover] recette` (`com.codeweavers.c4.N`), `correspondance` (`steamid`, `steamid+titre`, `titre`), `confiance` (`haute`, `moyenne`), `recette_date`, `crossover_version`, `bouteille` (`win10_64`…), `dll_overrides` (telles que la recette les donne : `"xaudio2_7=n ; mfplay="`), `dll_overrides_par_exe`, `dependances` (nos verbes), `dependances_non_traduites` (identifiants), `graphismes` (`d3dmetal`, `dxvk`), `environnement`, `registre`, `url` ; et, fondus dans `[cidre]` : `dll_overrides`, `dependances`, `windows_version` (sur demande) |
 
 Ce qu'on **ne reprend pas** :
 
@@ -366,8 +383,11 @@ Ce qu'on **ne reprend pas** :
   l'URL de la page. Les notes ProtonDB (prose des utilisateurs) ne sont pas
   recopiées non plus : seules les options de lancement (des commandes) et les
   compteurs ;
-- la base CrossOver (CodeWeavers) : pointée dans `VEILLE_CROSSOVER.md`, pas
-  importée ;
+- de la base CrossOver (CodeWeavers) : tout ce qui est texte ou avis —
+  descriptions, notes d'installation, commentaires, médailles et classements,
+  contributeurs — et la Compatibility Database du site (derrière un contrôle
+  anti-robot, `robots.txt` y demande 100 s entre deux requêtes) ; voir
+  « Recettes CrossOver » ;
 - `[jeu] lanceur` et `exe` : PCGW n'a pas de champ fiable pour le lanceur, et
   l'exécutable vient de Steam (ou `outil-steam/jeux.conf`) ;
 - `[jeu] api` quand plusieurs API sont listées : « ce que le jeu demande
@@ -386,5 +406,89 @@ nom dans `moteur_nom`), anti-triche (`Easy Anti-Cheat` → `eac`, `BattlEye` →
 Contradictions rapportées (`--rapport`) : une valeur protégée contredite par
 l'import ; PCGW et ProtonDB en désaccord sur l'anti-triche ; une fiche
 `cidre-test` qui nomme un anti-triche qu'aucune source ne signale ; AGW `ko`
-contre ProtonDB platine/or (ou l'inverse). Les contradictions ne modifient
-rien : c'est une relecture qui tranche.
+contre ProtonDB platine/or (ou l'inverse) ; une clé de `[cidre]` déjà posée
+(à la main ou par une source de rang plus haut) que la recette CrossOver
+contredit ; une bouteille CrossOver 32 bits pour un jeu que la fiche dit
+64 bits. Les contradictions ne modifient rien : c'est une relecture qui
+tranche.
+
+### Recettes CrossOver (source `crossover`)
+
+**D'où.** CodeWeavers publie ses recettes CrossTie en une archive, sans compte
+ni clé, que CrossOver télécharge lui-même :
+`https://media.codeweavers.com/pub/crossover/tie/crossover.tie.gz` (miroir
+`ftp.codeweavers.com`, même chemin ; 3 Mo, remise à jour chaque jour). C'est du
+XML : racine `<c4p>`, puis `<applications>` et une entrée
+`<app appid="com.codeweavers.c4.N">` par version minimale de CrossOver
+(`<cxversion>`) — la plus haute est la recette en vigueur, les autres sont
+celles des anciens CrossOver. Au 2026-10-13 : 4 489 recettes, 1 574 Steam ID
+distincts (`<appprofile><steamid>`). Les `.tie` unitaires se prennent sur le
+site, page par page, derrière un contrôle anti-robot : on ne les prend pas. La
+page d'une recette, citée dans la fiche (`url`) et jamais téléchargée :
+`https://www.codeweavers.com/compatibility/browse/name/?app_id=N`.
+
+**Licence.** Aucune n'accompagne l'archive ; le site porte « Copyright ©
+1999-2026 All Rights Reserved » sans conditions d'utilisation publiées, et la
+licence de CrossOver (`codeweavers.com/crossover/eula`) ne vise que le logiciel
+(« the software accompanying this License »), pas les recettes ni la base. Il
+n'y a donc pas d'autorisation de reprise : l'archive n'est ni redistribuée ni
+versée au dépôt (cache local), aucun texte n'en sort, et on n'en tire que des
+valeurs techniques — des faits de configuration de Wine — pour les seuls jeux
+qui ont une fiche (163 recettes sur 4 489). Constat, pas avis juridique : pour
+revenir en arrière, `--sources` sans `crossover` et retirer les blocs
+`[compat.crossover]` et les clés de `[cidre]` que `[cidre.sources]` lui
+attribue.
+
+**Rapprochement.** Par Steam ID quand la recette en porte un (`steamid`, ou
+`steamid+titre` si le titre concorde aussi ; confiance `haute`). Sinon par
+titre exact d'une recette de jeu sans Steam ID (`titre`, confiance `moyenne` ;
+« exact » : à la casse, aux ®™©, aux apostrophes et tirets typographiques et
+aux espaces près) — une recette qui porte un *autre* Steam ID est un autre jeu
+(remaster, autre édition). Deux recettes pour un même Steam ID sans titre pour
+les départager : rien n'est écrit, le cas sort dans le rapport (`ambigus`).
+
+**Ce qui est lu d'une recette.** Les profils d'installation sans condition, ou
+dont la condition `<useif>` vaut pour nous (`platform` = Mac, `sourcetype` =
+steam, le gabarit de la recette) ; une condition qu'on ne sait pas évaluer (langue de
+la bouteille, fichier d'installation) écarte le profil. Pas ce qui ne vaut que
+pour l'installeur (`installerdlloverrides`, `installerenvironment`), ni les
+profils posés pour une autre application de la bouteille. Les recettes n'ont
+pas d'options de lancement.
+
+**Ce qui entre dans `[cidre]`**, et seulement depuis une recette de confiance
+`haute` (un titre ne dit pas que c'est la même distribution du jeu) :
+
+- `dll_overrides`, au format du lanceur (`"a,b=n,b;c="`). `native` seul devient
+  `n,b` : la recette installe la DLL native par une dépendance, pas nous (pas
+  encore) — `n` seul empêcherait le jeu de démarrer, `n,b` retombe sur la DLL
+  de Wine. Les DLL du chemin graphique (`dxgi`, `d3d9` à `d3d12`, `winemetal`,
+  `nvapi`) restent celles de Cidre. La valeur d'origine est gardée dans
+  `[compat.crossover] dll_overrides`.
+- `dependances` : les composants CrossOver traduits en verbes façon winetricks
+  par notre table (`vcrun2005`…`vcrun2022`, `dotnet40`, `dotnet35sp1`,
+  `msxml3/4/6`, `corefonts`, `physx`, `xna40`, `d3dcompiler_47`, `wmp9`… ;
+  `directx_jun2010` et `directx_feb2010` pour les redistribuables DirectX de
+  juin et février 2010). Ce qu'elle ne sait pas nommer reste cité par son
+  identifiant dans `dependances_non_traduites` ; « DXVK (Builtin) » et les
+  variables `WINED3DMETAL`/`D3DMetal` deviennent `graphismes` (le chemin que
+  CrossOver prend sur Mac : une donnée, Cidre a le sien).
+- `windows_version` : **retenu par défaut** (`--crossover-windows-version` pour
+  le poser). Le lanceur l'applique par `winecfg -v` au préfixe, qui est partagé
+  entre les jeux, et ne revient jamais à win10 : un jeu en win7 y laisserait
+  tous les autres. Les fiches concernées sortent dans le rapport
+  (`windows_version_retenues`). Et même sur demande, un gabarit n'est repris
+  que s'il est un choix : recette pour CrossOver 23 ou plus (avant, `win7_64`
+  ou `winxp` sont le défaut de l'époque, pas une exigence du jeu), plus ancien
+  que win10 (win11 est aussi courant que win10 dans les recettes pour
+  CrossOver 26 : un défaut, là encore), et pas un gabarit 32 bits pour un jeu
+  64 bits.
+
+Une clé de `[cidre]` que la recette ne donne plus est retirée au passage
+suivant, si elle venait de `crossover`.
+
+Import du 2026-10-13 sur les 698 fiches : 163 reçoivent `[compat.crossover]`
+(145 par Steam ID, 18 par titre) ; dans `[cidre]`, `dependances` sur 32 fiches
+et `dll_overrides` sur 2 (33 fiches en tout) ; `windows_version` retenu sur 1
+(Ancestors: The Humankind Odyssey, `win7`) ; 1 cas ambigu (Civilization III:
+Complete, deux recettes) ; 2 contradictions (Secret World Legends et Rain
+World : bouteille 32 bits, jeu 64 bits).

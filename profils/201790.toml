@@ -24,6 +24,12 @@ api_disponibles = "pcgamingwiki 2026-10-11"
 bits = "pcgamingwiki 2026-10-11"
 drm = "pcgamingwiki 2026-10-11"
 
+[cidre]
+dependances = "directx_jun2010"
+
+[cidre.sources]
+dependances = "crossover 2026-10-13"
+
 [compat]
 etat = "non-teste"
 date = "2026-10-11"
@@ -50,3 +56,15 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Orcs_Must_Die%21_2"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.10548"
+source = "crossover"
+date = "2026-10-13"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2022-04-26"
+crossover_version = "22.0"
+bouteille = "win7_64"
+dependances = "directx_jun2010"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=10548"

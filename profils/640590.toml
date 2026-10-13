@@ -24,6 +24,12 @@ api_disponibles = "pcgamingwiki 2026-10-11"
 bits = "pcgamingwiki 2026-10-11"
 drm = "pcgamingwiki 2026-10-11"
 
+[cidre]
+dll_overrides = "xaudio2_7=n,b"
+
+[cidre.sources]
+dll_overrides = "crossover 2026-10-13"
+
 [compat]
 etat = "non-teste"
 date = "2026-10-11"
@@ -49,3 +55,15 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/The_Lego_Ninjago_Movie_Video_Game"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.18987"
+source = "crossover"
+date = "2026-10-13"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2023-07-26"
+crossover_version = "23"
+bouteille = "win10_64"
+dll_overrides = "xaudio2_7=n"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=18987"

@@ -24,6 +24,12 @@ bits = "pcgamingwiki 2026-10-11"
 anticheat = "pcgamingwiki 2026-10-11"
 drm = "pcgamingwiki 2026-10-11"
 
+[cidre]
+dependances = "directx_jun2010 dotnet20 dotnet35 dotnet40 vcrun2010"
+
+[cidre.sources]
+dependances = "crossover 2026-10-13"
+
 [compat]
 etat = "non-teste"
 date = "2026-10-11"
@@ -62,3 +68,15 @@ dernier_temoignage = "2025-12-12"
 source = "applegamingwiki"
 date = "2026-10-11"
 url = "https://www.applegamingwiki.com/wiki/Paladins"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.14576"
+source = "crossover"
+date = "2026-10-13"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2022-07-06"
+crossover_version = "15.3.1"
+bouteille = "win7_64"
+dependances = "directx_jun2010 dotnet20 dotnet35 dotnet40 vcrun2010"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=14576"
