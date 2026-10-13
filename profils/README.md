@@ -12,6 +12,9 @@ Lecture : `tests/fiche_profil.sh` (analyse, accès, mise à jour), via
 `tests/lancer_depuis_steam.sh` (options et réglages du jeu) et la CLI
 `cidre profils`, `cidre info <appid> --json`.
 
+Pour partager un résultat, proposer une fiche ou une correction :
+[CONTRIBUER.md](CONTRIBUER.md) (*[English](CONTRIBUER.md#contributing-to-the-game-profiles)*).
+
 ## Priorité des réglages
 
 Clé par clé, du plus fort au plus faible :
@@ -124,7 +127,8 @@ Sens des champs :
   limites), bronze (démarre, perf/bugs), ko (non), non-teste.
 - `[[rapports]]` : les remontées, dans l'ordre d'arrivée. Format stable, c'est
   celui que Verger envoie. Une remontée ne change pas `[compat]` toute seule :
-  c'est une relecture qui met `[compat]` à jour.
+  c'est une relecture qui met `[compat]` à jour (voir « Rapports
+  d'utilisateurs »).
 
 ## Réglages du jeu (`[reglages_jeu]`)
 
@@ -307,6 +311,52 @@ Variables d'environnement : `CIDRE_PROFILS_BASE` (dossier du cache),
 `https://raw.githubusercontent.com/gtranche/cidre/main/profils/` ; un
 `file:///…/` sert aux tests), `CIDRE_PROFILS` (profil utilisateur),
 `CIDRE_MACHINE` (faits de la machine imposés, pour les tests et les essais).
+
+## Rapports d'utilisateurs (`tests/outils/rapports_vers_fiches.py`)
+
+Verger (« Partager mon résultat ») ouvre un incident GitHub titré « Rapport de
+jeu : *nom* (*appid*) », label `rapport-jeu`, dont le corps porte le bloc
+`[[rapports]]`, le profil effectif et le diagnostic. L'outil (machine de dev,
+Python 3.11+, sans dépendance, `gh` en lecture seule) en fait des blocs prêts à
+coller ; c'est un outil de relecture, il ne décide rien :
+
+```sh
+python3 -I tests/outils/rapports_vers_fiches.py                    # les incidents ouverts : blocs, mises en garde, illisibles
+python3 -I tests/outils/rapports_vers_fiches.py --appliquer --incident 12   # ajoute ce bloc à sa fiche
+python3 -I tests/outils/rapports_vers_fiches.py --proposer-compat  # suggère [compat], n'écrit rien
+python3 -I tests/outils/rapports_vers_fiches.py incidents.json     # depuis un fichier (forme de `gh issue list --json`)
+python3 -I tests/outils/test_rapports_vers_fiches.py               # le test (incidents fabriqués)
+```
+
+- Les incidents sont cherchés par le label **et** par le titre : GitHub
+  n'honore le `labels=` d'une adresse « nouvel incident » que si l'auteur a le
+  droit de poser un label sur le dépôt (sa documentation le dit), un rapport
+  d'utilisateur peut donc arriver sans label.
+- Le bloc rendu : `date`, `machine`, `cidre_version`, `etat`, `fps_menu`,
+  `fps_jeu`, `notes` (celles du joueur, sur une ligne, suivies des options avec
+  lesquelles il a lancé quand elles diffèrent de la fiche) et `incident`
+  (l'adresse de l'incident). Le diagnostic n'est ni lu ni recopié.
+- Le contenu d'un incident est une donnée écrite par un inconnu : l'appid ne
+  sert de nom de fichier que s'il en a la forme, les caractères de contrôle
+  sont retirés, un `incident` écrit dans le corps est ignoré. Ce que l'outil a
+  dû interpréter (état en anglais, fps en fourchette, date absente, lien dans
+  les notes, nom qui ne correspond pas à la fiche, même auteur deux fois) est
+  dit au mainteneur.
+- `--appliquer` ajoute le bloc après le dernier `[[rapports]]` (sinon après
+  `[compat]`) sans toucher au reste, relit la fiche avant de l'écrire, crée une
+  fiche minimale (`[jeu]` appid et nom, `[compat] etat = "non-teste"`) si le
+  jeu n'en a pas, et régénère l'index. Un jeu hors Steam (`local-…`) ne reçoit
+  pas de fiche d'office. Un incident déjà intégré (son adresse figure dans un
+  `incident` de la base) n'est pas rajouté.
+- `--proposer-compat` : `etat = E`, `source = "utilisateur"`, quand au moins
+  deux rapports donnent E sur au moins deux machines différentes (le rapport
+  le plus récent de chaque machine compte seul) et qu'aucun autre état ne
+  réunit autant de machines ; date, machine et fps sont ceux du rapport le plus
+  récent. Un `[compat]` de source `cidre-test`, ou écrit à la main sans source,
+  n'est jamais proposé au remplacement : le désaccord est signalé, à retester.
+  Deux joueurs sur le même modèle de Mac comptent pour une machine.
+
+Après relecture : `git diff profils/`, commit, fermer les incidents intégrés.
 
 ## Import des bases externes (`tests/outils/importer_profils.py`)
 

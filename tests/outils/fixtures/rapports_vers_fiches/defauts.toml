@@ -1,0 +1,11 @@
+# Les reglages livres par defaut (forme de outil-steam/profils.toml) : fixture.
+[defaut]
+langue = "auto"
+tso = true
+vsync = true
+hud = false
+async = false
+fils_compilation = 0
+eac_untrusted = false
+luajit = false
+d3d11 = "dxvk"
