@@ -7,30 +7,28 @@ appid = 588650
 nom = "Dead Cells"
 exe = "deadcells.exe"
 moteur = "hashlink"
-api = "opengl"
+api = "d3d11"
 bits = 32
 anticheat = "none"
 lanceur = "steam"
 
 [cidre]
 tso = false
-# Jeu 32 bits. Le « DXError 887A0004 » du 2026-10-13 n'etait pas DXMT : sans
-# variante i386, c'est le d3d11 builtin de Wine qui refusait (tests/sonde_heaps.sh).
-# Avec DXMT i386 (patch 0123) le jeu demarre et rend, mais la manche du 2026-10-13
-# (Wine d'avant 0122) est restee sur un ecran noir en plein ecran exclusif ; pas
-# reproduit a la sonde sur le Wine d'apres. DXVK (110 fps) tant qu'une manche n'a
-# pas montre l'image et les fps en DXMT.
-d3d11 = "dxvk"
+# Jeu 32 bits : rendu par defaut (DXMT) des que le runtime porte la variante i386
+# (dxmt/i386, patch 0123), sinon le lanceur le met de lui-meme en DXVK. Le « DXError
+# 887A0004 » du 2026-10-13 n'etait pas DXMT : sans variante i386, c'est le d3d11
+# builtin de Wine qui refusait (tests/sonde_heaps.sh). L'ecran noir de la premiere
+# manche DXMT i386 venait du plein ecran exclusif du Wine d'avant 0122.
 
 [compat]
 etat = "or"
 source = "cidre-test"
-date = "2026-09-20"
+date = "2026-10-13"
 machine = "M1 Max 32 Go"
 cidre_version = ""
 fps_menu = 0
-fps_jeu = 110
-notes = "75 fps par defaut, 110 avec tso = false. DRM Valve porte, plein ecran OK."
+fps_jeu = 120
+notes = "DXMT i386 : 120 fps et 2 ms au HUD en plein ecran (Wine avec 0122), partie chargee. DXVK : 110 fps avec tso = false, 75 avec TSO. DRM Valve porte."
 
 [compat.steam_cloud]
 methode = "api"
