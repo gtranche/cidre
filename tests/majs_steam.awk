@@ -1,11 +1,14 @@
 # Compare les jeux installes a la derniere version publiee (pour `cidre updates`).
 #
-#    awk -v paires="<appid>=<build installe> ..." [-v texte=1] -f majs_steam.awk <appinfo.txt>
+#    awk -v paires="<appid>=<build installe> ..." [-v texte=1|2] -f majs_steam.awk <appinfo.txt>
 #
 # appinfo.txt est la sortie de `steamcmd +app_info_print <appid>` : pour chaque
 # application, sa fiche, dont le numero de build de la branche publique. Un jeu
-# est a jour quand son build installe est celui-la. Sort du JSON, ou (texte=1)
-# une ligne par jeu.
+# est a jour quand son build installe est celui-la -- ou un plus recent : les
+# builds de Steam ne font que croitre, et un build installe en avance sur le
+# build « publie » trahit une fiche en retard (cache, ou SteamCMD lui-meme), pas
+# un jeu perime. Sort du JSON, ou (texte=1) une ligne par jeu, ou (texte=2) les
+# trois nombres « appid, installe, publie » separes par des tabulations, pour `cidre`.
 
 # le build de la branche publique d'une fiche, ou rien
 function build_public(fiche,    s, i, k) {
@@ -44,12 +47,14 @@ END {
       split(p[i], q, "=")
       a = q[1] + 0; installe = q[2] + 0
       if (!(a in publie)) continue
-      a_jour = (installe == publie[a])
-      if (texte)
+      a_jour = (installe >= publie[a])
+      if (texte == 2)
+         printf "%d\t%d\t%d\n", a, installe, publie[a]
+      else if (texte)
          printf "%-9d %s\n", a, (a_jour ? "a jour" : sprintf("MISE A JOUR : build %d -> %d", installe, publie[a]))
       else
          printf "%s{\"appid\": %d, \"build_installe\": %d, \"build_disponible\": %d, \"a_jour\": %s}", sep, a, installe, publie[a], (a_jour ? "true" : "false")
-      sep = ", "
+      if (!texte) sep = ", "
    }
    if (!texte) print "]"
 }

@@ -22,6 +22,20 @@
 #   journal_detaille laisse Wine ecrire ses messages d'erreur dans le journal du jeu
 #                    (WINEDEBUG=err+all), au lieu de le faire taire. Pour comprendre
 #                    un jeu qui ne demarre pas ; un peu plus lent, a couper ensuite.
+#   maj_avant_lancement  met le jeu a jour avant de le lancer quand Steam publie un
+#                    build plus recent (`cidre play`, « Jouer » de Verger) : memes
+#                    versions que les autres joueurs, que le pont Steam et que les
+#                    sauvegardes du nuage. Ne vaut que pour un jeu du dossier Cidre
+#                    (`cidre dl`, `cidre import`) : un jeu du client Steam, c'est Steam
+#                    qui le met a jour. Jamais un obstacle -- hors ligne, session Steam
+#                    absente, place insuffisante, echec en route : une ligne le dit et
+#                    le jeu part dans sa version installee. false = ne jamais mettre a
+#                    jour au lancement : pour rester sur un build (un jeu qu'une mise a
+#                    jour casse, un mod), en reglage general ou pour un seul jeu ; la
+#                    mise a jour reste annoncee (`cidre updates`) et `cidre dl <appid>`
+#                    la fait a la demande. Pour une seule fois : `cidre play <id>
+#                    --sans-maj`. Un jeu qui suit une branche beta de Steam n'est
+#                    jamais mis a jour au lancement.
 #   tso              emulation de l'ordre memoire x86 par FEX. false = gros gain
 #                    CPU (jusqu'a 3,7x mesure), risque de course sur du lock-free.
 #   vsync            false = syncInterval 0 (plus de plafond vblank ; tearing possible).
@@ -102,6 +116,7 @@
 [defaut]
 langue = "auto"
 journal_detaille = false
+maj_avant_lancement = true
 tso = true
 vsync = true
 hud = false

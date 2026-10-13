@@ -30,6 +30,44 @@ Une clé absente d'une couche est prise dans la suivante. Le cache téléchargé
 prime sur la copie livrée ; `cidre profils maj` le rafraîchit et retire du
 cache les fiches qui ne sont plus dans l'index.
 
+### Mise à jour avant le lancement (`maj_avant_lancement`)
+
+`true` par défaut : `cidre play <id>` (et « Jouer » dans Verger) met d'abord à
+jour un jeu du dossier Cidre dont Steam publie un build plus récent, puis le
+lance. L'option suit la priorité ci-dessus : `cidre set defaut
+maj_avant_lancement false` la coupe pour tous les jeux, `cidre set <appid>
+maj_avant_lancement false` pour un seul (c'est la façon d'épingler un jeu sur
+son build), et une fiche peut la couper dans `[cidre]` pour un jeu qu'une mise
+à jour casse. `CIDRE_MAJ_AVANT_LANCEMENT=0` (ou `1`) passe devant le profil,
+`cidre play <id> --sans-maj` vaut pour un seul lancement.
+
+Ce que fait le lancement, cas par cas :
+
+| Cas | Ce qui se passe |
+|---|---|
+| Jeu du client Steam (natif macOS, ou Windows par le wrapper) | rien : Steam le met à jour lui-même avant de le lancer |
+| Jeu hors Steam (`cidre add`) | rien : pas de build à comparer |
+| Jeu du dossier Cidre, à jour | lancement ; la vérification lit un cache de 30 minutes (`cidre updates`) |
+| Build plus récent publié | téléchargement de ce qui a changé (SteamCMD, session mémorisée), puis lancement |
+| Jeu repris d'une bouteille (`cidre import`) | comme un jeu téléchargé : mis à jour sur place ; la bouteille garde sa version (clone APFS : seuls les fichiers changés prennent de la place) |
+| Option à `false`, ou `--sans-maj` | lancement de la version installée ; la mise à jour connue est annoncée en une ligne |
+| Jeu sur une branche bêta de Steam (`BetaKey` dans son manifeste) | jamais mis à jour au lancement : il est épinglé |
+| Hors ligne, Steam trop lent (plus de 8 s), SteamCMD absent | une ligne le dit, lancement de la version installée |
+| Session Steam absente, place insuffisante, échec en route | une ligne dit pourquoi et quoi faire, lancement de la version installée ; la tentative est reprise au lancement suivant |
+| Mise à jour du même jeu déjà en cours ailleurs | refus (code 4) : le jeu serait lancé à moitié remplacé |
+
+Un build installé plus récent que le build « publié » est tenu pour à jour :
+les builds de Steam ne font que croître, c'est la fiche lue qui est en retard.
+L'état de la dernière mise à jour de chaque jeu est gardé dans
+`~/Library/Application Support/Cidre/maj/<appid>` ; `cidre updates --json` et
+`cidre info <id> --json` (`"maj"`) le rendent : `a_jour`, `disponible`,
+`en_cours` (avec `avancement`, `octets`, `total`), `echouee` (`raison`,
+`message`), `ignoree` (`raison` : `option`, `branche`, `sans_effet`),
+`inconnu`. Réglages d'essai : `CIDRE_MAJ_TTL` (minutes de validité du cache),
+`CIDRE_MAJ_BUDGET` (secondes laissées à la vérification), `CIDRE_MAJ_LIBRE_MIN`
+(Mo libres exigés), `CIDRE_MAJ_VALIDER=1` (revérifier tous les fichiers).
+Essais : `sh tests/tester_maj_avant_lancement.sh`.
+
 ## Schéma d'une fiche
 
 Sous-ensemble de TOML volontairement simple : des tables `[nom]` et
@@ -56,7 +94,7 @@ lanceur = "steam"                  # steam, epic, gog, aucun
 [cidre]
 # Les options de lancement, mêmes noms et mêmes valeurs que dans
 # outil-steam/profils.toml (voir son en-tête pour le sens de chacune) :
-# langue, journal_detaille, tso, vsync, hud, overlay, async, narrow_barriers,
+# langue, journal_detaille, maj_avant_lancement, tso, vsync, hud, overlay, async, narrow_barriers,
 # garde_index, fils_compilation, eac_untrusted, luajit, plein_ecran, mode_emule, gamemode,
 # dx12, d3d11, metalfx, dll_overrides, windows_version, dependances.
 # On n'y met que ce qui diffère de [defaut].

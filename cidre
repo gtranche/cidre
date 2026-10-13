@@ -71,8 +71,9 @@ fiche_json() {
    p=$(plat "$1"); s=$(source_de "$1")
    [ "$p" = macos ] && l=natif || l=cidre
    [ "$p" = absent ] && inst=false || inst=true
-   # dossier Cidre : un telechargement interrompu n'est pas un jeu installe
-   [ "$s" = cidre ] && [ "$(champ "$1" StateFlags)" != 4 ] && inst=false
+   # dossier Cidre : un telechargement interrompu n'est pas un jeu installe...
+   # sauf si c'est la mise a jour d'un jeu qui l'etait : il reste lancable
+   [ "$s" = cidre ] && [ "$(champ "$1" StateFlags)" != 4 ] && [ -z "$(maj_champ "$1" build_avant)" ] && inst=false
    # le wrapper ne concerne que les jeux lances par Steam
    w=null; [ "$s" = steam ] && { [ "$(cidre_wrap "$1")" = oui ] && w=true || w=false; }
    t=$(champ "$1" SizeOnDisk); d=$(champ "$1" LastPlayed)
@@ -126,8 +127,10 @@ scmd_garde() {
 # sans compte : les informations publiques de Steam (versions des jeux)
 scmd_anonyme() { mkdir -p "$CIDRE_DIR/steamcmd-anonyme"; HOME="$CIDRE_DIR/steamcmd-anonyme" "$SCMD" +login anonymous "$@" </dev/null; }
 
-# binaire SteamCMD : le notre d'abord, puis PATH/brew
+# binaire SteamCMD : le notre d'abord, puis PATH/brew. CIDRE_STEAMCMD l'impose
+# (pour les essais) : celui-la, ou aucun.
 resolve_steamcmd() {
+   if [ -n "${CIDRE_STEAMCMD:-}" ]; then [ -x "$CIDRE_STEAMCMD" ] && echo "$CIDRE_STEAMCMD"; return; fi
    for c in "$R/tools/steamcmd/steamcmd.sh" "$STEAMCMD" "$(command -v steamcmd 2>/dev/null)"; do
       [ -n "$c" ] && [ -x "$c" ] && { echo "$c"; return; }
    done
@@ -159,12 +162,333 @@ exe_principal() {
 # Cidre (notre wrapper) pose sur ce jeu ?
 cidre_wrap() { grep -A6 "\"$1\"$" "$STEAM"/userdata/*/config/localconfig.vdf 2>/dev/null | grep -q "lancer_depuis_steam.sh" && echo oui || echo non; }
 
+# --- Mises a jour des jeux du dossier Cidre ---------------------------------
+# Le build installe d'un jeu (son manifeste) face a celui que publie Steam.
+# APPINFO garde la fiche publique des jeux installes, lue par SteamCMD sans
+# compte ; MAJ_ETATS/<appid> la derniere mise a jour de chaque jeu (en cours,
+# echouee et pourquoi, faite), en lignes `cle=valeur`. `cidre updates`, `cidre
+# info` et `cidre play` en tirent le meme etat (maj_etat).
+APPINFO="$CIDRE_DIR/cache/appinfo.txt"
+MAJ_ETATS="$CIDRE_DIR/maj"
+MAJ_TTL=${CIDRE_MAJ_TTL:-30}                 # minutes pendant lesquelles APPINFO fait foi
+MAJ_BUDGET=${CIDRE_MAJ_BUDGET:-8}            # secondes accordees a Steam avant un lancement
+MAJ_LIBRE_MIN=${CIDRE_MAJ_LIBRE_MIN:-1024}   # Mo libres sous lesquels on ne telecharge rien
+TAB=$(printf '\t'); CR=$(printf '\r')
+# le lanceur de la pile Cidre (CIDRE_LANCEUR : un autre, pour les essais)
+LANCEUR=${CIDRE_LANCEUR:-$R/tests/lancer_depuis_steam.sh}
+entier() { case $1 in ''|*[!0-9]*) return 1 ;; esac; }
+nombre() { entier "$1" && printf '%s' "$1" || printf null; }
+json_ou_null() { [ -n "$1" ] && json "$1" || printf null; }
+# En --json, la sortie standard de `cidre play` porte des evenements, un objet
+# JSON par ligne ; ce qui se lit (et la sortie de SteamCMD) va a l'erreur.
+dire() { if [ "$JSON" = oui ]; then printf '%s\n' "$*" >&2; else printf '%s\n' "$*"; fi; }
+evenement() { [ "$JSON" != oui ] || printf '%s\n' "$1"; }
+
+appinfo_perime() { [ ! -s "$APPINFO" ] || [ -n "$(find "$APPINFO" -mmin +"$MAJ_TTL" 2>/dev/null)" ]; }
+# un jeu installe depuis la derniere lecture n'y est pas encore
+appinfo_sans() { [ "$(acf "$1")" -nt "$APPINFO" ] && ! grep -q "^AppID : $1," "$APPINFO" 2>/dev/null; }
+# Redemande a Steam la fiche publique des jeux installes. 0 : cache neuf ;
+# 1 : Steam n'a pas repondu ; 2 : SteamCMD introuvable.
+appinfo_rafraichir() {
+   ar_d=""
+   for ar_a in $(appids); do [ -n "$(champ "$ar_a" buildid)" ] && ar_d="$ar_d +app_info_print $ar_a"; done
+   [ -n "$ar_d" ] || return 0
+   SCMD=$(resolve_steamcmd); [ -n "$SCMD" ] || return 2
+   mkdir -p "$(dirname "$APPINFO")"
+   scmd_anonyme +app_info_update 1 $ar_d +quit >"$APPINFO.tmp.$$" 2>&1
+   grep -q "^AppID : " "$APPINFO.tmp.$$" || { rm -f "${APPINFO:?}.tmp.$$"; return 1; }
+   mv "$APPINFO.tmp.$$" "$APPINFO"
+}
+# La meme, sans faire attendre un lancement plus de MAJ_BUDGET secondes (3 :
+# trop lent). La demande finit alors en fond : elle servira la fois suivante.
+appinfo_rafraichir_borne() {
+   [ -n "$(resolve_steamcmd)" ] || return 2
+   mkdir -p "$(dirname "$APPINFO")"
+   find "$(dirname "$APPINFO")" -name 'appinfo.txt.rc.*' -mmin +2 -delete 2>/dev/null
+   ab_f="$APPINFO.rc.$$"; : >"$ab_f"
+   ( appinfo_rafraichir; echo $? >"$ab_f" ) >/dev/null 2>&1 3>&- &
+   ab_n=$((MAJ_BUDGET * 5))
+   while [ $ab_n -gt 0 ] && [ ! -s "$ab_f" ]; do sleep 0.2; ab_n=$((ab_n - 1)); done
+   [ -s "$ab_f" ] || return 3
+   ab_rc=$(cat "$ab_f"); rm -f "${ab_f:?}"
+   return "${ab_rc:-1}"
+}
+# « appid, build installe, build publie » (tabulations) des jeux dont on connait les deux
+builds() { # [appid] : ce jeu seulement
+   bu_p=""
+   for bu_a in ${1:-$(appids)}; do bu_b=$(champ "$bu_a" buildid); [ -n "$bu_b" ] && bu_p="$bu_p $bu_a=$bu_b"; done
+   [ -s "$APPINFO" ] && LC_ALL=C awk -v paires="$bu_p" -v texte=2 -f "$R/tests/majs_steam.awk" "$APPINFO"
+}
+build_publie() { builds "$1" | cut -f3; }
+# la branche Steam que suit le jeu (rien : la branche publique)
+branche() { sed -n 's/.*"[Bb]eta[Kk]ey"[[:space:]]*"\([^"]*\)".*/\1/p' "$(acf "$1")" 2>/dev/null | head -1; }
+
+maj_champ() { sed -n "s/^$2=//p" "$MAJ_ETATS/$1" 2>/dev/null | head -1; }
+maj_noter() { # <appid> cle=valeur... : l'etat de sa derniere mise a jour (remplace le precedent)
+   mn_a=$1; shift
+   mkdir -p "$MAJ_ETATS" && printf '%s\n' "$@" "date=$(date +%s)" >"$MAJ_ETATS/$mn_a.tmp" && mv "$MAJ_ETATS/$mn_a.tmp" "$MAJ_ETATS/$mn_a"
+}
+# les fichiers de travail d'un telechargement (pas son etat)
+maj_oublier() { for mo_s in "$@"; do rm -f "${MAJ_ETATS:?}/${t_id:?}.$mo_s"; done; }
+maj_en_cours() { [ "$(maj_champ "$1" etat)" = en_cours ] && kill -0 "$(maj_champ "$1" pid)" 2>/dev/null; }
+# Met-on le jeu a jour avant de le lancer ? L'environnement garde la main
+# (CIDRE_MAJ_AVANT_LANCEMENT = 0 ou 1), sinon l'option maj_avant_lancement.
+maj_voulue() {
+   case ${CIDRE_MAJ_AVANT_LANCEMENT:-} in 0) return 1 ;; 1) return 0 ;; esac
+   [ "$(sh "$R/tests/profil_cidre.sh" "$1" 2>/dev/null | sed -n 's/^maj_avant_lancement=//p')" != false ]
+}
+# Ce qu'on dit au joueur, en une ligne : la cause probable, et quoi faire.
+maj_message() { # <raison> [detail]
+   case $1 in
+     hors_ligne)      echo "Mise a jour non verifiee : Steam n'a pas repondu (hors ligne ?)." ;;
+     trop_lent)       echo "Mise a jour non verifiee : Steam met plus de $MAJ_BUDGET s a repondre ; sa reponse servira au prochain lancement." ;;
+     steamcmd_absent) echo "Mise a jour non verifiee : SteamCMD est introuvable. Relance \`cidre setup\` pour le reinstaller." ;;
+     session)         echo "Mise a jour impossible : la session Steam n'est pas memorisee. Connecte-toi (\`cidre login\`, ou « Connexion a Steam » dans Verger), puis relance le jeu." ;;
+     compte)          echo "Mise a jour impossible : compte Steam introuvable. Connecte-toi (\`cidre login\`), ou exporte CIDRE_STEAM_USER=<ton_login>." ;;
+     disque)          echo "Mise a jour impossible : place insuffisante sur le disque des jeux${2:+ ($2)}. Libere de la place, puis relance le jeu." ;;
+     reseau)          echo "Mise a jour interrompue : la connexion a Steam a ete perdue${2:+ ($2)}. Elle reprendra ou elle en etait au prochain lancement." ;;
+     licence)         echo "Mise a jour impossible : ce compte Steam n'a pas ce jeu${2:+ ($2)}. Verifie le compte (\`cidre session\`)." ;;
+     interrompue)     echo "Mise a jour interrompue avant la fin ; elle reprendra ou elle en etait au prochain lancement." ;;
+     *)               echo "Mise a jour echouee : SteamCMD n'a pas pu la terminer${2:+ ($2)}. Relance le jeu pour reessayer, ou \`cidre dl <appid>\` pour en voir le detail." ;;
+   esac
+}
+# L'etat de mise a jour d'un jeu du dossier Cidre, dans MAJ_ETAT :
+#   a_jour      le build installe est celui que publie Steam (ou plus recent :
+#               un cache en retard ne fait pas un jeu perime)
+#   disponible  un build plus recent est publie
+#   en_cours    son telechargement tourne (avancement dans MAJ_ETATS/<appid>.avancement)
+#   echouee     la derniere tentative vers ce build a echoue ; MAJ_RAISON (session,
+#               disque, reseau, licence, compte, interrompue, steamcmd) et MAJ_MESSAGE
+#               disent pourquoi. Le build reste a installer.
+#   ignoree     un build plus recent existe et on n'y va pas : MAJ_RAISON = option
+#               (maj_avant_lancement = false), branche (le jeu suit une branche beta :
+#               il est epingle), sans_effet (Steam ne donne pas ce build a ce compte)
+#   inconnu     MAJ_RAISON = sans_build, jamais_verifie, hors_ligne, steamcmd_absent, trop_lent
+# MAJ_INSTALLE et MAJ_DISPO portent les deux builds. Sans second argument,
+# redemande a Steam quand APPINFO a plus de MAJ_TTL minutes, sans depasser
+# MAJ_BUDGET secondes ; `cache` : jamais de reseau.
+maj_etat() { # <appid> [cache]
+   MAJ_ETAT=inconnu; MAJ_RAISON=; MAJ_DISPO=; MAJ_MESSAGE=
+   MAJ_INSTALLE=$(champ "$1" buildid)
+   maj_voulue "$1" && MAJ_VOULUE=true || MAJ_VOULUE=false
+   if maj_en_cours "$1"; then MAJ_ETAT=en_cours; MAJ_DISPO=$(maj_champ "$1" build_vise); return; fi
+   # un premier telechargement inacheve n'est pas un jeu a mettre a jour
+   if ! entier "$MAJ_INSTALLE" || { [ "$(champ "$1" StateFlags)" != 4 ] && [ -z "$(maj_champ "$1" build_avant)" ]; }; then
+      MAJ_RAISON=sans_build; return
+   fi
+   MAJ_DISPO=$(build_publie "$1")
+   me_f=$(maj_champ "$1" etat); me_v=$(maj_champ "$1" build_vise)
+   # Un build publie ne recule pas : « plus recent que l'installe » reste vrai
+   # meme lu dans un cache ancien. « A jour » se redemande, et « plus recent,
+   # mais deja tente sans effet » aussi.
+   me_revoir=non
+   if ! entier "$MAJ_DISPO"; then me_revoir=oui
+   elif appinfo_perime && { [ "$MAJ_DISPO" -le "$MAJ_INSTALLE" ] || { [ "$me_f" = faite ] && [ "$me_v" = "$MAJ_DISPO" ]; }; }; then me_revoir=oui; fi
+   if [ $me_revoir = oui ]; then
+      if [ "${2:-}" != cache ] && { appinfo_perime || appinfo_sans "$1"; }; then
+         appinfo_rafraichir_borne
+         case $? in 0) ;; 2) MAJ_RAISON=steamcmd_absent ;; 3) MAJ_RAISON=trop_lent ;; *) MAJ_RAISON=hors_ligne ;; esac
+         [ -z "$MAJ_RAISON" ] || return
+         MAJ_DISPO=$(build_publie "$1")
+      fi
+      if ! entier "$MAJ_DISPO"; then
+         MAJ_DISPO=; [ -s "$APPINFO" ] && MAJ_RAISON=sans_build || MAJ_RAISON=jamais_verifie
+         return
+      fi
+   fi
+   if [ "$MAJ_DISPO" -le "$MAJ_INSTALLE" ]; then MAJ_ETAT=a_jour; return; fi
+   MAJ_ETAT=disponible
+   me_b=$(branche "$1")
+   if [ -n "$me_b" ] && [ "$me_b" != public ]; then MAJ_ETAT=ignoree; MAJ_RAISON=branche; return; fi
+   case $me_f in
+     faite) [ "$me_v" = "$MAJ_DISPO" ] && { MAJ_ETAT=ignoree; MAJ_RAISON=sans_effet; return; } ;;
+     echouee|en_cours)
+        if [ -z "$me_v" ] || [ "$me_v" = "$MAJ_DISPO" ]; then
+           MAJ_ETAT=echouee; MAJ_RAISON=$(maj_champ "$1" raison); MAJ_RAISON=${MAJ_RAISON:-interrompue}
+           MAJ_MESSAGE=$(maj_champ "$1" message); MAJ_MESSAGE=${MAJ_MESSAGE:-$(maj_message "$MAJ_RAISON")}
+           return
+        fi ;;
+   esac
+   [ "$MAJ_VOULUE" = true ] || { MAJ_ETAT=ignoree; MAJ_RAISON=option; }
+}
+# l'etat rendu par maj_etat, en JSON (sans les accolades)
+maj_json() { # <appid>
+   mj_p=; mj_o=; mj_t=; mj_ph=
+   [ "$MAJ_ETAT" != en_cours ] || [ ! -f "$MAJ_ETATS/$1.avancement" ] || read -r mj_p mj_o mj_t mj_ph <"$MAJ_ETATS/$1.avancement"
+   case $mj_p in ''|*[!0-9.]*) mj_p=null ;; esac
+   printf '"etat":"%s","build_installe":%s,"build_disponible":%s,"raison":%s,"message":%s,"avancement":%s,"octets":%s,"total":%s,"phase":%s,"avant_lancement":%s,"verifie":%s' \
+      "$MAJ_ETAT" "$(nombre "$MAJ_INSTALLE")" "$(nombre "$MAJ_DISPO")" "$(json_ou_null "$MAJ_RAISON")" "$(json_ou_null "$MAJ_MESSAGE")" \
+      "$mj_p" "$(nombre "$mj_o")" "$(nombre "$mj_t")" "$(json_ou_null "$mj_ph")" "${MAJ_VOULUE:-true}" "$(nombre "$(stat -f %m "$APPINFO" 2>/dev/null)")"
+}
+evenement_maj() { evenement "$(printf '{"evenement":"maj",%s}' "$(maj_json "$1")")"; }
+
+# Lit la sortie de SteamCMD : la relaie, la garde (MAJ_ETATS/<appid>.sortie, pour
+# dire pourquoi un echec) et en tire l'avancement, ligne
+# ` Update state (0x61) downloading, progress: 37.93 (32564012 / 85850313)`.
+maj_suivre() { # <appid>
+   while IFS= read -r ms_l || [ -n "$ms_l" ]; do
+      ms_l=${ms_l%"$CR"}
+      dire "$ms_l"
+      printf '%s\n' "$ms_l" >>"$MAJ_ETATS/$1.sortie"
+      case $ms_l in *"progress: "*"("*" / "*")"*) ;; *) continue ;; esac
+      ms_p=${ms_l#*progress: }; ms_pct=${ms_p%% *}; ms_r=${ms_p#*\(}; ms_o=${ms_r%% /*}; ms_t=${ms_r#*/ }; ms_t=${ms_t%%\)*}
+      ms_ph=${ms_l%%, progress:*}; ms_ph=${ms_ph##*\) }
+      case $ms_pct in ''|*[!0-9.]*) continue ;; esac
+      entier "$ms_o" && entier "$ms_t" || continue
+      case $ms_ph in ''|*[!a-z]*) ms_ph= ;; esac
+      printf '%s %s %s %s\n' "$ms_pct" "$ms_o" "$ms_t" "$ms_ph" >"$MAJ_ETATS/$1.avancement"
+      evenement "$(printf '{"evenement":"maj","etat":"en_cours","avancement":%s,"octets":%s,"total":%s,"phase":%s}' "$ms_pct" "$ms_o" "$ms_t" "$(json_ou_null "$ms_ph")")"
+   done
+}
+tuer_arbre() { for ta_c in $(pgrep -P "$1" 2>/dev/null); do tuer_arbre "$ta_c"; done; kill -TERM "$1" 2>/dev/null; }
+# `cidre` recoit l'ordre de s'arreter pendant un telechargement (Ctrl-C,
+# « Annuler » de Verger) : SteamCMD s'arrete avec lui, et on le note.
+maj_interrompre() {
+   trap - INT TERM HUP
+   for mi_p in $(pgrep -P $$ 2>/dev/null); do tuer_arbre "$mi_p"; done
+   maj_noter "$t_id" etat=echouee raison=interrompue "message=$(maj_message interrompue)" "build_avant=$t_avant" "build_vise=$t_vise"
+   maj_oublier avancement rc
+   exit 130
+}
+# Telecharge un jeu dans le dossier Cidre, ou l'y met a jour : c'est `cidre dl`
+# (mode dl : fichiers reverifies ; au terminal, SteamCMD peut demander le mot de
+# passe) et la mise a jour d'avant lancement de `cidre play` (mode maj : session
+# memorisee ou rien, seul ce qui a change est telecharge, et les fichiers que
+# Cidre a poses dans le jeu ne sont pas remis d'origine). Un jeu deja installe
+# doit rester lancable si la mise a jour echoue : on note d'ou l'on part
+# (build_avant), ou l'on va (build_vise) et pourquoi on s'est arrete. Rend 0, ou
+# le code de SteamCMD (3 : pas de session) ; MAJ_RAISON et MAJ_MESSAGE disent
+# alors pourquoi.
+telecharger() { # <appid> <windows|macos> <dl|maj>
+   t_id=$1; t_os=$2; t_mode=$3; DEST="$CIDRE_GAMES/$t_id"; MAJ_RAISON=; MAJ_MESSAGE=
+   t_acf="$DEST/steamapps/appmanifest_$t_id.acf"
+   SCMD=$(resolve_steamcmd)
+   [ -n "$SCMD" ] || { MAJ_RAISON=steamcmd_absent; MAJ_MESSAGE="SteamCMD introuvable (ni tools/steamcmd/ ni PATH)."; return 1; }
+   U=$(steam_user)
+   [ -n "$U" ] || { MAJ_RAISON=compte; MAJ_MESSAGE="Compte Steam introuvable. Exporte CIDRE_STEAM_USER=<ton_login> et relance."; return 1; }
+   # D'ou l'on part : le build installe, ou celui d'avant une mise a jour restee en route.
+   t_avant=; t_vise=
+   if [ -f "$t_acf" ]; then
+      [ "$(maj_champ "$t_id" etat)" = faite ] || t_avant=$(maj_champ "$t_id" build_avant)
+      [ "$(champ "$t_id" StateFlags)" = 4 ] && t_avant=$(champ "$t_id" buildid)
+      t_vise=$(build_publie "$t_id")
+   fi
+   mkdir -p "$CIDRE_GAMES"
+   t_libre=${CIDRE_ESSAI_LIBRE_KO:-$(df -Pk "$CIDRE_GAMES" 2>/dev/null | awk 'NR == 2 { print $4 }')}
+   if entier "$t_libre" && [ "$t_libre" -lt $((MAJ_LIBRE_MIN * 1024)) ]; then
+      MAJ_RAISON=disque; MAJ_MESSAGE=$(maj_message disque "$((t_libre / 1024)) Mo libres, il en faut au moins $MAJ_LIBRE_MIN")
+      [ ! -f "$t_acf" ] || maj_noter "$t_id" etat=echouee "raison=$MAJ_RAISON" "message=$MAJ_MESSAGE" "build_avant=$t_avant" "build_vise=$t_vise"
+      return 1
+   fi
+   mkdir -p "$DEST"
+   maj_noter "$t_id" etat=en_cours "pid=$$" "build_avant=$t_avant" "build_vise=$t_vise"
+   maj_oublier avancement rc; : >"$MAJ_ETATS/$t_id.sortie"
+   t_val=validate; [ "$t_mode" = maj ] && [ "${CIDRE_MAJ_VALIDER:-0}" != 1 ] && t_val=
+   if [ "$t_mode" = dl ] && [ -t 0 ]; then
+      scmd +@sSteamCmdForcePlatformType "$t_os" +force_install_dir "$DEST" +login "$U" +app_update "$t_id" $t_val +quit
+      t_rc=$?
+   else
+      # En fond, et on l'attend : `wait` se laisse interrompre par un signal, une
+      # commande au premier plan non.
+      { scmd_memorise +@sSteamCmdForcePlatformType "$t_os" +force_install_dir "$DEST" +login "$U" +app_update "$t_id" $t_val +quit 2>&1
+        echo $? >"$MAJ_ETATS/$t_id.rc"; } | maj_suivre "$t_id" &
+      t_pid=$!
+      trap 'maj_interrompre' INT TERM HUP
+      wait $t_pid
+      trap - INT TERM HUP
+      t_rc=$(cat "$MAJ_ETATS/$t_id.rc" 2>/dev/null); entier "$t_rc" || t_rc=1
+   fi
+   # rien de telecharge : ne pas laisser un dossier vide passer pour un jeu
+   rmdir "$DEST/steamapps" "$DEST" 2>/dev/null
+   t_err=$(grep -iE 'error|failed|no subscription' "$MAJ_ETATS/$t_id.sortie" 2>/dev/null | tail -1 | tr '\t' ' ' | sed 's/^ *//; s/ *$//')
+   # SteamCMD rend parfois 0 sur un echec : le manifeste, lui, dit si le jeu est entier
+   if [ "$t_rc" -eq 0 ] && { grep -q "Error! App '" "$MAJ_ETATS/$t_id.sortie" 2>/dev/null || ! grep -q '"StateFlags"[[:space:]]*"4"' "$t_acf" 2>/dev/null; }; then t_rc=1; fi
+   maj_oublier avancement rc
+   if [ "$t_rc" -eq 0 ]; then
+      maj_noter "$t_id" etat=faite "build_avant=$t_avant" "build_vise=$t_vise" "build_apres=$(champ "$t_id" buildid)"
+      # APPINFO ne dit pas le build qu'on vient d'installer : il est en retard
+      [ "$(build_publie "$t_id")" = "$(champ "$t_id" buildid)" ] || rm -f "${APPINFO:?}"
+      return 0
+   fi
+   if [ "$t_rc" -eq 3 ]; then MAJ_RAISON=session
+   elif grep -qiE '0x202|disk space|disk write' "$MAJ_ETATS/$t_id.sortie" 2>/dev/null; then MAJ_RAISON=disque
+   elif grep -qi 'no subscription' "$MAJ_ETATS/$t_id.sortie" 2>/dev/null; then MAJ_RAISON=licence
+   elif grep -qiE '0x402|0x602|timeout|timed out|no connection|connection failure|offline' "$MAJ_ETATS/$t_id.sortie" 2>/dev/null; then MAJ_RAISON=reseau
+   else MAJ_RAISON=steamcmd; fi
+   MAJ_MESSAGE=$(maj_message "$MAJ_RAISON" "$t_err")
+   if [ -d "$DEST" ]; then maj_noter "$t_id" etat=echouee "raison=$MAJ_RAISON" "message=$MAJ_MESSAGE" "build_avant=$t_avant" "build_vise=$t_vise"
+   else rm -f "${MAJ_ETATS:?}/${t_id:?}"; maj_oublier sortie; fi
+   return "$t_rc"
+}
+# Avant de lancer un jeu du dossier Cidre : s'il existe un build plus recent,
+# l'installer d'abord. Jamais un obstacle : verification impossible, session
+# absente, place manquante, echec en route... on le dit en une ligne et le jeu
+# part dans sa version installee. Seule une mise a jour deja en cours ailleurs
+# arrete le lancement : le jeu serait pris a moitie remplace.
+maj_avant_lancement() { # <appid>
+   if maj_en_cours "$1"; then
+      maj_etat "$1" cache; evenement_maj "$1"
+      echo "Une mise a jour de ce jeu est deja en cours (processus $(maj_champ "$1" pid)) : attends sa fin, puis relance-le. Le lancer maintenant le prendrait a moitie remplace." >&2
+      exit 4
+   fi
+   # le jeu tourne deja : on ne touche pas a ses fichiers
+   [ -f "$EN_COURS/$1" ] && kill -0 "$(cat "$EN_COURS/$1" 2>/dev/null)" 2>/dev/null && return 0
+   if [ "$SANS_MAJ" = oui ] || ! maj_voulue "$1"; then
+      # on ne demande rien a Steam ; si l'on sait deja qu'un build attend, on le dit
+      maj_etat "$1" cache
+      if entier "$MAJ_DISPO" && entier "$MAJ_INSTALLE" && [ "$MAJ_DISPO" -gt "$MAJ_INSTALLE" ]; then
+         MAJ_ETAT=ignoree; MAJ_MESSAGE=
+         if [ "$SANS_MAJ" = oui ]; then MAJ_RAISON=demande; ml_q="a ta demande (--sans-maj)"
+         else MAJ_RAISON=option; ml_q="maj_avant_lancement = false (\`cidre set $1 maj_avant_lancement true\` pour la reprendre)"; fi
+         dire "Mise a jour disponible (build $MAJ_INSTALLE -> $MAJ_DISPO), laissee de cote : $ml_q."
+         evenement_maj "$1"
+      fi
+      return 0
+   fi
+   evenement '{"evenement":"maj","etat":"verification"}'
+   maj_etat "$1"
+   case $MAJ_ETAT in
+     disponible|echouee) ;;
+     ignoree)
+        case $MAJ_RAISON in
+          branche)    dire "Mise a jour disponible sur la branche publique (build $MAJ_INSTALLE -> $MAJ_DISPO), laissee de cote : le jeu suit la branche « $(branche "$1") »." ;;
+          sans_effet) dire "Mise a jour annoncee (build $MAJ_INSTALLE -> $MAJ_DISPO), laissee de cote : Steam ne la donne pas a ce compte (deja tentee, sans effet)." ;;
+        esac
+        evenement_maj "$1"; return 0 ;;
+     inconnu)
+        case $MAJ_RAISON in sans_build|jamais_verifie) ;; *) MAJ_MESSAGE=$(maj_message "$MAJ_RAISON"); dire "$MAJ_MESSAGE Lancement de la version installee." ;; esac
+        evenement_maj "$1"; return 0 ;;
+     *) evenement_maj "$1"; return 0 ;;
+   esac
+   dire "Mise a jour avant le lancement : build $MAJ_INSTALLE -> $MAJ_DISPO (\`cidre play $1 --sans-maj\` pour jouer sans attendre)."
+   MAJ_ETAT=en_cours; MAJ_RAISON=; MAJ_MESSAGE=; evenement_maj "$1"
+   ml_os=windows; [ "$(plat "$1")" = macos ] && ml_os=macos
+   if telecharger "$1" "$ml_os" maj; then
+      MAJ_ETAT=faite; MAJ_INSTALLE=$(champ "$1" buildid)
+      dire "Mise a jour faite : build $MAJ_INSTALLE."
+   else
+      MAJ_ETAT=echouee; MAJ_INSTALLE=$(champ "$1" buildid)
+      dire "$MAJ_MESSAGE Lancement de la version installee (build $MAJ_INSTALLE)."
+   fi
+   evenement_maj "$1"
+   return 0
+}
+
 usage() {
    cat <<USAGE
 cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
   cidre list [--json]             liste tes jeux + plateforme + mode de lancement
   cidre info <id> [--json]        fiche d'un jeu : plateforme, taille, chemin, options actives
-  cidre play <id>                 lance le jeu (natif via Steam, ou par la pile Cidre)
+                                  --json : "maj" dit ou en est sa mise a jour (jeu du dossier Cidre ; voir updates)
+  cidre play <id> [--sans-maj] [--json]
+                                  lance le jeu (natif via Steam, ou par la pile Cidre). Un jeu du dossier
+                                  Cidre dont Steam publie un build plus recent est d'abord mis a jour ; si
+                                  ce n'est pas possible (hors ligne, session absente, place...), on le dit
+                                  et il part dans sa version installee. --sans-maj : jouer tout de suite ;
+                                  option maj_avant_lancement = false : ne jamais mettre a jour au lancement.
+                                  --json : la sortie standard porte des evenements, un objet par ligne
+                                  ({"evenement":"maj","etat":...} puis {"evenement":"lancement"}), le reste
+                                  va a l'erreur
   cidre running [--json]          les jeux en cours
   cidre stop [<id>]               force l'arret d'un jeu lance par Cidre (et de tout ce que Wine fait tourner)
   cidre log <id> [lignes]         la fin du journal du dernier lancement d'un jeu (sans les traces)
@@ -194,6 +518,10 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
                                   --json : "source":"bouteille" (avec "origine", "bouteille", "chemin") sur
                                   un jeu deja installe par CrossOver, Whisky ou Heroic, que cidre import reprend
   cidre updates [--json] [--refresh]   les jeux installes dont une version plus recente est publiee
+                                  --json : "etat" par jeu -- a_jour, disponible, en_cours ("avancement" en %,
+                                  "octets", "total"), echouee ("raison", "message"), ignoree ("raison" :
+                                  option, branche, sans_effet), inconnu -- et "source" (cidre : Cidre met a
+                                  jour ; steam : le client Steam s'en charge)
   cidre dl <appid> [windows|macos]   telecharge (ou met a jour) le jeu DANS le dossier Cidre, hors du client
   cidre bottles [--json]          les jeux Steam Windows deja installes par CrossOver, Whisky ou Heroic
   cidre import <appid> [<bouteille>] [--move] [--json]
@@ -215,11 +543,11 @@ USAGE
 
 cmd=${1:-help}; [ $# -gt 0 ] && shift
 # --json (n'importe ou) : sortie pour une interface (Verger), stable et parsable
-JSON=non; MAJ=non
+JSON=non; MAJ=non; SANS_MAJ=non
 # `run` transmet ses arguments tels quels au programme
 [ "$cmd" = run ] || for a in "$@"; do
    shift
-   case $a in --json) JSON=oui ;; --refresh) MAJ=oui ;; *) set -- "$@" "$a" ;; esac
+   case $a in --json) JSON=oui ;; --refresh) MAJ=oui ;; --sans-maj|--no-update) SANS_MAJ=oui ;; *) set -- "$@" "$a" ;; esac
 done
 case "$cmd" in
   list|ls)
@@ -244,9 +572,11 @@ case "$cmd" in
     connu "$id" || { echo "jeu inconnu : $id" >&2; exit 1; }
     opts=$(sh "$R/tests/profil_cidre.sh" "$id" json)
     { [ -n "$(saves_ids | grep -x "$id")" ] || [ -n "$(saves_steam "$id")" ]; } && sv=true || sv=false
+    # ou en est sa mise a jour (jeu du dossier Cidre), d'apres ce qu'on sait deja : pas de reseau ici
+    mj=null; [ "$(source_de "$id")" = cidre ] && { maj_etat "$id" cache; mj="{$(maj_json "$id")}"; }
     if [ "$JSON" = oui ]; then
       # "fiche" : la fiche de la base de profils (profils/README.md), ou null
-      fiche_json "$id"; printf ',"sauvegardes":%s,"options":%s,"options_perso":%s,"fiche":%s}\n' "$sv" "$opts" "$(sh "$R/tests/profil_cidre.sh" "$id" perso)" "$(sh "$R/tests/fiche_profil.sh" json "$id")"
+      fiche_json "$id"; printf ',"sauvegardes":%s,"options":%s,"options_perso":%s,"maj":%s,"fiche":%s}\n' "$sv" "$opts" "$(sh "$R/tests/profil_cidre.sh" "$id" perso)" "$mj" "$(sh "$R/tests/fiche_profil.sh" json "$id")"
     else
       echo "id          : $id"
       echo "nom         : $(nom "$id")"
@@ -255,6 +585,7 @@ case "$cmd" in
       echo "chemin      : $(chemin "$id")"
       t=$(champ "$id" SizeOnDisk); echo "taille      : $(( ${t:-0} / 1048576 )) Mo"
       echo "sauvegardes : $sv"
+      [ "$mj" = null ] || echo "mise a jour : $MAJ_ETAT${MAJ_RAISON:+ ($MAJ_RAISON)}${MAJ_DISPO:+, build $MAJ_INSTALLE -> $MAJ_DISPO}"
       echo "options     : $(sh "$R/tests/profil_cidre.sh" "$id" | tr '\n' ' ')"
       f=$(sh "$R/tests/fiche_profil.sh" chemin "$id")
       if [ -n "$f" ]; then
@@ -265,26 +596,36 @@ case "$cmd" in
       else echo "fiche       : aucune (cidre profils maj)"; fi
     fi ;;
   play|jouer)
-    id=${1:?usage: cidre play <id>}
+    id=${1:?usage: cidre play <id> [--sans-maj] [--json]}
     CDIR="$CIDRE_GAMES/$id"
+    # --json : l'evenement « lancement » clot la sortie standard ; tout ce qui
+    # suit (le lanceur, le jeu) ecrit a l'erreur.
+    partir() { evenement '{"evenement":"lancement"}'; [ "$JSON" != oui ] || exec >&2; }
     if est_local "$id"; then
       # Jeu hors Steam : pas d'appid, son profil de lancement est range sous son id.
       EXE=$(local_champ "$id" 3)
       [ -n "$EXE" ] || { echo "jeu inconnu : $id" >&2; exit 1; }
       [ -f "$EXE" ] || { echo "executable introuvable : $EXE" >&2; exit 1; }
+      partir
       echo "lancement Cidre : $(basename "$EXE")  ($id)"
       temoin_en_cours "$id"
-      CIDRE_JEU=$id sh "$R/tests/lancer_depuis_steam.sh" "$EXE"
+      CIDRE_JEU=$id sh "$LANCEUR" "$EXE"
     elif [ -d "$CDIR" ]; then
-      # Jeu telecharge par Cidre (hors client) : on lance par la pile Cidre.
+      # Jeu telecharge par Cidre (hors client) : c'est Cidre qui le tient a
+      # jour, puis on lance par la pile Cidre.
+      maj_avant_lancement "$id"
       EXE=$(exe_principal "$CDIR")
-      [ -n "$EXE" ] || { echo "aucun .exe dans $CDIR"; exit 1; }
+      [ -n "$EXE" ] || { dire "aucun .exe dans $CDIR"; exit 1; }
+      partir
       echo "lancement Cidre : $(basename "$EXE")  (appid $id)"
       echo "  (dossier : $CDIR)"
       temoin_en_cours "$id"
       SteamAppId=$id SteamGameId=$id SteamOverlayGameId=$id \
-        sh "$R/tests/lancer_depuis_steam.sh" "$EXE"
+        sh "$LANCEUR" "$EXE"
     else
+      # Jeu du client Steam (natif, ou Windows par le wrapper) : Steam le met a
+      # jour lui-meme avant de le lancer.
+      partir
       echo "lancement de $(nom "$id") ($id) via Steam..."
       open "steam://run/$id"
     fi
@@ -463,38 +804,34 @@ case "$cmd" in
     sh "$R/tests/cidre_install.sh" "$@" ;;
   dl|download|telecharger)
     id=${1:?usage: cidre dl <appid> [windows|macos]}; os=${2:-windows}
+    case $id in ''|*[!0-9]*) echo "usage: cidre dl <appid> [windows|macos]" >&2; exit 2 ;; esac
+    maj_en_cours "$id" && { echo "Un telechargement de ce jeu est deja en cours (processus $(maj_champ "$id" pid))." >&2; exit 4; }
     SCMD=$(resolve_steamcmd)
     [ -n "$SCMD" ] || { echo "SteamCMD introuvable (ni tools/steamcmd/ ni PATH)."; exit 1; }
     U=$(steam_user)
     [ -n "$U" ] || { echo "Compte Steam introuvable. Exporte CIDRE_STEAM_USER=<ton_login> et relance."; exit 1; }
-    DEST="$CIDRE_GAMES/$id"
-    mkdir -p "$DEST"
-    echo "== Cidre dl =="
-    echo "  app     : $id"
-    echo "  os      : $os"
-    echo "  compte  : $U"
-    echo "  dossier : $DEST   (hors du client Steam)"
-    echo "  -> Si demande : tape TON mot de passe + code Steam Guard (une fois ; ensuite memorise)."
-    echo
+    dire "== Cidre dl =="
+    dire "  app     : $id"
+    dire "  os      : $os"
+    dire "  compte  : $U"
+    dire "  dossier : $CIDRE_GAMES/$id   (hors du client Steam)"
+    dire "  -> Si demande : tape TON mot de passe + code Steam Guard (une fois ; ensuite memorise)."
+    dire
     # Au terminal, SteamCMD peut demander le mot de passe ; lance par une
     # interface, il ne le peut pas : session memorisee, ou code 3.
-    if [ -t 0 ]; then session=scmd; else session=scmd_memorise; fi
-    $session +@sSteamCmdForcePlatformType "$os" \
-            +force_install_dir "$DEST" \
-            +login "$U" \
-            +app_update "$id" validate \
-            +quit
+    telecharger "$id" "$os" dl
     rc=$?
-    # rien de telecharge : ne pas laisser un dossier vide passer pour un jeu
-    rmdir "$DEST/steamapps" "$DEST" 2>/dev/null
     [ $rc -eq 3 ] && { echo "Session Steam non memorisee : connecte-toi (\`cidre login\`)." >&2; exit 3; }
-    echo
+    dire
     if [ $rc -eq 0 ]; then
-      echo "OK. Contenu telecharge :"
+      dire "OK. Contenu telecharge :"
+      [ "$JSON" = oui ] && exec >&2
       ls -la "$DEST" 2>/dev/null | head
       find "$DEST" -maxdepth 3 \( -name '*.exe' -o -name '*.app' \) 2>/dev/null | head
     else
-      echo "Echec SteamCMD (rc=$rc). Si 'Invalid Password', relance et saisis bien mot de passe + Steam Guard."
+      # la cause probable et quoi faire, en derniere ligne : c'est elle qu'une interface montre
+      dire "Echec SteamCMD (rc=$rc). Si 'Invalid Password', relance et saisis bien mot de passe + Steam Guard."
+      [ -z "$MAJ_MESSAGE" ] || dire "$MAJ_MESSAGE"
       exit $rc
     fi ;;
   bottles|bouteilles)
@@ -567,7 +904,7 @@ case "$cmd" in
     [ -n "$id" ] && [ -n "$cle" ] && [ -n "$val" ] || { echo "usage: cidre set <id|defaut> <option> <valeur>" >&2; exit 2; }
     [ "$id" = defaut ] || connu "$id" || { echo "jeu inconnu : $id" >&2; exit 1; }
     case $cle in
-      journal_detaille|tso|vsync|hud|overlay|async|narrow_barriers|garde_index|dx12|metalfx|eac_untrusted|luajit|plein_ecran|mode_emule|gamemode|reglages_jeu_appliques)
+      journal_detaille|tso|vsync|hud|overlay|async|narrow_barriers|garde_index|dx12|metalfx|eac_untrusted|luajit|plein_ecran|mode_emule|gamemode|maj_avant_lancement|reglages_jeu_appliques)
         case $val in true|false) ;; *) echo "$cle attend true ou false" >&2; exit 2 ;; esac ;;
       fils_compilation)
         case $val in ''|*[!0-9]*) echo "fils_compilation attend un entier (0 = defaut DXVK)" >&2; exit 2 ;; esac
@@ -580,7 +917,7 @@ case "$cmd" in
         # une chaine : ecrite entre guillemets dans le profil (TOML)
         case $val in auto|fr|en|de|es|it|pt|ru|pl|ja|ko|zh) val="\"$val\"" ;;
           *) echo "langue attend auto ou un code : fr, en, de, es, it, pt, ru, pl, ja, ko, zh" >&2; exit 2 ;; esac ;;
-      *) echo "option inconnue : $cle (journal_detaille, tso, vsync, hud, overlay, async, narrow_barriers, garde_index, dx12, d3d11, metalfx, fils_compilation, eac_untrusted, luajit, plein_ecran, mode_emule, gamemode, langue, reglages_jeu_appliques)" >&2; exit 2 ;;
+      *) echo "option inconnue : $cle (journal_detaille, tso, vsync, hud, overlay, async, narrow_barriers, garde_index, dx12, d3d11, metalfx, fils_compilation, eac_untrusted, luajit, plein_ecran, mode_emule, gamemode, maj_avant_lancement, langue, reglages_jeu_appliques)" >&2; exit 2 ;;
     esac
     CIDRE_PROFILS=${CIDRE_PROFILS:-$CIDRE_DIR/profils.toml} sh "$R/tests/profil_cidre.sh" "$id" set "$cle" "$val" ;;
   unset)
@@ -659,24 +996,55 @@ case "$cmd" in
   updates|majs)
     # Le build installe de chaque jeu, compare a celui de la branche publique.
     # Information publique : SteamCMD la lit sans compte, donc sans session.
-    # Gardee en cache une demi-heure ; --refresh la redemande.
-    CACHE="$CIDRE_DIR/cache/appinfo.txt"
-    paires=""; demandes=""
-    for id in $(appids); do
-      b=$(champ "$id" buildid); [ -n "$b" ] || continue
-      paires="$paires $id=$b"; demandes="$demandes +app_info_print $id"
-    done
-    if [ -n "$demandes" ] && { [ ! -s "$CACHE" ] || [ "$MAJ" = oui ] || [ -n "$(find "$CACHE" -mmin +30 2>/dev/null)" ]; }; then
-      SCMD=$(resolve_steamcmd)
-      [ -n "$SCMD" ] || { echo "SteamCMD introuvable (ni tools/steamcmd/ ni PATH)." >&2; exit 1; }
-      mkdir -p "$(dirname "$CACHE")"
-      scmd_anonyme +app_info_update 1 $demandes +quit >"$CACHE.tmp" 2>&1
-      grep -q "^AppID : " "$CACHE.tmp" || { rm -f "$CACHE.tmp"; echo "Steam n'a pas repondu (hors ligne ?)." >&2; exit 1; }
-      mv "$CACHE.tmp" "$CACHE"
+    # Gardee en cache une demi-heure ; --refresh la redemande, et un jeu
+    # installe depuis aussi. Un jeu du dossier Cidre porte en plus l'etat de sa
+    # mise a jour (maj_etat) : c'est Cidre qui la fait.
+    neuf=non
+    [ "$MAJ" = oui ] || appinfo_perime && neuf=oui
+    [ "$neuf" = oui ] || for id in $(appids); do appinfo_sans "$id" && { neuf=oui; break; }; done
+    if [ "$neuf" = oui ]; then
+      appinfo_rafraichir
+      case $? in
+        0) ;;
+        2) echo "SteamCMD introuvable (ni tools/steamcmd/ ni PATH)." >&2; exit 1 ;;
+        *) # ce qu'on savait reste vrai : un build publie ne recule pas
+           [ -s "$APPINFO" ] || { echo "Steam n'a pas repondu (hors ligne ?)." >&2; exit 1; }
+           echo "Steam n'a pas repondu (hors ligne ?) : etat lu le $(date -r "$(stat -f %m "$APPINFO")" '+%Y-%m-%d a %H:%M')." >&2 ;;
+      esac
     fi
-    [ -s "$CACHE" ] || { [ "$JSON" = oui ] && echo "[]"; exit 0; }
-    [ "$JSON" = oui ] && texte=0 || texte=1
-    LC_ALL=C awk -v paires="$paires" -v texte=$texte -f "$R/tests/majs_steam.awk" "$CACHE" ;;
+    [ -s "$APPINFO" ] || { [ "$JSON" = oui ] && echo "[]"; exit 0; }
+    [ "$JSON" = oui ] && printf '['
+    sep=""
+    builds >"$APPINFO.builds.$$"
+    while IFS="$TAB" read -r u_a u_i u_p; do
+      [ "$u_p" -le "$u_i" ] && u_j=true || u_j=false
+      if [ "$(source_de "$u_a")" = cidre ]; then
+        maj_etat "$u_a" cache
+        [ "$MAJ_ETAT" = en_cours ] && MAJ_DISPO=${MAJ_DISPO:-$u_p}
+        if [ "$JSON" = oui ]; then
+          printf '%s{"appid": %s, "build_installe": %s, "build_disponible": %s, "a_jour": %s, "source": "cidre", %s}' "$sep" "$u_a" "$u_i" "$u_p" "$u_j" "$(maj_json "$u_a" | sed 's/"build_installe":[^,]*,"build_disponible":[^,]*,//')"
+        else
+          case $MAJ_ETAT in
+            a_jour)   u_t="a jour" ;;
+            en_cours) u_t="MISE A JOUR EN COURS : build $u_i -> $u_p" ;;
+            echouee)  u_t="MISE A JOUR : build $u_i -> $u_p (derniere tentative echouee : $MAJ_RAISON)" ;;
+            ignoree)  u_t="MISE A JOUR : build $u_i -> $u_p (laissee de cote : $MAJ_RAISON)" ;;
+            *)        [ $u_j = true ] && u_t="a jour" || u_t="MISE A JOUR : build $u_i -> $u_p" ;;
+          esac
+          printf '%-9d %s\n' "$u_a" "$u_t"
+        fi
+      elif [ "$JSON" = oui ]; then
+        [ $u_j = true ] && u_e=a_jour || u_e=disponible
+        printf '%s{"appid": %s, "build_installe": %s, "build_disponible": %s, "a_jour": %s, "source": "steam", "etat": "%s"}' "$sep" "$u_a" "$u_i" "$u_p" "$u_j" "$u_e"
+      else
+        [ $u_j = true ] && u_t="a jour" || u_t="MISE A JOUR : build $u_i -> $u_p"
+        printf '%-9d %s\n' "$u_a" "$u_t"
+      fi
+      sep=", "
+    done <"$APPINFO.builds.$$"
+    rm -f "${APPINFO:?}.builds.$$"
+    [ "$JSON" = oui ] && echo "]"
+    exit 0 ;;
   login)
     SCMD=$(resolve_steamcmd)
     [ -n "$SCMD" ] || { echo "SteamCMD introuvable (ni tools/steamcmd/ ni PATH)." >&2; exit 1; }
@@ -725,6 +1093,7 @@ case "$cmd" in
       # (une copie Cidre meme si Steam synchronise ce jeu : ceinture et bretelles)
       CIDRE_SAVES_STEAM=0 WINEPREFIX="${WINEPREFIX:-$R/wine/pfx-arm64ec}" sh "$R/tests/sync_saves_steam.sh" "$id" backup
       rm -rf "${CIDRE_GAMES:?}/${id:?}"
+      t_id=$id; rm -f "${MAJ_ETATS:?}/${id:?}"; maj_oublier sortie avancement rc
       echo "desinstalle : $CIDRE_GAMES/$id"
     fi ;;
   help|*) usage ;;
