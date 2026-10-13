@@ -1,0 +1,61 @@
+# Blackwell Deception -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 80360
+nom = "Blackwell Deception"
+plateformes_steam = "macos windows"
+moteur = "autre"
+moteur_nom = "Adventure Game Studio"
+api_disponibles = "d3d9 opengl"
+bits = 32
+drm = "drm-free"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "gold"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "moderate"
+rapports = 15
+score = 55
+lanceurs_signales = "steam:3"
+lanceur_secondaire = "non:3"
+verdicts_recents = "yes:1"
+rapports_export = 6
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/80360"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "Saved Games/Blackwell Deception/acsetup.cfg"
+sauvegardes = "Saved Games/Blackwell Deception/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Blackwell_Deception"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.14058"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2015-11-25"
+crossover_version = "15.0"
+bouteille = "win7_64"
+source = "crossover"
+date = "2026-10-13"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=14058"

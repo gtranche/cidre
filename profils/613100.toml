@@ -1,0 +1,58 @@
+# House Flipper -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 613100
+nom = "House Flipper"
+plateformes_steam = "macos windows"
+moteur = "unity"
+moteur_nom = "Unity"
+api_disponibles = "d3d11 opengl metal"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 153
+score = 84
+lanceurs_signales = "steam:80"
+options_lancement_1 = "gamemoderun %command% (x3)"
+options_lancement_2 = "PROTON_ENABLE_WAYLAND=1 gamemoderun %command% (x1)"
+options_lancement_3 = "PROTON_USE_NTSYNC=1 prime-run game-performance %command% (x1)"
+lanceur_secondaire = "non:11"
+verdicts_recents = "yes:33 no:6"
+rapports_export = 125
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/613100"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "registre:HKEY_CURRENT_USER/Software/Empyrean/House Flipper Game"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/House_Flipper"
+
+[compat.applegamingwiki]
+rosetta = "parfait"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/House_Flipper"

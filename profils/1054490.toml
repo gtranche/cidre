@@ -1,0 +1,62 @@
+# Wingspan -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 1054490
+nom = "Wingspan"
+plateformes_steam = "macos windows"
+moteur = "unity"
+moteur_nom = "Unity"
+api = "d3d11"
+api_disponibles = "d3d11"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 63
+score = 78
+lanceurs_signales = "steam:38 notListed:1"
+options_lancement_1 = "PROTON_USE_WINED3D=1 PROTON_NO_ESYNC=1 %command% (x1)"
+lanceur_secondaire = "non:8"
+verdicts_recents = "yes:10"
+rapports_export = 63
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/1054490"
+
+[compat.pcgamingwiki]
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Wingspan"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.17854"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2025-06-25"
+crossover_version = "25"
+bouteille = "win10_64"
+source = "crossover"
+date = "2026-10-13"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=17854"

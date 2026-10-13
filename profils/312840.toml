@@ -1,0 +1,65 @@
+# Fahrenheit: Indigo Prophecy Remastered -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 312840
+nom = "Fahrenheit: Indigo Prophecy Remastered"
+plateformes_steam = "macos windows"
+api_disponibles = "d3d9 opengl"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[cidre]
+dependances = "vcrun2005"
+
+[cidre.sources]
+dependances = "crossover 2026-10-13"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "good"
+rapports = 29
+score = 51
+lanceurs_signales = "steam:24"
+options_lancement_1 = "MANGOHUD_CONFIG=no_display,fps_limit=60 mangohud %command% (x1)"
+options_lancement_2 = "Con el launcher de linux que auto instala Steam (x1)"
+lanceur_secondaire = "non:11"
+verdicts_recents = "yes:12 no:2"
+rapports_export = 27
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/312840"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "jeu:fahrenheit.ini"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Fahrenheit%3A_Indigo_Prophecy_Remastered"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.20276"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2024-04-27"
+crossover_version = "23.5"
+bouteille = "win10_64"
+dependances = "vcrun2005"
+source = "crossover"
+date = "2026-10-13"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=20276"

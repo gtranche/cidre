@@ -1,0 +1,77 @@
+# Geometry Dash -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 322170
+nom = "Geometry Dash"
+plateformes_steam = "macos windows"
+moteur = "autre"
+moteur_nom = "cocos2d"
+api = "opengl"
+api_disponibles = "opengl"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 586
+score = 88
+lanceurs_signales = "steam:427 notListed:3 lutris:1 bottles:1"
+options_lancement_1 = "WINEDLLOVERRIDES=\"xinput1_4=n,b\" %command% (x47)"
+options_lancement_2 = "WINEDLLOVERRIDES=\"XInput1_4=n,b\" %command% (x11)"
+options_lancement_3 = "WINEDLLOVERRIDES=\"xinput1_4=n,b\" gamemoderun %command% (x6)"
+lanceur_secondaire = "non:23"
+verdicts_recents = "yes:190 no:12"
+rapports_export = 536
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/322170"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Local/GeometryDash/*.dat"
+sauvegardes = "AppData/Local/GeometryDash/*.dat"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Geometry_Dash"
+
+[compat.applegamingwiki]
+natif = "parfait"
+rosetta = "parfait"
+crossover = "parfait"
+wine = "parfait"
+parallels = "parfait"
+dernier_temoignage = "2023-12-20"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Geometry_Dash"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.14208"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2023-09-14"
+crossover_version = "19"
+bouteille = "win10_64"
+source = "crossover"
+date = "2026-10-13"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=14208"

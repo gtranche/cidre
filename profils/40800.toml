@@ -1,0 +1,67 @@
+# Super Meat Boy -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 40800
+nom = "Super Meat Boy"
+plateformes_steam = "macos windows"
+moteur = "autre"
+moteur_nom = "Tommunism Engine"
+api_disponibles = "d3d9 opengl"
+bits = 32
+drm = "drm-free"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 49
+score = 83
+lanceurs_signales = "steam:37 notListed:7"
+lanceur_secondaire = "non:22"
+verdicts_recents = "yes:19"
+rapports_export = 47
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/40800"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "jeu:UserData/"
+sauvegardes = "jeu:UserData/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Super_Meat_Boy"
+
+[compat.applegamingwiki]
+rosetta = "parfait"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Super_Meat_Boy"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.8292"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2014-06-24"
+crossover_version = "11.0"
+bouteille = "win7_64"
+source = "crossover"
+date = "2026-10-13"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=8292"

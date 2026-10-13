@@ -1,0 +1,59 @@
+# Desperados III -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 610370
+nom = "Desperados III"
+plateformes_steam = "macos windows"
+moteur = "unity"
+moteur_nom = "Unity"
+api_disponibles = "d3d11 opengl"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 52
+score = 69
+lanceurs_signales = "steam:37 bottles:1"
+options_lancement_1 = "gamemoderun %command% (x2)"
+options_lancement_2 = "gamescope --force-grab-cursor -f -W 2560 -H 1440 -O HDMI-A-4 -- %command% (x1)"
+options_lancement_3 = "MANGOHUD_CONFIG=\"fps_limit=160,no_display\" mangohud %command% (x1)"
+lanceur_secondaire = "non:4"
+verdicts_recents = "yes:12"
+rapports_export = 53
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/610370"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "registre:HKEY_CURRENT_USER/Software/Mimimi/Desperados III/ ; AppData/Local/Desperados III/<uid>/"
+sauvegardes = "AppData/Local/Desperados III/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Desperados_III"
+
+[compat.applegamingwiki]
+rosetta = "parfait"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Desperados_III"

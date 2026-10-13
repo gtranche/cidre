@@ -1,0 +1,75 @@
+# Half-Life 2 -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 220
+nom = "Half-Life 2"
+plateformes_steam = "macos windows"
+moteur = "source"
+moteur_nom = "Source"
+api_disponibles = "d3d9 opengl vulkan"
+bits = 64
+bits_32_aussi = true
+drm = "drm-free"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+bits_32_aussi = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 220
+score = 91
+lanceurs_signales = "steam:216 lutris:1"
+options_lancement_1 = "-vulkan (x25)"
+options_lancement_2 = "-novid -vulkan (x3)"
+options_lancement_3 = "gamemoderun %command% (x3)"
+lanceur_secondaire = "non:24"
+verdicts_recents = "yes:124 no:8"
+rapports_export = 220
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/220"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "registre:HKEY_CURRENT_USER/SOFTWARE/Valve/Source/hl2_complete/Settings ; registre:HKEY_CURRENT_USER/SOFTWARE/Valve/Source/hl2/Settings"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Half-Life_2"
+
+[compat.applegamingwiki]
+natif = "jouable"
+crossover = "demarre"
+wine = "parfait"
+parallels = "parfait"
+methodes = "crossover"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Half-Life_2"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.1168"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2024-11-22"
+crossover_version = "22.0"
+bouteille = "win10_64"
+source = "crossover"
+date = "2026-10-13"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=1168"

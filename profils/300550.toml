@@ -1,0 +1,62 @@
+# Shadowrun: Dragonfall - Director's Cut -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 300550
+nom = "Shadowrun: Dragonfall - Director's Cut"
+plateformes_steam = "macos windows"
+moteur = "unity"
+moteur_nom = "Unity"
+api = "d3d9"
+api_disponibles = "d3d9"
+bits = 32
+drm = "drm-free"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-13"
+moteur_nom = "pcgamingwiki 2026-10-13"
+api = "pcgamingwiki 2026-10-13"
+api_disponibles = "pcgamingwiki 2026-10-13"
+bits = "pcgamingwiki 2026-10-13"
+drm = "pcgamingwiki 2026-10-13"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "good"
+rapports = 20
+score = 76
+lanceurs_signales = "steam:15 notListed:2"
+options_lancement_1 = "LD_PRELOAD=\"/home/user/libunitybugworkaround.so /home/user/libunitybugworkaround-32.so\" %command% (x1)"
+lanceur_secondaire = "non:5"
+verdicts_recents = "yes:8"
+rapports_export = 19
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/300550"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "registre:HKEY_CURRENT_USER/SOFTWARE/Harebrained Schemes/Dragonfall"
+sauvegardes = "AppData/Local/Harebrained Schemes/Shadowrun Dragonfall/Saves"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-13"
+url = "https://www.pcgamingwiki.com/wiki/Shadowrun%3A_Dragonfall_-_Director%27s_Cut"
+
+[compat.applegamingwiki]
+rosetta = "parfait"
+crossover = "ko"
+methodes = "crossover"
+dernier_temoignage = "2022-02-02"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Shadowrun%3A_Dragonfall_-_Director%27s_Cut"

@@ -1,0 +1,36 @@
+# ENDLESS Space™ 2 -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 392110
+nom = "ENDLESS Space™ 2"
+plateformes_steam = "macos windows"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "gold"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 214
+score = 74
+lanceurs_signales = "steam:83 bottles:1 notListed:1"
+options_lancement_1 = "gamemoderun %command% (x3)"
+options_lancement_2 = "PROTON_USE_WINED3D=1 %command% (x2)"
+options_lancement_3 = "PROTON_USE_WINED3D=1 %command% -useembedded (x1)"
+lanceur_secondaire = "non:7"
+anticheat_signale = "autre:1"
+verdicts_recents = "yes:18 no:4"
+rapports_export = 133
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/392110"

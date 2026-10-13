@@ -1,0 +1,75 @@
+# Left 4 Dead 2 -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 550
+nom = "Left 4 Dead 2"
+plateformes_steam = "macos windows"
+moteur = "source"
+moteur_nom = "Source"
+api_disponibles = "d3d9 opengl vulkan"
+bits = 32
+anticheat = "vac"
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+anticheat = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "gold"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 433
+score = 80
+lanceurs_signales = "steam:408 notListed:1"
+options_lancement_1 = "-vulkan (x40)"
+options_lancement_2 = "-vulkan -novid (x14)"
+options_lancement_3 = "STEAM_COMPAT_RUNTIME_SDL3=1 %command% -vulkan (x5)"
+lanceur_secondaire = "non:27"
+anticheat_signale = "other:6 easyAntiCheat:1"
+verdicts_recents = "yes:226 no:34"
+rapports_export = 431
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/550"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "jeu:left4dead2/cfg/config.cfg"
+sauvegardes = "steam:userdata/<uid>/550/remote/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Left_4_Dead_2"
+
+[compat.applegamingwiki]
+crossover = "jouable"
+wine = "jouable"
+parallels = "jouable"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Left_4_Dead_2"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.6160"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2026-06-30"
+crossover_version = "19"
+bouteille = "win10_64"
+source = "crossover"
+date = "2026-10-13"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=6160"

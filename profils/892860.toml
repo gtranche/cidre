@@ -1,0 +1,51 @@
+# Hot Brass -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 892860
+nom = "Hot Brass"
+plateformes_steam = "macos windows"
+moteur = "unity"
+moteur_nom = "Unity"
+api = "d3d9"
+api_disponibles = "d3d9"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "moderate"
+rapports = 9
+score = 53
+lanceurs_signales = "steam:5"
+lanceur_secondaire = "non:2"
+rapports_export = 9
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/892860"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Local/../LocalLow/Walk with Kings/Hot Brass/Settings.json"
+sauvegardes = "AppData/Local/../LocalLow/Walk with Kings/Hot Brass/Profiles/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Hot_Brass"

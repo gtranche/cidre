@@ -1,0 +1,62 @@
+# Pillars of Eternity -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 291650
+nom = "Pillars of Eternity"
+plateformes_steam = "macos windows"
+moteur = "unity"
+moteur_nom = "Unity"
+api_disponibles = "d3d9 d3d11"
+bits = 64
+bits_32_aussi = true
+drm = "drm-free"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+bits_32_aussi = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 43
+score = 86
+lanceurs_signales = "steam:27 notListed:2"
+options_lancement_1 = "gamemoderun %command% -force-glcore46 (x1)"
+options_lancement_2 = "gamemoderun %command% (x1)"
+options_lancement_3 = "MANGOHUD=1 PROTON_ENABLE_WAYLAND=1 %command% (x1)"
+lanceur_secondaire = "non:2"
+verdicts_recents = "yes:14 no:1"
+rapports_export = 38
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/291650"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "registre:HKEY_CURRENT_USER/Software/Obsidian Entertainment/Pillars of Eternity/"
+sauvegardes = "Saved Games/Pillars of Eternity/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Pillars_of_Eternity"
+
+[compat.applegamingwiki]
+rosetta = "jouable"
+parallels = "parfait"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Pillars_of_Eternity"

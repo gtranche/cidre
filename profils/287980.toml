@@ -1,0 +1,58 @@
+# Mini Metro -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 287980
+nom = "Mini Metro"
+plateformes_steam = "macos windows"
+moteur = "unity"
+moteur_nom = "Unity"
+api_disponibles = "d3d11 opengl"
+bits = 32
+drm = "drm-free"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 47
+score = 89
+lanceurs_signales = "steam:41"
+options_lancement_1 = "gamemoderun %command% (x1)"
+options_lancement_2 = "PROTON_USE_WINED3D=1 %command% (x1)"
+lanceur_secondaire = "non:8"
+verdicts_recents = "yes:11"
+rapports_export = 46
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/287980"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/LocalLow/Dinosaur Polo Club/Mini Metro/ ; registre:HKEY_CURRENT_USER/SOFTWARE/Dinosaur Polo Club/Mini Metro/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Mini_Metro"
+
+[compat.applegamingwiki]
+natif = "parfait"
+rosetta = "parfait"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Mini_Metro"

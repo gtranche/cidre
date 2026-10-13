@@ -1,0 +1,51 @@
+# FOX n FORESTS -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 603400
+nom = "FOX n FORESTS"
+plateformes_steam = "macos windows"
+moteur = "unity"
+moteur_nom = "Unity"
+api_disponibles = "d3d11 opengl"
+bits = 64
+bits_32_aussi = true
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+bits_32_aussi = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "pending"
+tendance = "pending"
+meilleur_palier = "platinum"
+confiance = "inadequate"
+rapports = 2
+score = 34
+lanceurs_signales = "steam:2"
+lanceur_secondaire = "oui:2"
+rapports_export = 2
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/603400"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "registre:HKEY_CURRENT_USER/Software/Bonus Level Entertainment/FOXnFORESTS/"
+sauvegardes = "AppData/LocalLow/Bonus Level Entertainment/FOXnFORESTS/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Fox_n_Forests"

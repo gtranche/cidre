@@ -1,0 +1,43 @@
+# On the Rain-Slick Precipice of Darkness, Episode Two -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 18020
+nom = "On the Rain-Slick Precipice of Darkness, Episode Two"
+plateformes_steam = "macos windows"
+moteur = "autre"
+moteur_nom = "Torque Game Engine Advanced"
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "low"
+rapports = 7
+score = 57
+lanceurs_signales = "steam:1"
+rapports_export = 4
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/18020"
+
+[compat.pcgamingwiki]
+sauvegardes = "AppData/Local/HotheadGames/RainSlickEp2"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Penny_Arcade%27s_On_the_Rain-Slick_Precipice_of_Darkness%3A_Episode_Two"

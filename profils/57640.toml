@@ -1,0 +1,57 @@
+# Broken Sword 1 - Shadow of the Templars: Director's Cut (2009) -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 57640
+nom = "Broken Sword 1 - Shadow of the Templars: Director's Cut (2009)"
+plateformes_steam = "macos windows"
+moteur = "autre"
+moteur_nom = "Virtual Theatre"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "low"
+rapports = 9
+score = 61
+lanceurs_signales = "steam:9 notListed:1"
+lanceur_secondaire = "non:5"
+verdicts_recents = "yes:3"
+rapports_export = 10
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/57640"
+
+[compat.pcgamingwiki]
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Broken_Sword%3A_Shadow_of_the_Templars%3A_Director%27s_Cut"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.9293"
+correspondance = "steamid"
+confiance = "haute"
+recette_date = "2013-10-22"
+crossover_version = "11.0"
+bouteille = "win7_64"
+source = "crossover"
+date = "2026-10-13"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=9293"

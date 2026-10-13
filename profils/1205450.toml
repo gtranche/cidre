@@ -1,0 +1,68 @@
+# Turnip Boy Commits Tax Evasion -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 1205450
+nom = "Turnip Boy Commits Tax Evasion"
+plateformes_steam = "macos windows"
+moteur = "unity"
+moteur_nom = "Unity"
+api = "d3d11"
+api_disponibles = "d3d11"
+bits = 64
+drm = "drm-free"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 34
+score = 80
+lanceurs_signales = "steam:30 notListed:1"
+lanceur_secondaire = "non:9"
+verdicts_recents = "yes:14 no:1"
+rapports_export = 34
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/1205450"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "registre:HKEY_CURRENT_USER/SOFTWARE/Snoozy Kazoo/Turnip Boy Commits Tax Evasion"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Turnip_Boy_Commits_Tax_Evasion"
+
+[compat.applegamingwiki]
+crossover = "parfait"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Turnip_Boy_Commits_Tax_Evasion"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.17303"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2023-10-04"
+crossover_version = "20"
+bouteille = "win10_64"
+source = "crossover"
+date = "2026-10-13"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=17303"

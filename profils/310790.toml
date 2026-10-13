@@ -1,0 +1,47 @@
+# Geometry Wars 3: Dimensions Evolved -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 310790
+nom = "Geometry Wars 3: Dimensions Evolved"
+plateformes_steam = "macos windows"
+api = "d3d9"
+api_disponibles = "d3d9"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "moderate"
+rapports = 15
+score = 69
+lanceurs_signales = "steam:14"
+lanceur_secondaire = "non:8"
+verdicts_recents = "yes:5"
+rapports_export = 15
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/310790"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Local/GeometryWars3Dimensions/Settings"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Geometry_Wars_3%3A_Dimensions_Evolved"

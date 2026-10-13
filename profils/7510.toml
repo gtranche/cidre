@@ -1,0 +1,63 @@
+# X-Blades -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 7510
+nom = "X-Blades"
+plateformes_steam = "macos windows"
+moteur = "autre"
+moteur_nom = "Dagor Engine"
+api = "d3d9"
+api_disponibles = "d3d9"
+bits = 32
+drm = "drm-free"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "gold"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "good"
+rapports = 22
+score = 46
+lanceurs_signales = "steam:16"
+lanceur_secondaire = "non:2"
+verdicts_recents = "yes:3"
+rapports_export = 18
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/7510"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Roaming/XBlades/ ; AppData/Local/XBlades/"
+sauvegardes = "AppData/Roaming/XBlades/ ; AppData/Local/XBlades/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/X-Blades"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.12843"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2025-08-30"
+crossover_version = "24"
+bouteille = "win10_64"
+source = "crossover"
+date = "2026-10-13"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=12843"

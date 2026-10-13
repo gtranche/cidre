@@ -1,0 +1,74 @@
+# The Darkness II -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 67370
+nom = "The Darkness II"
+plateformes_steam = "macos windows"
+moteur = "autre"
+moteur_nom = "Evolution (Digital Extremes)"
+api = "d3d9"
+api_disponibles = "d3d9"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "silver"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 116
+score = 49
+lanceurs_signales = "steam:42 notListed:3"
+options_lancement_1 = "DXVK_FRAME_RATE=60 DXVK_ASYNC=1 %command% (x1)"
+options_lancement_2 = "proton-cachy0s-10.0-20251023 (steam linux runtime) (x1)"
+options_lancement_3 = "PROTON_ENABLE_WAYLAND=1 PROTON_PRIORITY_HIGH=1 %command% (x1)"
+lanceur_secondaire = "non:11"
+anticheat_signale = "autre:2 other:1"
+verdicts_recents = "yes:10 no:1"
+rapports_export = 72
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/67370"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Roaming/DarknessII/"
+sauvegardes = "AppData/Roaming/DarknessII/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/The_Darkness_II"
+
+[compat.applegamingwiki]
+parallels = "demarre"
+dernier_temoignage = "2021-04-30"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/The_Darkness_II"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.13060"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2014-07-24"
+crossover_version = "13.2.0"
+bouteille = "win7_64"
+source = "crossover"
+date = "2026-10-13"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=13060"

@@ -1,0 +1,17 @@
+# 8-Bit Attack -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 1116280
+nom = "8-Bit Attack"
+plateformes_steam = "macos windows"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"

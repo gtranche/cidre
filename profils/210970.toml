@@ -1,0 +1,67 @@
+# The Witness -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 210970
+nom = "The Witness"
+plateformes_steam = "macos windows"
+api_disponibles = "d3d11 metal"
+bits = 64
+bits_32_aussi = true
+drm = "drm-free"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+bits_32_aussi = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 169
+score = 79
+lanceurs_signales = "steam:51 notListed:3"
+options_lancement_1 = "PROTON_USE_WINED3D11=1 %command% (x1)"
+options_lancement_2 = "mangohud MANGOHUD_CONFIG=\"fps_limit=60,no_display\" %command% (x1)"
+lanceur_secondaire = "non:5 oui:2"
+verdicts_recents = "yes:25"
+rapports_export = 105
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/210970"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "jeu:data/Local.variables ; AppData/Roaming/The Witness/Launcher.variables"
+sauvegardes = "AppData/Roaming/The Witness/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/The_Witness"
+
+[compat.applegamingwiki]
+rosetta = "parfait"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/The_Witness"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.14335"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2021-05-25"
+crossover_version = "20"
+bouteille = "win10_64"
+source = "crossover"
+date = "2026-10-13"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=14335"

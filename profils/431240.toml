@@ -1,0 +1,57 @@
+# Golf With Your Friends -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 431240
+nom = "Golf With Your Friends"
+plateformes_steam = "macos windows"
+moteur = "unity"
+moteur_nom = "Unity"
+api_disponibles = "d3d9 d3d11"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 94
+score = 89
+lanceurs_signales = "steam:82"
+options_lancement_1 = "LD_PRELOAD=\"\" gamemoderun mangohud %command% (x1)"
+options_lancement_2 = "gamemoderun %command% -screen-width 2560 -screen-height 1440 -screen-fullscreen 0 (x1)"
+lanceur_secondaire = "non:8"
+verdicts_recents = "yes:54 no:2"
+rapports_export = 96
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/431240"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "registre:HKEY_CURRENT_USER/Software/Team17 Digital Ltd/Golf With Your Friends/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Golf_with_Your_Friends"
+
+[compat.applegamingwiki]
+rosetta = "parfait"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Golf_with_Your_Friends"

@@ -1,0 +1,62 @@
+# Sid Meier's Civilization V -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 8930
+nom = "Sid Meier's Civilization V"
+plateformes_steam = "macos windows"
+moteur = "autre"
+moteur_nom = "LORE"
+api_disponibles = "d3d9 d3d11 opengl"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "gold"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 219
+score = 70
+lanceurs_signales = "steam:172 notListed:1 lutris:1"
+options_lancement_1 = "taskset --cpu-list 0-7 %command% (x3)"
+options_lancement_2 = "taskset -c 0-7 steam steam://rungameid/8930 (x3)"
+options_lancement_3 = "gamemoderun %command% (x3)"
+lanceur_secondaire = "non:8"
+verdicts_recents = "yes:62 no:11"
+rapports_export = 198
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/8930"
+
+[compat.pcgamingwiki]
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Sid_Meier%27s_Civilization_V"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.7234"
+correspondance = "steamid"
+confiance = "haute"
+recette_date = "2022-11-10"
+crossover_version = "22.0.1"
+bouteille = "win7_64"
+source = "crossover"
+date = "2026-10-13"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=7234"

@@ -1,0 +1,57 @@
+# Victoria 3 -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 529340
+nom = "Victoria 3"
+plateformes_steam = "macos windows"
+api = "d3d11"
+api_disponibles = "d3d11"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 115
+score = 77
+lanceurs_signales = "steam:116"
+options_lancement_1 = "gamemoderun %command% (x5)"
+options_lancement_2 = "VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json %command% (x1)"
+options_lancement_3 = "vk_xwayland_wait_ready=false MESA_VK_WSI_PRESENT_MODE=immediate gamemoderun  gamescope -w 1920 -h 1080 -- %command% (x1)"
+lanceur_secondaire = "non:5"
+verdicts_recents = "yes:48 no:2"
+rapports_export = 116
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/529340"
+
+[compat.pcgamingwiki]
+sauvegardes = "steam:<uid>/529340/remote/save games"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Victoria_3"
+
+[compat.applegamingwiki]
+natif = "parfait"
+rosetta = "jouable"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Victoria_3"

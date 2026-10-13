@@ -1,0 +1,54 @@
+# Skulls of the Shogun -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 228960
+nom = "Skulls of the Shogun"
+plateformes_steam = "macos windows"
+moteur = "autre"
+moteur_nom = "XNA ; FNA"
+bits = 64
+bits_32_aussi = true
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+bits_32_aussi = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "pending"
+tendance = "pending"
+meilleur_palier = "platinum"
+confiance = "inadequate"
+rapports = 3
+score = 34
+lanceurs_signales = "steam:3"
+lanceur_secondaire = "non:1"
+verdicts_recents = "yes:1"
+rapports_export = 3
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/228960"
+
+[compat.pcgamingwiki]
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Skulls_of_the_Shogun"
+
+[compat.applegamingwiki]
+rosetta = "parfait"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Skulls_of_the_Shogun"

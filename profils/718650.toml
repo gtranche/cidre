@@ -1,0 +1,52 @@
+# Driftland: The Magic Revival -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 718650
+nom = "Driftland: The Magic Revival"
+plateformes_steam = "macos windows"
+moteur = "unreal"
+moteur_nom = "Unreal Engine 4"
+api = "d3d11"
+api_disponibles = "d3d11"
+bits = 64
+drm = "drm-free"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "good"
+rapports = 25
+score = 70
+lanceurs_signales = "steam:8 notListed:1"
+lanceur_secondaire = "non:1"
+verdicts_recents = "yes:4"
+rapports_export = 20
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/718650"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Local/Driftland/Saved/Config/WindowsNoEditor/"
+sauvegardes = "AppData/Local/Driftland/Saved/SaveGames/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Driftland%3A_The_Magic_Revival"

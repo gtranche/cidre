@@ -1,0 +1,73 @@
+# LEGO® Batman™: The Videogame -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 21000
+nom = "LEGO® Batman™: The Videogame"
+plateformes_steam = "macos windows"
+moteur = "autre"
+moteur_nom = "Nu2"
+api = "d3d9"
+api_disponibles = "d3d9"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 72
+score = 76
+lanceurs_signales = "steam:49 notListed:4"
+options_lancement_1 = "PROTON_USE_WINED3D=1 PROTON_NO_ESYNC=1 %command% (x1)"
+options_lancement_2 = "PROTON_NO_ESYNC=1 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.x86_64.json (x1)"
+lanceur_secondaire = "non:13"
+verdicts_recents = "yes:23 no:4"
+rapports_export = 59
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/21000"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Local/Warner Bros. Interactive Entertainment/LEGO Batman"
+sauvegardes = "AppData/Local/Warner Bros. Interactive Entertainment/LEGO Batman/Saved Games"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Lego_Batman%3A_The_Videogame"
+
+[compat.applegamingwiki]
+crossover = "parfait"
+methodes = "crossover"
+dernier_temoignage = "2023-11-10"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Lego_Batman%3A_The_Videogame"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.4961"
+correspondance = "steamid"
+confiance = "haute"
+recette_date = "2025-10-23"
+crossover_version = "14.0.0"
+bouteille = "winxp"
+source = "crossover"
+date = "2026-10-13"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=4961"

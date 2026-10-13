@@ -1,0 +1,40 @@
+# Ghosts'n DJs -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 1207390
+nom = "Ghosts'n DJs"
+plateformes_steam = "macos windows"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "pending"
+tendance = "pending"
+meilleur_palier = "platinum"
+confiance = "inadequate"
+rapports = 1
+score = 21
+rapports_export = 1
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/1207390"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.17156"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2023-09-24"
+crossover_version = "20"
+bouteille = "win7_64"
+source = "crossover"
+date = "2026-10-13"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=17156"

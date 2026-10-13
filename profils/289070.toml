@@ -1,0 +1,48 @@
+# Sid Meier's Civilization VI -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 289070
+nom = "Sid Meier's Civilization VI"
+plateformes_steam = "macos windows"
+api_disponibles = "d3d11 d3d12 opengl metal"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 574
+score = 76
+lanceurs_signales = "steam:445 notListed:11 lutris:2"
+options_lancement_1 = "eval $( echo gamemoderun PROTON_NO_ESYNC=1 PROTON_NO_FSYNC=1 \"%command%\" | sed \"s/2KLauncher\\/LauncherPatcher.exe'.*/Base\\/Binaries\\/Win64Steam\\/CivilizationVI'/\" ) (x2)"
+options_lancement_2 = "LD_PRELOAD=/usr/lib/libfreetype.so.6 gamemoderun %command% (x2)"
+options_lancement_3 = "gamemoderun mangohud %command% (x2)"
+lanceur_secondaire = "non:20 oui:4"
+verdicts_recents = "yes:125 no:12"
+rapports_export = 563
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/289070"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Local/Firaxis Games/Sid Meier's Civilization VI/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Sid_Meier%27s_Civilization_VI"

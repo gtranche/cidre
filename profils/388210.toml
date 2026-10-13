@@ -1,0 +1,70 @@
+# Day of the Tentacle Remastered -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 388210
+nom = "Day of the Tentacle Remastered"
+plateformes_steam = "macos windows"
+moteur = "autre"
+moteur_nom = "SCUMM"
+api = "opengl"
+api_disponibles = "opengl"
+bits = 32
+drm = "drm-free"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "moderate"
+rapports = 21
+score = 77
+lanceurs_signales = "steam:17 notListed:1"
+lanceur_secondaire = "non:8"
+verdicts_recents = "yes:3"
+rapports_export = 20
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/388210"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "jeu:savedata/settings.ini ; AppData/Roaming/Doublefine/DayOfTheTentacle/"
+sauvegardes = "jeu:savedata/ ; AppData/Roaming/Doublefine/DayOfTheTentacle/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Day_of_the_Tentacle_Remastered"
+
+[compat.applegamingwiki]
+rosetta = "parfait"
+parallels = "parfait"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Day_of_the_Tentacle_Remastered"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.18719"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2022-08-27"
+crossover_version = "22.0.0"
+bouteille = "win7"
+source = "crossover"
+date = "2026-10-13"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=18719"

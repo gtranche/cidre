@@ -1,0 +1,60 @@
+# Celeste -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 504230
+nom = "Celeste"
+plateformes_steam = "macos windows"
+moteur = "autre"
+moteur_nom = "Monocle Engine ; FNA ; XNA"
+api_disponibles = "d3d9 d3d11 opengl metal"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 282
+score = 90
+lanceurs_signales = "steam:257 notListed:19 lutris:1"
+options_lancement_1 = "-gldevice:Vulkan (x4)"
+options_lancement_2 = "STEAM_COMPAT_RUNTIME_SDL2=sdl2-compat FNA3D_FORCE_DRIVER=Vulkan SDL_VIDEO_DRIVER=wayland  %command% (x3)"
+options_lancement_3 = "FNA3D_FORCE_DRIVER=Vulkan gamemoderun %command% (x3)"
+lanceur_secondaire = "non:43"
+verdicts_recents = "yes:139 no:5"
+rapports_export = 286
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/504230"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "jeu:Saves/settings.celeste"
+sauvegardes = "jeu:Saves/*.celeste ; jeu:Saves/debug.celeste"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Celeste"
+
+[compat.applegamingwiki]
+rosetta = "parfait"
+crossover = "ko"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Celeste"

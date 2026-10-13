@@ -1,0 +1,55 @@
+# STAR WARS™ Jedi Knight II: Jedi Outcast™ -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 6030
+nom = "STAR WARS™ Jedi Knight II: Jedi Outcast™"
+plateformes_steam = "macos windows"
+moteur = "autre"
+moteur_nom = "id Tech 3"
+api = "opengl"
+api_disponibles = "opengl"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 56
+score = 71
+lanceurs_signales = "steam:23 notListed:1"
+options_lancement_1 = "MESA_EXTENSION_MAX_YEAR=2003 (x1)"
+options_lancement_2 = "gamescope -f -- steam steam://rungameid/6030 (x1)"
+options_lancement_3 = "gamescope -f -- steam steam://rungameid/6030 \\ +set r_mode -1 +set r_customwidth 1920 +set r_customheight 1080 +set r_fullscreen 1 +set cg_fov 110 +devmap sp1 (x1)"
+lanceur_secondaire = "non:6"
+verdicts_recents = "yes:9 no:1"
+rapports_export = 30
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/6030"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "jeu:GameData/base/*.cfg"
+sauvegardes = "jeu:GameData/base/saves/ ; jeu:GameData/base/screenshots/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Star_Wars%3A_Jedi_Knight_II_-_Jedi_Outcast"

@@ -1,0 +1,58 @@
+# Ozymandias -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 1768280
+nom = "Ozymandias"
+plateformes_steam = "macos windows"
+moteur = "unreal"
+moteur_nom = "Unreal Engine 4"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "moderate"
+rapports = 13
+score = 77
+lanceurs_signales = "steam:13"
+lanceur_secondaire = "non:2"
+verdicts_recents = "yes:1"
+rapports_export = 13
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/1768280"
+
+[compat.pcgamingwiki]
+sauvegardes = "AppData/Local/Ozymandias/Saved"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Ozymandias"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.20042"
+correspondance = "steamid"
+confiance = "haute"
+recette_date = "2023-09-02"
+crossover_version = "23"
+bouteille = "win10_64"
+source = "crossover"
+date = "2026-10-13"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=20042"

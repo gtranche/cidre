@@ -1,0 +1,77 @@
+# System Shock® 2 (1999) -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 238210
+nom = "System Shock® 2 (1999)"
+plateformes_steam = "macos windows"
+moteur = "autre"
+moteur_nom = "Dark Engine"
+api_disponibles = "d3d6 d3d9 ddraw"
+bits = 32
+drm = "drm-free"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[cidre]
+dependances = "gdiplus"
+
+[cidre.sources]
+dependances = "crossover 2026-10-13"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 56
+score = 82
+lanceurs_signales = "steam:30 notListed:3"
+options_lancement_1 = "LD_PRELOAD=\"\" gamescope -f -r 165 -W 2560 -H 1440 --mangoapp --force-grab-cursor --backend sdl -- %command% (x1)"
+options_lancement_2 = "gamemoderun %command% (x1)"
+options_lancement_3 = "+set i_mouse 0 +set r_width 1920 +set r_height 1080 +set r_fullscreen 1 (x1)"
+lanceur_secondaire = "non:6"
+verdicts_recents = "yes:11 no:3"
+rapports_export = 46
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/238210"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "jeu:*.cfg"
+sauvegardes = "jeu:save_*"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/System_Shock_2"
+
+[compat.applegamingwiki]
+rosetta = "demarre"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/System_Shock_2"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.2403"
+correspondance = "steamid"
+confiance = "haute"
+recette_date = "2022-01-03"
+crossover_version = "12.1.1"
+bouteille = "win7_64"
+dependances = "gdiplus"
+source = "crossover"
+date = "2026-10-13"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=2403"

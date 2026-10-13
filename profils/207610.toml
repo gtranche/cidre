@@ -1,0 +1,67 @@
+# The Walking Dead -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 207610
+nom = "The Walking Dead"
+plateformes_steam = "macos windows"
+moteur = "autre"
+moteur_nom = "Telltale Tool"
+api_disponibles = "d3d9 opengl"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 118
+score = 84
+lanceurs_signales = "steam:42"
+options_lancement_1 = "PROTON_USE_WINED3D=1 %command% (x1)"
+lanceur_secondaire = "non:11"
+verdicts_recents = "yes:17"
+rapports_export = 64
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/207610"
+
+[compat.pcgamingwiki]
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/The_Walking_Dead%3A_Season_One"
+
+[compat.applegamingwiki]
+crossover = "jouable"
+dernier_temoignage = "2021-04-30"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/The_Walking_Dead"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.10427"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2014-04-03"
+crossover_version = "13.1.2"
+bouteille = "win7_64"
+source = "crossover"
+date = "2026-10-13"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=10427"

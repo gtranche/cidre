@@ -1,0 +1,49 @@
+# Broken Dreams -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 444480
+nom = "Broken Dreams"
+plateformes_steam = "macos windows"
+moteur = "autre"
+moteur_nom = "Flash"
+api = "d3d9"
+api_disponibles = "d3d9"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "pending"
+tendance = "pending"
+meilleur_palier = "platinum"
+confiance = "inadequate"
+rapports = 1
+score = 21
+lanceurs_signales = "steam:1"
+rapports_export = 1
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/444480"
+
+[compat.pcgamingwiki]
+sauvegardes = "AppData/Roaming/Macromedia/Flash Player/#SharedObjects/<uid>/localhost/BrokenDreams.sol"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Broken_Dreams"

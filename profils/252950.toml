@@ -1,0 +1,81 @@
+# Rocket League -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 252950
+nom = "Rocket League"
+plateformes_steam = "macos windows"
+moteur = "unreal"
+moteur_nom = "Unreal Engine 3 ; Unreal Engine 6"
+api_disponibles = "d3d11 opengl"
+bits = 64
+anticheat = "eac"
+drm = "account ; steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+anticheat = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[cidre]
+dependances = "msxml3 directx_jun2010 vcrun2010"
+
+[cidre.sources]
+dependances = "crossover 2026-10-13"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 871
+score = 87
+lanceurs_signales = "steam:451 notListed:86 lutris:4 bottles:1"
+options_lancement_1 = "gamemoderun %command% (x6)"
+options_lancement_2 = "-noeac -noepicportal $command% (x2)"
+options_lancement_3 = "SDL_AUDIODRIVER=pulseaudio %command% (x2)"
+lanceur_secondaire = "non:42"
+anticheat_signale = "autre:2 other:2 battleEye:1"
+verdicts_recents = "yes:195 no:18"
+rapports_export = 847
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/252950"
+
+[compat.pcgamingwiki]
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Rocket_League"
+
+[compat.applegamingwiki]
+rosetta = "parfait"
+crossover = "ko"
+wine = "ko"
+parallels = "jouable"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Rocket_League"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.13812"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2025-12-12"
+crossover_version = "15.1.0"
+bouteille = "win10_64"
+dependances = "msxml3 directx_jun2010 vcrun2010"
+source = "crossover"
+date = "2026-10-13"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=13812"

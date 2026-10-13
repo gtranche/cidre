@@ -1,0 +1,49 @@
+# Valhalla Hills -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 351910
+nom = "Valhalla Hills"
+plateformes_steam = "macos windows"
+moteur = "unreal"
+moteur_nom = "Unreal Engine 4"
+bits = 64
+bits_32_aussi = true
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+bits_32_aussi = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "pending"
+tendance = "pending"
+meilleur_palier = "platinum"
+confiance = "inadequate"
+rapports = 2
+score = 21
+lanceurs_signales = "steam:2"
+verdicts_recents = "yes:1"
+rapports_export = 2
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/351910"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Local/ValhallaHills/Saved/Config"
+sauvegardes = "AppData/Local/ValhallaHills/Saved/SaveGames"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Valhalla_Hills"

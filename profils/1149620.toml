@@ -1,0 +1,53 @@
+# Gas Station Simulator -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 1149620
+nom = "Gas Station Simulator"
+plateformes_steam = "macos windows"
+moteur = "unreal"
+moteur_nom = "Unreal Engine 4"
+api_disponibles = "d3d11 d3d12"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "gold"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 50
+score = 54
+lanceurs_signales = "steam:35 notListed:2"
+options_lancement_1 = "gamemoderun %command% -fullscreen (x1)"
+options_lancement_2 = "keine (x1)"
+options_lancement_3 = "gamemoderun gamescope -g --force-grab-cursor -w 3840 -h 2160 -W 3840 -H 2160 -r 240 -f -- %command% (x1)"
+lanceur_secondaire = "non:1 oui:1"
+verdicts_recents = "yes:12 no:3"
+rapports_export = 50
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/1149620"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Local/GSS2/Saved/Config"
+sauvegardes = "AppData/Local/GSS2/Saved/SaveGames"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Gas_Station_Simulator"

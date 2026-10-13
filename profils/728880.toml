@@ -1,0 +1,66 @@
+# Overcooked! 2 -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 728880
+nom = "Overcooked! 2"
+plateformes_steam = "macos windows"
+moteur = "unity"
+moteur_nom = "Unity"
+api = "d3d11"
+api_disponibles = "d3d11"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-13"
+moteur_nom = "pcgamingwiki 2026-10-13"
+api = "pcgamingwiki 2026-10-13"
+api_disponibles = "pcgamingwiki 2026-10-13"
+bits = "pcgamingwiki 2026-10-13"
+drm = "pcgamingwiki 2026-10-13"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 92
+score = 87
+lanceurs_signales = "steam:69 notListed:15"
+options_lancement_1 = "PROTON_USE_WINED3D11=1 %command% (x3)"
+options_lancement_2 = "--no-gui --no-sandbox \"heroic://launch?appName=Potoo&runner=legendary\" (x1)"
+options_lancement_3 = "PROTON_NO_ESYNC=1 PROTON_NO_FSYNC=1 DXVK_ASYNC=1 __GL_SHADER_DISK_CACHE=1 __GL_THREADED_OPTIMIZATIONS=1 game-performance %command% (x1)"
+lanceur_secondaire = "non:12"
+verdicts_recents = "yes:51 no:3"
+rapports_export = 93
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/728880"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "registre:HKEY_CURRENT_USER/Software/Team17/Overcooked2/"
+sauvegardes = "AppData/LocalLow/Team17/Overcooked2/<uid>/ ; AppData/LocalLow/Team17/Overcooked2/Saves/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-13"
+url = "https://www.pcgamingwiki.com/wiki/Overcooked%21_2"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.18064"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2023-06-27"
+crossover_version = "22.0"
+bouteille = "win7_64"
+source = "crossover"
+date = "2026-10-13"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=18064"

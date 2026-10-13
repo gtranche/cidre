@@ -1,0 +1,44 @@
+# Teleglitch: Die More Edition -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 234390
+nom = "Teleglitch: Die More Edition"
+plateformes_steam = "macos windows"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "moderate"
+rapports = 12
+score = 70
+lanceurs_signales = "steam:10"
+lanceur_secondaire = "non:5"
+verdicts_recents = "yes:4"
+rapports_export = 12
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/234390"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "jeu:settings.lua"
+sauvegardes = "Documents/My Games/Teleglitch/Saves/exitsave*"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Teleglitch%3A_Die_More_Edition"

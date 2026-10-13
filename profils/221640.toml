@@ -1,0 +1,54 @@
+# Super Hexagon -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 221640
+nom = "Super Hexagon"
+plateformes_steam = "macos windows"
+api_disponibles = "d3d11 opengl vulkan"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "moderate"
+rapports = 28
+score = 78
+lanceurs_signales = "steam:26"
+lanceur_secondaire = "non:10"
+verdicts_recents = "yes:10"
+rapports_export = 28
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/221640"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "jeu:data/settings.dat"
+sauvegardes = "jeu:data/scores.dat ; jeu:data/suphex.dat"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Super_Hexagon"
+
+[compat.applegamingwiki]
+rosetta = "parfait"
+crossover = "parfait"
+wine = "jouable"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Super_Hexagon"

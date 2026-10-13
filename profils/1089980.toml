@@ -1,0 +1,53 @@
+# The Henry Stickmin Collection -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 1089980
+nom = "The Henry Stickmin Collection"
+plateformes_steam = "macos windows"
+moteur = "autre"
+moteur_nom = "Adobe AIR"
+api = "d3d9"
+api_disponibles = "d3d9"
+bits = 32
+drm = "drm-free"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 82
+score = 83
+lanceurs_signales = "steam:55"
+options_lancement_1 = "PROTON_USE_WINED3D11=1 %command% (x1)"
+lanceur_secondaire = "non:9"
+verdicts_recents = "yes:22 no:1"
+rapports_export = 82
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/1089980"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Roaming/com.innersloth.henry.HenryFlash/Local Store"
+sauvegardes = "AppData/Roaming/com.innersloth.henry.HenryFlash/Local Store"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/The_Henry_Stickmin_Collection"

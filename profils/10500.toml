@@ -1,0 +1,76 @@
+# Total War: EMPIRE - Definitive Edition -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 10500
+nom = "Total War: EMPIRE - Definitive Edition"
+plateformes_steam = "macos windows"
+moteur = "autre"
+moteur_nom = "Warscape"
+api_disponibles = "d3d9 metal"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[cidre]
+dependances = "directx_jun2010 vcrun2005"
+
+[cidre.sources]
+dependances = "crossover 2026-10-13"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 39
+score = 50
+lanceurs_signales = "steam:30"
+options_lancement_1 = "gamemoderun %command% -USEALLAVAILABLECORES (x1)"
+options_lancement_2 = "scb -- %command% (x1)"
+lanceur_secondaire = "non:3"
+verdicts_recents = "yes:8 no:1"
+rapports_export = 38
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/10500"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Roaming/The Creative Assembly/Empire/"
+sauvegardes = "AppData/Roaming/The Creative Assembly/Empire/save_games/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Empire%3A_Total_War"
+
+[compat.applegamingwiki]
+rosetta = "parfait"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Empire%3A_Total_War"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.5517"
+correspondance = "steamid"
+confiance = "haute"
+recette_date = "2015-11-17"
+crossover_version = "11.0"
+bouteille = "win7_64"
+dependances = "directx_jun2010 vcrun2005"
+source = "crossover"
+date = "2026-10-13"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=5517"

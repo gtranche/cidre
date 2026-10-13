@@ -1,0 +1,51 @@
+# STAR WARS™: TIE Fighter Special Edition -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 355250
+nom = "STAR WARS™: TIE Fighter Special Edition"
+plateformes_steam = "macos windows"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "gold"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "moderate"
+rapports = 16
+score = 52
+lanceurs_signales = "steam:9 notListed:1"
+options_lancement_1 = "%command% # \" (x1)"
+lanceur_secondaire = "non:2"
+verdicts_recents = "yes:1"
+rapports_export = 12
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/355250"
+
+[compat.pcgamingwiki]
+sauvegardes = "jeu:<uid>.tfr"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Star_Wars%3A_TIE_Fighter"
+
+[compat.applegamingwiki]
+crossover = "parfait"
+dernier_temoignage = "2021-04-30"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Star_Wars%3A_TIE_Fighter"

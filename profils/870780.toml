@@ -1,0 +1,62 @@
+# Control Ultimate Edition -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 870780
+nom = "Control Ultimate Edition"
+plateformes_steam = "macos windows"
+moteur = "autre"
+moteur_nom = "Northlight"
+api_disponibles = "d3d11 d3d12 metal"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 524
+score = 92
+lanceurs_signales = "steam:291 notListed:24 lutris:11 bottles:3"
+options_lancement_1 = "-dx11 (x13)"
+options_lancement_2 = "gamemoderun DXVK_FRAME_RATE=60 %command% -dx11 (x2)"
+options_lancement_3 = "%command% -dx11 (x2)"
+lanceur_secondaire = "non:45 oui:2"
+verdicts_recents = "yes:119 no:8"
+rapports_export = 525
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/870780"
+
+[compat.pcgamingwiki]
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Control"
+
+[compat.applegamingwiki]
+natif = "parfait"
+crossover = "parfait"
+wine = "parfait"
+parallels = "jouable"
+methodes = "crossover gptk heroic wine"
+dernier_temoignage = "2023-10-13"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Control"

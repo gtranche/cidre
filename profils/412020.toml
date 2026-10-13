@@ -1,0 +1,60 @@
+# Metro Exodus -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 412020
+nom = "Metro Exodus"
+plateformes_steam = "macos windows"
+moteur = "autre"
+moteur_nom = "4A Engine"
+api_disponibles = "d3d11 d3d12 vulkan metal"
+bits = 64
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "gold"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 435
+score = 81
+lanceurs_signales = "steam:281 notListed:9 lutris:1 bottles:1"
+options_lancement_1 = "gamemoderun %command% (x4)"
+options_lancement_2 = "VKD3D_FEATURE_LEVEL=12_2 PROTON_HIDE_NVIDIA_GPU=0 PROTON_ENABLE_NVAPI=1 VKD3D_CONFIG=dxr11 DXVK_ASYNC=1 %command% -deependark -forcenohdr (x4)"
+options_lancement_3 = "gamemoderun mangohud %command% (x2)"
+lanceur_secondaire = "non:19"
+verdicts_recents = "yes:100 no:9"
+rapports_export = 420
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/412020"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "Saved Games/metro exodus/"
+sauvegardes = "Saved Games/metro exodus/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Metro_Exodus"
+
+[compat.applegamingwiki]
+rosetta = "parfait"
+crossover = "parfait"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Metro_Exodus"

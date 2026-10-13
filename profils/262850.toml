@@ -1,0 +1,41 @@
+# The Journey Down: Chapter Two -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 262850
+nom = "The Journey Down: Chapter Two"
+plateformes_steam = "macos windows"
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "pending"
+tendance = "pending"
+meilleur_palier = "platinum"
+confiance = "inadequate"
+rapports = 1
+score = 21
+lanceurs_signales = "steam:1"
+lanceur_secondaire = "non:1"
+rapports_export = 1
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/262850"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Roaming/SkyGoblin/TheJourneyDown2/settings.cfg"
+sauvegardes = "AppData/Roaming/SkyGoblin/TheJourneyDown2/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/The_Journey_Down%3A_Chapter_Two"

@@ -1,0 +1,54 @@
+# Human Resource Machine -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 375820
+nom = "Human Resource Machine"
+plateformes_steam = "macos windows"
+api_disponibles = "d3d9 opengl"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "gold"
+tendance = "silver"
+meilleur_palier = "platinum"
+confiance = "moderate"
+rapports = 17
+score = 50
+lanceurs_signales = "steam:14 notListed:1"
+options_lancement_1 = "-dx11 (x1)"
+lanceur_secondaire = "non:4"
+verdicts_recents = "yes:5 no:2"
+rapports_export = 16
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/375820"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Roaming/Human Resource Machine/settings.txt"
+sauvegardes = "AppData/Roaming/Human Resource Machine/profiles.bin"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Human_Resource_Machine"
+
+[compat.applegamingwiki]
+rosetta = "parfait"
+crossover = "parfait"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Human_Resource_Machine"

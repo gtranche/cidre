@@ -1,0 +1,52 @@
+# Don't Escape: 4 Days to Survive -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 611760
+nom = "Don't Escape: 4 Days to Survive"
+plateformes_steam = "macos windows"
+moteur = "unity"
+moteur_nom = "Unity"
+api = "d3d11"
+api_disponibles = "d3d11"
+bits = 32
+drm = "drm-free"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "moderate"
+rapports = 10
+score = 66
+lanceurs_signales = "steam:6"
+lanceur_secondaire = "non:1"
+verdicts_recents = "yes:1"
+rapports_export = 8
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/611760"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "registre:HKEY_CURRENT_USER/Software/scriptwelder studio/Don't Escape: 4 Days in a Wasteland"
+sauvegardes = "AppData/LocalLow/scriptwelder studio/Don't Escape_ 4 Days in a Wasteland"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Don%27t_Escape%3A_4_Days_to_Survive"

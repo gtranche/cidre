@@ -1,0 +1,73 @@
+# Verdun -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 242860
+nom = "Verdun"
+plateformes_steam = "macos windows"
+moteur = "unity"
+moteur_nom = "Unity"
+api_disponibles = "d3d9 d3d11 opengl"
+bits = 64
+bits_32_aussi = true
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+bits_32_aussi = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "gold"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "good"
+rapports = 24
+score = 59
+lanceurs_signales = "steam:16 notListed:1 bottles:1"
+options_lancement_1 = "gamemoderun ENABLE_VKBASALT=1 %command% (x1)"
+options_lancement_2 = "gamemoderun mangohud %command% (x1)"
+options_lancement_3 = "obs-gamecapture %command% (x1)"
+lanceur_secondaire = "non:1"
+anticheat_signale = "other:1"
+verdicts_recents = "yes:6 no:3"
+rapports_export = 24
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/242860"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "registre:HKEY_CURRENT_USER/Software/WW1 Game Series/WW1 Game Series/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Verdun"
+
+[compat.applegamingwiki]
+rosetta = "parfait"
+parallels = "demarre"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Verdun"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.17471"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2021-08-02"
+crossover_version = "21"
+bouteille = "win7_64"
+source = "crossover"
+date = "2026-10-13"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=17471"

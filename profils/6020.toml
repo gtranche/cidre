@@ -1,0 +1,69 @@
+# STAR WARS™ Jedi Knight: Jedi Academy™ -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 6020
+nom = "STAR WARS™ Jedi Knight: Jedi Academy™"
+plateformes_steam = "macos windows"
+moteur = "autre"
+moteur_nom = "id Tech 3"
+api_disponibles = "d3d9 opengl"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "gold"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 71
+score = 68
+lanceurs_signales = "steam:27"
+options_lancement_1 = "WINE_FULLSCREEN_FSR=1 WINE_FULLSCREEN_FSR_STRENGTH=3 game-performance %command% (x1)"
+lanceur_secondaire = "non:8"
+verdicts_recents = "yes:7"
+rapports_export = 44
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/6020"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "jeu:GameData/base/*.cfg"
+sauvegardes = "jeu:GameData/base/saves/ ; jeu:GameData/base/screenshots/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Star_Wars%3A_Jedi_Knight_-_Jedi_Academy"
+
+[compat.applegamingwiki]
+crossover = "parfait"
+parallels = "jouable"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Star_Wars%3A_Jedi_Knight_-_Jedi_Academy"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.46"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2025-01-04"
+crossover_version = "11.0"
+bouteille = "win7_64"
+source = "crossover"
+date = "2026-10-13"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=46"

@@ -1,0 +1,44 @@
+# LIMBO -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 48000
+nom = "LIMBO"
+plateformes_steam = "macos windows"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 68
+score = 86
+lanceurs_signales = "steam:59 notListed:3"
+options_lancement_1 = "command prefix: game-performance\nenable feral gamemode\nenable fps counter (MangoHud) (x1)"
+lanceur_secondaire = "non:27"
+verdicts_recents = "yes:16"
+rapports_export = 66
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/48000"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.9528"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2019-11-04"
+crossover_version = "12.5"
+bouteille = "win7"
+source = "crossover"
+date = "2026-10-13"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=9528"

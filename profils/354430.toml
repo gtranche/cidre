@@ -1,0 +1,43 @@
+# STAR WARS™: X-Wing Special Edition -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 354430
+nom = "STAR WARS™: X-Wing Special Edition"
+plateformes_steam = "macos windows"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "gold"
+tendance = "bronze"
+meilleur_palier = "platinum"
+confiance = "moderate"
+rapports = 9
+score = 33
+lanceurs_signales = "steam:5"
+lanceur_secondaire = "non:2"
+verdicts_recents = "no:2 yes:1"
+rapports_export = 6
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/354430"
+
+[compat.pcgamingwiki]
+sauvegardes = "jeu:*.PLT"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Star_Wars%3A_X-Wing"

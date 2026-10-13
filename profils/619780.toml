@@ -1,0 +1,52 @@
+# The Swords of Ditto: Mormo's Curse -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 619780
+nom = "The Swords of Ditto: Mormo's Curse"
+plateformes_steam = "macos windows"
+moteur = "autre"
+moteur_nom = "GameMaker"
+api = "d3d11"
+api_disponibles = "d3d11"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "moderate"
+rapports = 11
+score = 62
+lanceurs_signales = "steam:7"
+lanceur_secondaire = "non:1"
+verdicts_recents = "yes:2 no:1"
+rapports_export = 10
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/619780"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Local/The_Swords_of_Ditto/<uid>/preferences"
+sauvegardes = "AppData/Local/The_Swords_of_Ditto/<uid>/Slot */"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/The_Swords_of_Ditto"

@@ -1,0 +1,47 @@
+# Fury Unleashed -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 465200
+nom = "Fury Unleashed"
+plateformes_steam = "macos windows"
+moteur = "unity"
+moteur_nom = "Unity"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-13"
+moteur_nom = "pcgamingwiki 2026-10-13"
+bits = "pcgamingwiki 2026-10-13"
+drm = "pcgamingwiki 2026-10-13"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "low"
+rapports = 9
+score = 65
+lanceurs_signales = "steam:5 notListed:1"
+options_lancement_1 = "wine-ge-lastest (x1)"
+lanceur_secondaire = "non:4"
+verdicts_recents = "yes:2"
+rapports_export = 8
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/465200"
+
+[compat.pcgamingwiki]
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-13"
+url = "https://www.pcgamingwiki.com/wiki/Fury_Unleashed"

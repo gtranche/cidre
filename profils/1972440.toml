@@ -1,0 +1,47 @@
+# Shotgun King: The Final Checkmate -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 1972440
+nom = "Shotgun King: The Final Checkmate"
+plateformes_steam = "macos windows"
+moteur = "autre"
+moteur_nom = "SUGAR"
+bits = 32
+drm = "drm-free"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 30
+score = 82
+lanceurs_signales = "steam:29 notListed:1"
+lanceur_secondaire = "non:7"
+verdicts_recents = "yes:4"
+rapports_export = 30
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/1972440"
+
+[compat.pcgamingwiki]
+sauvegardes = "jeu:save/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Shotgun_King%3A_The_Final_Checkmate"

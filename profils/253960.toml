@@ -1,0 +1,43 @@
+# Jack Orlando Director's Cut -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 253960
+nom = "Jack Orlando Director's Cut"
+plateformes_steam = "macos windows"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "low"
+rapports = 4
+score = 44
+lanceurs_signales = "steam:2"
+lanceur_secondaire = "non:2"
+rapports_export = 4
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/253960"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "registre:HKEY_LOCAL_MACHINE/TopWare Poland/Jack Orlando"
+sauvegardes = "jeu:Savegame"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Jack_Orlando"

@@ -1,3494 +1,7535 @@
-# Index de la base de profils : une table par fiche (nom, etat, date).
+# Index de la base de profils : une table par fiche (nom, etat, date, empreinte).
 # Genere par `sh tests/fiche_profil.sh generer-index > profils/index.toml` ;
 # tests/tester_profils.sh verifie qu'il est a jour. C'est lui que `cidre profils maj`
-# telecharge d'abord, pour savoir quelles fiches prendre.
+# telecharge d'abord, pour savoir quelles fiches prendre : seules celles dont
+# l'empreinte (md5 du fichier) a change sont retelechargees.
 
 [1000010]
 nom = "Crown Trick"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "4b34606b79e5ed4fd1fd2b28523d85fc"
+
+[1000030]
+nom = "Cook, Serve, Delicious! 3?!"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "237347947f8103e1718f55a201c0f796"
 
 [1000410]
 nom = "WRATH: Aeon of Ruin"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "470ba6bb109a81dc8d799a3ef30f70f5"
+
+[1003090]
+nom = "Through The Darkest of Times"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "2a6db05afb79adfeb4be58e98453c438"
 
 [1004490]
 nom = "Tools Up!"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "386e9ea8cf3b68bcdf38df7e9e8e7346"
 
 [1005240]
 nom = "Pixel Puzzles Illustrations & Anime Jigsaw Puzzles"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "dfa369546610f09f347c3ed5b79fceda"
 
 [10100]
 nom = "King's Quest Collection"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "bf745776d611614a262020c974e56310"
 
 [10110]
 nom = "Space Quest Collection"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "36c91846b7a78edf303fe6c473a6f79f"
 
 [1011190]
 nom = "SIMULACRA 2"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "269a879c01fba04ddddd14c218b6b35e"
 
 [10130]
 nom = "TimeShift"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "398f1544d64f308f26d531288f86b7a7"
 
 [1016790]
 nom = "West of Dead"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "4d0b68a1dacf8863d8b939cc307b4b51"
+
+[1016920]
+nom = "Unrailed!"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "0f07882c646cb6f3f733cc6a1f2a2554"
+
+[1018850]
+nom = "Smile For Me"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ee1e2c24fe8e92a6e1203dfde385eff9"
+
+[1020470]
+nom = "Evoland Legendary Edition"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "833fe9602fcd246031714c8e057a118e"
+
+[102840]
+nom = "Shank 2"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "1a6442f90cf4c81f6f91ab58cf3064be"
 
 [1030840]
 nom = "Mafia: Definitive Edition"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ff053d656b0881c0630e5a0988e2f4b5"
 
 [1035560]
 nom = "Struggling"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "8678230fc41008a402117c7da811dd69"
+
+[1037020]
+nom = "ScourgeBringer"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "51b1a168a1b514b08e568046f8dc2c94"
+
+[1037910]
+nom = "Paw Paw Paw"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "9d3c127403f7a8db2d3e00b874a3638a"
 
 [1038250]
 nom = "DIRT 5"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "2625690eb63d8c550ddcf6ce86bdd3b2"
+
+[1040070]
+nom = "Merchant of the Skies"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "746e8bf8ea8deb1cf910ed7a0a080053"
 
 [1041720]
 nom = "Kingdoms of Amalur: Re-Reckoning"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "b2f218a1143de3a0e831530b2770d935"
+
+[1041920]
+nom = "If Found"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "d825d54ecca77fad86a4a87d1374eafe"
 
 [1042490]
 nom = "Call of the Sea"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "67209d3ff9a4e38e89ea5cafeef95913"
+
+[1045580]
+nom = "Deleveled"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "26e2fd5afc8e4747305687d57a6b442a"
+
+[1045720]
+nom = "The Coma 2: Vicious Sisters"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "3c00925a31239cd4a3b6cb2d9fe67278"
 
 [1046790]
 nom = "Eternal Threads"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "544ef8c742d99d8f02affe9a0881d3f7"
+
+[1047220]
+nom = "Frog Detective 2: The Case of the Invisible Wizard"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "dcbcb8dab695347947246c748579cd59"
+
+[1049410]
+nom = "Superliminal"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "e0f2dfcd170bae2c2736953adde55c93"
+
+[10500]
+nom = "Total War: EMPIRE - Definitive Edition"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "948581029f1ffd9f7cf6def6b88f7b2a"
+
+[1050370]
+nom = "LUNARK"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "9f740d88e115796ff1e8225816b5ea13"
 
 [1053710]
 nom = "The Red Lantern"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ea222c99667d5a8ad77e2cc418935c55"
+
+[1054430]
+nom = "Fling to the Finish"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "18238f2ddc105aca0241839b5592be6c"
+
+[1054490]
+nom = "Wingspan"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "16f82654a7395345935c95e7bce6f18e"
 
 [105450]
 nom = "Age of Empires® III (2007)"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "f5025bbdc9bf226c97a649610c13f894"
+
+[105600]
+nom = "Terraria"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ad7361c373d2d62360c39df36f12b06e"
 
 [1057750]
 nom = "The Suicide of Rachel Foster"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d85cd159f5c89937e235ca38ae2334b5"
 
 [105800]
 nom = "PixelJunk™ Eden"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "3d1b68a933cc5b6bf41563087ed7c7be"
 
 [1058200]
 nom = "Pixel Puzzles Traditional Jigsaw Puzzles"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "bdab9cab5ee2397864502311b9ebd8cb"
 
 [1058650]
 nom = "Beyond The Wire"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "7a439d7f3b19ca655e486720d867f5d5"
 
 [1061880]
 nom = "Conan Chop Chop"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "f016c2cb91f16e9df36249ca6fb22cb2"
 
 [1061910]
 nom = "Metal: Hellsinger"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "80417c0819b69b2604c3f380fa1ac1fc"
 
 [1062830]
 nom = "Embr"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d5dc836cc07fabbe2a1f84818ca343e4"
 
 [1063310]
 nom = "Vane"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "2df4f1a7198e3477c0eabbe234f7473e"
+
+[1063490]
+nom = "Still There"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a9208229a108ae74bf9fd40a535889df"
 
 [1063660]
 nom = "Bendy and the Dark Revival"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "1542e89729484947b32ebb6f5b76b7d4"
+
+[1067540]
+nom = "Röki"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "4c742021d2ae1af2f81028ddf5b53406"
+
+[1069530]
+nom = "Narita Boy"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "4b2fb39908838333d7244424595054dd"
 
 [1069690]
 nom = "Rogue Lords"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "0b0217feb28f6ab309867d52b6c209c2"
 
 [107310]
 nom = "Cthulhu Saves the World "
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ff6fa94477c5dcdaac77feece9d9cf68"
 
 [1075200]
 nom = "TOHU"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d12c4797d47147e05bc3ae99ab0a7aea"
 
 [1075740]
 nom = "Banners of Ruin"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ae88e97dcfe1cfbcad6f5735b52de2a8"
+
+[1076200]
+nom = "Roguebook"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "2fd6a196a0d0fab58e4bb0da3a52bf5c"
 
 [1078920]
 nom = "Main Assembly"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "3e5325aeab74489f2d835f0ca4494e9b"
 
 [1080110]
 nom = "F1 2020"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "24195ca285dd909599d8aeb190629c76"
+
+[1084640]
+nom = "Chicken Police"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "aa8ca9acc6f975764d5e3d8d186e0f13"
 
 [1085220]
 nom = "Figment 2: Creed Valley"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "7807d8b45bcf30787c440aada6aa4e35"
 
 [1086010]
 nom = "198X"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "4f5c3180087ad73acb31a62d50bc9a31"
+
+[1086940]
+nom = "Baldur's Gate 3"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "f5b9e19fd9ccf5765e92554866373d15"
 
 [1087760]
 nom = "The Gunk"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "53f00e74609be93e14a2ceced1b95840"
 
 [1088710]
 nom = "Yakuza 3 Remastered"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "1c9ed4ea057e754c04c814bad5d5ab90"
+
+[1088790]
+nom = "Rebel Inc: Escalation"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "f50c1b9544319979d56f8a4c638507ac"
+
+[1089980]
+nom = "The Henry Stickmin Collection"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "5be5e7178dec50a380f499e6df6cefe1"
+
+[1091980]
+nom = "The Bard's Tale IV: Director's Cut"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "9e45e1d68d61f963005bcc667dd3e5ed"
+
+[1096410]
+nom = "Vampire: The Masquerade - Coteries of New York"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ba1aa8ce53b9e3e3a01a419ad3a131e0"
 
 [1096570]
 nom = "SONG OF HORROR"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d655058a018a34d33d33ea70e4a9fbc0"
 
 [1101360]
 nom = "Rock of Ages 3: Make & Break"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d1187e02d0b9159b7aff2439ecc62a1c"
 
 [1102190]
 nom = "Monster Train"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "13301c6eb5093fecc8266e0a03135ec5"
 
 [11040]
 nom = "Sherlock Holmes: Nemesis"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "13043410194ba9182f0e1d5f9d10436b"
+
+[1104330]
+nom = "Founders' Fortune"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "60a0e57506031027ec7c05bdbb8ef449"
 
 [1104660]
 nom = "MO:Astray"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "2c04773942d0649e97e6c87054b88013"
 
 [1105500]
 nom = "Yakuza 4 Remastered"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "8f7dd9d073c9920bf55ffd96e50534eb"
 
 [1108000]
 nom = "Children of Silentown"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "4c2fd4258aee548e5a8a99a80b820185"
 
 [1108590]
 nom = "Eldest Souls"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "8cec85028dfa2a4e8a73187ade5c8521"
+
+[1110050]
+nom = "Evan's Remains"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "2cf0fa8c0a67f3277ee059183c8d69f5"
 
 [1110100]
 nom = "Power Rangers: Battle for the Grid"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "59a4fbf63d2d8d0a98b94ff86777181c"
+
+[1112890]
+nom = "Calico"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "7d45cd6059b2caf66dee22eca5ff5aab"
 
 [11140]
 nom = "Sherlock Holmes: The Awakened (2008)"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "48506839945fb58c99088e5ae85b1575"
 
 [1114290]
 nom = "Windjammers 2"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "52dd4077679bae1abb8d540912ffe426"
 
 [11150]
 nom = "Sherlock Holmes: The Secret of the Silver Earring"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ba2a57697e76692945466db73afb5480"
+
+[1115690]
+nom = "Yes, Your Grace"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "62bfa6bd3303e5ff6d3c2daef4ec4111"
+
+[1116280]
+nom = "8-Bit Attack"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a2f95670af86ab6397d81ca2a9d30a47"
 
 [1116580]
 nom = "Shady Part of Me"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "09ac95a1aa4bcc8288e53439666f1661"
 
 [1117920]
 nom = "DaemonClaw: Origins of Nnar"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "596b4c2e12099feb94c6898940619dfe"
 
 [11180]
 nom = "Sherlock Holmes: The Mystery of The Persian Carpet"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "7ad13b60b0df1461ec2d823cd20a0009"
 
 [11190]
 nom = "Sherlock Holmes versus Jack the Ripper"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "f3eb4233c251d7e58bf82b2fac04ef07"
+
+[1119700]
+nom = "As Far As The Eye"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "be7d9b6dc048a0d4bc30af1193a164f7"
 
 [1119980]
 nom = "In Sound Mind"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "da31190f9e4df7e0645d7bbd37f22ae0"
 
 [1120320]
 nom = "Builder Simulator"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "5ebbd50ddd7b93d1004ef2ea2b1f09dd"
+
+[1123050]
+nom = "GRIME"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ea6780b36b4ceadc46b2c041a5e739ad"
 
 [1123770]
 nom = "Curse of the Dead Gods"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e85c4558deb0ff04f628e7a0f900eb3e"
 
 [1124260]
 nom = "Snowtopia"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "10c51a5620c68d7a412b1c0201375e09"
+
+[1124300]
+nom = "HUMANKIND™"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ec95639989bd0706eeac25a872c7296e"
+
+[1127610]
+nom = "Iris and the giant"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "377e8e5ba4ade6a5c396d1d93c97021d"
+
+[11280]
+nom = "Penguins Arena: Sedna's World"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ece1ef02453baf0fa99f41365fea483e"
 
 [1130410]
 nom = "Cyber Hook"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "6936171c9a9e051b3f8e63b34af605be"
+
+[113200]
+nom = "The Binding of Isaac"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "12f6c302bcc81363ad0abe8140f52b8d"
 
 [1132980]
 nom = "There Is No Light"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "fe62eb992e32ea2771ff5f7f9dc5e23a"
 
 [11340]
 nom = "Larva Mortus"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "a86ed5ea5257a429fa99cd74787015b7"
+
+[1135690]
+nom = "Unpacking"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "61a9a552c2f2acb2e1b54b87db1e3771"
 
 [1137300]
 nom = "Sherlock Holmes Chapter One"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "26c4b75fc9b23cc2e521cd721ead121c"
+
+[1138660]
+nom = "Black Book"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ce6089d4095e4fcc9be95bc4d71db3b2"
 
 [1139900]
 nom = "Ghostrunner"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "dfeca16468ab2662523a64ca4e6be7cb"
+
+[1139940]
+nom = "ATOM RPG Trudograd"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "23252f9765be1978e439038be6b5bc68"
+
+[1140270]
+nom = "Monster Prom 2: Monster Camp"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "68e566511ea5b64a3a34135a82ad9ad0"
 
 [1140890]
 nom = "Morbid: The Seven Acolytes"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e9f7507ea073d528d0b3ec8e0d064c71"
 
 [1142390]
 nom = "Remothered: Broken Porcelain "
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "539c71eff93829c9163d3c55879ef9d7"
+
+[1142500]
+nom = "Fun with Ragdolls: The Game"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "e039f682bf166f56aa8276aed7f617aa"
 
 [1143810]
 nom = "Black Skylands"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "507d35bb488689e99f99f7a71cf2ee53"
+
+[1144030]
+nom = "Pesterquest"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "8e101584f88a3837b1aafd2061432e8c"
 
 [11450]
 nom = "Overlord"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "826009cd405daafe84f0c5b5dc82f1c7"
 
 [1147550]
 nom = "Not For Broadcast"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "6cf463b73a6b5cf61557fe7b3333a5c2"
+
+[1149620]
+nom = "Gas Station Simulator"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "563e5ea0bb455251f5a5db8061422bdf"
+
+[1150950]
+nom = "Timelie"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a86a49a6d7e8d3b336198b36bc979b01"
 
 [1151050]
 nom = "Golf Gang"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "cc6e527a8a26f034b3e9ab4d0df9c0cf"
+
+[115110]
+nom = "Stacking"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "2e2a2095ec98d11ae31d9588cf6c693c"
 
 [1151340]
 nom = "Fallout 76"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "6e4e6a24a6484efdb3805c5160cbe0ef"
 
 [1151640]
 nom = "Horizon Zero Dawn™ Complete Edition"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "18ace677b8cc8744b131c0046d100395"
 
 [1154810]
 nom = "Going Under"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "0d32e2ae2504f2a2ede0b91d77dbf651"
+
+[1155970]
+nom = "Roadwarden"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "fc02a0d054713b01d2862949e5d4af89"
 
 [1157220]
 nom = "Nebuchadnezzar"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "1b2b4b63a2fd67b758d7da4e95931fe2"
+
+[115800]
+nom = "Owlboy"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "847afbef78c17c1626e96077de0182f1"
+
+[1158220]
+nom = "Kraken Academy!!"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "44276f46ba8f39b70b4496ade8f44699"
+
+[1158310]
+nom = "Crusader Kings III"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "04c7e66c42672cf038771aeac12c2c5f"
 
 [1158370]
 nom = "Aragami 2"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "2a76c39281badb0da01c8694db8c8a31"
 
 [11590]
 nom = "Hospital Tycoon"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "0f4ed8c73f46b443d7cab8b8b7e0b1f6"
 
 [1160220]
 nom = "Paradise Killer"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "b7c26a49847186a809a6befdf55cae7c"
 
 [1161580]
 nom = "Hardspace: Shipbreaker"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "759069641e9a099638d9a2f51eb8e407"
+
+[1162700]
+nom = "Midnight Protocol"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "3023c9f642247cd63e043a4ff828640e"
 
 [1167140]
 nom = "Siege Survival: Gloria Victis"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "5e6fced5bcd435f6b023621121c544bc"
 
 [1167920]
 nom = "The Dark Pictures: Man of Medan - Friend's Pass"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "5cce824dedda33ab8c564737aade6e1e"
+
+[1168880]
+nom = "MOLEK-SYNTEZ"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ce3f0704308419be8fd36ab427e74ffc"
 
 [1170080]
 nom = "Foretales"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "2c85d19b9975fc548479ae0f29f2df3c"
 
 [1171660]
 nom = "The Ambassador: Fractured Timelines"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ce6d82da534a1937aef9d3ef769f91c9"
+
+[1172450]
+nom = "Carto"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "97cc5b24b4b47428cb057903502de418"
 
 [1172620]
 nom = "Sea of Thieves"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d296c8520f0b1da1cf611b3feeeb50b2"
 
 [1172710]
 nom = "Dune: Awakening"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "662edbeb3e77cfd1d69bc7ff57bc43a8"
 
 [1173200]
 nom = "Metal Unit"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "47b146492d250f141d60b1599c37437f"
 
 [1175460]
 nom = "Revita"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d3cebb7cbc6f5c59177c728c75bb51bb"
 
 [1179210]
 nom = "Kill It With Fire"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "86d75d9ad6e381de4de6ef4f831aca05"
+
+[1181400]
+nom = "Path of Giants"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "439dce571ed62b0005afe4fdc3619d1c"
+
+[1182310]
+nom = "The Excavation of Hob's Barrow"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "688de6eeb44a1b29a5b6cadf2b9a407e"
 
 [1182900]
 nom = "A Plague Tale: Requiem"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "b5ac1786d2700855573f995e0cd02f36"
+
+[1184370]
+nom = "Pathfinder: Wrath of the Righteous - Enhanced Edition"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "3107edb52da621acadcd0dd4be765632"
 
 [1186040]
 nom = "Worms Rumble"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "71490155dcfa85574d17977e82470f7d"
 
 [1186640]
 nom = "Pumpkin Jack"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "eb41080cd9baa4a34c7dbcc9dec4af90"
 
 [1190170]
 nom = "OlliOlli World"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "b8228c133b890357185b1766090f43a6"
 
 [1194630]
 nom = "The Dark Pictures Anthology: Little Hope"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "34ca2d5c00a9a58a816bd16b218a645a"
 
 [1196590]
 nom = "Resident Evil Village"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "c29f16e57d2c635232bd25e09b9afdaf"
 
 [1202130]
 nom = "Starship Troopers: Terran Command"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "3ce0e4f08cf17ee506f1dfb0840360bb"
 
 [1203710]
 nom = "UnMetal"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "217114905e98bf3a7a3d1db04e231199"
 
 [1205170]
 nom = "Super Magbot"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "4a9981b10b23c5f75f26b11add266078"
+
+[1205450]
+nom = "Turnip Boy Commits Tax Evasion"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "01033fdafff5ba768be09b367e1ccda1"
+
+[1207390]
+nom = "Ghosts'n DJs"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "dd587fafa8c2166f49fd5b871814e48e"
+
+[1207650]
+nom = "Suzerain"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "67d5e2130a0d521e6767ae493120e952"
 
 [1210150]
 nom = "Ageless"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "590a948e3ae370dbba250cf1215d535e"
+
+[1218210]
+nom = "Coromon"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "531c4e600a84ec6fe14e139364100f7b"
 
 [1220150]
 nom = "Blue Fire"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "9561b21d846dffd8d1a37111fbf3f39a"
 
 [1222370]
 nom = "Necromunda: Hired Gun"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "fb9a9375b965347ae496fca3ebcb49f9"
 
 [1227530]
 nom = "Partisans 1941"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "bffc6f6f63684b00bc133a42e033243c"
 
 [1229380]
 nom = "Everhood"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "4ee468768a50104afb483523e4346d24"
 
 [1235140]
 nom = "Yakuza: Like a Dragon"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "35c673a1262d3e4289a5f2f903178200"
 
 [1236300]
 nom = "Resident Evil Re:Verse"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "46c68bf70f5a6e4cfb2f9557feebfd8b"
 
 [1239690]
 nom = "Retrowave"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "0e64577a7222e1b80bad22a1ae538a2a"
 
 [1243850]
 nom = "This Bed We Made"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "979f578a39b75d20673f20d01f805f8c"
 
 [1244460]
 nom = "Jurassic World Evolution 2"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "f16485ee571b1886fa7fab31930f735d"
+
+[1244800]
+nom = "Terraformers"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "d22878983bdaf81fcc19c9655a8e906a"
 
 [1244950]
 nom = "Battletoads"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "b1df0ef1eaf30d73bfee310662da15d9"
 
 [1245430]
 nom = "Golden Light"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "037e6636c56f43f5513701f22c717e85"
 
 [1245620]
 nom = "ELDEN RING"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "f4e931f3c97e940222b5fe1f2f608c31"
 
 [1249110]
 nom = "Skully"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "eb891d3b58d6c20daee6205baa9f67e2"
+
+[1250]
+nom = "Killing Floor"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a9a3a0610d87f5f3a272f5a4d1c9cf94"
 
 [1252830]
 nom = "A Juggler's Tale"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "dcd6e470f5a9e6653b7ec040432fc93c"
+
+[1255980]
+nom = "Portal Reloaded"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "cce250af6355421a2416159dae53482c"
+
+[1266030]
+nom = "The Pale Beyond"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "4f27eb417b892e98c5a6199bec3df9a6"
 
 [1266700]
 nom = "Destroy All Humans! 2 - Reprobed"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "9eb880bdfd4521446dc34d064951653a"
 
 [1269300]
 nom = "This Means Warp"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ff2f2ee1290f3fc532890339e209dda6"
 
 [1269640]
 nom = "Beacon Pines"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "9230def9ee87e3021935614a23a76422"
 
 [12710]
 nom = "Overlord: Raising Hell"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "131b6d47bdf1a712339e44b5b421ada2"
 
 [1271700]
 nom = "HOT WHEELS UNLEASHED™"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d93093385761b27cfae5ce8fefcadd06"
+
+[1272010]
+nom = "Destroyer: The U-Boat Hunter"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a394613610191dacb05ca1c492b0b67a"
 
 [1272160]
 nom = "The Life and Suffering of Sir Brante"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "16e5bd371b02b3859c1b9ead6657e702"
 
 [12750]
 nom = "GRID"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "7db408f5ea84629a6ce833eeb4f63513"
 
 [12770]
 nom = "Rise of the Argonauts"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "bd34537de569f7a2de54ec6259d5680b"
+
+[1279630]
+nom = "Vampire: The Masquerade - Shadows of New York"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "fda78fd4a640a974151e7abf003ea920"
+
+[1280930]
+nom = "Astral Ascent"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "afb7ef2fc1b5a97d7b9f9cef89d7765a"
 
 [12810]
 nom = "Overlord II"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "04267d6a2fa1aecfc01adbc48f2d0496"
 
 [1281590]
 nom = "The Dark Pictures Anthology: House of Ashes"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "503a5a0fa9805a257491b8f165d3754b"
 
 [1283400]
 nom = "Steelrising"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d0ffc30b9937bd6702911ea1b4975aa2"
 
 [1286350]
 nom = "BPM: BULLETS PER MINUTE"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "f84f261c2f4a9b6238da501652f528e3"
 
 [1286680]
 nom = "Tiny Tina's Wonderlands"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e0fb7b7394909184368f06b6f3a132fe"
 
 [1286830]
 nom = "STAR WARS™: The Old Republic™"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ece6a50c3f8dc5f29a84633f74905abb"
 
 [1287530]
 nom = "Lords and Villeins"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "0be2d988a93dd1c244e1fb55bef43bd4"
 
 [1287840]
 nom = "Disciples: Liberation"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "77c39df036a64c1959893497aa0b06c8"
 
 [1293180]
 nom = "SuchArt!"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "407ebc22ebd713e6a498eb4acae7dd3a"
 
 [1294420]
 nom = "Rollerdrome"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "df15ca60211b905a3ca407938ca88526"
 
 [1295500]
 nom = "Warhammer 40,000: Battlesector"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "39ca659716db820d5a2a2834b98a3e6f"
 
 [1295920]
 nom = "The Mortuary Assistant"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "91d9e09f911f43fcb9bc8b5263d43326"
 
 [1298140]
 nom = "Fobia - St. Dinfna Hotel"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "14c62abdc32b9e93330c4a3f75980704"
+
+[1302050]
+nom = "Milky Way Prince – The Vampire Star"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "64de3156e325d02f98138d8b31d48901"
 
 [1304680]
 nom = "Voidigo"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "8ed403476a87cead50c2af48e5e0f676"
 
 [1304780]
 nom = "Nongunz: Doppelganger Edition"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "8e625fb86b61843f32983d7823e52b24"
 
 [1306970]
 nom = "Diluvian Ultra"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "3a9ad840ea01a742b3e442c9804ecbfa"
+
+[1307580]
+nom = "TOEM"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ebd396ee4ced3c8d49965803064a4216"
 
 [1311070]
 nom = "Greak: Memories of Azur"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "40ddd5700f12b22fe1c587169523a6f4"
 
 [1312960]
 nom = "Epic Chef"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "68951e9f22e9316bee9fd2eac60c4491"
 
 [1315980]
 nom = "Tin Can"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "a543bd4625e197dc74506a7b730ad8a5"
+
+[1318690]
+nom = "shapez"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "c6e4c06f70706b53c7ddf316b9003ca1"
 
 [1319460]
 nom = "Fashion Police Squad"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "f00aef760c9dcb22143d14d08923c346"
 
 [1324350]
 nom = "Turbo Golf Racing"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "6b4a24a72d63aa7858bcd6bd5b002a03"
 
 [1325200]
 nom = "Nioh 2 – The Complete Edition"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "657a292b94abc7b8689e5ed7bb82aa12"
 
 [1325900]
 nom = "Demon Turf"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "1cf0c738ec99489ca0f2304ff6d841af"
 
 [1331910]
 nom = "Morkredd"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "cf981e95b61de1e91472ca72efa3ab65"
 
 [1335790]
 nom = "Operation Tango"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "a80ba11bf5f9918025003851960b7e36"
+
+[1342620]
+nom = "Werewolf: The Apocalypse - Heart of the Forest"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "1e5dfed18ed9ced6e5e8015adebe0b67"
 
 [1347970]
 nom = "Patch Quest"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "cbd1a4489300031c2b83688a492722cf"
+
+[1348690]
+nom = "Oaken"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "9bc007795a269d198411083449734e74"
+
+[1353270]
+nom = "Five Dates"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "75f9e592b2d3030d866d4a22048dca36"
 
 [1364100]
 nom = "Lacuna"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "8e22f62fcfbcaa70cf15a5fc1cd2d55b"
 
 [1367300]
 nom = "Blade Assault"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "2cfd9ea450c1347a1762fd1a8ff44006"
 
 [1370050]
 nom = "Trek to Yomi"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "8c78eaf8fdccf1ffa2b0e949b8d54fbf"
 
 [1380420]
 nom = "Grow: Song of the Evertree"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "bed63791433fcbe420abab94cd2980f2"
 
 [1388870]
 nom = "Arcade Paradise"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "196c49b7caf6a728ba86ea82e5d516cf"
+
+[1389550]
+nom = "Mind Scanners"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "d601d0e47b604829266483730eb557d2"
 
 [1390410]
 nom = "Midnight Fight Express"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "806d487d365a7ff0020eff82ca87153e"
+
+[1405790]
+nom = "John Wick Hex"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "acbf518a3f0a326cd98d474614180748"
+
+[1406850]
+nom = "The Legend of Tianding"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "3454b2d8e64f7b5de2df89d4ece54dda"
 
 [1409200]
 nom = "HYPERVIOLENT"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "07696559c40750d5766a4294f0574c77"
 
 [1414850]
 nom = "Nickelodeon All-Star Brawl"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "c4ef1453f2bd2e54192fe6b7643c0bfc"
 
 [1419160]
 nom = "Souldiers"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "db3b9eb266a6fe6d0fdca78640b92823"
 
 [1432050]
 nom = "Nobody Saves the World"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "557dc764625d767ba4b72ee4bb8db7d6"
 
 [1434540]
 nom = "Zoeti"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "fa786cbbab3f24432665b7b81f2c1fe6"
 
 [1449560]
 nom = "Metro Exodus Enhanced Edition"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d26b211a5f14508a742e57acce2eb884"
 
 [1451810]
 nom = "LEGO® 2K Drive"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "35f9654770c8fe1b9d17f6a258b3c88c"
 
 [1453790]
 nom = "The Serpent Rogue"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "986274daf9e67cc7f76ea8515d37edb0"
 
 [1462570]
 nom = "Lost in Random™"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "b4da93f47b17ddd957fcdc25f24defc5"
 
 [1466640]
 nom = "Road 96"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ba28647cbb815b07fe93ad124ba91514"
+
+[1467920]
+nom = "A Guidebook Of Babel"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "188d7bb1da5658b4ece5d9ffba0db2ab"
 
 [1472560]
 nom = "I Am Fish"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "9c7d9e7671365ba6eb2c13f76bac432d"
 
 [1475810]
 nom = "Ghostwire: Tokyo"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "580ba56fabbae3989ecfb073acf69678"
 
 [1480560]
 nom = "Lawn Mowing Simulator"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "7e38b27c8e83f1338dc7e5f14b5d2562"
 
 [1488200]
 nom = "Symphony of War: The Nephilim Saga"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "9a1b6547f89595d01334caecdc83d52a"
 
 [1496790]
 nom = "Gotham Knights"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "64b81271016f619f732e61e0eefc3a17"
 
 [1502190]
 nom = "From Space"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "b74096dbca1c15b0a6e3927faa7a3a3b"
+
+[1511780]
+nom = "Last Call BBS"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "c1af6cca39af43094b74a2211f43e3fa"
+
+[1515210]
+nom = "The Past Within"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "705de835c72090ba5c87ec76ae88278c"
 
 [1532690]
 nom = "BLACKTAIL"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "49bdd89b8a255c0a7d7ff81d107fcced"
 
 [1537710]
 nom = "The Dark Pictures Anthology: Little Hope - Friend's Pass"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "705b9ce8e0b569914aa88026e6f70608"
 
 [1544020]
 nom = "The Callisto Protocol"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d0b199e269fbbb2b7ccd9e0c3c6f2d86"
 
 [1549970]
 nom = "Aliens: Fireteam Elite"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "8ee5d5a2b6781b15056d83e8e4ef204e"
 
 [1552810]
 nom = "Twin Mirror"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "dc1ce5df6cbe71fcb24706e3e8feae02"
 
 [1562420]
 nom = "FOREWARNED"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "096fc8768e2d56497bd1e3f27f2c32a1"
 
 [1562430]
 nom = "DREDGE"
 etat = "or"
 date = "2026-09-20"
+empreinte = "2034f31cf7232382b6b5960b949c6a63"
 
 [1567020]
 nom = "The Dark Pictures Anthology: The Devil in Me"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "a84ab7ef5cbc3f39ef03c0ac1de51d2a"
 
 [15700]
 nom = "Oddworld: Abe's Oddysee"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "33aa09008fd076bdd721f9a974086f9a"
 
 [1577120]
 nom = "The Quarry"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "f727ec5dd266a799e25f3e680d45b823"
+
+[1578650]
+nom = "Citizen Sleeper"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a52225c2a8c8396b1e16ec33429aab64"
 
 [1579380]
 nom = "Shadow Tactics: Blades of the Shogun - Aiko's Choice"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ab04664b22385ecf15953b16ff5bf134"
 
 [1583230]
 nom = "High On Life"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d97f054e1c9b503f526ec71e59bf0b72"
 
 [1592110]
 nom = "Spirit Of The Island"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "c108b66dd5e7bd88c9026d909f918add"
 
 [1602080]
 nom = "Soulstice"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "28b2590243b95bbb32086752561a1b6d"
 
 [1604030]
 nom = "V Rising"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "6beb35e43ee592e42bd2f51791ec3897"
 
 [1605220]
 nom = "Dune: Spice Wars"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "dc81c29965930a3d033d3012600c1a97"
 
 [1608230]
 nom = "Planet of Lana"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "363d1d087f71219a142b3b293338d5e5"
 
 [1608640]
 nom = "OTXO"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e67522bcbd089ca87ed3820d578146f2"
 
 [1611910]
 nom = "Warhammer 40,000: Chaos Gate - Daemonhunters"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "5d9ec3378f8f383c832c7987d3184d84"
 
 [1622910]
 nom = "Still Wakes the Deep"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "40dd358c99159281ea0ab1f3269fb4cb"
+
+[1627840]
+nom = "Universe For Sale"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a6ee855cf6748c11310c80681b6d119a"
+
+[1628130]
+nom = "Who Pressed Mute on Uncle Marcus?"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "88f36569a9f61b7ad9b7c746e5de979d"
+
+[1634150]
+nom = "Behind the Frame: The Finest Scenery"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "92d45b69b9e22ffd2a08f8beee843628"
+
+[1644940]
+nom = "Loddlenaut"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "62a9cfea80bc57c04ed3f14dca2fc327"
 
 [1649010]
 nom = "Miasma Chronicles"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "b994415da6dfb3086b0620ac26dcc121"
+
+[1649080]
+nom = "Two Point Campus"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ba3bbabf5662f0beb432ef8a3f2a2133"
 
 [1656780]
 nom = "Hero's Hour"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "6391af060201002906ac6312870d2b43"
 
 [1665130]
 nom = "PAC-MAN MUSEUM+"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "6089f14511600468cdacc96e40348271"
 
 [1672970]
 nom = "Minecraft Dungeons"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "34c058f13419d4032f587653e6bc11b6"
+
+[16810]
+nom = "Sid Meier's Civilization IV: Colonization"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a9fdce85fa601cd99db69bceeb28ec9e"
 
 [1701520]
 nom = "Afterimage"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "53d1d195aca0082d548e1096a8809142"
 
 [1718130]
 nom = "SCP : Secret Files"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "0f17066e549c36dede6a1cdb60cbfb30"
+
+[1768280]
+nom = "Ozymandias"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "73a527e6ccd335f340d84e6e9cb18590"
 
 [1775270]
 nom = "The Dark Pictures Anthology: House of Ashes - Friend's Pass"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "af1bc195e0df59b8174e6f3a09bf13bc"
 
 [1785150]
 nom = "Friends vs Friends"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "9d32947b0de3a9a86719232e74e4f0f5"
 
 [1793350]
 nom = "Blue Fire: Void Maker"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "1b66d3965f7e9bf3f08e24ef729119d9"
+
+[18000]
+nom = "On the Rain-Slick Precipice of Darkness, Episode One"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "795789d75f9e2e9b71617a51ac3b2af8"
+
+[18020]
+nom = "On the Rain-Slick Precipice of Darkness, Episode Two"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "594a3519f5adcec1be1a6d53e90bd201"
+
+[18040]
+nom = "DeathSpank"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a108d0c7e375cdfa9f3a0c85e02fbe35"
+
+[18050]
+nom = "DeathSpank: Thongs Of Virtue"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "68c7d13cc4f4f0201e7c77fe58f5db21"
+
+[18070]
+nom = "The Baconing"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "b2243b03524f20bd037f8cf306a80c2e"
 
 [1812390]
 nom = "The Elder Scrolls II: Daggerfall"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "875db9fbb8d0c0c4533a6829198a0ecb"
 
 [1815570]
 nom = "Aces and Adventures"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "0ee5759eb3a35b7417d432f8e328e42f"
 
 [1817230]
 nom = "Hi-Fi RUSH"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "4ba8c4995572547b557af3e253579089"
 
 [1824220]
 nom = "Chivalry 2"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e0dcd430836fb85e2a3a4aead915d434"
 
 [1839880]
 nom = "King Of The Castle"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ea39c9ced1121e904c25d8faa7b93c3f"
 
 [1844380]
 nom = "Warhammer Age of Sigmar: Realms of Ruin"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e3b8983acb5b0340da8dfe863fdb53b5"
 
 [18480]
 nom = "Mata Hari"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "49dd45b1419266b62096a916ac382b45"
 
 [1850570]
 nom = "DEATH STRANDING DIRECTOR'S CUT"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "9ef69f3f2cd451f69ccdbaf80df9d37f"
+
+[1874950]
+nom = "Runner Party"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "5a7331f488540b0acaf1a31b44a71175"
 
 [1903340]
 nom = "Clair Obscur: Expedition 33"
 etat = "argent"
 date = "2026-10-11"
+empreinte = "35d034c9fb27c97b9daf958f8115c86a"
 
 [1907720]
 nom = "Autonauts vs Piratebots"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "4fc0d27562134df45edb50552c6ac852"
 
 [1920490]
 nom = "The Outer Worlds: Spacer's Choice Edition"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ee65e8508400c6676286524d14bc6831"
 
 [1920780]
 nom = "Stray Gods: The Roleplaying Musical"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "6f2d0b719e1cd30ba368283db07294cf"
 
 [1929610]
 nom = "Demonologist"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "cf0c3f377a4238f821e879957f936e93"
 
 [1949030]
 nom = "Sherlock Holmes The Awakened"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "927c66eac862172182ee74a300abb69e"
 
 [1966720]
 nom = "Lethal Company"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e21e5a9a04a4727ac95f292902a1d8ac"
+
+[1972440]
+nom = "Shotgun King: The Final Checkmate"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "6952bd263ebf7eef44fc27cf86a68f65"
 
 [1987080]
 nom = "Inside the Backrooms"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "0f5653a0f4da09b63100eb5db5a50c8b"
 
 [200110]
 nom = "Nosgoth"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d7e58c69a2980b5df9483cea8cf91e9a"
+
+[200510]
+nom = "XCOM: Enemy Unknown"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "8d5bf623e11ac259c7ee7d3f26be0e5f"
+
+[200710]
+nom = "Torchlight II"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "bf889f878bc4881d1ee924e97a9236e2"
 
 [200940]
 nom = "Sonic CD"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "327d0177f6b3240ebb1135a43a4be5d0"
 
 [201790]
 nom = "Orcs Must Die! 2"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "fbee9b2dfe9c15ffc86823980d80560e"
 
 [202200]
 nom = "Galactic Civilizations II: Ultimate Edition"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "1d7fbea4d8ea73ed87aeadc0a021121e"
 
 [202530]
 nom = "SONIC THE HEDGEHOG 4 Episode I"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "6a1277542190b7dce6e7969c70bbcd2d"
+
+[203160]
+nom = "Tomb Raider"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "5247f1c2d8c71e7ac77dfdb989d6077c"
 
 [203650]
 nom = "SONIC THE HEDGEHOG 4 Episode II"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "103e52b6923844fd5c02ca9a6b85af89"
+
+[203730]
+nom = "Q.U.B.E."
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "19ebd0630a90c0e37c2ee3630f4bdf24"
 
 [203750]
 nom = "Binary Domain"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "bce1b8e89a838ece9ee4adc801ede7f3"
+
+[203770]
+nom = "Crusader Kings II"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "4eabd76ef26e34d5dfec0c11a2a704a1"
+
+[203830]
+nom = "The Dark Eye: Chains of Satinav"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "07d90118e6f073017ff20b84d0f616f4"
+
+[204060]
+nom = "Superbrothers: Sword & Sworcery EP"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ea26ef2d1b5fd1a4edf474421effc177"
 
 [204120]
 nom = "LEGO® Harry Potter: Years 5-7"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "1a362145099548efb2438c9d4af0ff63"
+
+[204630]
+nom = "Retro City Rampage™ DX"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "f2a037fc18b8a3d6ada0c078abc081a4"
 
 [204880]
 nom = "Sins of a Solar Empire: Rebellion"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "df8e2a1e219e7cdb5e7fb0c2b2fad451"
 
 [205190]
 nom = "Rocksmith"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "cc4cdb974c24f3628cf3370ba9352182"
 
 [205230]
 nom = "Hell Yeah!"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "c53e2df068c2490288717f9c085517be"
 
 [205650]
 nom = "The Testament of Sherlock Holmes"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "b8f5b9d78b460594da2b6425f0735721"
+
+[205730]
+nom = "Insanely Twisted Shadow Planet"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "f13832a013016972d91b0c6dc56d33a7"
 
 [205950]
 nom = "Jet Set Radio"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "af46e15348fb2f7008b16bbaab36a9a9"
+
+[206370]
+nom = "Tales from Space: Mutant Blobs Attack"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a6d85ef97774ff250d8cb7fac08f9a1f"
+
+[206440]
+nom = "To the Moon"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "9ae8da48061156b4bb3800690e953bdd"
+
+[207170]
+nom = "Legend of Grimrock"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "1b47a0e2748700313a2d13250ee48203"
+
+[207610]
+nom = "The Walking Dead"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "70502f3e5c8cc737a3af2ef0043dcaa9"
+
+[207650]
+nom = "A Virus Named TOM"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "3630d9b97cea0cbbc0bcbb5a0bb44628"
+
+[208140]
+nom = "ENDLESS Space™ - Definitive Edition"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "006e5e25803cae8ff1dd3ed1e2e30057"
+
+[208580]
+nom = "STAR WARS™ Knights of the Old Republic™ II: The Sith Lords™"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "cb81a356bd518e5a612bb2a31b839d60"
+
+[209080]
+nom = "Guns of Icarus Online"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "5ca4e2273ab1d9f394693bbf031607f0"
 
 [209230]
 nom = "Sherlock Holmes and The Hound of The Baskervilles"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "a45974796978edce3b88f0eb910b2b0f"
+
+[2094550]
+nom = "Saga of Sins"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "63009c2339adbcb4e1528d79546d9a45"
 
 [2100]
 nom = "Dark Messiah of Might & Magic Single Player"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ab9ab69c560aba0acb8f7a0a8fd5e685"
+
+[21000]
+nom = "LEGO® Batman™: The Videogame"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "b79dc3081bafa35749fa4f8baf7110bd"
+
+[210170]
+nom = "Spirits"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "500ced71806a971cd08ffc1968ca863d"
+
+[2103680]
+nom = "Mediterranea Inferno"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "814e3f894c90cdf9a03947fafa78843b"
+
+[210770]
+nom = "Sanctum 2"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "fd6571bb4f558b9a189aedd63ed37ef4"
+
+[210970]
+nom = "The Witness"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "55412a5bcbaeb8eea888eb129e95f07b"
 
 [211160]
 nom = "Viking: Battle for Asgard"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "4fb65dba954991001be9bb777f95e8c5"
 
 [21130]
 nom = "LEGO® Harry Potter: Years 1-4"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "1c4d9a10b767f40854cb17a91f4850fc"
 
 [211400]
 nom = "Deadlight"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "51c14df7e03275b4492ba2aabaa07c6f"
 
 [2114740]
 nom = "Blasphemous 2"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "933236200149bc4c10193f619d49343b"
+
+[212050]
+nom = "Resonance"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "f971c3de765f3d25d90f7f2ad7012526"
 
 [212480]
 nom = "Sonic & All-Stars Racing Transformed Collection"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "1315d99d7c183a30e76dc3e74befd58c"
 
 [2130]
 nom = "Dark Messiah of Might & Magic Multi-Player"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "2b4d832f176896bf9203e58b4fa6c7cb"
 
 [213330]
 nom = "LEGO® Batman™ 2: DC Super Heroes"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "dcadcc78cdb7251386171811fe309ac8"
 
 [213610]
 nom = "Sonic Adventure™ 2 "
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "4f4b48cb8324c552a076b10bfa9a32e1"
 
 [2138710]
 nom = "Sifu"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e552755c5dcc7316dffe7c6858e484de"
 
 [214150]
 nom = "Galactic Civilizations I: Ultimate Edition"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "6ce9fce9a12ef44c0cccd3c26a70a2ac"
+
+[214340]
+nom = "Deponia"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "042988492404525f6df4823dd6558022"
 
 [2144740]
 nom = "Ghostrunner 2"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "8bf393045b85938b01531aa54fdef8c5"
+
+[214490]
+nom = "Alien: Isolation"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "e19ee1776cca3d7cc5bc13e6a6a6cbfe"
 
 [214510]
 nom = "LEGO® The Lord of the Rings™"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "c36c9bc58a4399f9de367d1bef699dc8"
+
+[214700]
+nom = "Thirty Flights of Loving"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "bec9d336c74e2c7b702a518ceab5cc4c"
+
+[214770]
+nom = "Guacamelee! Gold Edition"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "361445942b7dd19be2736c899a0da550"
 
 [214830]
 nom = "Half Minute Hero: Super Mega Neo Climax Ultimate Boy"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d43a34d8e899e16559498a871a28ab2c"
 
 [2149010]
 nom = "Little Nightmares Enhanced Edition"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ec4f59b187e600ae1c2192a9eb24cff7"
+
+[215160]
+nom = "The Book of Unwritten Tales"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "dd4dc12568e4b2870fde43de47876d8e"
 
 [215280]
 nom = "Secret World Legends"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "2d7012cc679e8618653d05b3f988c098"
+
+[215510]
+nom = "Rocketbirds: Hardboiled Chicken"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "282101bf35831d0021cad4ad96e62de9"
+
+[215530]
+nom = "The Incredible Adventures of Van Helsing"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "b7050f563b5f881df9cfaefcbb538b8d"
+
+[215670]
+nom = "Home"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "754c62e1694d6590f3be9a7f2c927553"
 
 [2162020]
 nom = "Strayed Lights"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "a950c0e136281023a4cf28ac53573011"
 
 [2166060]
 nom = "Amanda the Adventurer"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "45f553ca4a2d037dcb5991812fa677ac"
 
 [21680]
 nom = "Bionic Commando Rearmed"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "dd8b291edc16090471e95134db59df63"
 
 [21690]
 nom = "Resident Evil 5"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "860e96de00484090394daaaf4c2d792a"
+
+[218130]
+nom = "Dungeonland"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "904f68564cf12fc6c56c9cb601b9246d"
 
 [2181610]
 nom = "Heretic's Fork"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "a2530015fe2850cb12aa5c4ff5ecba58"
 
 [218620]
 nom = "PAYDAY 2"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "9a79e13304e92bd5f39ceb7d81960f0e"
+
+[218740]
+nom = "Pid "
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "2cd59532033bb64b9139c216057f343a"
+
+[219640]
+nom = "Chivalry: Medieval Warfare"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "fd918b33de909b75d420748d469a9576"
+
+[219890]
+nom = "Antichamber"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "8848f64fbab04207a263aecbf2e8c212"
 
 [219950]
 nom = "NiGHTS into Dreams..."
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "8d178fb344cb63a59d39dc7d28a19c69"
+
+[220]
+nom = "Half-Life 2"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "6add181710739a45ff0970f97feaede8"
+
+[22000]
+nom = "World of Goo"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "99307580e7dcb9f24f360393dacab28f"
+
+[220090]
+nom = "The Journey Down: Chapter One"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "2ad73511bb4a043bd94a96328dec8cc2"
 
 [220440]
 nom = "DmC Devil May Cry"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "df780d2c8fafe78ca8a8796ada36c1ff"
 
 [221380]
 nom = "Age of Empires II (2013)"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "71e837a9ecf467d899c21802d36fe3a3"
+
+[221640]
+nom = "Super Hexagon"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "f8cf645397e8d9ff290b8d3105a05538"
 
 [221680]
 nom = "Rocksmith® 2014 Edition - Remastered"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "065513353731a2b9dd68306c6f1950af"
+
+[221830]
+nom = "The Book of Unwritten Tales: The Critter Chronicles"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "eced6e6a9b25a0889c38d42a49ddf201"
+
+[221910]
+nom = "The Stanley Parable"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ce5b58c5c17bbe28d39a0b0acc941da5"
 
 [222480]
 nom = "Resident Evil Revelations"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "6bc51228f7b0b5112c1377b89c7015b5"
+
+[222880]
+nom = "Insurgency"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "fb0e7be0d53022364f2821814739936a"
 
 [222940]
 nom = "THE KING OF FIGHTERS XIII STEAM EDITION"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "b2ac674f643773fd73f69e49b1869ffc"
 
 [223470]
 nom = "POSTAL 2"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "605fed4b14ff20be2f07715469fe353e"
 
 [224300]
 nom = "Legacy of Kain: Defiance"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "9bd49b7120f01ecc2472b18a2d787de7"
 
 [224420]
 nom = "Afterfall InSanity Extended Edition"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "3230fc9a9b6a76fa30a38a032ee902b5"
+
+[224480]
+nom = "Octodad: Dadliest Catch"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ed2bac29866ca70dc8d6bf50c150f345"
+
+[224760]
+nom = "FEZ"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "c2e1a27db1932b368d8569f00453bc25"
 
 [224920]
 nom = "Legacy of Kain: Soul Reaver"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "bc2c4868c212306342c59072fb763906"
 
 [224940]
 nom = "Legacy of Kain: Soul Reaver 2 (2001)"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e4b7592e26075846116c9020f1d91f20"
 
 [225080]
 nom = "Brothers - A Tale of Two Sons"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "3805f088456476814cb9b1575cc5d629"
+
+[225260]
+nom = "Brütal Legend"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "9a54a33dcf307588905c3c2ef6147c0d"
 
 [225280]
 nom = "Full Mojo Rampage"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "3aed645d34c68e09d6b226297f227f5a"
+
+[226120]
+nom = "Weird Worlds: Return to Infinite Space"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "1e4e9e7e1e4ba5b9835a2e1121630634"
 
 [226720]
 nom = "Lost Planet 3"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "4aeced4d258591b047d93b0d6501a734"
+
+[226740]
+nom = "Monster Loves You!"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "9c505abf7133cf6c72e794dc2da5f29f"
+
+[226840]
+nom = "Age of Wonders III"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "7ecaa93625b940ab8b94cb9f185695f4"
 
 [226860]
 nom = "Galactic Civilizations III"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "c7a1646d575cbeaec9aae462d33fb682"
+
+[227200]
+nom = "Waking Mars"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "e4fe8909b9e9dd8328bdd96c484ef3b1"
+
+[227600]
+nom = "Castle of Illusion"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "03fabbf1704398432b4239ed18219401"
 
 [228300]
 nom = "Remember Me"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "2b4e1fe3b735baec5bc26d441d6bfbc6"
 
 [2285890]
 nom = "The Dark Pictures Anthology: The Devil in Me - Friend's Pass"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "49f70f633cc0cccfee29cfaa17e734fa"
+
+[228960]
+nom = "Skulls of the Shogun"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "488ab2c76277c1d026681ec1de631f30"
 
 [229480]
 nom = "Dungeons & Dragons: Chronicles of Mystara"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "1340582797c205ce788f8c3f905325cd"
+
+[230190]
+nom = "War for the Overworld"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "4e29c81b44fe38c6e65a8caa0eb1cd17"
+
+[230270]
+nom = "N++"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "7f5c910d8e914348ec8d85adf51bc805"
+
+[2303350]
+nom = "Sticky Business"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "95f8f6d07fdfb62e1ff6782d4a918d65"
+
+[230700]
+nom = "La-Mulana"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "03fba2c36de002a0b887414e2c3dd333"
+
+[230820]
+nom = "The Night of the Rabbit"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "838a7857c7fddd5b159c5069d59f7937"
 
 [231160]
 nom = "The Swapper"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "5d85ebadcbaa6a35c96b56ea809a179a"
+
+[231310]
+nom = "MirrorMoon EP"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a74886f370eda6f12ece5399cdc0d134"
 
 [231330]
 nom = "Deadfall Adventures"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ad3ba2cb4db495a55deaac1613d701b9"
+
+[231430]
+nom = "Company of Heroes 2"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "6ef37d5a71b96be4a44e552ca6f633a9"
 
 [232090]
 nom = "Killing Floor 2"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "2d8567832927bff2c3cef0c67103b71f"
+
+[233130]
+nom = "Shadow Warrior"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "f48807be1f8e68346b56b66232169bf1"
 
 [233290]
 nom = "MURDERED: SOUL SUSPECT™"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ca334bcc9fb6ef49a75bcf44f523ce86"
+
+[233370]
+nom = "The Raven - Legacy of a Master Thief"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "6541b540cfa47865742f60b23b206071"
+
+[233980]
+nom = "Unepic"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "1237cd48a95b41f0ba4c5fadf7da7b4b"
+
+[234390]
+nom = "Teleglitch: Die More Edition"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "c9695337ab48eab36730dbb80a43706c"
+
+[234650]
+nom = "Shadowrun Returns"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "f12e9d8b31ecf9edf988ba97efadbb1d"
 
 [235210]
 nom = "Strider"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e074eaf49fe770220c9665250b0e1b11"
 
 [235540]
 nom = "Warhammer: End Times - Vermintide"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "b6492991dbb0fc3d64751779bbae022b"
+
+[236930]
+nom = "Blackwell Epiphany"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "876ad7ee2d02cabe3fb2033b8e9f44bc"
 
 [236970]
 nom = "Jack Keane 2 - The Fire Within"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "5cfe8be2fe4652461bfb818570515dbd"
 
 [237630]
 nom = "DuckTales Remastered"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "0f827495c616a2d26cb75bda25945f7b"
+
+[237850]
+nom = "Dreamfall Chapters"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a6c29a503ec7762a63a7f1cdbf602eda"
+
+[238210]
+nom = "System Shock® 2 (1999)"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "1ba5f844e67d3b4d623129b63ffced09"
+
+[238320]
+nom = "Outlast"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "4a4848add8851ec14e03065b7085e044"
+
+[238370]
+nom = "Magicka 2"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "6b90a138baffdbec55c5e347134643d0"
+
+[238930]
+nom = "7 Grand Steps, Step 1: What Ancients Begat"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a3b3ef62cb8a16c01b6aa90087d09f16"
+
+[239200]
+nom = "Amnesia: A Machine for Pigs"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "72c92104f45e043a01ec94d53ecc817d"
 
 [239350]
 nom = "Spelunky"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "20b75a47516999900f1d4f57f0ee052d"
+
+[239430]
+nom = "Q.U.B.E: Director's Cut"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "5a99ac8a7ae4524e0bbc03ba470499cb"
+
+[240720]
+nom = "Getting Over It with Bennett Foddy"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "6ba7d4f46ad95a1f8ac1767d8c2d63ec"
+
+[240760]
+nom = "Wasteland 2"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "8adf7949aeb9bbe99d144d171587e30e"
+
+[241240]
+nom = "Contraption Maker"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "e47de490c1316d83c64f4f3692d9f7cc"
 
 [241260]
 nom = "Sherlock Holmes: Crimes and Punishments"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "686d61f516f1d026b265f41b76f79bc5"
 
 [241410]
 nom = "CastleStorm"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "fcb92c5d646e83763c9aeb28f371f32b"
 
 [24240]
 nom = "PAYDAY: The Heist"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "1e923075e6dfa43489838cc92577dccd"
+
+[242680]
+nom = "Nuclear Throne"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "4fe50870dbcba59e7bcb814c62eb2357"
 
 [242700]
 nom = "Injustice: Gods Among Us Ultimate Edition"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "b3e04316317aac9a82e9c47197bb5c8f"
+
+[242820]
+nom = "140"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "75b9e37ec396c020bf2817a946acdfa8"
+
+[242860]
+nom = "Verdun"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "d0271fc8fc365f108b3172652bb5a0ab"
 
 [242960]
 nom = "Blood Omen 2: Legacy of Kain"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e070f5143e417ec6183c38421bbe1fd4"
+
+[243160]
+nom = "Mushroom 11"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "4ff98019c5aac2155b75f5872a96f60a"
+
+[243970]
+nom = "Invisible, Inc."
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "4e3c321274f784ac09025b77be551879"
 
 [244070]
 nom = "Sid Meier's Ace Patrol"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "78d3632a8eb1e307dc127a0b5bae6410"
 
 [244090]
 nom = "Sid Meier's Ace Patrol: Pacific Skies"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "495f210df5098d1317d5fee379bdd65c"
+
+[244160]
+nom = "Homeworld Remastered Collection"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "256a249f38484a6ebcec8338c7215aa5"
 
 [245050]
 nom = "SpellForce 2 - Demons of the Past"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ea192ca787cecb6221a1719a0f61fd50"
+
+[245150]
+nom = "The Novelist"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "f1961558425ba639d90b1d52c72fa0ed"
+
+[245170]
+nom = "Skullgirls 2nd Encore"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "f35fe6978d396db24364d3168bb0bb15"
 
 [245280]
 nom = "ENSLAVED™: Odyssey to the West™ Premium Edition"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "9727f7ec103836d4745f321e5337891a"
+
+[245620]
+nom = "Tropico 5"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "6dde9f9a87965f4c774fd89cb44a7dd7"
+
+[246680]
+nom = "Secrets of Rætikon"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "8c5e4210032cd2c5bcb144f04946330b"
 
 [246760]
 nom = "Legends of Eisenwald"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "0da772604f8e53812dedfdceb341639b"
+
+[247020]
+nom = "Cook, Serve, Delicious!"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "56a4873aad9f038928fbdfc6b63b099a"
+
+[247080]
+nom = "Crypt of the NecroDancer"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ce1877b1cbb666ae0372ca6d68457e4c"
+
+[247240]
+nom = "Volgarr the Viking"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "02f7318979d31f454bc2e336f6619fa6"
+
+[248470]
+nom = "Doorways: Prelude"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a92f727ca56ae5b031af539909ed3e4d"
 
 [248610]
 nom = "Door Kickers"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "74d54c0c8f21c7943fad6087f6b9057e"
+
+[248820]
+nom = "Risk of Rain (2013)"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "28a5a99bfa478ac5d3af46700e3180fb"
+
+[249050]
+nom = "Dungeon of the ENDLESS™"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "bdca80ee008010c285d2176182b98d06"
+
+[249130]
+nom = "LEGO® MARVEL Super Heroes"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a70bdbfbe01a2d734314adda33b9882a"
+
+[249650]
+nom = "Blackguards"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "188b1cb65058d278bc5f370dbff408b2"
+
+[249990]
+nom = "FORCED"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "44a520275c801a93e7365b21f5c09c8c"
+
+[25000]
+nom = "Overgrowth"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "948f7756e138ed2bc6d8e107fa45118a"
+
+[250260]
+nom = "Jazzpunk: Director's Cut"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "401e7fd3054a89cb990861ea50ca82da"
+
+[250280]
+nom = "Super Comboman"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "210fab1f22e212b94b7fe668570f56ae"
+
+[250380]
+nom = "Knock-knock"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "77a6daa1ecff2251024729205e266455"
+
+[251060]
+nom = "Wargame: Red Dragon"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "6b891fada9fe0e3d306e57a9e642f5ff"
+
+[251130]
+nom = "Chroma Squad"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a0ed65960f98a3d39fed617665b620a2"
+
+[251430]
+nom = "The Inner World"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "e74e7a6b325adc09c4f16010acd9dccf"
+
+[251470]
+nom = "TowerFall Ascension"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "6feb755b180372307de85b0aa1c7dadb"
+
+[251730]
+nom = "Legend of Grimrock 2"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a288aabea3be0fb42e7d1eec0d4eff11"
+
+[252330]
+nom = "Slender: The Arrival"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "55f308936925bc58a7084d1730a5bba0"
 
 [252350]
 nom = "Double Dragon Neon"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "87ecc9cf82576122a3f8d7e4f23828ce"
+
+[252430]
+nom = "Dusty Revenge"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "6c5a83ca4917f36c30cd4df2c1ec07fd"
+
+[252630]
+nom = "Eldritch"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "49b423966b61caa4e2600c0de02e424f"
 
 [252850]
 nom = "Streamline"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "748af08c9c1d6d45385deb2cfd191ca1"
+
+[252950]
+nom = "Rocket League"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ee0bf886a63a444ac56264fb48f4bde8"
+
+[253390]
+nom = "Hot Tin Roof: The Cat That Wore A Fedora"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "6bdbd6d07a279f7dc6d349de23e5ca24"
+
+[253510]
+nom = "Warmachine Tactics"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "4799164a9a4393b6176d2ea53a71aa22"
+
+[253960]
+nom = "Jack Orlando Director's Cut"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "8d7e0d05da920dcdda7dda3f803088bb"
 
 [254700]
 nom = "Resident Evil 4 (2005)"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "1412a10f1e07517bd2e0c2f66203bb72"
 
 [255320]
 nom = "Edna & Harvey: The Breakout"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "496693dba6135ccb62fc1cb004263250"
 
 [255370]
 nom = "KickBeat Steam Edition"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "0af31704b345cec93e28c435fd53a36d"
 
 [255520]
 nom = "Viscera Cleanup Detail: Shadow Warrior"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "448e81026355dffcc257bbdc8685ad7c"
+
+[257510]
+nom = "The Talos Principle"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "c68920413fda10d402a092a285ef63fa"
+
+[257850]
+nom = "Hyper Light Drifter"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "963a31cf82c60fc6559fa2067eaefbc5"
 
 [258520]
 nom = "The Vanishing of Ethan Carter"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "0fe675e407074327fdbe3f803fc1ce90"
+
+[258890]
+nom = "Type:Rider"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "177e92ade02038550b13f4e6e347b7ae"
+
+[259130]
+nom = "Wasteland 1 - The Original Classic"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "e59f09c3604f0c0f530518397419596d"
 
 [259660]
 nom = "Void Destroyer"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "25397f03c17829f478e05043a90c9ade"
 
 [260270]
 nom = "Shadows: Price For Our Sins"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "631513ada43888cd3d7b33381596064d"
 
 [260550]
 nom = "Haunted"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "f883f017273dc710e9e4c9b294d7bbbf"
 
 [260690]
 nom = "Dark Fall 1: The Journal"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "3cac5a80121703f5d45f4c2199b73452"
 
 [260710]
 nom = "Dark Fall 2: Lights Out"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "3f2446da2ab8b882e7fb6da3b37d08de"
+
+[261510]
+nom = "Tesla Effect"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "99db3625d3b2760eb7e21e1748817cca"
+
+[262280]
+nom = "Dungeons 2"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "00705c130b9c7dfe32dd6255e15b31b9"
+
+[262850]
+nom = "The Journey Down: Chapter Two"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "02e817cc1faacfe7ed5eeba7d3acfb5c"
+
+[262940]
+nom = "Broken Sword 5 - the Serpent's Curse"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "82e42e714ebc02f7cd339fcf9ae10c44"
 
 [263120]
 nom = "LUDWIG"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "f89e893f5dc15fa01089ebf8603ca91b"
+
+[263460]
+nom = "Girls Like Robots"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "4b54028576e946d287dfee39873a2ab9"
 
 [2636420]
 nom = "Graveyard Shift"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "b8636bc06638c09c5b00f368190a65b0"
+
+[264140]
+nom = "Pixel Piracy"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "cdb217e450410d95dcb55a28979ef90a"
+
+[264710]
+nom = "Subnautica"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "32c3e66633ba2368e48f9b1fec329bb4"
 
 [265300]
 nom = "Lords Of The Fallen"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "c6ab30e37dda6a25cd0773928e86a399"
 
 [265610]
 nom = "Epic Battle Fantasy 4"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e52151b90ce092e3544f6e4d794c253b"
 
 [266050]
 nom = "Into the Dark"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "3a4641011b0075ec511a3f20c9e261c0"
+
+[266110]
+nom = "Tower of Guns"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a0ad991166ddecdff1b636627036d95b"
+
+[266510]
+nom = "Hand of Fate"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "daac181e97d8ab2320f7531d0e4d5c65"
+
+[267530]
+nom = "The LEGO® Movie - Videogame"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "d54edbcd29b1faa69a1846d7dd67f2f1"
+
+[267750]
+nom = "Shadowrun Chronicles - Boston Lockdown"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "eed26d1ca7281bd615e2bbcd4f50f5d2"
 
 [267900]
 nom = "Guilty Gear Isuka"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "8ebb0a614b58c7121c806bc7ccb97cfc"
+
+[26800]
+nom = "Braid"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "6342951b46806678b8e88375cc45bd4d"
+
+[268500]
+nom = "XCOM 2"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "f5c2f083d6c2031c4f63477048fa4121"
+
+[268540]
+nom = "The Whispered World Special Edition"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "2085fa2216773a6231e2b3541ed64d86"
 
 [269190]
 nom = "Edge Of Eternity"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "85e618697858c36568769023de061d03"
 
 [269370]
 nom = "Reaper - Tale of a Pale Swordsman"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "778868f8959e048ba1a0d9a6e34bd075"
 
 [269790]
 nom = "DreadOut"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "98c741b5aa4675d7e65da6b7e2e2dd5a"
+
+[270450]
+nom = "Robot Roller-Derby Disco Dodgeball"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "9a7d1db8c0a5699ff3e72881b05d4fff"
 
 [270590]
 nom = "Long Night"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "65934317c8d09b62ae436d4a482a9a8c"
 
 [2707930]
 nom = "Palia"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "7e8af41d8a218f1e679297ba3fdcc22c"
+
+[270810]
+nom = "Jones On Fire"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "e3917d3e2c4228e88552332d780cd326"
+
+[271240]
+nom = "Offworld Trading Company"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "0cb6feacec2fbd7748f03dc8113556bf"
+
+[272270]
+nom = "Torment: Tides of Numenera"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "e0b104feb435f9edb3ee2a5c0505c0d3"
+
+[27400]
+nom = "Dangerous High School Girls in Trouble!"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "4a49bc5d96fa51161a623d8d37784710"
+
+[274250]
+nom = "OlliOlli"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "7d7c7521fc5889f86eddac49a041599e"
+
+[274310]
+nom = "Always Sometimes Monsters"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "7e93b90fbfbecf5bc301a21cc88a001e"
+
+[274520]
+nom = "Darkwood"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "0322a1da6d4329022d10edfbae2724ee"
+
+[274980]
+nom = "Influent"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "c0ef5824c77d172d07e46931f3d80fda"
+
+[275200]
+nom = "Westerado: Double Barreled"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "6f67b7de11afa3af4a046c4050bd6600"
 
 [275390]
 nom = "Guacamelee! Super Turbo Championship Edition"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "cf3e06ee08aa4506c19e4fbf3a0e03d3"
 
 [275570]
 nom = "Summoner"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "da29acb12c69f83a6e33b414da4f61a6"
+
+[275850]
+nom = "No Man's Sky"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "5fed110b13e405901d8d45225f416488"
 
 [277890]
 nom = "Shantae: Risky's Revenge - Director's Cut"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "9974d10750d5235369a99e62129b1297"
+
+[279560]
+nom = "Dracula 4 and  5 - Special Steam Edition"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "24fb779f80a247e81eeb2fc014431d94"
 
 [280200]
 nom = "Eterium"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "4e31a2f1b3f235e02b264e3acf649c69"
+
+[281200]
+nom = "A Boy and His Blob"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "65f50b086da2effb269c0b2f036bb4d1"
+
+[281640]
+nom = "The Banner Saga 2"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "fc825503b6aa5fd519001d6082819647"
+
+[281920]
+nom = "Splatter - Zombiecalypse Now"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "f2dc67edf822d8b4b88f660f50de8169"
+
+[282210]
+nom = "Sid Meier's Starships"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ad0f44cc7904189e1e49c48d10b6420f"
+
+[282760]
+nom = "Circuits"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "b4737cebc2d7cd222a24bd62bf7f39a9"
 
 [285010]
 nom = "Pixel Puzzles: UndeadZ"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "86bc355669336253418cb4381e4ee1f7"
+
+[285160]
+nom = "LEGO® The Hobbit™"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "1a7394640d7f9fa591683b745a9b387b"
 
 [286360]
 nom = "Shadows on the Vatican - Act I: Greed"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "2b7ccba85f586bfbc0547ccf15a975b6"
 
 [286460]
 nom = "Black Mirror II"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "13777da17d9a1203f7d6b7be0874a0f7"
 
 [286480]
 nom = "Black Mirror III"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ea5da7a82c96515c64e8120e5f9d767c"
+
+[286500]
+nom = "House of 1,000 Doors - Family Secrets"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "c08b9fe53aebba559ec55ea8a6f2e50d"
 
 [287290]
 nom = "Resident Evil Revelations 2"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "2c3215ac13a9910f36abb0a6aa62f8d4"
 
 [287630]
 nom = "The Council"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "9b776916bd73aff5503b14a08d3e7d1c"
+
+[287980]
+nom = "Mini Metro"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "2f043d88a6af0d2e9afbd448c9470f00"
 
 [288160]
 nom = "The Room"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "fbd531e35e3a13fb4dfe324a0046fe80"
 
 [288880]
 nom = "Pineview Drive"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e578d941bb6fb94f70774b2f2bd5c4f4"
+
+[289070]
+nom = "Sid Meier's Civilization VI"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "42c3c87e7eb290e46c4cb2700a93804d"
 
 [289690]
 nom = "Lara Croft and the Temple of Osiris"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "f9e299304e2a2363333038f563db2ef9"
+
+[289760]
+nom = "ROCKETSROCKETSROCKETS"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "81a2e5764278e4a0462b57203b6cf529"
+
+[289800]
+nom = "Dracula: The Resurrection"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "48c21daf6d46bdbb2dddf68a999bbc92"
+
+[289820]
+nom = "Dracula 2: The Last Sanctuary"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "881ba5ef2b32ba9310efd514779c5f07"
+
+[289840]
+nom = "Dracula 3: The Path of the Dragon"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "31cd1dac186be2ebe3922bf5e4f1d152"
+
+[289930]
+nom = "TransOcean: The Shipping Company"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "60cce0ac683e00b7b41c91818922e23b"
+
+[290040]
+nom = "Retro Game Crunch"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "c6c22a292e652f11738535a067048b96"
+
+[290260]
+nom = "Sokobond"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "4b6db13eb80ffd312d390cd102393b34"
+
+[290340]
+nom = "Armello"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "0f9e885a6991eec5979023ca919f490b"
 
 [290790]
 nom = "Grey Goo"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "7984fa1a28ecb73820f7995fb4c1addd"
+
+[291650]
+nom = "Pillars of Eternity"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "75af38a7c558b08629dc7627c723d10e"
 
 [292200]
 nom = "Crazy Plant Shop"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "3b5da3b5d285e2607d7ef59f0d658565"
+
+[292500]
+nom = "Kero Blaster"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "bcbed223479938082d3f7da83b7e79d6"
+
+[292600]
+nom = "Duet"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "0364d78db439d9f80996f625d52b1caa"
 
 [292930]
 nom = "Black Mirror I"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "f814bc9b1efda0e2567d798026639c50"
+
+[293860]
+nom = "White Noise Online"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "6ea7aaad11c207e84603abde91935160"
+
+[294000]
+nom = "Knight Squad"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "7c9caf4e3eb988bc127010be944ea211"
+
+[295790]
+nom = "Never Alone (Kisima Ingitchuna)"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "2ba6388f1297cda90d98ae5c267529ef"
 
 [2963870]
 nom = "Metal Slug: Awakening"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d0e16c180aa668fb094a2aceffa92a35"
+
+[296930]
+nom = "Ascendant"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "3e71eba0527aba4cda6b9b48f5f8ed1d"
 
 [297000]
 nom = "Heroes of Might & Magic III - HD Edition"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "585a513f62622cbfc5bb6f6a85b77b2e"
 
 [298140]
 nom = "Rhiannon: Curse of the Four Branches"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "9e466dc76ea33ce4ee162818ce557428"
 
 [2989180]
 nom = "Darwin's Paradox"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "4460a88566679dd3edb55df496b1b30d"
 
 [2995470]
 nom = "Dune: Awakening Public Test Client"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e822dc701d281a12ecdf147560c55e36"
 
 [299950]
 nom = "GET EVEN"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "197fb79933ccd9c75826a058cf38418f"
 
 [300200]
 nom = "Urban Legends"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "24bef277e233134e9730883b34903ec8"
 
 [300510]
 nom = "Them - The Summoning"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "18924922cb8b554a6b73c86d61b41d7e"
+
+[300550]
+nom = "Shadowrun: Dragonfall - Director's Cut"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "7c2496393eed2a2f6068d8a4425d77e9"
 
 [302110]
 nom = "Small Town Terrors Pilgrim's Hook Collector's Edition"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "2589b629eb8e596a22129470cdd49022"
+
+[302330]
+nom = "Tex Murphy: Mean Streets"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "5c1a695e68480f49ca8dfa265d87db83"
+
+[302340]
+nom = "Tex Murphy: Martian Memorandum"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "497437c30074ca095ae39afb38c6f42b"
+
+[302350]
+nom = "Tex Murphy: Under a Killing Moon"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "876df0316ae344fcf13f32d473cb8324"
+
+[302360]
+nom = "Tex Murphy: The Pandora Directive"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "1b144393effd8e2e314dbbc453a783a2"
 
 [302370]
 nom = "Tex Murphy: Overseer"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d3fddf224d0faec804a6303c588cc1e7"
 
 [302390]
 nom = "Necronomicon: The Dawning of Darkness"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "80e1b72a97432e5318278b7caf024a7c"
 
 [302690]
 nom = "Metal Dead"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "6ff437babe2dc9a7b7d4bd67c55f65b1"
+
+[302750]
+nom = "The Counting Kingdom"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "bb32299d2ee4767f3cf79be327f4d7e0"
+
+[302850]
+nom = "Team Indie"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a6e6033cb10023c697911cde29d14022"
 
 [304430]
 nom = "INSIDE"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "2d21f582d8217753ac40d38e1c941493"
+
+[304650]
+nom = "Sunless Sea"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "95f6161e8babe7802d96b6171bf9b5e4"
+
+[305050]
+nom = "Outland"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "b36db85bf265aed469d8039613fd5e14"
+
+[305070]
+nom = "FIST OF AWESOME"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "99144a1d830e0c66b513dba754a6bd7b"
+
+[305640]
+nom = "Shattered Planet"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "b9a69831f6913fefa280fbd4bb62d44e"
+
+[306130]
+nom = "The Elder Scrolls Online"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "2e199c02489fd16acc1bcb3e7f7aca57"
 
 [3064370]
 nom = "Dark Hours: Prologue"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "eaa467986091d98a3865b141daf11fcd"
+
+[306660]
+nom = "Ultimate General: Gettysburg"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "12e49880c7ebbb102cb76dff72c7f9a0"
 
 [3069340]
 nom = "Blasterbug: Last Bug Standing! "
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d67ca8606d7d5b7b0310c3927bab30c8"
+
+[307110]
+nom = "We Need To Go Deeper"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "473ad3f33b572f2aebac587a6be73bfa"
 
 [307780]
 nom = "Mortal Kombat X"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "35fadadbcd3456f2958b6074d250fe9b"
+
+[310790]
+nom = "Geometry Wars 3: Dimensions Evolved"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "2b41324d66e91f504ebe731e567aeaf4"
 
 [310810]
 nom = "Shiftlings"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "567e86a5cb2d2ccc599725edabe0084e"
 
 [310950]
 nom = "Street Fighter V"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "45a4fcd62a9d86cf98d0dd77a86d044c"
+
+[311480]
+nom = "Vertical Drop Heroes HD"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "588a1f47514e58c019fb29b6adc86c65"
+
+[311720]
+nom = "Sproggiwood"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "e3b6c917d85c83e67876d88d9ecbfd4a"
 
 [311850]
 nom = "Zombie Solitaire"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "0bab1a15016bb7038fc3ce61d12f33eb"
+
+[312200]
+nom = "Chasm"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "0f7e90e5986af387087cbfc8973a9fc4"
 
 [312520]
 nom = "Rain World"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "1b9dd37229177b21e75143e9cb11a042"
 
 [312530]
 nom = "Duck Game"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "f9026bc719d596f4cf9234b8cdc88f44"
 
 [312670]
 nom = "Strange Brigade"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "5d6c3e7e2625ca334c1818c3d518c8ba"
+
+[312840]
+nom = "Fahrenheit: Indigo Prophecy Remastered"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "761c272029e15ffe569409a54f700c29"
 
 [313140]
 nom = "Blackbay Asylum"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e88376077777e9ea639cedf235c10e25"
+
+[313360]
+nom = "The Maker's Eden"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "3c052e3bcfc340afa15daea3a862c6db"
 
 [313400]
 nom = "REVOLVER360 RE:ACTOR"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "f2d2674b2b0de2f0d5f956f1d1717e56"
+
+[313690]
+nom = "LEGO® Batman™ 3: Beyond Gotham"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "7a988932596a00154c78c3075321fa86"
 
 [314030]
 nom = "Guilty Gear X2 #Reload"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d54b6c13af99b7ddbc4dfd1bdd1cd1a6"
 
 [3144950]
 nom = "Pet Lands"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "3216fae949f17fb62f5be74427f38708"
+
+[314790]
+nom = "Silence"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "2d2114386f1376e41f8761c874645392"
 
 [316160]
 nom = "Broken Sword 4 - the Angel of Death (2006)"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "aaaaa5a71e016dcc2620a189008f1a40"
+
+[317280]
+nom = "Solstice"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ae77d3f2cdafd10aa950b7b454d8c72b"
+
+[317300]
+nom = "Roommates"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "9895b5063210790dee5cda57937918ff"
+
+[317400]
+nom = "Portal Stories: Mel"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "3f7c4939a0ee70b976f9c3dbca79bb1f"
+
+[319470]
+nom = "Ninja Pizza Girl"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "2b67107f67a219690f4e024ade531f01"
+
+[319910]
+nom = "Trine 3: The Artifacts of Power"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "36b6f95094f0265ec88845fd8c01594d"
+
+[320]
+nom = "Half-Life 2: Deathmatch"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "629f171688d0e2b2b6b9272c99f1abba"
+
+[321110]
+nom = "Fist of Jesus"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "0bf82a2f14a468709dadc634772b2d5e"
+
+[322170]
+nom = "Geometry Dash"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "e02111a64656f38b970952a16d5e5deb"
+
+[322450]
+nom = "FRAMED Collection"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "92f63a3ea53416ddc9dcb7991702c039"
 
 [323190]
 nom = "Frostpunk"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "415bd660c9b1dc0628bb22f0c2bc733a"
 
 [32350]
 nom = "STAR WARS™ Starfighter™"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ac0e5acd91d6d8f98d37a0185736d530"
+
+[323580]
+nom = "Jotun: Valhalla Edition"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ae391f209d883b95a08d596f9948ed1a"
 
 [32360]
 nom = "The Secret of Monkey Island: Special Edition"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d680b15e41786bf5abaca5fcd0019c1a"
+
+[32370]
+nom = "STAR WARS™ Knights of the Old Republic™"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "f66543c50e11eac178da3d8f70bb216d"
 
 [32380]
 nom = "STAR WARS™ Jedi Knight: Dark Forces II"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "dade42af9dbdaa45dadd39ef7a55c487"
+
+[32400]
+nom = "STAR WARS™: Dark Forces"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "eef464d57fc8752c677ff0ce110ba563"
 
 [3241660]
 nom = "R.E.P.O."
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "1e072f9a48a656cd17fe445e44ad8953"
+
+[32430]
+nom = "STAR WARS™: The Force Unleashed™ Ultimate Sith Edition"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "7409d493f68c204e6d9e06e5de5fec89"
+
+[32440]
+nom = "LEGO® Star Wars™: The Complete Saga"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "55098c14e588bd852c3c5bb8cabcfee0"
 
 [32460]
 nom = "Monkey Island 2: Special Edition"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "b664897c4c267611b25927d7f63f4989"
 
 [32470]
 nom = "STAR WARS™ Empire at War: Gold Pack"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "7a7687bc1aa352a75c92f5b1c3c66b77"
 
 [32500]
 nom = "STAR WARS™: The Force Unleashed™ II"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ecb77780c9c1cd7a53e1960ca6d68edf"
 
 [3260]
 nom = "Safecracker: The Ultimate Puzzle Adventure"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "6bf27c8a30f6e977d470f2ce5aac3185"
+
+[327030]
+nom = "Worms W.M.D"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "f56e97570e5ab07332d044b5a783b927"
 
 [327510]
 nom = "WASTED"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "adac2aaabd165c94981b8a14480120ee"
+
+[328500]
+nom = "Potatoman Seeks the Troof"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "c616a24d2675ab162ef928e1db0cbac8"
 
 [328600]
 nom = "Frozen Synapse Prime"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "43c3e8e9eacd26d217d867c0717773bd"
 
 [329200]
 nom = "Astray"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d38b64305aac872c67f72f0c124d12d2"
 
 [329440]
 nom = "Sonic Lost World"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "95ed01437b40f54faabbf02f1dae4185"
+
+[329460]
+nom = "JumpJet Rex"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "51a9d1ecaefc821aed08da40d1056919"
+
+[330020]
+nom = "Children of Morta"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a080185700205b8e40dc85d0c991df7d"
+
+[330420]
+nom = "The Interactive Adventures of Dog Mendonça and Pizzaboy"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "86ffcd0cb85bf6fc187a81f10f61f24e"
+
+[330660]
+nom = "Luna's Wandering Stars"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "7fc2fc5cd3b96970abc162dbf2358fa2"
+
+[330820]
+nom = "2064: Read Only Memories"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "c81b0086a9a82244696a5b5e0bf0e551"
 
 [3311740]
 nom = "The Cabin Factory"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "47588094df5ab7d2f6a88a9fc93e3e71"
 
 [331710]
 nom = "Why So Evil"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "f3b2882aca6ca4cde11a67901404d7a5"
+
+[331870]
+nom = "AER Memories of Old"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "c83c9368b53629d3fa25290253f17537"
 
 [332310]
 nom = "LEGO® Worlds"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "b81045ff8c52051e7d73cc364225389e"
 
 [332500]
 nom = "GRAV"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "04b4e488de2be7fcf19b1f9acf95627b"
+
+[332530]
+nom = "Shutshimi"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "770397eeeffc2eee3c7ae6008efa49e2"
+
+[333300]
+nom = "ADOM (Ancient Domains Of Mystery)"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "adab9e664ea0f04808c233ae4c5082a8"
+
+[333540]
+nom = "Neocolonialism"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "8b9216a4a9f51421f30fa30a82c73755"
+
+[333860]
+nom = "Project Night"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "9bee1883974d6cf68cd784a9beab3ed5"
 
 [334190]
 nom = "Insanity's Blade"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "887751927ec0a3f70eec2487bb84a0a0"
 
 [335300]
 nom = "DARK SOULS™ II: Scholar of the First Sin"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "7ef6949fcd8445c28fe4d609936f5e24"
+
+[33600]
+nom = "Broken Sword 2 - the Smoking Mirror: Remastered (2010)"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "e78fbf2cff249ff499e380bf887864e6"
 
 [33610]
 nom = "Broken Sword 3 - the Sleeping Dragon (2003)"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "1ff084f142f22bd00295c172ae7069bd"
 
 [336420]
 nom = "Bloodsports.TV"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "813ccf7a70a40a0b03bc6cee8f559fad"
 
 [337180]
 nom = "Velocity 2X"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "f2b0ce027ff783a0396b4878606ebddb"
+
+[338050]
+nom = "Anoxemia"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "240df8432f695737afd134df09c1f487"
+
+[339200]
+nom = "Oceanhorn: Monster of Uncharted Seas"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "76edd1ae6bcf44b055e0e64d32315f54"
+
+[340000]
+nom = "Headlander"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "e1f25b0dea9c00cd85d0c951bac0ab83"
+
+[340150]
+nom = "Basement"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "c630a615e7d07744ee3dd5f863e79809"
+
+[340270]
+nom = "TIMEframe"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "6613ed9d66de1beffe01d1e842b30faa"
 
 [34190]
 nom = "Sonic and SEGA All Stars Racing"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "117b88a6b42484bf9dfe6cd9a9c6c483"
+
+[34270]
+nom = "SEGA Mega Drive & Genesis Classics"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "9120d87541ab2001cf9e3120cb4f32cd"
+
+[343270]
+nom = "Disillusions Manga Horror"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "efc8d765ff413ae20612af015b2151fb"
+
+[34330]
+nom = "Total War: SHOGUN 2"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "4788cb2e64243adaa1301f8c4baa17d4"
+
+[34440]
+nom = "Sid Meier's Civilization IV"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ce554ddbc294c522017716d5aa0e9c88"
+
+[34450]
+nom = "Sid Meier's Civilization IV: Warlords"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "c6b46e8dfc29c86ff254c7f2151e9f44"
+
+[34460]
+nom = "Sid Meier's Civilization IV: Beyond the Sword"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "fb992ef74cb79a1e771c4b90aadf46a7"
+
+[345180]
+nom = "Victor Vran"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "96d35214e2ec50f18d2bb81c3e9a505a"
 
 [345390]
 nom = "King's Quest"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "6aa8133c81c6d4965d1bdfc4fbde1fc7"
 
 [345820]
 nom = "Shantae and the Pirate's Curse"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d908c694d30b5cb22899b3d3d6bf3ee0"
 
 [345860]
 nom = "Super Galaxy Squadron EX Turbo"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "dd70c37aace8fecf634d8631b1f4d3c0"
+
+[347030]
+nom = "The Bluecoats: North vs South"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "0c2f407fdf5e5944baa87999d94dc7d9"
 
 [347290]
 nom = "Rise & Shine"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "cf4d84700f39e72f1a6359e96d814cff"
 
 [348250]
 nom = "Google Earth VR"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "90f5f655227fe166539d22dfecedfa54"
 
 [348550]
 nom = "GUILTY GEAR XX ACCENT CORE PLUS R"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "7b99e3f985208cc41dd89ca456df82c7"
 
 [349730]
 nom = "Popup Dungeon"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "32a39e4152c21e66d614ed22cfa98112"
 
 [350640]
 nom = "Sherlock Holmes: The Devil's Daughter"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "03497a1acba1691b1c9c0fbe23030d8e"
+
+[351100]
+nom = "Niffelheim"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "426a3a32a58f39e34cc59bf240a93bf9"
+
+[351910]
+nom = "Valhalla Hills"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "c4c9356e20ae5085d86199061fea9058"
+
+[351940]
+nom = "The Descendant"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "d45db7e4d3cd370afafef1e2572a3b7e"
 
 [352400]
 nom = "LEGO® Jurassic World"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "25f8937b8fc0b7689020c27933deea5b"
 
 [3527290]
 nom = "PEAK"
 etat = "bronze"
 date = "2026-10-05"
+empreinte = "f54372b49ba8580d01f0b42e2b1f6718"
 
 [35420]
 nom = "Killing Floor Mod: Defence Alliance 2"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "9750b4f7737d17a0978b63613c3ff93f"
+
+[354430]
+nom = "STAR WARS™: X-Wing Special Edition"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "f7fe2fee3995f3786ed815eb5fa75f79"
 
 [354850]
 nom = "Why So Evil 2: Dystopia"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "9baf9d77a16c4447b13c22f231417bd2"
 
 [3550490]
 nom = "Overcome Your Fears - Caretaker"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "c029f2e6f16e7029eb9152d7032cd1ea"
+
+[355250]
+nom = "STAR WARS™: TIE Fighter Special Edition"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "b49606b8335936b4976e035c06c85f53"
 
 [356190]
 nom = "Middle-earth™: Shadow of War™"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "1aeccddf5bcf662c2d51db9486cdbd2c"
 
 [3564740]
 nom = "Where Winds Meet"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "3c3ed477b0479ac7c16a6559ea1dfab0"
 
 [356500]
 nom = "STAR WARS™ Galactic Battlegrounds Saga"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e5fc73a05f25bd4c0000ca636ed803a2"
 
 [356650]
 nom = "Death's Gambit: Afterlife"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d084720274f136623b6c02e8556b1429"
+
+[357780]
+nom = "Defend Your Life"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "124caf2d488503b6b1e0077129dccdef"
 
 [359100]
 nom = "Q.U.B.E. 2"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "f9ac52aca1da23b23ac6e5d6e1cd540b"
+
+[359310]
+nom = "Evoland 2"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "6cf7745ff6e8cfd06d9a344872fc6fe7"
 
 [359580]
 nom = "Uncanny Valley"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "a7f94bca1f57e21c722bbe7d5eac301b"
 
 [359960]
 nom = "Choice Chamber"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "8d9a8da68b5d8a35550c9e5a600135d3"
+
+[360]
+nom = "Half-Life Deathmatch: Source"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "0c152794cf5407591f8878c24b0c80d1"
+
+[360830]
+nom = "Yooka-Laylee"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "74a21449b51c5146c6f525913cc31aeb"
+
+[361280]
+nom = "Turmoil"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "b95bdcd9e94658ea4945167aeb76045a"
 
 [361670]
 nom = "STAR WARS™: X-Wing Alliance™"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "39d6d1aa625746fab3f1c60fe434ce5d"
 
 [361690]
 nom = "STAR WARS™ X-Wing vs TIE Fighter: Balance of Power Campaigns™"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "0961a9bdfc481f10dc2720304b7c4ea3"
+
+[361990]
+nom = "Lakeview Cabin Collection"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "92bf135772cbaa0a22e8562c31a62453"
+
+[363600]
+nom = "Holy Potatoes! A Weapon Shop?!"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a5f1b2b2a28c5884d4cd6621dba32f21"
+
+[363930]
+nom = "Dead Age"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "d709f7c64eb0b651531bf6fb97af2be6"
+
+[364420]
+nom = "Roguelands"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "5877800caad7fba8d76294ebc0593e03"
+
+[366320]
+nom = "Seasons after Fall"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "f501604d3faed089371e20bd54d3246a"
+
+[367520]
+nom = "Hollow Knight"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "16b9ebd38edff36df4c3902be7d69878"
 
 [368080]
 nom = "Aurion: Legacy of the Kori-Odan"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "523464a9ebdb9f9d6bff0cc01c524ae2"
 
 [368260]
 nom = "Marvel's Midnight Suns"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "94457812637a338b1c089e42c37e0e1f"
+
+[368730]
+nom = "No Time To Explain Remastered"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "46339e4243eef1784007ef38b326baf7"
 
 [368900]
 nom = "Brilliant Bob"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ef7cfe90d74eb3678e92eb616025a6bb"
 
 [370870]
 nom = "Dark Future: Blood Red States"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d745175865072d31361dcc5aa09d7cd3"
+
+[370910]
+nom = "Kathy Rain"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "bcfbdd5367efd3a6616791b00691330c"
+
+[371140]
+nom = "Aegis Defenders"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a0cfe33ba40a20b3851df84e860ab760"
 
 [3717340]
 nom = "Yakuza Kiwami 2"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e0c904cc97ab01dabac92bccedb6a0d4"
 
 [374320]
 nom = "DARK SOULS™ III"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d260c09549bbc9b6a5453908b7e7bdce"
+
+[375820]
+nom = "Human Resource Machine"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "efad317e91ae1982b19968edc742947e"
 
 [376300]
 nom = "GUILTY GEAR Xrd -SIGN-"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "a5b69fd8aab8414b7d7d8959d1b33b66"
 
 [381210]
 nom = "Dead by Daylight"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "2ece2c3a0c66d96d44df0da02b0d09b4"
+
+[3830]
+nom = "Psychonauts"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "f2ea91b5bd236d81d3a2f17ffb5c83ec"
 
 [383120]
 nom = "Empyrion - Galactic Survival"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "cd162abc96f296e7e64482b687e93379"
 
 [383180]
 nom = "Dead Island Riptide Definitive Edition"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "304a49a869a82c4481b78222acb231b5"
+
+[383840]
+nom = "Nimbatus - The Space Drone Constructor"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "bf29ae7fb069b21845cd295eac1dea6f"
 
 [38400]
 nom = "Fallout"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ce30a0707d1e52888a44094d5a3e272e"
+
+[385710]
+nom = "INK"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "db069d6c39eabe0c2c17961e578a2d0b"
 
 [385760]
 nom = "NBA 2K17"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "62a1d6721c52bdc6dff340d53325fd1f"
 
 [386360]
 nom = "SMITE"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "aec23cd22d8dfeac3307462b2b5d6896"
+
+[388210]
+nom = "Day of the Tentacle Remastered"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "72fabd1dfa67d43d23e4bf140002612c"
+
+[388880]
+nom = "Oxenfree"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "6c2a3efa2a853b5fd240c82bf442f08a"
+
+[389140]
+nom = "Horizon Chase Turbo"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "0a391f617ecfc8ff1a4bc3b46e09b001"
 
 [389730]
 nom = "TEKKEN 7"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "bcc85a2b69117fe74b6269aaae94c068"
+
+[3900]
+nom = "Sid Meier's Civilization IV"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "b6db6a44d03373d30e01cda7f9e57529"
 
 [390040]
 nom = "Small Radios Big Televisions"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "6cb076c82e3a8add4919ce69a63fd47a"
 
 [3908270]
 nom = "Letherfall"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ef1cce22d0703026ea2a7ee725ad9c30"
 
 [3910]
 nom = "Sid Meier's Civilization III: Complete"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "6546bf041b7a8693968898df515c4078"
+
+[391220]
+nom = "Rise of the Tomb Raider"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "e5a7f5aaae6c3fb818deafe1308ec264"
+
+[391720]
+nom = "Layers of Fear (2016)"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "d0432a8d4c18110a97a51d1972611db4"
 
 [3920]
 nom = "Sid Meier's Pirates!"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e58464e240eea260a521148949d3ee91"
+
+[392110]
+nom = "ENDLESS Space™ 2"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "594b2613a492b0b8f9230ce749e12265"
+
+[393190]
+nom = "TSIOQUE"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "08a02ab1cf6c35ed0a2e12d89e304a8b"
+
+[394970]
+nom = "DEADBOLT"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "c7fa1475d6142f3c1b11f4a00f05c54d"
 
 [39630]
 nom = "AquaNox"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ef797160384e86a8617af6d482eb451f"
 
 [39640]
 nom = "AquaNox 2: Revelation"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e5bb6d91814437cc33ea15735b49de4e"
 
 [396900]
 nom = "GRIP: Combat Racing"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "a422fe406623467de7c78de3a7aa539f"
+
+[397080]
+nom = "Magicka 2: Spell Balance Beta"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "9c8fb2d9cc5ba2944f407ae50a6b25e5"
+
+[397340]
+nom = "SimplePlanes"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "f90573ed6302fcfcc7ecab69ff5af5ba"
 
 [397540]
 nom = "Borderlands 3"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "0c7751689472ae30891f826bfa6a3841"
+
+[3990]
+nom = "Sid Meier's Civilization IV: Warlords"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "1e46c0c62a8238dbe97c616092bbdd4f"
 
 [399810]
 nom = "Call of Cthulhu"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "3d5c866f705c2e8824b22b04c27aaf21"
+
+[400]
+nom = "Portal"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "9e521a612ce2420ec5c51a6bdbd9b1f6"
+
+[400080]
+nom = "Out of Space"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a25753ca266a55e973c745c51fb8142e"
+
+[400110]
+nom = "Else Heart.Break()"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "f2d0310979f65849923418e7e427fdc7"
+
+[400240]
+nom = "The Deer"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "d0809d7ed13bd4aa8138e099a00184fe"
 
 [400430]
 nom = "The Vanishing of Ethan Carter Redux"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "94daaf42f8cb9423cba622cc45e6f578"
+
+[400630]
+nom = "Wuppo - Definitive Edition"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "7e0fcd90c2671ca9b01726fda5b5f5b8"
 
 [4015530]
 nom = "MyVoiceZoo"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "05819347f9ea62fe22b5e30b7d8eb423"
 
 [40330]
 nom = "Secret Files: Tunguska"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "b353db527b29cac35e1bc78b331f4fc5"
 
 [40380]
 nom = "Nail'd"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "c96bedb7c628eb5f8b2cc01678cfcce6"
+
+[40400]
+nom = "AI War: Fleet Command"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "066975581b048ce137b8807508b283b6"
+
+[404590]
+nom = "Vikings - Wolves of Midgard"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "8a77b7b94079928ff6b800ff252bbc29"
 
 [404680]
 nom = "Hob"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "4c3e97ca6354e2376b11eafd899c095c"
+
+[404730]
+nom = "Wasteland 2: Director's Cut"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ccb8a877c3e1874cb0772bbc34528b11"
 
 [405310]
 nom = "LEGO® MARVEL's Avengers"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "2f87583ce46f6ccd71802c3af7be4acf"
+
+[405640]
+nom = "Pony Island"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "093af62c35a3f160684feeea4c3c5f09"
+
+[405830]
+nom = "Turok 2: Seeds of Evil"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "b69e23a5909d89b24753f1cc56b7c151"
+
+[406150]
+nom = "Refunct"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a79799dbf3fe4e9b5f14527f7be38251"
+
+[406970]
+nom = "The Uncertain: Last Quiet Day"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "527997f5771ed1d0355ad484e7110ee7"
+
+[40800]
+nom = "Super Meat Boy"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "1db4dd3a7c691935272a06f60e6d5c01"
 
 [408410]
 nom = "X-Morph: Defense"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ee278fca78fc74dd9ee702efa67d17fe"
+
+[410700]
+nom = "System Shock: Classic"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "2a0c90f6c4a60cc8cdd673e5401b5ac1"
 
 [410710]
 nom = "System Shock: Enhanced Edition"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "6abf64082d8f2dc8e900d3dcf495e4f8"
 
 [411300]
 nom = "ELEX"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "518f526cf22e71cfab22ed2031553a6e"
+
+[412020]
+nom = "Metro Exodus"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "3cf358b378f6b42dd5d86655313b5f91"
+
+[413150]
+nom = "Stardew Valley"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a21b24877c238c69e81b967b667804a8"
 
 [414340]
 nom = "Hellblade: Senua's Sacrifice"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "56164a2133e4d4310731e27b9c6e34eb"
 
 [417290]
 nom = "Ghost of a Tale"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e4c2063d458921acffc07e9ff667db6c"
+
+[418240]
+nom = "Shadow Tactics: Blades of the Shogun"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "7f0a00958e78563f599acc5830fc4dbf"
 
 [418950]
 nom = "DreadOut: Keepers of The Dark"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "698e1fa5f8f5e016582394b0105bacc4"
+
+[421170]
+nom = "Indivisible"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "f4a1b867300f5ea2f4f6dd80295dd914"
 
 [423230]
 nom = "Furi"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "0924e401dc58f2968e89b3e0527d5edf"
 
 [424840]
 nom = "Little Nightmares"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "6f70e9938bd3d47d920f4184c0ee6265"
 
 [425220]
 nom = "ONE PIECE BURNING BLOOD"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "da34d9645083d200c8d076daddb31d0b"
 
 [427290]
 nom = "Vampyr"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "7292c2d601d60402ba5136c76fe27d4b"
 
 [427680]
 nom = "Zwei: The Arges Adventure"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ef227072f6c80772e6286b0b6b2b26e1"
 
 [427700]
 nom = "Zwei: The Ilvard Insurrection"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "0c53e5919dd38d16ff5e729393b72f79"
+
+[428550]
+nom = "Momodora: Reverie Under the Moonlight"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "130c5b0c458018aaf14c4fa090f71faf"
 
 [42910]
 nom = "Magicka"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "aebc8deda187e70ae1bad2491d40999e"
 
 [4293620]
 nom = "GOBLiiNS6"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ee95c2e3186d742a8c52cf553166e3a2"
 
 [429660]
 nom = "Tales of Berseria"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "4b53624028fe4ce8112559114289414b"
 
 [430070]
 nom = "Never Again"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "da9e9eedffecf3e77450c25a59901f98"
 
 [43110]
 nom = "Metro 2033"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "959e4441ad2d5b9890ab1f31cda94835"
+
+[431240]
+nom = "Golf With Your Friends"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "01f390ef0ea793e8cb912d786fd00442"
 
 [431940]
 nom = "Wildfire"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "9e184f21be8085e4c28ffb1a3aa50118"
 
 [4333200]
 nom = "Lost & Found: A This Bed We Made Story"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "a1d21cbe9d22ae55762863761b8f1cae"
+
+[433950]
+nom = "Bit Blaster XL"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "12883687309077b0d91d611da3084069"
 
 [435100]
 nom = "2Dark"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "2a022d177bd36beb644e11e208d49df2"
+
+[435530]
+nom = "The Final Station"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "1356d1133200ad024fa9983f177b1c56"
 
 [437000]
 nom = "GUILTY GEAR 2 -OVERTURE-"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "4d2439015cd8a0d2adb9777353f616ee"
 
 [438640]
 nom = "LEGO® STAR WARS™: The Force Awakens"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "641d3f286a2e068503b8ab0a04dff559"
 
 [438740]
 nom = "Friday the 13th: The Game"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "5c41ae9424f9cc003634bde86f0c1908"
 
 [439190]
 nom = "Stories: The Path of Destinies"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "804abffa59c3018672cfdf6877b60d67"
+
+[440]
+nom = "Team Fortress 2"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "11f76d20b82897f3b75a91ad20f5ecfb"
+
+[440650]
+nom = "Niche - a genetics survival game"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "8ac78185a590078cb1f85609ba2a1cb9"
 
 [441550]
 nom = "STAR WARS™ Rebellion"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "3eadab9e1a71332fccd71fd2c4ad2521"
+
+[44350]
+nom = "GRID 2"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "0828934c27dbccce1620ed9e282fd431"
 
 [444090]
 nom = "Paladins"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "8448e4a0e08c32be771a5e8a3d21c8ea"
+
+[444480]
+nom = "Broken Dreams"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "1a0275d8c9a7996447de9ac244bc6cf3"
+
+[447120]
+nom = "Where the Water Tastes Like Wine"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "2bb22f3fb30717caacbfea3cd2febd03"
 
 [447530]
 nom = "VA-11 Hall-A: Cyberpunk Bartender Action"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d573bcc8b0a47909ec2aa5403e4ce5fb"
 
 [448510]
 nom = "Overcooked"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e26b8c7fbcae26bffb61e533c5f34b38"
+
+[448850]
+nom = "Overload"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "dc7b87982c8f5bd145aff3794ceed1e9"
+
+[449960]
+nom = "Book of Demons"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "300a71eef346109432fbb1d58767eead"
+
+[451020]
+nom = "Battle Chasers: Nightwar"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "dd7bfe751a3e1e4e599d86b3661074e9"
 
 [4540]
 nom = "Titan Quest"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "4223eead8784d47bd7823f912b29beae"
 
 [4550]
 nom = "Titan Quest: Immortal Throne"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "696d3c7873eb045fd160edcb93f9458e"
+
+[455400]
+nom = "PAC-MAN 256"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "c5721b870743c7ebf5ac67fd4bc36c63"
 
 [45740]
 nom = "Dead Rising 2"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "878194d6fef16375c999246872de046f"
 
 [45760]
 nom = "Ultra Street Fighter IV"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "f110c871caeb9144669eeca75ba37b13"
 
 [460700]
 nom = "Song of the Deep"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "796dc3e35dc9ce0fc5cd4f0e8abb2187"
+
+[460950]
+nom = "Katana ZERO"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "94762a690a914d46306865c028e9de11"
 
 [462780]
 nom = "Darksiders Warmastered Edition"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "9a43f538c0d43582d39e65f13ee58160"
+
+[464340]
+nom = "Syberia 3"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "62b987bdd67d2a8e8e716f55ace585f8"
+
+[464920]
+nom = "Surviving Mars"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "baa565b555951f074c46fb297d87a2c2"
 
 [46500]
 nom = "Syberia"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "c940f76d66b79024275733e5245bf8b1"
+
+[465100]
+nom = "LUNA The Shadow Dust"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "78a9af57402bec60d26a3efbdb4f9c91"
+
+[465200]
+nom = "Fury Unleashed"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a0366eda7cc45cefe9ef498ab7fa9120"
 
 [468650]
 nom = "Super ComboMan: Smash Edition"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "5d49517245587cf3f65d0239525d0ea5"
+
+[469600]
+nom = "Legion TD 2"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "42091c8401ed77969489b1a6427112b0"
 
 [4720]
 nom = "Condemned: Criminal Origins"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e5fd2f2cfbc440528313ffed37b35a76"
 
 [475150]
 nom = "Titan Quest Anniversary Edition"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "6ace472b6998e051442ed8ef09dc45fb"
+
+[475190]
+nom = "Scanner Sombre"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "46f20cbe98e74fbb59cd9ad873b9b46d"
+
+[480]
+nom = "Spacewar"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "1a1a2439406a711015d66a90ace4a265"
+
+[48000]
+nom = "LIMBO"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "b0ae7bd55b8e6a24917b86625b8f1402"
 
 [484900]
 nom = "Aven Colony"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "a89c87e3b0ca7c47404dd022fc59593e"
 
 [489630]
 nom = "Warhammer 40,000: Gladius - Relics of War"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ead8c609835e16d23d7bcf364cc136a0"
+
+[491950]
+nom = "Orwell"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "b182b47aba24cfd356d76755ca3c8ff9"
+
+[492720]
+nom = "Tropico 6"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ddbb9628f3eb8d4bfb55ad178718351a"
+
+[493340]
+nom = "Planet Coaster"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "af3d108d6e5b32eba84613ffaac561cd"
 
 [494740]
 nom = "Police Quest Collection"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "0770253979c68743ea6ab56542205139"
 
 [495700]
 nom = "Gabriel Knight: Sins of the Fathers"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "9019eb089a260e9baec78f4a1652ae4d"
+
+[49600]
+nom = "Beat Hazard"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "1b2eec39d91df6c0d30ba134ba8dea10"
 
 [496760]
 nom = "Gabriel Knight 2: The Beast Within"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d9f33b751ccf8fa75d2eb51af1c54db7"
 
 [497360]
 nom = "Gabriel Knight 3: Blood of the Sacred, Blood of the Damned"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "fa04c7979d358705af440226c4d06bfd"
 
 [500810]
 nom = "Arcanum"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "efebbfd28b03bb39c90a49808b61e448"
+
+[501320]
+nom = "The Shrouded Isle"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "26ef826d0549332952db384dac907275"
 
 [501970]
 nom = "Phantasmagoria 2"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "60bbf5d770e7c857254d229bbfe38f65"
 
 [501990]
 nom = "Phantasmagoria"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "dd8ebb2964b2c570c481c2e416167d47"
 
 [502750]
 nom = "Quest for Glory Collection"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "f8dda2687cab951777dd5b53a27948d9"
 
 [503940]
 nom = "Railway Empire"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "454c18c05bc10d41f02803f050c51209"
+
+[504210]
+nom = "SHENZHEN I/O"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "9d2ac8e5a753d63d4efcd0d4e22c4357"
+
+[504230]
+nom = "Celeste"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "6c0cc653902520fcf29b624fb01a83a9"
 
 [505230]
 nom = "Pathologic 2"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "8d9b45f3f306302293d6100d9949de51"
 
 [50620]
 nom = "Darksiders"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "0b5b11076a7e1f6c6703f03355450fe5"
 
 [50650]
 nom = "Darksiders II"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "67690e2aa85744c91ce7b0c5e64f5bd5"
 
 [506610]
 nom = "Five Nights at Freddy's: Sister Location"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "f6033026e47ca03e57b24493ba83e260"
 
 [507490]
 nom = "Ashes of the Singularity: Escalation"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "8a37d7a0299c06c66bb9b45939c5d51d"
 
 [508530]
 nom = "HackyZack"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "420413bf48c190d1b090c9cdc0560597"
+
+[512790]
+nom = "Quern - Undying Thoughts"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "5ef1e1c5d0e78b16ca76a6219e9bdc75"
+
+[514620]
+nom = "Ellipsis"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "cc6383db63c1a6f1d7ee3885054fb0d6"
+
+[514900]
+nom = "Observer"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "c9fc58db1ec2d192db17290b4eab2395"
 
 [517790]
 nom = "Caesar 3"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e33fbcdbfb046dae8e6a98676c783a28"
 
 [517810]
 nom = "Caesar 4"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "01600517119b58840916c9cb2d443def"
 
 [518060]
 nom = "Chess Ultra"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e08612e1605f1f15dfec0c5e403d8db8"
+
+[518620]
+nom = "Ballistick"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "e812e5dd9d68ca35bb7d621b7fa2b6ea"
 
 [520440]
 nom = "GUILTY GEAR Xrd REV 2"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "74aa31c4ab11fb0f723e910954ee5d5c"
 
 [521890]
 nom = "Hello Neighbor"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e5eb5f16bba9dca4db0500a7090bc699"
+
+[523780]
+nom = "Emily is Away Too"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "3f25146ab59c6744838c1493ab4c2185"
 
 [525480]
 nom = ".hack//G.U. Last Recode"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "39442839bd336aa67d0c3a7bd99832c2"
 
 [526160]
 nom = "The Wild Eight"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "6dcee0c891abcc7424fdbd85501eff64"
+
+[529340]
+nom = "Victoria 3"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "1aba7566cf59896754e0c84796aa3bf9"
 
 [529660]
 nom = "Mages of Mystralia"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "b08d39aebc7afa50d9a06400da5ce283"
+
+[530020]
+nom = "World to the West"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "d82c8046a2c0e03820eac2080483e1b9"
+
+[532210]
+nom = "Life is Strange 2"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "f04d930aafdff340e26ef46d1fcdf04c"
+
+[535520]
+nom = "Nidhogg 2"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "07760928ba2b96cedda1e217dd2b5065"
+
+[535930]
+nom = "Two Point Hospital"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "53e39339bd01de0fa6665fedc7f8e159"
 
 [536270]
 nom = "Ancestors: The Humankind Odyssey "
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "2207d88cf74dee0dc43b6512dbfd0097"
+
+[536890]
+nom = "Glittermitten Grove"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "35366a98cf84d160a5e2226f1ebaf7f4"
+
+[537340]
+nom = "Guts and Glory"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "657733d03ecf7c0f156e409ea2ea8125"
 
 [539470]
 nom = "Police Stories"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "9e94d9f266c208fa53a252becf85cee9"
 
 [544330]
 nom = "Snake Pass"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "cb66bd0c351b447298bba91c0cc650e8"
 
 [544610]
 nom = "Battlestar Galactica Deadlock"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "cf93be3c7f1643d4e50fb8a294c36b77"
 
 [544750]
 nom = "SOULCALIBUR VI"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "c0292d0b0e941739e5b72415530196b6"
 
 [548430]
 nom = "Deep Rock Galactic"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "5462f8274af2ae0d348072ac544dc5cc"
+
+[550]
+nom = "Left 4 Dead 2"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "bff6bbd4cfd555e490da0a0c7ea47874"
 
 [55100]
 nom = "Homefront"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "c1079cca5f652cc084d67db4596fdb0b"
 
 [55110]
 nom = "Red Faction: Armageddon"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "66df06809852ebcf9ef7c28824e27eb4"
 
 [55140]
 nom = "MX vs. ATV Reflex"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "4b60c2ddad192f74787f1e940c79397f"
 
 [55150]
 nom = "Warhammer 40,000: Space Marine - Anniversary Edition"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "b319f9a536e83df9bb524c8c74a3a8c2"
 
 [552500]
 nom = "Warhammer: Vermintide 2"
 etat = "argent"
 date = "2026-09-28"
+empreinte = "ab81c60de1cd90e71adfbe19df5f3da7"
+
+[553310]
+nom = "Lethal League Blaze"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "09ce0e43f097d62e8bdd8ea7e56833d2"
 
 [555000]
 nom = "GOAT OF DUTY"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "43b863b2950e7c1289116da8e768b725"
 
 [557340]
 nom = "My Friend Pedro"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "9008b8b0917729762a040c9a040f5914"
+
+[558420]
+nom = "Stories Untold"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "442ab795a4e6020c2250a2bd16b57b3d"
+
+[558990]
+nom = "Opus Magnum"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "d925bfb62454440296861807535ef8e0"
 
 [559100]
 nom = "Phantom Doctrine"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d1317ac73da7cce7f0e6235efe74121c"
+
+[562500]
+nom = "Warstone TD"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ecdd88f516f75c20f179658ff8fea770"
+
+[569860]
+nom = "Thimbleweed Park"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "e8a86efe4e24ac180352bb40c6acb40d"
+
+[570]
+nom = "Dota 2"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "4cb71a71a1897a542b4c6890ef67d40f"
 
 [570050]
 nom = "Raiden V: Director's Cut"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "09482d5b1d8bcd83736fd88eca1f421d"
+
+[57300]
+nom = "Amnesia: The Dark Descent"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "af530a99d9c1dc12a38ef8fe7de33c15"
+
+[573120]
+nom = "Dead In Vinland"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "27281969d79f12d18eeec704ec2859fd"
+
+[573320]
+nom = "Underhero"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ef364d701cc48a6e13ee34f23421a6e8"
+
+[573410]
+nom = "AI War 2"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "71e67099b5697959beb3dd6c323dd85c"
+
+[574720]
+nom = "Little Big Workshop"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "1452b8ad04c71abd84f61483656f8fd5"
+
+[574980]
+nom = "Them's Fightin' Herds"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "e26dd7ae562db6fd2c1a23dc26fc1df4"
+
+[57640]
+nom = "Broken Sword 1 - Shadow of the Templars: Director's Cut (2009)"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "9819135bf9500d3277e5a8cccda363f6"
+
+[57690]
+nom = "Tropico 4"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "7eaeae514f02893157c9193e4f5191d2"
 
 [577940]
 nom = "Killer Instinct"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "1613c0ae10734861317f20c033c59ab2"
 
 [578650]
 nom = "The Outer Worlds"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "c5654e5c6fd67977969b0563c2a73e3e"
+
+[582500]
+nom = "We Were Here"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "2c8db635114ecc8cba6866189de72daf"
 
 [582660]
 nom = "Black Desert"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "14d82e696825412cc20287151a4ad628"
 
 [585420]
 nom = "Trailmakers"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "a906638ba3f3338509ef2ca812e78514"
 
 [585450]
 nom = "Shadows: Awakening"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d430599a5ce3cb8eef3a2e4c99a441c4"
 
 [58560]
 nom = "Runaway: A Twist of Fate"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "5d9281f8112187b629e719b3607ae7f4"
 
 [587620]
 nom = "Okami HD"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "b4e271ff557e8f25791d11526b583a93"
 
 [588650]
 nom = "Dead Cells"
 etat = "or"
 date = "2026-09-20"
+empreinte = "982907ee27db70ffed96633684588275"
+
+[590590]
+nom = "Remnants of Naezith"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "655d162e6cc092f9da9d51700ce10a47"
 
 [596350]
 nom = "Paladins - Public Test"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "b9a85efe563d0bfe872a5432c3535bd2"
+
+[596970]
+nom = "Sunless Skies"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "3e98122e015d0e71bc2d4ed506eb1c6c"
 
 [597820]
 nom = "BIOMUTANT"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "64ba9a1a77b153152f0ef7358b704e05"
 
 [598780]
 nom = "Boreal Blade"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "b82a80d0ef8c8ac7f9fbda600168b317"
+
+[599140]
+nom = "Graveyard Keeper"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "0a112e8d9f3f10c3872fdcac1826a712"
 
 [6000]
 nom = "STAR WARS™ Republic Commando"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "b03fc1e3ecf57b03b1013c76be5cfe20"
 
 [600130]
 nom = "Valfaris"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "8785f905dd3000cd75e841b230649ba0"
+
+[6020]
+nom = "STAR WARS™ Jedi Knight: Jedi Academy™"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "fa71a204a3851e78cd593479ea2f33f4"
+
+[602960]
+nom = "Barotrauma"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ed447d4ff1b12164bac6458601c5ab8a"
+
+[6030]
+nom = "STAR WARS™ Jedi Knight II: Jedi Outcast™"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "5c1f2db0147c2bb81f55ff159f800c00"
+
+[603400]
+nom = "FOX n FORESTS"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "fdf708e4d0b17a7c175dfbb236f8a094"
 
 [603930]
 nom = "Battle Princess Madelyn"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "16cef545ca085fd7b9d0dce3b7db7dea"
 
 [6060]
 nom = "Star Wars: Battlefront 2 (Classic, 2005)"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "abd4c6d79fa53328b528e3b45935f343"
+
+[606150]
+nom = "Moonlighter"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "c4da5117230b9fecce3606220658346b"
 
 [606280]
 nom = "Darksiders III"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "172ac08de6e78eb0c1978e5361e285c2"
 
 [606880]
 nom = "GreedFall"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "31d04cdb4f073767c8a3e93fc7af5bce"
 
 [607050]
 nom = "Wargroove"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ddd59e934c1fc2820a8691608a0cda37"
 
 [609920]
 nom = "Hotshot Racing"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "c45a382b882b999c5133cae06921aa8c"
+
+[6100]
+nom = "Eets"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "e40cb93545a9bbfd56017bb7f261dd5b"
+
+[610370]
+nom = "Desperados III"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ad91194c494f17e8472df098c6f8b3db"
 
 [611500]
 nom = "Quake Champions"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "b1ef3c903ac92314be1e49576d4af6ce"
+
+[611760]
+nom = "Don't Escape: 4 Days to Survive"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "25c45a4d01add2d1aab38e54f04a11ef"
+
+[6120]
+nom = "Shank"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "9747d6f51d4e23d2ea83ffaf2dfb0143"
+
+[612570]
+nom = "Fort Triumph"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "92611701a1a2848043d03a6af558c090"
+
+[613100]
+nom = "House Flipper"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "59a8287f52ddd7170df22d5934845fcb"
 
 [61700]
 nom = "Might & Magic: Clash of Heroes"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "6ab6c2f33e14cfc5e5c66b718c894e4d"
 
 [617290]
 nom = "Remnant: From the Ashes"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "6d267b4f48b80589d5e016a20eb4f32d"
 
 [618740]
 nom = "Beat Hazard 2"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "46ebc7c328b178fd9f65a7f2f5022d5c"
+
+[619780]
+nom = "The Swords of Ditto: Mormo's Curse"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "11d4bc49e4affae9a30ae5a85da37d0c"
+
+[620]
+nom = "Portal 2"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "bb590cea2dc3afdf97a8a13e691ee846"
+
+[620590]
+nom = "Ancestors Legacy"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "9588ecb47a8372f7bbf9bfb24e212dd2"
 
 [621060]
 nom = "PC Building Simulator"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "2127347ef03d84eae64b212cef6f7ca0"
+
+[624680]
+nom = "Promethium"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "739a08669fad24ccd1a1411d4babd056"
 
 [627270]
 nom = "Injustice™ 2"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "7f19423d44c39b49f7e46c8dded9758c"
 
 [628200]
 nom = "The Invisible Hand"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "c616e5f316386c171c2bfe0f4533c921"
+
+[628670]
+nom = "Hellpoint"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "1dd5ea1042c5ea1950253a96653f70cc"
 
 [629090]
 nom = "Horace"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "446cee41def61df29df08b3f5ff925d1"
 
 [629760]
 nom = "MORDHAU"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "cd42e9be7c8b75a32a1d8b0b7dd3711b"
 
 [629820]
 nom = "Maneater"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "2e4cc7d25b21fe7553efb7725195caed"
 
 [63110]
 nom = "Alter Ego"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "1923ea998773a9daa972c3a8833d407c"
+
+[631570]
+nom = "Whispers of a Machine"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "b3a29d37615365a5bc5be2ba4e62bcc2"
 
 [632360]
 nom = "Risk of Rain 2"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d2d1801b7b59f507b5d689b67237e526"
+
+[632470]
+nom = "Disco Elysium"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "e1d548c9c4522fe2379bdf5f5ded0e68"
+
+[633060]
+nom = "Orwell: Ignorance is Strength"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "483a989f8b96ea007d168113b1f082e3"
+
+[633130]
+nom = "Nongünz"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "520ee930c63e36e6894e68c5115ff072"
 
 [633230]
 nom = "NARUTO TO BORUTO: SHINOBI STRIKER"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "3220168ea98a78efcb4663c54f34ab24"
 
 [633360]
 nom = "Remothered: Tormented Fathers"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "47110077b9b7b8c823f2f95eb6254493"
+
+[63500]
+nom = "Swords and Soldiers HD"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "802b2199672d1675264d57a3217fdd29"
 
 [635320]
 nom = "Last Day of June"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "6bcbad2e03bc9277fa055f0ff2b582fe"
 
 [640120]
 nom = "Youropa"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d8f2b5efe40ce0c25d2698d43ec3c882"
 
 [640590]
 nom = "The LEGO® NINJAGO® Movie Video Game"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "be7683a5548834b2829f8443175d6d0e"
+
+[640820]
+nom = "Pathfinder: Kingmaker"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "7d72ef5f7853832322f787a55dabe5d4"
 
 [644830]
 nom = "The Surge 2"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "1ffe3d056cb90c81b5cf93f86e6bdd07"
+
+[647830]
+nom = "LEGO® MARVEL Super Heroes 2"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "3ec9cc39e199ccf3e540a547db8e7e39"
 
 [648350]
 nom = "Jurassic World Evolution"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "2879f0b6f392f4949b6633776ba479ca"
+
+[65300]
+nom = "Dustforce"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "abefd5cf020ea31df3651b481bb03833"
 
 [65500]
 nom = "Aura: Fate of the Ages"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "658b370fe11b15b439414cc628c20945"
 
 [65800]
 nom = "Dungeon Defenders"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "86ed9056f0e09a207c9f5b76595570ae"
+
+[65930]
+nom = "The Bureau: XCOM Declassified"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "0865b9955aa37ac51eacb03bab60820b"
+
+[65980]
+nom = "Sid Meier's Civilization: Beyond Earth"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "6f4eda3d4aa3357886ebddc7b299a901"
 
 [661450]
 nom = "The Lighthouse"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "6f2927826228bde2be6f2e1b96ec55b7"
+
+[661940]
+nom = "Regular Human Basketball"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "e7e1f07f1b5d9f1d501a99011f20a053"
+
+[666140]
+nom = "My Time at Portia"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "2e909c7cbab22730e66915c52e329aad"
 
 [668550]
 nom = "8Doors: Arum's Afterlife Adventure"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ecf9821648a25edd914c6daa2dca0264"
+
+[671440]
+nom = "Rise of Industry"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "477114669bf52d4e60c47ef7053fd442"
 
 [671510]
 nom = "Desolate"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "2f22ac0baee298ec9fa28ec9b5169b4b"
+
+[67370]
+nom = "The Darkness II"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "56ee4aaa2a4740698bbe72568f39fd07"
 
 [674500]
 nom = "Total Tank Simulator"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d0cc25da9d4b9ce59db1d1d55556c478"
 
 [677280]
 nom = "Sigi - A Fart for Melusina"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "19796d0f39fdd4bbc649258634cb4570"
 
 [678900]
 nom = "Farmer's Dynasty - Final Harvest Edition"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e9589d5e74d38ca1b58c368fd74dc549"
 
 [678960]
 nom = "CODE VEIN"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "3e64a00918c8a2a27b80a928e0057672"
+
+[680380]
+nom = "Night Call"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "e54635c538f696dee989f938f200d5f2"
+
+[681280]
+nom = "Descenders"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "1834b174a97a6fd8f802fc9899d22dd1"
+
+[681730]
+nom = "Nowhere Prophet"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "0a3120f03fcaed47f2c8f7381a661705"
+
+[683320]
+nom = "GRIS"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "7e948a7509a5edf2a8e7e94e5baf04c6"
 
 [684450]
 nom = "Surviving the Aftermath"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "4a624654a3be351b257104b5f94a4297"
+
+[688420]
+nom = "Bad North: Jotunn Edition"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "c8513f1f837f260ad7b8937a613bc6ab"
+
+[690040]
+nom = "SUPERHOT: MIND CONTROL DELETE"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "0950829f9ba363e08af5510771e11a66"
 
 [690140]
 nom = "Sword Legacy Omen"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "b418ce78b8029f83d8387f40656442cf"
 
 [690640]
 nom = "Trine 4: The Nightmare Prince"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "9711b0c536c53d75bbb3c91dd5301c73"
 
 [692850]
 nom = "Bloodstained: Ritual of the Night"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e55ea5300eff74f88c7f559277267c77"
 
 [692890]
 nom = "Roboquest"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "3d967f91b57a74f7b1f3bf3f148e3c38"
+
+[696280]
+nom = "Sole"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "1b6bf2c8960275631ec60853197fc812"
 
 [698670]
 nom = "Scorn"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "295beca70dc573a1e356c16f41ae4d2f"
+
+[699170]
+nom = "Fell Seal: Arbiter's Mark"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "560ef2c300792e9eddacf6f9026864f5"
+
+[70]
+nom = "Half-Life"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "16a78b367202a43aaffaca115810c872"
+
+[701160]
+nom = "Kingdom Two Crowns"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "4ecf42367af7219d25b767c2ddbb81a0"
+
+[70300]
+nom = "VVVVVV"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "7ef96f370dd6afcf480f121d7e352f5a"
 
 [703080]
 nom = "Planet Zoo"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d3225183e5135047673aa0fe0fcd588c"
 
 [703860]
 nom = "GRID (2019)"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "076b0dbaf36482eec0515fa1b28daee1"
 
 [704270]
 nom = "Generation Zero®"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "4b0c159fc30735490e64bcc33458d7ea"
 
 [710920]
 nom = "Darksiders Genesis"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "95ed384ba6bc86c04f43184e9fda768a"
 
 [712190]
 nom = "Genesis Alpha One Deluxe Edition"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "a3a6c733ba95cbec12953280be89b251"
 
 [71230]
 nom = "Crazy Taxi"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "be1242b031b62b78b5049043a59ace7d"
 
 [71240]
 nom = "SEGA Bass Fishing"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "04800eb2a4746767b465e93d5f220809"
 
 [71250]
 nom = "Sonic Adventure DX"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "610c97c503d33482e92235820c0b55d4"
 
 [71260]
 nom = "Space Channel 5: Part 2"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "bbd4a92f05c5f3fe0940d8327610f78c"
+
+[712730]
+nom = "SIMULACRA"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "598c8e9a8cfa1edcbd139534cea64b3c"
 
 [71340]
 nom = "Sonic Generations"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "443fa319833d2df88b31677cc99fb7bd"
+
+[714120]
+nom = "Little Misfortune"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a97095b1ba8840907702de32dfe898c4"
 
 [715400]
 nom = "Frozen Flame"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "03300a9e0758bf09353052c6052e0faa"
+
+[716490]
+nom = "EXAPUNKS"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ec563148deaf96a6142ad7ac02d16558"
+
+[716500]
+nom = "Eliza"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "86685bfdceb221f7efa2b3055ffbc2bb"
+
+[716640]
+nom = "Sigma Theory"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "27af0f96abc5a369145d31dffcf27724"
+
+[717610]
+nom = "A Case of Distrust"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "8d0dfd458c9dc3246386a369fbd5c2bf"
+
+[718650]
+nom = "Driftland: The Magic Revival"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "cd6063b6b07854c0a0deede0641c392c"
+
+[718850]
+nom = "Age of Wonders: Planetfall"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "aba568085a98f90f5f7b4034626e49b0"
+
+[719040]
+nom = "Wasteland 3"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "82cd5d9620830b766cf2339247fb0376"
 
 [7210]
 nom = "Runaway: A Road Adventure"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "f1bfced7fad9637dd687e18a55842720"
 
 [7220]
 nom = "Runaway: The Dream of the Turtle"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "5f2f82a478c31dcfddc602da1ce667af"
 
 [722560]
 nom = "RAD"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "111489606c7930a07dd2eebe4d6a6a9c"
 
 [725480]
 nom = "Slap City"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ea1cd8fb95740a44e01b12335317e63f"
 
 [727130]
 nom = "Between the Stars"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e5fef54efbf13ad99aaa52c95691b622"
 
 [727850]
 nom = "ELDERBORN"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "8979f2e588c5d52cd726ae454890dace"
+
+[728880]
+nom = "Overcooked! 2"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ed20e926a97fc319f5de8a5ccd8568c2"
 
 [730390]
 nom = "Raji: An Ancient Epic"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "44fe9bceaa6dd1a2769236752a0a23df"
 
 [731040]
 nom = "The Invincible"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "fa9b5f998b7637c9202f7f800bc63b39"
 
 [733790]
 nom = "Not Tonight"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "2e095722cf0a63ae71083d236e42822f"
+
+[735290]
+nom = "Genesis Noir"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "416e74ba167d69e69776e0aa8f9618fb"
+
+[736810]
+nom = "The Raven Remastered"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "3bdfcf2783295184958374cd156ff7da"
 
 [736820]
 nom = "Knights of Honor II: Sovereign"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d0ee1405f7108126dc8955b5cec30f9f"
 
 [737800]
 nom = "F1 2018"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "523a527309724743573c55e86e583758"
 
 [738540]
 nom = "Tales of Vesperia: Definitive Edition"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "7531da94bbf3f63337733465a23eee43"
 
 [739630]
 nom = "Phasmophobia"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "3aa816e1bb26ded9e4293040c5a2a5d0"
 
 [739650]
 nom = "Drake Hollow"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ba5c42c39f41ece55b2a42629f61423a"
+
+[740080]
+nom = "Deadly Days"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a6060434f6ee58f63efd84cd28acf795"
 
 [742420]
 nom = "Saints Row"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "870586a284c1ed6bc6072868fbbbf849"
 
 [745920]
 nom = "Temtem"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "617c97da07da88a28694cf5b3a310b03"
 
 [747350]
 nom = "Hellblade: Senua's Sacrifice VR Edition"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "fd5dafbd84366b030bd78f67ee438002"
 
 [750130]
 nom = "The Sinking City Remastered"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "0657a5076151900c5061ed5c6efdc964"
+
+[750920]
+nom = "Shadow of the Tomb Raider"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "f44c62782071f437ef2178e65da0c269"
+
+[7510]
+nom = "X-Blades"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "73a32bfe4b91a1fdcfe2ff8553680200"
 
 [751780]
 nom = "Forager"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "15f3e16421d72be2cbe9c2c282de4cd6"
 
 [751820]
 nom = "Black Future '88"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "b64e34fb5c0471cc76fdff03f9b61bd8"
 
 [752590]
 nom = "A Plague Tale: Innocence"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "caf18ca62204ab828551e8f349728b2c"
 
 [753640]
 nom = "Outer Wilds"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "cbe11ca5469ad5f88083563b0ed0c8db"
 
 [753650]
 nom = "Due Process"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "96943bb00d0b6373fce874b0d68758dd"
+
+[757300]
+nom = "Truberbrook"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "7c09ac4dade0a67004ee8181051e62db"
 
 [757320]
 nom = "Atomicrops"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "2888fd5ff77341ca64eef3c430adef10"
 
 [760650]
 nom = "Hammerting"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "fc1602f17fd8693b19c1c5c920c3efe7"
+
+[760810]
+nom = "Retimed"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ae46872078724a6ee8cfceda63187983"
+
+[761030]
+nom = "EARTHLOCK"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "7609e1655b49ca812a0aea4035f7449d"
+
+[761830]
+nom = "Mr. Prepper"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "b305a54a22670fadccabb2736c8b9f69"
 
 [764790]
 nom = "The Messenger"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "21ed7d5825669c07104a55a052896a9f"
 
 [7650]
 nom = "X-COM: Terror from the Deep"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "33e2eb81737fb5f3c230cd22bded3dc8"
 
 [765880]
 nom = "The Occupation"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "3fee03ca42d8f59671b1a0d71ef82311"
 
 [7660]
 nom = "X-COM: Apocalypse"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "22adb858a5e009b417ea264f74ff2c97"
 
 [768520]
 nom = "Red Solstice 2: Survivors"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d480b064cb95217351aa8e63e5056200"
 
 [7730]
 nom = "X-COM: Interceptor"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "c1993c0e43eb51121479e66fed4e7243"
 
 [774201]
 nom = "Heaven's Vault"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e259d44c118e6533f6f9fc273f2d69c0"
 
 [774241]
 nom = "Warhammer: Chaosbane"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "afc80bc959eeb8e32c1f0214cbb2f4d8"
+
+[774361]
+nom = "Blasphemous"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "8fc43556069026f42fdbdb4ee62368fb"
 
 [774861]
 nom = "Project Winter"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "6ba3cfee18c9e6a663dc3bec9af8b8b8"
 
 [7760]
 nom = "X-COM: UFO Defense"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "76c10cf89ea8816e8ed4e46bc0933267"
 
 [7770]
 nom = "X-COM: Enforcer"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "db9440c68dfd93d19b7eff65a8028a0d"
+
+[777880]
+nom = "Fluffy Horde"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "41d1c45a9c11cd9bde4dd3467370d31b"
+
+[779290]
+nom = "Stygian: Reign of the Old Ones"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a7753305b6d5b581ae2d1f968c2a026a"
 
 [7800]
 nom = "Stubbs the Zombie in Rebel Without a Pulse"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "5df592a76c91e8b63d95e721b23022ab"
 
 [782330]
 nom = "DOOM Eternal"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "2cc2a97dd49ff8c5bd8770d1ae390d92"
+
+[785740]
+nom = "This Is the Police 2"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "7592045ec55ea2cd3d72152b9d4787e7"
 
 [787810]
 nom = "Rogue Heroes: Ruins of Tasos"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "c229872159f47807f20d995aee3853f3"
 
 [788100]
 nom = "Neon Abyss"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "b4ec0d145994c27593f4004615a6b546"
 
 [790820]
 nom = "Valkyria Chronicles 4 Complete Edition"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "31b2df05ab23574fe20dfd889f100371"
 
 [792300]
 nom = "The Beast Inside"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d767836e7d5ebcda67ac020fee54e8a4"
 
 [792710]
 nom = "Levelhead"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "fc8f00ea5510211293362a4a7fa36151"
+
+[793460]
+nom = "112 Operator"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "abf0acfffa484c02417bb2cd9c468d65"
 
 [794260]
 nom = "Outward"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "99f6ba875e20e527416ae8fce2f37f25"
 
 [797400]
 nom = "Railroad Corporation"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "89818b62a97bc1c81ed54465296dcd2a"
 
 [797410]
 nom = "Headsnatchers"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "f5f3b66ab5b2684b0ea1f7d07aecef45"
 
 [798490]
 nom = "Othercide"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "a72328b283f591c035d282c5fe63ebee"
+
+[801480]
+nom = "Agent A: A puzzle in disguise"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "2cbb04da4872831f777a4f0f4a0423af"
 
 [803050]
 nom = "Per Aspera"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "5261b203d3efc64ea591b7cf9aef4944"
+
+[80310]
+nom = "Gemini Rue"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ad60304effe8023df63aee5a5798a431"
+
+[80330]
+nom = "The Blackwell Legacy"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "72c1c4dafa1267ea3fd7e41a0123b2a7"
 
 [803330]
 nom = "Destroy All Humans!"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "f3c110b9b18df3604bcd11b0bc879676"
+
+[80340]
+nom = "Blackwell Unbound"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "4e6323e1e84d7eee4c4dc9dd5242bde9"
+
+[80350]
+nom = "Blackwell Convergence"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "0e6079b382ccc97b604edd5fc4fbfdbf"
+
+[80360]
+nom = "Blackwell Deception"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "3630fc9cee2447b4eb8690672e4fe494"
 
 [809890]
 nom = "Shining Resonance Refrain"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "7f1fbfba3ccba3fd9e568820739db723"
+
+[811870]
+nom = "Verlet Swing"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "b830ba3bc28ff85e8f0839ea115947c7"
 
 [812140]
 nom = "Assassin's Creed Odyssey"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "890f902a5b089f4ffe6dee963e98c8c2"
 
 [812160]
 nom = "Etherborn"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "98454df083f773c082107b1b57cd92ba"
 
 [812550]
 nom = "The King's Bird"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "737caa0840bf1b470ce2c82737faca9f"
 
 [813630]
 nom = "Supraland"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "1e0ba932f7f0342007e78cb2a26e9591"
+
+[814370]
+nom = "Monster Sanctuary"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "4c1473230bcd2ecc16cdafe184cbce89"
+
+[814680]
+nom = "Unbound: Worlds Apart"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "bf3e568e56e71f22b9b1b9e839f1f711"
+
+[818320]
+nom = "LEGO® The Incredibles"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "07f577baf97ce91556ca8b23c22ecb64"
 
 [820520]
 nom = "Deceive Inc."
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "3d547c93cddd099a31504c2527741b08"
 
 [824000]
 nom = "Hokko Life"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "77175666f4558bae6cd6b35091ebe15f"
 
 [826630]
 nom = "Iron Harvest"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "1c5c6796837d8ca63815f2c392850564"
 
 [826940]
 nom = "Maid of Sker"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "95aac0b234fdd5e4dffcc48c3dfd07ef"
 
 [828740]
 nom = "Tales of the Neon Sea"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "a987fabd712f68ddac1e816778414ef0"
+
+[828900]
+nom = "The Stillness of the Wind"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "d809036222f4643d50969944920bb1ac"
+
+[829110]
+nom = "LEGO® DC Super-Villains"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "06e042e8d00cec689d86e76a845c5dd9"
+
+[830370]
+nom = "Monster Crown"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ac3ce451c43b2f04c63251fddaaa74f7"
+
+[833040]
+nom = "Hiveswap Friendsim"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "5a2f0a87b2b84e317d8526976719842b"
 
 [834530]
 nom = "Yakuza Kiwami (Legacy)"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "842587f97948841a9d8b49ddf252db17"
 
 [834800]
 nom = "SolSeraph"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "5d091b151fbd93a4c2dd64d9b561c96c"
 
 [835960]
 nom = "The Talos Principle 2"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e2513153def545f3e43f9d2de81a09cc"
 
 [838310]
 nom = "Bloodstained: Curse of the Moon"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "42d42c0054deb53de33ee01861015a36"
+
+[838410]
+nom = "Tabletop Playground"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "93e0de84ff1ed604630fb8e7af472ea1"
+
+[839770]
+nom = "Phoenix Point"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "f951dc2d9a0642243d236404d31c74ab"
 
 [841190]
 nom = "Honey, I Joined a Cult"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "631ba4e6544932d713c9cbe8ca38bb83"
+
+[843260]
+nom = "The Bard's Tale Trilogy"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "6aaa2180a142929fcaca9225b831754c"
+
+[844050]
+nom = "Desert Child"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "c16d2bcf5392f2e6aecbd0c75b4af5aa"
 
 [844260]
 nom = "Rustler"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "94e23debfe6fc71fab503297e32907a8"
 
 [846870]
 nom = "Yooka-Laylee and the Impossible Lair"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "07c427d2bce9060db167329ca4f1f7fd"
 
 [848350]
 nom = "Katamari Damacy REROLL"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "57e1c87e4d820fcca84a5c7c936d6ae9"
 
 [850980]
 nom = "GUILTY GEAR"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "acbad6ebb5c3dfb867261e7e47100fb2"
+
+[854940]
+nom = "Ikenfell"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "e9821d2e9c7da39b75f8ac3ff65ed318"
+
+[857980]
+nom = "Void Bastards"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "c4e6dc3cbecdf0a3c97d8ef991cefb05"
+
+[858460]
+nom = "SMITE - Public Test"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "89280e4d5df2f816eb8afbf039532dcc"
+
+[858710]
+nom = "Gravity Circuit"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ec50ddea67004d94068edfb5c4961cc6"
 
 [858820]
 nom = "Tribes of Midgard"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "7e44297afffde2a638821648644e12aa"
 
 [859570]
 nom = "Secret Neighbor"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "39a9602163570d7a383d7e255994f7d7"
+
+[859580]
+nom = "Imperator: Rome"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a99f171cbffaff583b4d7fde8c599a8c"
 
 [860510]
 nom = "Little Nightmares II"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "215ee0914538d847e58b4ba3e37f0405"
 
 [863550]
 nom = "HITMAN™ 2"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "02e59b3f679359bfc8a1992a572e06e0"
 
 [864680]
 nom = "Rover Mechanic Simulator"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "232ba9c7d92295e99d3cb22935cae79e"
+
+[865040]
+nom = "Super Bit Blaster XL"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "d0b21cc33a67a8579561cba3e6a76d23"
+
+[865360]
+nom = "We Were Here Together"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "e6d28dd919b1500ad6cfc5b606ba7c70"
+
+[865610]
+nom = "Tails Noir"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "2cec3ea745f429d767a1885ce830507e"
 
 [867660]
 nom = "NYKRA: Before"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "0864cffdeb62b6d4a0527d674eef6d7f"
 
 [868020]
 nom = "Aperture Hand Lab"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "da2bfffa38470847caefd07b186e35b1"
+
+[870200]
+nom = "Juno: New Origins"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "e64e10bfe8a433642c13865920a6bab3"
+
+[870780]
+nom = "Control Ultimate Edition"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "70b00244a0f3c040bad9c690019daf45"
+
+[871420]
+nom = "Lovecraft's Untold Stories"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "824c1d855907369321f4a0fe60e91bb2"
+
+[872750]
+nom = "Guard Duty"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "16059725afe520c535cbd1bf9245295a"
+
+[873940]
+nom = "Crying Suns"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "d3160725dc555422ba6ea5a213634ce1"
 
 [874260]
 nom = "The Forgotten City"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e702ac00db16f1af362a8339f6121d48"
+
+[878580]
+nom = "GARAGE: Bad Trip"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "780cc2c67d69d3232409cc629b6ba4e0"
 
 [878670]
 nom = "Shenmue III"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "3e1bcf8237aa0e057aff03a631b1772b"
+
+[8800]
+nom = "Sid Meier's Civilization IV: Beyond the Sword"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "26fa60664405e02d9435300d9da4fd6e"
+
+[881320]
+nom = "The LEGO® Movie 2 - Videogame"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "94fa33a6152f810080740c480f50383a"
 
 [882100]
 nom = "XCOM: Chimera Squad"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "7385cecac1c67e7d4df13256c1224bbf"
 
 [889910]
 nom = "Hell Pie"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "42d3ab4ea660fbd8c2b2cdcc4ff211ef"
+
+[890720]
+nom = "In Other Waters"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "ee8040fd9c1aac7b095db0a96f13b452"
+
+[892860]
+nom = "Hot Brass"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "9e1f57e5357a12fbfebe2d369d0202c1"
+
+[8930]
+nom = "Sid Meier's Civilization V"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "8cc6adac0ef6c534ba2751b65d353350"
 
 [893180]
 nom = "Catherine Classic"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "17284460f88f169391da8ab32213fcfb"
 
 [893680]
 nom = "Project Warlock"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "149e6a6faf834371d6f23c6338d61963"
+
+[895620]
+nom = "Spellcaster University"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "49e25d2e5ad1d1da01fd7908bcc208e0"
 
 [895870]
 nom = "Project Wingman"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "889b6f43de289ed363ef54071cd767cd"
 
 [897450]
 nom = "The Survivalists"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "39908d5c4089e3d26480fb250bc6b629"
+
+[898650]
+nom = "The Shapeshifting Detective"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "16e7fd86832dd24cdcd1e26866f10d78"
 
 [899310]
 nom = "Iron Danger"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e399f1f7d87a798e50940aa58e5e49b8"
 
 [899440]
 nom = "GOD EATER 3"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "eccc5ec110a7a75c44adf4881371ff3c"
+
+[900010]
+nom = "Meeple Station"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "0044beb6401d9e73087a521ff03fdef9"
 
 [900040]
 nom = "ELEX II"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e1ddbe15d62974d948ffc6a6838f0ad6"
 
 [903950]
 nom = "Last Oasis"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "94b0df9b1b108944ed87cb4113d28a4e"
 
 [904360]
 nom = "Family Man"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "823419764f2796531b94badd8b2e63c3"
+
+[905340]
+nom = "Heave Ho"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "1be61b94fbcc42d093539e4874ea50ae"
 
 [910490]
 nom = "Killsquad"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "a3136790fe3aab82f298bb77ccf94edc"
 
 [914010]
 nom = "Train Station Renovation"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "1c75d93e1b20187b11df0aa07c34cdaa"
+
+[914020]
+nom = "Gibbous - A Cthulhu Adventure"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "1491f81159d1afbd0725a9085aec513c"
 
 [914750]
 nom = "Bee Simulator"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "02b9a67dc9c9ff98275e050587a69ec7"
 
 [917720]
 nom = "Gamedec - Definitive Edition"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "f630a63dc868546c06fb52cae89e50a4"
 
 [921800]
 nom = "Encased"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ac9f75635588ba227714f779b0f50b6a"
 
 [927380]
 nom = "Yakuza Kiwami 2 (Legacy)"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "5f6181a0c4be5bddbaecf5fc00ac1564"
 
 [929010]
 nom = "Swag and Sorcery"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e7c5faa2890ea58a772a43d4c244b2a5"
 
 [933820]
 nom = "Endzone - A World Apart"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "d13b02dc542fce5910a497271742cab2"
 
 [934780]
 nom = "American Fugitive"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "69a9e6af24f0d6c85a00859d937fb623"
 
 [9350]
 nom = "Supreme Commander"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "275bbc67ea9e33a925fa311f3a1ebb5b"
 
 [936790]
 nom = "Life is Strange: True Colors"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "351d3f262fab7cc7dfdc3ba67a55156b"
 
 [938380]
 nom = "Townsmen - A Kingdom Rebuilt"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "27a6d66910d362083fea60c01d4b6894"
 
 [939100]
 nom = "Darksburg"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "69edb4c8e2816873bcf68f06f911c436"
 
 [939850]
 nom = "The Dark Pictures Anthology: Man of Medan"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "1c4ed7951164d425c1eee1eb592cb93b"
+
+[940680]
+nom = "The Textorcist: The Story of Ray Bibbia"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "d944bd30fd188dd388ec5c3a5cd70be7"
 
 [940710]
 nom = "Colt Canyon"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "68c88d97bee7423e0face6b0b6d6fc15"
 
 [940910]
 nom = "Minoria"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "b2ab6fd6fa78899cb4d317fbbfa9006a"
 
 [941570]
 nom = "Relicta"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ba7a7af26e8d6b50ca82ad6d955b9d79"
 
 [9420]
 nom = "Supreme Commander: Forged Alliance"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "42de98fd792df75b84b5a8479938e6cf"
 
 [943370]
 nom = "Bravery and Greed"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "40f66485af40b9a31b3689e739225a8d"
+
+[94400]
+nom = "Nidhogg"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "88a85abc9040e2d092fb4f1640ee2ac5"
 
 [944010]
 nom = "SWINE HD Remaster"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "588faec6c020b84ce83a138e59c1dac3"
 
 [945360]
 nom = "Among Us"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "448013aae48fe8fdc8c1128f1fd5dea9"
+
+[95000]
+nom = "Super Splatters"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "9a3fee924864315432897a646a628798"
+
+[95300]
+nom = "Capsized"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "a7ecd387ac48c4e5581bc2b9f994bfd4"
 
 [953880]
 nom = "First Class Trouble"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ab78b4bf3d2a6a44599cf3c0328ad767"
 
 [959520]
 nom = "Fantasy Blacksmith"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "9a3b125fa9882b8671174b2a392e3b08"
+
+[960690]
+nom = "One Step From Eden"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "d0c57ce7979bc032766cd9c9e44f95ba"
+
+[963000]
+nom = "Frog Detective 1: The Haunted Island"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "7108495f72eb8270bc6d905ddba4fcf4"
+
+[964800]
+nom = "Prodeus"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "eb6182f1ef62a7c50c861c1c2b2b6ffc"
 
 [965680]
 nom = "Boomerang Fu"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "6ffdc6f4b10696b3737c9f3e0a76d514"
 
 [969760]
 nom = "Omno"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "7e376812eb1f81d64f5ab8aa99f65e98"
 
 [969990]
 nom = "SpongeBob SquarePants: Battle for Bikini Bottom - Rehydrated"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ef3d0f63858f49caa77c06625b074d10"
+
+[970830]
+nom = "The Dungeon Of Naheulbeuk: The Amulet Of Chaos"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "736bf785353815127b0391ea002ef5dc"
+
+[970960]
+nom = "Rebel Cops"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "9336c6739c8a4e2422b37c5e71207f54"
+
+[971160]
+nom = "Möbius Front '83"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "6cf6d134dd7d78622c38b9f3d0272351"
+
+[972660]
+nom = "Spiritfarer®: Farewell Edition"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "fd273d6995cc0c3c17688cab559f9325"
 
 [973580]
 nom = "Sniper Ghost Warrior Contracts"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "bddb60197c494d398f58b12fe4bc3f8e"
 
 [973760]
 nom = "Thronebreaker: The Witcher Tales"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "0081cae46b677e6465cbe4b140e58a82"
 
 [975510]
 nom = "Panzer Paladin"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "a56bf3cdfeb37827348b2bf4358a8e93"
 
 [975950]
 nom = "Effie"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "9b17574b1df946b62c7b366ee1cba787"
 
 [976700]
 nom = "Size Matters"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "77868fca7befd40e5c8be8ddf9145866"
+
+[978460]
+nom = "Emily is Away <3"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "978a31c503344de28f2cc4d1022da302"
+
+[978520]
+nom = "Legend of Keepers"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "9b7403ea2c77d46125bbc1167aeec354"
 
 [979070]
 nom = "Just Die Already"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "13f9f1352a429a4421c158b35215f83e"
 
 [979120]
 nom = "Autonauts"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ae49463c34f131351b816ba1e9f594d1"
 
 [979640]
 nom = "Cepheus Protocol"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "93148dc950f54e6a16a46a75b2c84c46"
 
 [979690]
 nom = "The Ascent"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "e236f5c6e55b6e2e2fcc5889bc977c35"
 
 [980300]
 nom = "One Finger Death Punch 2"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "8a5e7f84d847a33b8a06e92e52fa0451"
 
 [982720]
 nom = "Paradise Lost"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "b4703f08ce8163899c5bf71f3077cb52"
 
 [984800]
 nom = "Automachef"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "5de43a6376a8529b82e23536817f1a31"
 
 [987840]
 nom = "Expeditions: Rome"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "3629c17b2a345f948a52a3592e24b6d6"
 
 [990080]
 nom = "Hogwarts Legacy"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ac94a3f41653ecc1f2ac4dd2879498c0"
 
 [99300]
 nom = "Renegade Ops"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "ecc12efaf369a2084d868b83013b9841"
 
 [994140]
 nom = "Lightmatter"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "b99e3464536c83e03218ee8ba7e49595"
 
 [995980]
 nom = "Fae Tactics"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "0de1c96b11b1af4dd4e4e6ab68f1121d"
 
 [996770]
 nom = "Moving Out"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "6097bc986f18073c56c8068040017d39"
+
+[998740]
+nom = "Ring of Pain"
+etat = "non-teste"
+date = "2026-10-13"
+empreinte = "bd06b8da91515f9cdb116624ab564ba9"
 
 [999220]
 nom = "Amnesia: Rebirth"
 etat = "non-teste"
 date = "2026-10-11"
+empreinte = "eea4daa5d181eb0cb3d2fdc05d9c4b91"

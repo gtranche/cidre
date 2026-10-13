@@ -1,0 +1,73 @@
+# Torchlight II -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 200710
+nom = "Torchlight II"
+plateformes_steam = "macos windows"
+moteur = "autre"
+moteur_nom = "Ogre"
+api = "d3d9"
+api_disponibles = "d3d9"
+bits = 32
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 65
+score = 82
+lanceurs_signales = "steam:47 notListed:3"
+options_lancement_1 = "PROTON_USE_WINED3D=1  %command% (x2)"
+options_lancement_2 = "LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libfreetype.so.6 %command% (x1)"
+options_lancement_3 = "LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libfreetype.so.6:/usr/lib/x86_64-linux-gnu/libbrotlidec.so.1:/usr/lib/x86_64-linux-gnu/libbrotlicommon.so.1 mangohud --dlsym %command% (x1)"
+lanceur_secondaire = "non:4"
+verdicts_recents = "yes:21"
+rapports_export = 57
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/200710"
+
+[compat.pcgamingwiki]
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Torchlight_II"
+
+[compat.applegamingwiki]
+rosetta = "parfait"
+wine = "demarre"
+parallels = "parfait"
+methodes = "portingkit wine"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Torchlight_II"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.10337"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2022-04-21"
+crossover_version = "22.0"
+bouteille = "win7_64"
+source = "crossover"
+date = "2026-10-13"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=10337"

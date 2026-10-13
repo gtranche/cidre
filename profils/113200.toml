@@ -1,0 +1,60 @@
+# The Binding of Isaac -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 113200
+nom = "The Binding of Isaac"
+plateformes_steam = "macos windows"
+moteur = "autre"
+moteur_nom = "Flash"
+api_disponibles = "d3d9 opengl"
+bits = 32
+drm = "drm-free"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "gold"
+tendance = "gold"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 121
+score = 74
+lanceurs_signales = "steam:38"
+options_lancement_1 = "kscreen-doctor output.DP-3.mode.1280x720@60; %command%; kscreen-doctor output.DP-3.mode.3840x2160@240 (x1)"
+options_lancement_2 = "gamescope -w 2560 -h 1440 -W 2560 -H 1440 -- %command% (x1)"
+options_lancement_3 = "gamescope -w 3840 -h 2160 -W 3840 -H 2160 -- %command% (x1)"
+lanceur_secondaire = "non:14"
+verdicts_recents = "yes:10 no:1"
+rapports_export = 60
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/113200"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "jeu:serial.txt"
+sauvegardes = "jeu:serial.txt"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/The_Binding_of_Isaac"
+
+[compat.applegamingwiki]
+crossover = "demarre"
+parallels = "parfait"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/The_Binding_of_Isaac"

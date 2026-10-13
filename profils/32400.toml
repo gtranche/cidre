@@ -1,0 +1,55 @@
+# STAR WARS™: Dark Forces -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 32400
+nom = "STAR WARS™: Dark Forces"
+plateformes_steam = "macos windows"
+moteur = "autre"
+moteur_nom = "Jedi"
+drm = "drm-free"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 40
+score = 71
+lanceurs_signales = "steam:18 notListed:2"
+lanceur_secondaire = "non:6"
+verdicts_recents = "yes:1"
+rapports_export = 26
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/32400"
+
+[compat.pcgamingwiki]
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Star_Wars%3A_Dark_Forces"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.2440"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2021-10-18"
+crossover_version = "21"
+bouteille = "win7"
+source = "crossover"
+date = "2026-10-13"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=2440"

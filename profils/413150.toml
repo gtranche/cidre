@@ -1,0 +1,81 @@
+# Stardew Valley -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 413150
+nom = "Stardew Valley"
+plateformes_steam = "macos windows"
+moteur = "autre"
+moteur_nom = "MonoGame"
+api_disponibles = "d3d9 opengl"
+bits = 64
+bits_32_aussi = true
+drm = "drm-free"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+bits_32_aussi = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[cidre]
+dependances = "dotnet40"
+
+[cidre.sources]
+dependances = "crossover 2026-10-13"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "strong"
+rapports = 392
+score = 96
+lanceurs_signales = "steam:367 notListed:5"
+options_lancement_1 = "SDL_VIDEODRIVER=\"\" %command% (x2)"
+options_lancement_2 = "/path/to/smapi/StardewModdingAPI.elf %command% (x1)"
+options_lancement_3 = "mangohud game-performance %command% (x1)"
+lanceur_secondaire = "non:66"
+verdicts_recents = "yes:211 no:4"
+rapports_export = 392
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/413150"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Roaming/StardewValley/default_options"
+sauvegardes = "AppData/Roaming/StardewValley/Saves/"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Stardew_Valley"
+
+[compat.applegamingwiki]
+natif = "parfait"
+rosetta = "parfait"
+source = "applegamingwiki"
+date = "2026-10-11"
+url = "https://www.applegamingwiki.com/wiki/Stardew_Valley"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.14259"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2026-06-30"
+crossover_version = "15.0.0"
+bouteille = "win8"
+dependances = "dotnet40"
+registre = "Direct3D:MaxVersionGL=dword:30002"
+source = "crossover"
+date = "2026-10-13"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=14259"

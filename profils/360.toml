@@ -1,0 +1,55 @@
+# Half-Life Deathmatch: Source -- fiche amorcee par tests/outils/importer_profils.py (2026-10-13).
+# Chaque valeur importee porte sa source et sa date ([jeu.sources], ou `source`/`date`
+# des blocs [compat.*]) ; une valeur sans provenance, cidre-test ou utilisateur n'est
+# jamais ecrasee par l'import. Voir profils/README.md.
+
+[jeu]
+appid = 360
+nom = "Half-Life Deathmatch: Source"
+plateformes_steam = "macos windows"
+moteur = "source"
+moteur_nom = "Source"
+api_disponibles = "d3d9 opengl"
+bits = 64
+bits_32_aussi = true
+anticheat = "vac"
+drm = "steam"
+
+[jeu.sources]
+nom = "steam 2026-10-13"
+plateformes_steam = "steam 2026-10-13"
+moteur = "pcgamingwiki 2026-10-11"
+moteur_nom = "pcgamingwiki 2026-10-11"
+api_disponibles = "pcgamingwiki 2026-10-11"
+bits = "pcgamingwiki 2026-10-11"
+bits_32_aussi = "pcgamingwiki 2026-10-11"
+anticheat = "pcgamingwiki 2026-10-11"
+drm = "pcgamingwiki 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-13"
+
+[compat.protondb]
+palier = "platinum"
+tendance = "platinum"
+meilleur_palier = "platinum"
+confiance = "low"
+rapports = 11
+score = 65
+lanceurs_signales = "steam:10"
+options_lancement_1 = "-vulkan -windowed (x1)"
+options_lancement_2 = "LD_PRELOAD=libcasefolding.so %command% (x1)"
+lanceur_secondaire = "non:3"
+verdicts_recents = "yes:5 no:1"
+rapports_export = 10
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/360"
+
+[compat.pcgamingwiki]
+fichiers_reglages = "jeu:hl1mp/cfg"
+correspondance = "appid"
+source = "pcgamingwiki"
+date = "2026-10-11"
+url = "https://www.pcgamingwiki.com/wiki/Half-Life_Deathmatch%3A_Source"
