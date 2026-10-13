@@ -41,3 +41,4 @@ tests/bench_argbuf_metal.m
 tests/build_bench_bindless.sh
 dxmt/
 dxmt.*/
+__pycache__/
