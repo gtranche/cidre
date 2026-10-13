@@ -6,6 +6,23 @@
 # Donc dx12 = false (D3D11 fluide, jouable) tant que le VRAI backend sparse Metal
 # (TiledResourcesTier2 reel) n'est pas ecrit dans KosmicKrisp. Repasser a true quand
 # ce sera fait. La conservative raster feinte, elle, ne gene pas.
+#
+# tso = false : avec l'emulation de l'ordre memoire x86 (TSO) de FEX, regarder au
+# loin fait tomber le jeu de ~100 a 13 images/s (mesure du 2026-10-13, M1 Max,
+# reproduit sur quatre lancements). Ce n'est ni la carte graphique (occupee a 13 %,
+# ~10 ms par image) ni le chemin par dessin de DXMT (fil d'encodage inoccupe a
+# 97 %) : a l'horizon la scene passe de 350 a 2 100 dessins et le fil de rendu
+# d'Unity attend ses fils de travail (Job.Worker), qui passent leur temps dans une
+# meme famille de fonctions de UnityPlayer.dll (+0x1522d00 a +0x15246a0, perf map
+# FEX), tres lentes sous TSO. Aucune option graphique du jeu n'y change rien
+# (ombres, qualite du monde, occlusion ambiante, echelle de rendu, toutes
+# baissees : 13-14 images/s), -force-gfx-mt non plus. Sans TSO : 72 images/s au
+# meme endroit, options du jeu d'origine, 8 min de jeu sans gel ni plantage.
+# Risque connu de tso = false : une course dans du code sans verrou ; si le jeu
+# se fige ou plante, `cidre set 3527290 tso true` le remet.
+# Les options graphiques du jeu sont des PlayerPrefs d'Unity (registre du
+# prefixe, HKCU\Software\LandCrab\PEAK : RenderScaleSetting,
+# ShadowDistanceSettings, LodQuality, AOSetting).
 [jeu]
 appid = 3527290
 nom = "PEAK"
@@ -18,16 +35,17 @@ lanceur = "steam"
 
 [cidre]
 dx12 = false
+tso = false
 
 [compat]
 etat = "or"
 source = "cidre-test"
 date = "2026-10-13"
 machine = "M1 Max 32 Go"
-cidre_version = "1.5.8"
+cidre_version = "1.5.9"
 fps_menu = 0
-fps_jeu = 110
-notes = "En D3D11 (repli du DX12) avec DXMT, le defaut depuis la 1.5.8 : 110 fps en jeu plein ecran (114 en fenetre), 10 ms GPU. En DXVK (jusqu'a la 1.5.7) : 8-15 fps, GPU-bound KosmicKrisp -> Metal. Le vrai D3D12 (dx12 = true) fige en jeu (tiled resources)."
+fps_jeu = 72
+notes = "En D3D11 (repli du DX12) avec DXMT et sans TSO (tso = false) : 72 fps en regardant au loin (2 100 dessins par passe), ~100 fps de pres, plein ecran, options du jeu d'origine. Avec TSO : 13 fps au loin (fils de travail d'Unity ralentis par l'emulation, GPU occupe a 13 %), quelles que soient les options graphiques du jeu. En DXVK (jusqu'a la 1.5.7) : 8-15 fps partout. Le vrai D3D12 (dx12 = true) fige en jeu (tiled resources)."
 
 [compat.steam_cloud]
 methode = "auto"
