@@ -23,8 +23,10 @@ après une partie d'au moins dix minutes).
 
 2. Si tu les as mesurées, les images par seconde au menu et en jeu. En notes :
    ce qui marche, ce qui coince, les options qui ont aidé.
-3. **Ouvrir sur GitHub** : la page « nouvel incident » s'ouvre déjà remplie. Tu
-   relis, tu publies. Il faut un compte GitHub.
+3. **Ouvrir sur GitHub** : le formulaire « Rapport de jeu » du dépôt s'ouvre,
+   son titre et son champ « Rapport » déjà remplis. Tu relis, tu publies. Il
+   faut un compte GitHub, et aucun droit sur le dépôt : le formulaire range
+   lui-même l'incident sous le label `rapport-jeu`.
 
 À savoir :
 
@@ -34,23 +36,40 @@ après une partie d'au moins dix minutes).
 - Ne change ni le titre (« Rapport de jeu : *nom* (*appid*) ») ni le bloc
   `[[rapports]]` : c'est ce qui est lu. Tu peux écrire ce que tu veux en dessous.
 - Un « ne marche pas » est aussi utile qu'un « parfait ».
+- Si GitHub te demande d'abord de te connecter, le formulaire revient rempli
+  après la connexion. S'il arrive quand même vide : dans Verger, **Copier le
+  rapport**, puis colle-le dans le champ « Rapport », à la place du modèle.
+- Une adresse web ne porte que quelques kilo-octets. Verger coupe donc la fin du
+  diagnostic et te montre le fichier complet, à glisser dans le champ si tu veux
+  le joindre. Si le rapport lui-même est trop long (de très longues notes),
+  Verger le copie et ouvre le formulaire avec le titre seul : colle-le de même.
+- Il faut Verger 0.3.14 ou plus récent. Les versions d'avant ouvrent un incident
+  hors formulaire, avec le label dans l'adresse : d'après la documentation de
+  GitHub, la page ne s'ouvre alors (erreur 404) que pour qui a le droit de poser
+  un label sur le dépôt.
 
-Sans Verger : ouvrir un [incident](https://github.com/gtranche/cidre/issues/new)
-avec ce titre, et ce bloc dans le texte (l'appid est le nombre dans l'adresse de
-la page Steam du jeu ; `cidre status` donne la version) :
+Sans Verger : ouvrir le formulaire
+[Rapport de jeu](https://github.com/gtranche/cidre/issues/new?template=rapport-jeu.yml),
+remplacer `NOM DU JEU` et `APPID` dans le titre (l'appid est le nombre dans
+l'adresse de la page Steam du jeu) et remplir le bloc du champ « Rapport »
+(`cidre status` donne la version ; les images par seconde non mesurées restent
+à 0) :
 
 ````
 ```toml
 [[rapports]]
 date = "2026-10-13"
 machine = "M1 Max 32 Go"
-cidre_version = "1.5.7"
+cidre_version = "1.5.10"
 etat = "argent"
 fps_menu = 90
 fps_jeu = 40
 notes = "Ce qui marche, ce qui coince."
 ```
 ````
+
+Le formulaire envoyé tel quel (`etat = ""`) n'est pas un rapport : il est refusé
+à la relecture.
 
 ## Proposer une fiche ou une correction (pull request)
 
@@ -94,10 +113,12 @@ python3 -I tests/outils/test_rapports_vers_fiches.py
 Rien n'est automatique : chaque rapport est relu.
 
 1. `python3 -I tests/outils/rapports_vers_fiches.py` lit les incidents ouverts
-   et rend, pour chacun, le bloc `[[rapports]]` prêt à coller, avec ce qui
-   mérite un coup d'œil (valeur retouchée, doublon, nom qui ne correspond pas à
-   l'appid). Le diagnostic n'est pas recopié. Un rapport illisible reçoit une
-   question dans son incident.
+   (ceux du label `rapport-jeu`, et par filet ceux dont le titre commence par
+   « Rapport de jeu » ou dont le texte porte la balise de Verger) et rend, pour
+   chacun, le bloc `[[rapports]]` prêt à coller, avec ce qui mérite un coup
+   d'œil (valeur retouchée, doublon, nom qui ne correspond pas à l'appid,
+   incident arrivé sans le label). Le diagnostic n'est pas recopié. Un rapport
+   illisible reçoit une question dans son incident.
 2. Relu, le bloc est ajouté à la fiche (`--appliquer --incident N`), avec
    l'adresse de l'incident dans `incident`. Un jeu sans fiche en reçoit une,
    minimale, à l'état `non-teste`. L'incident est fermé.
@@ -135,8 +156,10 @@ ten minutes or more).
 
 2. Frames per second in the menu and in game, if you measured them. In the
    notes: what works, what does not, which options helped.
-3. **Open on GitHub**: the "new issue" page opens already filled in. You review
-   it and submit it. A GitHub account is required.
+3. **Open on GitHub**: the repository's "Rapport de jeu / Game report" issue
+   form opens, its title and its "Rapport" field already filled in. You review
+   it and submit it. A GitHub account is required, and no permission on the
+   repository: the form itself files the issue under the `rapport-jeu` label.
 
 Good to know:
 
@@ -147,24 +170,40 @@ Good to know:
   French) nor the `[[rapports]]` block: that is what gets read. Write anything
   you like below it, in English if you prefer.
 - "Does not work" is as useful as "Perfect".
+- If GitHub asks you to sign in first, the form comes back filled in after you
+  sign in. If it still comes up empty: in Verger, **Copy the Report**, then
+  paste it into the "Rapport" field, replacing the template.
+- A web address only carries a few kilobytes. Verger therefore cuts the end of
+  the diagnostic and shows you the complete file, to drag into the field if you
+  want to attach it. If the report itself is too long (very long notes), Verger
+  copies it and opens the form with the title only: paste it the same way.
+- Verger 0.3.14 or later is required. Earlier versions open an issue outside
+  the form, with the label in the address: according to GitHub's
+  documentation, that page only opens (404 error otherwise) for people allowed
+  to set labels on the repository.
 
-Without Verger: open an [issue](https://github.com/gtranche/cidre/issues/new)
-with that title, and this block in the text (the appid is the number in the
-game's Steam store URL; `cidre status` prints the version; `etat` is one of
-`or`, `argent`, `bronze`, `ko`):
+Without Verger: open the
+[Rapport de jeu / Game report](https://github.com/gtranche/cidre/issues/new?template=rapport-jeu.yml)
+form, replace `NOM DU JEU` (the game's name) and `APPID` in the title (the
+appid is the number in the game's Steam store URL) and fill in the block of the
+"Rapport" field (`cidre status` prints the version; `etat` is one of `or`,
+`argent`, `bronze`, `ko`; leave unmeasured frame rates at 0):
 
 ````
 ```toml
 [[rapports]]
 date = "2026-10-13"
 machine = "M1 Max 32 Go"
-cidre_version = "1.5.7"
+cidre_version = "1.5.10"
 etat = "argent"
 fps_menu = 90
 fps_jeu = 40
 notes = "What works, what does not."
 ```
 ````
+
+The form submitted as is (`etat = ""`) is not a report: it is rejected at
+review.
 
 ## Propose a profile or a fix (pull request)
 
@@ -207,11 +246,13 @@ python3 -I tests/outils/test_rapports_vers_fiches.py
 
 Nothing is automatic: every report is read.
 
-1. `python3 -I tests/outils/rapports_vers_fiches.py` reads the open issues and
-   prints, for each, the `[[rapports]]` block ready to paste, with whatever
-   deserves a second look (edited value, duplicate, name that does not match
-   the appid). The diagnostic is not copied. An unreadable report gets a
-   question in its issue.
+1. `python3 -I tests/outils/rapports_vers_fiches.py` reads the open issues
+   (those labelled `rapport-jeu` and, as a safety net, those whose title starts
+   with "Rapport de jeu" or whose text carries Verger's tag) and prints, for
+   each, the `[[rapports]]` block ready to paste, with whatever deserves a
+   second look (edited value, duplicate, name that does not match the appid,
+   issue that arrived without the label). The diagnostic is not copied. An
+   unreadable report gets a question in its issue.
 2. Once reviewed, the block is added to the profile
    (`--appliquer --incident N`), with the issue URL in `incident`. A game
    without a profile gets a minimal one, status `non-teste`. The issue is

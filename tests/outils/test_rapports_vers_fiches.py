@@ -5,15 +5,19 @@
 
 Les fixtures (tests/outils/fixtures/rapports_vers_fiches/) : incidents.json a
 la forme de `gh issue list --json`, les corps sont ceux que Verger ecrit
-(GameReport.swift) et ce qu'un utilisateur peut en faire ; deux fiches. On
-verifie :
+(GameReport.swift) et ce qu'un utilisateur peut en faire ; deux fiches. Deux
+formes de corps : sans formulaire (Verger <= 0.3.13, #9001 a #9011) et par le
+formulaire d'incident .github/ISSUE_TEMPLATE/rapport-jeu.yml (« ### Rapport »
+puis le champ, #9012 a #9015). On verifie :
   - le bloc [[rapports]] rendu (champs, notes sur une ligne, `incident`) ;
   - que sans --appliquer rien n'est ecrit, et que --proposer-compat n'ecrit jamais ;
   - que les corps mal formes sont refuses avec leur raison, un titre piege aussi ;
   - que --appliquer ajoute le bloc sans toucher au reste ([compat], commentaires),
     cree la fiche minimale qui manque, et ne rajoute pas un incident deja integre ;
   - que tests/fiche_profil.sh relit les fiches produites ;
-  - la regle de --proposer-compat, cas par cas.
+  - la regle de --proposer-compat, cas par cas ;
+  - que le modele du formulaire du depot, envoye tel quel, est refuse, et que
+    rempli il se lit.
 """
 import importlib.util
 import os
@@ -100,7 +104,36 @@ def main():
         # titre refait : la balise du corps dit le jeu ; meme auteur, meme jeu qu'un autre incident
         s = section(sortie, 9011)
         assert f'incident = "{URL}9011"' in s and "990000002.toml" in s and "meme auteur et meme jeu que #9003" in s, s
-        assert "11 incident(s) : 0 integre(s), 7 a integrer, 1 deja integre(s), 3 illisible(s)" in sortie, sortie[-400:]
+        # --- par le formulaire d'incident : le corps commence par « ### Rapport »
+        # rempli par Verger, titre refait : la balise dit le jeu ; profil lu, diagnostic non
+        s = section(sortie, 9012)
+        assert "\n".join([
+            "[[rapports]]",
+            'date = "2026-10-13"',
+            'machine = "M2 16 Go"',
+            'cidre_version = "1.5.10"',
+            'etat = "or"',
+            "fps_menu = 110",
+            "fps_jeu = 72",
+            'notes = "Rien à redire. Lance avec tso=false (differe des reglages par defaut)."',
+            f'incident = "{URL}9012"',
+        ]) in s and "990000004.toml n'existe pas" in s and "attention" not in s, s
+        # rempli a la main (corps en CRLF) : les commentaires du modele ne genent pas, fps laisse a 0 = non
+        # mesure, le texte libre et ce qui suit « ### Diagnostic » ne sont pas lus
+        s = section(sortie, 9013)
+        for attendu in ('date = "2026-10-12"', 'machine = "M3 Pro 18 Go"', 'cidre_version = "1.5.10"', 'etat = "argent"',
+                        "fps_jeu = 48\n", 'notes = "Le son grésille au menu."', f'incident = "{URL}9013"'):
+            assert attendu in s, (attendu, s)
+        assert "fps_menu" not in s and "attention" not in s and "merci pour Cidre" not in s, s
+        # envoye tel quel : ni le titre ni le modele ne passent pour un rapport
+        s = section(sortie, 9014)
+        assert "ILLISIBLE : identifiant de jeu refuse : « APPID »" in s and "ILLISIBLE : etat absent" in s and "[[rapports]]" not in s, s
+        # rapport colle sous le modele laisse en place : c'est le bloc qui donne un etat qui est lu ;
+        # sans label, l'incident est quand meme lu, et son absence est dite
+        s = section(sortie, 9015)
+        assert 'date = "2026-10-14"' in s and 'etat = "or"' in s and "fps_jeu = 70\n" in s and f'incident = "{URL}9015"' in s, s
+        assert "attention : sans le label rapport-jeu" in s and sortie.count("sans le label rapport-jeu") == 1, s
+        assert "15 incident(s) : 0 integre(s), 10 a integrer, 1 deja integre(s), 4 illisible(s)" in sortie, sortie[-400:]
 
         # 2. --proposer-compat : une proposition, un desaccord avec nos tests ; rien d'ecrit
         sortie = lancer(profils, "--proposer-compat")
@@ -111,6 +144,7 @@ def main():
         s = prop[prop.index("-- 990000001"):prop.index("-- 990000002")]
         assert "2 machines donnent « or »" in s and "nos tests priment" in s and "[compat]\n" not in s, s
         assert "990000003" not in prop  # une seule machine : rien a dire
+        assert "990000004" not in prop  # deux machines, deux etats (la plus recente de « M2 16 Go » compte seule)
 
         # 3. --appliquer --incident N : celui-la seul, a sa place, le reste intact
         sortie = lancer(profils, "--appliquer", "--incident", "9001")
@@ -128,8 +162,8 @@ def main():
 
         # 4. --appliquer : tout ce qui est lisible ; fiche minimale creee ; [compat] jamais touche
         sortie = lancer(profils, "--appliquer")
-        assert "5 integre(s), 1 a integrer, 2 deja integre(s), 3 illisible(s)" in sortie, sortie[-400:]
-        assert sorted(os.listdir(profils)) == ["990000001.toml", "990000002.toml", "990000003.toml"], os.listdir(profils)
+        assert "8 integre(s), 1 a integrer, 2 deja integre(s), 4 illisible(s)" in sortie, sortie[-400:]
+        assert sorted(os.listdir(profils)) == ["990000001.toml", "990000002.toml", "990000003.toml", "990000004.toml"], os.listdir(profils)
         d1, d2, d3 = (tomllib.load(open(f, "rb")) for f in (f1, f2, f3))
         assert d1["compat"] == avant["compat"] and [r["incident"][len(URL):] for r in d1["rapports"]] == ["9010", "9001", "9002"]
         avant2 = tomllib.loads(depart["990000002.toml"])
@@ -140,6 +174,13 @@ def main():
         assert d3["jeu"] == {"appid": 990000003, "nom": "Jeu Neuf: L'Édition « Dorée »"}, d3["jeu"]
         assert d3["compat"] == {"etat": "non-teste", "date": DATE} and len(d3["rapports"]) == 1 and d3["rapports"][0]["etat"] == "ko"
         assert "fiche creee" in section(sortie, 9005) and "non applique" in section(sortie, 9009)
+        # les trois rapports arrives par le formulaire : une fiche creee par le premier, les autres a la suite
+        f4 = os.path.join(profils, "990000004.toml")
+        d4 = tomllib.load(open(f4, "rb"))
+        assert d4["jeu"] == {"appid": 990000004, "nom": "990000004"} and d4["compat"] == {"etat": "non-teste", "date": DATE}, d4
+        assert [(r["incident"][len(URL):], r["etat"], r["machine"]) for r in d4["rapports"]] == [
+            ("9012", "or", "M2 16 Go"), ("9013", "argent", "M3 Pro 18 Go"), ("9015", "or", "M2 16 Go")], d4["rapports"]
+        assert "fiche creee" in section(sortie, 9012) and "ajoute a" in section(sortie, 9013) and "ajoute a" in section(sortie, 9015)
         for texte in etat_du_dossier(profils).values():
             assert "evil.example" not in texte and "ligne-piege" not in texte
             assert not any(ord(c) < 32 and c != "\n" for c in texte) and "\u202e" not in texte
@@ -148,12 +189,12 @@ def main():
         fige = etat_du_dossier(profils)
         sortie = lancer(profils, "--appliquer")
         assert etat_du_dossier(profils) == fige
-        assert "0 integre(s), 1 a integrer, 7 deja integre(s), 3 illisible(s)" in sortie, sortie[-400:]
+        assert "0 integre(s), 1 a integrer, 10 deja integre(s), 4 illisible(s)" in sortie, sortie[-400:]
 
         # 6. le lecteur shell relit les fiches (sous-ensemble TOML du README)
         lecteur = os.path.join(RACINE, "tests", "fiche_profil.sh")
         if os.path.exists(lecteur):
-            for f, n, numero in ((f1, 3, 9002), (f2, 3, 9011), (f3, 1, 9005)):
+            for f, n, numero in ((f1, 3, 9002), (f2, 3, 9011), (f3, 1, 9005), (f4, 3, 9015)):
                 r = subprocess.run(["sh", lecteur, "toml", f], capture_output=True, text=True)
                 assert r.returncode == 0, r.stderr
                 lignes = {tuple(l.split("\t")) for l in r.stdout.splitlines()}
@@ -205,6 +246,30 @@ def main():
         lu = outil.lire_rapport({"number": 9, "title": "Rapport de jeu : X (42)", "url": "https://github.com/autre/depot/issues/9",
                                  "body": "etat = or\ndate = 2026-01-02"}, "gtranche/cidre")
         assert lu["url"] == URL + "9" and lu["champs"]["etat"] == "or" and lu["champs"]["date"] == "2026-01-02", lu
+
+        # 9. le formulaire du depot : son champ a l'identifiant que Verger remplit, il pose le label que
+        # l'outil cherche, et son modele, envoye tel quel, est refuse ; rempli, il se lit
+        formulaire = os.path.join(RACINE, ".github", "ISSUE_TEMPLATE", "rapport-jeu.yml")
+        yml = open(formulaire, encoding="utf-8").read()
+        assert f'labels: ["{outil.LABEL}"]' in yml and "    id: rapport\n" in yml and "type: textarea" in yml, "formulaire : label ou champ"
+        assert 'title: "Rapport de jeu : NOM DU JEU (APPID)"' in yml
+        debut = yml.index("      value: |\n        ```toml")
+        modele = "\n".join(l[8:] for l in yml[debut:yml.index("    validations:")].split("\n")[1:]).strip("\n")
+        assert modele.startswith("```toml\n[[rapports]]\n") and modele.endswith("```") and 'etat = ""' in modele, modele
+        def par_le_formulaire(titre, champ):
+            return outil.lire_rapport({"number": 10, "title": titre, "createdAt": "2026-01-03T00:00:00Z", "labels": [{"name": "rapport-jeu"}],
+                                       "body": "### Rapport\n\n" + champ}, "gtranche/cidre")
+        lu = par_le_formulaire("Rapport de jeu : NOM DU JEU (APPID)", modele)
+        assert any("APPID" in e for e in lu["erreurs"]) and "etat absent" in lu["erreurs"], lu["erreurs"]
+        assert "etat absent" in par_le_formulaire("Rapport de jeu : X (42)", modele)["erreurs"]
+        rempli = modele.replace('date = ""', 'date = "2026-01-02"').replace('etat = ""', 'etat = "bronze"').replace("fps_jeu = 0", "fps_jeu = 25")
+        lu = par_le_formulaire("Rapport de jeu : X (42)", rempli)
+        assert lu["erreurs"] == [] and lu["appid"] == "42" and lu["champs"] == {"date": "2026-01-02", "etat": "bronze", "fps_jeu": 25}, lu
+        assert lu["avertissements"] == ["machine absente : ce rapport ne comptera pas pour --proposer-compat"], lu["avertissements"]
+        # ce qui suit l'intitule du diagnostic, en titre de formulaire comme en gras, n'est jamais un rapport
+        for intitule in ("### Diagnostic", "**Diagnostic**"):
+            lu = par_le_formulaire("Rapport de jeu : X (42)", f"Rien à dire.\n\n{intitule}\n\netat = \"or\"\ndate = \"2026-01-02\"\n")
+            assert lu["erreurs"] == ["aucun bloc [[rapports]] ni ligne « etat = ... » dans le corps"], (intitule, lu["erreurs"])
         print("test_rapports_vers_fiches : OK")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

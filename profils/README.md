@@ -483,9 +483,11 @@ Variables d'environnement : `CIDRE_PROFILS_BASE` (dossier du cache),
 
 ## Rapports d'utilisateurs (`tests/outils/rapports_vers_fiches.py`)
 
-Verger (« Partager mon résultat ») ouvre un incident GitHub titré « Rapport de
-jeu : *nom* (*appid*) », label `rapport-jeu`, dont le corps porte le bloc
-`[[rapports]]`, le profil effectif et le diagnostic. L'outil (machine de dev,
+Verger (« Partager mon résultat ») ouvre le formulaire d'incident « Rapport de
+jeu » du dépôt (`.github/ISSUE_TEMPLATE/rapport-jeu.yml`), titré « Rapport de
+jeu : *nom* (*appid*) », dont le champ « Rapport » porte une balise
+`<!-- cidre-rapport v1 appid=… -->`, le bloc `[[rapports]]`, le profil effectif
+et le diagnostic ; le formulaire pose le label `rapport-jeu`. L'outil (machine de dev,
 Python 3.11+, sans dépendance, `gh` en lecture seule) en fait des blocs prêts à
 coller ; c'est un outil de relecture, il ne décide rien :
 
@@ -497,10 +499,22 @@ python3 -I tests/outils/rapports_vers_fiches.py incidents.json     # depuis un f
 python3 -I tests/outils/test_rapports_vers_fiches.py               # le test (incidents fabriqués)
 ```
 
-- Les incidents sont cherchés par le label **et** par le titre : GitHub
-  n'honore le `labels=` d'une adresse « nouvel incident » que si l'auteur a le
-  droit de poser un label sur le dépôt (sa documentation le dit), un rapport
-  d'utilisateur peut donc arriver sans label.
+- Le label vient du formulaire, pas de l'adresse : un `labels=` dans une adresse
+  « nouvel incident » exige le droit de poser un label sur le dépôt (la
+  documentation de GitHub annonce une page 404 sinon), alors que les labels d'un
+  formulaire sont posés « automatiquement », quel que soit l'auteur — à
+  condition que le label existe sur le dépôt. Verger remplit le champ du
+  formulaire par son identifiant
+  (`issues/new?template=rapport-jeu.yml&title=…&rapport=…`) : ne renommer ni le
+  fichier ni l'`id` du champ sans changer Verger.
+- Les incidents sont cherchés par le label, **et** par le titre, **et** par la
+  balise du corps : un rapport ouvert hors du formulaire (Verger 0.3.13 ou plus
+  ancien, incident libre) arrive sans label. L'outil le lit quand même et le
+  signale. Deux formes de corps sont lues : « ### Rapport » suivi du champ (le
+  formulaire) et le rapport seul (avant le formulaire).
+- Le modèle du formulaire est vide (`etat = ""`) : envoyé tel quel, il est
+  refusé. Si un rapport est collé sous le modèle laissé en place, c'est le bloc
+  qui donne un état qui est lu.
 - Le bloc rendu : `date`, `machine`, `cidre_version`, `etat`, `fps_menu`,
   `fps_jeu`, `notes` (celles du joueur, sur une ligne, suivies des options avec
   lesquelles il a lancé quand elles diffèrent de la fiche) et `incident`

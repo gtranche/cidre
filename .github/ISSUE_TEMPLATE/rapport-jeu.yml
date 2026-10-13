@@ -1,0 +1,48 @@
+# Le formulaire « Rapport de jeu ». Verger (« Partager mon resultat ») l'ouvre
+# par son nom de fichier et remplit le champ `rapport` par son identifiant :
+#   https://github.com/gtranche/cidre/issues/new?template=rapport-jeu.yml&title=...&rapport=...
+# Ne renommer ni ce fichier ni l'`id` du champ sans changer Verger
+# (GameReport.issueTemplate, GameReport.issueField) : la page s'ouvrirait vide.
+#
+# C'est ce formulaire qui pose le label, quel que soit l'auteur : un `labels=`
+# dans l'adresse exige le droit de poser un label sur le depot, qu'un joueur n'a
+# pas. Le label doit exister sur le depot, GitHub ne le cree pas.
+#
+# Le corps de l'incident devient « ### Rapport », puis le texte du champ : c'est
+# ce que lit tests/outils/rapports_vers_fiches.py (voir profils/CONTRIBUER.md).
+# Le modele ci-dessous est volontairement vide (`etat = ""`) : envoye tel quel,
+# il est refuse par l'outil au lieu de passer pour un rapport.
+name: Rapport de jeu / Game report
+description: Dire comment un jeu tourne sur ton Mac avec Cidre. / Say how a game runs on your Mac with Cidre.
+title: "Rapport de jeu : NOM DU JEU (APPID)"
+labels: ["rapport-jeu"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Merci ! Ton rapport nourrit la fiche du jeu (`profils/<appid>.toml`) et aide les autres joueurs. Un « ne marche pas » est aussi utile qu'un « parfait ». L'incident est public : relis-le avant de l'envoyer. La marche à suivre : [profils/CONTRIBUER.md](https://github.com/gtranche/cidre/blob/main/profils/CONTRIBUER.md).
+
+        *Thank you! Your report feeds the game's profile and helps other players. "Does not work" is as useful as "Perfect". The issue is public: read it over before submitting. How it works: [profils/CONTRIBUER.md](https://github.com/gtranche/cidre/blob/main/profils/CONTRIBUER.md#contributing-to-the-game-profiles).*
+  - type: textarea
+    id: rapport
+    attributes:
+      label: Rapport
+      description: |
+        Depuis Verger (« Partager mon résultat ») ce champ et le titre sont déjà remplis : relis et envoie. S'il est arrivé vide, colle ici le rapport copié dans Verger (« Copier le rapport »), à la place du modèle.
+        À la main : dans le titre, remplace NOM DU JEU et APPID (le nombre dans l'adresse de la page Steam du jeu) ; ci-dessous, remplis les guillemets. `etat` vaut `or` (parfait), `argent` (jouable avec des limites), `bronze` (démarre mais lent ou bogué) ou `ko` (ne marche pas) ; `cidre status` donne la version ; laisse à 0 les images par seconde que tu n'as pas mesurées. Tu peux écrire ce que tu veux sous le bloc.
+
+        From Verger ("Share My Result") this field and the title are already filled in: review and submit. If it came up empty, paste the report copied in Verger ("Copy the Report") here, replacing the template.
+        By hand: in the title, replace NOM DU JEU (the game's name) and APPID (the number in the game's Steam store URL); below, fill in the quotes. `etat` is `or` (perfect), `argent` (playable with limits), `bronze` (starts but slow or buggy) or `ko` (does not work); `cidre status` prints the version; leave unmeasured frame rates at 0. Keys stay in French; write anything you like below the block.
+      value: |
+        ```toml
+        [[rapports]]
+        date = ""            # AAAA-MM-JJ
+        machine = ""         # M1 Max 32 Go
+        cidre_version = ""   # 1.5.10
+        etat = ""            # or, argent, bronze, ko
+        fps_menu = 0
+        fps_jeu = 0
+        notes = ""
+        ```
+    validations:
+      required: true

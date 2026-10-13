@@ -4,12 +4,20 @@
     rapports_vers_fiches.py [options] [incidents.json]
 
 Outil de RELECTURE pour le mainteneur (Python 3.11+, aucune dependance ; rien
-ici ne tourne cote runtime). Verger (« Partager mon resultat ») ouvre un
-incident titre « Rapport de jeu : <nom> (<appid>) » dont le corps porte un bloc
-[[rapports]], le profil effectif ([profil]) et le diagnostic. Cet outil lit les
-incidents ouverts (`gh issue list`, lecture seule) ou un fichier JSON de meme
-forme, et rend pour chacun le bloc [[rapports]] pret a coller dans
-profils/<appid>.toml, avec `incident` = l'adresse de l'incident.
+ici ne tourne cote runtime). Verger (« Partager mon resultat ») ouvre le
+formulaire d'incident « Rapport de jeu » du depot
+(.github/ISSUE_TEMPLATE/rapport-jeu.yml), titre « Rapport de jeu : <nom>
+(<appid>) », dont le champ « Rapport » porte un bloc [[rapports]], le profil
+effectif ([profil]) et le diagnostic ; le formulaire pose le label
+`rapport-jeu`. Cet outil lit les incidents ouverts (`gh issue list`, lecture
+seule) ou un fichier JSON de meme forme, et rend pour chacun le bloc
+[[rapports]] pret a coller dans profils/<appid>.toml, avec `incident` =
+l'adresse de l'incident.
+
+Deux formes de corps sont lues, et ce qu'un joueur en fait a la main :
+  - celle du formulaire : « ### Rapport », puis le texte du champ (le rapport de
+    Verger, ou le modele du formulaire rempli a la main) ;
+  - celle des Verger <= 0.3.13, sans formulaire : le rapport seul.
 
     (sans option)        montre les blocs, les mises en garde, les illisibles ; n'ecrit rien
     --appliquer          ajoute chaque bloc a sa fiche (creee, minimale, si elle manque)
@@ -53,7 +61,7 @@ CHAMPS_GH = "number,title,body,url,createdAt,state,author,labels"
 # « Rapport de jeu : <nom> (<appid>) » : le titre fixe de Verger (GameReport.swift).
 TITRE = re.compile(r"^\s*Rapport de jeu\s*:\s*(.*?)\s*\(\s*([^()]*?)\s*\)\s*$", re.I)
 APPID = re.compile(r"[0-9]{1,10}|local-[A-Za-z0-9_-]{1,64}")
-# balise facultative en tete de corps (proposee a Verger) : <!-- cidre-rapport v1 appid=1903340 -->
+# balise en tete du rapport de Verger (GameReport.tag) : <!-- cidre-rapport v1 appid=1903340 -->
 BALISE = re.compile(r"<!--\s*cidre-rapport\s+v(\d+)\s+appid=(\S+?)\s*-->")
 ETATS = ("or", "argent", "bronze", "ko")
 SYNONYMES = {
@@ -83,13 +91,16 @@ def lire_incidents(args):
         with open(args.fichier, encoding="utf-8") as f:
             d = json.load(f)
         return [i for i in ([d] if isinstance(d, dict) else d) if isinstance(i, dict)]
-    # Deux requetes : le label, et le titre. GitHub n'honore le `labels=` d'une
-    # adresse « nouvel incident » que si l'auteur a le droit de poser un label
-    # sur le depot : un rapport d'utilisateur peut donc arriver sans label.
+    # Trois requetes : le label, le titre, la balise du corps. Le label est pose
+    # par le formulaire d'incident, quel que soit l'auteur ; le titre et la
+    # balise sont les filets pour un incident ouvert hors du formulaire (un
+    # Verger <= 0.3.13 passait par `labels=` dans l'adresse, que GitHub refuse a
+    # qui n'a pas le droit de poser un label ; un incident libre n'en a pas).
     base = ["gh", "issue", "list", "--repo", args.depot, "--state", args.etat,
             "--limit", "500", "--json", CHAMPS_GH]
     vus = {}
-    for filtre in (["--label", LABEL], ["--search", 'in:title "Rapport de jeu"']):
+    for filtre in (["--label", LABEL], ["--search", 'in:title "Rapport de jeu"'],
+                   ["--search", 'in:body "cidre-rapport v1"']):
         try:
             r = subprocess.run(base + filtre, capture_output=True, text=True, check=False)
         except FileNotFoundError:
@@ -136,20 +147,32 @@ _ENTETE = re.compile(r"^\s*\[+[^\]]*\]+\s*$")
 _CLE = re.compile(r"^\s*[-*]?\s*`?([A-Za-z_][A-Za-z0-9_]*)`?\s*[=:]\s*(.*?)\s*$")
 
 
+def _a_un_etat(bloc):
+    """Vrai si le bloc donne un `etat` non vide : le modele du formulaire, laisse
+    tel quel au-dessus d'un rapport colle, n'en donne pas."""
+    for l in bloc:
+        m = _CLE.match(l)
+        if m and m.group(1).lower() == "etat":
+            return bool(str(valeur(m.group(2))[0]).strip())
+    return False
+
+
 def lignes_du_rapport(corps):
     """Les lignes `cle = valeur` du rapport, ou None. Verger les met dans un
     bloc de code toml sous [[rapports]] ; on tolere un bloc sans en-tete, ou
-    pas de bloc du tout. Le diagnostic (bloc `text`, ou ce qui suit son
-    intitule) n'est jamais lu."""
+    pas de bloc du tout. De plusieurs blocs [[rapports]], le premier qui donne
+    un etat est pris. Le diagnostic (bloc `text`, ou ce qui suit son intitule,
+    en gras ou en titre) n'est jamais lu."""
     segs = segments(corps)
     for i, (code, info, lignes) in enumerate(segs):  # tout ce qui suit l'intitule du diagnostic est du journal
-        n = next((k for k, l in enumerate(lignes) if re.match(r"^\s*\**\s*diagnos", l, re.I)), None)
+        n = next((k for k, l in enumerate(lignes) if re.match(r"^\s*[#*\s]*diagnos", l, re.I)), None)
         if not code and n is not None:
             segs = segs[:i] + [(False, "", lignes[:n])]
             break
     segs = [s for s in segs if not (s[0] and s[1] in ("text", "log", "txt"))]
 
-    def apres_entete(lignes):
+    def apres_entetes(lignes):
+        blocs = []
         for i, l in enumerate(lignes):
             if _ENTETE_RAPPORT.match(l):
                 bloc = []
@@ -157,13 +180,12 @@ def lignes_du_rapport(corps):
                     if _ENTETE.match(l2):
                         break
                     bloc.append(l2)
-                return bloc
-        return None
+                blocs.append(bloc)
+        return blocs
 
-    for _, _, lignes in segs:                       # 1. [[rapports]], dans un bloc de code ou non
-        bloc = apres_entete(lignes)
-        if bloc is not None:
-            return bloc
+    blocs = [b for _, _, lignes in segs for b in apres_entetes(lignes)]   # 1. [[rapports]], dans un bloc de code ou non
+    if blocs:
+        return next((b for b in blocs if _a_un_etat(b)), blocs[0])
     for code, _, lignes in segs:                    # 2. pas d'en-tete : des lignes avec un `etat`
         bloc = []
         for l in lignes:
@@ -215,6 +237,10 @@ def lire_rapport(incident, depot):
          "appid": None, "nom": "", "champs": {}, "profil": {}, "avertissements": [], "erreurs": []}
     av, err = r["avertissements"], r["erreurs"]
     corps = str(incident.get("body") or "")
+    # le label, pose par le formulaire : son absence dit par ou l'incident est arrive
+    labels = incident.get("labels")
+    if isinstance(labels, list) and LABEL not in [str((l or {}).get("name", "")) if isinstance(l, dict) else str(l) for l in labels]:
+        av.append(f"sans le label {LABEL} : ouvert hors du formulaire « Rapport de jeu » (ou par un Verger <= 0.3.13)")
 
     # l'adresse de l'incident : celle de GitHub, sur ce depot, rien d'autre
     url = str(incident.get("url") or "")
