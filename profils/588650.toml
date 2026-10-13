@@ -14,8 +14,12 @@ lanceur = "steam"
 
 [cidre]
 tso = false
-# DXMT refuse au demarrage (Heaps DirectXDriver.reset : DXError 887A0004 =
-# DXGI_ERROR_UNSUPPORTED, 2026-10-13) : ce jeu reste en DXVK.
+# Jeu 32 bits. Le « DXError 887A0004 » du 2026-10-13 n'etait pas DXMT : sans
+# variante i386, c'est le d3d11 builtin de Wine qui refusait (tests/sonde_heaps.sh).
+# Avec DXMT i386 (patch 0123) le jeu demarre et rend, mais la manche du 2026-10-13
+# (Wine d'avant 0122) est restee sur un ecran noir en plein ecran exclusif ; pas
+# reproduit a la sonde sur le Wine d'apres. DXVK (110 fps) tant qu'une manche n'a
+# pas montre l'image et les fps en DXMT.
 d3d11 = "dxvk"
 
 [compat]

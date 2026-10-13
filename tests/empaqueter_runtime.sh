@@ -45,7 +45,9 @@ for d in d3d12core d3d12; do
    cp "$R/build/vkd3d-winarm64ec/libs/$d/$d.dll" "$STAGE/vkd3d/" 2>/dev/null || true
 done
 
-# DXMT arm64ec (D3D11 -> Metal en un saut, option d3d11 = "dxmt"). Bati contre
+# DXMT arm64ec (D3D11 -> Metal en un saut, option d3d11 = "dxmt"), et sa variante
+# i386 (dxmt/i386, quatre DLL) pour les jeux 32 bits, que le lanceur pose dans
+# lib/wine/i386-windows -- sans elle un jeu 32 bits part en dxvk. Bati contre
 # notre Wine comme des builtins (tests/construire_dxmt.sh, qui pose le build
 # valide dans $R/dxmt/) : lancer_depuis_steam.sh les pose dans
 # lib/wine/aarch64-windows et aarch64-unix au lancement d'un jeu en dxmt, et
@@ -59,6 +61,13 @@ for f in d3d11/d3d11.dll dxgi/dxgi.dll d3d10/d3d10core.dll winemetal/winemetal.d
    if [ -f "$R/dxmt/$b" ]; then cp "$R/dxmt/$b" "$STAGE/dxmt/"
    elif [ -f "$DXMT/build/src/$f" ]; then cp "$DXMT/build/src/$f" "$STAGE/dxmt/"
    else echo "  dxmt : $b ABSENT (sh tests/construire_dxmt.sh poser) ; l'option d3d11=dxmt retombera en dxvk"; fi
+done
+mkdir -p "$STAGE/dxmt/i386"
+for f in d3d11/d3d11.dll dxgi/dxgi.dll d3d10/d3d10core.dll winemetal/winemetal.dll; do
+   b=$(basename "$f")
+   if [ -f "$R/dxmt/i386/$b" ]; then cp "$R/dxmt/i386/$b" "$STAGE/dxmt/i386/"
+   elif [ -f "$DXMT/build-i386/src/$f" ]; then cp "$DXMT/build-i386/src/$f" "$STAGE/dxmt/i386/"
+   else echo "  dxmt i386 : $b ABSENT (sh tests/construire_dxmt.sh poser) ; un jeu 32 bits en d3d11=dxmt retombera en dxvk"; fi
 done
 for f in COPYING.LIB LICENSE README.md; do cp "$DXMT/$f" "$STAGE/dxmt/$f" 2>/dev/null || true; done
 

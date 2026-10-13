@@ -265,6 +265,15 @@ fi
 # viennent du runtime livre ($R/dxmt) ; sur la machine de dev, a defaut, de
 # src/dxmt/build. Remplacement par mv, jamais cp par-dessus : ecraser une
 # bibliotheque encore mappee par un jeu en cours tue ce jeu.
+# Un jeu 32 bits (PE32 i386 : Dead Cells) ne charge rien de aarch64-windows : il
+# lui faut la variante i386 de DXMT ($R/dxmt/i386, quatre DLL, la meme
+# winemetal.so servant les deux largeurs par ses thunks wow64), posee dans
+# lib/wine/i386-windows. Sans elle, le =b l'envoie sur le d3d11 builtin de Wine
+# (wined3d), qui rend DXGI_ERROR_UNSUPPORTED a la creation du device -- le
+# « DXError 887A0004 » du 2026-10-13 (tests/sonde_heaps.sh) ; un runtime sans
+# DXMT i386 lance donc un jeu 32 bits en dxvk d'emblee.
+# CIDRE_DXMT_DIR=<dossier> (essais) : un DXMT a la forme de $R/dxmt (cinq
+# fichiers, plus i386/), pris avant le runtime livre pour ce lancement.
 D3D11=$(opt d3d11 CIDRE_D3D11)
 case $D3D11 in dxmt) ;; *) D3D11=dxvk ;; esac
 # Options DXMT propres au jeu (fiche ou profil : dxmt_config = "d3d11.cle=valeur;..."),
@@ -276,7 +285,9 @@ if [ "$D3D11" = dxmt ] && [ -n "$DXMTCFG" ]; then
 fi
 WINDLL=$R/wine/wine11-arm64/lib/wine/aarch64-windows
 WINUNIX=$R/wine/wine11-arm64/lib/wine/aarch64-unix
+WINDLL32=$R/wine/wine11-arm64/lib/wine/i386-windows
 SYS32=$WINEPREFIX/drive_c/windows/system32
+SYSWOW=$WINEPREFIX/drive_c/windows/syswow64
 BUILTINS_WINE=$R/wine/.wine-builtin-backup
 DXMT_DLLS="d3d11 dxgi d3d10core"
 # Un builtin Wine ne contient pas la chaine « dxmt » ; ceux de DXMT, si. (grep
@@ -292,11 +303,48 @@ source_dxmt() { # <fichier> : le runtime livre d'abord, le build de dev a defaut
       d3d10core.dll) dev=d3d10/$1 ;; winemetal.so) dev=winemetal/unix/$1 ;;
       winemetal.dll) dev=winemetal/$1 ;; *) dev=${1%.dll}/$1 ;;
    esac
-   for cand in "$R/dxmt/$1" "$R/src/dxmt/build/src/$dev"; do
+   for cand in ${CIDRE_DXMT_DIR:+"$CIDRE_DXMT_DIR/$1"} "$R/dxmt/$1" "$R/src/dxmt/build/src/$dev"; do
       [ -f "$cand" ] && { echo "$cand"; return 0; }
    done
    return 1
 }
+source_dxmt32() { # <fichier> : la variante i386, memes sources
+   case $1 in
+      d3d10core.dll) dev=d3d10/$1 ;; winemetal.dll) dev=winemetal/$1 ;; *) dev=${1%.dll}/$1 ;;
+   esac
+   for cand in ${CIDRE_DXMT_DIR:+"$CIDRE_DXMT_DIR/i386/$1"} "$R/dxmt/i386/$1" "$R/src/dxmt/build-i386/src/$dev"; do
+      [ -f "$cand" ] && { echo "$cand"; return 0; }
+   done
+   return 1
+}
+est_pe32() { # <exe> : champ Machine de l'en-tete PE = 0x014c (i386)
+   pe=$(od -An -t u4 -j 60 -N 4 "$1" 2>/dev/null | tr -d ' ')
+   case $pe in ''|*[!0-9]*) return 1 ;; esac
+   [ "$(od -An -t x2 -j $((pe + 4)) -N 2 "$1" 2>/dev/null | tr -d ' ')" = 014c ]
+}
+retirer_dxmt32() { # <raison> : remet les builtins i386 de Wine si DXMT i386 est pose
+   for d in $DXMT_DLLS; do
+      [ -f "$WINDLL32/$d.dll" ] && est_dxmt "$WINDLL32/$d.dll" || continue
+      if [ -f "$BUILTINS_WINE/i386/$d.dll" ]; then
+         poser "$BUILTINS_WINE/i386/$d.dll" "$WINDLL32/$d.dll"
+         echo "    d3d11 : $1 -> builtin Wine i386 $d.dll remis (DXMT etait pose)" >>"$JOURNAL"
+      else
+         echo "    d3d11 : $d.dll i386 est celui de DXMT et le builtin Wine n'a pas de sauvegarde : reinstaller le runtime (cidre setup)" >>"$JOURNAL"
+      fi
+   done
+   rm -f "$WINDLL32/winemetal.dll" "$SYSWOW/winemetal.dll"
+}
+DXMT32=
+if [ -d "$WINDLL32" ]; then
+   DXMT32=1
+   for f in d3d11.dll dxgi.dll d3d10core.dll winemetal.dll; do
+      source_dxmt32 "$f" >/dev/null || { DXMT32=; break; }
+   done
+fi
+if [ "$D3D11" = dxmt ] && [ -z "$DXMT32" ] && est_pe32 "$DOSSIER/$PROG"; then
+   echo "    d3d11 : jeu 32 bits et pas de DXMT i386 dans ce runtime (ni $R/dxmt/i386 ni src/dxmt/build-i386) : on reste en dxvk" >>"$JOURNAL"
+   D3D11=dxvk
+fi
 if [ "$D3D11" = dxmt ]; then
    for f in d3d11.dll dxgi.dll d3d10core.dll winemetal.dll winemetal.so; do
       source_dxmt "$f" >/dev/null || {
@@ -317,12 +365,29 @@ if [ "$D3D11" = dxmt ]; then
    poser "$(source_dxmt winemetal.so)"  "$WINUNIX/winemetal.so"
    # une copie en system32 pour que le chargeur resolve l'import de d3d11.dll
    [ -d "$SYS32" ] && poser "$(source_dxmt winemetal.dll)" "$SYS32/winemetal.dll"
+   # la variante i386, pour un jeu (ou un lanceur de jeu) 32 bits : memes gestes,
+   # builtins i386 de Wine gardes a part, winemetal.dll i386 aussi en syswow64
+   if [ -n "$DXMT32" ]; then
+      for d in $DXMT_DLLS; do
+         if [ -f "$WINDLL32/$d.dll" ] && ! est_dxmt "$WINDLL32/$d.dll"; then
+            mkdir -p "$BUILTINS_WINE/i386"
+            cp -p "$WINDLL32/$d.dll" "$BUILTINS_WINE/i386/$d.dll"
+         fi
+         poser "$(source_dxmt32 $d.dll)" "$WINDLL32/$d.dll"
+      done
+      poser "$(source_dxmt32 winemetal.dll)" "$WINDLL32/winemetal.dll"
+      [ -d "$SYSWOW" ] && poser "$(source_dxmt32 winemetal.dll)" "$SYSWOW/winemetal.dll"
+   else
+      # pas de variante i386 dans ce DXMT : celle d'un autre (essai, runtime
+      # precedent) ne doit pas rester a cote d'une winemetal.so qui n'est pas la sienne
+      retirer_dxmt32 "dxmt sans i386"
+   fi
    DXMT_OV="dxgi,d3d11,d3d10core,winemetal=b"
    case ";${CIDRE_DLL_OVERRIDES:-};" in
       *";$DXMT_OV;"*) : ;;
       *) export CIDRE_DLL_OVERRIDES="${CIDRE_DLL_OVERRIDES:+$CIDRE_DLL_OVERRIDES;}$DXMT_OV" ;;
    esac
-   echo "    d3d11 : dxmt pose depuis $(dirname "$(source_dxmt d3d11.dll)") (builtins Wine gardes dans $BUILTINS_WINE)" >>"$JOURNAL"
+   echo "    d3d11 : dxmt pose depuis $(dirname "$(source_dxmt d3d11.dll)")${DXMT32:+, i386 compris} (builtins Wine gardes dans $BUILTINS_WINE)" >>"$JOURNAL"
    # L'overlay Steam (gameoverlayrenderer.dylib) accroche presentDrawable: ; avec
    # DXMT la premiere image s'affiche puis plus rien n'avance (verifie sur
    # Expedition 33 le 2026-10-11). On le coupe pour ce lancement, quoi que dise
@@ -354,6 +419,7 @@ else
          echo "    d3d11 : $d.dll est celui de DXMT et le builtin Wine n'a pas de sauvegarde : reinstaller le runtime (cidre setup)" >>"$JOURNAL"
       fi
    done
+   retirer_dxmt32 dxvk
    rm -f "$WINDLL/winemetal.dll" "$WINUNIX/winemetal.so" "$SYS32/winemetal.dll"
 fi
 

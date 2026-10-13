@@ -6,12 +6,20 @@
 # thread_local native lue par « ldr [x18, #0x58] » faute apres une preemption
 # (gel vu sur Expedition 33, patch 0114). Idempotent : reutilise un build-dir
 # deja configure (ninja incremental).
+# Puis la variante i386 (quatre DLL PE32, cross-file amont build-win32.txt tel
+# quel) pour les jeux 32 bits : un PE32 ne charge rien de aarch64-windows, et sans
+# DXMT i386 il tombe sur le d3d11 builtin de Wine (wined3d), qui refuse le device
+# (Dead Cells, « DXError 887A0004 », 2026-10-13). C'est du code x86 emule par FEX :
+# ni x18 ni emulated-tls ne le concernent, et il parle a la meme winemetal.so par
+# ses thunks wow64.
 #   sh tests/construire_dxmt.sh          # configure (si besoin), compile, verifie x18
 #   sh tests/construire_dxmt.sh poser    # idem, puis pose les 5 fichiers dans $R/dxmt/
-#                                        # (le dossier que prefere le lanceur), le
+#                                        # et les 4 DLL i386 dans $R/dxmt/i386/ (le
+#                                        # dossier que prefere le lanceur), le
 #                                        # precedent etant garde dans $R/dxmt.precedent/
-# Variables : DXMT_SRC (src/dxmt), DXMT_BUILD (src/dxmt/build), NATIVE_LLVM
-# (/opt/homebrew/opt/llvm@15), WINE_INSTALL (wine/wine11-arm64).
+# Variables : DXMT_SRC (src/dxmt), DXMT_BUILD (src/dxmt/build), DXMT_BUILD_I386
+# ($DXMT_BUILD-i386), NATIVE_LLVM (/opt/homebrew/opt/llvm@15), WINE_INSTALL
+# (wine/wine11-arm64).
 # Prerequis : Xcode + composant Metal Toolchain (xcodebuild -downloadComponent
 # MetalToolchain), brew llvm@15 arm64, ninja arm64 (/opt/homebrew/bin, pas le
 # /usr/local/bin x86_64), meson de toolchain/bin, llvm-mingw de toolchain/.
@@ -23,12 +31,16 @@ MINGW="$R/toolchain/llvm-mingw/bin"
 J=$(sysctl -n hw.ncpu 2>/dev/null || echo 4)
 SRC=${DXMT_SRC:-$R/src/dxmt}
 BLD=${DXMT_BUILD:-$SRC/build}
+BLD32=${DXMT_BUILD_I386:-$BLD-i386}
 NATIVE_LLVM=${NATIVE_LLVM:-/opt/homebrew/opt/llvm@15}
 WINE_INSTALL=${WINE_INSTALL:-$R/wine/wine11-arm64}
 ACTION=${1:-construire}
 
 [ -f "$SRC/build-arm64ec.txt" ] || { echo "ECHEC : $SRC/build-arm64ec.txt absent (etape1 --cloner ?)"; exit 1; }
+[ -f "$SRC/build-win32.txt" ] || { echo "ECHEC : $SRC/build-win32.txt absent (etape1 --cloner ?)"; exit 1; }
 [ -x "$MINGW/arm64ec-w64-mingw32-clang" ] || { echo "ECHEC : llvm-mingw absent de $MINGW"; exit 1; }
+[ -x "$MINGW/i686-w64-mingw32-clang" ] || { echo "ECHEC : llvm-mingw i686 absent de $MINGW"; exit 1; }
+[ -f "$WINE_INSTALL/lib/wine/i386-windows/libwinecrt0.a" ] || { echo "ECHEC : Wine sans partie i386 ($WINE_INSTALL/lib/wine/i386-windows)"; exit 1; }
 [ -d "$NATIVE_LLVM" ] || { echo "ECHEC : LLVM natif absent ($NATIVE_LLVM)"; exit 1; }
 [ -d "$WINE_INSTALL/lib/wine" ] || { echo "ECHEC : Wine absent ($WINE_INSTALL)"; exit 1; }
 
@@ -96,6 +108,23 @@ for f in d3d11/d3d11.dll dxgi/dxgi.dll d3d10/d3d10core.dll winemetal/winemetal.d
 done
 [ $rc -eq 0 ] || exit $rc
 
+echo "== DXMT i386 -> $BLD32 =="
+if [ ! -f "$BLD32/build.ninja" ]; then
+   meson setup "$BLD32" "$SRC" --cross-file "$SRC/build-win32.txt" --buildtype release \
+      -Dnative_llvm_path="$NATIVE_LLVM" -Dwine_install_path="$WINE_INSTALL"
+fi
+meson compile -C "$BLD32" -j "$J"
+# quatre PE32 i386 marques builtin Wine (sans la marque, le =b du lanceur les refuse)
+for f in d3d11/d3d11.dll dxgi/dxgi.dll d3d10/d3d10core.dll winemetal/winemetal.dll; do
+   dll="$BLD32/src/$f"
+   [ -f "$dll" ] || { echo "ECHEC : $dll absent"; rc=1; continue; }
+   machine=$("$MINGW/llvm-readobj" --file-headers "$dll" | awk '/^ *Machine:/ { print $2 }')
+   if [ "$machine" != IMAGE_FILE_MACHINE_I386 ]; then echo "ECHEC : $f n'est pas un PE32 i386 ($machine)"; rc=1
+   elif ! LC_ALL=C grep -q -a "Wine builtin DLL" "$dll"; then echo "ECHEC : $f sans la marque builtin Wine"; rc=1
+   else echo "  i386 $f : PE32 i386, builtin Wine"; fi
+done
+[ $rc -eq 0 ] || exit $rc
+
 if [ "$ACTION" = "poser" ]; then
    echo "== pose dans $R/dxmt/ (precedent -> $R/dxmt.precedent/) =="
    if [ -d "$R/dxmt" ]; then
@@ -106,8 +135,12 @@ if [ "$ACTION" = "poser" ]; then
    for f in d3d11/d3d11.dll dxgi/dxgi.dll d3d10/d3d10core.dll winemetal/winemetal.dll winemetal/unix/winemetal.so; do
       cp "$BLD/src/$f" "$R/dxmt/"
    done
+   mkdir -p "$R/dxmt/i386"
+   for f in d3d11/d3d11.dll dxgi/dxgi.dll d3d10/d3d10core.dll winemetal/winemetal.dll; do
+      cp "$BLD32/src/$f" "$R/dxmt/i386/"
+   done
    for f in COPYING.LIB LICENSE README.md; do cp "$SRC/$f" "$R/dxmt/$f" 2>/dev/null || true; done
-   ls -l "$R/dxmt"
+   ls -l "$R/dxmt" "$R/dxmt/i386"
    echo "Pose faite. Le lanceur (option d3d11 = dxmt) prend $R/dxmt/ au prochain lancement ;"
    echo "pour revenir en arriere : rm -rf $R/dxmt && mv $R/dxmt.precedent $R/dxmt"
 else

@@ -1,0 +1,209 @@
+dxmt : les pointeurs d'un invite 32 bits partent en adresses de l'hote
+
+DXMT i386 (les quatre DLL PE32 des jeux 32 bits) parle a la meme winemetal.so
+que le 64 bits, par __wine_unix_call_wow64_funcs. Amont suppose que l'invite
+32 bits et l'hote partagent leurs adresses : WMTMemoryPointer porte le
+pointeur 32 bits et une moitie haute a zero, et le cote unix le dereference
+tel quel. C'est vrai sous Rosetta et sous Linux, pas dans le Wine arm64 natif
+de Cidre : macOS n'accorde rien sous 4 Gio a un processus arm64, la fenetre de
+l'invite est donc plus haut (16 Gio mesure, __wine_wow64_guest_base cote PE,
+__wine_wow64_host_base cote unix), et l'hote doit lire base + A la ou l'invite
+voit A.
+
+Sans cela, mesure par tests/sonde_heaps.sh (la sequence d'initialisation de
+Heaps, invite i686) : le device et la chaine se creent, puis chaque appel unix
+qui suit un pointeur faute. Sur un fil Wine la faute fait rendre
+STATUS_ACCESS_VIOLATION a l'appel, que UNIX_CALL ignore hors debug (« Failed
+to initialize shader », objets nuls, puis lecture de 0) ; dans le bloc que
+_MetalLayer_setProps envoie au fil principal Cocoa, qui n'est pas un fil Wine,
+le gestionnaire refaute sans fin : invite fige a 100 % dans ResizeBuffers.
+
+Le cote PE i386 remplit desormais la moitie haute avec celle de la fenetre
+(WMTGetGuestMemoryHighPart, lue une fois dans ntdll ; zero si le symbole
+n'existe pas, donc rien ne change sur un Wine en 1:1) : set(), WMT_MEMPTR_SET
+et les trois pointeurs passes comme entiers (PtrToUInt64, DispatchData). get()
+et get_accessible_or_null() tiennent pour accessible un pointeur dont la
+moitie haute est celle de la fenetre -- c'est le cas de la memoire que l'invite
+place lui-meme sous les tampons Metal. Le handle d'evenement de
+MTLSharedEvent_setWin32EventAtValue n'est pas une adresse : il ne passe plus
+par PtrToUInt64. Cote unix, les relais thunk32_SM50* convertissaient leurs
+pointeurs de 32 bits par UInt32ToPtr : elle ajoute la base.
+
+Les builds 64 bits (arm64ec, x86_64) ne changent pas : tout est sous
+__i386__, et WMTGuestPointerToUInt64 y est le cast d'avant.
+
+diff --git a/src/winemetal/Metal.hpp b/src/winemetal/Metal.hpp
+--- a/src/winemetal/Metal.hpp
++++ b/src/winemetal/Metal.hpp
+@@ -826,7 +826,7 @@
+ 
+   Reference<Library>
+   newLibrary(const void *bytecode, uint64_t bytecode_length, Error &error) {
+-    auto data = DispatchData_alloc_init((uint64_t)bytecode, bytecode_length);
++    auto data = DispatchData_alloc_init(WMTGuestPointerToUInt64(bytecode), bytecode_length);
+     auto ret = Reference<Library>(MTLDevice_newLibrary(handle, data, &error.handle));
+     NSObject_release(data);
+     return ret;
+@@ -1100,7 +1100,7 @@
+ 
+ inline Reference<DispatchData>
+ MakeDispatchData(void *native_ptr, uint64_t length) {
+-  return Reference<DispatchData>(DispatchData_alloc_init((uint64_t)native_ptr, length));
++  return Reference<DispatchData>(DispatchData_alloc_init(WMTGuestPointerToUInt64(native_ptr), length));
+ }
+ 
+ inline Object
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -1866,9 +1866,22 @@
+   return STATUS_SUCCESS;
+ }
+ 
++// Host address of the 32-bit guest's address 0. Zero when guest and host share
++// addresses; a Wine that has to place the guest's 4 GiB window elsewhere (native
++// arm64 macOS: nothing can be mapped below 4 GiB) publishes it from ntdll.so.
++static uint64_t
++wow64_host_base(void) {
++  static uint64_t base = ~0ull;
++  if (base == ~0ull) {
++    uint64_t (*pfn_host_base)(void) = dlsym(RTLD_DEFAULT, "__wine_wow64_host_base");
++    base = pfn_host_base ? pfn_host_base() : 0;
++  }
++  return base;
++}
++
+ static inline void *
+ UInt32ToPtr(uint32_t v) {
+-  return (void *)(uint64_t)v;
++  return v ? (void *)(wow64_host_base() + v) : NULL;
+ }
+ 
+ #ifndef DXMT_NATIVE
+diff --git a/src/winemetal/winemetal.h b/src/winemetal/winemetal.h
+--- a/src/winemetal/winemetal.h
++++ b/src/winemetal/winemetal.h
+@@ -121,6 +121,32 @@
+   WMTResourceOptionCPUCacheModeDefault = 0,
+   WMTResourceOptionCPUCacheModeWriteCombined = 1,
+ };
++
++#if defined(__i386__)
++// High 32 bits of the host address of 32-bit guest memory: what the unix side must
++// see above a guest pointer to dereference it. Zero when guest and host share
++// addresses (the upstream assumption); non-zero when Wine places the guest's 4 GiB
++// window above 4 GiB (native arm64 macOS, where nothing can be mapped lower).
++WINEMETAL_API uint32_t WMTGetGuestMemoryHighPart(void);
++
++static inline uint32_t
++WMTGuestMemoryHighPart(void) {
++  static uint32_t high_part = ~0u;
++  if (high_part == ~0u)
++    high_part = WMTGetGuestMemoryHighPart();
++  return high_part;
++}
++#endif
++
++// A pointer handed to the unix side as an integer: the host address of that memory.
++static inline uint64_t
++WMTGuestPointerToUInt64(const void *p) {
++#if defined(__i386__)
++  return p ? ((uint64_t)WMTGuestMemoryHighPart() << 32) | (uintptr_t)p : 0;
++#else
++  return (uint64_t)(uintptr_t)p;
++#endif
++}
+ 
+ struct WMTMemoryPointer {
+   void *ptr;
+@@ -132,7 +158,7 @@
+   void
+   set(void *p) {
+ #if defined(__i386__)
+-    high_part = 0;
++    high_part = p ? WMTGuestMemoryHighPart() : 0;
+ #endif
+     ptr = p;
+   }
+@@ -140,7 +166,7 @@
+   void *
+   get() {
+ #if defined(__i386__)
+-    assert(!high_part && "inaccessible 64-bit pointer");
++    assert((!high_part || high_part == WMTGuestMemoryHighPart()) && "inaccessible 64-bit pointer");
+ #endif
+     return ptr;
+   }
+@@ -148,7 +174,7 @@
+   void *
+   get_accessible_or_null() {
+ #if defined(__i386__)
+-    if (high_part)
++    if (high_part && high_part != WMTGuestMemoryHighPart())
+       return nullptr;
+ #endif
+     return ptr;
+@@ -166,7 +192,7 @@
+   void
+   set(const void *p) {
+ #if defined(__i386__)
+-    high_part = 0;
++    high_part = p ? WMTGuestMemoryHighPart() : 0;
+ #endif
+     ptr = p;
+   }
+@@ -174,7 +200,7 @@
+   const void *
+   get() {
+ #if defined(__i386__)
+-    assert(!high_part && "inaccessible 64-bit pointer");
++    assert((!high_part || high_part == WMTGuestMemoryHighPart()) && "inaccessible 64-bit pointer");
+ #endif
+     return ptr;
+   }
+@@ -183,8 +209,8 @@
+ 
+ #if defined(__i386__)
+ #define WMT_MEMPTR_SET(obj, value)                                                                                     \
+-  obj.high_part = 0;                                                                                                   \
+-  obj.ptr = value
++  obj.ptr = value;                                                                                                     \
++  obj.high_part = obj.ptr ? WMTGuestMemoryHighPart() : 0
+ #else
+ #define WMT_MEMPTR_SET(obj, value) obj.ptr = value
+ #endif
+diff --git a/src/winemetal/winemetal_thunks.c b/src/winemetal/winemetal_thunks.c
+--- a/src/winemetal/winemetal_thunks.c
++++ b/src/winemetal/winemetal_thunks.c
+@@ -19,8 +19,21 @@
+   }
+ #endif
+ 
+-#define PtrToUInt64(v) ((uint64_t)(uintptr_t)(v))
++#define PtrToUInt64(v) WMTGuestPointerToUInt64(v)
+ 
++#if defined(__i386__)
++#include "winbase.h"
++
++WINEMETAL_API uint32_t
++WMTGetGuestMemoryHighPart(void) {
++  // A Wine that places the 32-bit guest's window above 4 GiB exports its base
++  // from ntdll (a multiple of 4 GiB); any other Wine maps the guest 1:1.
++  const uint64_t *guest_base =
++      (const uint64_t *)GetProcAddress(GetModuleHandleA("ntdll.dll"), "__wine_wow64_guest_base");
++  return guest_base ? (uint32_t)(*guest_base >> 32) : 0;
++}
++#endif
++
+ WINEMETAL_API void
+ NSObject_retain(obj_handle_t obj) {
+   UNIX_CALL(0, &obj);
+@@ -903,7 +916,7 @@
+   struct unixcall_mtlsharedevent_setevent params;
+   params.shared_event = event;
+   params.shared_event_listener = shared_event_listener;
+-  params.event_handle = (obj_handle_t)PtrToUInt64(nt_event_handle);
++  params.event_handle = (obj_handle_t)(uintptr_t)nt_event_handle; // a handle, not memory
+   params.value = at_value;
+   UNIX_CALL(104, &params);
+ }

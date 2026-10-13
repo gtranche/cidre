@@ -1,8 +1,12 @@
 #!/bin/sh
 # DXMT est le rendu Direct3D 11 par defaut, mais un jeu peut le refuser au
 # demarrage (DXGI_ERROR_UNSUPPORTED : un format, un niveau de fonctionnalite ou
-# un mode de presentation que DXMT ne fait pas ; Dead Cells, moteur Heaps, le
-# 2026-10-13). Ce script lit le journal du lancement qui vient de finir et, si
+# un mode de presentation que DXMT ne fait pas). Le cas qui a fait ecrire ce
+# script, Dead Cells le 2026-10-13, n'en etait pas un : jeu 32 bits, DXMT pose
+# pour le 64 bits seulement, c'est le d3d11 builtin de Wine qui refusait
+# (tests/sonde_heaps.sh) ; depuis, le lanceur pose DXMT i386 ou part en dxvk
+# d'emblee. Le filet reste pour les vrais refus. Ce script lit le journal du
+# lancement qui vient de finir et, si
 # le jeu a ete lance en DXMT et porte une signature de refus, enregistre le
 # repli d3d11 = dxvk dans le profil utilisateur de ce jeu, pour que le
 # prochain lancement passe. Il ecrit ce qu'il a fait (une ligne, style
