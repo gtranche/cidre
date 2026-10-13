@@ -286,16 +286,17 @@ case $CMD in
             if (json) print "]"
          }' ;;
    generer-index)
-      echo "# Index de la base de profils : une table par fiche (nom, etat, date)."
+      echo "# Index de la base de profils : une table par fiche (nom, etat, date, empreinte)."
       echo "# Genere par \`sh tests/fiche_profil.sh generer-index > profils/index.toml\` ;"
       echo "# tests/tester_profils.sh verifie qu'il est a jour. C'est lui que \`cidre profils maj\`"
-      echo "# telecharge d'abord, pour savoir quelles fiches prendre."
+      echo "# telecharge d'abord, pour savoir quelles fiches prendre : seules celles dont"
+      echo "# l'empreinte (md5 du fichier) a change sont retelechargees."
       for f in "$LIVRE"/*.toml; do
          [ -f "$f" ] || continue
          a=$(basename "$f" .toml); [ "$a" = index ] && continue
-         toml_plat "$f" | LC_ALL=C awk -F'\t' -v a="$a" '
+         toml_plat "$f" | LC_ALL=C awk -F'\t' -v a="$a" -v h="$(md5 -q "$f" 2>/dev/null || md5sum "$f" | cut -c1-32)" '
             ($1 == "jeu" && $2 == "nom") || ($1 == "compat" && ($2 == "etat" || $2 == "date")) { gsub(/\\/, "\\\\", $4); gsub(/"/, "\\\"", $4); c[$2] = $4 }
-            END { print ""; print "[" a "]"; print "nom = \"" c["nom"] "\""; print "etat = \"" (c["etat"] == "" ? "non-teste" : c["etat"]) "\""; print "date = \"" c["date"] "\"" }'
+            END { print ""; print "[" a "]"; print "nom = \"" c["nom"] "\""; print "etat = \"" (c["etat"] == "" ? "non-teste" : c["etat"]) "\""; print "date = \"" c["date"] "\""; print "empreinte = \"" h "\"" }'
       done ;;
    maj)
       # L index d abord, puis chaque fiche qu il nomme, dans un dossier de travail ;
@@ -309,9 +310,17 @@ case $CMD in
          [ "$ARG" = json ] && echo '{"ok":false,"erreur":"index.toml injoignable"}' || echo "base de profils : index injoignable ($URL) ; la copie livree sert" >&2
          exit 1
       fi
-      n=0; rates=""
+      # Incremental : une fiche deja en cache dont l'empreinte (md5, portee par
+      # l'index) n'a pas change n'est pas retelechargee. Un index sans empreintes
+      # (ancien) retelecharge tout.
+      empreinte() { md5 -q "$1" 2>/dev/null || md5sum "$1" | cut -c1-32; }
+      n=0; gardees=0; rates=""
       for a in $(toml_plat "$T/index.toml" | cut -f1 | awk '!vu[$0]++'); do
          id_sur "$a" || continue
+         e=$(toml_plat "$T/index.toml" | LC_ALL=C awk -F'\t' -v a="$a" '$1 == a && $2 == "empreinte" { print $4; exit }')
+         if [ -n "$e" ] && [ -f "$BASE/$a.toml" ] && [ "$(empreinte "$BASE/$a.toml")" = "$e" ]; then
+            gardees=$((gardees + 1)); continue
+         fi
          if prendre "$a.toml"; then n=$((n + 1)); else rates="$rates $a"; fi
       done
       mkdir -p "$BASE"
@@ -325,11 +334,11 @@ case $CMD in
       date '+%Y-%m-%dT%H:%M:%S%z' >"$BASE/horodatage"
       rm -rf "$T"
       if [ "$ARG" = json ]; then
-         printf '{"ok":true,"fiches":%s,"rates":[' "$n"; sep=""
+         printf '{"ok":true,"fiches":%s,"gardees":%s,"rates":[' "$n" "$gardees"; sep=""
          for a in $rates; do printf '%s"%s"' "$sep" "$a"; sep=","; done
          printf '],"horodatage":"%s"}\n' "$(cat "$BASE/horodatage")"
       else
-         echo "base de profils : $n fiche(s) mise(s) a jour dans $BASE"
+         echo "base de profils : $n fiche(s) mise(s) a jour dans $BASE ($gardees inchangee(s))"
          [ -z "$rates" ] || echo "  non recues :$rates" >&2
       fi
       [ -z "$rates" ] ;;

@@ -310,6 +310,15 @@ verif "maj : fiche en cache identique" "" "$(cmp "$CIDRE_PROFILS_BASE/1903340.to
 verif "maj : horodatage pose" "20" "$(cut -c1-2 "$CIDRE_PROFILS_BASE/horodatage")"
 verif "maj : fiche sortie de l'index retiree" "" "$(ls "$CIDRE_PROFILS_BASE" | grep 424242)"
 verif "index : origine cache" "cache" "$(sh "$R/tests/fiche_profil.sh" index | awk -F'\t' '$1==1903340{print $5}')"
+# seconde mise a jour : tout est deja en cache avec la bonne empreinte, rien n'est retelecharge
+sortie=$(CIDRE_PROFILS_URL="file://$R/profils/" sh "$R/tests/fiche_profil.sh" maj json)
+verif "maj incrementale : 0 fiche retelechargee" "\"fiches\":0" "$(printf '%s' "$sortie" | grep -o '"fiches":[0-9]*')"
+verif "maj incrementale : $n fiches gardees" "\"gardees\":$n" "$(printf '%s' "$sortie" | grep -o '"gardees":[0-9]*')"
+# une fiche modifiee localement (empreinte differente) est reprise
+printf '[cidre]\ntso = false\n' >"$CIDRE_PROFILS_BASE/1903340.toml"
+sortie=$(CIDRE_PROFILS_URL="file://$R/profils/" sh "$R/tests/fiche_profil.sh" maj json)
+verif "maj incrementale : 1 fiche changee retelechargee" "\"fiches\":1" "$(printf '%s' "$sortie" | grep -o '"fiches":[0-9]*')"
+verif "maj incrementale : fiche reprise identique" "" "$(cmp "$CIDRE_PROFILS_BASE/1903340.toml" "$R/profils/1903340.toml" 2>&1)"
 sortie=$(CIDRE_PROFILS_URL="file://$T/nulle-part/" sh "$R/tests/fiche_profil.sh" maj json 2>/dev/null); rc=$?
 verif "hors reseau : code 1" "1" "$rc"
 verif "hors reseau : json ok=false" '{"ok":false' "$(printf '%s' "$sortie" | cut -c1-11)"
