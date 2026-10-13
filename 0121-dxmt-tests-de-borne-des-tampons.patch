@@ -1,0 +1,326 @@
+dxmt : options d3d11.groupedBufferLoad et d3d11.uncheckedBufferRead (tests de borne des tampons)
+
+Mesure de depart (banc du 2026-10-13, Expedition 33, meme scene) : l'etage
+sommets coute 8,9 ms par image sous DXMT et 5,4 ms sous D3DMetal. Les vertex
+shaders AIR de D3DMetal, sortis de son cache et rejoues a cote de ceux
+d'airconv dans le banc Metal natif, sont 2 fois moins chers sur le skinning et
+pas meilleurs ailleurs ; desassemble (code AGX), le meme chemin execute compte
+57 % d'instructions de plus chez airconv, dont 35 chargements memoire et 21
+attentes contre 14 et 7. Deux causes viennent des tests de borne :
+
+  - ld_structured / ld_raw : airconv teste et charge chaque mot de 32 bits a
+    part (select du pointeur ou nul, puis load). Le compilateur Metal ne
+    fusionne pas ces chargements : un load et une attente par mot. D3DMetal
+    teste l'element une fois et lit les mots voisins sur le meme pointeur.
+  - Buffer<T> : chaque lecture est precedee d'un test d'index (select idx, -1).
+    D3DMetal n'en fait pas.
+
+d3d11.groupedBufferLoad : pour un tampon structure, un seul test par element
+(la longueur est un multiple du pas : l'element est tout entier dedans ou tout
+entier dehors), identique pour tous les chargements du meme element, que
+EarlyCSE reduit a un ; les mots se lisent par GEP constant a partir du pointeur
+verifie. Decalage non constant ou hors de l'element, et tampon brut : un test
+par instruction, sur le mot le plus haut (sans debordement : Index < mots - k).
+Memoire de groupe et tampons « coherents » : inchanges. Seul ecart de
+comportement : un chargement brut a cheval sur la fin du tampon se lit a zero
+en entier au lieu de mot par mot.
+
+d3d11.uncheckedBufferRead : pas de test de borne sur la lecture d'un Buffer<T>
+(etage sommets, pixel et calcul) ; hors borne, c'est Metal qui decide (zero sur
+les GPU Apple essayes), ou Direct3D 11 impose zero.
+
+Les deux sont a False par defaut (rien ne change sans elles) et passent par
+deux drapeaux de compilation, SM50_SHADER_FLAG_GROUPED_BUFFER_LOAD et
+SM50_SHADER_FLAG_UNCHECKED_BUFFER_READ, qui entrent dans le digest de variante
+comme ceux de 0112 : chaque combinaison a ses entrees de cache, les shaders
+sont recompiles au premier lancement d'une variante.
+
+Hors jeu (retouche equivalente de l'AIR du cache, banc Metal natif, 61 vertex
+shaders d'Expedition 33) : test groupe -8 % sur les VS de passe de base tires
+au hasard (mediane -9 %), -4 % sur les 10 plus lourds (-13 % sur le skinning),
+-5 a -7 % sur les VS d'ombres ; avec Buffer<T> sans borne : -9 %, -10 %, -5 a
+-7 %. Sonde d'image : tests/sonde_tampons.sh (tests/probe_d3d11_tampons.c),
+condenses identiques au bit pres dans et hors des tampons, ecart attendu
+detecte sur le chargement a cheval ; le vertex shader de la sonde passe de 19
+tests de borne a 3.
+
+diff --git a/dxmt.conf b/dxmt.conf
+index 60707b4..c254ab8 100644
+--- a/dxmt.conf
++++ b/dxmt.conf
+@@ -123,6 +123,26 @@
+ 
+ # d3d11.relaxedGroupshared = False
+ 
++# Chargements de tampons (ld_structured, ld_raw) : un seul test de borne par
++# element de tampon structure (commun a tous les chargements du meme element),
++# un par instruction pour un tampon brut (sur le mot le plus haut) ; les mots
++# se lisent a partir du pointeur verifie. Sans l'option chaque mot de 32 bits
++# est teste et charge a part, et le compilateur Metal emet un chargement et
++# une attente par mot. Seul ecart de comportement : un chargement brut a cheval
++# sur la fin du tampon se lit a zero en entier (au lieu de mot par mot).
++#
++# Supported values: True, False
++
++# d3d11.groupedBufferLoad = False
++
++# Lecture de Buffer<T> (texture_buffer) sans test de borne. Direct3D 11 rend
++# zero pour un index hors borne ; sans le test, c'est Metal qui decide (zero ou
++# texel de bord sur les GPU Apple). C'est ce que fait D3DMetal.
++#
++# Supported values: True, False
++
++# d3d11.uncheckedBufferRead = False
++
+ # Override the maximum feature level of created d3d11 device.
+ #
+ # Supported values: 9_1, 9_2, 9_3, 10_0, 10_1, 11_0, 11_1, 12_0, 12_1
+diff --git a/src/airconv/airconv_public.h b/src/airconv/airconv_public.h
+index 86cf811..58ec791 100644
+--- a/src/airconv/airconv_public.h
++++ b/src/airconv/airconv_public.h
+@@ -251,6 +251,11 @@ enum SM50_SHADER_FLAG {
+   SM50_SHADER_FLAG_FAST_MATH = 1 << 2,
+   /* acces a la memoire de groupe (TGSM) sans volatile : les barrieres suffisent. */
+   SM50_SHADER_FLAG_TGSM_NO_VOLATILE = 1 << 3,
++  /* ld_raw / ld_structured a plusieurs composantes : un seul test de borne pour
++     l'instruction, les mots voisins lus a partir du pointeur verifie. */
++  SM50_SHADER_FLAG_GROUPED_BUFFER_LOAD = 1 << 4,
++  /* lecture de Buffer<T> (texture_buffer) sans test de borne. */
++  SM50_SHADER_FLAG_UNCHECKED_BUFFER_READ = 1 << 5,
+ };
+ 
+ struct SM50_SHADER_COMMON_DATA {
+diff --git a/src/airconv/dxbc_converter.cpp b/src/airconv/dxbc_converter.cpp
+index 681f3e7..499a423 100644
+--- a/src/airconv/dxbc_converter.cpp
++++ b/src/airconv/dxbc_converter.cpp
+@@ -412,6 +412,8 @@ llvm::Error convert_dxbc_pixel_shader(
+           .defuseFma = bool(shader_flags & SM50_SHADER_FLAG_DEFUSE_FMA),
+           .fastMath = bool(shader_flags & SM50_SHADER_FLAG_FAST_MATH),
+           .tgsmNoVolatile = bool(shader_flags & SM50_SHADER_FLAG_TGSM_NO_VOLATILE),
++          .groupedBufferLoad = bool(shader_flags & SM50_SHADER_FLAG_GROUPED_BUFFER_LOAD),
++          .uncheckedBufferRead = bool(shader_flags & SM50_SHADER_FLAG_UNCHECKED_BUFFER_READ),
+       },
+       builder, nulldbg
+   );
+@@ -539,6 +541,8 @@ llvm::Error convert_dxbc_compute_shader(
+           .defuseFma = bool(shader_flags & SM50_SHADER_FLAG_DEFUSE_FMA),
+           .fastMath = bool(shader_flags & SM50_SHADER_FLAG_FAST_MATH),
+           .tgsmNoVolatile = bool(shader_flags & SM50_SHADER_FLAG_TGSM_NO_VOLATILE),
++          .groupedBufferLoad = bool(shader_flags & SM50_SHADER_FLAG_GROUPED_BUFFER_LOAD),
++          .uncheckedBufferRead = bool(shader_flags & SM50_SHADER_FLAG_UNCHECKED_BUFFER_READ),
+       },
+       builder, nulldbg
+   );
+@@ -758,6 +762,8 @@ llvm::Error convert_dxbc_vertex_shader(
+           .defuseFma = bool(shader_flags & SM50_SHADER_FLAG_DEFUSE_FMA),
+           .fastMath = bool(shader_flags & SM50_SHADER_FLAG_FAST_MATH),
+           .tgsmNoVolatile = bool(shader_flags & SM50_SHADER_FLAG_TGSM_NO_VOLATILE),
++          .groupedBufferLoad = bool(shader_flags & SM50_SHADER_FLAG_GROUPED_BUFFER_LOAD),
++          .uncheckedBufferRead = bool(shader_flags & SM50_SHADER_FLAG_UNCHECKED_BUFFER_READ),
+       },
+       builder, nulldbg
+   );
+diff --git a/src/airconv/dxbc_converter_gs.cpp b/src/airconv/dxbc_converter_gs.cpp
+index 69a3626..1096b8c 100644
+--- a/src/airconv/dxbc_converter_gs.cpp
++++ b/src/airconv/dxbc_converter_gs.cpp
+@@ -181,6 +181,8 @@ convert_dxbc_geometry_shader(
+           .defuseFma = bool(shader_flags & SM50_SHADER_FLAG_DEFUSE_FMA),
+           .fastMath = bool(shader_flags & SM50_SHADER_FLAG_FAST_MATH),
+           .tgsmNoVolatile = bool(shader_flags & SM50_SHADER_FLAG_TGSM_NO_VOLATILE),
++          .groupedBufferLoad = bool(shader_flags & SM50_SHADER_FLAG_GROUPED_BUFFER_LOAD),
++          .uncheckedBufferRead = bool(shader_flags & SM50_SHADER_FLAG_UNCHECKED_BUFFER_READ),
+       },
+       builder, nulldbg
+   );
+@@ -623,6 +625,8 @@ convert_dxbc_vertex_for_geometry_shader(
+           .defuseFma = bool(shader_flags & SM50_SHADER_FLAG_DEFUSE_FMA),
+           .fastMath = bool(shader_flags & SM50_SHADER_FLAG_FAST_MATH),
+           .tgsmNoVolatile = bool(shader_flags & SM50_SHADER_FLAG_TGSM_NO_VOLATILE),
++          .groupedBufferLoad = bool(shader_flags & SM50_SHADER_FLAG_GROUPED_BUFFER_LOAD),
++          .uncheckedBufferRead = bool(shader_flags & SM50_SHADER_FLAG_UNCHECKED_BUFFER_READ),
+       },
+       builder, nulldbg
+   );
+diff --git a/src/airconv/dxbc_converter_ts.cpp b/src/airconv/dxbc_converter_ts.cpp
+index c0641f6..0375efc 100644
+--- a/src/airconv/dxbc_converter_ts.cpp
++++ b/src/airconv/dxbc_converter_ts.cpp
+@@ -336,6 +336,8 @@ convert_dxbc_vertex_hull_shader(
+           .defuseFma = bool(shader_flags & SM50_SHADER_FLAG_DEFUSE_FMA),
+           .fastMath = bool(shader_flags & SM50_SHADER_FLAG_FAST_MATH),
+           .tgsmNoVolatile = bool(shader_flags & SM50_SHADER_FLAG_TGSM_NO_VOLATILE),
++          .groupedBufferLoad = bool(shader_flags & SM50_SHADER_FLAG_GROUPED_BUFFER_LOAD),
++          .uncheckedBufferRead = bool(shader_flags & SM50_SHADER_FLAG_UNCHECKED_BUFFER_READ),
+       },
+       builder, nulldbg
+   );
+@@ -877,6 +879,8 @@ convert_dxbc_tesselator_domain_shader(
+           .defuseFma = bool(shader_flags & SM50_SHADER_FLAG_DEFUSE_FMA),
+           .fastMath = bool(shader_flags & SM50_SHADER_FLAG_FAST_MATH),
+           .tgsmNoVolatile = bool(shader_flags & SM50_SHADER_FLAG_TGSM_NO_VOLATILE),
++          .groupedBufferLoad = bool(shader_flags & SM50_SHADER_FLAG_GROUPED_BUFFER_LOAD),
++          .uncheckedBufferRead = bool(shader_flags & SM50_SHADER_FLAG_UNCHECKED_BUFFER_READ),
+       },
+       builder, nulldbg
+   );
+diff --git a/src/airconv/nt/air_builder.hpp b/src/airconv/nt/air_builder.hpp
+index 4fb3eea..230f162 100644
+--- a/src/airconv/nt/air_builder.hpp
++++ b/src/airconv/nt/air_builder.hpp
+@@ -109,6 +109,8 @@ public:
+   bool defuseFma = false;
+   bool fastMath = false;
+   bool tgsmNoVolatile = false;
++  bool groupedBufferLoad = false;
++  bool uncheckedBufferRead = false;
+ };
+ 
+ class AIRBuilder {
+diff --git a/src/airconv/nt/dxbc_converter_base.cpp b/src/airconv/nt/dxbc_converter_base.cpp
+index b9b72b5..9f212ce 100644
+--- a/src/airconv/nt/dxbc_converter_base.cpp
++++ b/src/airconv/nt/dxbc_converter_base.cpp
+@@ -16,6 +16,7 @@
+  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+  */
+ 
++#include <algorithm>
+ #include "dxbc_converter_base.hpp"
+ #include "../dxbc_converter.hpp"
+ #include "air_builder.hpp"
+@@ -1363,7 +1364,9 @@ Converter::operator()(const InstLoad &load) {
+   case Texture::texture_buffer:
+     Address = LoadOperand(load.src_address, kMaskComponentX);
+     Offset = air.getInt(load.offsets[0]);
+-    OOB = ir.CreateICmpUGE(ir.CreateAdd(Address, Offset), DecodeTextureBufferElement(Tex->Metadata));
++    /* d3d11.uncheckedBufferRead : pas de test de borne sur la lecture d'un Buffer<T> */
++    if (!air.getOptions().uncheckedBufferRead)
++      OOB = ir.CreateICmpUGE(ir.CreateAdd(Address, Offset), DecodeTextureBufferElement(Tex->Metadata));
+     Address = ir.CreateAdd(Address, DecodeTextureBufferOffset(Tex->Metadata));
+     break;
+   case Texture::texture1d:
+@@ -2257,8 +2260,17 @@ Converter::operator()(const InstLoadRaw &load) {
+   }
+ 
+   llvm::Value *ValueVec = llvm::PoisonValue::get(air.getIntTy(4));
++  /* d3d11.groupedBufferLoad : un test de borne pour l'instruction, sur le mot le plus haut */
++  llvm::Value *Base = nullptr;
++  if (air.getOptions().groupedBufferLoad && !Buf->GlobalCoherent && !Volatile) {
++    uint32_t Last = 0;
++    for (auto [DstComp, _] : EnumerateComponents(MemoryAccessMask(Mask, Buf->Swizzle)))
++      Last = std::max<uint32_t>(Last, DstComp);
++    Base = CreateGEPInt32WithGroupedBoundCheck(Buf.value(), Index, Last);
++  }
+   for (auto [DstComp, _] : EnumerateComponents(MemoryAccessMask(Mask, Buf->Swizzle))) {
+-    auto Ptr = CreateGEPInt32WithBoundCheck(Buf.value(), ir.CreateAdd(Index, ir.getInt32(DstComp)));
++    auto Ptr = Base ? ir.CreateConstGEP1_32(ir.getInt32Ty(), Base, DstComp)
++                    : CreateGEPInt32WithBoundCheck(Buf.value(), ir.CreateAdd(Index, ir.getInt32(DstComp)));
+     auto ValueInt = Buf->GlobalCoherent ? (llvm::Value *)air.CreateDeviceCoherentLoad(ir.getInt32Ty(), Ptr)
+                                         : (llvm::Value *)ir.CreateLoad(ir.getInt32Ty(), Ptr, Volatile);
+     ValueVec = ir.CreateInsertElement(ValueVec, ValueInt, DstComp);
+@@ -2279,18 +2291,50 @@ Converter::operator()(const InstLoadStructured &load) {
+ 
+   auto IndexStruct =
+       ir.CreateMul(ir.getInt32(Buf->StructureStride >> 2), LoadOperand(load.src_address, kMaskComponentX));
+-  auto Index = ir.CreateAdd(IndexStruct, ir.CreateLShr(LoadOperand(load.src_byte_offset, kMaskComponentX), 2));
++  auto OffsetWords = ir.CreateLShr(LoadOperand(load.src_byte_offset, kMaskComponentX), 2);
++  auto Index = ir.CreateAdd(IndexStruct, OffsetWords);
++
++  /* d3d11.groupedBufferLoad : la longueur d'un tampon structure est un multiple du pas, un element est donc
++     tout entier dans le tampon ou tout entier dehors. Un seul test, sur l'element ; il est le meme pour
++     tous les chargements du meme element (EarlyCSE n'en garde qu'un) et les mots se lisent a partir du
++     pointeur verifie. Decalage non constant ou hors de l'element : test par instruction, sur le mot le plus haut. */
++  llvm::Value *ElemBase = nullptr;
++  uint32_t ElemOffset = 0;
++  if (air.getOptions().groupedBufferLoad && !Buf->GlobalCoherent && !Volatile && (Buf->StructureStride >> 2)) {
++    uint32_t Last = 0;
++    for (auto [DstComp, _] : EnumerateComponents(MemoryAccessMask(Mask, Buf->Swizzle)))
++      Last = std::max<uint32_t>(Last, DstComp);
++    if (auto Comp = ComponentFromScalarMask(Mask, Buf->Swizzle); Comp >= 0)
++      Last = Comp;
++    if (auto C = llvm::dyn_cast<llvm::ConstantInt>(OffsetWords);
++        C && C->getZExtValue() + Last < (Buf->StructureStride >> 2)) {
++      ElemOffset = C->getZExtValue();
++      ElemBase = CreateGEPInt32WithGroupedBoundCheck(Buf.value(), IndexStruct, (Buf->StructureStride >> 2) - 1);
++    }
++  }
+ 
+   if (auto Comp = ComponentFromScalarMask(Mask, Buf->Swizzle); Comp >= 0) {
+-    auto Ptr = CreateGEPInt32WithBoundCheck(Buf.value(), ir.CreateAdd(Index, ir.getInt32(Comp)));
++    auto Ptr = ElemBase ? ir.CreateConstGEP1_32(ir.getInt32Ty(), ElemBase, ElemOffset + Comp)
++                        : CreateGEPInt32WithBoundCheck(Buf.value(), ir.CreateAdd(Index, ir.getInt32(Comp)));
+     auto ValueInt = Buf->GlobalCoherent ? (llvm::Value *)air.CreateDeviceCoherentLoad(ir.getInt32Ty(), Ptr)
+                                         : (llvm::Value *)ir.CreateLoad(ir.getInt32Ty(), Ptr, Volatile);
+     return StoreOperand(load.dst, MaskSwizzle(ValueInt, Mask));
+   }
+ 
+   llvm::Value *ValueVec = llvm::PoisonValue::get(air.getIntTy(4));
++  /* d3d11.groupedBufferLoad : un test de borne pour l'instruction, sur le mot le plus haut */
++  llvm::Value *Base = nullptr;
++  if (ElemBase) {
++    Base = ir.CreateConstGEP1_32(ir.getInt32Ty(), ElemBase, ElemOffset);
++  } else if (air.getOptions().groupedBufferLoad && !Buf->GlobalCoherent && !Volatile) {
++    uint32_t Last = 0;
++    for (auto [DstComp, _] : EnumerateComponents(MemoryAccessMask(Mask, Buf->Swizzle)))
++      Last = std::max<uint32_t>(Last, DstComp);
++    Base = CreateGEPInt32WithGroupedBoundCheck(Buf.value(), Index, Last);
++  }
+   for (auto [DstComp, _] : EnumerateComponents(MemoryAccessMask(Mask, Buf->Swizzle))) {
+-    auto Ptr = CreateGEPInt32WithBoundCheck(Buf.value(), ir.CreateAdd(Index, ir.getInt32(DstComp)));
++    auto Ptr = Base ? ir.CreateConstGEP1_32(ir.getInt32Ty(), Base, DstComp)
++                    : CreateGEPInt32WithBoundCheck(Buf.value(), ir.CreateAdd(Index, ir.getInt32(DstComp)));
+     auto ValueInt = Buf->GlobalCoherent ? (llvm::Value *)air.CreateDeviceCoherentLoad(ir.getInt32Ty(), Ptr)
+                                         : (llvm::Value *)ir.CreateLoad(ir.getInt32Ty(), Ptr, Volatile);
+     ValueVec = ir.CreateInsertElement(ValueVec, ValueInt, DstComp);
+@@ -2913,6 +2957,19 @@ Converter::CreateGEPInt32WithBoundCheck(BufferResourceHandle &Buffer, llvm::Valu
+   );
+ }
+ 
++llvm::Value *
++Converter::CreateGEPInt32WithGroupedBoundCheck(BufferResourceHandle &Buffer, llvm::Value *Index, uint32_t Last) {
++  auto Addr = ir.CreateGEP(ir.getInt32Ty(), Buffer.Pointer, {Index});
++  if (!Buffer.Metadata) {
++    return Addr;
++  }
++  /* Index + Last < mots, sans debordement : Index < mots - Last quand mots > Last */
++  auto Words = ir.CreateLShr(DecodeRawBufferByteLength(Buffer.Metadata), 2);
++  auto Limit =
++      ir.CreateSelect(ir.CreateICmpUGT(Words, ir.getInt32(Last)), ir.CreateSub(Words, ir.getInt32(Last)), ir.getInt32(0));
++  return ir.CreateSelect(ir.CreateICmpULT(Index, Limit), Addr, llvm::Constant::getNullValue(Addr->getType()));
++}
++
+ llvm::Value *
+ Converter::CreateGEPInt32WithBoundCheck(AtomicBufferResourceHandle &Buffer, llvm::Value *Index) {
+   auto Addr = ir.CreateGEP(ir.getInt32Ty(), Buffer.Pointer, {Index});
+diff --git a/src/airconv/nt/dxbc_converter_base.hpp b/src/airconv/nt/dxbc_converter_base.hpp
+index c600d3d..3bc9cf4 100644
+--- a/src/airconv/nt/dxbc_converter_base.hpp
++++ b/src/airconv/nt/dxbc_converter_base.hpp
+@@ -498,6 +498,9 @@ public:
+ 
+   llvm::Value * CreateGEPInt32WithBoundCheck(BufferResourceHandle &Buffer, llvm::Value* Index);
+ 
++  /* d3d11.groupedBufferLoad : pointeur du mot Index, nul si le mot Index + Last sort du tampon */
++  llvm::Value * CreateGEPInt32WithGroupedBoundCheck(BufferResourceHandle &Buffer, llvm::Value* Index, uint32_t Last);
++
+   llvm::Value * CreateGEPInt32WithBoundCheck(AtomicBufferResourceHandle &Buffer, llvm::Value* Index);
+ 
+   [[nodiscard]]
+diff --git a/src/d3d11/d3d11_shader.cpp b/src/d3d11/d3d11_shader.cpp
+index 7ea67ec..dbd9e96 100644
+--- a/src/d3d11/d3d11_shader.cpp
++++ b/src/d3d11/d3d11_shader.cpp
+@@ -22,6 +22,10 @@ getGlobalShaderFlag() {
+       shader_flag |= SM50_SHADER_FLAG_FAST_MATH;
+     if (Config::getInstance().getOption<bool>("d3d11.relaxedGroupshared", false))
+       shader_flag |= SM50_SHADER_FLAG_TGSM_NO_VOLATILE;
++    if (Config::getInstance().getOption<bool>("d3d11.groupedBufferLoad", false))
++      shader_flag |= SM50_SHADER_FLAG_GROUPED_BUFFER_LOAD;
++    if (Config::getInstance().getOption<bool>("d3d11.uncheckedBufferRead", false))
++      shader_flag |= SM50_SHADER_FLAG_UNCHECKED_BUFFER_READ;
+   });
+   return shader_flag;
+ };
