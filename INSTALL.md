@@ -35,10 +35,20 @@ Les sauvegardes du jeu suivent : `cidre import` les retrouve dans la bouteille
 habituels des moteurs, au nom du jeu) et les copie sur le disque C: de Cidre, la
 ou le jeu les cherchera. Une sauvegarde plus recente deja presente cote Cidre
 n'est jamais ecrasee ; une plus ancienne est remplacee apres copie dans
-l'historique du jeu ; la bouteille n'est que lue. Quand Steam Cloud detient deja
-les sauvegardes (jeu qui ecrit par l'API de Steam), rien n'est copie : le client
-Steam les fournit. Quand le jeu declare a Steam un dossier macOS, elles sont
-copiees dans ce dossier, celui que Steam synchronise. Si Cidre ne trouve pas ou
+l'historique du jeu ; la bouteille n'est que lue.
+
+La regle, partout : ce que Steam Cloud synchronise a toujours la priorite -- ni
+la copie de Cidre, ni iCloud, ni une bouteille ne remplacent un fichier que
+Steam detient ; ils ne font que combler un dossier que Steam a vide. A la
+reprise d'une bouteille : un jeu qui ecrit par l'API de Steam ne recoit rien (le
+client Steam fournit ses sauvegardes) ; un jeu dont Steam synchronise un dossier
+macOS ne recoit celles de la bouteille que si ce dossier est vide et que le
+client Steam n'en connait aucune dans le nuage -- sinon Cidre ne copie rien, dit
+combien la bouteille en garde et ou, et `cidre import <appid> --saves --forcer`
+passe outre si tu y tiens (les versions remplacees sont gardees). Quand le
+client Steam n'a encore jamais synchronise le jeu sur ce Mac, Cidre ne peut pas
+savoir ce que garde le nuage : il comble le dossier et previent que Steam peut
+signaler un conflit a la sortie du jeu. Si Cidre ne trouve pas ou
 le jeu les range, il le dit : `cidre import <appid> --saves --dossier <dossier
 de la bouteille>` le lui montre. `cidre import <appid> --saves` rattrape un jeu
 repris par un Cidre plus ancien, ou rejoue depuis dans la bouteille.

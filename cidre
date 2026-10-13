@@ -501,6 +501,9 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
   cidre saves [<id>] [--json]     les sauvegardes : synchronisees par Steam Cloud quand il le peut (le jeu
                                   ecrit par l'API de Steam, ou declare un dossier macOS : Cidre y lie le
                                   sien), sinon copiees par Cidre dans un dossier de ce Mac
+                                  Regle : ce que Steam Cloud synchronise a toujours la priorite -- ni la copie
+                                  de Cidre, ni iCloud, ni une bouteille ne remplacent un fichier que Steam
+                                  detient ; ils ne font que combler un dossier que Steam a vide
                                   --json : "synchro" dit qui synchronise -- steam_api (API de Steam, par le
                                   pont), steam_macos (dossier lie, le client Steam s'en charge), copie (Cidre,
                                   vers le dossier "copie"), aucune (dossier inconnu) -- et "synchro_detail"
@@ -530,16 +533,20 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
                                   APFS, immediat et sans place prise ; la bouteille n'est pas modifiee
                                   ses sauvegardes sont ramenees de la bouteille la ou le jeu les cherchera,
                                   sans ecraser une sauvegarde plus recente (l'ancienne version est gardee) ;
-                                  rien n'est copie quand Steam Cloud les detient deja (API de Steam)
+                                  Steam d'abord : rien n'est copie quand Steam Cloud a deja des sauvegardes
+                                  du jeu (API de Steam, ou dossier macOS lie qui en contient)
                                   --move : deplace le jeu au lieu de le cloner (la bouteille ne l'a plus) ;
                                   refuse tant que la bouteille est en cours d'usage
                                   --json : la fiche du jeu, et "reprise_sauvegardes" : "etat" (copie, a_jour,
-                                  steam, avec_le_jeu, absentes, introuvable, erreur), "fichiers", "remplaces",
-                                  "gardes", "origine", "bouteille", "depuis", "vers", "message"
-  cidre import <appid> [<bouteille>] --saves [--dossier <chemin>] [--json]
+                                  steam, steam_prioritaire, avec_le_jeu, absentes, introuvable, erreur),
+                                  "fichiers", "remplaces", "gardes", "origine", "bouteille", "depuis", "vers",
+                                  "steam_fichiers", "conflit_possible", "message"
+  cidre import <appid> [<bouteille>] --saves [--dossier <chemin>] [--forcer] [--json]
                                   ramene seulement les sauvegardes d'un jeu deja repris (ou rejoue depuis dans
                                   la bouteille) ; <bouteille> : pour un jeu qui n'en vient pas
                                   --dossier : le dossier de la bouteille ou elles sont, si Cidre ne le trouve pas
+                                  --forcer : copier celles de la bouteille par-dessus celles qui sont la, meme
+                                  celles que Steam Cloud synchronise (les versions remplacees sont gardees)
   cidre login                     memorise la session SteamCMD (mot de passe tape a SteamCMD, une fois)
   cidre session [--json]          le compte Steam, et si sa session est memorisee
   cidre logout                    oublie la session Steam (les jeux installes restent jouables)
@@ -861,7 +868,7 @@ case "$cmd" in
       case $a in --saves|--sauvegardes) SV=oui ;; *) set -- "$@" "$a" ;; esac
     done
     id=; for a in "$@"; do case $a in -*) ;; *) id=$a; break ;; esac; done
-    [ -n "$id" ] || { echo "usage: cidre import <appid> [<bouteille>] [--move | --saves [--dossier <chemin>]]" >&2; exit 2; }
+    [ -n "$id" ] || { echo "usage: cidre import <appid> [<bouteille>] [--move | --saves [--dossier <chemin>] [--forcer]]" >&2; exit 2; }
     if [ $SV = oui ]; then
       [ "$JSON" = oui ] && set -- "$@" --json
       sh "$R/tests/reprendre_saves_bouteille.sh" "$@"; exit $?

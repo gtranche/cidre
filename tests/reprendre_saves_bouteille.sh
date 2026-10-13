@@ -5,7 +5,7 @@
 # `cidre import <appid>`, et `cidre import <appid> --saves` pour un jeu repris
 # avant que Cidre sache le faire (ou rejoue depuis dans la bouteille).
 #
-#   reprendre_saves_bouteille.sh <appid> [<bouteille>] [--dossier <chemin>] [--json]
+#   reprendre_saves_bouteille.sh <appid> [<bouteille>] [--dossier <chemin>] [--forcer] [--json]
 #
 # La bouteille est celle que note reprises.conf (ecrit par `cidre import`), ou
 # celle qu'on nomme : son nom, source:nom (crossover:Steam), ou sa racine --
@@ -31,20 +31,34 @@
 # du meme instant) cote Cidre est garde tel quel. Le superflu (journaux, caches,
 # fichiers de plus de 100 Mo) n'est pas repris.
 #
-# Quand Steam Cloud synchronise deja le jeu (tests/lier_saves_steam.sh) :
-#   - par l'API de Steam (synchro = "steam-api") : rien n'est copie. Ces
-#     sauvegardes sont dans le stockage du client Steam (userdata/.../remote),
-#     que seul le client doit ecrire : y deposer des fichiers a sa place
-#     contredirait ce qu'il sait du nuage. On dit combien la bouteille en garde,
-#     et ou. Exception : le dossier LOCAL que designe saves.conf (Vermintide 2)
-#     n'est pas confie a Steam ; il est repris comme les autres.
-#   - par un dossier macOS lie (synchro = "steam-lien") : les fichiers sont
-#     copies DANS ce dossier macOS (le lien est pose d'abord, comme au premier
-#     lancement), avec la meme regle. Le client Steam de macOS ne descend pas
-#     les fichiers d'un jeu qu'il ne lance pas lui-meme, et un jeu qui declare
-#     ses fichiers par systeme (PEAK) ne partage pas ceux de Windows avec le
-#     Mac : sans cette copie, le jeu demarrerait sans sauvegarde. Steam les
-#     enverra a la sortie du jeu, comme toute partie jouee ici.
+# STEAM D'ABORD. Ce que Steam Cloud synchronise a toujours la priorite : un
+# fichier que Steam detient n'est jamais remplace par celui d'une bouteille,
+# meme plus ancien. La bouteille ne fait que COMBLER un dossier que Steam a
+# vide. (tests/lier_saves_steam.sh dit comment Steam synchronise le jeu.)
+#   - par l'API de Steam (synchro = "steam-api") : rien n'est copie, jamais.
+#     Ces sauvegardes sont dans le stockage du client Steam
+#     (userdata/.../remote), que seul le client doit ecrire. On dit combien la
+#     bouteille en garde, et ou. Exception : le dossier LOCAL que designe
+#     saves.conf (Vermintide 2) n'est pas confie a Steam ; il suit la regle
+#     ordinaire (le plus recent gagne, l'ancien est garde).
+#   - par un dossier macOS lie (synchro = "steam-lien", ou tout dossier du
+#     prefixe qui est deja un lien pose par lier_saves_steam.sh) :
+#       . Steam a des sauvegardes de ce jeu -- le dossier lie en contient, ou
+#         le client Steam de ce Mac en connait dans le nuage pour macOS
+#         (userdata/<compte>/<appid>/remotecache.vdf) : RIEN n'est copie, pas
+#         meme les fichiers que Steam n'a pas. Etat "steam_prioritaire" ; on
+#         dit combien la bouteille en garde, ou, et la commande pour passer
+#         outre ;
+#       . Steam n'en a aucune : la bouteille comble le dossier (le lien est
+#         pose d'abord, comme au premier lancement), pour que le jeu ne
+#         demarre pas a vide ; Steam les enverra a la sortie du jeu. Si le
+#         client Steam n'a encore jamais synchronise ce jeu sur ce Mac (pas de
+#         remotecache.vdf), on ne peut pas savoir ce que garde le nuage : on
+#         previent qu'un conflit Steam Cloud est possible ("conflit_possible").
+#   --forcer : le joueur veut les sauvegardes de la bouteille. Elles sont
+#     copiees par-dessus celles du dossier, Steam ou non, quelle que soit leur
+#     date ; chaque fichier remplace est d'abord garde dans l'historique.
+#     Jamais par defaut, et sans effet sur le stockage de l'API de Steam.
 # Un jeu qui range ses sauvegardes dans son propre dossier (`jeu:...`) les a
 # emportees avec lui : rien a faire.
 #
@@ -53,10 +67,15 @@
 #   {"appid":N,"etat":E,"fichiers":N,"remplaces":N,"gardes":N,"identiques":N,
 #    "octets":N,"origine":"crossover","bouteille":"Steam","depuis":"...",
 #    "vers":"...","dossier":"AppData/...","synchro":S,"historique":"...",
+#    "steam_fichiers":N,"steam_distants":B,"conflit_possible":B,"force":B,
 #    "date":N,"message":"une phrase"}
 #   etat : copie (des fichiers ont ete ramenes : "fichiers", dont "remplaces"),
 #          a_jour (rien a ramener : "identiques", ou plus recents ici : "gardes"),
 #          steam (Steam Cloud s'en charge par son API : rien n'est copie),
+#          steam_prioritaire (le dossier que Steam synchronise a deja des
+#            sauvegardes : rien n'est copie ; "steam_fichiers" = combien Steam
+#            en a, "steam_distants" = vrai s'il ne les a que dans le nuage,
+#            "gardes" = combien la bouteille en garde),
 #          avec_le_jeu (elles sont dans le dossier du jeu, venues avec lui),
 #          absentes (on sait ou elles seraient : la bouteille n'en a pas),
 #          introuvable (on ne sait pas ou ce jeu les range)
@@ -73,11 +92,12 @@ CIDRE_DIR=${CIDRE_DIR:-$HOME/Library/Application Support/Cidre}
 PFX=${WINEPREFIX:-$R/wine/pfx-arm64ec}
 JEUX="$CIDRE_DIR/games"
 TAB=$(printf '\t')
-usage() { echo "usage: cidre import <appid> [<bouteille>] --saves [--dossier <dossier de la bouteille>]" >&2; exit 2; }
-APPID=; QUI=; DOSSIER=; JSON=non
+usage() { echo "usage: cidre import <appid> [<bouteille>] --saves [--dossier <dossier de la bouteille>] [--forcer]" >&2; exit 2; }
+APPID=; QUI=; DOSSIER=; JSON=non; FORCER=non
 while [ $# -gt 0 ]; do
    case $1 in
       --json) JSON=oui ;;
+      --forcer|--force) FORCER=oui ;;
       --dossier) [ $# -ge 2 ] || usage; DOSSIER=$2; shift ;;
       -*) usage ;;
       *) if [ -z "$APPID" ]; then APPID=$1; elif [ -z "$QUI" ]; then QUI=$1; else usage; fi ;;
@@ -154,10 +174,12 @@ noms() {
 
 # --- l'etat, et comment on le rend ------------------------------------------
 ETAT=; NF=0; NR=0; NG=0; NI=0; OCT=0; DEPUIS=; VERS=; REL=; SYNCHRO=aucune; HIST=; MESSAGE=
+NSTEAM=0; ND=0; DISTANTS=false; CONFLIT=false
 rendre() {
-   obj=$(printf '{"appid":%s,"etat":"%s","fichiers":%s,"remplaces":%s,"gardes":%s,"identiques":%s,"octets":%s,"origine":%s,"bouteille":%s,"depuis":%s,"vers":%s,"dossier":%s,"synchro":"%s","historique":%s,"date":%s,"message":%s}' \
+   [ $FORCER = oui ] && force=true || force=false
+   obj=$(printf '{"appid":%s,"etat":"%s","fichiers":%s,"remplaces":%s,"gardes":%s,"identiques":%s,"octets":%s,"origine":%s,"bouteille":%s,"depuis":%s,"vers":%s,"dossier":%s,"synchro":"%s","historique":%s,"steam_fichiers":%s,"steam_distants":%s,"conflit_possible":%s,"force":%s,"date":%s,"message":%s}' \
       "$APPID" "$ETAT" $((NF + NR)) "$NR" "$NG" "$NI" "$OCT" "$(js "$SOURCE")" "$(js "$BOUTEILLE")" "$(js "$DEPUIS")" "$(js "$VERS")" \
-      "$(js "$REL")" "$SYNCHRO" "$(js "$HIST")" "$(date +%s)" "$(js "$MESSAGE")")
+      "$(js "$REL")" "$SYNCHRO" "$(js "$HIST")" "$NSTEAM" "$DISTANTS" "$CONFLIT" "$force" "$(date +%s)" "$(js "$MESSAGE")")
    mkdir -p "$CIDRE_DIR/reprises.saves" && printf '%s\n' "$obj" >"$CIDRE_DIR/reprises.saves/$APPID.json"
    [ "$JSON" = oui ] && printf '%s\n' "$obj"
    exit 0
@@ -173,10 +195,17 @@ COPIES=$(sh "$R/tests/sync_saves_steam.sh" - dossier)
 LISTE=$(mktemp "${TMPDIR:-/tmp}/reprise-saves.XXXXXX") || exit 1
 trap 'rm -f "$LISTE" "$LISTE.l"' EXIT
 NPAIRE=0
-copier() { # <dossier de la bouteille> <dossier cote Cidre>
-   src=$1; dst=$2
-   # (le tri porte sur le chemin sous le dossier, barre en tete : `/cache/x`)
-   ( cd "$src" && find . -type f ) 2>/dev/null | sed 's|^\.||' | grep -avE "$JUNK" | sed 's|^/||' >"$LISTE"
+# les fichiers de sauvegarde d'un dossier (chemins sous le dossier, sans le superflu)
+# (le tri porte sur le chemin, barre en tete : `/cache/x`)
+lister() { ( cd "$1" 2>/dev/null && find . -type f ) 2>/dev/null | sed 's|^\.||' | grep -avE "$JUNK" | sed 's|^/||'; }
+compter() { lister "$1" | wc -l | tr -d ' '; }
+# <regle> : `date` -- le plus recent gagne (un fichier plus recent cote Cidre
+# est garde) ; `combler` -- seuls les fichiers absents sont copies, aucun n'est
+# remplace ; `forcer` -- celui de la bouteille gagne toujours. Un fichier
+# remplace est d'abord copie dans l'historique du jeu.
+copier() { # <dossier de la bouteille> <dossier cote Cidre> <regle>
+   src=$1; dst=$2; regle=$3
+   lister "$src" >"$LISTE"
    h="$COPIES/$APPID/.history/avant-reprise-$TS/$NPAIRE"; NPAIRE=$((NPAIRE + 1))
    while IFS= read -r f; do
       s="$src/$f"; d="$dst/$f"
@@ -187,14 +216,100 @@ copier() { # <dossier de la bouteille> <dossier cote Cidre>
          NF=$((NF + 1)); OCT=$((OCT + $2))
       elif [ ! -f "$d" ]; then NG=$((NG + 1))   # autre chose qu'un fichier a cette place : on n'y touche pas
       elif cmp -s "$s" "$d"; then NI=$((NI + 1))
-      elif [ "$1" -gt "$(stat -f %m "$d")" ]; then
-         # celui de la bouteille est plus recent : l'ancien est garde, puis remplace
+      elif [ $regle = forcer ] || { [ $regle = date ] && [ "$1" -gt "$(stat -f %m "$d")" ]; }; then
+         # celui de la bouteille l'emporte : l'ancien est garde, puis remplace
          mkdir -p "$h/$(dirname "$f")" && cp -p "$d" "$h/$f" || { dire "    saves: copie de precaution impossible, $f laisse tel quel"; NG=$((NG + 1)); continue; }
          [ -f "$h.origine" ] || printf '%s\n' "$dst" >"$h.origine"
          cp -p "$s" "$d" || { dire "    saves: copie impossible : $d"; continue; }
          NR=$((NR + 1)); OCT=$((OCT + $2)); HIST=$(dirname "$h")
       else NG=$((NG + 1)); fi
    done <"$LISTE"
+}
+
+# --- Steam d'abord ------------------------------------------------------------
+# Un dossier du prefixe que Steam synchronise : le lien pose par
+# lier_saves_steam.sh -- le dossier lui-meme, ou un de ses parents. Pas les
+# dossiers de premier niveau (Documents, Bureau...), que Wine lie au Mac.
+lie_a_steam() { # <dossier sous $UTILC>
+   p=$1
+   while [ "$p" != / ] && [ "$p" != "$UTILC" ] && [ "$(dirname "$p")" != "$UTILC" ]; do
+      [ -L "$p" ] && return 0
+      p=$(dirname "$p")
+   done
+   return 1
+}
+# Ce que le client Steam de ce Mac sait du nuage pour ce jeu : son
+# remotecache.vdf, ecrit a chaque synchronisation. CONNU = il existe (le client
+# a deja synchronise ce jeu ici) ; ND = les fichiers qu'il y note pour macOS
+# (platformstosync2 : -1 = tous les systemes, bit 2 = macOS ; un fichier que le
+# jeu ne declare que pour Windows ne descendra jamais sur ce Mac : pas compte).
+USERDATA=${CIDRE_STEAM_USERDATA:-$HOME/Library/Application Support/Steam/userdata}
+distants() {
+   CONNU=non; ND=0
+   for c in "$USERDATA"/*/"$APPID"/remotecache.vdf; do
+      [ -f "$c" ] || continue
+      CONNU=oui
+      n=$(LC_ALL=C awk '
+         /^[ \t]*\{/ { prof++; if (prof == 2) { taille = 0; rt = 0; sha = ""; p = -1 } next }
+         /^[ \t]*\}/ { if (prof == 2 && (p < 0 || int(p / 2) % 2 == 1) && (taille > 0 || rt > 0 || sha ~ /[1-9a-f]/)) nb++; prof--; next }
+         prof == 2 { split($0, q, "\""); if (q[2] == "size") taille = q[4] + 0; else if (q[2] == "remotetime") rt = q[4] + 0
+                     else if (q[2] == "sha") sha = q[4]; else if (q[2] == "platformstosync2") p = q[4] + 0 }
+         END { print nb + 0 }' "$c")
+      ND=$((ND + n))
+   done
+}
+# La reprise vers un dossier que Steam synchronise. <fichier> : une ligne
+# `dossier de la bouteille (ou -) <TAB> dossier du prefixe (le lien)` par
+# dossier (les colonnes suivantes ne sont pas lues).
+# Pose ETAT et le compte rendu.
+steam_dabord() {
+   NSTEAM=0; nbout=0
+   while IFS="$TAB" read -r s d reste; do
+      NSTEAM=$((NSTEAM + $(compter "$d")))
+      [ "$s" = - ] || nbout=$((nbout + $(compter "$s")))
+   done <"$1"
+   distants
+   if [ $nbout -eq 0 ]; then
+      ETAT=absentes
+      dire "  sauvegardes : aucune dans la bouteille (dossier attendu : ${REL:-?}) ; Steam Cloud synchronise ce jeu"
+      MESSAGE="Aucune sauvegarde de ce jeu dans $QUI_DIT"
+      return
+   fi
+   if [ $FORCER = non ] && [ $((NSTEAM + ND)) -gt 0 ]; then
+      ETAT=steam_prioritaire; NG=$nbout
+      dire "  sauvegardes : Steam Cloud a deja des sauvegardes de ce jeu : elles ont la priorite, rien n'est copie de la bouteille"
+      if [ $NSTEAM -gt 0 ]; then dire "                Steam     : $NSTEAM fichier(s) dans $VERS"
+      else
+         DISTANTS=true; NSTEAM=$ND
+         dire "                Steam     : $ND fichier(s) dans le nuage, que le client Steam connait (pas encore sur ce Mac)"
+      fi
+      dire "                bouteille : $nbout fichier(s), intacts : $DEPUIS"
+      dire "                pour les copier quand meme par-dessus celles de Steam (les versions remplacees sont gardees) :"
+      dire "                cidre import $APPID --saves --forcer"
+      MESSAGE="Steam Cloud a déjà des sauvegardes de ce jeu : elles ont la priorité, rien n'a été copié de $QUI_DIT, qui garde ses $nbout fichier(s)"
+      return
+   fi
+   regle=combler; [ $FORCER = oui ] && regle=forcer
+   while IFS="$TAB" read -r s d reste; do [ "$s" = - ] || copier "$s" "$d" $regle; done <"$1"
+   if [ $((NF + NR)) -gt 0 ]; then
+      ETAT=copie
+      if [ $FORCER = oui ]; then
+         dire "  sauvegardes : $((NF + NR)) fichier(s) ramene(s) de la bouteille par-dessus le dossier que Steam Cloud synchronise (--forcer)"
+         MESSAGE="$((NF + NR)) fichier(s) de sauvegarde ramené(s) de $QUI_DIT par-dessus le dossier que Steam Cloud synchronise (forcé)"
+      else
+         dire "  sauvegardes : $((NF + NR)) fichier(s) ramene(s) de la bouteille, dans le dossier que Steam Cloud synchronise"
+         dire "                (Steam n'y avait aucune sauvegarde de ce jeu)"
+         MESSAGE="$((NF + NR)) fichier(s) de sauvegarde ramené(s) de $QUI_DIT dans le dossier que Steam Cloud synchronise, qui était vide"
+         if [ $CONNU = non ]; then
+            CONFLIT=true
+            MESSAGE="$MESSAGE ; si Steam Cloud en garde d'autres, faites ailleurs, Steam demandera laquelle garder"
+         fi
+      fi
+   else
+      ETAT=a_jour
+      dire "  sauvegardes : rien a ramener de la bouteille : celles du dossier que Steam Cloud synchronise sont identiques"
+      MESSAGE="Rien à ramener de $QUI_DIT : les sauvegardes du dossier que Steam Cloud synchronise sont identiques"
+   fi
 }
 
 # --- 1. ou sont-elles ? ------------------------------------------------------
@@ -228,6 +343,7 @@ elif [ "$STEAM_MODE" = api ] && [ -z "$LIGNE" ]; then
    done
    dire "  sauvegardes : Steam Cloud synchronise deja ce jeu (il ecrit par l'API de Steam) : rien n'est copie,"
    dire "                le client Steam les fournit au jeu"
+   [ $FORCER = non ] || dire "                (--forcer n'y change rien : ce stockage est celui du client Steam, Cidre n'y ecrit pas)"
    MESSAGE="Steam Cloud synchronise déjà ce jeu : rien n'a été copié de $QUI_DIT"
    if [ "$n" -gt 0 ]; then
       dire "                (la bouteille en garde $n fichier(s), intacts : $DEPUIS)"
@@ -236,37 +352,28 @@ elif [ "$STEAM_MODE" = api ] && [ -z "$LIGNE" ]; then
    rendre
 fi
 
-# --- 2. Steam Cloud par un dossier macOS lie : on copie dans ce dossier ------
+# --- 2. Steam Cloud par un dossier macOS lie : Steam d'abord ------------------
 if [ "$STEAM_MODE" = lien ]; then
    [ -n "$UTILC" ] && [ -d "$UTILC" ] || sans_prefixe
    # le lien se pose comme au premier lancement ; s'il ne peut pas l'etre, la
    # copie Cidre prend la main, ici comme dans sync_saves_steam.sh
    if l=$(CIDRE_PREFIXE_UTIL="$UTILC" CIDRE_JEU_DOSSIER="$JEUX/$APPID" sh "$R/tests/lier_saves_steam.sh" "$APPID" lier 2>&1); then
       [ -z "$l" ] || dire "$l"
-      SYNCHRO=steam_macos; attendu=
-      CIDRE_PREFIXE_UTIL="$UTILC" CIDRE_JEU_DOSSIER="$JEUX/$APPID" sh "$R/tests/lier_saves_steam.sh" "$APPID" dossiers >"$LISTE.l" 2>/dev/null
-      while IFS="$TAB" read -r w m; do
-         case $w in "$UTILC"/?*) rel=${w#"$UTILC"/} ;; *) continue ;; esac
-         [ -n "$attendu" ] || attendu=$rel
-         u=$(qui_a "$rel"); [ -n "$u" ] || continue
-         [ -n "$DEPUIS" ] || { DEPUIS="$u/$rel"; VERS=$m; REL=$rel; }
-         copier "$u/$rel" "$w"
+      SYNCHRO=steam_macos; attendu=; vers1=
+      CIDRE_PREFIXE_UTIL="$UTILC" CIDRE_JEU_DOSSIER="$JEUX/$APPID" sh "$R/tests/lier_saves_steam.sh" "$APPID" dossiers 2>/dev/null |
+         while IFS="$TAB" read -r w m; do
+            case $w in "$UTILC"/?*) rel=${w#"$UTILC"/} ;; *) continue ;; esac
+            u=$(qui_a "$rel"); [ -n "$u" ] && s="$u/$rel" || s=-
+            printf '%s\t%s\t%s\t%s\n' "$s" "$w" "$rel" "$m"
+         done >"$LISTE.l"
+      # (ce qu'on montre : la premiere paire que la bouteille a ; sinon la premiere)
+      while IFS="$TAB" read -r s w rel m; do
+         [ -n "$attendu" ] || { attendu=$rel; vers1=$m; }
+         [ "$s" = - ] || [ -n "$DEPUIS" ] || { DEPUIS=$s; VERS=$m; REL=$rel; }
       done <"$LISTE.l"
+      [ -n "$REL" ] || { REL=$attendu; VERS=$vers1; }
+      steam_dabord "$LISTE.l"
       rm -f "$LISTE.l"
-      [ -n "$REL" ] || REL=$attendu
-      if [ $((NF + NR)) -gt 0 ]; then
-         ETAT=copie
-         dire "  sauvegardes : $((NF + NR)) fichier(s) ramene(s) de la bouteille, dans le dossier que Steam Cloud synchronise"
-         MESSAGE="$((NF + NR)) fichier(s) de sauvegarde ramené(s) de $QUI_DIT dans le dossier que Steam Cloud synchronise"
-      elif [ $((NI + NG)) -gt 0 ]; then
-         ETAT=a_jour
-         dire "  sauvegardes : rien a ramener de la bouteille : celles du dossier que Steam Cloud synchronise sont identiques ou plus recentes"
-         MESSAGE="Rien à ramener de $QUI_DIT : les sauvegardes du dossier que Steam Cloud synchronise sont identiques ou plus récentes"
-      else
-         ETAT=absentes
-         dire "  sauvegardes : aucune dans la bouteille (dossier attendu : ${REL:-?}) ; Steam Cloud synchronise ce jeu"
-         MESSAGE="Aucune sauvegarde de ce jeu dans $QUI_DIT"
-      fi
    else
       [ -z "$l" ] || dire "$l"
       STEAM_MODE=
@@ -305,13 +412,22 @@ if [ -z "$ETAT" ]; then
          [ -n "$UTILC" ] && [ -d "$UTILC" ] || sans_prefixe
          [ -n "$BU" ] || BU=$(qui_a "$REL")
          VERS="$UTILC/$REL"
-         if [ -z "$BU" ] || [ ! -d "$BU/$REL" ]; then
+         if [ -n "$BU" ] && [ -d "$BU/$REL" ] && lie_a_steam "$VERS"; then
+            # ce dossier du prefixe est deja un lien vers un dossier que Steam
+            # synchronise (pose a un lancement precedent) : Steam d'abord, ici aussi
+            DEPUIS="$BU/$REL"; SYNCHRO=steam_macos
+            printf '%s\t%s\n' "$DEPUIS" "$VERS" >"$LISTE.l"
+            VERS=$(physique "$VERS" || printf '%s' "$VERS")
+            steam_dabord "$LISTE.l"
+            rm -f "$LISTE.l"
+         elif [ -z "$BU" ] || [ ! -d "$BU/$REL" ]; then
             ETAT=absentes
             dire "  sauvegardes : aucune dans la bouteille (dossier attendu : $REL)"
             MESSAGE="Aucune sauvegarde de ce jeu dans $QUI_DIT"
          else
             DEPUIS="$BU/$REL"
-            copier "$DEPUIS" "$VERS"
+            regle=date; [ $FORCER = oui ] && regle=forcer
+            copier "$DEPUIS" "$VERS" $regle
             if [ $((NF + NR)) -gt 0 ]; then
                ETAT=copie
                dire "  sauvegardes : $((NF + NR)) fichier(s) ramene(s) de la bouteille"
@@ -338,14 +454,25 @@ if [ -z "$ETAT" ]; then
 fi
 
 # --- le detail ---------------------------------------------------------------
-if [ -n "$DEPUIS" ] && [ "$ETAT" != absentes ]; then
+if [ -n "$DEPUIS" ] && [ "$ETAT" != absentes ] && [ "$ETAT" != steam_prioritaire ]; then
    dire "                de   : $DEPUIS"
    dire "                vers : $VERS"
 fi
-[ "$NR" -eq 0 ] || { dire "                $NR remplace(s) par une version plus recente de la bouteille ; l'ancienne est gardee : $HIST"
-                     MESSAGE="$MESSAGE ; $NR remplacé(s), l'ancienne version est gardée"; }
-[ "$NG" -eq 0 ] || { dire "                $NG plus recent(s) cote Cidre : garde(s) tel(s) quel(s)"
-                     [ "$ETAT" != copie ] || MESSAGE="$MESSAGE ; $NG plus récent(s) ici, gardé(s)"; }
+if [ "$NR" -gt 0 ]; then
+   [ $FORCER = oui ] && comment="par la version de la bouteille" || comment="par une version plus recente de la bouteille"
+   dire "                $NR remplace(s) $comment ; l'ancienne est gardee : $HIST"
+   MESSAGE="$MESSAGE ; $NR remplacé(s), l'ancienne version est gardée"
+fi
+if [ "$NG" -gt 0 ] && [ "$ETAT" != steam_prioritaire ]; then
+   [ "$SYNCHRO" = steam_macos ] && dire "                $NG deja la cote Steam : garde(s) tel(s) quel(s)" ||
+      dire "                $NG plus recent(s) cote Cidre : garde(s) tel(s) quel(s)"
+   [ "$ETAT" != copie ] || MESSAGE="$MESSAGE ; $NG plus récent(s) ici, gardé(s)"
+fi
+if [ $CONFLIT = true ]; then
+   dire "                attention : le client Steam de ce Mac n'a encore jamais synchronise ce jeu ; Cidre ne peut pas savoir"
+   dire "                si Steam Cloud en garde des sauvegardes faites ailleurs. S'il en a, Steam signalera un conflit a la"
+   dire "                sortie du jeu : choisis alors dans Steam la version a garder."
+fi
 [ "$SYNCHRO" != steam_api ] || [ "$ETAT" = steam ] ||
    dire "                (Steam Cloud synchronise par ailleurs ce que le jeu ecrit par l'API de Steam)"
 rendre

@@ -291,6 +291,88 @@ o=$(ramener 1562430)
 verif "le dossier du saves.conf livre" "copie 1 AppData/LocalLow/Black Salt Games/DREDGE" "$(cj etat "$o") $(cj fichiers "$o") $(cj dossier "$o")"
 verif "la bouteille n'a pas ete touchee" "$BT_AVANT" "$(cliche "$BT")"
 
+echo "== Steam d'abord : la bouteille ne fait que combler"
+# le stockage du client Steam (userdata), fabrique : ce qu'il sait du nuage
+export CIDRE_STEAM_USERDATA="$T/userdata"
+cache_steam() { # <appid> <fichier> <taille> <platformstosync2>
+   mkdir -p "$CIDRE_STEAM_USERDATA/77/$1"
+   printf '"%s"\n{\n\t"ChangeNumber"\t\t"3"\n\t"%s"\n\t{\n\t\t"root"\t\t"12"\n\t\t"size"\t\t"%s"\n\t\t"remotetime"\t\t"%s"\n\t\t"sha"\t\t"0000000000000000000000000000000000000000"\n\t\t"syncstate"\t\t"2"\n\t\t"platformstosync2"\t\t"%s"\n\t}\n}\n' \
+      "$1" "$2" "$3" "$([ "$3" -gt 0 ] && echo 1791067661 || echo 0)" "$4" >"$CIDRE_STEAM_USERDATA/77/$1/remotecache.vdf"
+}
+lie() { # <n> : jeu 91<n>, sa fiche a dossier macOS lie, une sauvegarde dans la bouteille
+   repris 91$1 "Jeu 1$1"; mkdir -p "$BU/AppData/LocalLow/D$1/J$1"
+   echo "bouteille $1" >"$BU/AppData/LocalLow/D$1/J$1/commun.sav"; echo "en plus $1" >"$BU/AppData/LocalLow/D$1/J$1/autre.sav"
+   touch -t 202606010000 "$BU/AppData/LocalLow/D$1/J$1"/*.sav
+}
+fl() { printf 'steam-lien\tAppData/LocalLow/D%s/J%s => Library/Application Support/D%s.J%s' "$1" "$1" "$1" "$1"; }
+ml() { printf '%s' "$M/Library/Application Support/D$1.J$1"; }
+for n in 07 08 09 10 11 12; do lie $n; done
+repris 9113 "Jeu 113"; mkdir -p "$BU/AppData/Roaming/Jeu 113"; echo api >"$BU/AppData/Roaming/Jeu 113/s.sav"
+BT_AVANT=$(cliche "$BT")
+# 9107 : Steam a deja un fichier, PLUS ANCIEN que celui de la bouteille
+mkdir -p "$(ml 07)"; echo "steam ancien" >"$(ml 07)/commun.sav"; touch -t 202501010000 "$(ml 07)/commun.sav"
+o=$(FICHE="$(fl 07)" ramener 9107); verif "Steam a un fichier plus ancien : code de retour" "0" "$?"
+verif "Steam a un fichier plus ancien : Steam d'abord" "steam_prioritaire steam_macos 0 0 2 1 false false" \
+   "$(cj etat "$o") $(cj synchro "$o") $(cj fichiers "$o") $(cj remplaces "$o") $(cj gardes "$o") $(cj steam_fichiers "$o") $(cj steam_distants "$o") $(cj force "$o")"
+verif "le fichier de Steam n'est pas remplace, meme plus ancien" "steam ancien" "$(cat "$(ml 07)/commun.sav")"
+verif "rien n'est ajoute non plus au dossier de Steam" "commun.sav" "$(ls "$(ml 07)" | tr '\n' ' ' | sed 's/ $//')"
+verif "on dit la priorite, ce que la bouteille garde, et comment passer outre" "1 1 1" \
+   "$(grep -c 'elles ont la priorite, rien n.est copie de la bouteille' "$T/rs.err") $(grep -c "bouteille : 2 fichier(s), intacts : $BU/AppData/LocalLow/D07/J07" "$T/rs.err") $(grep -c 'cidre import 9107 --saves --forcer' "$T/rs.err")"
+verif "aucune copie de precaution : rien n'a ete remplace" "" "$(ls -d "$C/saves/9107/.history/avant-reprise-"* 2>/dev/null)"
+# 9108 : le dossier de Steam est vide, le client n'a jamais synchronise ce jeu
+o=$(FICHE="$(fl 08)" ramener 9108)
+verif "dossier de Steam vide : comble" "copie 2 0 true bouteille 08" "$(cj etat "$o") $(cj fichiers "$o") $(cj steam_fichiers "$o") $(cj conflit_possible "$o") $(cat "$(ml 08)/commun.sav" 2>/dev/null)"
+verif "jamais synchronise ici : le conflit possible est dit" "1" "$(grep -c 'Steam signalera un conflit' "$T/rs.err")"
+o=$(FICHE="$(fl 08)" ramener 9108)
+verif "second passage : Steam a maintenant ces fichiers, plus rien n'est touche" "steam_prioritaire 0" "$(cj etat "$o") $(cj fichiers "$o")"
+# 9109 : dossier vide, mais le client connait un fichier du nuage pour macOS
+cache_steam 9109 "D09/J09/commun.sav" 4096 -1
+o=$(FICHE="$(fl 09)" ramener 9109)
+verif "fichiers connus dans le nuage : rien n'est copie" "steam_prioritaire 0 1 true" "$(cj etat "$o") $(cj fichiers "$o") $(cj steam_fichiers "$o") $(cj steam_distants "$o")"
+verif "fichiers connus dans le nuage : le dossier de Steam reste vide" "" "$(ls -A "$(ml 09)" 2>/dev/null)"
+# 9110 : le client ne connait qu'un fichier declare pour Windows (jamais descendu sur Mac), ou un fichier efface
+cache_steam 9110 "D10/J10/commun.sav" 4096 1
+o=$(FICHE="$(fl 10)" ramener 9110)
+verif "nuage : fichier pour Windows seulement -> comble, sans conflit possible" "copie 2 false" "$(cj etat "$o") $(cj fichiers "$o") $(cj conflit_possible "$o")"
+cache_steam 9111 "D11/J11/commun.sav" 0 -1
+o=$(FICHE="$(fl 11)" ramener 9111)
+verif "nuage : entree vide (taille 0, jamais envoyee) -> comble" "copie 2 false" "$(cj etat "$o") $(cj fichiers "$o") $(cj conflit_possible "$o")"
+# forcer, a la demande : la bouteille passe par-dessus, la version de Steam est gardee
+o=$(FICHE="$(fl 07)" ramener 9107 --forcer)
+verif "--forcer : etat, ecrits, remplaces, force" "copie 2 1 true" "$(cj etat "$o") $(cj fichiers "$o") $(cj remplaces "$o") $(cj force "$o")"
+verif "--forcer : le fichier de la bouteille remplace celui de Steam" "bouteille 07" "$(cat "$(ml 07)/commun.sav")"
+verif "--forcer : la version de Steam est gardee dans l'historique" "steam ancien" "$(cat "$(cj historique "$o")/0/commun.sav" 2>/dev/null)"
+o=$(FICHE="$(fl 09)" ramener 9109 --forcer)
+verif "--forcer malgre des fichiers connus dans le nuage : copie" "copie 2" "$(cj etat "$o") $(cj fichiers "$o")"
+o=$(FICHE=steam-api ramener 9113 --forcer)
+verif "--forcer sur un jeu a API de Steam : toujours rien" "steam 0 0" "$(cj etat "$o") $(cj fichiers "$o") $(ls "$U/AppData/Roaming/Jeu 113" 2>/dev/null | wc -l | tr -d ' ')"
+# 9112 : le lien est deja pose, mais la fiche ne le dit plus (cache de fiches perime,
+# CIDRE_SAVES_STEAM=0) : le dossier reste celui que Steam synchronise
+mkdir -p "$(ml 12)" "$U/AppData/LocalLow/D12"; echo "steam 12" >"$(ml 12)/commun.sav"; touch -t 202501010000 "$(ml 12)/commun.sav"
+ln -s "$(ml 12)" "$U/AppData/LocalLow/D12/J12"; printf '9112\tAppData/LocalLow/D12/J12\n' >>"$C/saves.conf"
+o=$(ramener 9112)
+verif "lien deja pose, fiche muette : Steam d'abord quand meme" "steam_prioritaire steam_macos 0 steam 12" "$(cj etat "$o") $(cj synchro "$o") $(cj fichiers "$o") $(cat "$(ml 12)/commun.sav")"
+verif "la bouteille n'a pas ete touchee" "$BT_AVANT" "$(cliche "$BT")"
+
+echo "== Steam d'abord : la copie de Cidre n'est jamais restauree dans un dossier que Steam synchronise"
+# la copie de Cidre (ou d'iCloud) a un fichier plus recent, et un que Steam n'a pas
+mkdir -p "$C/saves/9112"; echo "copie cidre recente" >"$C/saves/9112/commun.sav"; touch -t 202901010000 "$C/saves/9112/commun.sav"; echo "en plus" >"$C/saves/9112/copie.sav"
+s=$(CIDRE_FICHE_STEAM_CLOUD=- sh "$Y" 9112 restore 2>&1)
+verif "lien pose, jeu retombe en copie Cidre : restore ne remplace rien" "steam 12" "$(cat "$(ml 12)/commun.sav")"
+verif "restore n'ajoute rien non plus" "commun.sav" "$(ls "$(ml 12)" | tr '\n' ' ' | sed 's/ $//')"
+verif "restore le dit" "1" "$(printf '%s\n' "$s" | grep -c "la copie de Cidre n'y est pas restauree (Steam a la priorite)")"
+s=$(CIDRE_SAVES_STEAM=0 CIDRE_FICHE_STEAM_CLOUD="$(fl 12)" sh "$Y" 9112 restore 2>&1)
+verif "CIDRE_SAVES_STEAM=0 : pareil" "steam 12" "$(cat "$(ml 12)/commun.sav")"
+CIDRE_FICHE_STEAM_CLOUD=- sh "$Y" 9112 backup >/dev/null 2>&1
+verif "backup, lui, lit le dossier de Steam sans y ecrire" "steam 12 copie cidre recente" "$(cat "$(ml 12)/commun.sav") $(cat "$C/saves/9112/.history"/*/commun.sav 2>/dev/null)"
+s=$(CIDRE_FICHE_STEAM_CLOUD="$(fl 12)" sh "$Y" 9112 restore 2>&1)
+verif "fiche a dossier lie : restore ne copie rien (Steam Cloud)" "steam 12 0" "$(cat "$(ml 12)/commun.sav") $(printf '%s\n' "$s" | grep -c 'restore ')"
+# un dossier ordinaire (pas un lien) reste restaure comme avant
+mkdir -p "$C/saves/9105"; echo "copie plus recente" >"$C/saves/9105/s.sav"; touch -t 203001010000 "$C/saves/9105/s.sav"
+CIDRE_FICHE_STEAM_CLOUD=- sh "$Y" 9105 restore >/dev/null 2>&1
+verif "jeu sans Steam Cloud : la copie de Cidre plus recente est toujours restauree" "copie plus recente" "$(cat "$U/AppData/Roaming/Jeu 95/s.sav")"
+unset CIDRE_STEAM_USERDATA
+
 echo "== bouteille : ce qu'en dit l'etat des sauvegardes"
 e=$(CIDRE_FICHE_STEAM_CLOUD=- sh "$Y" 9101 etat)
 printf '%s' "$e" | plutil -convert json -o /dev/null - 2>/dev/null && ok "etat : JSON valide" || echec "etat : JSON invalide : $e"

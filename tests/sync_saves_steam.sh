@@ -13,6 +13,11 @@
 # CIDRE_SAVES_DIR. Mode DOSSIER : tout le dossier du jeu sauf le superflu.
 # JAMAIS destructif : copie horodatee en .history/ avant toute ecriture. Non
 # bloquant.
+# STEAM D'ABORD : ce que Steam Cloud synchronise a toujours la priorite. La
+# copie de Cidre (sur ce Mac ou dans iCloud) n'est jamais restauree dans le
+# stockage de l'API de Steam ni dans un dossier lie a celui que Steam
+# synchronise -- y compris quand le jeu retombe en copie Cidre alors que le
+# lien est deja pose (fiche absente du cache, CIDRE_SAVES_STEAM=0).
 #
 #   sync_saves_steam.sh <id> <restore|backup>
 #   sync_saves_steam.sh <id> etat        ou en est la synchro, en JSON
@@ -172,6 +177,20 @@ case "$SENS" in
       [ -z "$STEAM_ET_COPIE" ] || sh "$R/tests/lier_saves_steam.sh" "$APPID" envoi "${CIDRE_SAVES_DEPUIS:-}" ;;
    restore)
       [ -d "$BAK" ] || exit 0
+      # Steam d'abord : un dossier du prefixe qui est un lien pose par
+      # lier_saves_steam.sh (lui, ou un de ses parents ; pas les dossiers de
+      # premier niveau, Documents ou Bureau, que Wine lie au Mac) est celui que
+      # Steam synchronise. La copie de Cidre n'y remplace rien.
+      case $reldir in jeu:*) ;; *)
+         p=$SRC; base=$(dirname "$UH")
+         while [ "$p" != / ] && [ "$p" != "$base" ] && [ "$(dirname "$p")" != "$base" ]; do
+            if [ -L "$p" ]; then
+               echo "    saves: $SRC est lie a un dossier que Steam Cloud synchronise : la copie de Cidre n'y est pas restauree (Steam a la priorite)"
+               exit 0
+            fi
+            p=$(dirname "$p")
+         done ;;
+      esac
       find "$BAK" -type f 2>/dev/null | grep -av "/.history/" | while IFS= read -r dst; do
          rel=${dst#$BAK/}; loc="$SRC/$rel"
          if [ ! -f "$loc" ] || [ "$dst" -nt "$loc" ]; then

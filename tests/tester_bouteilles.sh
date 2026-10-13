@@ -18,8 +18,11 @@
 #   6. les sauvegardes a la reprise (tests/reprendre_saves_bouteille.sh, par
 #      `cidre import`) : absentes cote Cidre, plus anciennes, plus recentes,
 #      absentes de la bouteille, introuvables puis designees (--dossier), jeu
-#      que Steam Cloud synchronise (API, dossier macOS lie), sauvegardes dans
-#      le dossier du jeu, rattrapage d'une reprise ancienne (--saves), refus ;
+#      que Steam Cloud synchronise -- Steam d'abord : API, dossier macOS lie
+#      qui a deja une sauvegarde (meme plus ancienne : gardee), dossier vide
+#      (comble), fichiers connus dans le nuage (rien copie), --forcer --,
+#      sauvegardes dans le dossier du jeu, rattrapage d'une reprise ancienne
+#      (--saves), refus ;
 #   7. `cidre import --move` sur une bouteille en cours d'usage : refuse, rien
 #      ne bouge ;
 #   8. sh -n sur les scripts, et l'aide de `cidre`.
@@ -341,12 +344,30 @@ S4="$BU/AppData/Roaming/Bizarre Nom"; mkdir -p "$S4"; echo x >"$S4/partie.bin"
 jeu "$BS" 2005 "Jeu Cinq" "JeuCinq" 4 5
 REM="$B/drive_c/Program Files (x86)/Steam/userdata/123456/2005/remote"; mkdir -p "$REM"; echo nuage >"$REM/user_0.dat"
 S5="$BU/AppData/Roaming/Jeu Cinq"; mkdir -p "$S5"; echo "local" >"$S5/local.sav"
-# 2006 : Steam Cloud par un dossier macOS lie, qui a deja un fichier plus recent
+# 2006 : Steam Cloud par un dossier macOS lie, qui a deja une sauvegarde -- plus
+# ANCIENNE que celle de la bouteille : Steam a la priorite quand meme
 jeu "$BS" 2006 "Jeu Six" "JeuSix" 4 5
 S6="$BU/AppData/LocalLow/Dev6/Jeu6"; MAC="$T/maison/Library/Application Support/Dev6.Jeu6"; mkdir -p "$S6" "$MAC"
-echo "windows" >"$S6/win.sav"; echo "windows vieux" >"$S6/commun.sav"; date_bouteille "$S6"/*.sav
-echo "mac recent" >"$MAC/commun.sav"; touch -t 202801010000 "$MAC/commun.sav"
-LIEN="steam-lien${TAB}AppData/LocalLow/Dev6/Jeu6 => Library/Application Support/Dev6.Jeu6"
+echo "windows" >"$S6/win.sav"; echo "windows recent" >"$S6/commun.sav"; date_bouteille "$S6"/*.sav
+echo "mac ancien" >"$MAC/commun.sav"; touch -t 202501010000 "$MAC/commun.sav"
+lien() { printf 'steam-lien\tAppData/LocalLow/Dev%s/Jeu%s => Library/Application Support/Dev%s.Jeu%s' "$1" "$1" "$1" "$1"; }
+LIEN=$(lien 6)
+# 2014 : dossier macOS lie vide, et le client Steam n'a jamais synchronise le jeu ;
+# 2015 : vide, mais le client connait des fichiers du nuage pour macOS ;
+# 2016 : vide, le client ne connait qu'un fichier declare pour Windows (comme PEAK)
+UD="$HOME/Library/Application Support/Steam/userdata/4242"
+cache_steam() { # <appid> <fichier> <taille> <platformstosync2>
+   mkdir -p "$UD/$1"
+   printf '"%s"\n{\n\t"ChangeNumber"\t\t"3"\n\t"ostype"\t\t"-102"\n\t"%s"\n\t{\n\t\t"root"\t\t"12"\n\t\t"size"\t\t"%s"\n\t\t"localtime"\t\t"0"\n\t\t"time"\t\t"%s"\n\t\t"remotetime"\t\t"%s"\n\t\t"sha"\t\t"%s"\n\t\t"syncstate"\t\t"2"\n\t\t"persiststate"\t\t"0"\n\t\t"platformstosync2"\t\t"%s"\n\t}\n}\n' \
+      "$1" "$2" "$3" "$([ "$3" -gt 0 ] && echo 1791067661 || echo 0)" "$([ "$3" -gt 0 ] && echo 1791067661 || echo 0)" \
+      "$([ "$3" -gt 0 ] && echo 425f5cba8cfeb4a6143972c5766c2d4dbea3d7f9 || echo 0000000000000000000000000000000000000000)" "$4" >"$UD/$1/remotecache.vdf"
+}
+for n in 14 15 16; do
+   jeu "$BS" 20$n "Jeu $n" "Jeu$n" 4 5
+   mkdir -p "$BU/AppData/LocalLow/Dev$n/Jeu$n"; echo "bouteille $n" >"$BU/AppData/LocalLow/Dev$n/Jeu$n/partie.sav"
+done
+cache_steam 2015 "Dev15/Jeu15/partie.sav" 4096 -1
+cache_steam 2016 "Dev16/Jeu16/partie.sav" 0 1
 # 2007 : repris par un Cidre d'avant (le jeu, pas ses sauvegardes) ; 2008 : pas encore de disque C:
 jeu "$BS" 2007 "Jeu Sept" "JeuSept" 4 5
 S7="$BU/Documents/My Games/Jeu Sept"; mkdir -p "$S7"; echo partie >"$S7/partie.sav"; date_bouteille "$S7/partie.sav"
@@ -417,22 +438,49 @@ verif "API de Steam : etat steam, rien de copie" "steam steam_api 0" "$(cs etat 
 [ ! -e "$UC/AppData/Roaming/Jeu Cinq" ] && ok "API de Steam : rien n'est ecrit sur le disque C: de Cidre" || echec "API de Steam : un dossier a ete copie"
 contient "API de Steam : on le dit" "sauvegardes : Steam Cloud synchronise deja ce jeu (il ecrit par l'API de Steam) : rien n'est copie" "$(cat "$T/err")"
 contient "API de Steam : ce que la bouteille garde, et ou" "(la bouteille en garde 1 fichier(s), intacts : $REM)" "$(cat "$T/err")"
+sortie=$(CIDRE_FICHE_STEAM_CLOUD=steam-api sh "$R/cidre" import 2005 --saves --forcer --json 2>"$T/err")
+verif "API de Steam, --forcer : toujours rien (le stockage de Steam n'est pas a Cidre)" "steam 0 1" "$(cs etat "$sortie") $(cs fichiers "$sortie") $(grep -c "forcer n'y change rien" "$T/err")"
+[ ! -e "$UC/AppData/Roaming/Jeu Cinq" ] && ok "API de Steam, --forcer : rien d'ecrit" || echec "API de Steam, --forcer : un dossier a ete copie"
 printf '2005\tAppData/Roaming/Jeu Cinq\n' >>"$CIDRE_DIR/saves.conf"
 sortie=$(CIDRE_FICHE_STEAM_CLOUD=steam-api sh "$R/cidre" import 2005 --saves --json 2>/dev/null)
 verif "API de Steam + dossier local de saves.conf : celui-la est ramene" "copie steam_api 1" "$(cs etat "$sortie") $(cs synchro "$sortie") $(cs fichiers "$sortie")"
-sortie=$(CIDRE_FICHE_STEAM_CLOUD="$LIEN" sh "$R/cidre" import 2006 --json 2>"$T/err"); verif "dossier macOS lie : le jeu est repris" "0" "$?"
-verif "dossier macOS lie : etat, synchro, ecrits, gardes" "copie steam_macos 1 1" "$(cs etat "$sortie") $(cs synchro "$sortie") $(cs fichiers "$sortie") $(cs gardes "$sortie")"
-verif "dossier macOS lie : d'ou, vers le dossier que Steam synchronise" "$S6 $MAC" "$(cs depuis "$sortie") $(cs vers "$sortie")"
-verif "dossier macOS lie : le lien est pose" "$MAC" "$(readlink "$UC/AppData/LocalLow/Dev6/Jeu6")"
-verif "dossier macOS lie : le fichier de Windows y est" "windows" "$(cat "$MAC/win.sav" 2>/dev/null)"
-verif "dossier macOS lie : le fichier plus recent du Mac n'est pas ecrase" "mac recent" "$(cat "$MAC/commun.sav")"
-contient "dossier macOS lie : on le dit" "ramene(s) de la bouteille, dans le dossier que Steam Cloud synchronise" "$(cat "$T/err")"
+echo "  -- Steam d'abord : dossier macOS lie"
+sortie=$(CIDRE_FICHE_STEAM_CLOUD="$LIEN" sh "$R/cidre" import 2006 --json 2>"$T/err"); verif "Steam a deja une sauvegarde : le jeu est repris" "0" "$?"
+verif "Steam a deja une sauvegarde : etat, synchro, ecrits, gardes (bouteille), cote Steam" "steam_prioritaire steam_macos 0 2 1 false" \
+   "$(cs etat "$sortie") $(cs synchro "$sortie") $(cs fichiers "$sortie") $(cs gardes "$sortie") $(cs steam_fichiers "$sortie") $(cs steam_distants "$sortie")"
+verif "Steam a deja une sauvegarde : d'ou, et le dossier que Steam synchronise" "$S6 $MAC" "$(cs depuis "$sortie") $(cs vers "$sortie")"
+verif "Steam a deja une sauvegarde : le lien est pose" "$MAC" "$(readlink "$UC/AppData/LocalLow/Dev6/Jeu6")"
+verif "le fichier de Steam, meme plus ancien que celui de la bouteille, n'est pas remplace" "mac ancien" "$(cat "$MAC/commun.sav")"
+[ ! -e "$MAC/win.sav" ] && ok "rien n'est copie, pas meme le fichier que Steam n'a pas" || echec "un fichier de la bouteille a ete ajoute au dossier de Steam"
+contient "on dit que Steam a la priorite" "sauvegardes : Steam Cloud a deja des sauvegardes de ce jeu : elles ont la priorite, rien n'est copie de la bouteille" "$(cat "$T/err")"
+contient "on dit ce que Steam a, et ou" "Steam     : 1 fichier(s) dans $MAC" "$(cat "$T/err")"
+contient "on dit ce que la bouteille garde, et ou" "bouteille : 2 fichier(s), intacts : $S6" "$(cat "$T/err")"
+contient "on dit comment passer outre" "cidre import 2006 --saves --forcer" "$(cat "$T/err")"
+contient "cidre saves --json : la reprise dit que Steam a eu la priorite" '"reprise":{"appid":2006,"etat":"steam_prioritaire","fichiers":0,' "$(CIDRE_FICHE_STEAM_CLOUD="$LIEN" sh "$R/cidre" saves 2006 --json)"
+sh "$R/cidre" import 2006 --forcer >/dev/null 2>&1; verif "--forcer sans --saves : usage (jamais a la reprise)" "2" "$?"
+sortie=$(CIDRE_FICHE_STEAM_CLOUD="$(lien 14)" sh "$R/cidre" import 2014 --json 2>"$T/err")
+verif "dossier de Steam vide : comble par la bouteille" "copie steam_macos 1 0 bouteille 14" "$(cs etat "$sortie") $(cs synchro "$sortie") $(cs fichiers "$sortie") $(cs steam_fichiers "$sortie") $(cat "$T/maison/Library/Application Support/Dev14.Jeu14/partie.sav" 2>/dev/null)"
+verif "jamais synchronise par le client de ce Mac : conflit possible, dit" "true 1" "$(cs conflit_possible "$sortie") $(grep -c 'Steam signalera un conflit' "$T/err")"
+sortie=$(CIDRE_FICHE_STEAM_CLOUD="$(lien 15)" sh "$R/cidre" import 2015 --json 2>"$T/err")
+verif "dossier vide mais fichiers connus dans le nuage : Steam d'abord, rien n'est copie" "steam_prioritaire 0 1 true" "$(cs etat "$sortie") $(cs fichiers "$sortie") $(cs steam_fichiers "$sortie") $(cs steam_distants "$sortie")"
+[ -z "$(ls -A "$T/maison/Library/Application Support/Dev15.Jeu15" 2>/dev/null)" ] && ok "fichiers connus dans le nuage : le dossier de Steam reste vide" || echec "fichiers connus dans le nuage : un fichier a ete copie"
+contient "fichiers connus dans le nuage : on le dit" "Steam     : 1 fichier(s) dans le nuage, que le client Steam connait (pas encore sur ce Mac)" "$(cat "$T/err")"
+sortie=$(CIDRE_FICHE_STEAM_CLOUD="$(lien 16)" sh "$R/cidre" import 2016 --json 2>"$T/err")
+verif "le nuage n'a qu'un fichier declare pour Windows : comble, sans conflit possible" "copie 1 false bouteille 16" "$(cs etat "$sortie") $(cs fichiers "$sortie") $(cs conflit_possible "$sortie") $(cat "$T/maison/Library/Application Support/Dev16.Jeu16/partie.sav" 2>/dev/null)"
 
 echo "  -- sauvegardes dans le dossier du jeu"
 sortie=$(CIDRE_FICHE_SAUVEGARDES='jeu:save' sh "$R/cidre" import 2009 --json 2>"$T/err")
 verif "etat avec_le_jeu" "avec_le_jeu 0" "$(cs etat "$sortie") $(cs fichiers "$sortie")"
 verif "elles sont venues avec le clone" "neuf" "$(cat "$G/2009/save/slot.sav" 2>/dev/null)"
 contient "on le dit" "ce jeu les range dans son propre dossier (save) : elles sont venues avec lui" "$(cat "$T/err")"
+echo "  -- Steam d'abord : forcer, a la demande"
+sortie=$(CIDRE_FICHE_STEAM_CLOUD="$LIEN" sh "$R/cidre" import 2006 --saves --forcer --json 2>"$T/err"); verif "--saves --forcer : fait" "0" "$?"
+verif "--forcer : etat, ecrits, remplaces, force" "copie 2 1 true" "$(cs etat "$sortie") $(cs fichiers "$sortie") $(cs remplaces "$sortie") $(cs force "$sortie")"
+verif "--forcer : les fichiers de la bouteille sont dans le dossier de Steam" "windows recent windows" "$(cat "$MAC/commun.sav") $(cat "$MAC/win.sav" 2>/dev/null)"
+verif "--forcer : la version de Steam remplacee est gardee" "mac ancien" "$(cat "$(cs historique "$sortie")/0/commun.sav" 2>/dev/null)"
+contient "--forcer : on le dit" "par-dessus le dossier que Steam Cloud synchronise (--forcer)" "$(cat "$T/err")"
+sortie=$(CIDRE_FICHE_STEAM_CLOUD="$(lien 15)" sh "$R/cidre" import 2015 --saves --json 2>/dev/null)
+verif "rattrapage sans --forcer : Steam garde la priorite" "steam_prioritaire 0" "$(cs etat "$sortie") $(cs fichiers "$sortie")"
 verif "aucune bouteille n'a ete modifiee par ces reprises" "$ESSAIS_AVANT" "$(cliche "$ES")"
 
 echo "  -- rattrapage d'une reprise ancienne (cidre import <appid> --saves)"
