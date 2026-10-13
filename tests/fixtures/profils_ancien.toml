@@ -147,7 +147,7 @@ source = "cidre-test"
 dx12 = false
 moteur = "unity"
 anticheat = "none"
-etat = "bronze"
+etat = "or"
 source = "cidre-test"
 
 # Clair Obscur: Expedition 33 (Unreal Engine 5, tourne en D3D11 par DXVK).
