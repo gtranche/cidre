@@ -83,6 +83,9 @@ livrer() { # <chemin relatif au depot>
    fi
    case $1 in *.sh|*.py|cidre) chmod +x "$STAGE/$1" ;; esac
 }
+# `cidre bottles` et `cidre import` : les jeux deja installes par CrossOver,
+# Whisky ou Heroic, repris sans telechargement.
+for f in trouver_jeux_bouteilles.sh reprendre_jeu_bouteille.sh; do livrer "tests/$f"; done
 for f in etape2_pile_arm64ec.sh lancer_depuis_steam.sh brancher_jeux_steam.sh \
          installer_agent_steam.sh preparer_pont_steam_arm64.sh sync_saves_steam.sh \
          installer_fex.sh profil_cidre.sh cidre_install.sh compte_steam.sh \

@@ -1,7 +1,7 @@
 /* cidre-outil : ce que le script `cidre` ne sait pas faire en sh.
  *
  *    cidre-outil session <steamcmd.sh> <arguments de SteamCMD...>
- *    cidre-outil bibliotheque [--texte] <licences.txt> [appid installe ...]
+ *    cidre-outil bibliotheque [--texte] [--bouteilles <liste|->] <licences.txt> [appid installe ...]
  *
  * Livre construit dans le runtime (build/cidre-outil) : un Mac sans outils de
  * developpement n'a ni Python ni compilateur, et `/usr/bin/python3` n'y est
@@ -23,7 +23,11 @@
  * applications de chacun. Les noms, types et plateformes viennent du cache du
  * client Steam (appcache/appinfo.vdf, format binaire v27 a v29), qu'on lit sans
  * rien y ecrire. SteamCMD tronque la liste d'applications des gros paquets : on
- * la complete par packageinfo.vdf.
+ * la complete par packageinfo.vdf. --bouteilles : la sortie de
+ * tests/trouver_jeux_bouteilles.sh (`-` : l'entree standard), les jeux qu'une
+ * bouteille CrossOver, Whisky ou Heroic a deja installes. Un jeu non installe
+ * qui s'y trouve porte "source": "bouteille", avec "origine", "bouteille",
+ * "chemin", "buildid" et "taille" : `cidre import` le reprend.
  */
 #include <ctype.h>
 #include <errno.h>
@@ -540,11 +544,88 @@ static int cmp_jeu(const void *a, const void *b)
    return (x->ncle > y->ncle) - (x->ncle < y->ncle);
 }
 
+/* un jeu deja installe dans une bouteille : une ligne de trouver_jeux_bouteilles.sh */
+typedef struct {
+   uint32_t appid;
+   const char *nom, *origine, *bouteille, *chemin, *buildid, *taille;
+} Bouteille;
+
+typedef struct {
+   Bouteille *v;
+   size_t n, cap;
+} Bouteilles;
+
+static int que_des_chiffres(const char *s)
+{
+   return *s && strspn(s, "0123456789") == strlen(s);
+}
+
+/* appid, nom, source, bouteille, chemin, buildid, taille, separes par des
+ * tabulations. Un jeu present dans plusieurs bouteilles : la premiere ligne. */
+static void lire_bouteilles(const char *chemin, Bouteilles *b)
+{
+   size_t n = 0;
+   char *d = NULL;
+   if (strcmp(chemin, "-"))
+      d = (char *)lire_fichier(chemin, &n);
+   else {
+      size_t cap = 1 << 12;
+      d = memoire(NULL, cap + 1);
+      for (size_t lu; (lu = fread(d + n, 1, cap - n, stdin)) > 0;)
+         if ((n += lu) == cap)
+            d = memoire(d, (cap *= 2) + 1);
+      d[n] = 0;
+   }
+   if (!d)
+      return;
+   for (char *l = d, *fin; l < d + n; l = fin + 1) {
+      fin = memchr(l, '\n', (size_t)(d + n - l));
+      if (!fin)
+         fin = d + n;
+      *fin = 0;
+      char *champ[7];
+      int nc = 0;
+      for (char *p = l; nc < 7; nc++) {
+         champ[nc] = p;
+         if (!(p = strchr(p, '\t')))
+            break;
+         *p++ = 0;
+      }
+      if (nc < 6 || !que_des_chiffres(champ[0]) || !que_des_chiffres(champ[5]) || !que_des_chiffres(champ[6]))
+         continue;
+      unsigned long long id = strtoull(champ[0], NULL, 10);
+      size_t i = 0;
+      while (i < b->n && b->v[i].appid != id)
+         i++;
+      if (i < b->n || id > UINT32_MAX)
+         continue;
+      if (b->n == b->cap)
+         b->v = memoire(b->v, (b->cap = b->cap ? b->cap * 2 : 16) * sizeof *b->v);
+      b->v[b->n++] = (Bouteille){ (uint32_t)id, champ[1], champ[2], champ[3], champ[4], champ[5], champ[6] };
+   }
+}
+
+static const Bouteille *bouteille_de(const Bouteilles *b, uint32_t appid)
+{
+   for (size_t i = 0; i < b->n; i++)
+      if (b->v[i].appid == appid)
+         return &b->v[i];
+   return NULL;
+}
+
 static int cmd_bibliotheque(int argc, char **argv)
 {
-   int texte = argc > 0 && !strcmp(argv[0], "--texte");
-   if (texte)
-      argc--, argv++;
+   int texte = 0;
+   Bouteilles bouteilles = { 0 };
+   for (; argc > 0 && !strncmp(argv[0], "--", 2); argc--, argv++) {
+      if (!strcmp(argv[0], "--texte"))
+         texte = 1;
+      else if (!strcmp(argv[0], "--bouteilles") && argc > 1) {
+         lire_bouteilles(argv[1], &bouteilles);
+         argc--, argv++;
+      } else
+         return 2;
+   }
    if (argc < 1)
       return 2;
 
@@ -607,6 +688,21 @@ static int cmd_bibliotheque(int argc, char **argv)
    if (lire_appinfo(chemin, &possedes, &jeux))
       return 1;
 
+   /* Un jeu d'une bouteille que les licences ne listent pas (partage familial,
+    * autre compte dans la bouteille, cache du client incomplet) : on le montre
+    * quand meme, avec le nom de son manifeste. */
+   for (size_t i = 0; i < bouteilles.n; i++) {
+      const Bouteille *b = &bouteilles.v[i];
+      size_t k = 0;
+      while (k < jeux.n && jeux.v[k].appid != b->appid)
+         k++;
+      if (k < jeux.n)
+         continue;
+      if (jeux.n == jeux.cap)
+         jeux.v = memoire(jeux.v, (jeux.cap = jeux.cap ? jeux.cap * 2 : 256) * sizeof *jeux.v);
+      jeux.v[jeux.n++] = (Jeu){ .appid = b->appid, .c = { .nom = b->nom, .type = "game", .os = "windows" } };
+   }
+
    /* on garde les jeux, sur Windows ou macOS */
    locale_t utf8 = newlocale(LC_CTYPE_MASK, "en_US.UTF-8", NULL);
    size_t gardes = 0;
@@ -647,6 +743,7 @@ static int cmd_bibliotheque(int argc, char **argv)
       const char *premier = j->windows == 1 ? "windows" : "macos";
       const char *second = j->windows == 2 ? "windows" : j->macos == 2 ? "macos" : NULL;
       int installe = ens_contient(&installes, j->appid);
+      const Bouteille *b = installe ? NULL : bouteille_de(&bouteilles, j->appid);
       if (texte) {
          /* le nom sur 40 colonnes : coupe et complete en caracteres, pas en octets */
          const unsigned char *u = (const unsigned char *)j->c.nom;
@@ -656,14 +753,27 @@ static int cmd_bibliotheque(int argc, char **argv)
          for (size_t k = 0; u[k] && colonnes < 40; colonnes++)
             utf8_ecrire(utf8_lire(u, &k));
          snprintf(os, sizeof os, "%s%s%s", premier, second ? "," : "", second ? second : "");
-         printf("%*s %-15s %s\n", 40 - colonnes, "", os, installe ? "oui" : "");
+         printf("%*s %-15s %s", 40 - colonnes, "", os, installe ? "oui" : b ? "a reprendre" : "");
+         if (b)
+            printf(" (%s : %s)", b->origine, b->bouteille);
+         putchar('\n');
       } else {
          printf("%s{\"appid\": %u, \"nom\": ", i ? ", " : "", j->appid);
          json_chaine(j->c.nom);
          printf(", \"plateformes\": [\"%s\"", premier);
          if (second)
             printf(", \"%s\"", second);
-         printf("], \"installe\": %s}", installe ? "true" : "false");
+         printf("], \"installe\": %s", installe ? "true" : "false");
+         if (b) {
+            printf(", \"source\": \"bouteille\", \"origine\": ");
+            json_chaine(b->origine);
+            printf(", \"bouteille\": ");
+            json_chaine(b->bouteille);
+            printf(", \"chemin\": ");
+            json_chaine(b->chemin);
+            printf(", \"buildid\": %s, \"taille\": %s", b->buildid, b->taille);
+         }
+         putchar('}');
       }
    }
    if (!texte)
@@ -678,6 +788,6 @@ int main(int argc, char **argv)
    if (argc >= 3 && !strcmp(argv[1], "bibliotheque"))
       return cmd_bibliotheque(argc - 2, argv + 2);
    fprintf(stderr, "usage: cidre-outil session <steamcmd.sh> <arguments...>\n"
-                   "       cidre-outil bibliotheque [--texte] <licences.txt> [appid installe ...]\n");
+                   "       cidre-outil bibliotheque [--texte] [--bouteilles <liste|->] <licences.txt> [appid installe ...]\n");
    return 2;
 }

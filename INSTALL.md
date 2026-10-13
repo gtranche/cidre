@@ -19,6 +19,17 @@ Rosetta, ni outils de developpement.
    la session de SteamCMD, l'outil de Valve qui telecharge les jeux. Elle est
    distincte de celle du client Steam.
 
+**Des jeux deja installes par CrossOver, Whisky ou Heroic ?** Inutile de les
+telecharger une seconde fois : Cidre retrouve les jeux Steam Windows de leurs
+bouteilles (`cidre bottles`) et les reprend dans son dossier (`cidre import
+<appid>`). C'est un clone APFS : immediat, sans place prise tant que les deux
+copies sont identiques, et la bouteille n'est pas modifiee -- le jeu y reste
+jouable. `cidre import <appid> --move` le deplace au lieu de le cloner (la
+bouteille ne l'a plus) ; a ne faire qu'apres avoir ferme CrossOver, Whisky ou
+Heroic. Une bouteille sur un autre disque est copiee, pas clonee : Cidre le dit,
+et refuse si la place manque. Les sauvegardes restent dans la bouteille
+(`drive_c/users/<nom>/AppData/...`) ; `cidre import` dit ou.
+
 Un jeu marche, ou ne marche pas ? Le dire sert a tous les joueurs : Verger a un
 bouton « Partager mon resultat » sur la page de chaque jeu. La marche a suivre,
 et comment proposer une fiche de jeu : [profils/CONTRIBUER.md](profils/CONTRIBUER.md)
