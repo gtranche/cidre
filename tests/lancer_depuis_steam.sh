@@ -247,6 +247,13 @@ fi
 # bibliotheque encore mappee par un jeu en cours tue ce jeu.
 D3D11=$(opt d3d11 CIDRE_D3D11)
 case $D3D11 in dxmt) ;; *) D3D11=dxvk ;; esac
+# Options DXMT propres au jeu (fiche ou profil : dxmt_config = "d3d11.cle=valeur;..."),
+# placees devant DXMT_CONFIG de l'environnement, qui garde donc le dernier mot.
+DXMTCFG=$(opt dxmt_config CIDRE_DXMT_CONFIG)
+if [ "$D3D11" = dxmt ] && [ -n "$DXMTCFG" ]; then
+   export DXMT_CONFIG="$DXMTCFG;${DXMT_CONFIG:-}"
+   echo "    d3d11 : options DXMT du profil : $DXMTCFG" >>"$JOURNAL"
+fi
 WINDLL=$R/wine/wine11-arm64/lib/wine/aarch64-windows
 WINUNIX=$R/wine/wine11-arm64/lib/wine/aarch64-unix
 SYS32=$WINEPREFIX/drive_c/windows/system32

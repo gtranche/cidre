@@ -29,6 +29,10 @@ garde_index = false
 d3d11 = "dxmt"
 vsync = false
 tso = false
+# Tests de borne des tampons groupes par element (correctif DXMT 0121) : -7 a
+# -10 % sur les vertex shaders de la passe de base au banc (2026-10-13), sous le
+# bruit en fps. Recompile les shaders une fois au premier lancement.
+dxmt_config = "d3d11.groupedBufferLoad=True"
 
 # Reglages du jeu, poses une fois par le lanceur ; l'utilisateur est libre ensuite
 # (voir README). Ou le jeu lit quoi (mesure sur M1 Max le 2026-10-11 et sur iMac M4

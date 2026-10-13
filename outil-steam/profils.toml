@@ -53,6 +53,10 @@
 #                    force d3d12=n). false (defaut) = d3d12 builtin de Wine, qui
 #                    retombe en D3D11/DXVK. KosmicKrisp plafonne au FL 12.0 : un
 #                    jeu qui exige FL 12.1 (ex. PEAK) reste en D3D11 meme a true.
+#   dxmt_config      options DXMT propres au jeu, format "d3d11.cle=valeur;..."
+#                    (ex. "d3d11.groupedBufferLoad=True"), ajoutees a DXMT_CONFIG ;
+#                    vide = rien. Changer une option recompile les shaders du jeu
+#                    une fois (2-3 min de saccades au lancement suivant).
 #   d3d11            rendu Direct3D 11 : "dxmt" (defaut depuis la 1.5.8 : DXMT,
 #                    D3D11 -> Metal en un saut, builtins Wine remplaces au
 #                    lancement par ceux de DXMT) ou "dxvk" (DXVK -> Vulkan ->
@@ -107,6 +111,7 @@ plein_ecran = true
 gamemode = true
 dx12 = false
 d3d11 = "dxmt"
+dxmt_config = ""
 metalfx = false
 
 # (plus de section par jeu ici : profils/<appid>.toml, section [cidre])
