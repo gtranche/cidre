@@ -9,7 +9,8 @@
 #      posees, autres lignes intactes, sauvegarde .avant-cidre, idempotence,
 #      cle manquante ajoutee dans sa section, fichier absent = on reessaiera ;
 #      puis une sauvegarde Unreal factice (format gvas : entiers remplaces sur
-#      place) et un chemin a `*` (un dossier par compte) ;
+#      place), un chemin a `*` (un dossier par compte), et une ruche de
+#      registre factice (formats registre et playerprefs) ;
 #   4. le marqueur reglages_jeu_appliques dans le profil utilisateur ;
 #   5. `fiche_profil.sh maj` contre une copie locale (file://), et sans reseau ;
 #   6. variantes par machine (blocs [[machine]], tests/machine.sh) : conditions,
@@ -263,6 +264,76 @@ sortie=$(sh "$R/tests/reglages_jeu.sh" 999); rc=$?
 verif "chemin a * au format ini : pose dans le fichier trouve" "0 sg.ShadowQuality=2" "$rc $(tr -d '\r' <"$INI" | grep -m1 '^sg.ShadowQuality=')"
 printf '[reglages_jeu]\nfichier = "AppData/Local/Jeu/Config/GameUserSettings.ini"\nformat = "yaml"\nvaleurs = { "k" = "v" }\n' >"$CIDRE_PROFILS_BASE/999.toml"
 verif "format inconnu : code 3" "3" "$(sh "$R/tests/reglages_jeu.sh" 999 >/dev/null; echo $?)"
+
+# formats registre et playerprefs : le registre du prefixe (user.reg), ici une
+# ruche factice au format de Wine, avec une valeur binaire sur deux lignes
+REG="$WINEPREFIX/user.reg"
+export CIDRE_SERVEUR_WINE=non
+cat >"$REG" <<'FIN'
+WINE REGISTRY Version 2
+;; All keys relative to REGISTRY\\User\\S-1-5-21-0-0-0-1000
+
+#arch=win64
+
+[Software\\Editeur\\Jeu] 1791905543
+#time=1dd5b280b278856
+"FovSetting_h2102208684"=hex(4):00,00,00,20,48,a2,51,40
+"PUNCloudBestRegion_h3469667079"=hex:65,75,3b,32,30,3b,61,73,69,61,2c,61,75,2c,\
+  65,75,2c,68,6b,2c,6a,70,2c,73,61,2c,75,73,2c,75,73,73,63,2c,75,73,77,00
+"Screenmanager Resolution Width_h182942802"=dword:000006c0
+"UnitySelectMonitor_h17969598"=dword:00000000
+
+[Software\\Editeur\\Jeu\\Sous-cle] 1791905543
+"LodQuality_h4281427567"=hex:48,69,67,68,00
+
+[Software\\Wine] 1790333337
+"Version"="win10"
+FIN
+cp "$REG" "$T/reg-origine"
+cat >"$CIDRE_PROFILS_BASE/999.toml" <<'FIN'
+[reglages_jeu]
+fichier = "user.reg"
+format = "playerprefs"
+section = "Software\\Editeur\\Jeu"
+valeurs = { "LodQuality" = "Low", "PUNCloudBestRegion" = "eu", "Screenmanager Resolution Width" = 1280, "Decalage" = -1, "Echelle" = 0.5, "Accentué" = "x" }
+FIN
+sortie=$(sh "$R/tests/reglages_jeu.sh" 999); rc=$?
+reg_cle() { CLE="[$1] " awk 'index($0, ENVIRON["CLE"]) == 1 { d = 1; next } d && /^\[/ { exit } d' "$REG"; }
+verif "playerprefs : code 0, pose" "0 1" "$rc $(printf '%s\n' "$sortie" | grep -c 'poses dans user.reg \[Software.Editeur.Jeu\]')"
+verif "playerprefs : chaine ajoutee, nom suffixe du hachage d Unity, binaire a zero final" '"LodQuality_h4281427567"=hex:4c,6f,77,00' "$(reg_cle 'Software\\Editeur\\Jeu' | grep '^"LodQuality')"
+verif "playerprefs : chaine sur deux lignes remplacee en entier" '"PUNCloudBestRegion_h3469667079"=hex:65,75,00|0' "$(reg_cle 'Software\\Editeur\\Jeu' | grep '^"PUNCloud')|$(grep -c '^  65,75' "$REG")"
+verif "playerprefs : entier en dword, negatif en complement a deux" '"Screenmanager Resolution Width_h182942802"=dword:00000500 "Decalage_h3221923689"=dword:ffffffff' "$(reg_cle 'Software\\Editeur\\Jeu' | grep '^"Screenmanager Resolution Width') $(reg_cle 'Software\\Editeur\\Jeu' | grep '^"Decalage')"
+verif "playerprefs : nombre decimal et caracteres non ASCII laisses, dits" "1 1 0" "$(printf '%s\n' "$sortie" | grep -c 'Echelle = 0.5 : les nombres decimaux') $(printf '%s\n' "$sortie" | grep -c 'ASCII imprimables') $(grep -c 'Echelle\|Accentu' "$REG")"
+verif "playerprefs : les autres valeurs de la cle et les autres cles intactes" "$(grep -v 'PUNCloud\|^  65,75\|Resolution Width' "$T/reg-origine")" "$(grep -v 'PUNCloud\|Resolution Width\|^"LodQuality_h4281427567"=hex:4c\|Decalage' "$REG")"
+verif "playerprefs : la sous-cle garde sa valeur de meme nom" '"LodQuality_h4281427567"=hex:48,69,67,68,00' "$(reg_cle 'Software\\Editeur\\Jeu\\Sous-cle')"
+verif "playerprefs : copie d origine de la ruche" "" "$(cmp "$REG.avant-cidre" "$T/reg-origine" 2>&1)"
+cp "$REG" "$T/reg-pose"
+sortie=$(sh "$R/tests/reglages_jeu.sh" 999); rc=$?
+verif "playerprefs : relance = deja en place, ruche inchangee" "0 1 " "$rc $(printf '%s\n' "$sortie" | grep -c 'deja en place') $(cmp "$REG" "$T/reg-pose" 2>&1)"
+cp "$T/reg-origine" "$REG"
+verif "registre : prefixe tenu par un wineserver -> code 3, ruche pas touchee" "3 " "$(CIDRE_SERVEUR_WINE=oui sh "$R/tests/reglages_jeu.sh" 999 >/dev/null; echo $?) $(cmp "$REG" "$T/reg-origine" 2>&1)"
+# cle absente (le jeu n a jamais tourne) : creee a la fin ; format registre = noms tels quels, chaines REG_SZ
+cat >"$CIDRE_PROFILS_BASE/999.toml" <<'FIN'
+[[reglages_jeu]]
+fichier = "user.reg"
+format = "registre"
+section = "Software\\Editeur\\Neuf"
+valeurs = { "Dossier" = "C:\\jeu \"x\"", "Niveau" = 3 }
+[[reglages_jeu]]
+fichier = "user.reg"
+format = "registre"
+section = "software\\wine"
+valeurs = { "version" = "win11" }
+FIN
+sortie=$(sh "$R/tests/reglages_jeu.sh" 999); rc=$?
+verif "registre : cle absente creee, chaine echappee et dword" '0 "Dossier"="C:\\jeu \"x\"" "Niveau"=dword:00000003' "$rc $(reg_cle 'Software\\Editeur\\Neuf' | tr '\n' ' ' | sed 's/ *$//')"
+verif "registre : cle et nom retrouves sans egard a la casse, valeur remplacee" '"version"="win11"' "$(reg_cle 'Software\\Wine')"
+verif "registre : une seule cle creee" "4" "$(grep -c '^\[' "$REG")"
+printf '[reglages_jeu]\nfichier = "system.reg"\nformat = "registre"\nsection = "Software\\\\X"\nvaleurs = { "k" = "v" }\n' >"$CIDRE_PROFILS_BASE/999.toml"
+verif "registre : une autre ruche que user.reg refusee" "1" "$(sh "$R/tests/reglages_jeu.sh" 999 >/dev/null; echo $?)"
+printf '[reglages_jeu]\nfichier = "user.reg"\nformat = "registre"\nvaleurs = { "k" = "v" }\n' >"$CIDRE_PROFILS_BASE/999.toml"
+verif "registre : sans cle (section) -> code 1" "1" "$(sh "$R/tests/reglages_jeu.sh" 999 >/dev/null; echo $?)"
+unset CIDRE_SERVEUR_WINE
 
 echo "== 4. marqueur reglages_jeu_appliques"
 verif "avant : pas de marqueur" "" "$(valeur 999 reglages_jeu_appliques)"

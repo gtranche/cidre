@@ -69,7 +69,7 @@ garde_index = false
 # Une entrée par section INI visée ; une fiche qui n'en vise qu'une peut
 # écrire une table simple `[reglages_jeu]` au lieu du tableau.
 fichier = "AppData/Local/Sandfall/Saved/Config/Windows/GameUserSettings.ini"
-format = "ini"                     # ini (défaut) ou gvas (sauvegarde Unreal), voir plus bas
+format = "ini"                     # ini (défaut), gvas (sauvegarde Unreal), playerprefs (Unity) ou registre, voir plus bas
 section = "ScalabilityGroups"      # optionnel : la section INI où vivent les clés
                                    # (exemple de forme : ce jeu-ci relit sa qualité ailleurs, voir plus bas)
 [reglages_jeu.valeurs]             # ou, en ligne : valeurs = { "sg.ShadowQuality" = "1" }
@@ -180,6 +180,43 @@ les pose, une fois :
   propriété, pas d'autre type (les flottants et les chaînes changent de forme
   d'une version d'Unreal à l'autre). Même copie `.avant-cidre` avant la
   première écriture.
+- `format = "playerprefs"` : le jeu est en Unity et garde ses options dans les
+  PlayerPrefs, que Unity range sous Windows dans le registre
+  (`HKEY_CURRENT_USER\Software\<éditeur>\<jeu>`). `fichier` vaut alors
+  `"user.reg"` (la ruche de l'utilisateur, à la racine du préfixe ; la seule
+  acceptée) et `section` est la clé, relative à `HKEY_CURRENT_USER`. Chaque clé
+  de `valeurs` est le nom du PlayerPrefs tel que le jeu le nomme
+  (`"ShadowDistanceSettings"`) : le lanceur lui ajoute le suffixe `_h<hachage>`
+  qu'Unity lui donne. Une valeur faite de chiffres est un entier (`SetInt`,
+  `REG_DWORD`), toute autre une chaîne (`SetString`, rangée en binaire avec son
+  zéro final, comme Unity l'écrit). Pas de nombre décimal (`SetFloat`), pas de
+  caractère hors ASCII : la valeur est laissée, le journal le dit.
+
+  ```toml
+  [[reglages_jeu]]
+  fichier = "user.reg"
+  format = "playerprefs"
+  section = "Software\\LandCrab\\PEAK"
+  valeurs = { "ShadowDistanceSettings" = "Low" }
+  ```
+
+  Où trouver les noms : le journal du jeu (`Player.log`, sous
+  `AppData/LocalLow/<éditeur>/<jeu>/`) quand il les cite (PEAK : « Failed to
+  load setting of type ShadowDistanceSettings from PlayerPrefs » tant qu'une
+  option est à sa valeur par défaut), la ruche après avoir changé l'option dans
+  le jeu (`grep -A40 'LandCrab' user.reg`), sinon les classes du jeu
+  (`PEAK_Data/Managed/Assembly-CSharp.dll`).
+- `format = "registre"` : même chose pour un jeu qui écrit le registre
+  lui-même, sans les conventions d'Unity : le nom de la valeur est pris tel
+  quel, un entier est un `REG_DWORD`, une chaîne un `REG_SZ`.
+- Pour ces deux formats : la clé est créée si elle manque (les réglages valent
+  dès le premier lancement, le jeu n'a pas besoin d'avoir tourné) ; les autres
+  valeurs de la clé et les autres clés ne bougent pas ; la ruche est copiée en
+  `user.reg.avant-cidre` avant la première écriture. Le registre n'est écrit
+  que si aucun `wineserver` ne tient le préfixe (il garde le registre en
+  mémoire et réécrirait le fichier à sa sortie) : sinon rien n'est fait et on
+  réessaie au lancement suivant. Un runtime d'avant ces formats (Cidre ≤ 1.5.9)
+  répond « format inconnu » et réessaie à chaque lancement sans rien écrire.
 - Un runtime d'avant ces deux ajouts (Cidre ≤ 1.5.4) répond « format inconnu »
   ou « fichier absent » et réessaie à chaque lancement, sans jamais poser le
   marqueur : une entrée `gvas` ou à `*` ne se met donc **que dans un bloc

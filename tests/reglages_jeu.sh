@@ -20,9 +20,11 @@
 # encore cree : on reessaiera au prochain lancement, les entrees deja posees
 # seront alors « deja en place ») ; 1 = erreur.
 #
-# Deux formats (cle `format` de l'entree) : `ini` (defaut), et `gvas` pour une
+# Quatre formats (cle `format` de l'entree) : `ini` (defaut), `gvas` pour une
 # sauvegarde Unreal ou le jeu range des reglages (proprietes entieres remplacees
-# sur place, cf. poser_gvas). `fichier` peut contenir un `*` pour un dossier au
+# sur place, cf. poser_gvas), `registre` et `playerprefs` (les PlayerPrefs
+# d'Unity) pour un jeu qui les garde dans le registre du prefixe (cf.
+# poser_registre). `fichier` peut contenir un `*` pour un dossier au
 # nom inconnu d'avance (un par compte) : chaque fichier qui correspond est traite.
 #
 # Format ini : seules les cles voulues sont reecrites, si leur valeur differe : les autres
@@ -167,6 +169,136 @@ poser_gvas() { # <nom affiche>
    return 0
 }
 
+# Formats registre et playerprefs : le jeu range ses reglages dans le registre
+# du prefixe, sous HKEY_CURRENT_USER. `fichier` est alors "user.reg" (la ruche
+# de l utilisateur, a la racine du prefixe) et `section` la cle, relative a
+# HKEY_CURRENT_USER (« Software\Editeur\Jeu »). Une valeur faite de chiffres est
+# un entier (REG_DWORD), toute autre une chaine. playerprefs = les PlayerPrefs
+# d Unity (PEAK : toutes ses options graphiques) : le nom de la valeur recoit le
+# suffixe _h<hachage> qu Unity lui donne, et une chaine est rangee en binaire,
+# zero final compris, comme Unity l ecrit. La cle est creee si elle manque (le
+# jeu n a jamais tourne : ses reglages valent des le premier lancement). Le
+# registre n est ecrit que si aucun wineserver ne tient le prefixe : le serveur
+# garde le registre en memoire et recrirait le fichier a sa sortie. Rend 0, 3
+# (prefixe en cours d usage : on reessaiera) ou 1.
+serveur_wine_en_cours() {
+   case ${CIDRE_SERVEUR_WINE:-} in oui) return 0 ;; non) return 1 ;; esac
+   [ -S "/tmp/.wine-$(id -u)/server-$(stat -f '%Xd-%Xi' "$PFX" 2>/dev/null)/socket" ] && pgrep -x wineserver >/dev/null 2>&1
+}
+poser_registre() { # <nom affiche>
+   if [ -z "$SECTION" ] || printf '%s' "$SECTION" | LC_ALL=C grep -q '[^ -~]\|[]["]'; then
+      echo "    reglages du jeu : cle de registre absente ou refusee (« $SECTION »)"; return 1
+   fi
+   if serveur_wine_en_cours; then
+      echo "    reglages du jeu : le prefixe est en cours d'usage (wineserver), registre laisse ; on reessaiera"
+      return 3
+   fi
+   : >"$V.ok"
+   while IFS='	' read -r c v; do
+      if [ -z "$c" ] || printf '%s' "$c$v" | LC_ALL=C grep -q '[^ -~]'; then
+         echo "    reglages du jeu : $c : seuls les caracteres ASCII imprimables sont pris en charge, laisse"; continue
+      fi
+      case $v in
+         *[0-9].[0-9]*|.[0-9]*)
+            if [ "$FORMAT" = playerprefs ] && ! printf '%s' "$v" | grep -q '[^0-9.-]'; then
+               echo "    reglages du jeu : $c = $v : les nombres decimaux ne sont pas pris en charge, laisse"; continue
+            fi ;;
+         -[0-9]*|[0-9]*)
+            case ${v#-} in
+               *[!0-9]*) ;;
+               *) [ ${#v} -le 11 ] && [ "$v" -ge -2147483648 ] && [ "$v" -le 4294967295 ] ||
+                     { echo "    reglages du jeu : $c = $v est hors bornes, laisse"; continue; } ;;
+            esac ;;
+      esac
+      printf '%s\t%s\n' "$c" "$v" >>"$V.ok"
+   done <"$V"
+   [ -s "$V.ok" ] || { rm -f "$V.ok"; echo "    reglages du jeu : aucune valeur a poser dans $1 [$SECTION]"; return 1; }
+   # la cle passe par l environnement : `awk -v` interpreterait ses barres obliques inverses
+   CLE=$SECTION LC_ALL=C awk -v mode="$FORMAT" -v maintenant="$(date +%s)" '
+      function echapper(s,   i, ch, r) {
+         r = ""
+         for (i = 1; i <= length(s); i++) { ch = substr(s, i, 1); if (ch == "\\" || ch == "\"") r = r "\\"; r = r ch }
+         return r
+      }
+      # le hachage qu Unity ajoute au nom d un PlayerPrefs : h = h * 33 ^ c depuis 5381, sur 32 bits
+      function hachage(s,   h, i, c, bas, x, b, p) {
+         h = 5381
+         for (i = 1; i <= length(s); i++) {
+            h = (h * 33) % 4294967296; c = ord[substr(s, i, 1)]
+            bas = h % 256; h -= bas; x = 0; p = 1
+            for (b = 0; b < 8; b++) { if (int(bas / p) % 2 != int(c / p) % 2) x += p; p *= 2 }
+            h += x
+         }
+         return sprintf("%.0f", h)
+      }
+      function donnee(v,   i, r) {
+         if (v ~ /^-?[0-9]+$/) { v += 0; if (v < 0) v += 4294967296; return sprintf("dword:%08x", v) }
+         if (mode != "playerprefs") return "\"" echapper(v) "\""
+         r = "hex:"
+         for (i = 1; i <= length(v); i++) r = r sprintf("%02x,", ord[substr(v, i, 1)])
+         return r "00"
+      }
+      # le nom d une ligne de valeur `"nom"=...`, en minuscules ; vide pour toute autre ligne
+      function nom_de(l,   i, ch, r) {
+         if (substr(l, 1, 1) != "\"") return ""
+         r = ""
+         for (i = 2; i <= length(l); i++) {
+            ch = substr(l, i, 1)
+            if (ch == "\\") { i++; r = r substr(l, i, 1); continue }
+            if (ch == "\"") break
+            r = r ch
+         }
+         return (substr(l, i + 1, 1) == "=") ? tolower(r) : ""
+      }
+      # les valeurs manquantes, a la fin de la cle (avant sa ligne vide)
+      function ajouter(   k) {
+         for (k = 1; k <= nv; k++) if (!fait[ordre[k]]) { print ligne[ordre[k]]; fait[ordre[k]] = 1 }
+      }
+      BEGIN { for (i = 32; i < 127; i++) ord[sprintf("%c", i)] = i; cle = ENVIRON["CLE"]; cle_e = tolower(echapper(cle)) }
+      NR == FNR {
+         i = index($0, "\t"); c = substr($0, 1, i - 1)
+         n = (mode == "playerprefs") ? c "_h" hachage(c) : c
+         k = tolower(n); if (!(k in ligne)) ordre[++nv] = k
+         ligne[k] = "\"" echapper(n) "\"=" donnee(substr($0, i + 1)); next
+      }
+      # la suite (lignes finissant par \) d une valeur binaire qu on vient de remplacer
+      saute { if ($0 !~ /\\$/) saute = 0; next }
+      /^\[/ {
+         if (dedans) { ajouter(); vue = 1 }
+         printf "%s", attente; attente = ""
+         k = $0; sub(/^\[/, "", k); sub(/\][^\]]*$/, "", k)
+         dedans = (tolower(k) == cle_e)
+         print; vide = 0; next
+      }
+      dedans && $0 == "" { attente = attente "\n"; next }
+      {
+         printf "%s", attente; attente = ""
+         if (dedans) {
+            n = nom_de($0)
+            if (n != "" && (n in ligne)) {
+               if ($0 ~ /\\$/) saute = 1
+               if (!fait[n]) { print ligne[n]; fait[n] = 1 }
+               next
+            }
+         }
+         print; vide = ($0 == "")
+      }
+      END {
+         if (dedans) { ajouter(); vue = 1 }
+         printf "%s", attente
+         if (!vue && nv) {
+            # cle absente : on la cree a la fin (Wine cree les cles parentes en la lisant)
+            if (!vide) print ""
+            print "[" echapper(cle) "] " maintenant; ajouter(); print ""
+         }
+      }
+   ' "$V.ok" "$F" >"$F.cidre-tmp" || { rm -f "$F.cidre-tmp" "$V.ok"; echo "    reglages du jeu : echec de la reecriture de $1"; return 1; }
+   rm -f "$V.ok"
+   remplacer "$1" " [$SECTION]"
+   return 0
+}
+poser_playerprefs() { poser_registre "$@"; }
+
 # Une entree : <numero>. Rend 0 (pose ou deja la), 3 (pas maintenant), 1 (erreur).
 entree() {
    N=$1
@@ -175,12 +307,19 @@ entree() {
    [ -n "$REL" ] || { echo "    reglages du jeu : entree $N sans fichier, rien a faire"; return 3; }
    case $REL in /*|*..*) echo "    reglages du jeu : chemin refuse ($REL)"; return 1 ;; esac
    FORMAT=${FORMAT:-ini}
-   case $FORMAT in ini|gvas) ;; *) echo "    reglages du jeu : format « $FORMAT » inconnu, rien a faire"; return 3 ;; esac
+   case $FORMAT in ini|gvas|registre|playerprefs) ;; *) echo "    reglages du jeu : format « $FORMAT » inconnu, rien a faire"; return 3 ;; esac
+   # ou vit le fichier : le dossier utilisateur du prefixe, ou le prefixe lui-meme
+   # pour le registre (user.reg, la ruche de HKEY_CURRENT_USER, et elle seule)
+   BASE=$(dirname "$UH")
+   case $FORMAT in registre|playerprefs)
+      [ "$REL" = user.reg ] || { echo "    reglages du jeu : registre : seul user.reg (HKEY_CURRENT_USER) est pris en charge ($REL)"; return 1; }
+      BASE=$PFX ;;
+   esac
    # Un `*` dans le chemin vaut pour un dossier qu on ne connait pas d avance
    # (Saved/SaveGames/<identifiant du compte>/) : chaque fichier qui correspond.
    case $REL in
-      *'*'*) FICHIERS=$(cd "$(dirname "$UH")" 2>/dev/null && IFS= && for f in $REL; do [ -f "$f" ] && printf '%s\n' "$f"; done) ;;
-      *) FICHIERS=$REL; [ -f "$(dirname "$UH")/$REL" ] || FICHIERS= ;;
+      *'*'*) FICHIERS=$(cd "$BASE" 2>/dev/null && IFS= && for f in $REL; do [ -f "$f" ] && printf '%s\n' "$f"; done) ;;
+      *) FICHIERS=$REL; [ -f "$BASE/$REL" ] || FICHIERS= ;;
    esac
    [ -n "$FICHIERS" ] || { echo "    reglages du jeu : $REL absent (premier lancement ?), on reessaiera"; return 3; }
 
@@ -191,8 +330,10 @@ entree() {
    rce=0
    printf '%s\n' "$FICHIERS" >"$V.fichiers"
    while IFS= read -r rel; do
-      F="$(dirname "$UH")/$rel"
-      "poser_$FORMAT" "$rel" </dev/null || rce=1
+      F="$BASE/$rel"
+      "poser_$FORMAT" "$rel" </dev/null; r=$?
+      [ $r -eq 1 ] && rce=1
+      [ $r -eq 3 ] && [ $rce -ne 1 ] && rce=3
    done <"$V.fichiers"
    rm -f "$V" "$V.fichiers"
    return $rce
