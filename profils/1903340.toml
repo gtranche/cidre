@@ -106,3 +106,14 @@ etat = "argent"
 fps_menu = 77
 fps_jeu = 35
 notes = "DXMT sans vsync ni TSO, Moyen + resolution 50 % : menu 72-80 fps, jeu 33-37 (GPU 30 ms, carte a 99 %). Moyen 75 % : menu 42, jeu 22. Bas 50 % : menu 84, jeu 37. Moyen 50 % + MetalFX : menu 62, jeu 30. Eleve 50 % : menu 70. Memoire : 4,7 Go pour le jeu, 6 Go alloues par la carte, pas de swap. En DXVK le jeu se regle seul en Bas."
+
+[compat.crossover]
+recette = "com.codeweavers.c4.21737"
+source = "crossover"
+date = "2026-10-13"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2026-09-14"
+crossover_version = "26.3"
+bouteille = "win11_64"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=21737"

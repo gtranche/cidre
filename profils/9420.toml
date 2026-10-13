@@ -24,6 +24,12 @@ api_disponibles = "pcgamingwiki 2026-10-11"
 bits = "pcgamingwiki 2026-10-11"
 drm = "pcgamingwiki 2026-10-11"
 
+[cidre]
+dependances = "directx_jun2010"
+
+[cidre.sources]
+dependances = "crossover 2026-10-13"
+
 [compat]
 etat = "non-teste"
 date = "2026-10-11"
@@ -58,3 +64,15 @@ parallels = "jouable"
 source = "applegamingwiki"
 date = "2026-10-11"
 url = "https://www.applegamingwiki.com/wiki/Supreme_Commander_Forged_Alliance"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.6603"
+source = "crossover"
+date = "2026-10-13"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2015-11-17"
+crossover_version = "13.0.1"
+bouteille = "win7_64"
+dependances = "directx_jun2010"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=6603"

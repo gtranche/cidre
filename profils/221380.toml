@@ -24,6 +24,12 @@ api_disponibles = "pcgamingwiki 2026-10-11"
 bits = "pcgamingwiki 2026-10-11"
 drm = "pcgamingwiki 2026-10-11"
 
+[cidre]
+dependances = "vcrun2013"
+
+[cidre.sources]
+dependances = "crossover 2026-10-13"
+
 [compat]
 etat = "non-teste"
 date = "2026-10-11"
@@ -62,3 +68,16 @@ dernier_temoignage = "2024-11-12"
 source = "applegamingwiki"
 date = "2026-10-11"
 url = "https://www.applegamingwiki.com/wiki/Age_of_Empires_II%3A_HD_Edition"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.11592"
+source = "crossover"
+date = "2026-10-13"
+correspondance = "steamid"
+confiance = "haute"
+recette_date = "2023-11-17"
+crossover_version = "13.0.1"
+bouteille = "win10_64"
+dependances = "vcrun2013"
+registre = "Fonts/Replacements:Palatino Linotype=Times New Roman"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=11592"

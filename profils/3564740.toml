@@ -22,6 +22,12 @@ api_disponibles = "pcgamingwiki 2026-10-11"
 bits = "pcgamingwiki 2026-10-11"
 drm = "pcgamingwiki 2026-10-11"
 
+[cidre]
+dependances = "d3dcompiler_47"
+
+[cidre.sources]
+dependances = "crossover 2026-10-13"
+
 [compat]
 etat = "non-teste"
 date = "2026-10-11"
@@ -49,3 +55,15 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Where_Winds_Meet"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.21383"
+source = "crossover"
+date = "2026-10-13"
+correspondance = "steamid"
+confiance = "haute"
+recette_date = "2026-07-01"
+crossover_version = "26"
+bouteille = "win11_64"
+dependances = "d3dcompiler_47"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=21383"

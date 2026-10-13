@@ -26,6 +26,12 @@ bits_32_aussi = "pcgamingwiki 2026-10-11"
 anticheat = "pcgamingwiki 2026-10-11"
 drm = "pcgamingwiki 2026-10-11"
 
+[cidre]
+dependances = "dotnet35sp1 dotnet40"
+
+[cidre.sources]
+dependances = "crossover 2026-10-13"
+
 [compat]
 etat = "non-teste"
 date = "2026-10-11"
@@ -54,3 +60,15 @@ correspondance = "appid"
 source = "pcgamingwiki"
 date = "2026-10-11"
 url = "https://www.pcgamingwiki.com/wiki/Smite"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.10612"
+source = "crossover"
+date = "2026-10-13"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2022-11-17"
+crossover_version = "22.0.1"
+bouteille = "win7_64"
+dependances = "dotnet35sp1 dotnet40"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=10612"

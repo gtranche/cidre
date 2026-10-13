@@ -20,6 +20,12 @@ moteur_nom = "pcgamingwiki 2026-10-11"
 bits = "pcgamingwiki 2026-10-11"
 drm = "pcgamingwiki 2026-10-11"
 
+[cidre]
+dependances = "vcrun2022"
+
+[cidre.sources]
+dependances = "crossover 2026-10-13"
+
 [compat]
 etat = "non-teste"
 date = "2026-10-11"
@@ -54,3 +60,15 @@ dernier_temoignage = "2025-06-01"
 source = "applegamingwiki"
 date = "2026-10-11"
 url = "https://www.applegamingwiki.com/wiki/Ancestors%3A_The_Humankind_Odyssey"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.16964"
+source = "crossover"
+date = "2026-10-13"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2023-08-28"
+crossover_version = "23"
+bouteille = "win7_64"
+dependances = "vcrun2022"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=16964"

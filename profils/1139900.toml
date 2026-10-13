@@ -22,6 +22,12 @@ api_disponibles = "pcgamingwiki 2026-10-11"
 bits = "pcgamingwiki 2026-10-11"
 drm = "pcgamingwiki 2026-10-11"
 
+[cidre]
+dependances = "msxml3 directx_jun2010 vcrun2013 vcrun2022"
+
+[cidre.sources]
+dependances = "crossover 2026-10-13"
+
 [compat]
 etat = "non-teste"
 date = "2026-10-11"
@@ -62,3 +68,15 @@ dernier_temoignage = "2024-04-21"
 source = "applegamingwiki"
 date = "2026-10-11"
 url = "https://www.applegamingwiki.com/wiki/Ghostrunner"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.17574"
+source = "crossover"
+date = "2026-10-13"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2024-12-26"
+crossover_version = "15.0.1"
+bouteille = "win10_64"
+dependances = "msxml3 directx_jun2010 vcrun2013 vcrun2022"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=17574"

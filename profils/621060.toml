@@ -26,6 +26,12 @@ bits = "pcgamingwiki 2026-10-11"
 bits_32_aussi = "pcgamingwiki 2026-10-11"
 drm = "pcgamingwiki 2026-10-11"
 
+[cidre]
+dependances = "corefonts"
+
+[cidre.sources]
+dependances = "crossover 2026-10-13"
+
 [compat]
 etat = "non-teste"
 date = "2026-10-11"
@@ -64,3 +70,15 @@ dernier_temoignage = "2026-05-17"
 source = "applegamingwiki"
 date = "2026-10-11"
 url = "https://www.applegamingwiki.com/wiki/PC_Building_Simulator"
+
+[compat.crossover]
+recette = "com.codeweavers.c4.16227"
+source = "crossover"
+date = "2026-10-13"
+correspondance = "steamid+titre"
+confiance = "haute"
+recette_date = "2021-10-07"
+crossover_version = "21"
+bouteille = "win10_64"
+dependances = "corefonts"
+url = "https://www.codeweavers.com/compatibility/browse/name/?app_id=16227"
