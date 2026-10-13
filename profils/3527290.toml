@@ -20,11 +20,11 @@ lanceur = "steam"
 dx12 = false
 
 [compat]
-etat = "bronze"
+etat = "or"
 source = "cidre-test"
-date = "2026-10-05"
+date = "2026-10-13"
 machine = "M1 Max 32 Go"
-cidre_version = ""
+cidre_version = "1.5.8"
 fps_menu = 0
-fps_jeu = 12
-notes = "Tourne en D3D11 (repli), 8-15 fps : GPU-bound KosmicKrisp -> Metal. Le vrai D3D12 (dx12 = true) fige en jeu (tiled resources)."
+fps_jeu = 110
+notes = "En D3D11 (repli du DX12) avec DXMT, le defaut depuis la 1.5.8 : 110 fps en jeu plein ecran (114 en fenetre), 10 ms GPU. En DXVK (jusqu'a la 1.5.7) : 8-15 fps, GPU-bound KosmicKrisp -> Metal. Le vrai D3D12 (dx12 = true) fige en jeu (tiled resources)."

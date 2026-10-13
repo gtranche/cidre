@@ -45,6 +45,17 @@ dire() { echo "    cause probable : $1"; [ -n "${2:-}" ] && echo "    a faire : 
 
 # --- signatures du journal, de la plus precise a la plus generale ---------------
 
+if a "887A0004" || a "DXGI_ERROR_UNSUPPORTED" || a "Failed to initialize DirectX"; then
+   if a "repli automatique vers dxvk"; then
+      dire "ce jeu refuse de demarrer avec DXMT (DirectX non pris en charge, DXGI_ERROR_UNSUPPORTED)" \
+           "Cidre l'a remis en DXVK pour ce jeu : relance-le (cidre set <id> d3d11 dxmt pour reessayer DXMT)"
+   else
+      dire "le jeu n'a pas pu initialiser DirectX (DXGI_ERROR_UNSUPPORTED)" \
+           "passer ce jeu en DXVK (option d3d11 = dxvk dans Verger), puis relancer"
+   fi
+   exit 0
+fi
+
 if a "no driver could be loaded"; then
    dire "le jeu a demande une fenetre mais aucun affichage n'est disponible : il a ete lance hors d'une session a l'ecran (par SSH, un service, un terminal distant)" \
         "lancer le jeu depuis Verger ou un terminal ouvert dans la session connectee a l'ecran"

@@ -14,6 +14,9 @@ lanceur = "steam"
 
 [cidre]
 tso = false
+# DXMT refuse au demarrage (Heaps DirectXDriver.reset : DXError 887A0004 =
+# DXGI_ERROR_UNSUPPORTED, 2026-10-13) : ce jeu reste en DXVK.
+d3d11 = "dxvk"
 
 [compat]
 etat = "or"

@@ -4248,9 +4248,9 @@ empreinte = "25f8937b8fc0b7689020c27933deea5b"
 
 [3527290]
 nom = "PEAK"
-etat = "bronze"
-date = "2026-10-05"
-empreinte = "f54372b49ba8580d01f0b42e2b1f6718"
+etat = "or"
+date = "2026-10-13"
+empreinte = "620b4e1000bf733c011dbc19268e08de"
 
 [35420]
 nom = "Killing Floor Mod: Defence Alliance 2"
@@ -5654,7 +5654,7 @@ empreinte = "b4e271ff557e8f25791d11526b583a93"
 nom = "Dead Cells"
 etat = "or"
 date = "2026-09-20"
-empreinte = "982907ee27db70ffed96633684588275"
+empreinte = "baf1ec4d6b24e0bf5d51ad6563ff74bd"
 
 [590590]
 nom = "Remnants of Naezith"

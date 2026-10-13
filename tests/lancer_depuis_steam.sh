@@ -479,8 +479,16 @@ CIDRE_OVERLAY_DYLIB=$OVERLAY sh "$R/tests/etape2_pile_arm64ec.sh" "$PROG" "$@" >
 # ferme, pas d'affichage, DLL manquante, prefixe abime, plantage...) et ecrit
 # « cause probable » et « a faire », au journal et sur la sortie (Verger les
 # affiche a la place du code).
-if [ $RC -ne 0 ]; then
-   echo "    le jeu s'est termine sur le code $RC" | tee -a "$JOURNAL"
+# Un jeu lance en DXMT qui l'a refuse au demarrage (DXGI_ERROR_UNSUPPORTED) :
+# tests/repli_dxmt.sh enregistre d3d11 = dxvk pour ce jeu, et on l'explique
+# meme si le jeu est sorti sur 0 (fenetre d'erreur fermee par le joueur).
+REPLI=
+if [ -n "$JEU" ] && [ "$D3D11" = dxmt ]; then
+   REPLI=$(sh "$R/tests/repli_dxmt.sh" "$JEU" "$JOURNAL" 2>/dev/null || true)
+   [ -z "$REPLI" ] || echo "$REPLI" | tee -a "$JOURNAL"
+fi
+if [ $RC -ne 0 ] || [ -n "$REPLI" ]; then
+   [ $RC -eq 0 ] || echo "    le jeu s'est termine sur le code $RC" | tee -a "$JOURNAL"
    [ "${CIDRE_SANS_STEAM:-}" != 1 ] || export CIDRE_CLIENT_STEAM_ETAT=inconnu
    CIDRE_JEU="$JEU" sh "$R/tests/expliquer_sortie.sh" "$RC" "$JOURNAL" 2>/dev/null | tee -a "$JOURNAL" || true
 fi

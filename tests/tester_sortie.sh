@@ -27,6 +27,36 @@ expliquer() { # <code> <journal>
    SteamAppId=${APPID-1} CIDRE_CLIENT_STEAM_ETAT=${ETAT-connecte} sh "$S" "$1" "$2" 2>&1
 }
 
+echo "== DXMT refuse au demarrage (DXGI_ERROR_UNSUPPORTED)"
+r=$(expliquer 1 "$(journal '    d3d11 : dxmt pose depuis /x/dxmt
+Failed to initialize DirectX driver (DXError 887A0004 line 112)')")
+contient "cause sans repli" "n'a pas pu initialiser DirectX" "$r"
+contient "a faire sans repli" "d3d11 = dxvk" "$r"
+r=$(expliquer 0 "$(journal '    d3d11 : dxmt pose depuis /x/dxmt
+Failed to initialize DirectX driver (DXError 887A0004 line 112)
+    d3d11 : repli automatique vers dxvk pour 1 (DXMT refuse par le jeu au demarrage)')")
+contient "cause avec repli" "refuse de demarrer avec DXMT" "$r"
+contient "a faire avec repli" "relance-le" "$r"
+
+echo "== repli_dxmt.sh : enregistre dxvk dans le profil utilisateur"
+export CIDRE_PROFILS="$T/perso.toml"
+j=$(journal '    d3d11 : dxmt pose depuis /x/dxmt
+Failed to initialize DirectX driver (DXError 887A0004 line 112)')
+r=$(sh "$R/tests/repli_dxmt.sh" 1903340 "$j"); rc=$?
+contient "repli : message" "repli automatique vers dxvk pour 1903340" "$r"
+verif "repli : code 0" "0" "$rc"
+verif "repli : d3d11 = dxvk ecrit" "dxvk" "$(sh "$R/tests/profil_cidre.sh" 1903340 get d3d11 2>/dev/null | sed -n 's/^d3d11=//p')"
+r=$(sh "$R/tests/repli_dxmt.sh" 1903340 "$(journal '    d3d11 : dxmt pose depuis /x/dxmt
+err:   DXGI: CreateSwapChainForHwnd: Failed to create swap chain, hr -2147467259')"); rc=$?
+verif "repli : swap chain seul n est pas un refus (code 1)" "1" "$rc"
+r=$(sh "$R/tests/repli_dxmt.sh" 1903340 "$(journal 'Failed to initialize DirectX driver (DXError 887A0004 line 112)')"); rc=$?
+verif "repli : pas lance en dxmt -> rien (code 1)" "1" "$rc"
+r=$(sh "$R/tests/repli_dxmt.sh" 1903340 "$(journal '    d3d11 : dxmt pose depuis /x/dxmt
+Failed to initialize DirectX driver (DXError 887A0004 line 112)
+    d3d11 : repli automatique vers dxvk pour 1903340 (DXMT refuse)')"); rc=$?
+verif "repli : deja replie dans ce journal -> rien (code 1)" "1" "$rc"
+unset CIDRE_PROFILS
+
 echo "== pas de session a l'ecran"
 r=$(expliquer 3 "$(journal 'Application tried to create a window, but no driver could be loaded.')")
 contient "cause" "aucun affichage" "$r"
