@@ -1,0 +1,20 @@
+# Autre Jeu -- fiche amorcee par tests/outils/importer_profils.py (2026-10-11) : fixture.
+
+[jeu]
+appid = 990000002
+nom = "Autre Jeu"
+plateformes_steam = "windows"
+
+[jeu.sources]
+nom = "steam 2026-10-11"
+plateformes_steam = "steam 2026-10-11"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-11"
+
+[compat.protondb]
+palier = "platinum"
+source = "protondb"
+date = "2026-10-01"
+url = "https://www.protondb.com/app/990000002"

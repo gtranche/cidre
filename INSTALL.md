@@ -19,6 +19,11 @@ Rosetta, ni outils de developpement.
    la session de SteamCMD, l'outil de Valve qui telecharge les jeux. Elle est
    distincte de celle du client Steam.
 
+Un jeu marche, ou ne marche pas ? Le dire sert a tous les joueurs : Verger a un
+bouton « Partager mon resultat » sur la page de chaque jeu. La marche a suivre,
+et comment proposer une fiche de jeu : [profils/CONTRIBUER.md](profils/CONTRIBUER.md)
+(*[English](profils/CONTRIBUER.md#contributing-to-the-game-profiles)*).
+
 SteamCMD est installe a partir des paquets a jour de Valve
 (`tests/installer_steamcmd.sh`), pas de son archive `steamcmd_osx.tar.gz` : elle
 date de 2020 et ne contient qu'un binaire Intel, qui ne demarre pas sans Rosetta.

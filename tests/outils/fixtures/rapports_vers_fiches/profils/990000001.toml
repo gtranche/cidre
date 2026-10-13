@@ -1,0 +1,32 @@
+# Jeu Fictif : fiche de test (fixture), ecrite a la main, [compat] de nos tests.
+[jeu]
+appid = 990000001
+nom = "Jeu Fictif"
+moteur = "unity"
+[cidre]
+d3d11 = "dxmt"
+fils_compilation = 6
+
+[compat]
+etat = "argent"   # commentaire en fin de ligne, a garder
+source = "cidre-test"
+date = "2026-10-01"
+machine = "M1 Max 32 Go"
+cidre_version = "1.5.0"
+fps_menu = 90
+fps_jeu = 40
+notes = "Mesure maison."
+
+[[rapports]]
+date = "2026-10-02"
+machine = "iMac M4 24 Go"
+cidre_version = "1.5.3"
+etat = "argent"
+notes = "Deja la."
+incident = "https://github.com/gtranche/cidre/issues/9010"
+
+# commentaire de la section d'apres : il doit rester colle a [compat.protondb]
+[compat.protondb]
+palier = "gold"
+source = "protondb"
+date = "2026-10-01"

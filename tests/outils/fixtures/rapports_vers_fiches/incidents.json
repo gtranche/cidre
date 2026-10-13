@@ -1,0 +1,178 @@
+[
+ {
+  "number": 9001,
+  "title": "Rapport de jeu : Jeu Fictif (990000001)",
+  "body": "```toml\r\n[[rapports]]\r\ndate = \"2026-10-11\"\r\nmachine = \"M1 Max 32 Go\"\r\ncidre_version = \"1.5.7\"\r\netat = \"or\"\r\nfps_menu = 120\r\nfps_jeu = 45\r\nnotes = \"Il dit \\\"ça marche\\\" ; chemin C:\\\\Jeu\\nDeuxième ligne\\ttab\"\r\n```\r\n\r\n**Profil effectif**\r\n```toml\r\n[profil]\r\ntso = true\r\nvsync = false\r\nhud = false\r\nasync = false\r\nfils_compilation = 6\r\neac_untrusted = false\r\nluajit = false\r\nd3d11 = \"dxmt\"\r\nlangue = \"fr\"\r\n```\r\n\r\n\r\n**Diagnostic**\r\n```text\r\n== Verger ==\r\n  version : 0.3.12\r\n== Cidre ==\r\n  ok\r\n[[rapports]]\r\netat = \"ko\"\r\nnotes = \"ligne-piege du diagnostic\"\r\n```\r\n",
+  "url": "https://github.com/gtranche/cidre/issues/9001",
+  "createdAt": "2026-10-11T18:02:11Z",
+  "state": "OPEN",
+  "author": {
+   "login": "alice"
+  },
+  "labels": [
+   {
+    "name": "rapport-jeu"
+   }
+  ]
+ },
+ {
+  "number": 9002,
+  "title": "Rapport de jeu : Jeu Fictif (990000001)",
+  "body": "```toml\n[[rapports]]\ndate = \"2026-10-12\"\nmachine = \"M4 16 Go\"\ncidre_version = \"1.5.7\"\netat = \"or\"\nfps_jeu = 60\n```\n\n**Effective profile**\n```toml\n[profil]\ntso = true\nvsync = true\nhud = false\nasync = false\nfils_compilation = 6\neac_untrusted = false\nluajit = false\nd3d11 = \"dxmt\"\n```\n\n\n**Diagnostic**\n```text\n== Verger ==\n  version : 0.3.12\n```\n",
+  "url": "https://github.com/gtranche/cidre/issues/9002",
+  "createdAt": "2026-10-12T18:02:11Z",
+  "state": "OPEN",
+  "author": {
+   "login": "bob"
+  },
+  "labels": [
+   {
+    "name": "rapport-jeu"
+   }
+  ]
+ },
+ {
+  "number": 9003,
+  "title": "Rapport de jeu : Autre Jeu (990000002)",
+  "body": "```toml\n[[rapports]]\ndate = \"2026-10-11\"\nmachine = \"M1 Max 32 Go\"\ncidre_version = \"1.5.6\"\netat = \"argent\"\nfps_menu = 60\nfps_jeu = 38\nnotes = \"Quelques saccades en ville\"\n```\n\n**Profil effectif**\n```toml\n[profil]\ntso = false\nvsync = true\nhud = false\nasync = false\nfils_compilation = 0\neac_untrusted = false\nluajit = false\nd3d11 = \"dxmt\"\n```\n\n\n**Diagnostic**\n```text\n== Verger ==\n  version : 0.3.12\n== Cidre ==\n  ok\n[[rapports]]\netat = \"ko\"\nnotes = \"ligne-piege du diagnostic\"\n```\n",
+  "url": "https://github.com/gtranche/cidre/issues/9003",
+  "createdAt": "2026-10-11T18:02:11Z",
+  "state": "OPEN",
+  "author": {
+   "login": "alice"
+  },
+  "labels": [
+   {
+    "name": "rapport-jeu"
+   }
+  ]
+ },
+ {
+  "number": 9004,
+  "title": "rapport de jeu: Autre Jeu  ( 990000002 )",
+  "body": "Salut, voici mon retour.\n\n[[rapports]]\nmachine = \"M2 Pro 16 Go\"\ncidre_version = \"v1.5.7\"\netat: Silver\nfps_jeu = 40-45 fps\nhumeur = \"bonne\"\nincident = \"https://evil.example/x\"\nnotes = \"Voir https://example.org/video pour la preuve\"\n\nMerci !\n",
+  "url": "https://github.com/gtranche/cidre/issues/9004",
+  "createdAt": "2026-10-12T18:02:11Z",
+  "state": "OPEN",
+  "author": {
+   "login": "carol"
+  },
+  "labels": [
+   {
+    "name": "rapport-jeu"
+   }
+  ]
+ },
+ {
+  "number": 9005,
+  "title": "Rapport de jeu : Jeu Neuf: L'Édition « Dorée » (990000003)",
+  "body": "```toml\n[[rapports]]\ndate = \"2026-10-12\"\nmachine = \"M3 8 Go\"\ncidre_version = \"dev\"\netat = \"ko\"\nfps_menu = 0\nnotes = \"Écran noir\\u0001 au lancement \\u202Eetrevni\"\n```\n",
+  "url": "https://github.com/gtranche/cidre/issues/9005",
+  "createdAt": "2026-10-12T18:02:11Z",
+  "state": "OPEN",
+  "author": {
+   "login": "dave"
+  },
+  "labels": [
+   {
+    "name": "rapport-jeu"
+   }
+  ]
+ },
+ {
+  "number": 9006,
+  "title": "Rapport de jeu : Jeu Fictif (990000001)",
+  "body": "Ça marche pas chez moi !!! Faites quelque chose.",
+  "url": "https://github.com/gtranche/cidre/issues/9006",
+  "createdAt": "2026-10-12T18:02:11Z",
+  "state": "OPEN",
+  "author": {
+   "login": "erin"
+  },
+  "labels": [
+   {
+    "name": "rapport-jeu"
+   }
+  ]
+ },
+ {
+  "number": 9007,
+  "title": "Rapport de jeu : Jeu Fictif (990000001)",
+  "body": "```toml\n[[rapports]]\ndate = \"2026-10-12\"\nmachine = \"M1 8 Go\"\netat = \"super\"\n```\n",
+  "url": "https://github.com/gtranche/cidre/issues/9007",
+  "createdAt": "2026-10-12T18:02:11Z",
+  "state": "OPEN",
+  "author": {
+   "login": "frank"
+  },
+  "labels": [
+   {
+    "name": "rapport-jeu"
+   }
+  ]
+ },
+ {
+  "number": 9008,
+  "title": "Rapport de jeu : Méchant (../../etc/passwd)",
+  "body": "```toml\n[[rapports]]\ndate = \"2026-10-12\"\nmachine = \"M1 8 Go\"\netat = \"or\"\n```\n",
+  "url": "https://github.com/gtranche/cidre/issues/9008",
+  "createdAt": "2026-10-12T18:02:11Z",
+  "state": "OPEN",
+  "author": {
+   "login": "mallory"
+  },
+  "labels": [
+   {
+    "name": "rapport-jeu"
+   }
+  ]
+ },
+ {
+  "number": 9009,
+  "title": "Rapport de jeu : Mon Jeu (local-mon-jeu)",
+  "body": "```toml\n[[rapports]]\ndate = \"2026-01-02\"\netat = \"ko\"\n```\n",
+  "url": "https://github.com/gtranche/cidre/issues/9009",
+  "createdAt": "2026-01-02T18:02:11Z",
+  "state": "OPEN",
+  "author": {
+   "login": "grace"
+  },
+  "labels": [
+   {
+    "name": "rapport-jeu"
+   }
+  ]
+ },
+ {
+  "number": 9010,
+  "title": "Rapport de jeu : Jeu Fictif (990000001)",
+  "body": "```toml\n[[rapports]]\ndate = \"2026-10-02\"\nmachine = \"iMac M4 24 Go\"\ncidre_version = \"1.5.3\"\netat = \"argent\"\nnotes = \"Deja la.\"\n```\n",
+  "url": "https://github.com/gtranche/cidre/issues/9010",
+  "createdAt": "2026-10-02T18:02:11Z",
+  "state": "OPEN",
+  "author": {
+   "login": "heidi"
+  },
+  "labels": [
+   {
+    "name": "rapport-jeu"
+   }
+  ]
+ },
+ {
+  "number": 9011,
+  "title": "Mon retour sur Autre Jeu",
+  "body": "<!-- cidre-rapport v1 appid=990000002 -->\n```toml\n[[rapports]]\ndate = \"2026-10-13\"\nmachine = \"M1 Max 32 Go\"\ncidre_version = \"1.5.7\"\netat = \"argent\"\nfps_jeu = 41\n```\n",
+  "url": "https://github.com/gtranche/cidre/issues/9011",
+  "createdAt": "2026-10-13T18:02:11Z",
+  "state": "OPEN",
+  "author": {
+   "login": "alice"
+  },
+  "labels": [
+   {
+    "name": "rapport-jeu"
+   }
+  ]
+ }
+]
