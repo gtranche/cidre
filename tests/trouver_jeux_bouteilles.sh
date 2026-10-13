@@ -6,6 +6,7 @@
 # Lecture seule : rien n'est ecrit, nulle part.
 #
 #   trouver_jeux_bouteilles.sh [--json] [--rapide] [--complet] [--verbeux]
+#   trouver_jeux_bouteilles.sh --bouteilles
 #
 # Une ligne par jeu, champs separes par une tabulation :
 #   appid  nom  source (crossover|whisky|heroic)  bouteille  chemin  buildid  taille
@@ -25,6 +26,8 @@
 #   --complet   trois colonnes de plus : StateFlags, racine de la bouteille,
 #               chemin du manifeste (pour `cidre import`)
 #   --verbeux   dit sur la sortie d'erreur pourquoi un jeu n'est pas retenu
+#   --bouteilles  les bouteilles elles-memes, avec ou sans jeu : une ligne
+#               `source <TAB> nom <TAB> racine` (pour y chercher des sauvegardes)
 #
 # Ou chercher. Chaque variable est une liste de dossiers separes par `:` ; la
 # definir vide desactive la source (les essais n'explorent pas la machine).
@@ -33,8 +36,9 @@
 #       choisi dans les preferences de CrossOver (BottleDir)
 #   CIDRE_BOUTEILLES_WHISKY     dossiers de bouteilles Whisky
 #       defaut : ~/Library/Containers/com.isaacmarovitz.Whisky/Bottles, et les
-#       bouteilles rangees ailleurs, que note BottleVM.plist
-#       (CIDRE_WHISKY_REGISTRE pour en lire un autre)
+#       bouteilles que note BottleVM.plist -- toutes, celles de ce dossier
+#       comme celles rangees ailleurs (CIDRE_WHISKY_REGISTRE pour en lire un
+#       autre)
 #   CIDRE_BOUTEILLES_HEROIC     dossiers de prefixes Heroic
 #       defaut : ~/Games/Heroic/Prefixes, et les prefixes que nomme la
 #       configuration de Heroic (CIDRE_HEROIC_CONFIG pour en lire une autre)
@@ -44,11 +48,12 @@
 set -u
 CIDRE_DIR=${CIDRE_DIR:-$HOME/Library/Application Support/Cidre}
 JEUX_CIDRE="$CIDRE_DIR/games"
-JSON=non; RAPIDE=non; COMPLET=non; VERBEUX=non
+JSON=non; RAPIDE=non; COMPLET=non; VERBEUX=non; BOUTEILLES=non
 for a in "$@"; do
    case $a in
       --json) JSON=oui ;; --rapide) RAPIDE=oui ;; --complet) COMPLET=oui ;; --verbeux) VERBEUX=oui ;;
-      *) echo "usage: trouver_jeux_bouteilles.sh [--json] [--rapide] [--complet] [--verbeux]" >&2; exit 2 ;;
+      --bouteilles) BOUTEILLES=oui ;;
+      *) echo "usage: trouver_jeux_bouteilles.sh [--json] [--rapide] [--complet] [--verbeux] | --bouteilles" >&2; exit 2 ;;
    esac
 done
 TAB=$(printf '\t'); US=$(printf '\037')
@@ -85,7 +90,12 @@ bouteilles() {
       done
    done
    # Whisky : un dossier par bouteille, nomme par un UUID ; le nom donne par
-   # l'utilisateur est dans Metadata.plist.
+   # l'utilisateur est dans Metadata.plist (info > name). Verifie sur des
+   # bouteilles ecrites par Whisky 2.3.5 lui-meme : son registre BottleVM.plist
+   # note TOUTES les bouteilles (paths[].relative, une URL file:// sans barre
+   # finale), y compris celles du dossier Bottles -- le tri par chemin physique,
+   # plus bas, ne les compte qu'une fois ; une bouteille neuve n'a pas de
+   # drive_c tant que Wine n'y a pas tourne : elle est passee.
    if [ "${CIDRE_BOUTEILLES_WHISKY+x}" ]; then L=$CIDRE_BOUTEILLES_WHISKY; REG=${CIDRE_WHISKY_REGISTRE:-}
    else
       L="$HOME/Library/Containers/com.isaacmarovitz.Whisky/Bottles"
@@ -95,7 +105,7 @@ bouteilles() {
         [ -n "$d" ] || continue
         for b in "$d"/*/; do [ -d "$b" ] && printf '%s\n' "${b%/}"; done
      done
-     # les bouteilles rangees ailleurs : des URL file:// dans le registre
+     # les bouteilles du registre : des URL file://
      [ -f "$REG" ] && plutil -extract paths json -o - "$REG" 2>/dev/null | sed 's#\\/#/#g' | tr '"' '\n' |
         grep '^file://' | while IFS= read -r u; do chemin_url "$u"; done
    } | while IFS= read -r b; do
@@ -165,6 +175,16 @@ T=$(mktemp "${TMPDIR:-/tmp}/bouteilles.XXXXXX") || exit 1
 trap 'rm -f "$T" "$T.b"' EXIT
 # (dans un fichier : les boucles ci-dessous lisent leur entree, pas un tube)
 bouteilles >"$T.b"
+if [ "$BOUTEILLES" = oui ]; then
+   vues=
+   while IFS="$TAB" read -r src nomb racine; do
+      racine=$(physique "$racine") || continue
+      case "$US$vues$US" in *"$US$racine$US"*) continue ;; esac
+      vues="$vues$US$racine"
+      printf '%s\t%s\t%s\n' "$src" "$nomb" "$racine"
+   done <"$T.b"
+   exit 0
+fi
 vues=
 while IFS="$TAB" read -r src nomb racine; do
    # une bouteille connue par deux chemins (un prefixe Heroic qui est une

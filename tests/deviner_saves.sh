@@ -24,6 +24,12 @@
 #    celui dont le fichier est le plus recent. Sans `depuis`, cette source
 #    n'est pas consultee : un dossier ancien peut etre celui d'un autre jeu.
 #
+# CIDRE_DEVINER_NOMS (une ligne par nom : le jeu, son dossier, son executable,
+# son projet Unity ou Unreal) restreint la seconde source aux dossiers qui
+# portent un de ces noms -- pour chercher dans le prefixe d'un autre outil
+# (tests/reprendre_saves_bouteille.sh), ou plusieurs jeux ont joue : sans cela,
+# « le plus recent » peut etre le dossier d'un autre jeu.
+#
 # Pour les essais : CIDRE_PREFIXE_UTIL (dossier utilisateur du prefixe),
 # CIDRE_JEU_DOSSIER (dossier du jeu), CIDRE_FICHE_SAUVEGARDES (valeur de la
 # fiche, `-` pour aucune), CIDRE_FICHE_DOSSIERS_STEAM (dossier_windows de la
@@ -107,12 +113,25 @@ plus_recent() { # <dossier>
       stat -f '%m' "$f" 2>/dev/null
    done | sort -n | tail -1
 }
+# Le dossier porte-t-il un des noms du jeu ? (sans liste de noms : oui)
+NOMS=${CIDRE_DEVINER_NOMS:-}
+du_jeu() { # <relatif>
+   [ -n "$NOMS" ] || return 0
+   printf '%s\n' "$NOMS" | LC_ALL=C awk -v rel="$1" '
+      function norme(s) { s = tolower(s); gsub(/[^a-z0-9]/, "", s); return s }
+      BEGIN { n = split(rel, c, "/"); for (i = 1; i <= n; i++) comp[norme(c[i])] = 1
+              split("appdata local locallow roaming documents mygames savedgames saved savegames", g, " ")
+              for (i in g) delete comp[g[i]] }
+      { k = norme($0); if (length(k) >= 3 && (k in comp)) ok = 1 }
+      END { exit !ok }'
+}
 candidats() {
    [ -n "$UTIL" ] && for g in "$UTIL"/AppData/Local/*/Saved/SaveGames "$UTIL"/AppData/LocalLow/*/* \
                               "$UTIL/Documents/My Games"/* "$UTIL/Saved Games"/* "$UTIL"/AppData/Roaming/*; do
       [ -d "$g" ] || continue
       rel=${g#$UTIL/}
       case $rel in */Microsoft/*|*/CryptnetUrlCache*|*/Temp*|*/wine*) continue ;; esac
+      du_jeu "$rel" || continue
       m=$(plus_recent "$g"); [ -n "$m" ] && printf '%s\t%s\n' "$m" "$rel"
    done
    if [ -n "$JEUDIR" ] && [ -d "$JEUDIR" ]; then

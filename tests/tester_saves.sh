@@ -4,7 +4,9 @@
 # apres une partie, et les cas ou il faut se taire. Puis « Steam d'abord » :
 # tests/lier_saves_steam.sh (lien du dossier du prefixe vers le dossier macOS
 # que le jeu declare a Steam Cloud, sans rien perdre) et le dossier des copies
-# de tests/sync_saves_steam.sh. Rien n'est lance, rien de reel n'est touche.
+# de tests/sync_saves_steam.sh. Enfin les sauvegardes d'un jeu repris d'une
+# bouteille (tests/reprendre_saves_bouteille.sh) : plus anciennes, plus recentes,
+# absentes, jeu que Steam synchronise. Rien n'est lance, rien de reel n'est touche.
 #   sh tests/tester_saves.sh
 set -u
 R=$(cd "$(dirname "$0")/.." && pwd)
@@ -194,6 +196,111 @@ verif "copies d'iCloud reprises une fois" "ancien" "$(cat "$C/saves/7/vieux.sav"
 verif "rien n'est retire d'iCloud" "ancien" "$(cat "$IC/vieux.sav")"
 verif "le journal ne parle plus d'iCloud" "0" "$(printf '%s\n' "$s" | grep -c -- '-> iCloud')"
 verif "etat : pas dans iCloud" '"icloud":false' "$(HOME="$FH" CIDRE_FICHE_STEAM_CLOUD=copie sh "$Y" 7 etat | sed -n 's/.*\("icloud":false\).*/\1/p')"
+
+# ------------------------------------------------------------------------------
+# Les sauvegardes d'un jeu repris d'une bouteille CrossOver, Whisky ou Heroic :
+# tests/reprendre_saves_bouteille.sh, sur une bouteille fabriquee (le parcours
+# par `cidre import` est dans tests/tester_bouteilles.sh).
+echo "== bouteille : les dossiers des moteurs, au nom du jeu seulement"
+U2="$T/autre-prefixe/users/crossover"
+mkdir -p "$U2/AppData/LocalLow/Dev/Jeu A" "$U2/AppData/LocalLow/Dev/Jeu B" "$U2/AppData/Local/Projet/Saved/SaveGames"
+echo a >"$U2/AppData/LocalLow/Dev/Jeu A/s.sav"; vieux "$U2/AppData/LocalLow/Dev/Jeu A/s.sav"
+echo b >"$U2/AppData/LocalLow/Dev/Jeu B/s.sav"
+echo p >"$U2/AppData/Local/Projet/Saved/SaveGames/p.sav"; vieux "$U2/AppData/Local/Projet/Saved/SaveGames/p.sav"
+nomme() { CIDRE_PREFIXE_UTIL="$U2" CIDRE_JEU_DOSSIER=/nonexistent CIDRE_DEVINER_NOMS="$1" CIDRE_FICHE_SAUVEGARDES=- CIDRE_FICHE_DOSSIERS_STEAM=- sh "$S" 1 1 2>/dev/null; }
+verif "sans nom : le plus recent, quel que soit le jeu" "AppData/LocalLow/Dev/Jeu B" "$(nomme '')"
+verif "au nom du jeu : son dossier, meme plus ancien" "AppData/LocalLow/Dev/Jeu A" "$(nomme 'Jeu A')"
+verif "casse et ponctuation ignorees" "AppData/LocalLow/Dev/Jeu A" "$(nomme 'JEU-a!')"
+verif "plusieurs noms (un par ligne) : projet Unreal" "AppData/Local/Projet/Saved/SaveGames" "$(nomme "$(printf 'Un Titre\nProjet')")"
+verif "aucun dossier a ce nom : rien" "" "$(nomme 'Jeu C')"
+verif "un nom de dossier generique ne designe rien" "" "$(nomme "$(printf 'Saved\nLocalLow\nSaveGames')")"
+verif "un nom trop court ne designe rien" "" "$(nomme 'B')"
+
+echo "== bouteille : ramener les sauvegardes sans rien perdre"
+RS="$R/tests/reprendre_saves_bouteille.sh"
+export CIDRE_BOUTEILLES_CROSSOVER= CIDRE_BOUTEILLES_WHISKY= CIDRE_WHISKY_REGISTRE= CIDRE_BOUTEILLES_HEROIC= CIDRE_HEROIC_CONFIG=
+BT="$T/bouteille"; BU="$BT/drive_c/users/crossover"; mkdir -p "$BU/AppData/Roaming" "$BT/drive_c/users/steamuser/AppData/Roaming" "$BT/drive_c/users/Public"
+repris() { # <appid> <nom> : un jeu du dossier Cidre, note comme repris de la bouteille
+   mkdir -p "$C/games/$1/steamapps"
+   printf '"AppState"\r\n{\r\n\t"appid"\t\t"%s"\r\n\t"name"\t\t"%s"\r\n\t"installdir"\t\t"Rep%s"\r\n}\r\n' "$1" "$2" "$1" >"$C/games/$1/steamapps/appmanifest_$1.acf"
+   printf '%s\tcrossover\tEssai\t%s\tclone\t0\n' "$1" "$BT" >>"$C/reprises.conf"
+}
+# avec la fiche Steam Cloud $FICHE (aucune par defaut) ; le compte rendu dans rs.err
+ramener() { CIDRE_FICHE_STEAM_CLOUD="${FICHE:--}" CIDRE_FICHE_SAUVEGARDES=- CIDRE_FICHE_DOSSIERS_STEAM=- sh "$RS" "$@" --json 2>"$T/rs.err"; }
+cj() { printf '%s' "$2" | sed -n 's/.*"'"$1"'":"\{0,1\}\([^",}]*\).*/\1/p'; }
+cliche() { (cd "$1" && find . -exec stat -f '%i %z %m %N' {} + | sort); }
+rm -f "$C/saves.conf"
+# 9101 : cote Cidre, un fichier plus ancien, un plus recent, un identique, un absent ; du superflu
+repris 9101 "Jeu 91"
+S91="$BU/AppData/Roaming/Jeu91"; C91="$U/AppData/Roaming/Jeu91"; mkdir -p "$S91/cache" "$S91/sous" "$C91"
+for f in a b c; do echo "bouteille $f" >"$S91/$f.sav"; done; echo "bouteille d" >"$S91/sous/d.sav"
+echo journal >"$S91/jeu.log"; echo cache >"$S91/cache/x.bin"; mkfile -n 101m "$S91/enorme.bin"
+touch -t 202606010000 "$S91"/*.sav "$S91/sous/d.sav"
+echo "cidre ancien" >"$C91/a.sav"; touch -t 202501010000 "$C91/a.sav"
+echo "cidre recent" >"$C91/b.sav"; touch -t 202801010000 "$C91/b.sav"
+cp -p "$S91/c.sav" "$C91/c.sav"
+printf '9101\tAppData/Roaming/Jeu91\n' >>"$C/saves.conf"
+# 9102 : rien dans la bouteille ; 9105 : chez un autre utilisateur de la bouteille
+repris 9102 "Jeu 92"; printf '9102\tAppData/Roaming/Jeu92\n' >>"$C/saves.conf"
+repris 9105 "Jeu 95"; mkdir -p "$BT/drive_c/users/steamuser/AppData/Roaming/Jeu 95"; echo cinq >"$BT/drive_c/users/steamuser/AppData/Roaming/Jeu 95/s.sav"
+# 9103 : Steam Cloud par l'API ; 9104 : par un dossier macOS lie
+repris 9103 "Jeu 93"; mkdir -p "$BU/AppData/Roaming/Jeu 93"; echo trois >"$BU/AppData/Roaming/Jeu 93/s.sav"
+repris 9104 "Jeu 94"; S94="$BU/AppData/LocalLow/Dev94/Jeu94"; M94="$M/Library/Application Support/Dev94.Jeu94"; mkdir -p "$S94"
+echo quatre >"$S94/q.sav"
+F94="steam-lien${TABU}AppData/LocalLow/Dev94/Jeu94 => Library/Application Support/Dev94.Jeu94"
+# 9106 : Documents de la bouteille et de Cidre sont le meme dossier du Mac
+repris 9106 "Vieux"; ln -s "$U/Documents" "$BU/Documents"; printf '9106\tDocuments/My Games/Vieux\n' >>"$C/saves.conf"
+# 1562430 : le dossier que dit le saves.conf livre
+repris 1562430 "DREDGE"; mkdir -p "$BU/AppData/LocalLow/Black Salt Games/DREDGE/saves"; echo dredge >"$BU/AppData/LocalLow/Black Salt Games/DREDGE/saves/slot0.bin"
+BT_AVANT=$(cliche "$BT"); DOC_AVANT=$(cliche "$U/Documents")
+
+o=$(ramener 9101); verif "code de retour" "0" "$?"
+printf '%s' "$o" | plutil -convert json -o /dev/null - 2>/dev/null && ok "JSON valide" || echec "JSON invalide : $o"
+verif "etat, ecrits, remplaces, gardes, identiques" "copie 2 1 1 1" "$(cj etat "$o") $(cj fichiers "$o") $(cj remplaces "$o") $(cj gardes "$o") $(cj identiques "$o")"
+verif "origine, bouteille, synchro, dossier" "crossover Essai copie AppData/Roaming/Jeu91" "$(cj origine "$o") $(cj bouteille "$o") $(cj synchro "$o") $(cj dossier "$o")"
+verif "d'ou, vers ou" "$S91 $C91" "$(cj depuis "$o") $(cj vers "$o")"
+verif "plus ancien cote Cidre : remplace par celui de la bouteille" "bouteille a" "$(cat "$C91/a.sav")"
+verif "plus recent cote Cidre : jamais ecrase" "cidre recent" "$(cat "$C91/b.sav")"
+verif "absent cote Cidre : copie, sous-dossier compris" "bouteille d" "$(cat "$C91/sous/d.sav" 2>/dev/null)"
+verif "la date de la bouteille est gardee" "$(stat -f %m "$S91/sous/d.sav")" "$(stat -f %m "$C91/sous/d.sav" 2>/dev/null)"
+verif "le superflu n'est pas repris (journal, cache, plus de 100 Mo)" "" "$(ls "$C91/jeu.log" "$C91/cache" "$C91/enorme.bin" 2>/dev/null)"
+H91=$(cj historique "$o")
+verif "copie de ce qui est remplace, et de cela seulement" "cidre ancien|a.sav" "$(cat "$H91/0/a.sav" 2>/dev/null)|$(ls "$H91/0" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+verif "la copie de precaution est dans l'historique du jeu" "$C/saves/9101/.history" "$(dirname "$H91")"
+o=$(ramener 9101)
+verif "second passage : rien a ramener, rien de plus dans l'historique" "a_jour 0 1" "$(cj etat "$o") $(cj fichiers "$o") $(ls "$C/saves/9101/.history" | wc -l | tr -d ' ')"
+o=$(ramener 9102)
+verif "rien dans la bouteille : absentes" "absentes 0" "$(cj etat "$o") $(cj fichiers "$o")"
+o=$(ramener 9105)
+verif "chez un autre utilisateur de la bouteille (dossier au nom du jeu)" "copie 1 $BT/drive_c/users/steamuser/AppData/Roaming/Jeu 95" "$(cj etat "$o") $(cj fichiers "$o") $(cj depuis "$o")"
+verif "le dossier devine est note dans saves.conf" "AppData/Roaming/Jeu 95" "$(awk -F'\t' '$1 == 9105 { print $2 }' "$C/saves.conf")"
+o=$(FICHE=steam-api ramener 9103)
+verif "Steam Cloud par l'API : rien n'est copie" "steam steam_api 0" "$(cj etat "$o") $(cj synchro "$o") $(cj fichiers "$o")"
+[ ! -e "$U/AppData/Roaming/Jeu 93" ] && ok "Steam Cloud par l'API : rien d'ecrit cote Cidre" || echec "Steam Cloud par l'API : un dossier a ete copie"
+verif "Steam Cloud par l'API : on le dit" "1" "$(grep -c 'Steam Cloud synchronise deja ce jeu' "$T/rs.err")"
+o=$(CIDRE_SAVES_STEAM=0 FICHE=steam-api ramener 9103)
+verif "CIDRE_SAVES_STEAM=0 : comme un jeu sans Steam Cloud" "copie copie 1" "$(cj etat "$o") $(cj synchro "$o") $(cj fichiers "$o")"
+o=$(FICHE="$F94" ramener 9104)
+verif "dossier macOS lie : copie dans ce dossier" "copie steam_macos 1 $M94" "$(cj etat "$o") $(cj synchro "$o") $(cj fichiers "$o") $(cj vers "$o")"
+verif "dossier macOS lie : le lien est pose, le fichier y est" "$M94 quatre" "$(readlink "$U/AppData/LocalLow/Dev94/Jeu94") $(cat "$M94/q.sav" 2>/dev/null)"
+verif "dossier macOS lie : rien n'est note dans saves.conf" "" "$(awk -F'\t' '$1 == 9104' "$C/saves.conf")"
+o=$(ramener 9106)
+verif "meme dossier des deux cotes (Documents du Mac) : rien a faire" "a_jour 0 1" "$(cj etat "$o") $(cj fichiers "$o") $(cj identiques "$o")"
+verif "meme dossier des deux cotes : intact" "$DOC_AVANT" "$(cliche "$U/Documents")"
+o=$(ramener 1562430)
+verif "le dossier du saves.conf livre" "copie 1 AppData/LocalLow/Black Salt Games/DREDGE" "$(cj etat "$o") $(cj fichiers "$o") $(cj dossier "$o")"
+verif "la bouteille n'a pas ete touchee" "$BT_AVANT" "$(cliche "$BT")"
+
+echo "== bouteille : ce qu'en dit l'etat des sauvegardes"
+e=$(CIDRE_FICHE_STEAM_CLOUD=- sh "$Y" 9101 etat)
+printf '%s' "$e" | plutil -convert json -o /dev/null - 2>/dev/null && ok "etat : JSON valide" || echec "etat : JSON invalide : $e"
+verif "copie Cidre : \"reprise\" porte le dernier passage" '"reprise":{"appid":9101,"etat":"a_jour","fichiers":0,' "$(printf '%s' "$e" | grep -o '"reprise":{"appid":9101,"etat":"a_jour","fichiers":0,')"
+verif "copie Cidre : le reste de l'etat est la" "jamais_sauvegarde copie" "$(cj etat "$(printf '%s' "$e" | sed 's/,"reprise":.*//')") $(cj synchro "$(printf '%s' "$e" | sed 's/,"reprise":.*//')")"
+e=$(CIDRE_FICHE_STEAM_CLOUD="$F94" sh "$Y" 9104 etat)
+verif "Steam Cloud : \"reprise\" aussi" "1" "$(printf '%s' "$e" | grep -c '"synchro":"steam_macos".*"reprise":{"appid":9104,"etat":"copie","fichiers":1,')"
+verif "jeu qui ne vient pas d'une bouteille : null" "1" "$(CIDRE_FICHE_STEAM_CLOUD=- sh "$Y" 7 etat | grep -c '"reprise":null}$')"
+verif "dossier inconnu : null aussi" "1" "$(CIDRE_FICHE_STEAM_CLOUD=- sh "$Y" 424242 etat | grep -c '"configure":false.*"reprise":null}$')"
+verif "refus : jeu absent du dossier Cidre" "1 erreur jeu_absent" "$(o=$(ramener 31337); echo "$? $(cj etat "$o") $(cj raison "$o")")"
 
 echo
 echo "$nb verifications, $ko en echec"

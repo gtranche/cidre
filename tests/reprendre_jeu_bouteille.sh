@@ -18,13 +18,21 @@
 #
 #   --deplacer  deplace le jeu au lieu de le cloner, et retire son manifeste de
 #               la bouteille : elle est liberee, son client Steam ne voit plus
-#               le jeu. Fermer d'abord l'outil qui la fait tourner.
+#               le jeu. Refuse tant que la bouteille est en cours d'usage (son
+#               wineserver tourne, son client Steam ou un jeu est ouvert) : on
+#               ne retire pas un jeu sous les pieds du client qui le suit.
 #   <bouteille> quand le jeu est dans plusieurs : son nom, ou source:nom
 #               (crossover:Steam), ou sa racine. Sinon, le build le plus recent.
 #
-# Les sauvegardes restent dans le prefixe de la bouteille (drive_c/users/...) :
-# on dit ou, et on note la reprise dans reprises.conf (appid, source, bouteille,
-# racine, mode, date) pour qui voudra les ramener.
+# Les sauvegardes sont dans le prefixe de la bouteille (drive_c/users/...), pas
+# dans le dossier du jeu : `cidre import` les ramene ensuite
+# (tests/reprendre_saves_bouteille.sh), d'apres la reprise notee ici dans
+# reprises.conf (appid, source, bouteille, racine, mode, date).
+#
+# Pour les essais : CIDRE_PS (la commande qui liste les processus avec leur
+# environnement, `ps -axwwE -o pid=,command=` par defaut) et CIDRE_LSOF (celle
+# qui donne le dossier de travail des wineserver, `lsof -a -c wineserver -d cwd
+# -Fpn` par defaut).
 # Codes de retour : 0 repris, 1 refuse (rien n'a change), 2 usage.
 set -u
 R=$(cd "$(dirname "$0")/.." && pwd)
@@ -59,6 +67,43 @@ case $SRC in */steamapps/common/?*) ;; *) echo "chemin inattendu : $SRC" >&2; ex
 [ -n "$(find "$SRC" -maxdepth 4 -iname '*.exe' 2>/dev/null | head -1)" ] ||
    { echo "aucun .exe dans $SRC : ce n'est pas la version Windows du jeu" >&2; exit 1; }
 
+
+# --deplacer : la bouteille tourne-t-elle ? Ce qu'on sait voir sans rien lui
+# demander, une raison par ligne (rien : elle est libre) :
+#   - un wineserver dont le dossier de travail est celui de ce prefixe : Wine le
+#     nomme server-<volume>-<inode du prefixe> (en hexadecimal, sous
+#     /tmp/.wine-<uid>/), et son serveur y reste tant qu'il vit -- le dossier,
+#     lui, survit au serveur : c'est le processus qu'on cherche ;
+#   - un processus lance avec WINEPREFIX = cette bouteille (CrossOver, Whisky et
+#     Heroic le posent tous) : son client Steam, un jeu, un outil.
+occupee() { # <racine de la bouteille>
+   cle=$(stat -f 'server-%Xd-%Xi' "$1" 2>/dev/null | tr 'A-F' 'a-f')
+   [ -z "$cle" ] || ${CIDRE_LSOF:-lsof -a -c wineserver -d cwd -Fpn} 2>/dev/null | awk -v c="/$cle" '
+      /^p/ { pid = substr($0, 2) }
+      /^n/ && substr($0, length($0) - length(c) + 1) == c { print "son wineserver tourne (processus " pid ")" }'
+   ${CIDRE_PS:-ps -axwwE -o pid=,command=} 2>/dev/null | LC_ALL=C awk -v r="$1" '
+      {  # WINEPREFIX=<racine>, suivi de la variable suivante ou de la fin de la ligne
+         i = index($0, "WINEPREFIX=" r); if (!i) next
+         reste = substr($0, i + 11 + length(r)); sub(/^\//, "", reste)
+         if (reste != "" && reste !~ /^ [A-Za-z_][A-Za-z0-9_]*=/) next
+         pid = $1; ligne = tolower($0)
+         if (ligne ~ /wineserver/) print "son wineserver tourne (processus " pid ")"
+         else if (ligne ~ /steam\.exe|steamwebhelper/) { if (!steam++) print "son client Steam est ouvert (processus " pid ")" }
+         else if (!autre++) print "un programme Windows y tourne (processus " pid ")"
+      }'
+}
+if [ "$DEPLACER" = oui ]; then
+   quoi=$(occupee "$RACINE" | awk -F' [(]processus' '!vu[$1]++')
+   if [ -n "$quoi" ]; then
+      case $SOURCE in crossover) outil=CrossOver ;; whisky) outil=Whisky ;; heroic) outil=Heroic ;; *) outil=$SOURCE ;; esac
+      {  echo "deplacement refuse : la bouteille « $BOUTEILLE » ($outil) est en cours d'usage :"
+         printf '%s\n' "$quoi" | sed 's/^/  - /'
+         echo "Ferme le client Steam de cette bouteille et les jeux qui y tournent, puis quitte $outil, et relance : cidre import $APPID --move"
+         echo "Sans --move, le jeu peut etre repris tout de suite : il est clone, et la bouteille n'est pas modifiee."
+      } >&2
+      exit 1
+   fi
+fi
 mkdir -p "$JEUX" || exit 1
 volume() { stat -f %d "$1"; }
 apfs() { mount | grep -F "$(df -P "$1" | awk 'NR == 2 { print $1 }') on " | grep -q '(apfs'; }
@@ -124,5 +169,3 @@ case $MODE in
    deplace) echo "  mode        : deplace (la bouteille n'a plus ce jeu)" ;;
 esac
 echo "  dossier     : $DEST"
-u=$(ls -d "$RACINE/drive_c/users/"*/AppData 2>/dev/null | grep -v '/users/Public/' | head -1)
-[ -z "$u" ] || echo "  sauvegardes : restees dans la bouteille, sous $(dirname "$u")"

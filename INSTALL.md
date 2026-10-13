@@ -25,10 +25,23 @@ bouteilles (`cidre bottles`) et les reprend dans son dossier (`cidre import
 <appid>`). C'est un clone APFS : immediat, sans place prise tant que les deux
 copies sont identiques, et la bouteille n'est pas modifiee -- le jeu y reste
 jouable. `cidre import <appid> --move` le deplace au lieu de le cloner (la
-bouteille ne l'a plus) ; a ne faire qu'apres avoir ferme CrossOver, Whisky ou
-Heroic. Une bouteille sur un autre disque est copiee, pas clonee : Cidre le dit,
-et refuse si la place manque. Les sauvegardes restent dans la bouteille
-(`drive_c/users/<nom>/AppData/...`) ; `cidre import` dit ou.
+bouteille ne l'a plus) ; Cidre le refuse tant que la bouteille est en cours
+d'usage (son client Steam ou un jeu ouvert, son wineserver encore la) et dit
+quoi fermer. Une bouteille sur un autre disque est copiee, pas clonee : Cidre le
+dit, et refuse si la place manque.
+
+Les sauvegardes du jeu suivent : `cidre import` les retrouve dans la bouteille
+(`drive_c/users/<nom>/...`, d'apres la fiche du jeu, sinon les dossiers
+habituels des moteurs, au nom du jeu) et les copie sur le disque C: de Cidre, la
+ou le jeu les cherchera. Une sauvegarde plus recente deja presente cote Cidre
+n'est jamais ecrasee ; une plus ancienne est remplacee apres copie dans
+l'historique du jeu ; la bouteille n'est que lue. Quand Steam Cloud detient deja
+les sauvegardes (jeu qui ecrit par l'API de Steam), rien n'est copie : le client
+Steam les fournit. Quand le jeu declare a Steam un dossier macOS, elles sont
+copiees dans ce dossier, celui que Steam synchronise. Si Cidre ne trouve pas ou
+le jeu les range, il le dit : `cidre import <appid> --saves --dossier <dossier
+de la bouteille>` le lui montre. `cidre import <appid> --saves` rattrape un jeu
+repris par un Cidre plus ancien, ou rejoue depuis dans la bouteille.
 
 Un jeu marche, ou ne marche pas ? Le dire sert a tous les joueurs : Verger a un
 bouton « Partager mon resultat » sur la page de chaque jeu. La marche a suivre,

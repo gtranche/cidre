@@ -504,7 +504,8 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
                                   --json : "synchro" dit qui synchronise -- steam_api (API de Steam, par le
                                   pont), steam_macos (dossier lie, le client Steam s'en charge), copie (Cidre,
                                   vers le dossier "copie"), aucune (dossier inconnu) -- et "synchro_detail"
-                                  le dit en une phrase
+                                  le dit en une phrase ; "reprise" : ce que cidre import a ramene de la
+                                  bouteille d'origine du jeu (null s'il n'en vient pas)
   cidre saves set <id> <dossier>  dire ou un jeu range ses sauvegardes (unset : revenir au reglage livre)
   cidre saves dossier [<chemin>|icloud|defaut] [--json]
                                   ou vont les copies de Cidre (defaut : ~/Library/Application Support/Cidre/saves ;
@@ -527,7 +528,18 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
   cidre import <appid> [<bouteille>] [--move] [--json]
                                   reprend un de ces jeux dans le dossier Cidre sans le retelecharger : clone
                                   APFS, immediat et sans place prise ; la bouteille n'est pas modifiee
-                                  --move : deplace le jeu au lieu de le cloner (la bouteille ne l'a plus)
+                                  ses sauvegardes sont ramenees de la bouteille la ou le jeu les cherchera,
+                                  sans ecraser une sauvegarde plus recente (l'ancienne version est gardee) ;
+                                  rien n'est copie quand Steam Cloud les detient deja (API de Steam)
+                                  --move : deplace le jeu au lieu de le cloner (la bouteille ne l'a plus) ;
+                                  refuse tant que la bouteille est en cours d'usage
+                                  --json : la fiche du jeu, et "reprise_sauvegardes" : "etat" (copie, a_jour,
+                                  steam, avec_le_jeu, absentes, introuvable, erreur), "fichiers", "remplaces",
+                                  "gardes", "origine", "bouteille", "depuis", "vers", "message"
+  cidre import <appid> [<bouteille>] --saves [--dossier <chemin>] [--json]
+                                  ramene seulement les sauvegardes d'un jeu deja repris (ou rejoue depuis dans
+                                  la bouteille) ; <bouteille> : pour un jeu qui n'en vient pas
+                                  --dossier : le dossier de la bouteille ou elles sont, si Cidre ne le trouve pas
   cidre login                     memorise la session SteamCMD (mot de passe tape a SteamCMD, une fois)
   cidre session [--json]          le compte Steam, et si sa session est memorisee
   cidre logout                    oublie la session Steam (les jeux installes restent jouables)
@@ -842,8 +854,18 @@ case "$cmd" in
       sh "$R/tests/trouver_jeux_bouteilles.sh" | awk -F'\t' '{ printf "%-9s %-32.32s %-22.22s %5d Mo %s\n", $1, $2, $3 " : " $4, $7 / 1048576, $5 }'
     fi ;;
   import|importer|reprendre)
+    # --saves : les sauvegardes seulement, d'un jeu deja dans le dossier Cidre
+    SV=non
+    for a in "$@"; do
+      shift
+      case $a in --saves|--sauvegardes) SV=oui ;; *) set -- "$@" "$a" ;; esac
+    done
     id=; for a in "$@"; do case $a in -*) ;; *) id=$a; break ;; esac; done
-    [ -n "$id" ] || { echo "usage: cidre import <appid> [<bouteille>] [--move]" >&2; exit 2; }
+    [ -n "$id" ] || { echo "usage: cidre import <appid> [<bouteille>] [--move | --saves [--dossier <chemin>]]" >&2; exit 2; }
+    if [ $SV = oui ]; then
+      [ "$JSON" = oui ] && set -- "$@" --json
+      sh "$R/tests/reprendre_saves_bouteille.sh" "$@"; exit $?
+    fi
     # (--json : la sortie est la fiche du jeu ; le compte rendu va a l'erreur)
     if [ "$JSON" = oui ]; then sh "$R/tests/reprendre_jeu_bouteille.sh" "$@" >&2
     else sh "$R/tests/reprendre_jeu_bouteille.sh" "$@"; fi || exit $?
@@ -855,7 +877,13 @@ case "$cmd" in
     if [ -z "$EXE" ]; then echo "attention : aucun .exe a la racine de $CIDRE_GAMES/$id ni un niveau plus bas : \`cidre play $id\` ne saura pas quoi lancer (outil-steam/jeux.conf)" >&2
     elif [ "$(head -c 2 "$EXE" 2>/dev/null)" != MZ ]; then echo "attention : $EXE n'est pas un executable Windows" >&2
     elif [ "$JSON" = non ]; then echo "  executable  : ${EXE#"$CIDRE_GAMES/$id/"}"; fi
-    if [ "$JSON" = oui ]; then fiche_json "$id"; printf '}\n'; fi ;;
+    # Ses sauvegardes sont restees dans le prefixe de la bouteille : on les
+    # ramene. Le jeu est repris quoi qu'il en soit ; un refus ici se rattrape
+    # (`cidre import <appid> --saves`).
+    if [ "$JSON" = oui ]; then
+      sv=$(sh "$R/tests/reprendre_saves_bouteille.sh" "$id" --json)
+      fiche_json "$id"; printf ',"reprise_sauvegardes":%s}\n' "${sv:-null}"
+    else sh "$R/tests/reprendre_saves_bouteille.sh" "$id" || true; fi ;;
   status|etat)
     # VERSION est pose par l'empaqueteur ; un depot de developpement n'en a pas.
     v=$(cat "$R/VERSION" 2>/dev/null); v=${v:-dev}
