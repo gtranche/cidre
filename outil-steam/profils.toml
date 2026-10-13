@@ -46,6 +46,11 @@
 #   plein_ecran      vrai plein ecran macOS (Space) auto quand le jeu couvre
 #                    l'ecran : couvre l'encoche, laisse macOS scaler une
 #                    resolution plus basse pour remplir, et autorise le Game Mode.
+#   mode_emule       plein ecran exclusif sans changement de mode : le jeu voit
+#                    le mode qu'il demande, l'ecran garde sa resolution et
+#                    l'image est mise a l'echelle dans la fenetre plein ecran
+#                    (EmulateModeset de Wine). false = vrai changement de mode
+#                    de l'ecran, pour un jeu qui l'exigerait.
 #   gamemode         force le macOS Game Mode (gamepolicyctl set on, sans sudo) au
 #                    lancement et le rend a auto a la sortie ; n'a d'effet qu'en
 #                    vrai plein ecran, donc avec plein_ecran = true.
@@ -108,6 +113,7 @@ fils_compilation = 0
 eac_untrusted = false
 luajit = false
 plein_ecran = true
+mode_emule = true
 gamemode = true
 dx12 = false
 d3d11 = "dxmt"

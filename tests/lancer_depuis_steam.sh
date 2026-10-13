@@ -202,6 +202,19 @@ case $FILS in ''|0|*[!0-9]*) : ;; *) dxvk_config "dxvk.numCompilerThreads=$FILS"
 # Game Mode. Generique tous jeux ; plein_ecran = false pour un jeu recalcitrant.
 [ "$(opt plein_ecran CIDRE_PLEIN_ECRAN)" = true ] && export CIDRE_FULLSCREEN_SPACE=1
 
+# Plein ecran exclusif sans changement de mode. Un jeu qui demande un mode
+# d'ecran (ChangeDisplaySettings, DXGI SetFullscreenState) le voit applique,
+# mais l'ecran reste a sa resolution : win32u emule le mode (EmulateModeset de
+# Wine, pose ici par CIDRE_EMULATE_MODESET), la fenetre couvre l'ecran et
+# l'image est mise a l'echelle et centree, comme en fenetre plein ecran. Le
+# vrai changement de mode passait par le filtre de l'ecran (image floue) et
+# par un mode sans Retina. Avec plein_ecran, le bureau presente au jeu est
+# l'espace plein ecran lui-meme (sous la barre de menus d'un ecran a encoche).
+# mode_emule = false rend l'ancien comportement a un jeu qui l'exigerait.
+if [ -z "${CIDRE_EMULATE_MODESET:-}" ] && [ "$(opt mode_emule CIDRE_MODE_EMULE)" = true ]; then
+   export CIDRE_EMULATE_MODESET=1
+fi
+
 JOURNAL=${PROTON_OUVERT_JOURNAL:-$R/build/logs/steam-${JEU:-inconnu}.log}
 mkdir -p "$(dirname "$JOURNAL")"
 # Un journal detaille peut peser lourd : au-dela de 30 Mo, on repart d'un

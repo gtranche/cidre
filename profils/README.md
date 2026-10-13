@@ -57,7 +57,7 @@ lanceur = "steam"                  # steam, epic, gog, aucun
 # Les options de lancement, mêmes noms et mêmes valeurs que dans
 # outil-steam/profils.toml (voir son en-tête pour le sens de chacune) :
 # langue, journal_detaille, tso, vsync, hud, overlay, async, narrow_barriers,
-# garde_index, fils_compilation, eac_untrusted, luajit, plein_ecran, gamemode,
+# garde_index, fils_compilation, eac_untrusted, luajit, plein_ecran, mode_emule, gamemode,
 # dx12, d3d11, metalfx, dll_overrides, windows_version, dependances.
 # On n'y met que ce qui diffère de [defaut].
 async = true

@@ -1,0 +1,794 @@
+wine11 : espace plein ecran sans barre de titre ni bord, curseur capture, plein ecran exclusif sans changement de mode
+
+Trois defauts du vrai plein ecran macOS (0081), vus avec PEAK (Unity, DXMT) le
+2026-10-13.
+
+1. La barre de titre par-dessus le jeu
+
+Dans l'espace plein ecran ou winemac promeut la fenetre de jeu, la souris en
+haut de l'ecran revele la barre de menus ET une barre de titre (feux, titre de
+la fenetre) qui recouvre le jeu. macOS la fabrique meme pour une fenetre sans
+bordure : a l'entree dans l'espace il cree une fenetre fille privee,
+NSToolbarFullScreenWindow, qui porte un NSTitlebarContainerView et qu'il fait
+apparaitre (alpha 0 -> 1) avec la barre de menus. Reproduit hors de Wine par un
+NSPanel sans bordure de vingt lignes (macOS 26.5), puis dans winemac.
+
+titleVisibility = hidden, titlebarAppearsTransparent et le masquage des trois
+feux ne suffisent pas : le fond de la barre reste peint (essaye). Regler
+l'alpha de la fenetre fille non plus, macOS le remet a chaque revelation. Ce qui
+tient : masquer la vue de contenu de cette fenetre et la rendre transparente
+aux clics, a l'entree dans l'espace et quand la fenetre redevient la fenetre
+cle ; tout est rendu a la sortie de l'espace, la barre de titre d'une fenetre
+ordinaire n'est jamais touchee. 
+Et la barre de menus elle-meme ne se revele plus : l'espace d'un jeu demande
+FullScreen + HideMenuBar + HideDock, comme les jeux Mac sous SDL. Un jeu a la
+premiere personne cache le curseur et le recentre a chaque image ; winemac ne
+confine le curseur de macOS que si le jeu appelle ClipCursor avec un rectangle
+plus petit que l'ecran, sinon il court entre deux images, touche le haut de
+l'ecran des qu'on regarde vers le haut, et la barre descendait sur le jeu.
+Avec ces options macOS ne cree meme plus sa fenetre de detection du bord
+(_NSFullScreenMouseDetectionWindow). Les raccourcis des menus restent actifs
+(ctrl+option+cmd+F sort de l'espace) ; CIDRE_FULLSCREEN_MENUBAR=1 rend la
+revelation au contact, barre de titre masquee. Le tout ne vaut que pour une
+fenetre promue par 0081 (cidreEnteredFullScreen) et CIDRE_FULLSCREEN_SPACE pose.
+
+2. Le curseur sortait du jeu
+
+Meme cause, autre bord : en poussant la souris a gauche, le curseur passait
+chez le Mac voisin (Controle universel). winemac ne confine le curseur de macOS
+que si le jeu appelle ClipCursor avec un rectangle plus petit que l'ecran
+(-[NSWindow setMouseConfinementRect:]) ; un jeu qui se contente de cacher le
+curseur et de le recentrer le laissait libre.
+
+Tant que le jeu cache le curseur, que sa fenetre est la fenetre cle et qu'elle
+est dans l'espace plein ecran ou on l'a promue, la souris est maintenant
+decouplee du curseur (CGAssociateMouseAndMouseCursorPosition(false), comme GLFW
+et SDL en mode relatif) : le curseur de macOS ne bouge plus, donc n'atteint
+aucun bord. Les mouvements partent au jeu en relatif ; winemac tient la position
+que Windows donne au curseur (bornee a la fenetre et au rectangle de ClipCursor)
+et s'en sert pour les clics, la molette, GetCursorPos et SetCursorPos, qui ne
+deplace plus le curseur reel. Quand le jeu remontre le curseur (menu), ou que
+la fenetre ou l'application perd la main, le curseur reel est pose a cette
+position et la souris lui est rendue. Curseur visible : rien ne change.
+
+3. Le plein ecran exclusif changeait le mode de l'ecran
+
+« Setting display mode: 1728x1080@120 » : c'est DXMT (wsi_window_win32.cpp,
+comme DXVK) qui appelle ChangeDisplaySettingsExW quand le jeu demande un plein
+ecran exclusif ; winemac changeait alors vraiment le mode de l'ecran -- un mode
+sans Retina, mis a l'echelle par le filtre de l'ecran, d'ou l'image degradee.
+
+Wine 11 sait deja ne pas le faire : avec EmulateModeset, win32u garde le mode
+physique, presente au programme le mode demande, et convertit les rectangles
+entre les deux (la fenetre plein ecran couvre l'ecran, la surface cliente est
+mise a l'echelle et centree, winemac peint les bandes noires ; DXMT pose de
+lui-meme le rectangle de presentation attendu). Ce n'etait reglable que par le
+registre du prefixe, que les jeux partagent : win32u lit maintenant
+CIDRE_EMULATE_MODESET, que le lanceur pose par jeu (option mode_emule, vraie par
+defaut ; fausse = vrai changement de mode, comme avant).
+
+Reste l'encoche. Sur un MacBook, l'espace plein ecran s'arrete sous la barre de
+menus : 1728x1084 dans un ecran de 1728x1117. Jusqu'ici la fenetre de jeu etait
+retaillee a son entree dans l'espace et le jeu suivait (WM_SIZE 1728x1084).
+Sous un mode emule ce retaillage revient au jeu converti dans le mode demande :
+mesure, une fenetre de 1280x695 puis 1280x803 dans un ecran de 1280x720. Quand
+les deux variables sont posees, winemac annonce donc d'emblee a win32u la zone
+de l'espace comme ecran physique (rectangle du moniteur et taille du mode
+courant) : le jeu voit 1728x1084 des le depart, la fenetre entre dans l'espace
+sans changer de taille, et un mode emule y est centre. En consequence :
+ - une fenetre qui couvre cette zone compte comme plein ecran ;
+ - une fenetre creee deja pleine est promue quand elle devient visible (la
+   promotion ne se jouait qu'au changement d'etat ; elle resterait sinon sous
+   la barre de menus) ;
+ - la taille de l'espace n'est plus bornee par la taille maximale de la
+   fenetre, exprimee dans les coordonnees du jeu ;
+ - un ecart de quelques points entre la zone prevue et celle que macOS donne
+   n'est pas rapporte au jeu.
+ - l'ecran principal vu par le programme commence a l'origine, alors que la
+   zone annoncee commence sous l'encoche (win32u, add_modes) ; sans cela le
+   moniteur etait vu en (0,33)-(1728,1117).
+Sans encoche (ecran externe) la zone est l'ecran entier, rien ne change.
+
+Essais (programme temoin GDI, prefixe et runtime clones, MacBook Pro 16 pouces,
+macOS 26.5) : sans changement de mode, 1728x1084 des le depart et aucun WM_SIZE
+a l'entree dans l'espace ; modes emules 1280x720 et 1728x1080, ecran, moniteur,
+fenetre et zone cliente coherents, mode reel de l'ecran inchange (1728x1117),
+retour au mode d'origine correct ; souris poussee en haut de l'ecran : ni barre
+de menus ni barre de titre. Curseur cache et recentre, avec et sans ClipCursor,
+souris poussee en haut puis a gauche par des evenements synthetiques : le
+programme voit son curseur au centre et recoit les mouvements, SetCursorPos ne
+deplace plus le curseur reel, et le curseur revient au centre quand le
+programme le remontre ; curseur visible, comportement inchange. Des evenements
+synthetiques deplacent le curseur reel meme decouple : ce qu'une vraie souris
+ne fait pas, et que seul un essai a la main prouve.
+
+En jeu (PEAK, Unity, DXMT, 2026-10-13, a la main) : plus de barre en haut de
+l'ecran ; curseur cache, la souris poussee longtemps vers chaque bord ne sort
+plus ni ne revele rien ; au retour d'un autre bureau la fenetre ne « zoome »
+plus -- le jeu reaffirmait une fenetre de 1728x1117 dans un espace de
+1728x1084, il demande maintenant la taille de l'espace. Reste, voulu ici : au
+menu du jeu, curseur visible, le curseur est libre comme dans toute
+application en plein ecran et peut passer sur un autre ecran ou un autre Mac.
+
+Connu, hors de ce correctif : sous un mode emule, une fenetre peinte en GDI est
+dessinee en haut de la fenetre et non entre les bandes noires (vu aussi sans
+l'espace plein ecran). Les jeux passent par la vue cliente Metal, cadree par
+win32u sur le rectangle de presentation.
+
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -2232,7 +2232,13 @@
+     else
+     {
+         if (!read_source_mode( source->key, ENUM_CURRENT_SETTINGS, &virtual ) || is_detached_mode( &virtual ))
++        {
+             virtual = physical;
++            /* Cidre : winemac annonce l'espace plein ecran comme ecran physique ;
++             * sous une encoche il ne commence pas en (0,0). L'ecran principal vu
++             * par le programme, lui, commence toujours a l'origine. */
++            if (ctx->is_primary) virtual.dmPosition.x = virtual.dmPosition.y = 0;
++        }
+ 
+         if ((virtual_modes = get_virtual_modes( current, &physical, host_modes, host_modes_count, &virtual_count )))
+         {
+@@ -5981,6 +5987,7 @@
+     WCHAR layout[KL_NAMELENGTH];
+     pthread_mutexattr_t attr;
+     HKEY hkey, appkey = 0;
++    const char *env;
+     DWORD len;
+ 
+     static const WCHAR oneW[] = {'1',0};
+@@ -6082,6 +6089,11 @@
+         decorated_mode = IS_OPTION_TRUE( buffer[0] );
+     if (!get_config_key( hkey, appkey, "EmulateModeset", buffer, sizeof(buffer) ))
+         emulate_modeset = IS_OPTION_TRUE( buffer[0] );
++    /* Cidre : le lanceur regle l'emulation des changements de mode par jeu,
++     * sans toucher au registre du prefixe partage. Un jeu qui demande un plein
++     * ecran exclusif garde alors l'ecran a sa resolution : la fenetre couvre
++     * l'ecran et l'image est mise a l'echelle, comme en fenetre plein ecran. */
++    if ((env = getenv( "CIDRE_EMULATE_MODESET" )) && *env) emulate_modeset = IS_OPTION_TRUE( *env );
+ 
+ #undef IS_OPTION_TRUE
+ 
+diff --git a/dlls/winemac.drv/cocoa_app.h b/dlls/winemac.drv/cocoa_app.h
+--- a/dlls/winemac.drv/cocoa_app.h
++++ b/dlls/winemac.drv/cocoa_app.h
+@@ -90,6 +90,11 @@
+ 
+     NSTimeInterval lastSetCursorPositionTime;
+ 
++    /* Cidre : curseur capture par un jeu en espace plein ecran (souris
++       decouplee du curseur de macOS) et position que le jeu lui connait. */
++    BOOL cidreCursorCaptured;
++    CGPoint cidreCapturePos;
++
+     id<WineClipCursorHandler> clipCursorHandler;
+ 
+     NSImage* applicationIcon;
+@@ -118,6 +123,8 @@
+     - (double) ticksForEventTime:(NSTimeInterval)eventTime;
+ 
+     - (void) windowGotFocus:(WineWindow*)window;
++    - (void) cidreUpdateCursorCapture;
++    - (BOOL) cidreGetCapturePos:(NSPoint*)pos;
+ 
+     - (BOOL) waitUntilQueryDone:(bool*)done timeout:(NSDate*)timeout processEvents:(BOOL)processEvents;
+ 
+diff --git a/dlls/winemac.drv/cocoa_app.m b/dlls/winemac.drv/cocoa_app.m
+--- a/dlls/winemac.drv/cocoa_app.m
++++ b/dlls/winemac.drv/cocoa_app.m
+@@ -960,14 +960,94 @@
+                 cursorHidden = FALSE;
+             }
+         }
++    }
++
++    /* Cidre : capture du curseur par un jeu en espace plein ecran.
++     *
++     * Un jeu a la premiere personne cache le curseur et le recentre a chaque
++     * image. winemac laissait alors le curseur de macOS suivre la souris :
++     * entre deux recentrages il atteint un bord de l'ecran, et de la part chez
++     * le Mac voisin (Controle universel) ou revele ce que macOS cache au bord.
++     * Tant que le jeu cache le curseur, que sa fenetre est la fenetre cle et
++     * qu'elle est dans l'espace plein ecran ou on l'a promue, on decouple donc
++     * la souris du curseur (CGAssociateMouseAndMouseCursorPosition(false),
++     * comme GLFW et SDL en mode relatif) : le curseur de macOS ne bouge plus,
++     * les mouvements arrivent toujours avec leurs deltas et partent au jeu en
++     * mouvements relatifs. On tient a jour la position que le jeu connait au
++     * curseur (cidreCapturePos, bornee comme le fait Windows) : c'est elle que
++     * portent les clics et la molette, que rend GetCursorPos et que pose
++     * SetCursorPos, sans aucun deplacement du curseur reel. Des que le jeu
++     * remontre le curseur (menu), ou que la fenetre perd la main, le curseur
++     * reel est pose a cette position et la souris lui est rendue. */
++    - (WineWindow*) cidreCaptureWindow
++    {
++        WineWindow* key = (WineWindow*)[NSApp keyWindow];
++
++        if (!clientWantsCursorHidden || ![NSApp isActive] || [windowsBeingDragged count])
++            return nil;
++        if (![key isKindOfClass:[WineWindow class]] || !key.cidreInFullScreenSpace)
++            return nil;
++        /* l'ecrou a base de CGEventTap deplace deja lui-meme le curseur */
++        if ([clipCursorHandler respondsToSelector:@selector(setCursorPosition:)])
++            return nil;
++        return key;
+     }
+ 
++    - (void) cidreClampCapturePos:(WineWindow*)window
++    {
++        NSRect frame;
++
++        if (![window isKindOfClass:[WineWindow class]]) return;
++        frame = [window contentRectForFrameRect:[window frame]];
++        [self flipRect:&frame];
++        if (cidreCapturePos.x < NSMinX(frame)) cidreCapturePos.x = NSMinX(frame);
++        if (cidreCapturePos.x > NSMaxX(frame) - 1) cidreCapturePos.x = NSMaxX(frame) - 1;
++        if (cidreCapturePos.y < NSMinY(frame)) cidreCapturePos.y = NSMinY(frame);
++        if (cidreCapturePos.y > NSMaxY(frame) - 1) cidreCapturePos.y = NSMaxY(frame) - 1;
++        if (self.clippingCursor)
++            [clipCursorHandler clipCursorLocation:&cidreCapturePos];
++    }
++
++    - (BOOL) cidreGetCapturePos:(NSPoint*)pos
++    {
++        if (!cidreCursorCaptured) return FALSE;
++        *pos = NSPointFromCGPoint(cidreCapturePos);
++        return TRUE;
++    }
++
++    - (void) cidreUpdateCursorCapture
++    {
++        WineWindow* window = [self cidreCaptureWindow];
++
++        if ((window != nil) == cidreCursorCaptured) return;
++
++        if (window)
++        {
++            cidreCapturePos = NSPointToCGPoint([self flippedMouseLocation:[NSEvent mouseLocation]]);
++            [self cidreClampCapturePos:window];
++            if (CGAssociateMouseAndMouseCursorPosition(false) != kCGErrorSuccess) return;
++            cidreCursorCaptured = TRUE;
++            mouseMoveDeltaX = 0;
++            mouseMoveDeltaY = 0;
++        }
++        else
++        {
++            cidreCursorCaptured = FALSE;
++            CGSetLocalEventsSuppressionInterval(0);
++            CGWarpMouseCursorPosition(cidreCapturePos);
++            CGSetLocalEventsSuppressionInterval(0.25);
++            CGAssociateMouseAndMouseCursorPosition(true);
++            lastSetCursorPositionTime = [[NSProcessInfo processInfo] systemUptime];
++        }
++    }
++
+     - (void) hideCursor
+     {
+         if (!clientWantsCursorHidden)
+         {
+             clientWantsCursorHidden = TRUE;
+             [self updateCursor:TRUE];
++            [self cidreUpdateCursorCapture];
+         }
+     }
+ 
+@@ -977,6 +1057,7 @@
+         {
+             clientWantsCursorHidden = FALSE;
+             [self updateCursor:FALSE];
++            [self cidreUpdateCursorCapture];
+         }
+     }
+ 
+@@ -1149,6 +1230,15 @@
+ 
+         if ([windowsBeingDragged count])
+             ret = FALSE;
++        else if (cidreCursorCaptured)
++        {
++            /* Cidre : le jeu recentre son curseur ; le curseur reel, decouple
++               de la souris, n'a pas a bouger. */
++            cidreCapturePos = pos;
++            [self cidreClampCapturePos:(WineWindow*)[NSApp keyWindow]];
++            pos = cidreCapturePos;
++            ret = TRUE;
++        }
+         else if (self.clippingCursor && [clipCursorHandler respondsToSelector:@selector(setCursorPosition:)])
+             ret = [clipCursorHandler setCursorPosition:pos];
+         else
+@@ -1330,8 +1420,12 @@
+         WineWindow* targetWindow;
+         BOOL drag = [anEvent type] != NSEventTypeMouseMoved;
+ 
++        [self cidreUpdateCursorCapture];
++
+         if ([windowsBeingDragged count])
+             targetWindow = nil;
++        else if (cidreCursorCaptured)
++            targetWindow = (WineWindow*)[NSApp keyWindow];
+         else if (mouseCaptureWindow)
+             targetWindow = mouseCaptureWindow;
+         else if (drag)
+@@ -1355,7 +1449,7 @@
+ 
+         if ([targetWindow isKindOfClass:[WineWindow class]])
+         {
+-            CGPoint point = CGEventGetLocation([anEvent CGEvent]);
++            CGPoint point = cidreCursorCaptured ? cidreCapturePos : CGEventGetLocation([anEvent CGEvent]);
+             macdrv_event* event;
+             BOOL absolute;
+ 
+@@ -1376,6 +1470,11 @@
+                 absolute = TRUE;
+                 forceNextMouseMoveAbsolute = FALSE;
+             }
++            else if (cidreCursorCaptured)
++            {
++                /* Cidre : le curseur reel ne bouge pas, seuls les deltas parlent. */
++                absolute = FALSE;
++            }
+             else
+             {
+                 // Send absolute move events if the cursor is in the interior of
+@@ -1452,6 +1551,14 @@
+                 /* Keep the remainder after integer truncation. */
+                 mouseMoveDeltaX -= event->mouse_moved.x / scale;
+                 mouseMoveDeltaY -= event->mouse_moved.y / scale;
++
++                if (cidreCursorCaptured)
++                {
++                    /* Cidre : suivre la position que Windows donne au curseur. */
++                    cidreCapturePos.x += event->mouse_moved.x / scale;
++                    cidreCapturePos.y += event->mouse_moved.y / scale;
++                    [self cidreClampCapturePos:targetWindow];
++                }
+             }
+ 
+             if (event->type == MOUSE_MOVED_ABSOLUTE || event->mouse_moved.x || event->mouse_moved.y)
+@@ -1506,8 +1613,12 @@
+             }
+         }
+ 
++        [self cidreUpdateCursorCapture];
++
+         if ([windowsBeingDragged count])
+             window = nil;
++        else if (cidreCursorCaptured)
++            window = (WineWindow*)[NSApp keyWindow];
+         else if (mouseCaptureWindow)
+             window = mouseCaptureWindow;
+ 
+@@ -1516,7 +1627,8 @@
+             BOOL pressed = (type == NSEventTypeLeftMouseDown ||
+                             type == NSEventTypeRightMouseDown ||
+                             type == NSEventTypeOtherMouseDown);
+-            CGPoint pt = CGEventGetLocation([theEvent CGEvent]);
++            /* Cidre : curseur capture, le clic porte la position connue du jeu. */
++            CGPoint pt = cidreCursorCaptured ? cidreCapturePos : CGEventGetLocation([theEvent CGEvent]);
+ 
+             if (self.clippingCursor)
+                 [clipCursorHandler clipCursorLocation:&pt];
+@@ -1625,7 +1737,9 @@
+     {
+         WineWindow* window;
+ 
+-        if (mouseCaptureWindow)
++        if (cidreCursorCaptured)
++            window = (WineWindow*)[NSApp keyWindow];
++        else if (mouseCaptureWindow)
+             window = mouseCaptureWindow;
+         else
+             window = (WineWindow*)[theEvent window];
+@@ -1633,7 +1747,7 @@
+         if ([window isKindOfClass:[WineWindow class]])
+         {
+             CGEventRef cgevent = [theEvent CGEvent];
+-            CGPoint pt = CGEventGetLocation(cgevent);
++            CGPoint pt = cidreCursorCaptured ? cidreCapturePos : CGEventGetLocation(cgevent);
+             BOOL process;
+ 
+             if (self.clippingCursor)
+@@ -2211,6 +2325,7 @@
+ 
+         [self updateFullscreenWindows];
+         [self adjustWindowLevels:YES];
++        [self cidreUpdateCursorCapture];
+ 
+         if (beenActive)
+             [self unminimizeWindowIfNoneVisible];
+@@ -2239,6 +2354,9 @@
+         macdrv_event* event;
+         WineEventQueue* queue;
+ 
++        /* Cidre : l'application n'est plus devant, rendre le curseur. */
++        [self cidreUpdateCursorCapture];
++
+         [self invalidateGotFocusEvents];
+ 
+         event = macdrv_create_event(APP_DEACTIVATED, nil);
+@@ -2538,8 +2656,11 @@
+ int macdrv_get_cursor_position(CGPoint *pos)
+ {
+     OnMainThread(^{
++        WineApplicationController* controller = [WineApplicationController sharedController];
+         NSPoint location = [NSEvent mouseLocation];
+-        location = [[WineApplicationController sharedController] flippedMouseLocation:location];
++        location = [controller flippedMouseLocation:location];
++        /* Cidre : curseur capture, la position est celle que le jeu connait. */
++        [controller cidreGetCapturePos:&location];
+         *pos = cgpoint_win_from_mac(NSPointToCGPoint(location));
+     });
+ 
+diff --git a/dlls/winemac.drv/cocoa_display.m b/dlls/winemac.drv/cocoa_display.m
+--- a/dlls/winemac.drv/cocoa_display.m
++++ b/dlls/winemac.drv/cocoa_display.m
+@@ -42,6 +42,57 @@
+     CGRect out_rect = NSRectToCGRect(in_rect);
+     out_rect.origin.y = NSMaxY(primary_frame) - NSMaxY(in_rect);
+     return out_rect;
++}
++
++
++/***********************************************************************
++ *              macdrv_cidre_space_desktop
++ *
++ * Cidre : le bureau presente a Windows est-il l'espace plein ecran du jeu ?
++ *
++ * Avec le vrai plein ecran macOS (CIDRE_FULLSCREEN_SPACE) et l'emulation des
++ * changements de mode (CIDRE_EMULATE_MODESET, lue par win32u), la fenetre de
++ * jeu finit dans un espace plein ecran. Sur un ecran a encoche cet espace
++ * s'arrete sous la barre de menus : il est moins haut que l'ecran. Si Windows
++ * croyait l'ecran entier disponible, macOS retaillerait la fenetre a son
++ * entree dans l'espace, et sous un mode emule ce retaillage revient au jeu
++ * comme une taille qui n'est celle d'aucun mode (1280x695 dans un ecran de
++ * 1280x720). On annonce donc d'emblee a win32u la zone de l'espace comme
++ * ecran physique : la fenetre de jeu y entre sans changer de taille, et un
++ * mode emule y est mis a l'echelle et centre.
++ */
++int macdrv_cidre_space_desktop(void)
++{
++    static int want;
++    static dispatch_once_t once;
++    dispatch_once(&once, ^{
++        const char* space = getenv("CIDRE_FULLSCREEN_SPACE");
++        const char* emule = getenv("CIDRE_EMULATE_MODESET");
++        want = space && strchr("1yYtT", *space) && *space &&
++               emule && strchr("1yYtT", *emule) && *emule;
++    });
++    return want;
++}
++
++/***********************************************************************
++ *              macdrv_cidre_space_top_inset
++ *
++ * Cidre : hauteur que l'espace plein ecran laisse a la barre de menus, en haut
++ * d'un ecran a encoche (0 ailleurs : la barre s'y revele par-dessus la
++ * fenetre). C'est l'epaisseur de la barre de menus ; quand elle est masquee
++ * sur le bureau, visibleFrame ne la dit plus et on prend la zone sure de
++ * l'encoche plus le filet (32 + 1 sur un MacBook Pro 16 pouces).
++ */
++CGFloat macdrv_cidre_space_top_inset(NSScreen* screen)
++{
++    CGFloat safe, bar;
++
++    if (!macdrv_cidre_space_desktop()) return 0;
++    if (![screen respondsToSelector:@selector(safeAreaInsets)]) return 0;
++    safe = screen.safeAreaInsets.top;
++    if (safe <= 0) return 0;
++    bar = NSMaxY(screen.frame) - NSMaxY(screen.visibleFrame);
++    return bar >= safe ? bar : safe + 1;
+ }
+ 
+ 
+@@ -944,7 +995,12 @@
+                     primary_index = monitor_count;
+ 
+                 monitors[monitor_count].id = display_ids[i];
+-                monitors[monitor_count].rc_monitor = cgrect_win_from_mac(convert_display_rect(screen.frame, primary_frame));
++                {
++                    /* Cidre : l'ecran annonce est la zone de l'espace plein ecran. */
++                    NSRect frame = screen.frame;
++                    frame.size.height -= macdrv_cidre_space_top_inset(screen);
++                    monitors[monitor_count].rc_monitor = cgrect_win_from_mac(convert_display_rect(frame, primary_frame));
++                }
+                 monitors[monitor_count].rc_work = cgrect_win_from_mac(convert_display_rect(screen.visibleFrame, primary_frame));
+ 
+                 vendor_number = CGDisplayVendorNumber(monitors[monitor_count].id);
+diff --git a/dlls/winemac.drv/cocoa_window.h b/dlls/winemac.drv/cocoa_window.h
+--- a/dlls/winemac.drv/cocoa_window.h
++++ b/dlls/winemac.drv/cocoa_window.h
+@@ -94,6 +94,8 @@
+ @property (readonly, nonatomic) BOOL preventsAppActivation;
+ @property (readonly, nonatomic) BOOL floating;
+ @property (readonly, getter=isFullscreen, nonatomic) BOOL fullscreen;
++/* Cidre : la fenetre de jeu est dans l'espace plein ecran ou on l'a promue. */
++@property (readonly, nonatomic) BOOL cidreInFullScreenSpace;
+ @property (readonly, getter=isFakingClose, nonatomic) BOOL fakingClose;
+ @property (readonly, nonatomic) NSRect wine_fractionalFrame;
+ 
+diff --git a/dlls/winemac.drv/cocoa_window.m b/dlls/winemac.drv/cocoa_window.m
+--- a/dlls/winemac.drv/cocoa_window.m
++++ b/dlls/winemac.drv/cocoa_window.m
+@@ -121,7 +121,11 @@
+ {
+     for (NSScreen* screen in screens)
+     {
+-        if (NSContainsRect(rect, [screen frame]))
++        /* Cidre : quand le bureau est la zone de l'espace plein ecran, une
++           fenetre qui la couvre est en plein ecran. */
++        NSRect frame = [screen frame];
++        frame.size.height -= macdrv_cidre_space_top_inset(screen);
++        if (NSContainsRect(rect, frame))
+             return screen;
+     }
+     return nil;
+@@ -1751,6 +1755,13 @@
+                 [controller adjustWindowLevels];
+             }
+ 
++            /* Cidre : une fenetre creee a la taille de l'ecran etait pleine
++               avant d'etre visible, et la promotion ne se jouait qu'au
++               changement d'etat. Quand le bureau est la zone de l'espace,
++               elle resterait sous la barre de menus : la promouvoir ici. */
++            if (macdrv_cidre_space_desktop())
++                [self cidrePromoteToFullScreenSpace];
++
+             if (pendingMinimize)
+             {
+                 [self setStyleMask:([self styleMask] | NSWindowStyleMaskMiniaturizable)];
+@@ -1826,6 +1837,39 @@
+                                          event_mask_for_type(WINDOW_MINIMIZE_REQUESTED) |
+                                          event_mask_for_type(WINDOW_RESTORE_REQUESTED)
+                                forWindow:self];
++    }
++
++    /* Cidre : promeut une fenetre de jeu qui couvre l'ecran (plein ecran sans
++       bordure de Wine, drapeau `fullscreen`) vers un vrai espace plein ecran
++       macOS, une seule fois (latch), sans jamais relancer apres une sortie
++       manuelle. On force FullScreenPrimary car une fenetre sans bordure est
++       sinon marquee Auxiliary et toggleFullScreen: n'y ferait rien. Le toggle
++       est differe au prochain tour de run loop pour ne pas reentrer pendant
++       l'etablissement du cadre. Appele quand la fenetre devient pleine, et
++       quand une fenetre creee pleine devient visible. */
++    - (void) cidrePromoteToFullScreenSpace
++    {
++        if (fullscreen && cidre_wants_fullscreen_space() &&
++            !cidreEnteredFullScreen && !enteringFullScreen &&
++            !([self styleMask] & NSWindowStyleMaskFullScreen) &&
++            !self.disabled && !maximized &&
++            [self isVisible] && [self isOnActiveSpace])
++        {
++            NSWindowCollectionBehavior behavior = [self collectionBehavior];
++
++            cidreEnteredFullScreen = YES;
++            behavior |= NSWindowCollectionBehaviorFullScreenPrimary;
++            behavior &= ~NSWindowCollectionBehaviorFullScreenAuxiliary;
++            if (behavior != [self collectionBehavior])
++                [self setCollectionBehavior:behavior];
++
++            dispatch_async(dispatch_get_main_queue(), ^{
++                if (!([self styleMask] & NSWindowStyleMaskFullScreen) &&
++                    !self.disabled && !maximized &&
++                    [self isVisible] && [self isOnActiveSpace])
++                    [self toggleFullScreen:nil];
++            });
++        }
+     }
+ 
+     - (void) updateFullscreen
+@@ -1843,33 +1887,38 @@
+ 
+             [controller adjustWindowLevels];
+ 
+-            /* Cidre : promeut cette fenetre borderless-plein-ecran vers un vrai
+-               Space macOS, une seule fois (latch), sans jamais relancer apres
+-               une sortie manuelle. On force FullScreenPrimary car une fenetre
+-               borderless est sinon marquee Auxiliary et toggleFullScreen: n'y
+-               ferait rien. Le toggle est differe au prochain tour de run loop
+-               pour ne pas reentrer pendant l'etablissement du cadre. */
+-            if (nowFullscreen && cidre_wants_fullscreen_space() &&
+-                !cidreEnteredFullScreen && !enteringFullScreen &&
+-                !([self styleMask] & NSWindowStyleMaskFullScreen) &&
+-                !self.disabled && !maximized &&
+-                [self isVisible] && [self isOnActiveSpace])
+-            {
+-                NSWindowCollectionBehavior behavior = [self collectionBehavior];
++            [self cidrePromoteToFullScreenSpace];
++        }
++    }
+ 
+-                cidreEnteredFullScreen = YES;
+-                behavior |= NSWindowCollectionBehaviorFullScreenPrimary;
+-                behavior &= ~NSWindowCollectionBehaviorFullScreenAuxiliary;
+-                if (behavior != [self collectionBehavior])
+-                    [self setCollectionBehavior:behavior];
++    /* Cidre : en espace plein ecran, macOS loge la barre de titre (feux et
++       titre, y compris pour une fenetre sans bordure) dans une fenetre fille
++       privee, NSToolbarFullScreenWindow, qu'il fait descendre avec la barre
++       de menus des que la souris touche le haut de l'ecran : elle recouvre
++       alors le jeu. titleVisibility, titlebarAppearsTransparent et le
++       masquage des feux n'y suffisent pas, le fond de la barre reste peint
++       (essaye sur macOS 26.5). On masque donc le contenu de cette fenetre et
++       on la rend transparente aux clics, tant que la fenetre de jeu promue
++       par nos soins reste dans son espace. La barre de menus, elle, continue
++       de se reveler. */
++    - (BOOL) cidreOwnsFullScreenSpace
++    {
++        return cidreEnteredFullScreen && cidre_wants_fullscreen_space();
++    }
+ 
+-                dispatch_async(dispatch_get_main_queue(), ^{
+-                    if (!([self styleMask] & NSWindowStyleMaskFullScreen) &&
+-                        !self.disabled && !maximized &&
+-                        [self isVisible] && [self isOnActiveSpace])
+-                        [self toggleFullScreen:nil];
+-                });
+-            }
++    - (BOOL) cidreInFullScreenSpace
++    {
++        return [self cidreOwnsFullScreenSpace] && !exitingFullScreen &&
++               ([self styleMask] & NSWindowStyleMaskFullScreen);
++    }
++
++    - (void) cidreHideFullScreenTitlebar:(BOOL)hide
++    {
++        for (NSWindow* child in [self childWindows])
++        {
++            if (![[child className] isEqualToString:@"NSToolbarFullScreenWindow"]) continue;
++            [[child contentView] setHidden:hide];
++            [child setIgnoresMouseEvents:hide];
+         }
+     }
+ 
+@@ -2751,6 +2800,13 @@
+     {
+         macdrv_query* query;
+         NSSize size;
++
++        /* Cidre : la fenetre de jeu promue couvrait deja l'ecran ; elle garde
++           sa taille dans son espace. La borne ci-dessous est exprimee dans
++           les coordonnees du jeu : sous un mode d'ecran emule (EmulateModeset)
++           elle retrecirait la fenetre a la resolution demandee par le jeu. */
++        if ([self cidreOwnsFullScreenSpace])
++            return proposedSize;
+ 
+         query = macdrv_create_query();
+         query->type = QUERY_MIN_MAX_INFO;
+@@ -2766,6 +2822,31 @@
+         return size;
+     }
+ 
++    /* Cidre : dans l'espace plein ecran d'un jeu, ni la barre de menus ni le
++       Dock ne se revelent quand la souris touche un bord. Un jeu a la
++       premiere personne cache le curseur et le recentre a chaque image : le
++       curseur de macOS continue de courir entre deux images, atteint le haut
++       de l'ecran des qu'on regarde vers le haut, et la barre de menus
++       descendait sur le jeu. C'est le reglage des jeux Mac en espace plein
++       ecran (SDL fait de meme). Les raccourcis des menus restent actifs
++       (ctrl+option+cmd+F sort de l'espace). CIDRE_FULLSCREEN_MENUBAR=1 rend la
++       revelation au contact, quel que soit le reglage « masquer la barre des
++       menus en plein ecran » de l'utilisateur. */
++    - (NSApplicationPresentationOptions) window:(NSWindow*)window
++           willUseFullScreenPresentationOptions:(NSApplicationPresentationOptions)proposedOptions
++    {
++        if ([self cidreOwnsFullScreenSpace])
++        {
++            const char* menubar = getenv("CIDRE_FULLSCREEN_MENUBAR");
++            if (menubar && *menubar == '1')
++                return NSApplicationPresentationFullScreen | NSApplicationPresentationAutoHideMenuBar |
++                       NSApplicationPresentationAutoHideDock | NSApplicationPresentationAutoHideToolbar;
++            return NSApplicationPresentationFullScreen | NSApplicationPresentationHideMenuBar |
++                   NSApplicationPresentationHideDock;
++        }
++        return proposedOptions;
++    }
++
+     - (void)windowDidBecomeKey:(NSNotification *)notification
+     {
+         WineApplicationController* controller = [WineApplicationController sharedController];
+@@ -2773,6 +2854,12 @@
+         if (event)
+             [self flagsChanged:event];
+ 
++        /* Cidre : macOS peut refaire la fenetre de la barre de titre (retour
++           d'un autre espace, changement d'ecran) ; la masquer de nouveau. */
++        if ([self cidreOwnsFullScreenSpace] && ([self styleMask] & NSWindowStyleMaskFullScreen))
++            [self cidreHideFullScreenTitlebar:YES];
++        [controller cidreUpdateCursorCapture];
++
+         if (causing_becomeKeyWindow == self) return;
+ 
+         [controller windowGotFocus:self];
+@@ -2820,6 +2907,9 @@
+     {
+         enteringFullScreen = FALSE;
+         enteredFullScreenTime = [[NSProcessInfo processInfo] systemUptime];
++        if ([self cidreOwnsFullScreenSpace])
++            [self cidreHideFullScreenTitlebar:YES];
++        [[WineApplicationController sharedController] cidreUpdateCursorCapture];
+         if (pendingOrderOut)
+             [self doOrderOut];
+     }
+@@ -2844,6 +2934,8 @@
+     - (void) windowDidFailToExitFullScreen:(NSWindow*)window
+     {
+         exitingFullScreen = FALSE;
++        if ([self cidreOwnsFullScreenSpace])
++            [self cidreHideFullScreenTitlebar:YES];
+         [self windowDidResize:nil];
+         if (pendingOrderOut)
+             [self doOrderOut];
+@@ -2870,6 +2962,9 @@
+     {
+         macdrv_event* event;
+ 
++        /* Cidre : la fenetre de jeu n'a plus la main, rendre le curseur. */
++        [[WineApplicationController sharedController] cidreUpdateCursorCapture];
++
+         if (causing_becomeKeyWindow) return;
+ 
+         event = macdrv_create_event(WINDOW_LOST_FOCUS, self);
+@@ -2890,6 +2985,19 @@
+         }
+ 
+         if (ignore_windowResize || exitingFullScreen) return;
++
++        /* Cidre : l'espace plein ecran a ete annonce a Windows comme l'ecran.
++           Si macOS lui donne un cadre a quelques points pres de celui qu'on
++           avait prevu, ne pas le rapporter : sous un mode emule, l'ecart
++           reviendrait au jeu comme un changement de taille. */
++        if (macdrv_cidre_space_desktop() && [self cidreOwnsFullScreenSpace] &&
++            (enteringFullScreen || ([self styleMask] & NSWindowStyleMaskFullScreen)))
++        {
++            NSRect actual = [self frame];
++            if (fabs(NSMinX(actual) - NSMinX(wineFrame)) <= 4 && fabs(NSMaxX(actual) - NSMaxX(wineFrame)) <= 4 &&
++                fabs(NSMinY(actual) - NSMinY(wineFrame)) <= 4 && fabs(NSMaxY(actual) - NSMaxY(wineFrame)) <= 4)
++                return;
++        }
+ 
+         if ([self preventResizing])
+         {
+@@ -2968,6 +3076,10 @@
+     - (void) windowWillExitFullScreen:(NSNotification*)notification
+     {
+         exitingFullScreen = TRUE;
++        /* Cidre : en fenetre, la barre de titre redevient celle de macOS et
++           le curseur n'est plus capture. */
++        [self cidreHideFullScreenTitlebar:NO];
++        [[WineApplicationController sharedController] cidreUpdateCursorCapture];
+         [self postWindowFrameChanged:nonFullscreenFrame fullscreen:FALSE resizing:FALSE skipSizeMove:FALSE];
+     }
+ 
+diff --git a/dlls/winemac.drv/display.c b/dlls/winemac.drv/display.c
+--- a/dlls/winemac.drv/display.c
++++ b/dlls/winemac.drv/display.c
+@@ -901,6 +901,12 @@
+         }
+         free_display_mode_descriptor(desc);
+     }
++
++    /* Cidre : le mode courant a la taille de l'ecran annonce, c'est-a-dire de
++     * l'espace plein ecran quand il est plus petit que l'ecran (encoche). */
++    if (macdrv_cidre_space_desktop() && CGRectGetHeight(monitor->rc_monitor) > 0 &&
++        CGRectGetHeight(monitor->rc_monitor) < devmode->dmPelsHeight)
++        devmode->dmPelsHeight = CGRectGetHeight(monitor->rc_monitor);
+ 
+     CFRelease(display_mode);
+ }
+diff --git a/dlls/winemac.drv/macdrv_cocoa.h b/dlls/winemac.drv/macdrv_cocoa.h
+--- a/dlls/winemac.drv/macdrv_cocoa.h
++++ b/dlls/winemac.drv/macdrv_cocoa.h
+@@ -273,6 +273,11 @@
+ extern int macdrv_get_adapters(uint64_t gpu_id, struct macdrv_adapter** adapters, int* count);
+ extern void macdrv_free_adapters(struct macdrv_adapter* adapters);
+ extern int macdrv_get_monitors(CGDirectDisplayID adapter_id, struct macdrv_monitor** monitors, int* count);
++extern int macdrv_cidre_space_desktop(void);
++#ifdef __OBJC__
++@class NSScreen;
++extern CGFloat macdrv_cidre_space_top_inset(NSScreen* screen);
++#endif
+ extern void macdrv_free_monitors(struct macdrv_monitor* monitors, int monitor_count);
+ 
+ 
