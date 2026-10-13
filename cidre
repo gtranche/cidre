@@ -913,11 +913,16 @@ case "$cmd" in
         # rendu Direct3D 11 : dxvk (defaut) ou dxmt ; une chaine, entre guillemets
         case $val in dxvk|dxmt) val="\"$val\"" ;;
           *) echo "d3d11 attend dxvk ou dxmt" >&2; exit 2 ;; esac ;;
+      windows_version)
+        # version de Windows vue par le jeu (win10 = le defaut) : une chaine, sous
+        # la forme que Wine attend ; la liste est celle du lanceur
+        val=$(sh "$R/tests/version_windows.sh" valider "$val") || exit 2
+        val="\"$val\"" ;;
       langue)
         # une chaine : ecrite entre guillemets dans le profil (TOML)
         case $val in auto|fr|en|de|es|it|pt|ru|pl|ja|ko|zh) val="\"$val\"" ;;
           *) echo "langue attend auto ou un code : fr, en, de, es, it, pt, ru, pl, ja, ko, zh" >&2; exit 2 ;; esac ;;
-      *) echo "option inconnue : $cle (journal_detaille, tso, vsync, hud, overlay, async, narrow_barriers, garde_index, dx12, d3d11, metalfx, fils_compilation, eac_untrusted, luajit, plein_ecran, mode_emule, gamemode, maj_avant_lancement, langue, reglages_jeu_appliques)" >&2; exit 2 ;;
+      *) echo "option inconnue : $cle (journal_detaille, tso, vsync, hud, overlay, async, narrow_barriers, garde_index, dx12, d3d11, metalfx, fils_compilation, eac_untrusted, luajit, plein_ecran, mode_emule, gamemode, maj_avant_lancement, langue, windows_version, reglages_jeu_appliques)" >&2; exit 2 ;;
     esac
     CIDRE_PROFILS=${CIDRE_PROFILS:-$CIDRE_DIR/profils.toml} sh "$R/tests/profil_cidre.sh" "$id" set "$cle" "$val" ;;
   unset)

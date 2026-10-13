@@ -164,13 +164,6 @@ fi
 DLLOV=${CIDRE_DLL_OVERRIDES:-$(profil dll_overrides)}
 [ -n "$DLLOV" ] && export CIDRE_DLL_OVERRIDES="$DLLOV"
 
-# Version de Windows presentee par le prefixe, quand un jeu l'exige (win7, winxp ;
-# win10 par defaut, non force). Pose via le registre du prefixe avant le lancement.
-WINVER=${CIDRE_WINDOWS_VERSION:-$(profil windows_version)}
-if [ -n "$WINVER" ] && [ "$WINVER" != win10 ]; then
-   "$R/wine/wine11-arm64/bin/wine" winecfg -v "$WINVER" >>"$JOURNAL" 2>&1 || true
-fi
-
 # Relachement cible des barrieres de cloture d'encodeur KosmicKrisp vers les
 # vraies stages (au lieu de ALL->ALL) : laisse les passes GPU se recouvrir, gain
 # en scene chargee (GPU-bound). Valide sur VT2. Un environnement explicite
@@ -252,6 +245,20 @@ if [ "$(head -c 2 "$DOSSIER/$PROG" 2>/dev/null)" != "MZ" ]; then
    cd "$DOSSIER"
    exec "./$PROG" "$@"
 fi
+
+# Version de Windows vue par le jeu : windows_version = "win7", "winxp"... quand
+# il l'exige (CIDRE_WINDOWS_VERSION=win7 pour un essai) ; win10 sans l'option.
+# Les jeux partagent le prefixe : elle est donc reglee a CHAQUE lancement, pour
+# le jeu qu'on lance -- la valeur HKCU\Software\Wine\Version, que Wine lit avant
+# la version du prefixe et que tous les processus du jeu voient (son lanceur,
+# ce qu'il demarre). Sans l'option elle est retiree : un jeu ne laisse rien au
+# suivant, et une version restee collee au prefixe (winecfg -v) est remise a
+# Windows 10. Ecrit dans le registre sans demarrer Wine, donc ICI, avant le
+# client de service : un wineserver en vie recrirait le registre a sa sortie.
+# Une valeur inconnue est dite, et le jeu part en win10. Jamais bloquant.
+# Cf. tests/version_windows.sh.
+WINVER=${CIDRE_WINDOWS_VERSION:-$(profil windows_version)}
+sh "$R/tests/version_windows.sh" poser "$WINVER" 2>&1 | tee -a "$JOURNAL" || true
 
 # Rendu Direct3D 11 : d3d11 = "dxmt" (defaut depuis la 1.5.8) ou "dxvk" (CIDRE_D3D11=dxvk, repli).
 # DXVK est un natif pose en system32 (dxgi,d3d11=n, cf. etape2). DXMT (D3D11 ->

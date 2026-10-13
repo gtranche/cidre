@@ -100,8 +100,15 @@
 #                    une fois les [reglages_jeu] de la fiche ecrits dans le fichier de
 #                    reglages du jeu ; il n y touche plus ensuite. `cidre unset <id>
 #                    reglages_jeu_appliques` pour les reposer au prochain lancement.
-#   windows_version  version de Windows du prefixe si le jeu l'exige : win7, winxp...
-#                    (win10 par defaut, non force). Applique via winecfg au lancement.
+#   windows_version  version de Windows que voit le jeu, s'il l'exige : win11, win10, win81,
+#                    win8, win7, vista, winxp64, winxp, win2k (win10 sans l'option). Par jeu :
+#                    le lanceur la regle a chaque lancement (HKCU\Software\Wine\Version,
+#                    ecrite dans le registre du prefixe sans demarrer Wine) et la retire
+#                    pour un jeu qui ne la demande pas -- le prefixe est partage, mais un jeu
+#                    en win7 n'y laisse rien aux autres. Une valeur inconnue est dite au
+#                    journal, et le jeu part en win10. `cidre set <id> windows_version win7`,
+#                    `cidre unset <id> windows_version` ; CIDRE_WINDOWS_VERSION=win7 pour un
+#                    essai. Cf. tests/version_windows.sh. APPLIQUE.
 #   dll_overrides    overrides DLL propres au jeu, format Wine "a,b=n;c=b" (n natif,
 #                    b builtin, = disable). Ajoutes aux overrides par defaut. APPLIQUE.
 #   dependances      redistribuables requis, verbes facon winetricks separes par des

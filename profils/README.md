@@ -68,6 +68,47 @@ L'état de la dernière mise à jour de chaque jeu est gardé dans
 (Mo libres exigés), `CIDRE_MAJ_VALIDER=1` (revérifier tous les fichiers).
 Essais : `sh tests/tester_maj_avant_lancement.sh`.
 
+### Version de Windows (`windows_version`)
+
+Sans l'option, un jeu voit Windows 10. Une fiche (ou `cidre set <id>
+windows_version win7`) la change pour ce jeu-là : `win11`, `win10`, `win81`,
+`win8`, `win7`, `vista`, `winxp64`, `winxp`, `win2k`. Tous les jeux partagent
+un préfixe : le lanceur règle donc la version **à chaque lancement**, pour le
+jeu qu'il lance, et un jeu qui ne la demande pas tourne en win10 quel que soit
+le jeu lancé avant lui.
+
+- La mécanique : la valeur `HKCU\Software\Wine\Version`, que Wine lit au
+  démarrage de chaque processus, avant la version du préfixe. Tous les
+  processus du jeu la voient, quel que soit leur nom (son lanceur,
+  l'exécutable final, ce qu'il démarre, en 64 comme en 32 bits) : c'est la
+  portée d'une bouteille CrossOver, d'où viennent la plupart de ces valeurs.
+  La clé par application de Wine (`AppDefaults\<exe>\Version`) ne suit que le
+  nom d'un exécutable : il faudrait énumérer ceux du jeu, et deux jeux qui ont
+  un `Launcher.exe` se la disputeraient. Un réglage par application posé à la
+  main (winecfg, onglet Applications) garde la priorité ; Cidre n'y touche pas.
+- L'écriture : une ligne de `user.reg`, posée sans démarrer Wine par
+  l'écriture de registre de `[reglages_jeu]` (voir plus bas), avant le premier
+  processus Wine du lancement ; sans l'option, la ligne est retirée. Si un
+  wineserver tient le préfixe (un autre jeu tourne), rien n'est écrit et le
+  journal le dit.
+- La version du préfixe (`HKLM`, celle de `winecfg -v`) reste Windows 10. Si
+  elle a été changée pour tous les jeux (`winecfg -v`, à la main ou par
+  winetricks ; le lanceur d'avant devait l'appeler, mais sa commande ne
+  partait pas), elle est remise au lancement suivant et le journal le dit.
+  Elle est reconnue à la signature de winecfg : `ProductName` « Microsoft
+  Windows … » (wine.inf écrit « Windows 10 Pro ») avec un autre numéro de
+  build que 19045, ou plus aucune valeur NT et un `VersionNumber` de
+  Windows 9x. Les ruches d'avant la première écriture sont gardées
+  (`user.reg.avant-cidre`, `system.reg.avant-cidre`).
+- Une valeur inconnue (`windows 7`, `win95`…) est dite au journal et à la
+  sortie du lancement, et le jeu part en win10 ; `cidre set` la refuse.
+- Limite, celle de la clé par application de Wine : un programme qui lit la
+  version dans `HKLM` au lieu de la demander à Windows y trouve Windows 10.
+
+`CIDRE_WINDOWS_VERSION=win7` passe devant le profil, pour un essai. Le code
+est dans `tests/version_windows.sh` ; essais : `sh
+tests/tester_version_windows.sh`.
+
 ## Schéma d'une fiche
 
 Sous-ensemble de TOML volontairement simple : des tables `[nom]` et
@@ -613,7 +654,7 @@ Proton) ou le verdict AppleGamingWiki (CrossOver, GPTK) ne sont pas notre
 | PCGamingWiki, API MediaWiki, wikitexte des modèles (CC BY-NC-SA) | `{{Infobox game}}` moteur, appid ; `{{API}}` versions Direct3D/Vulkan/OpenGL, exécutable 32/64 bits ; `{{Middleware}}` anti-triche ; `{{Availability/row}}` DRM Steam | `[jeu] moteur` (vocabulaire de la fiche, sinon `autre`) + `moteur_nom`, `api` (seulement si une seule API), `api_disponibles` (`"d3d11 d3d12"`), `bits` (64 si un exécutable 64 bits existe) + `bits_32_aussi`, `anticheat` (none, eac, battleye, denuvo, vac, sinon `autre` + `anticheat_nom`), `drm` |
 | PCGamingWiki, `{{Game data/config}}` et `{{Game data/saves}}` (Windows) | emplacement des fichiers de réglages et des sauvegardes | `[compat.pcgamingwiki] fichiers_reglages`, `sauvegardes` (chemins traduits dans la convention Cidre : relatifs à `drive_c/users/<utilisateur>/`, `jeu:` = dossier du jeu, `registre:` = clé de registre), `url`, `correspondance` (`appid`, `appid-side`, `titre` : comment la page a été trouvée) |
 | AppleGamingWiki, `{{Compatibility/macOS}}` (CC BY-NC-SA) | verdicts natif, Rosetta 2, CrossOver, Wine (GPTK/Whisky/Kegworks), Parallels ; méthode et date des témoignages | `[compat.applegamingwiki] natif`, `rosetta`, `crossover`, `wine`, `parallels` (`parfait`, `jouable`, `demarre`, `ko`), `methodes` (`"gptk whisky"`), `dernier_temoignage`, `url` |
-| CrossOver, archive publique des recettes CrossTie `crossover.tie.gz` (aucune licence publiée : valeurs techniques seulement, voir plus bas) | recette en vigueur du jeu : gabarit de bouteille, DLL forcées (`HKCU\Software\Wine\DllOverrides`), dépendances, variables d'environnement de la bouteille, autres clés sous `Software\Wine` | `[compat.crossover] recette` (`com.codeweavers.c4.N`), `correspondance` (`steamid`, `steamid+titre`, `titre`), `confiance` (`haute`, `moyenne`), `recette_date`, `crossover_version`, `bouteille` (`win10_64`…), `dll_overrides` (telles que la recette les donne : `"xaudio2_7=n ; mfplay="`), `dll_overrides_par_exe`, `dependances` (nos verbes), `dependances_non_traduites` (identifiants), `graphismes` (`d3dmetal`, `dxvk`), `environnement`, `registre`, `url` ; et, fondus dans `[cidre]` : `dll_overrides`, `dependances`, `windows_version` (sur demande) |
+| CrossOver, archive publique des recettes CrossTie `crossover.tie.gz` (aucune licence publiée : valeurs techniques seulement, voir plus bas) | recette en vigueur du jeu : gabarit de bouteille, DLL forcées (`HKCU\Software\Wine\DllOverrides`), dépendances, variables d'environnement de la bouteille, autres clés sous `Software\Wine` | `[compat.crossover] recette` (`com.codeweavers.c4.N`), `correspondance` (`steamid`, `steamid+titre`, `titre`), `confiance` (`haute`, `moyenne`), `recette_date`, `crossover_version`, `bouteille` (`win10_64`…), `dll_overrides` (telles que la recette les donne : `"xaudio2_7=n ; mfplay="`), `dll_overrides_par_exe`, `dependances` (nos verbes), `dependances_non_traduites` (identifiants), `graphismes` (`d3dmetal`, `dxvk`), `environnement`, `registre`, `url` ; et, fondus dans `[cidre]` : `dll_overrides`, `dependances`, `windows_version` |
 
 Ce qu'on **ne reprend pas** :
 
@@ -711,16 +752,16 @@ pas d'options de lancement.
   identifiant dans `dependances_non_traduites` ; « DXVK (Builtin) » et les
   variables `WINED3DMETAL`/`D3DMetal` deviennent `graphismes` (le chemin que
   CrossOver prend sur Mac : une donnée, Cidre a le sien).
-- `windows_version` : **retenu par défaut** (`--crossover-windows-version` pour
-  le poser). Le lanceur l'applique par `winecfg -v` au préfixe, qui est partagé
-  entre les jeux, et ne revient jamais à win10 : un jeu en win7 y laisserait
-  tous les autres. Les fiches concernées sortent dans le rapport
-  (`windows_version_retenues`). Et même sur demande, un gabarit n'est repris
-  que s'il est un choix : recette pour CrossOver 23 ou plus (avant, `win7_64`
-  ou `winxp` sont le défaut de l'époque, pas une exigence du jeu), plus ancien
-  que win10 (win11 est aussi courant que win10 dans les recettes pour
-  CrossOver 26 : un défaut, là encore), et pas un gabarit 32 bits pour un jeu
-  64 bits.
+- `windows_version` : **posé** (`--sans-crossover-windows-version` pour le
+  retenir : les fiches concernées sortent alors dans le rapport,
+  `windows_version_retenues`). Le lanceur le règle à chaque lancement, pour le
+  jeu qu'il lance, et le retire pour un jeu qui ne le demande pas (voir
+  « Version de Windows ») : le préfixe partagé n'en garde rien. Un gabarit
+  n'est repris que s'il est un choix : recette pour CrossOver 23 ou plus
+  (avant, `win7_64` ou `winxp` sont le défaut de l'époque, pas une exigence du
+  jeu), plus ancien que win10 (win11 est aussi courant que win10 dans les
+  recettes pour CrossOver 26 : un défaut, là encore), connu du lanceur (pas de
+  Windows 9x), et pas un gabarit 32 bits pour un jeu 64 bits.
 
 Une clé de `[cidre]` que la recette ne donne plus est retirée au passage
 suivant, si elle venait de `crossover`.

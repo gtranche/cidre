@@ -60,7 +60,7 @@ Source `crossover` : les recettes CrossTie de CodeWeavers. Constat (2026-10-13) 
     recette (identifiant, URL, date) dans [compat.crossover].
   - Rang : le dernier. Une valeur CrossOver n'ecrase jamais celle d'une autre
     source ; elle ne remplace qu'une valeur CrossOver. Fondue dans [cidre]
-    (dll_overrides, dependances ; windows_version sur demande seulement) avec
+    (dll_overrides, dependances, windows_version) avec
     sa provenance par cle dans [cidre.sources], sous garde-fous (voir
     crossover_valeurs et importer_crossover).
 Ce constat n'est pas un avis juridique : si CodeWeavers publie des conditions
@@ -1299,6 +1299,11 @@ def agw_extraire(texte):
 # Gabarit de bouteille CrossOver -> nom de version de winecfg (`winecfg -v`).
 GABARITS = {"win11": "win11", "win10": "win10", "win8": "win8", "win7": "win7", "winvista": "vista",
             "winxp": "winxp", "win2000": "win2k", "win98": "win98"}
+# Les versions que le lanceur sait poser (tests/version_windows.sh liste, que
+# test_importer_profils.py compare a celle-ci) et qui ne sont pas un defaut :
+# win10 est le notre, win11 l'autre defaut des recettes pour CrossOver 26. Un
+# gabarit win98 n'en donne donc pas.
+VERSIONS_WINDOWS_REPRISES = ("win81", "win8", "win7", "vista", "winxp64", "winxp", "win2k")
 # A partir de CrossOver 23, win10_64 (puis win11_64) est le gabarit de 86 % des
 # recettes de jeu (archive du 2026-10-12 ; win7_64 ou winxp dominent avant la
 # 21) : un autre gabarit y est un choix. Avant, c'est le defaut de l'epoque.
@@ -1553,10 +1558,10 @@ def crossover_valeurs(r, index, bits=None):
     le lanceur applique). Garde-fous de la seconde :
       - windows_version : seulement si le gabarit est un choix (recette pour
         CrossOver >= 23, voir CROSSOVER_GABARIT_CHOISI), plus ancien que
-        win10 (win10 est notre defaut, win11 l'autre defaut des recettes pour
-        CrossOver 26), et pas un gabarit 32 bits pour un jeu dont la fiche dit
-        64 bits (recette d'avant l'executable 64 bits). importer_crossover ne
-        le pose que sur demande (--crossover-windows-version) ;
+        win10 et connu du lanceur (VERSIONS_WINDOWS_REPRISES), et pas un
+        gabarit 32 bits pour un jeu dont la fiche dit 64 bits (recette d'avant
+        l'executable 64 bits). importer_crossover le pose, sauf
+        --sans-crossover-windows-version ;
       - dll_overrides : `native` seul devient `n,b` -- la recette installe la
         DLL native par une dependance, nous pas encore : sans elle, `n` seul
         empecherait le jeu de demarrer, `n,b` retombe sur celle de Wine ; les
@@ -1572,7 +1577,7 @@ def crossover_valeurs(r, index, bits=None):
         version = "winxp64" if gabarit == "winxp_64" else GABARITS.get(gabarit.removesuffix("_64"))
         choisi = _version(r["version"])[0] >= CROSSOVER_GABARIT_CHOISI
         trop_vieux = bits == 64 and not gabarit.endswith("_64")
-        if version and version not in ("win10", "win11") and choisi and not trop_vieux:
+        if version in VERSIONS_WINDOWS_REPRISES and choisi and not trop_vieux:
             cidre["windows_version"] = version
     # DLL forcees
     brutes, par_mode = [], collections.OrderedDict()
@@ -1649,11 +1654,13 @@ def importer_crossover(fiche, appid, nom, crossover, bilan):
     compte ce qui a ete trouve et pose ; les desaccords vont, comme pour les
     autres sources, dans fiche.contradictions.
     Dans [cidre], rien n'est pose depuis une recette rapprochee par le titre
-    seul (confiance moyenne : meme jeu, mais autre boutique ou edition CD), et
-    windows_version ne l'est que si crossover["poser_windows_version"] : le
-    lanceur l'applique par `winecfg -v` au prefixe partage sans jamais revenir
-    a win10, un jeu en win7 y laisserait donc tous les autres. Ce que la
-    recette aurait donne sort dans bilan["windows_version_retenues"]."""
+    seul (confiance moyenne : meme jeu, mais autre boutique ou edition CD).
+    windows_version y est pose comme les autres cles : le lanceur le regle a
+    chaque lancement, pour le jeu qu'il lance, et le retire pour un jeu qui
+    ne le demande pas (tests/version_windows.sh) -- le prefixe partage n'en
+    garde rien. Sans crossover["poser_windows_version"]
+    (--sans-crossover-windows-version), ce que la recette aurait donne sort
+    dans bilan["windows_version_retenues"] et la cle n'est pas posee."""
     index, date = crossover["index"], crossover["date"]
     r, comment, confiance = crossover_trouver(index, appid, nom)
     if r is None:
@@ -1898,9 +1905,11 @@ def main(argv=None):
     ap.add_argument("--windows-seulement", action="store_true", help="ignorer les jeux qui ont une version macOS native")
     ap.add_argument("--sources", default=",".join(SOURCES),
                     help="sources a interroger, separees par des virgules (defaut : toutes) : " + ", ".join(SOURCES))
-    ap.add_argument("--crossover-windows-version", action="store_true",
-                    help="poser aussi [cidre] windows_version depuis les recettes CrossOver (coupe par defaut : "
-                         "le lanceur ne remet pas win10 sur le prefixe partage)")
+    ap.add_argument("--sans-crossover-windows-version", action="store_true",
+                    help="ne pas poser [cidre] windows_version depuis les recettes CrossOver (pose par defaut : le "
+                         "lanceur regle la version a chaque lancement, par jeu) ; les fiches concernees sortent "
+                         "dans le rapport")
+    ap.add_argument("--crossover-windows-version", action="store_true", help=argparse.SUPPRESS)  # l'ancien nom du defaut
     ap.add_argument("--steamcmd", help="le SteamCMD qui lit la configuration Steam Cloud des jeux (defaut : tools/steamcmd/, STEAMCMD)")
     ap.add_argument("--fiches-existantes", action="store_true",
                     help="sans appid : les fiches deja dans --profils, au lieu de la bibliotheque Steam")
@@ -1940,7 +1949,7 @@ def main(argv=None):
     if not a.sans_export and "protondb" in sources:
         index_dir, date_export = protondb_export_indexer(toile, appids)
     index_crossover, date_crossover = crossover_charger(toile, aujourd) if "crossover" in sources else (None, None)
-    crossover = {"index": index_crossover, "date": date_crossover, "poser_windows_version": a.crossover_windows_version}
+    crossover = {"index": index_crossover, "date": date_crossover, "poser_windows_version": not a.sans_crossover_windows_version}
     bilan_crossover = bilan_crossover_vide()
     bilan_steam = {}
     if "steam" in sources:
@@ -1970,7 +1979,7 @@ def main(argv=None):
         rapport["crossover"] = b
         dire(f"CrossOver : {b['recettes']} recette(s) trouvee(s), {len(b['ambigus'])} ambigue(s) ; [cidre] : "
              + (", ".join(f"{k} sur {n} fiche(s)" for k, n in sorted(b["cidre"].items())) or "rien")
-             + (f" ; windows_version retenue sur {len(b['windows_version_retenues'])} fiche(s) (--crossover-windows-version)"
+             + (f" ; windows_version retenue sur {len(b['windows_version_retenues'])} fiche(s) (--sans-crossover-windows-version)"
                 if b["windows_version_retenues"] else ""))
     if bilan_steam:
         rapport["steam_cloud"] = dict(sorted(bilan_steam.items()))

@@ -8,6 +8,8 @@
 #   reglages_jeu.sh <appid>
 #   reglages_jeu.sh <appid> temoin                  la valeur du temoin de la fiche (voir plus bas), vide s'il n'y en a pas
 #   reglages_jeu.sh <appid> temoin-change <avant>   apres la partie : si le temoin ne vaut plus <avant>, retire le marqueur
+#   reglages_jeu.sh - ruche <ruche> <cle>           hors fiche : pose sous <cle> de <ruche> (user.reg, system.reg) les
+#                                                   lignes `nom TAB donnee` lues sur l'entree (format brut, voir poser_registre)
 #
 # Une fiche peut viser plusieurs sections INI (liste [[reglages_jeu]]) : chaque
 # entree est traitee a son tour, dans l'ordre de la fiche. Les reglages sont ceux
@@ -71,10 +73,13 @@ case ${2:-} in
       exit 0 ;;
 esac
 
-REGL=$(sh "$R/tests/fiche_profil.sh" reglages "$APPID") || exit 1
-[ -n "$REGL" ] || exit 3
-UH=$(ls -d "$PFX/drive_c/users/"*/AppData 2>/dev/null | head -1)
-[ -n "$UH" ] || { echo "    reglages du jeu : pas de dossier utilisateur dans le prefixe"; exit 3; }
+# (l appel `ruche` ne lit pas de fiche : il passe droit a poser_registre, plus bas)
+if [ "${2:-}" != ruche ]; then
+   REGL=$(sh "$R/tests/fiche_profil.sh" reglages "$APPID") || exit 1
+   [ -n "$REGL" ] || exit 3
+   UH=$(ls -d "$PFX/drive_c/users/"*/AppData 2>/dev/null | head -1)
+   [ -n "$UH" ] || { echo "    reglages du jeu : pas de dossier utilisateur dans le prefixe"; exit 3; }
+fi
 
 # Le fichier reecrit ($F.cidre-tmp) remplace l original s il en differe : copie
 # d origine d abord (une seule fois), puis cat -- pas mv, le fichier garde ses
@@ -181,6 +186,9 @@ poser_gvas() { # <nom affiche>
 # registre n est ecrit que si aucun wineserver ne tient le prefixe : le serveur
 # garde le registre en memoire et recrirait le fichier a sa sortie. Rend 0, 3
 # (prefixe en cours d usage : on reessaiera) ou 1.
+# Format brut (l appel `ruche`, jamais une fiche) : la donnee est ecrite telle
+# qu elle doit figurer dans la ruche (`"win7"`, `dword:0000000a`), et une donnee
+# vide retire la valeur ; une cle absente n est creee que s il y a a y poser.
 serveur_wine_en_cours() {
    case ${CIDRE_SERVEUR_WINE:-} in oui) return 0 ;; non) return 1 ;; esac
    [ -S "/tmp/.wine-$(id -u)/server-$(stat -f '%Xd-%Xi' "$PFX" 2>/dev/null)/socket" ] && pgrep -x wineserver >/dev/null 2>&1
@@ -232,6 +240,7 @@ poser_registre() { # <nom affiche>
          return sprintf("%.0f", h)
       }
       function donnee(v,   i, r) {
+         if (mode == "brut") return v
          if (v ~ /^-?[0-9]+$/) { v += 0; if (v < 0) v += 4294967296; return sprintf("dword:%08x", v) }
          if (mode != "playerprefs") return "\"" echapper(v) "\""
          r = "hex:"
@@ -252,14 +261,16 @@ poser_registre() { # <nom affiche>
       }
       # les valeurs manquantes, a la fin de la cle (avant sa ligne vide)
       function ajouter(   k) {
-         for (k = 1; k <= nv; k++) if (!fait[ordre[k]]) { print ligne[ordre[k]]; fait[ordre[k]] = 1 }
+         for (k = 1; k <= nv; k++) if (!fait[ordre[k]]) { if (!retire[ordre[k]]) print ligne[ordre[k]]; fait[ordre[k]] = 1 }
       }
       BEGIN { for (i = 32; i < 127; i++) ord[sprintf("%c", i)] = i; cle = ENVIRON["CLE"]; cle_e = tolower(echapper(cle)) }
       NR == FNR {
          i = index($0, "\t"); c = substr($0, 1, i - 1)
          n = (mode == "playerprefs") ? c "_h" hachage(c) : c
          k = tolower(n); if (!(k in ligne)) ordre[++nv] = k
-         ligne[k] = "\"" echapper(n) "\"=" donnee(substr($0, i + 1)); next
+         ligne[k] = "\"" echapper(n) "\"=" donnee(substr($0, i + 1))
+         retire[k] = (mode == "brut" && substr($0, i + 1) == ""); if (!retire[k]) a_poser = 1
+         next
       }
       # la suite (lignes finissant par \) d une valeur binaire qu on vient de remplacer
       saute { if ($0 !~ /\\$/) saute = 0; next }
@@ -277,7 +288,7 @@ poser_registre() { # <nom affiche>
             n = nom_de($0)
             if (n != "" && (n in ligne)) {
                if ($0 ~ /\\$/) saute = 1
-               if (!fait[n]) { print ligne[n]; fait[n] = 1 }
+               if (!fait[n]) { if (!retire[n]) print ligne[n]; fait[n] = 1 }
                next
             }
          }
@@ -286,7 +297,7 @@ poser_registre() { # <nom affiche>
       END {
          if (dedans) { ajouter(); vue = 1 }
          printf "%s", attente
-         if (!vue && nv) {
+         if (!vue && a_poser) {
             # cle absente : on la cree a la fin (Wine cree les cles parentes en la lisant)
             if (!vide) print ""
             print "[" echapper(cle) "] " maintenant; ajouter(); print ""
@@ -338,6 +349,20 @@ entree() {
    rm -f "$V" "$V.fichiers"
    return $rce
 }
+
+# Hors fiche : un reglage du prefixe qui n est pas celui d un jeu (la version de
+# Windows, tests/version_windows.sh). Memes gardes et meme ecriture qu une entree
+# au format registre, sur la ruche et la cle donnees.
+if [ "${2:-}" = ruche ]; then
+   case ${3:-} in user.reg|system.reg) ;; *) echo "    reglages du jeu : ruche « ${3:-} » refusee (user.reg ou system.reg)"; exit 1 ;; esac
+   F="$PFX/$3"; SECTION=${4:-}; FORMAT=brut
+   [ -f "$F" ] || { echo "    reglages du jeu : $3 absent du prefixe"; exit 3; }
+   V=$(mktemp "${TMPDIR:-/tmp}/reglages.XXXXXX")
+   cat >"$V"
+   poser_registre "$3"; rc=$?
+   rm -f "$V"
+   exit $rc
+fi
 
 RC=0
 for n in $(printf '%s\n' "$REGL" | cut -f1 | awk '!vu[$0]++'); do

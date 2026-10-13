@@ -102,6 +102,11 @@ def unitaires_crossover(tmp):
     for gabarit in ("win10_64", "win11_64"):
         assert "windows_version" not in m.crossover_valeurs(dict(xp, gabarit=gabarit), index)[1]
     assert m.crossover_valeurs(dict(xp, gabarit="winvista_64"), index)[1]["windows_version"] == "vista"
+    # ... et seulement une version que le lanceur sait poser : pas de Windows 9x
+    assert "windows_version" not in m.crossover_valeurs(dict(xp, gabarit="win98"), index, bits=32)[1]
+    lanceur = subprocess.run(["sh", os.path.join(os.path.dirname(ICI), "version_windows.sh"), "liste"],
+                             capture_output=True, text=True, check=True).stdout.split()
+    assert set(m.VERSIONS_WINDOWS_REPRISES) == set(lanceur) - {"win10", "win11"}, lanceur
     fiche = m.Fiche({"jeu": {"appid": 990000002, "bits": 64, "sources": {"bits": "pcgamingwiki 2026-01-01"}}})
     m.importer_crossover(fiche, "990000002", "Jeu Sans Identifiant: L'Édition", crossover, m.bilan_crossover_vide())
     assert [(c["champ"], c["import"]) for c in fiche.contradictions] == [("jeu.bits", "bouteille winxp (32 bits)")]
@@ -337,16 +342,16 @@ def main():
         assert x["url"] == "https://www.codeweavers.com/compatibility/browse/name/?app_id=90001", x
         # ... fondue dans [cidre] : `native` seul devient n,b, d3d11 reste a Cidre, la provenance est par cle
         assert d["cidre"]["dll_overrides"] == "xaudio2_7,x3daudio1_7,msvcp140=n,b;mfplay=", d["cidre"]
-        assert d["cidre"]["sources"] == {"dll_overrides": f"crossover {DATE}"}, d["cidre"]
+        assert d["cidre"]["sources"] == {"dll_overrides": f"crossover {DATE}",
+                                         "windows_version": f"crossover {DATE}"}, d["cidre"]
         # ... sans ecraser ce qui y etait a la main : le desaccord est rapporte
         assert d["cidre"]["dependances"] == "vcrun2019"
         assert ("cidre.dependances", "vcrun2015 dotnet462 directx_jun2010") in champs, champs
-        # ... et windows_version reste dans le rapport tant qu'on ne le demande pas
-        assert "windows_version" not in d["cidre"]
+        # ... et windows_version aussi : le gabarit win7_64 de la recette est un choix (CrossOver 24)
+        assert d["cidre"]["windows_version"] == "win7", d["cidre"]
         b = rapport["crossover"]
-        assert b["recettes"] == 1 and b["cidre"] == {"dll_overrides": 1}, b
-        assert b["windows_version_retenues"] == [{"appid": APPID, "nom": "Jeu Fictif", "windows_version": "win7",
-                                                  "recette": "com.codeweavers.c4.90001"}], b
+        assert b["recettes"] == 1 and b["cidre"] == {"dll_overrides": 1, "windows_version": 1}, b
+        assert b["windows_version_retenues"] == [], b
         assert texte.index("[cidre]") < texte.index("[cidre.sources]") < texte.index("[[reglages_jeu]]")
 
         # 3. pas de texte editorial, ni rien d'une recette perimee, d'une autre plateforme ou d'un nom douteux
@@ -371,14 +376,17 @@ def main():
         assert rapport2["fiches_modifiees"] == 0, rapport2
         assert open(fiche, encoding="utf-8").read() == texte
 
-        # 4 bis. windows_version sur demande, puis retire quand on ne le demande plus : aller-retour exact
-        r3 = lancer(profils, os.path.join(tmp, "rapport-wv.json"), "--crossover-windows-version")
+        # 4 bis. windows_version retire sur demande (il sort alors dans le rapport), puis repose : memes valeurs
+        # (la cle reposee va a la fin de sa section : le texte n'est plus celui du premier passage)
+        r3 = lancer(profils, os.path.join(tmp, "rapport-wv.json"), "--sans-crossover-windows-version")
         w = tomllib.load(open(fiche, "rb"))
-        assert w["cidre"]["windows_version"] == "win7", w["cidre"]
-        assert w["cidre"]["sources"]["windows_version"] == f"crossover {DATE}", w["cidre"]
-        assert r3["crossover"]["cidre"] == {"dll_overrides": 1, "windows_version": 1}, r3["crossover"]
-        lancer(profils, os.path.join(tmp, "rapport-wv2.json"))
-        assert open(fiche, encoding="utf-8").read() == texte
+        assert "windows_version" not in w["cidre"] and "windows_version" not in w["cidre"]["sources"], w["cidre"]
+        assert r3["crossover"]["cidre"] == {"dll_overrides": 1}, r3["crossover"]
+        assert r3["crossover"]["windows_version_retenues"] == [{"appid": APPID, "nom": "Jeu Fictif", "windows_version": "win7",
+                                                                "recette": "com.codeweavers.c4.90001"}], r3["crossover"]
+        lancer(profils, os.path.join(tmp, "rapport-wv2.json"), "--crossover-windows-version")  # l'ancien nom, encore accepte
+        assert tomllib.load(open(fiche, "rb")) == tomllib.loads(texte)
+        assert lancer(profils, os.path.join(tmp, "rapport-wv3.json"))["fiches_modifiees"] == 0
 
         # 5. fiche neuve (sans fiche de depart) : [compat] non-teste, date du jour
         profils2 = os.path.join(tmp, "profils2")
@@ -388,9 +396,10 @@ def main():
         assert n["compat"]["etat"] == "non-teste" and n["compat"]["date"] == DATE
         assert n["jeu"]["moteur"] == "unity" and n["jeu"]["anticheat"] == "eac"
         assert n["jeu"]["sources"]["anticheat"] == f"pcgamingwiki {DATE}"
-        assert n["cidre"] == {"dll_overrides": "xaudio2_7,x3daudio1_7,msvcp140=n,b;mfplay=",
+        assert n["cidre"] == {"windows_version": "win7", "dll_overrides": "xaudio2_7,x3daudio1_7,msvcp140=n,b;mfplay=",
                               "dependances": "vcrun2015 dotnet462 directx_jun2010",
-                              "sources": {"dll_overrides": f"crossover {DATE}", "dependances": f"crossover {DATE}"}}, n["cidre"]
+                              "sources": {"windows_version": f"crossover {DATE}", "dll_overrides": f"crossover {DATE}",
+                                          "dependances": f"crossover {DATE}"}}, n["cidre"]
         neuve = open(os.path.join(profils2, f"{APPID}.toml"), encoding="utf-8").read()
         assert neuve.index("[jeu.sources]") < neuve.index("[cidre]") < neuve.index("[compat]") < neuve.index("[compat.crossover]")
         # une seule source demandee : les autres blocs ne sont pas ecrits
@@ -417,6 +426,7 @@ def main():
                                env={**os.environ, "CIDRE_PROFILS_BASE": profils})
             assert r.returncode == 0, r.stderr
             assert 'dll_overrides = "xaudio2_7,x3daudio1_7,msvcp140=n,b;mfplay="' in r.stdout, r.stdout
+            assert 'windows_version = "win7"' in r.stdout, r.stdout
             assert "crossover" not in r.stdout and "sources" not in r.stdout, r.stdout
         else:
             print("fiche_profil.sh absent : lecture shell non verifiee", file=sys.stderr)
