@@ -136,6 +136,15 @@ plat() {
    find "$d" -maxdepth 2 -name '*.exe' 2>/dev/null | grep -q . && { echo windows; return; }
    echo inconnu
 }
+# L'executable principal d'un jeu du dossier Cidre : on ecarte les variantes
+# (_gl), lanceurs, serveurs et handlers de crash ; a defaut, le premier .exe trouve.
+exe_principal() {
+   e=$(find "$1" -maxdepth 1 -name '*.exe' 2>/dev/null \
+         | grep -viE '_gl\.exe$|_server|server\.exe$|launcher|crash|unitycrash|vcredist|redist|setup|dxsetup|install' \
+         | head -1)
+   [ -n "$e" ] || e=$(find "$1" -maxdepth 2 -name '*.exe' 2>/dev/null | head -1)
+   [ -n "$e" ] && echo "$e"
+}
 # Cidre (notre wrapper) pose sur ce jeu ?
 cidre_wrap() { grep -A6 "\"$1\"$" "$STEAM"/userdata/*/config/localconfig.vdf 2>/dev/null | grep -q "lancer_depuis_steam.sh" && echo oui || echo non; }
 
@@ -162,8 +171,15 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
   cidre setup                     configure le runtime apres une installation ou une mise a jour
  Steam
   cidre library [--json] [--refresh]   les jeux que possede ton compte (installes ou non)
+                                  --json : "source":"bouteille" (avec "origine", "bouteille", "chemin") sur
+                                  un jeu deja installe par CrossOver, Whisky ou Heroic, que cidre import reprend
   cidre updates [--json] [--refresh]   les jeux installes dont une version plus recente est publiee
   cidre dl <appid> [windows|macos]   telecharge (ou met a jour) le jeu DANS le dossier Cidre, hors du client
+  cidre bottles [--json]          les jeux Steam Windows deja installes par CrossOver, Whisky ou Heroic
+  cidre import <appid> [<bouteille>] [--move] [--json]
+                                  reprend un de ces jeux dans le dossier Cidre sans le retelecharger : clone
+                                  APFS, immediat et sans place prise ; la bouteille n'est pas modifiee
+                                  --move : deplace le jeu au lieu de le cloner (la bouteille ne l'a plus)
   cidre login                     memorise la session SteamCMD (mot de passe tape a SteamCMD, une fois)
   cidre session [--json]          le compte Steam, et si sa session est memorisee
   cidre logout                    oublie la session Steam (les jeux installes restent jouables)
@@ -241,12 +257,7 @@ case "$cmd" in
       CIDRE_JEU=$id sh "$R/tests/lancer_depuis_steam.sh" "$EXE"
     elif [ -d "$CDIR" ]; then
       # Jeu telecharge par Cidre (hors client) : on lance par la pile Cidre.
-      # On choisit l'exe principal : on ecarte les variantes (_gl), lanceurs,
-      # serveurs et handlers de crash ; a defaut, le premier .exe trouve.
-      EXE=$(find "$CDIR" -maxdepth 1 -name '*.exe' 2>/dev/null \
-            | grep -viE '_gl\.exe$|_server|server\.exe$|launcher|crash|unitycrash|vcredist|redist|setup|dxsetup|install' \
-            | head -1)
-      [ -n "$EXE" ] || EXE=$(find "$CDIR" -maxdepth 2 -name '*.exe' 2>/dev/null | head -1)
+      EXE=$(exe_principal "$CDIR")
       [ -n "$EXE" ] || { echo "aucun .exe dans $CDIR"; exit 1; }
       echo "lancement Cidre : $(basename "$EXE")  (appid $id)"
       echo "  (dossier : $CDIR)"
@@ -433,6 +444,28 @@ case "$cmd" in
       echo "Echec SteamCMD (rc=$rc). Si 'Invalid Password', relance et saisis bien mot de passe + Steam Guard."
       exit $rc
     fi ;;
+  bottles|bouteilles)
+    # Les jeux qu'un autre outil a deja installes, et que `cidre import` reprend.
+    if [ "$JSON" = oui ]; then sh "$R/tests/trouver_jeux_bouteilles.sh" --json
+    else
+      printf "%-9s %-32s %-22s %-8s %s\n" APPID JEU BOUTEILLE TAILLE CHEMIN
+      sh "$R/tests/trouver_jeux_bouteilles.sh" | awk -F'\t' '{ printf "%-9s %-32.32s %-22.22s %5d Mo %s\n", $1, $2, $3 " : " $4, $7 / 1048576, $5 }'
+    fi ;;
+  import|importer|reprendre)
+    id=; for a in "$@"; do case $a in -*) ;; *) id=$a; break ;; esac; done
+    [ -n "$id" ] || { echo "usage: cidre import <appid> [<bouteille>] [--move]" >&2; exit 2; }
+    # (--json : la sortie est la fiche du jeu ; le compte rendu va a l'erreur)
+    if [ "$JSON" = oui ]; then sh "$R/tests/reprendre_jeu_bouteille.sh" "$@" >&2
+    else sh "$R/tests/reprendre_jeu_bouteille.sh" "$@"; fi || exit $?
+    # Apres coup : l'executable que `cidre play` lancera (ou celui que la table
+    # des lanceurs lui substitue) est-il la, et est-ce un programme Windows ?
+    EXE=$(exe_principal "$CIDRE_GAMES/$id")
+    c=$(awk -v a="$id" '$1==a {print $2; exit}' "$R/outil-steam/jeux.conf" 2>/dev/null)
+    [ -n "$c" ] && [ -f "$CIDRE_GAMES/$id/$c" ] && EXE="$CIDRE_GAMES/$id/$c"
+    if [ -z "$EXE" ]; then echo "attention : aucun .exe a la racine de $CIDRE_GAMES/$id ni un niveau plus bas : \`cidre play $id\` ne saura pas quoi lancer (outil-steam/jeux.conf)" >&2
+    elif [ "$(head -c 2 "$EXE" 2>/dev/null)" != MZ ]; then echo "attention : $EXE n'est pas un executable Windows" >&2
+    elif [ "$JSON" = non ]; then echo "  executable  : ${EXE#"$CIDRE_GAMES/$id/"}"; fi
+    if [ "$JSON" = oui ]; then fiche_json "$id"; printf '}\n'; fi ;;
   status|etat)
     # VERSION est pose par l'empaqueteur ; un depot de developpement n'en a pas.
     v=$(cat "$R/VERSION" 2>/dev/null); v=${v:-dev}
@@ -563,10 +596,12 @@ case "$cmd" in
       fi
       mv "$CACHE.tmp" "$CACHE"
     fi
+    # Les jeux deja installes dans une bouteille (CrossOver, Whisky, Heroic) et
+    # pas encore repris : "source":"bouteille" (cidre import), sans peser leur dossier.
     if [ "$JSON" = oui ]; then
-      "$OUTIL" bibliotheque "$CACHE" $(appids)
+      sh "$R/tests/trouver_jeux_bouteilles.sh" --rapide | "$OUTIL" bibliotheque --bouteilles - "$CACHE" $(appids)
     else
-      "$OUTIL" bibliotheque --texte "$CACHE" $(appids)
+      sh "$R/tests/trouver_jeux_bouteilles.sh" --rapide | "$OUTIL" bibliotheque --texte --bouteilles - "$CACHE" $(appids)
     fi ;;
   updates|majs)
     # Le build installe de chaque jeu, compare a celui de la branche publique.
