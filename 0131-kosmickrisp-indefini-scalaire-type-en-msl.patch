@@ -1,0 +1,21 @@
+Generated-by: LLM
+
+KosmicKrisp : valeur indefinie scalaire emise avec son type en MSL
+
+diff --git a/src/kosmickrisp/compiler/nir_to_msl.c b/src/kosmickrisp/compiler/nir_to_msl.c
+--- a/src/kosmickrisp/compiler/nir_to_msl.c
++++ b/src/kosmickrisp/compiler/nir_to_msl.c
+@@ -170,7 +170,12 @@ src_to_msl(struct nir_to_msl_ctx *ctx, nir_src *src)
+    }
+    if (nir_src_is_undef(*src)) {
+       if (src->ssa->num_components == 1) {
+-         P(ctx, "00");
++         const char *type = msl_type_for_src(ctx->types, src);
++         if (type) {
++            P(ctx, "%s(0)", type);
++         } else {
++            P(ctx, "00");
++         }
+       } else {
+          P(ctx, "%s(", msl_type_for_src(ctx->types, src));
+          for (int i = 0; i < src->ssa->num_components; i++) {
