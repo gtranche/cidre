@@ -193,6 +193,18 @@ fi
 if [ -z "${MESA_KK_DISABLE_WORKAROUNDS:-}" ] && [ "$(profil garde_index)" = false ]; then
    export MESA_KK_DISABLE_WORKAROUNDS=12,13
 fi
+# Pipelines Metal compiles hors du verrou du device (correctif 0130) : KosmicKrisp
+# compile le pipeline Metal au premier dessin, et le faisait sous un verrou global ;
+# les fils qui enregistrent en parallele (Job.Worker d'Unity en D3D12) s'y
+# attendaient tous. PEAK en D3D12, meme parcours, 2026-10-14 : trous de plus de
+# 250 ms 3,0 -> 0,9 par minute ; banc tests/bench_variantes_paralleles.c, 8 fils :
+# 466 -> 102 ms, un fil neutre. Pour tous les jeux ; CIDRE_COMPILE_HORS_VERROU=0
+# revient a l'ancien comportement (le pilote ne regarde que la presence de la
+# variable : on la retire).
+case ${CIDRE_COMPILE_HORS_VERROU:-1} in
+   0) unset CIDRE_COMPILE_HORS_VERROU ;;
+   *) export CIDRE_COMPILE_HORS_VERROU=1 ;;
+esac
 FILS=${CIDRE_FILS_COMPILATION:-$(profil fils_compilation)}
 case $FILS in ''|0|*[!0-9]*) : ;; *) dxvk_config "dxvk.numCompilerThreads=$FILS" ;; esac
 
