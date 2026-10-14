@@ -168,8 +168,19 @@ DLLOV=${CIDRE_DLL_OVERRIDES:-$(profil dll_overrides)}
 # vraies stages (au lieu de ALL->ALL) : laisse les passes GPU se recouvrir, gain
 # en scene chargee (GPU-bound). Valide sur VT2. Un environnement explicite
 # (y compris CIDRE_NARROW_BARRIERS=global pour le mode debug) garde la main.
+# En vrai D3D12 (dx12), le mode « sur » (correctif 0125) : le relachement
+# ignore l'etage VERTEX du cote consommateur, or vkd3d-proton le demande pour
+# NON_PIXEL_SHADER_RESOURCE (lecture d'une cible rendue au sommet). Banc
+# tests/bench_barriere_vertex.c, 2026-10-14 : mode cible 597 fautes sur 600
+# quand la barriere demande VERTEX|FRAGMENT ou ALL_COMMANDS, mode « sur » 0 ;
+# meme gain (-9 % de temps mur, bench_barriere_chaine.c) quand elle ne demande
+# que FRAGMENT. Le mode cible reste celui de DXVK (VT2, valide en jeu).
 if [ -z "${CIDRE_NARROW_BARRIERS:-}" ] && [ "$(profil narrow_barriers)" = true ]; then
-   export CIDRE_NARROW_BARRIERS=1
+   if [ "$(opt dx12 CIDRE_DX12)" = true ]; then
+      export CIDRE_NARROW_BARRIERS=sur
+   else
+      export CIDRE_NARROW_BARRIERS=1
+   fi
 fi
 # Garde d'index de KosmicKrisp (ses contournements 12 et 13) : faute de pouvoir
 # se fier a Metal pour les lectures hors limites d'un tampon d'index, le pilote

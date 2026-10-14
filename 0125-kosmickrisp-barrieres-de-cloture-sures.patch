@@ -1,0 +1,52 @@
+Generated-by: LLM
+
+KosmicKrisp : barrieres de cloture en mode « sur » (CIDRE_NARROW_BARRIERS=sur)
+
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.c b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+@@ -35,6 +35,8 @@ kk_narrow_mode(void)
+          mode = 0;
+       else if (!strcmp(v, "global"))
+          mode = 2;
++      else if (!strcmp(v, "sur"))
++         mode = 3;
+       else
+          mode = 1;
+    }
+@@ -134,7 +136,14 @@ kk_resolve_close_stages(struct kk_cmd_buffer *cmd, enum kk_encoder_kind kind,
+ {
+    kk_close_barrier_stages(kind, after, before);
+ 
+-   if (kk_narrow_mode() == 1 && cmd->metal.pending_barrier_before != 0) {
++   if (kk_narrow_mode() == 3 && cmd->metal.pending_barrier_before != 0) {
++      enum mtl_stages real_before = cmd->metal.pending_barrier_before;
++      enum mtl_stages narrowed =
++         (*before & real_before) | (real_before & MTL_STAGE_VERTEX);
++      *before = narrowed ? narrowed : real_before;
++      cmd->metal.pending_barrier_after = 0;
++      cmd->metal.pending_barrier_before = 0;
++   } else if (kk_narrow_mode() == 1 && cmd->metal.pending_barrier_before != 0) {
+       enum mtl_stages real_before = cmd->metal.pending_barrier_before;
+       enum mtl_stages narrowed = *before & real_before;
+       *before = narrowed ? narrowed : real_before;
+@@ -888,7 +897,7 @@ kk_CmdPipelineBarrier2(VkCommandBuffer commandBuffer,
+     * s'empiler avant la fermeture effective. Les barrieres intra-encodeur ne
+     * touchent pas pending (elles sont satisfaites sans fermeture). */
+    enum mtl_stages mtl_after = MTL_STAGE_ALL, mtl_before = MTL_STAGE_ALL;
+-   if (kk_narrow_mode() == 1) {
++   if (kk_narrow_mode() == 1 || kk_narrow_mode() == 3) {
+       VkPipelineStageFlags2 src = 0, dst = 0;
+       for (uint32_t i = 0; i < pDependencyInfo->memoryBarrierCount; i++) {
+          src |= pDependencyInfo->pMemoryBarriers[i].srcStageMask;
+diff --git a/src/kosmickrisp/vulkan/kk_queue.c b/src/kosmickrisp/vulkan/kk_queue.c
+--- a/src/kosmickrisp/vulkan/kk_queue.c
++++ b/src/kosmickrisp/vulkan/kk_queue.c
+@@ -83,6 +83,7 @@ kk_gpu_stats_feed(const struct mtl_feedback_data *data)
+       const char *nb = getenv("CIDRE_NARROW_BARRIERS");
+       const char *label = !nb              ? "ALL->ALL"
+                           : !strcmp(nb, "global") ? "GLOBAL(frag)"
++                          : !strcmp(nb, "sur")    ? "SUR"
+                                                   : "CIBLE";
+       fprintf(stderr,
+               "[CIDRE_GPU] %u soum : GPU-ms/soum moy=%.2f max=%.2f ; "
