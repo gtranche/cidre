@@ -1,0 +1,91 @@
+Generated-by: LLM
+
+KosmicKrisp : trace des dispatchs de calcul (CIDRE_DISPATCH_TRACE=<dossier>) : MSL de chaque nuanceur de calcul, un encodeur etiquete par dispatch
+
+--- a/src/kosmickrisp/vulkan/kk_cmd_dispatch.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_dispatch.c
+@@ -58,6 +58,35 @@
+    }
+ }
+ 
++
++static const char *
++kk_dispatch_trace_dir(void)
++{
++   static int init = 0;
++   static const char *dir = NULL;
++   if (!init) {
++      dir = getenv("CIDRE_DISPATCH_TRACE");
++      init = 1;
++   }
++   return dir;
++}
++
++static void
++kk_dispatch_trace_label(struct kk_cmd_buffer *cmd, mtl_compute_encoder *enc,
++                        const struct kk_shader *cs, uint32_t x, uint32_t y,
++                        uint32_t z, bool indirect)
++{
++   char label[96];
++   struct mtl_size l = cs->info.cs.local_size;
++   if (indirect)
++      snprintf(label, sizeof(label), "CS %p indirect t%ux%ux%u", (void *)cs,
++               (unsigned)l.x, (unsigned)l.y, (unsigned)l.z);
++   else
++      snprintf(label, sizeof(label), "CS %p g%ux%ux%u t%ux%ux%u", (void *)cs,
++               x, y, z, (unsigned)l.x, (unsigned)l.y, (unsigned)l.z);
++   mtl_encoder_set_label(enc, label);
++}
++
+ VKAPI_ATTR void VKAPI_CALL
+ kk_CmdDispatchBase(VkCommandBuffer commandBuffer, uint32_t baseGroupX,
+                    uint32_t baseGroupY, uint32_t baseGroupZ,
+@@ -109,7 +138,12 @@
+       };
+ 
+       kk_flush_compute_state(cmd);
++      if (kk_dispatch_trace_dir())
++         kk_dispatch_trace_label(cmd, encoder, cs, groupCountX, groupCountY,
++                                 groupCountZ, false);
+       mtl_dispatch_threads(encoder, grid_size, local_size);
++      if (kk_dispatch_trace_dir())
++         cs_end(cmd);
+    }
+ }
+ 
+@@ -146,8 +180,12 @@
+                                                      local_size);
+    } else {
+       kk_flush_compute_state(cmd);
++      if (kk_dispatch_trace_dir())
++         kk_dispatch_trace_label(cmd, encoder, cs, 0, 0, 0, true);
+       mtl_dispatch_threadgroups_with_indirect_buffer(
+          encoder, pInfo->addressRange.address, local_size);
++      if (kk_dispatch_trace_dir())
++         cs_end(cmd);
+    }
+ }
+ 
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -1614,6 +1614,20 @@
+ 
+    if (KK_DEBUG(MSL))
+       mesa_logi("%s\n", data->code);
++
++   const char *trace_dir = getenv("CIDRE_DISPATCH_TRACE");
++   if (trace_dir && stage == MESA_SHADER_COMPUTE && data->code) {
++      char path[1024];
++      snprintf(path, sizeof(path), "%s/cs-%p.metal", trace_dir, (void *)shader);
++      FILE *f = fopen(path, "w");
++      if (f) {
++         fprintf(f, "// local_size %ux%ux%u\n%s\n",
++                 (unsigned)shader->info.cs.local_size.x,
++                 (unsigned)shader->info.cs.local_size.y,
++                 (unsigned)shader->info.cs.local_size.z, data->code);
++         fclose(f);
++      }
++   }
+ 
+    ralloc_free(nir);
+ 
