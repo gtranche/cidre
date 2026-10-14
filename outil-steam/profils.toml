@@ -75,7 +75,12 @@
 #                    rendu D3D11, DXMT reste bien plus rapide (PEAK : 105 images/s
 #                    en DXMT, 45 en D3D12 avec -force-gfx-direct, 2026-10-14) : dx12
 #                    sert aux jeux D3D12 seuls. Le Shader Model reste plafonne a 6.0
-#                    (Unreal 5.4 refuse alors le D3D12).
+#                    (Unreal 5.4 refuse alors le D3D12). Avec dx12, le lanceur coupe
+#                    aussi custom_border de KosmicKrisp et active ses correctifs
+#                    0135, 0136 et 0138 (lectures de texture sans branchements) :
+#                    Little Nightmares Enhanced Edition 12 -> 29 images/s
+#                    (2026-10-14, M1 Max). CIDRE_MINMAX_ZERO_ENTIER=0 ou
+#                    CIDRE_TEXTURES_NULLES_SANS_BRANCHE=0 pour un essai sans.
 #   arguments        options de ligne de commande ajoutees au jeu, separees par des
 #                    espaces, sans guillemets (ex. "-force-gfx-direct" : un jeu Unity
 #                    en D3D12 rend alors en 2 listes de commandes par image au lieu
