@@ -143,8 +143,12 @@ fi
 # absente de Metal) reste hors de portee -- chantier KosmicKrisp.
 if [ "$(opt dx12 CIDRE_DX12)" = true ]; then
    P12="$WINEPREFIX/drive_c/windows/system32"
+   # CIDRE_VKD3D_DIR=<dossier> (essais) : un vkd3d-proton construit a part (ses
+   # d3d12.dll et d3d12core.dll), pris avant celui du runtime pour ce lancement --
+   # par exemple un build -Denable_profiling=true pour VKD3D_TIMESTAMP_PROFILE (temps
+   # GPU par PSO). Le lancement suivant sans la variable remet celui du runtime.
    for d in d3d12core d3d12; do
-      for cand in "$R/vkd3d/$d.dll" "$R/build/vkd3d-winarm64ec/libs/$d/$d.dll"; do
+      for cand in ${CIDRE_VKD3D_DIR:+"$CIDRE_VKD3D_DIR/$d.dll"} "$R/vkd3d/$d.dll" "$R/build/vkd3d-winarm64ec/libs/$d/$d.dll"; do
          [ -f "$cand" ] || continue
          cmp -s "$cand" "$P12/$d.dll" || cp "$cand" "$P12/$d.dll"
          break
