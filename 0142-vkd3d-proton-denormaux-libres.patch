@@ -1,0 +1,38 @@
+vkd3d-proton : SM 6.2+ annonce malgre des denormaux fp32 non reglables (CIDRE_VKD3D_DENORMAUX_LIBRES)
+
+KosmicKrisp (Metal) ne regle pas les denormaux fp32 : le GPU Apple les remet
+toujours a zero (sonde sonde_sm66, M1 Max et M4, 2026-10-14), d'ou
+denormBehaviorIndependence = NONE, ce qui bloquait tout Shader Model au-dela de
+6.0. Le DXIL laisse le mode des denormaux fp32 a « any » par defaut et les jeux ne
+le fixent presque jamais. Avec CIDRE_VKD3D_DENORMAUX_LIBRES=1, vkd3d-proton annonce
+SM 6.2 et suivants (6.5 sur KosmicKrisp, sonde d3d12caps) ; un nuanceur qui
+exigerait la preservation des denormaux les verra remis a zero. Premier des trois
+pas vers Unreal 5 en D3D12 sur M2 et suivants (SM 6.6).
+
+diff --git a/libs/vkd3d/device.c b/libs/vkd3d/device.c
+--- a/libs/vkd3d/device.c
++++ b/libs/vkd3d/device.c
+@@ -9750,6 +9750,23 @@
+             }
+         }
+ 
++        /* Cidre : KosmicKrisp (Metal) ne regle pas les denormaux fp32 du tout
++         * (denormBehaviorIndependence = NONE, flush-to-zero force par le GPU), ce
++         * qui bloquait tout Shader Model au-dela de 6.1. Le DXIL laisse le mode des
++         * denormaux fp32 a « any » par defaut et les jeux ne le fixent presque
++         * jamais : CIDRE_VKD3D_DENORMAUX_LIBRES=1 annonce quand meme SM 6.2+, un
++         * nuanceur qui exigerait la preservation des denormaux les verra remis a
++         * zero. */
++        if (!denorm_behavior)
++        {
++            char env[8];
++            if (vkd3d_get_env_var("CIDRE_VKD3D_DENORMAUX_LIBRES", env, sizeof(env)) && env[0] == '1')
++            {
++                INFO("Cidre : denormaux fp32 non regles, SM 6.2+ annonce quand meme.\n");
++                denorm_behavior = true;
++            }
++        }
++
+         if (denorm_behavior)
+         {
+             device->d3d12_caps.max_shader_model = D3D_SHADER_MODEL_6_2;

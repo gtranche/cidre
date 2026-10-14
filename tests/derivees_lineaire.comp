@@ -1,0 +1,10 @@
+#version 450
+#extension GL_NV_compute_shader_derivatives : require
+layout(local_size_x = 64) in;
+layout(derivative_group_linearNV) in;
+layout(std430, set = 0, binding = 1) buffer Out { vec4 o[]; };
+void main() {
+   uint i = gl_LocalInvocationIndex;
+   float v = float(i * i) * 0.5 + float(i);
+   o[i] = vec4(dFdxFine(v), dFdyFine(v), dFdxCoarse(v), dFdyCoarse(v));
+}

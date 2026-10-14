@@ -1,0 +1,17 @@
+#version 450
+#extension GL_NV_compute_shader_derivatives : require
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(derivative_group_quadsNV) in;
+layout(set = 0, binding = 0) uniform sampler2D tex;
+layout(std430, set = 0, binding = 1) buffer Out { vec4 o[]; };
+void main() {
+   uvec2 p = gl_LocalInvocationID.xy;
+   float x = float(p.x), y = float(p.y);
+   float v = x * x * 3.0 + y * y * 7.0 + x * y;
+   uint i = p.y * 8u + p.x;
+   o[i] = vec4(dFdxFine(v), dFdyFine(v), dFdxCoarse(v), dFdyCoarse(v));
+   /* uv avance de 4 texels par fil : LOD 2 attendu sur une texture 256x256 */
+   vec2 uv = (vec2(p) * 4.0 + 0.5) / 256.0;
+   o[64u + i] = texture(tex, uv);
+   o[128u + i] = texture(tex, uv, 1.0);
+}

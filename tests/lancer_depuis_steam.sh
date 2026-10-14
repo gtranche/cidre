@@ -176,6 +176,14 @@ if [ "$(opt dx12 CIDRE_DX12)" = true ]; then
       0) unset CIDRE_TEXTURES_NULLES_SANS_BRANCHE ;;
       *) export CIDRE_TEXTURES_NULLES_SANS_BRANCHE=1 ;;
    esac
+   # Shader Model 6.6 (Unreal 5 en D3D12, sm66 = true) : vkd3d-proton annonce SM 6.2+
+   # malgre des denormaux fp32 non reglables (0142), KosmicKrisp les derivees dans les
+   # nuanceurs de calcul (0143) et, sur M2 et suivants seulement (detection a
+   # l'execution), les atomiques 64 bits min/max de Metal (0144). Sur M1, SM 6.5 sans
+   # atomiques 64 bits : Unreal 5 y garde son repli.
+   if [ "$(opt sm66 CIDRE_SM66)" = true ]; then
+      export CIDRE_VKD3D_DENORMAUX_LIBRES=1 CIDRE_DERIVEES_CALCUL=1 CIDRE_ATOMIQUES_64=1
+   fi
 fi
 
 # Overrides DLL propres au jeu (base de compat, cf. profils.toml). Format Wine

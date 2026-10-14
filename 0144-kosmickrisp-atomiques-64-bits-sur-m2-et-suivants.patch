@@ -1,0 +1,236 @@
+Generated-by: LLM
+
+KosmicKrisp : atomiques 64 bits sur tampon et sur image (VK_KHR_shader_atomic_int64, VK_EXT_shader_image_atomic_int64, CIDRE_ATOMIQUES_64), annoncees seulement sur Apple8 et suivants (M2+), detectes a l execution : min/max 64 bits natifs de Metal quand la valeur rendue n est pas lue (le cas de Nanite), add/and/or/xor decoupes en deux atomiques 32 bits (valeur finale juste, valeur rendue mot par mot), formats R64_UINT/R64_SINT portes par RG32Uint en usage atomique, textures ulong/long en MSL ; sur M1 rien ne change (Metal n y a aucune atomique 64 bits)
+
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -860,6 +860,50 @@
+    return enabled;
+ }
+ 
++bool
++kk_atomic64_enabled(const struct kk_physical_device *pdev)
++{
++   static int enabled = -1;
++   if (enabled < 0)
++      enabled = getenv("CIDRE_ATOMIQUES_64") != NULL;
++   return enabled && pdev->info.gpu_apple_family >= 8;
++}
++
++static bool
++split_atomic64_instr(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data)
++{
++   if (intr->intrinsic != nir_intrinsic_global_atomic || intr->def.bit_size != 64)
++      return false;
++
++   nir_atomic_op op = nir_intrinsic_atomic_op(intr);
++   if (op != nir_atomic_op_iadd && op != nir_atomic_op_iand &&
++       op != nir_atomic_op_ior && op != nir_atomic_op_ixor)
++      return false;
++
++   b->cursor = nir_before_instr(&intr->instr);
++   nir_def *addr = intr->src[0].ssa;
++   nir_def *lo = nir_unpack_64_2x32_split_x(b, intr->src[1].ssa);
++   nir_def *hi = nir_unpack_64_2x32_split_y(b, intr->src[1].ssa);
++
++   nir_def *old_lo = nir_global_atomic(b, 32, addr, lo, .atomic_op = op);
++   if (op == nir_atomic_op_iadd) {
++      nir_def *carry = nir_ult(b, nir_iadd(b, old_lo, lo), old_lo);
++      hi = nir_iadd(b, hi, nir_b2i32(b, carry));
++   }
++   nir_def *old_hi =
++      nir_global_atomic(b, 32, nir_iadd_imm(b, addr, 4), hi, .atomic_op = op);
++
++   nir_def_replace(&intr->def, nir_pack_64_2x32_split(b, old_lo, old_hi));
++   return true;
++}
++
++static bool
++kk_nir_split_atomic64(nir_shader *nir)
++{
++   return nir_shader_intrinsics_pass(nir, split_atomic64_instr,
++                                     nir_metadata_control_flow, NULL);
++}
++
+ static nir_def *
+ compute_derivative(nir_builder *b, nir_def *v, bool y, bool coarse)
+ {
+@@ -1036,6 +1080,9 @@
+    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ubo,
+             kk_buffer_addr_format(rs->uniform_buffers));
+ 
++   if (kk_atomic64_enabled(pdev))
++      NIR_PASS(_, nir, kk_nir_split_atomic64);
++
+    NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
+             type_size_vec4,
+             nir_lower_io_lower_64bit_to_32 |
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -84,7 +84,8 @@
+       .KHR_imageless_framebuffer = true,
+       .KHR_sampler_mirror_clamp_to_edge = true,
+       .KHR_separate_depth_stencil_layouts = true,
+-      .KHR_shader_atomic_int64 = false,
++      .KHR_shader_atomic_int64 = kk_atomic64_enabled(pdev),
++      .EXT_shader_image_atomic_int64 = kk_atomic64_enabled(pdev),
+       .NV_compute_shader_derivatives = kk_compute_derivatives_enabled(),
+       .KHR_shader_float_controls = true,
+       .KHR_shader_float16_int8 = true,
+@@ -270,6 +271,8 @@
+       .shaderImageGatherExtended = true,
+       .shaderInt16 = true,
+       .shaderInt64 = true,
++      .shaderBufferInt64Atomics = kk_atomic64_enabled(pdev),
++      .shaderImageInt64Atomics = kk_atomic64_enabled(pdev),
+       .computeDerivativeGroupQuads = kk_compute_derivatives_enabled(),
+       .computeDerivativeGroupLinear = kk_compute_derivatives_enabled(),
+       .shaderResourceMinLod = true,
+--- a/src/kosmickrisp/vulkan/kk_shader.h
++++ b/src/kosmickrisp/vulkan/kk_shader.h
+@@ -318,6 +318,9 @@
+ 
+ bool kk_compute_derivatives_enabled(void);
+ 
++struct kk_physical_device;
++bool kk_atomic64_enabled(const struct kk_physical_device *pdev);
++
+ bool kk_nir_lower_textures(nir_shader *nir);
+ 
+ bool kk_nir_lower_vs_multiview(nir_shader *nir, uint32_t view_mask);
+--- a/src/kosmickrisp/vulkan/kk_format.c
++++ b/src/kosmickrisp/vulkan/kk_format.c
+@@ -207,6 +207,10 @@
+    MTL_FMT_NATIVE(R32G32_UINT, MTL_FMT_WCMS(64), MTL_FMT_TB_WR),
+    MTL_FMT_NATIVE(R32G32_SINT, MTL_FMT_WCMS(64), MTL_FMT_TB_WR),
+    MTL_FMT_NATIVE(R32G32_FLOAT, MTL_FMT_ALL_NO_ATOMIC(64), MTL_FMT_TB_WR),
++   MTL_FMT(R64_UINT, R32G32_UINT, MTL_SWIZZLE_IDENTITY, MTL_FMT_WCSA(64),
++           MTL_FMT_TB_NONE, false),
++   MTL_FMT(R64_SINT, R32G32_UINT, MTL_SWIZZLE_IDENTITY, MTL_FMT_WCSA(64),
++           MTL_FMT_TB_NONE, false),
+    MTL_FMT_NATIVE(R16G16B16A16_UNORM, MTL_FMT_ALL_NO_ATOMIC(64), MTL_FMT_TB_WR),
+    MTL_FMT_NATIVE(R16G16B16A16_SNORM, MTL_FMT_ALL_NO_ATOMIC(64), MTL_FMT_TB_WR),
+    MTL_FMT_NATIVE(R16G16B16A16_UINT, MTL_FMT_WCMS(64), MTL_FMT_TB_ALL),
+--- a/src/kosmickrisp/vulkan/kk_image.c
++++ b/src/kosmickrisp/vulkan/kk_image.c
+@@ -13,6 +13,7 @@
+ #include "kk_entrypoints.h"
+ #include "kk_format.h"
+ #include "kk_physical_device.h"
++#include "kk_shader.h"
+ 
+ #include "kosmickrisp/bridge/mtl_bridge.h"
+ #include "kosmickrisp/bridge/vk_to_mtl_map.h"
+@@ -44,6 +45,17 @@
+    const struct kk_va_format *va_format = kk_get_va_format(p_format);
+    if (va_format == NULL)
+       return 0;
++
++   if (p_format == PIPE_FORMAT_R64_UINT || p_format == PIPE_FORMAT_R64_SINT) {
++      if (!kk_atomic64_enabled(pdev) || tiling != VK_IMAGE_TILING_OPTIMAL)
++         return 0;
++      return VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT |
++             VK_FORMAT_FEATURE_2_STORAGE_IMAGE_ATOMIC_BIT |
++             VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT |
++             VK_FORMAT_FEATURE_2_STORAGE_WRITE_WITHOUT_FORMAT_BIT |
++             VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
++             VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
++   }
+ 
+    // Textures can at least be sampled
+    features |= VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT;
+--- a/src/kosmickrisp/vulkan/kk_image_layout.c
++++ b/src/kosmickrisp/vulkan/kk_image_layout.c
+@@ -12,6 +12,7 @@
+ #include "kk_device.h"
+ #include "kk_format.h"
+ #include "kk_physical_device.h"
++#include "kk_shader.h"
+ 
+ #include "kosmickrisp/bridge/mtl_bridge.h"
+ #include "kosmickrisp/bridge/mtl_format.h"
+@@ -249,8 +250,16 @@
+    layout->linear = image->tiling != VK_IMAGE_TILING_OPTIMAL;
+    layout->optimized_layout = kk_image_layout_can_optimize(
+       pdev, image->usage, image->tiling, image->create_flags, format);
++   bool atomics = supported_format->atomic;
++   if (format == PIPE_FORMAT_R64_UINT || format == PIPE_FORMAT_R64_SINT)
++      atomics = kk_atomic64_enabled(pdev);
++   else if ((format == PIPE_FORMAT_R32G32_UINT ||
++             format == PIPE_FORMAT_R32G32_SINT) &&
++            (image->usage & VK_IMAGE_USAGE_STORAGE_BIT) &&
++            kk_atomic64_enabled(pdev))
++      atomics = true;
+    layout->usage = vk_image_usage_flags_to_mtl_texture_usage(
+-      image->usage, image->create_flags, supported_format->atomic);
++      image->usage, image->create_flags, atomics);
+    layout->create_flags = image->create_flags;
+    layout->format.pipe = format;
+    layout->format.mtl = supported_format->mtl_pixel_format;
+--- a/src/kosmickrisp/compiler/nir_to_msl.c
++++ b/src/kosmickrisp/compiler/nir_to_msl.c
+@@ -697,6 +697,10 @@
+       return "ushort";
+    case nir_type_uint32:
+       return "uint";
++   case nir_type_int64:
++      return "long";
++   case nir_type_uint64:
++      return "ulong";
+    case nir_type_float16:
+       return "half";
+    case nir_type_float32:
+@@ -941,12 +945,35 @@
+    }
+ }
+ 
++static bool
++atomic64_min_max_without_result(nir_intrinsic_instr *instr)
++{
++   nir_atomic_op op = nir_intrinsic_atomic_op(instr);
++   return instr->def.bit_size == 64 && nir_def_is_unused(&instr->def) &&
++          (op == nir_atomic_op_umin || op == nir_atomic_op_umax);
++}
++
+ static void
+ atomic_to_msl(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr,
+               const char *scope, bool shared)
+ {
+    const char *atomic_op = atomic_op_to_msl(nir_intrinsic_atomic_op(instr));
+    const char *mem_order = "memory_order_relaxed";
++
++   if (atomic64_min_max_without_result(instr)) {
++      P(ctx, "0ul; atomic_%s_explicit((%s atomic_ulong*)",
++        nir_intrinsic_atomic_op(instr) == nir_atomic_op_umin ? "min" : "max",
++        scope);
++      if (shared)
++         P(ctx, "&shared_data[%u + ", nir_intrinsic_base(instr));
++      src_to_msl(ctx, &instr->src[0]);
++      if (shared)
++         P(ctx, "]");
++      P(ctx, ", ");
++      src_to_msl(ctx, &instr->src[1]);
++      P(ctx, ", %s);\n", mem_order);
++      return;
++   }
+ 
+    P(ctx, "%s_explicit((%s atomic_%s*)", atomic_op, scope,
+      msl_type_for_def(ctx->types, &instr->def));
+@@ -1715,6 +1742,17 @@
+       P(ctx, ");\n");
+       break;
+    case nir_intrinsic_bindless_image_atomic:
++      if (atomic64_min_max_without_result(instr)) {
++         P(ctx, "0ul; ");
++         src_to_msl(ctx, &instr->src[0]);
++         P(ctx, ".atomic_%s(",
++           nir_intrinsic_atomic_op(instr) == nir_atomic_op_umin ? "min" : "max");
++         image_coord_swizzle(ctx, instr);
++         P(ctx, ", ");
++         src_to_msl(ctx, &instr->src[3]);
++         P(ctx, ");\n");
++         break;
++      }
+       src_to_msl(ctx, &instr->src[0]);
+       P(ctx, ".%s(", atomic_op_to_msl(nir_intrinsic_atomic_op(instr)));
+       image_coord_swizzle(ctx, instr);

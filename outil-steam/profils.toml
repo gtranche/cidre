@@ -86,6 +86,12 @@
 #                    Little Nightmares Enhanced Edition 12 -> 29 images/s
 #                    (2026-10-14, M1 Max). CIDRE_MINMAX_ZERO_ENTIER=0 ou
 #                    CIDRE_TEXTURES_NULLES_SANS_BRANCHE=0 pour un essai sans.
+#   sm66             avec dx12 : Shader Model 6.6 pour Unreal 5 en D3D12. vkd3d-proton
+#                    annonce SM 6.2+ malgre des denormaux fp32 que le GPU Apple remet
+#                    toujours a zero, KosmicKrisp les derivees dans les nuanceurs de
+#                    calcul et, sur M2 et suivants seulement, les atomiques 64 bits
+#                    (min/max natifs de Metal, ceux de Nanite). Sur M1 : SM 6.5 sans
+#                    atomiques 64 bits. Essai, false par defaut (2026-10-14).
 #   arguments        options de ligne de commande ajoutees au jeu, separees par des
 #                    espaces, sans guillemets (ex. "-force-gfx-direct" : un jeu Unity
 #                    en D3D12 rend alors en 2 listes de commandes par image au lieu
@@ -160,6 +166,7 @@ mode_emule = true
 retina = false
 gamemode = true
 dx12 = false
+sm66 = false
 d3d11 = "dxmt"
 dxmt_config = ""
 metalfx = false

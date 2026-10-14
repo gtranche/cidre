@@ -1,0 +1,184 @@
+Generated-by: LLM
+
+KosmicKrisp : derivees dans les nuanceurs de calcul (VK_NV_compute_shader_derivatives, CIDRE_DERIVEES_CALCUL) : ddx/ddy fines et grossieres par echanges de quad, lectures de texture a LOD implicite en txd, groupes en quads ramenes au lineaire par permutation des identifiants ; une des conditions du Shader Model 6.6 de vkd3d-proton. Variante NV (meme structure de fonctionnalites, meme capacite SPIR-V) : sous Wine, la structure de proprietes de la variante KHR faisait sortir vkd3d-proton (code 3) a la creation du device
+
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -81,6 +81,7 @@
+    nir_lower_compute_system_values_options csv_options = {
+       .has_base_global_invocation_id = 0,
+       .has_base_workgroup_id = true,
++      .shuffle_local_ids_for_quad_derivatives = true,
+    };
+    NIR_PASS(_, nir, nir_lower_compute_system_values, &csv_options);
+ }
+@@ -848,8 +849,120 @@
+ 
+    return kk_fs_reads_input_attachment(nir, depth_att, stencil_att,
+                                        indices_known);
++}
++
++bool
++kk_compute_derivatives_enabled(void)
++{
++   static int enabled = -1;
++   if (enabled < 0)
++      enabled = getenv("CIDRE_DERIVEES_CALCUL") != NULL;
++   return enabled;
++}
++
++static nir_def *
++compute_derivative(nir_builder *b, nir_def *v, bool y, bool coarse)
++{
++   if (coarse) {
++      nir_def *base = nir_quad_broadcast(b, v, nir_imm_int(b, 0));
++      nir_def *other = nir_quad_broadcast(b, v, nir_imm_int(b, y ? 2 : 1));
++      return nir_fsub(b, other, base);
++   }
++
++   nir_def *swapped =
++      y ? nir_quad_swap_vertical(b, v) : nir_quad_swap_horizontal(b, v);
++   nir_def *lane = nir_load_subgroup_invocation(b);
++   nir_def *bit = nir_iand_imm(b, nir_ushr_imm(b, lane, y ? 1 : 0), 1);
++   nir_def *sign = nir_fsub_imm(b, 1.0, nir_fmul_imm(b, nir_u2f32(b, bit), 2.0));
++   if (v->bit_size != 32)
++      sign = nir_f2fN(b, sign, v->bit_size);
++   return nir_fmul(b, nir_fsub(b, swapped, v),
++                   nir_replicate(b, sign, v->num_components));
+ }
+ 
++static bool
++lower_compute_derivative_intrinsic(nir_builder *b, nir_intrinsic_instr *intr)
++{
++   bool y, coarse;
++   switch (intr->intrinsic) {
++   case nir_intrinsic_ddx:
++   case nir_intrinsic_ddx_fine:
++      y = false, coarse = false;
++      break;
++   case nir_intrinsic_ddx_coarse:
++      y = false, coarse = true;
++      break;
++   case nir_intrinsic_ddy:
++   case nir_intrinsic_ddy_fine:
++      y = true, coarse = false;
++      break;
++   case nir_intrinsic_ddy_coarse:
++      y = true, coarse = true;
++      break;
++   default:
++      return false;
++   }
++
++   b->cursor = nir_before_instr(&intr->instr);
++   nir_def_replace(&intr->def,
++                   compute_derivative(b, intr->src[0].ssa, y, coarse));
++   return true;
++}
++
++static bool
++lower_compute_implicit_lod(nir_builder *b, nir_tex_instr *tex)
++{
++   if (tex->op != nir_texop_tex && tex->op != nir_texop_txb)
++      return false;
++   if (nir_tex_instr_src_index(tex, nir_tex_src_projector) >= 0)
++      return false;
++
++   int coord_idx = nir_tex_instr_src_index(tex, nir_tex_src_coord);
++   if (coord_idx < 0)
++      return false;
++
++   b->cursor = nir_before_instr(&tex->instr);
++   unsigned comps = tex->coord_components - (tex->is_array ? 1 : 0);
++   nir_def *coord =
++      nir_trim_vector(b, tex->src[coord_idx].src.ssa, comps);
++   nir_def *dx = compute_derivative(b, coord, false, false);
++   nir_def *dy = compute_derivative(b, coord, true, false);
++
++   int bias_idx = nir_tex_instr_src_index(tex, nir_tex_src_bias);
++   if (bias_idx >= 0) {
++      nir_def *scale = nir_fexp2(b, nir_f2f32(b, tex->src[bias_idx].src.ssa));
++      if (dx->bit_size != 32)
++         scale = nir_f2fN(b, scale, dx->bit_size);
++      scale = nir_replicate(b, scale, comps);
++      dx = nir_fmul(b, dx, scale);
++      dy = nir_fmul(b, dy, scale);
++      nir_tex_instr_remove_src(tex, bias_idx);
++   }
++
++   nir_tex_instr_add_src(tex, nir_tex_src_ddx, dx);
++   nir_tex_instr_add_src(tex, nir_tex_src_ddy, dy);
++   tex->op = nir_texop_txd;
++   return true;
++}
++
++static bool
++lower_compute_derivatives_instr(nir_builder *b, nir_instr *instr,
++                                UNUSED void *data)
++{
++   if (instr->type == nir_instr_type_intrinsic)
++      return lower_compute_derivative_intrinsic(b, nir_instr_as_intrinsic(instr));
++   if (instr->type == nir_instr_type_tex)
++      return lower_compute_implicit_lod(b, nir_instr_as_tex(instr));
++   return false;
++}
++
++static bool
++kk_nir_lower_compute_derivatives(nir_shader *nir)
++{
++   return nir_shader_instructions_pass(nir, lower_compute_derivatives_instr,
++                                       nir_metadata_control_flow, NULL);
++}
++
+ static void
+ kk_lower_nir(struct kk_device *dev, nir_shader *nir, bool emulated_stage,
+              const struct vk_pipeline_robustness_state *rs,
+@@ -901,6 +1014,10 @@
+    };
+    NIR_PASS(_, nir, nir_vk_lower_ycbcr_tex, lookup_ycbcr_conversion,
+             &ycbcr_state);
++
++   if (nir->info.stage == MESA_SHADER_COMPUTE &&
++       nir->info.derivative_group != DERIVATIVE_GROUP_NONE)
++      NIR_PASS(_, nir, kk_nir_lower_compute_derivatives);
+ 
+    /* Common msl texture lowering needs to happen after ycbcr lowering and
+     * before descriptor lowering. */
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -18,6 +18,7 @@
+ #include "kk_nir_lower_vbo.h"
+ #include "kk_sync.h"
+ #include "kk_wsi.h"
++#include "kk_shader.h"
+ 
+ #include "kosmickrisp/bridge/mtl_bridge.h"
+ #include "kosmickrisp/bridge/ns_process_info.h"
+@@ -84,6 +85,7 @@
+       .KHR_sampler_mirror_clamp_to_edge = true,
+       .KHR_separate_depth_stencil_layouts = true,
+       .KHR_shader_atomic_int64 = false,
++      .NV_compute_shader_derivatives = kk_compute_derivatives_enabled(),
+       .KHR_shader_float_controls = true,
+       .KHR_shader_float16_int8 = true,
+       .KHR_shader_subgroup_extended_types = true,
+@@ -268,6 +270,8 @@
+       .shaderImageGatherExtended = true,
+       .shaderInt16 = true,
+       .shaderInt64 = true,
++      .computeDerivativeGroupQuads = kk_compute_derivatives_enabled(),
++      .computeDerivativeGroupLinear = kk_compute_derivatives_enabled(),
+       .shaderResourceMinLod = true,
+       .shaderSampledImageArrayDynamicIndexing = true,
+       .shaderStorageBufferArrayDynamicIndexing = true,
+--- a/src/kosmickrisp/vulkan/kk_shader.h
++++ b/src/kosmickrisp/vulkan/kk_shader.h
+@@ -315,6 +315,8 @@
+  * bounds checked, from the same draw that rasterizes them. */
+ bool kk_nir_lower_xfb(struct nir_shader *nir);
+ bool kk_nir_lower_null_images(nir_shader *nir);
++
++bool kk_compute_derivatives_enabled(void);
+ 
+ bool kk_nir_lower_textures(nir_shader *nir);
+ 
