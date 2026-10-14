@@ -1,0 +1,150 @@
+Generated-by: LLM
+
+KosmicKrisp : statistiques d ouverture des passes de rendu par cause (CIDRE_PASS_STATS)
+
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+@@ -510,8 +510,98 @@
+ }
+ 
+ static void cs_flush_closing(struct kk_cmd_buffer *cmd, bool force_barrier);
++
++
++static int
++kk_pass_stats_enabled(void)
++{
++   static int enabled = -1;
++   if (enabled < 0)
++      enabled = getenv("CIDRE_PASS_STATS") != NULL;
++   return enabled;
++}
++
++enum kk_pass_class {
++   KK_PASS_PREMIERE,
++   KK_PASS_FUSIONNABLE,
++   KK_PASS_MEMES_AVEC_EFFACEMENT,
++   KK_PASS_AUTRES_ATTACHEMENTS,
++   KK_PASS_APRES_CALCUL,
++   KK_PASS_REPRISE,
++   KK_PASS_COUPURE_BARRIERE,
++   KK_PASS_CLASS_COUNT,
++};
++
++static const char *const kk_pass_class_names[KK_PASS_CLASS_COUNT] = {
++   "premiere_du_tampon", "fusionnable", "memes_avec_effacement",
++   "autres_attachements", "apres_fermeture_ou_calcul", "reprise_mi_passe",
++   "coupure_barriere",
++};
+ 
++static uint64_t kk_pass_class_counts[KK_PASS_CLASS_COUNT];
+ 
++static uint64_t
++kk_att_key(const struct kk_attachment *att)
++{
++   if (!att->iview)
++      return 0;
++   const struct kk_image_view *iv = att->iview;
++   return (uint64_t)(uintptr_t)iv->vk.image ^
++          ((uint64_t)iv->vk.base_mip_level << 48) ^
++          ((uint64_t)iv->vk.base_array_layer << 32);
++}
++
++static void
++kk_pass_stats_record(struct kk_cmd_buffer *cmd, bool had_closing)
++{
++   const struct kk_rendering_state *r = &cmd->state.gfx.render;
++   uint64_t keys[KK_MAX_RTS + 2];
++   uint8_t n = 0;
++   bool clears = false;
++   for (uint32_t i = 0; i < r->color_att_count && n < KK_MAX_RTS; i++) {
++      keys[n++] = kk_att_key(&r->color_att[i]);
++      clears |= r->color_att[i].iview &&
++                r->color_att[i].load_op == VK_ATTACHMENT_LOAD_OP_CLEAR;
++   }
++   keys[n++] = kk_att_key(&r->depth_att);
++   keys[n++] = kk_att_key(&r->stencil_att);
++   clears |= (r->depth_att.iview &&
++              r->depth_att.load_op == VK_ATTACHMENT_LOAD_OP_CLEAR) ||
++             (r->stencil_att.iview &&
++              r->stencil_att.load_op == VK_ATTACHMENT_LOAD_OP_CLEAR);
++
++   enum kk_pass_class cls;
++   if (cmd->metal.start_reason == 1)
++      cls = KK_PASS_REPRISE;
++   else if (cmd->metal.start_reason == 2)
++      cls = KK_PASS_COUPURE_BARRIERE;
++   else if (had_closing) {
++      bool same = n == cmd->metal.prev_att_count &&
++                  !memcmp(keys, cmd->metal.prev_atts, n * sizeof(keys[0]));
++      cls = !same    ? KK_PASS_AUTRES_ATTACHEMENTS
++            : clears ? KK_PASS_MEMES_AVEC_EFFACEMENT
++                     : KK_PASS_FUSIONNABLE;
++   } else if (cmd->metal.encoders_in_cmd_buf == 0)
++      cls = KK_PASS_PREMIERE;
++   else
++      cls = KK_PASS_APRES_CALCUL;
++
++   memcpy(cmd->metal.prev_atts, keys, n * sizeof(keys[0]));
++   cmd->metal.prev_att_count = n;
++
++   p_atomic_inc(&kk_pass_class_counts[cls]);
++   uint64_t total = 0;
++   for (unsigned i = 0; i < KK_PASS_CLASS_COUNT; i++)
++      total += kk_pass_class_counts[i];
++   if (total % 20000u == 0u) {
++      fprintf(stderr, "[CIDRE_PASSES] total=%llu", (unsigned long long)total);
++      for (unsigned i = 0; i < KK_PASS_CLASS_COUNT; i++)
++         fprintf(stderr, " %s=%llu", kk_pass_class_names[i],
++                 (unsigned long long)kk_pass_class_counts[i]);
++      fprintf(stderr, "\n");
++   }
++}
++
+ void
+ cs_start_render(struct kk_cmd_buffer *cmd)
+ {
+@@ -530,11 +620,16 @@
+          kk_images_intersect(&cmd->opening_reads, &cmd->closing_writes);
+    }
+ 
++   bool had_closing = cmd->metal.render_closing != NULL;
+    cs_flush_closing(cmd, conflicts);
+ 
+    /* Ensure no other active encoder, aka compute */
+    cs_end(cmd);
+ 
++   if (kk_pass_stats_enabled())
++      kk_pass_stats_record(cmd, had_closing);
++   cmd->metal.start_reason = 0;
++
+    kk_cmd_buffer_split_if_full(cmd);
+    cmd->metal.encoders_in_cmd_buf++;
+ 
+@@ -591,6 +686,7 @@
+       mtl_render_pass_descriptor_set_default_raster_sample_count(
+          cmd->state.gfx.render_pass_descriptor, gfx->render.samples);
+       gfx->need_to_start_render_pass = false;
++      cmd->metal.start_reason = 1;
+       cs_start_render(cmd);
+    }
+ 
+@@ -930,6 +1026,7 @@
+          cmd->metal.pending_barrier_before |= mtl_before;
+          kk_apply_attachment_store_ops(cmd, true);
+          cs_end(cmd);
++         cmd->metal.start_reason = 2;
+          cs_start_render(cmd);
+       } else
+          mtl_barrier_after_encoder_stages(cmd->metal.render, MTL_STAGE_VERTEX,
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+@@ -343,6 +343,9 @@
+       struct util_dynarray sealed_cmd_bufs;
+       /* Encoders opened on cmd_buf since it was begun. */
+       uint32_t encoders_in_cmd_buf;
++      uint8_t start_reason;
++      uint8_t prev_att_count;
++      uint64_t prev_atts[KK_MAX_RTS + 2];
+    } metal;
+    /* Pending timestamp resolves (struct kk_ts_resolve), flushed at cs_end. */
+    struct util_dynarray ts_resolves;

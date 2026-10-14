@@ -1,0 +1,51 @@
+Generated-by: LLM
+
+KosmicKrisp : variantes de pipeline Metal compilees hors du verrou du device (CIDRE_COMPILE_HORS_VERROU)
+
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -2089,6 +2089,15 @@ kk_build_render_pipeline(struct kk_device *device,
+    return state;
+ }
+ 
++static bool
++kk_compile_unlocked(void)
++{
++   static int enabled = -1;
++   if (enabled < 0)
++      enabled = getenv("CIDRE_COMPILE_HORS_VERROU") != NULL;
++   return enabled;
++}
++
+ mtl_render_pipeline_state *
+ kk_get_render_pipeline_variant(struct kk_device *device,
+                                mtl_function_descriptor *vs_function,
+@@ -2112,7 +2121,26 @@ kk_get_render_pipeline_variant(struct kk_device *device,
+       _mesa_hash_table_search(device->rp_variant_cache, &full);
+    mtl_render_pipeline_state *state = entry ? entry->data : NULL;
+ 
+-   if (state == NULL) {
++   if (state == NULL && kk_compile_unlocked()) {
++      simple_mtx_unlock(&device->rp_variant_lock);
++      mtl_render_pipeline_state *built =
++         kk_build_render_pipeline(device, vs_function, vs, fs, &full);
++      simple_mtx_lock(&device->rp_variant_lock);
++      entry = _mesa_hash_table_search(device->rp_variant_cache, &full);
++      if (entry != NULL) {
++         if (built != NULL)
++            mtl_release(built);
++         state = entry->data;
++      } else if (built != NULL) {
++         struct kk_rp_variant_key *stored =
++            ralloc(device->rp_variant_cache, struct kk_rp_variant_key);
++         if (stored != NULL) {
++            *stored = full;
++            _mesa_hash_table_insert(device->rp_variant_cache, stored, built);
++         }
++         state = built;
++      }
++   } else if (state == NULL) {
+       state = kk_build_render_pipeline(device, vs_function, vs, fs, &full);
+       if (state != NULL) {
+          struct kk_rp_variant_key *stored =
