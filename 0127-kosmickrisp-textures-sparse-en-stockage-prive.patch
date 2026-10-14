@@ -1,0 +1,18 @@
+Generated-by: LLM
+
+KosmicKrisp : textures sparse en stockage prive
+
+diff --git a/src/kosmickrisp/bridge/mtl_heap.m b/src/kosmickrisp/bridge/mtl_heap.m
+--- a/src/kosmickrisp/bridge/mtl_heap.m
++++ b/src/kosmickrisp/bridge/mtl_heap.m
+@@ -90,7 +90,9 @@
+    @autoreleasepool {
+       id<MTLDevice> dev = (id<MTLDevice>)device;
+       MTLTextureDescriptor *descriptor = [mtl_new_texture_descriptor(layout) autorelease];
+-      descriptor.resourceOptions = KK_MTL_RESOURCE_OPTIONS;
++      descriptor.resourceOptions =
++         ((MTLResourceOptions)KK_MTL_RESOURCE_OPTIONS & ~MTLResourceStorageModeMask) |
++         MTLResourceStorageModePrivate;
+       descriptor.placementSparsePageSize = MTLSparsePageSize16;
+       return [dev newTextureWithDescriptor:descriptor];
+    }

@@ -294,6 +294,16 @@ sh "$R/tests/version_windows.sh" poser "$WINVER" 2>&1 | tee -a "$JOURNAL" || tru
 # fichiers, plus i386/), pris avant le runtime livre pour ce lancement.
 D3D11=$(opt d3d11 CIDRE_D3D11)
 case $D3D11 in dxmt) ;; *) D3D11=dxvk ;; esac
+# En vrai D3D12 (dx12), le DXGI est celui de DXVK, compagnon de vkd3d-proton
+# (comme sous Proton) : celui de DXMT annonce 0 octet de memoire partagee, et
+# Unity, qui voit un adaptateur « integre » en D3D12, refusait le D3D12 de PEAK
+# (« Graphics Memory Less Than 3600 », manche du 2026-10-14 ; avec le DXGI de
+# DXVK le filtre passe). Le D3D11 eventuel du jeu suit donc DXVK. Un
+# CIDRE_D3D11=dxmt explicite garde la main (essais).
+if [ "$D3D11" = dxmt ] && [ "$(opt dx12 CIDRE_DX12)" = true ] && [ -z "${CIDRE_D3D11:-}" ]; then
+   D3D11=dxvk
+   echo "    d3d11 : dxvk (dx12 : DXGI de DXVK pour vkd3d-proton)" >>"$JOURNAL"
+fi
 # Options DXMT propres au jeu (fiche ou profil : dxmt_config = "d3d11.cle=valeur;..."),
 # placees devant DXMT_CONFIG de l'environnement, qui garde donc le dernier mot.
 DXMTCFG=$(opt dxmt_config CIDRE_DXMT_CONFIG)
