@@ -2,6 +2,7 @@
  *
  *    cidre-outil session <steamcmd.sh> <arguments de SteamCMD...>
  *    cidre-outil bibliotheque [--texte] [--bouteilles <liste|->] <licences.txt> [appid installe ...]
+ *    cidre-outil builds <appinfo.vdf> <appid ...>
  *
  * Livre construit dans le runtime (build/cidre-outil) : un Mac sans outils de
  * developpement n'a ni Python ni compilateur, et `/usr/bin/python3` n'y est
@@ -28,6 +29,14 @@
  * bouteille CrossOver, Whisky ou Heroic a deja installes. Un jeu non installe
  * qui s'y trouve porte "source": "bouteille", avec "origine", "bouteille",
  * "chemin", "buildid" et "taille" : `cidre import` le reprend.
+ *
+ * builds -- le build de la branche publique de chaque jeu demande, tel que le
+ * client Steam le garde dans son cache (appcache/appinfo.vdf) : une ligne
+ * « appid <TAB> buildid <TAB> date », la date (secondes Unix) etant celle ou
+ * le client a mis la fiche a jour. Pour `cidre play` et `cidre updates` :
+ * sans reseau ni SteamCMD, le client Steam suivant les fiches de son compte.
+ * Un jeu absent du cache, ou sans branche publique, ne donne pas de ligne ; un
+ * fichier illisible ou d'un autre format, rien du tout (code 1).
  */
 #include <ctype.h>
 #include <errno.h>
@@ -385,10 +394,18 @@ typedef struct {
    size_t n, cap;
 } Jeux;
 
-/* La section `common` des applications voulues, dans l'ordre du fichier.
- * Rend 0, ou -1 (message ecrit) si le fichier n'est pas celui qu'on attend. */
-static int lire_appinfo(const char *chemin, const Ens *voulus, Jeux *jeux)
+/* appinfo.vdf, ouvert : son contenu, sa table de cles (v29) et la zone des fiches */
+typedef struct {
+   unsigned char *d;
+   size_t n, pos, limite, entete;
+   const char **table;
+   uint32_t ntable;
+} AppInfo;
+
+/* Rend 0, ou -1 (message ecrit) si le fichier n'est pas celui qu'on attend. */
+static int ouvrir_appinfo(const char *chemin, AppInfo *a)
 {
+   *a = (AppInfo){ 0 };
    size_t n;
    unsigned char *d = lire_fichier(chemin, &n);
    if (!d) {
@@ -400,63 +417,138 @@ static int lire_appinfo(const char *chemin, const Ens *voulus, Jeux *jeux)
       fprintf(stderr, "appinfo.vdf : format inconnu (%#x)\n", magie);
       return -1;
    }
-   size_t pos = 8, limite = n;
-   const char **table = NULL;
-   uint32_t ntable = 0;
+   a->d = d;
+   a->n = n;
+   a->pos = 8;
+   a->limite = n;
    if (version == 0x29) {
       /* v29 : les cles sont rangees une fois pour toutes en fin de fichier */
       int64_t debut = n >= 16 ? i64(d + 8) : -1;
       if (debut < 16 || (uint64_t)debut > n - 4)
          goto tronque;
-      pos = 16;
-      limite = (size_t)debut;
-      ntable = u32(d + debut);
-      table = memoire(NULL, (size_t)ntable * sizeof *table);
+      a->pos = 16;
+      a->limite = (size_t)debut;
+      a->ntable = u32(d + debut);
+      a->table = memoire(NULL, (size_t)a->ntable * sizeof *a->table);
       const unsigned char *s = d + debut + 4;
-      for (uint32_t i = 0; i < ntable; i++) {
+      for (uint32_t i = 0; i < a->ntable; i++) {
          const unsigned char *nul = s < d + n ? memchr(s, 0, (size_t)(d + n - s)) : NULL;
          if (!nul)
             goto tronque;
-         table[i] = (const char *)s;
+         a->table[i] = (const char *)s;
          s = nul + 1;
       }
    }
    /* entete d'une entree, apres appid et taille : etat, date, jeton, sha1,
     * numero de changement, et (v28+) sha1 binaire */
-   size_t entete = 4 + 4 + 8 + 20 + 4 + (version >= 0x28 ? 20 : 0);
-   for (;;) {
-      if (limite - pos < 4)
-         goto tronque;
-      uint32_t appid = u32(d + pos);
-      if (appid == 0)
-         return 0; /* `d` et `table` restent : les fiches pointent dedans */
-      if (limite - pos < 8)
-         goto tronque;
-      size_t taille = u32(d + pos + 4);
-      size_t fin = taille < limite - pos - 8 ? pos + 8 + taille : limite;
-      if (ens_contient(voulus, appid) && fin - pos - 8 > entete) {
-         Fiche f = { 0 };
-         Lecteur L = { .d = d, .pos = pos + 8 + entete, .fin = fin, .table = table,
-                       .ntable = ntable, .visite = visite_appinfo, .ctx = &f };
-         if (vdf_lire(&L, 0) == 0) {
-            size_t i = 0;
-            while (i < jeux->n && jeux->v[i].appid != appid)
-               i++;
-            if (i == jeux->n) {
-               if (jeux->n == jeux->cap)
-                  jeux->v = memoire(jeux->v, (jeux->cap = jeux->cap ? jeux->cap * 2 : 256) * sizeof *jeux->v);
-               jeux->n++;
-            }
-            jeux->v[i] = (Jeu){ .appid = appid, .c = f.a_appinfo ? f.sous_appinfo : f.racine };
-         }
-      }
-      if (taille > limite - pos - 8)
-         goto tronque;
-      pos += 8 + taille;
-   }
+   a->entete = 4 + 4 + 8 + 20 + 4 + (version >= 0x28 ? 20 : 0);
+   return 0;
 tronque:
    fprintf(stderr, "appinfo.vdf : fichier tronque\n");
    return -1;
+}
+
+/* L'entree suivante : son appid (0 a la fin), et ou commence et finit son
+ * dictionnaire. Rend -1 sur un fichier tronque. */
+static int entree_suivante(AppInfo *a, uint32_t *appid, size_t *debut, size_t *fin, uint32_t *date)
+{
+   size_t pos = a->pos, limite = a->limite;
+   if (limite - pos < 4)
+      return -1;
+   *appid = u32(a->d + pos);
+   if (*appid == 0)
+      return 0;
+   if (limite - pos < 8)
+      return -1;
+   size_t taille = u32(a->d + pos + 4);
+   if (taille > limite - pos - 8)
+      return -1;
+   *fin = pos + 8 + taille;
+   *debut = taille > a->entete ? pos + 8 + a->entete : *fin;
+   *date = taille >= 8 ? u32(a->d + pos + 12) : 0;
+   a->pos = *fin;
+   return 0;
+}
+
+/* La section `common` des applications voulues, dans l'ordre du fichier.
+ * Rend 0, ou -1 (message ecrit) si le fichier n'est pas celui qu'on attend. */
+static int lire_appinfo(const char *chemin, const Ens *voulus, Jeux *jeux)
+{
+   AppInfo a;
+   if (ouvrir_appinfo(chemin, &a))
+      return -1;
+   for (;;) {
+      uint32_t appid, date;
+      size_t debut, fin;
+      if (entree_suivante(&a, &appid, &debut, &fin, &date))
+         break;
+      if (appid == 0)
+         return 0; /* `a.d` et `a.table` restent : les fiches pointent dedans */
+      if (!ens_contient(voulus, appid) || debut >= fin)
+         continue;
+      Fiche f = { 0 };
+      Lecteur L = { .d = a.d, .pos = debut, .fin = fin, .table = a.table,
+                    .ntable = a.ntable, .visite = visite_appinfo, .ctx = &f };
+      if (vdf_lire(&L, 0) == 0) {
+         size_t i = 0;
+         while (i < jeux->n && jeux->v[i].appid != appid)
+            i++;
+         if (i == jeux->n) {
+            if (jeux->n == jeux->cap)
+               jeux->v = memoire(jeux->v, (jeux->cap = jeux->cap ? jeux->cap * 2 : 256) * sizeof *jeux->v);
+            jeux->n++;
+         }
+         jeux->v[i] = (Jeu){ .appid = appid, .c = f.a_appinfo ? f.sous_appinfo : f.racine };
+      }
+   }
+   fprintf(stderr, "appinfo.vdf : fichier tronque\n");
+   return -1;
+}
+
+/* ------------------------------------------------------------------- builds */
+
+/* depots/branches/public/buildid, sous `appinfo` ou a la racine ; un entier,
+ * ou (format plus ancien) une chaine de chiffres */
+static void visite_build(Lecteur *L, int prof, const char *cle, int type, const char *chaine, int64_t entier)
+{
+   int64_t *build = L->ctx;
+   int base = prof >= 1 && !strcmp(L->cles[0], "appinfo");
+   if (prof != base + 3 || strcmp(cle, "buildid") || strcmp(L->cles[base], "depots") ||
+       strcmp(L->cles[base + 1], "branches") || strcmp(L->cles[base + 2], "public"))
+      return;
+   if (type == VDF_ENTIER)
+      *build = entier;
+   else if (type == VDF_CHAINE && chaine[0] && strspn(chaine, "0123456789") == strlen(chaine))
+      *build = strtoll(chaine, NULL, 10);
+}
+
+static int cmd_builds(int argc, char **argv)
+{
+   Ens voulus = { 0 };
+   for (int i = 1; i < argc; i++)
+      ens_ajoute_nombres(&voulus, argv[i], argv[i] + strlen(argv[i]));
+   ens_trie(&voulus);
+   AppInfo a;
+   if (ouvrir_appinfo(argv[0], &a))
+      return 1;
+   for (;;) {
+      uint32_t appid, date;
+      size_t debut, fin;
+      if (entree_suivante(&a, &appid, &debut, &fin, &date)) {
+         fprintf(stderr, "appinfo.vdf : fichier tronque\n");
+         return 1;
+      }
+      if (appid == 0)
+         break;
+      if (!ens_contient(&voulus, appid) || debut >= fin)
+         continue;
+      int64_t build = -1;
+      Lecteur L = { .d = a.d, .pos = debut, .fin = fin, .table = a.table,
+                    .ntable = a.ntable, .visite = visite_build, .ctx = &build };
+      if (vdf_lire(&L, 0) == 0 && build > 0)
+         printf("%u\t%lld\t%u\n", appid, (long long)build, date);
+   }
+   return fflush(stdout) || ferror(stdout) ? 1 : 0;
 }
 
 /* Le point de code UTF-8 en s[*i], et avance. Une suite invalide rend U+FFFD
@@ -787,7 +879,10 @@ int main(int argc, char **argv)
       return cmd_session(argv + 2);
    if (argc >= 3 && !strcmp(argv[1], "bibliotheque"))
       return cmd_bibliotheque(argc - 2, argv + 2);
+   if (argc >= 3 && !strcmp(argv[1], "builds"))
+      return cmd_builds(argc - 2, argv + 2);
    fprintf(stderr, "usage: cidre-outil session <steamcmd.sh> <arguments...>\n"
-                   "       cidre-outil bibliotheque [--texte] [--bouteilles <liste|->] <licences.txt> [appid installe ...]\n");
+                   "       cidre-outil bibliotheque [--texte] [--bouteilles <liste|->] <licences.txt> [appid installe ...]\n"
+                   "       cidre-outil builds <appinfo.vdf> <appid ...>\n");
    return 2;
 }

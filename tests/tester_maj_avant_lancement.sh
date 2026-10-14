@@ -21,11 +21,16 @@
 #   7. --json : les evenements de `cidre play`, un objet par ligne ;
 #   8. deux commandes a la fois, et l'arret en cours de route (SIGTERM) ;
 #   9. `cidre dl` : meme chemin, cache invalide apres coup ; `cidre rm` ;
-#  10. syntaxe, aide, documentation de l'option.
+#  10. le cache du client Steam (appcache/appinfo.vdf, fabrique ici) : lu par
+#      `cidre-outil builds`, il dispense de SteamCMD tant qu'il est frais ;
+#      `cidre updates --fond`, une seule demande a la fois (verrou), rien
+#      laisse derriere une verification abandonnee ;
+#  11. syntaxe, aide, documentation de l'option.
 # Rien n'est lu ni ecrit hors d'un dossier temporaire (HOME et CIDRE_DIR a part).
 #   sh tests/tester_maj_avant_lancement.sh
 set -u
 R=$(cd "$(dirname "$0")/.." && pwd)
+VRAI_HOME=$HOME
 C="$R/cidre"
 T=$(mktemp -d "${TMPDIR:-/tmp}/tester-maj.XXXXXX")
 T=$(cd "$T" && pwd -P)
@@ -55,7 +60,7 @@ unset CIDRE_MAJ_AVANT_LANCEMENT CIDRE_MAJ_TTL CIDRE_MAJ_LIBRE_MIN CIDRE_ESSAI_LI
 # `open` (le client Steam) : un faux, devant le vrai
 printf '#!/bin/sh\necho "$*" >>"%s/ouvertures"\n' "$F" >"$F/bin/open"; chmod +x "$F/bin/open"
 export PATH="$F/bin:$PATH"
-G="$CIDRE_DIR/games"; M="$CIDRE_DIR/maj"; A="$CIDRE_DIR/cache/appinfo.txt"
+G="$CIDRE_DIR/games"; M="$CIDRE_DIR/maj"; A="$CIDRE_DIR/cache/appinfo.txt"; TAB=$(printf '\t')
 mkdir -p "$G"
 
 # Le faux lanceur : note l'executable et la version du jeu qu'on lui confie.
@@ -343,6 +348,25 @@ raz; vieillir; sh "$C" play 9014 >/dev/null 2>&1
 verif "mise a jour sans effet : redemande a Steam quand le cache a vieilli, sans retenter le meme build" "1 0" "$(appels 'login anonymous') $(appels app_update)"
 publie 9014 300; vieillir; sh "$C" play 9014 >/dev/null 2>&1
 verif "mise a jour sans effet : un build encore plus recent est retente" "300" "$(build 9014)"
+# La passe A de l'essai reel (PEAK, 2026-10-14) : buildid abaisse a 25000000,
+# SteamCMD repond « Success! App '3527290' already up to date. » sans recrire
+# le manifeste. Ce n'est pas une mise a jour faite.
+jeu 3527290 25000000; publie 3527290 25739797; sh "$C" updates --refresh >/dev/null 2>&1; raz; echo sans_effet >"$F/mode"
+sortie=$(sh "$C" play 3527290 2>&1)
+contient "passe A : SteamCMD dit exactement ce qu'il a dit" "Success! App '3527290' already up to date." "$sortie"
+sans "passe A : pas de « Mise a jour faite »" "Mise a jour faite" "$sortie"
+contient "passe A : le message juste" "Mise a jour sans effet : SteamCMD dit le jeu a jour mais le laisse au build 25000000 (publie : 25739797) ; elle ne sera pas retentee pour ce build. Lancement de la version installee." "$sortie"
+verif "passe A : le jeu part dans sa version installee" "25000000 Jeu.exe 25000000 appid=3527290" "$(build 3527290) $(lance)"
+verif "passe A : la tentative est notee (faite, vers 25739797, sans effet)" "faite 25000000 25739797 25000000" "$(etat 3527290 etat) $(etat 3527290 build_avant) $(etat 3527290 build_vise) $(etat 3527290 build_apres)"
+m=$(maj_de 3527290); verif "passe A : cidre info dit ignoree, sans_effet" '"ignoree" "sans_effet"' "$(champ_json "$m" etat) $(champ_json "$m" raison)"
+raz; sortie=$(sh "$C" play 3527290 2>&1)
+verif "passe A, lancement suivant : pas de nouvelle tentative" "0 Jeu.exe 25000000 appid=3527290" "$(appels app_update) $(lance)"
+contient "passe A, lancement suivant : le dit" "laissee de cote : Steam ne la donne pas a ce compte (deja tentee, sans effet)." "$sortie"
+raz; vieillir; sh "$C" play 3527290 >/dev/null 2>&1
+verif "passe A, cache vieilli : redemande a Steam, toujours pas de nouvelle tentative" "1 0" "$(appels 'login anonymous') $(appels app_update)"
+raz; echo sans_effet >"$F/mode"; jeu 3527290 25000000; rm -f "$M/3527290"; sh "$C" play 3527290 --json >"$T/evts" 2>/dev/null
+contient "passe A, --json : l'evenement dit ignoree, sans_effet" '{"evenement":"maj","etat":"ignoree","build_installe":25000000,"build_disponible":25739797,"raison":"sans_effet"' "$(cat "$T/evts")"
+echo ok >"$F/mode"; sh "$C" rm 3527290 >/dev/null 2>&1
 
 echo "== 7. --json : les evenements de cidre play"
 jeu 9020 100; publie 9020 200; sh "$C" updates --refresh >/dev/null 2>&1; raz; vieillir
@@ -423,13 +447,122 @@ verif "cidre dl qui echoue : la derniere ligne dit la cause et quoi faire" "Mise
 sh "$C" rm 9040 >/dev/null 2>&1
 verif "cidre rm : l'etat de mise a jour part avec le jeu" "" "$(ls "$M" | grep 9040)"
 
-echo "== 10. syntaxe, aide, documentation"
+echo "== 10. le cache du client Steam"
+# Un appinfo.vdf comme l'ecrit le client (format v28, cles en ligne) : pour
+# chaque jeu, appinfo/depots/branches/public/buildid, en entier ou en chaine.
+octets() { for o in "$@"; do printf "\\$(printf %03o "$o")"; done; }
+le32() { octets $(($1 & 255)) $(($1 >> 8 & 255)) $(($1 >> 16 & 255)) $(($1 >> 24 & 255)); }
+fiche_client() { # <appid> <build> [chaine] : une entree, sur la sortie standard
+   { octets 0; printf 'appinfo\000'
+       octets 2; printf 'appid\000'; le32 "$1"
+       octets 0; printf 'depots\000'
+         octets 0; printf 'branches\000'
+           octets 0; printf 'beta\000'; octets 2; printf 'buildid\000'; le32 999999; octets 8
+           octets 0; printf 'public\000'
+             if [ -n "${3:-}" ]; then octets 1; printf 'buildid\000%s\000' "$2"; else octets 2; printf 'buildid\000'; le32 "$2"; fi
+           octets 8
+         octets 8
+       octets 8
+     octets 8
+     octets 8
+   } >"$T/corps"
+   le32 "$1"; le32 $((60 + $(wc -c <"$T/corps")))
+   le32 2; le32 1791900000; octets 0 0 0 0 0 0 0 0
+   i=0; while [ $i -lt 20 ]; do octets 0; i=$((i + 1)); done
+   le32 42
+   i=0; while [ $i -lt 20 ]; do octets 0; i=$((i + 1)); done
+   cat "$T/corps"
+}
+CLIENT="$HOME/Library/Application Support/Steam/appcache/appinfo.vdf"
+client() { # <appid>=<build>[:chaine] ... : le cache du client, frais
+   mkdir -p "$(dirname "$CLIENT")"
+   { le32 $((0x07564428)); le32 1
+     for e in "$@"; do b=${e#*=}; case $b in *:chaine) fiche_client "${e%%=*}" "${b%:chaine}" chaine ;; *) fiche_client "${e%%=*}" "$b" ;; esac; done
+     le32 0; } >"$CLIENT"
+}
+O="$R/build/cidre-outil"
+client 9050=200 9051=300:chaine 9052=0
+verif "cidre-outil builds : entier, chaine, la date ; jeu absent ou sans build : rien" "$(printf '9050\t200\t1791900000\n9051\t300\t1791900000')" "$("$O" builds "$CLIENT" 9050 9051 9052 9053)"
+verif "cidre-outil builds : la branche publique, pas une autre" "" "$("$O" builds "$CLIENT" 9050 | grep 999999)"
+printf 'pas un cache' >"$T/faux.vdf"
+verif "cidre-outil builds : un fichier d'un autre format ne donne rien (code 1)" "1 " "$("$O" builds "$T/faux.vdf" 9050 2>/dev/null; echo "$? $("$O" builds "$T/faux.vdf" 9050 2>/dev/null)")"
+head -c 120 "$CLIENT" >"$T/tronque.vdf"
+verif "cidre-outil builds : un fichier tronque, code 1" "1" "$("$O" builds "$T/tronque.vdf" 9050 >/dev/null 2>&1; echo $?)"
+if [ -s "$VRAI_HOME/Library/Application Support/Steam/appcache/appinfo.vdf" ]; then
+   # le vrai cache du client de cette machine, lu sans rien y ecrire
+   vrai=$("$O" builds "$VRAI_HOME/Library/Application Support/Steam/appcache/appinfo.vdf" 220 440 570 730 3527290 1903340); rc=$?
+   verif "vrai cache du client : lu (code 0)" "0" "$rc"
+   verif "vrai cache du client : des lignes « appid, build, date »" "0" "$(printf '%s\n' "$vrai" | grep -v '^$' | grep -cv "^[0-9]*$TAB[0-9]*$TAB[0-9]*$")"
+else
+   echo "  (pas de client Steam sur cette machine : vrai cache non lu)"
+fi
+# un jeu en retard que seul le client sait : pas de SteamCMD sans compte, mise a jour faite
+jeu 9050 100; publie 9050 200; rm -f "$A"; raz
+client 9050=200
+sortie=$(sh "$C" play 9050 2>&1)
+verif "client frais, cache absent : aucune demande sans compte" "0" "$(appels 'login anonymous')"
+verif "client frais : la mise a jour est faite, puis le jeu lance" "200 Jeu.exe 200 appid=9050" "$(build 9050) $(lance)"
+raz; sh "$C" play 9050 >/dev/null 2>&1
+verif "client frais, jeu a jour : aucun appel a SteamCMD" "0 Jeu.exe 200 appid=9050" "$(wc -l <"$F/appels" | tr -d ' ') $(lance)"
+# le client est plus en avance que le cache : le plus grand fait foi
+publie 9050 200; sh "$C" updates --refresh >/dev/null 2>&1; client 9050=300; publie 9050 300; raz
+sh "$C" play 9050 >/dev/null 2>&1
+verif "le client en sait plus que le cache : son build fait foi" "0 300" "$(appels 'login anonymous') $(build 9050)"
+# un client ancien ne dispense de rien... sauf s'il tourne et vient de relire
+# ses fiches : il ne recrit son cache que quand l'une change
+J="$HOME/Library/Application Support/Steam/logs/appinfo_log.txt"; mkdir -p "$(dirname "$J")"
+raz; touch -t 202601010000 "$CLIENT"; vieillir
+CIDRE_STEAM_TOURNE=false sh "$C" play 9050 >/dev/null 2>&1
+verif "client ancien, cache ancien : une demande sans compte" "1" "$(appels 'login anonymous')"
+raz; vieillir; echo "[2026-10-14 09:34:07] Apps changed: 1=2," >"$J"
+CIDRE_STEAM_TOURNE=true sh "$C" play 9050 >/dev/null 2>&1
+verif "cache du client ancien, mais client lance qui vient de relire : aucune demande" "0" "$(appels 'login anonymous')"
+raz; vieillir
+CIDRE_STEAM_TOURNE=false sh "$C" play 9050 >/dev/null 2>&1
+verif "meme journal recent, client ferme : une demande sans compte" "1" "$(appels 'login anonymous')"
+raz; vieillir; touch -t 202601010000 "$J"
+CIDRE_STEAM_TOURNE=true sh "$C" play 9050 >/dev/null 2>&1
+verif "client lance qui n'a pas relu depuis longtemps (hors ligne) : une demande sans compte" "1" "$(appels 'login anonymous')"
+printf 'pas un cache' >"$CLIENT"; raz; vieillir; touch "$J"
+CIDRE_STEAM_TOURNE=true sh "$C" play 9050 >/dev/null 2>&1
+verif "client illisible : ignore, une demande sans compte, le jeu part" "1 Jeu.exe 300 appid=9050" "$(appels 'login anonymous') $(lance)"
+# cidre updates : un client frais qui porte tous les jeux dispense de SteamCMD
+raz; vieillir
+ids=$(ls "$G" | grep -E '^[0-9]+$' | tr '\n' ' ')
+# (et le jeu du client Steam de la partie 6)
+set -- 9010=200; for i in $ids; do set -- "$@" "$i=$(build "$i")"; done
+client "$@"; publie 9050 300
+u=$(sh "$C" updates --json)
+verif "cidre updates, client frais et complet : aucune demande sans compte" "0" "$(appels 'login anonymous')"
+printf '%s' "$u" | plutil -convert json -o /dev/null - 2>/dev/null && ok "cidre updates --json : JSON valide" || echec "cidre updates --json : JSON invalide : $u"
+verif "cidre updates : « verifie » est la date du cache du client" "$(stat -f %m "$CLIENT")" "$(champ_json "$(printf '%s' "$u" | tr '{' '\n' | grep '"appid": 9050,')" verifie)"
+# --fond : la main revient tout de suite ; une seule demande a la fois
+rm -f "$CLIENT"; raz; vieillir; echo 2 >"$F/lent"
+debut=$(date +%s); sh "$C" updates --fond; rc=$?; duree=$(( $(date +%s) - debut ))
+verif "--fond : code 0, sans attendre SteamCMD" "0 0" "$rc $duree"
+sh "$C" updates --fond
+i=0; while [ $i -lt 40 ] && [ -n "$(find "$A" -mmin +1)" ]; do sleep 0.25; i=$((i + 1)); done
+[ -z "$(find "$A" -mmin +1)" ] && ok "--fond : le cache est refait en arriere-plan" || echec "--fond : le cache n'a pas ete refait"
+sleep 1
+verif "deux --fond coup sur coup : une seule demande a SteamCMD (verrou)" "1" "$(appels 'login anonymous')"
+verif "le verrou est rendu" "" "$(ls -d "$A.verrou" 2>/dev/null)"
+raz; sh "$C" updates --fond
+verif "--fond, cache frais : rien n'est demande" "0" "$(sleep 1; appels 'login anonymous')"
+# une verification abandonnee (trop lente) ne laisse rien derriere elle
+raz; vieillir; echo 3 >"$F/lent"
+CIDRE_MAJ_BUDGET=1 sh "$C" play 9050 >/dev/null 2>&1
+sleep 4
+verif "verification abandonnee : ni .rc ni .abandon laisses dans le cache" "" "$(ls "$(dirname "$A")" | grep -e '\.rc\.' -e abandon)"
+rm -f "$F/lent"
+
+echo "== 11. syntaxe, aide, documentation"
 for f in cidre tests/tester_maj_avant_lancement.sh; do
    sh -n "$R/$f" 2>/dev/null && ok "sh -n $f" || echec "sh -n $f"
 done
 LC_ALL=C awk -v paires="1=5 2=7 3=9" -f "$R/tests/majs_steam.awk" "$A" >/dev/null 2>&1 && ok "majs_steam.awk s'execute" || echec "majs_steam.awk en erreur"
 verif "cidre help : rien sur la sortie d'erreur" "" "$(sh "$C" help 2>&1 >/dev/null)"
 verif "cidre help : --sans-maj documente" "1" "$(sh "$C" help 2>/dev/null | grep -c '^  cidre play <id> \[--sans-maj\]')"
+verif "cidre help : --fond documente" "1" "$(sh "$C" help 2>/dev/null | grep -c '^  cidre updates .*\[--fond\]')"
 verif "outil-steam/profils.toml : option documentee et livree" "2" "$(grep -c -e '^#   maj_avant_lancement ' -e '^maj_avant_lancement = true$' "$R/outil-steam/profils.toml")"
 verif "profils/README.md : option documentee" "1" "$(grep -c '^### Mise à jour avant le lancement' "$R/profils/README.md")"
 

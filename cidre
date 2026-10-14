@@ -184,40 +184,116 @@ json_ou_null() { [ -n "$1" ] && json "$1" || printf null; }
 dire() { if [ "$JSON" = oui ]; then printf '%s\n' "$*" >&2; else printf '%s\n' "$*"; fi; }
 evenement() { [ "$JSON" != oui ] || printf '%s\n' "$1"; }
 
+# Deux sources pour le build que publie Steam : APPINFO, que remplit SteamCMD
+# sans compte (quelques secondes, davantage quand il se met lui-meme a jour), et
+# le cache du client Steam (CLIENT_APPINFO), qui suit de lui-meme les fiches des
+# jeux du compte et que cidre-outil lit en quelques millisecondes, sans reseau.
+# Un build publie ne recule pas : des deux, le plus grand fait foi.
+CLIENT_APPINFO="$STEAM/appcache/appinfo.vdf"
+CLIENT_JOURNAL="$STEAM/logs/appinfo_log.txt"
 appinfo_perime() { [ ! -s "$APPINFO" ] || [ -n "$(find "$APPINFO" -mmin +"$MAJ_TTL" 2>/dev/null)" ]; }
+# Le client Steam redemande les fiches de son compte toutes les quinze minutes
+# environ (une ligne dans son appinfo_log.txt a chaque fois) et ne recrit son
+# cache que si l'une a change (journal du client, 2026-10-14). Son cache est
+# donc juste s'il a ete ecrit recemment, ou si le client tourne et vient de
+# redemander, aussi ancien soit-il.
+client_tourne() {
+   if [ -n "${CIDRE_STEAM_TOURNE:-}" ]; then sh -c "$CIDRE_STEAM_TOURNE" >/dev/null 2>&1
+   else pgrep -x steam_osx >/dev/null 2>&1; fi
+}
+client_frais() {
+   [ -s "$CLIENT_APPINFO" ] || return 1
+   [ -n "$(find "$CLIENT_APPINFO" -mmin -"$MAJ_TTL" 2>/dev/null)" ] && return 0
+   [ -n "$(find "$CLIENT_JOURNAL" -mmin -"$MAJ_TTL" 2>/dev/null)" ] && client_tourne
+}
+# « appid <TAB> build » que le cache du client donne pour ces jeux (rien sans lui)
+builds_client() { [ $# -gt 0 ] && [ -s "$CLIENT_APPINFO" ] && outil_pret 2>/dev/null && "$OUTIL" builds "$CLIENT_APPINFO" "$@" 2>/dev/null | cut -f1,2; }
 # un jeu installe depuis la derniere lecture n'y est pas encore
 appinfo_sans() { [ "$(acf "$1")" -nt "$APPINFO" ] && ! grep -q "^AppID : $1," "$APPINFO" 2>/dev/null; }
+# Sait-on, de fraiche date (moins de MAJ_TTL minutes), ce que Steam publie pour ce jeu ?
+connu_frais() {
+   { ! appinfo_perime && grep -q "^AppID : $1," "$APPINFO" 2>/dev/null; } ||
+   { client_frais && [ -n "$(builds_client "$1")" ]; }
+}
+# la date de ce qu'on sait : la plus recente des deux sources (pour le client,
+# sa derniere relecture quand il tourne, sinon l'ecriture de son cache)
+verifie_le() {
+   vl_a=$(stat -f %m "$APPINFO" 2>/dev/null); vl_c=$(stat -f %m "$CLIENT_APPINFO" 2>/dev/null)
+   vl_j=$(stat -f %m "$CLIENT_JOURNAL" 2>/dev/null)
+   [ -n "$vl_j" ] && [ -n "$vl_c" ] && [ "$vl_j" -gt "$vl_c" ] && client_tourne && vl_c=$vl_j
+   [ -n "$vl_c" ] && [ -n "$(builds_client "$1")" ] && [ "$vl_c" -gt "${vl_a:-0}" ] && vl_a=$vl_c
+   printf '%s' "$vl_a"
+}
+# Une seule demande a SteamCMD a la fois (lancement, `cidre updates`, sa
+# variante en fond) : la seconde attend la fin de la premiere et s'en sert.
+# 0 : le verrou est a nous ; 1 : une autre a refait le cache pendant qu'on
+# attendait ; 2 : elle n'a rien rapporte. Un verrou de plus de 2 minutes est
+# un reste (commande tuee) : on le reprend.
+appinfo_verrou() {
+   av_v="$APPINFO.verrou"; mkdir -p "$(dirname "$APPINFO")"
+   av_t=$(stat -f %m "$APPINFO" 2>/dev/null); av_n=0
+   while ! mkdir "$av_v" 2>/dev/null; do
+      if [ -n "$(find "$av_v" -maxdepth 0 -mmin +2 2>/dev/null)" ]; then rmdir "$av_v" 2>/dev/null; continue; fi
+      sleep 0.2; av_n=$((av_n + 1))
+      if [ ! -d "$av_v" ]; then
+         [ "$(stat -f %m "$APPINFO" 2>/dev/null)" != "$av_t" ] && return 1
+         return 2
+      fi
+      [ $av_n -lt 900 ] || return 2
+   done
+   return 0
+}
 # Redemande a Steam la fiche publique des jeux installes. 0 : cache neuf ;
 # 1 : Steam n'a pas repondu ; 2 : SteamCMD introuvable.
 appinfo_rafraichir() {
+   [ -n "$(resolve_steamcmd)" ] || return 2
+   appinfo_verrou
+   case $? in 1) return 0 ;; 2) return 1 ;; esac
+   appinfo_demander; ar_rc=$?
+   rmdir "$APPINFO.verrou" 2>/dev/null
+   return $ar_rc
+}
+appinfo_demander() {
    ar_d=""
    for ar_a in $(appids); do [ -n "$(champ "$ar_a" buildid)" ] && ar_d="$ar_d +app_info_print $ar_a"; done
    [ -n "$ar_d" ] || return 0
    SCMD=$(resolve_steamcmd); [ -n "$SCMD" ] || return 2
-   mkdir -p "$(dirname "$APPINFO")"
    scmd_anonyme +app_info_update 1 $ar_d +quit >"$APPINFO.tmp.$$" 2>&1
    grep -q "^AppID : " "$APPINFO.tmp.$$" || { rm -f "${APPINFO:?}.tmp.$$"; return 1; }
    mv "$APPINFO.tmp.$$" "$APPINFO"
 }
 # La meme, sans faire attendre un lancement plus de MAJ_BUDGET secondes (3 :
-# trop lent). La demande finit alors en fond : elle servira la fois suivante.
+# trop lent). La demande finit alors en fond : elle servira la fois suivante,
+# et efface derriere elle ce qu'on n'attend plus.
 appinfo_rafraichir_borne() {
    [ -n "$(resolve_steamcmd)" ] || return 2
    mkdir -p "$(dirname "$APPINFO")"
    find "$(dirname "$APPINFO")" -name 'appinfo.txt.rc.*' -mmin +2 -delete 2>/dev/null
    ab_f="$APPINFO.rc.$$"; : >"$ab_f"
-   ( appinfo_rafraichir; echo $? >"$ab_f" ) >/dev/null 2>&1 3>&- &
+   ( appinfo_rafraichir; ab_r=$?
+     if [ -f "$ab_f.abandon" ]; then rm -f "${ab_f:?}" "${ab_f:?}.abandon"; else echo $ab_r >"$ab_f"; fi
+   ) >/dev/null 2>&1 3>&- &
    ab_n=$((MAJ_BUDGET * 5))
    while [ $ab_n -gt 0 ] && [ ! -s "$ab_f" ]; do sleep 0.2; ab_n=$((ab_n - 1)); done
-   [ -s "$ab_f" ] || return 3
-   ab_rc=$(cat "$ab_f"); rm -f "${ab_f:?}"
+   if [ ! -s "$ab_f" ]; then
+      : >"$ab_f.abandon"
+      [ -s "$ab_f" ] || return 3     # (sinon : finie a l'instant)
+   fi
+   ab_rc=$(cat "$ab_f"); rm -f "${ab_f:?}" "${ab_f:?}.abandon"
    return "${ab_rc:-1}"
 }
-# « appid, build installe, build publie » (tabulations) des jeux dont on connait les deux
+# « appid, build installe, build publie » (tabulations) des jeux dont on connait
+# les deux ; le build publie est le plus grand que donnent APPINFO et le client.
 builds() { # [appid] : ce jeu seulement
-   bu_p=""
-   for bu_a in ${1:-$(appids)}; do bu_b=$(champ "$bu_a" buildid); [ -n "$bu_b" ] && bu_p="$bu_p $bu_a=$bu_b"; done
-   [ -s "$APPINFO" ] && LC_ALL=C awk -v paires="$bu_p" -v texte=2 -f "$R/tests/majs_steam.awk" "$APPINFO"
+   bu_p=""; bu_i=""
+   for bu_a in ${1:-$(appids)}; do bu_b=$(champ "$bu_a" buildid); [ -n "$bu_b" ] && { bu_p="$bu_p $bu_a=$bu_b"; bu_i="$bu_i $bu_a"; }; done
+   [ -n "$bu_i" ] || return 0
+   { [ ! -s "$APPINFO" ] || LC_ALL=C awk -v paires="$bu_p" -v texte=2 -f "$R/tests/majs_steam.awk" "$APPINFO" | cut -f1,3
+     builds_client $bu_i
+   } | LC_ALL=C awk -F'\t' -v paires="$bu_p" '
+      $2 ~ /^[0-9]+$/ { if (!($1 in pub) || $2 + 0 > pub[$1] + 0) pub[$1] = $2 }
+      END { n = split(paires, p, " ")
+            for (i = 1; i <= n; i++) { split(p[i], q, "="); if (q[2] ~ /^[0-9]+$/ && q[1] in pub) printf "%s\t%s\t%s\n", q[1], q[2], pub[q[1]] } }'
 }
 build_publie() { builds "$1" | cut -f3; }
 # la branche Steam que suit le jeu (rien : la branche publique)
@@ -283,7 +359,7 @@ maj_etat() { # <appid> [cache]
    # mais deja tente sans effet » aussi.
    me_revoir=non
    if ! entier "$MAJ_DISPO"; then me_revoir=oui
-   elif appinfo_perime && { [ "$MAJ_DISPO" -le "$MAJ_INSTALLE" ] || { [ "$me_f" = faite ] && [ "$me_v" = "$MAJ_DISPO" ]; }; }; then me_revoir=oui; fi
+   elif ! connu_frais "$1" && { [ "$MAJ_DISPO" -le "$MAJ_INSTALLE" ] || { [ "$me_f" = faite ] && [ "$me_v" = "$MAJ_DISPO" ]; }; }; then me_revoir=oui; fi
    if [ $me_revoir = oui ]; then
       if [ "${2:-}" != cache ] && { appinfo_perime || appinfo_sans "$1"; }; then
          appinfo_rafraichir_borne
@@ -318,7 +394,7 @@ maj_json() { # <appid>
    case $mj_p in ''|*[!0-9.]*) mj_p=null ;; esac
    printf '"etat":"%s","build_installe":%s,"build_disponible":%s,"raison":%s,"message":%s,"avancement":%s,"octets":%s,"total":%s,"phase":%s,"avant_lancement":%s,"verifie":%s' \
       "$MAJ_ETAT" "$(nombre "$MAJ_INSTALLE")" "$(nombre "$MAJ_DISPO")" "$(json_ou_null "$MAJ_RAISON")" "$(json_ou_null "$MAJ_MESSAGE")" \
-      "$mj_p" "$(nombre "$mj_o")" "$(nombre "$mj_t")" "$(json_ou_null "$mj_ph")" "${MAJ_VOULUE:-true}" "$(nombre "$(stat -f %m "$APPINFO" 2>/dev/null)")"
+      "$mj_p" "$(nombre "$mj_o")" "$(nombre "$mj_t")" "$(json_ou_null "$mj_ph")" "${MAJ_VOULUE:-true}" "$(nombre "$(verifie_le "$1")")"
 }
 evenement_maj() { evenement "$(printf '{"evenement":"maj",%s}' "$(maj_json "$1")")"; }
 
@@ -406,8 +482,11 @@ telecharger() { # <appid> <windows|macos> <dl|maj>
    maj_oublier avancement rc
    if [ "$t_rc" -eq 0 ]; then
       maj_noter "$t_id" etat=faite "build_avant=$t_avant" "build_vise=$t_vise" "build_apres=$(champ "$t_id" buildid)"
-      # APPINFO ne dit pas le build qu'on vient d'installer : il est en retard
-      [ "$(build_publie "$t_id")" = "$(champ "$t_id" buildid)" ] || rm -f "${APPINFO:?}"
+      # APPINFO ignore le jeu, ou dit plus ancien que ce qu'on vient
+      # d'installer : il est en retard. (Plus recent : la mise a jour a ete sans
+      # effet, et il dit vrai.)
+      t_p=$(build_publie "$t_id"); t_b=$(champ "$t_id" buildid)
+      if ! entier "$t_p" || { entier "$t_b" && [ "$t_b" -gt "$t_p" ]; }; then rm -f "${APPINFO:?}"; fi
       return 0
    fi
    if [ "$t_rc" -eq 3 ]; then MAJ_RAISON=session
@@ -463,9 +542,19 @@ maj_avant_lancement() { # <appid>
    dire "Mise a jour avant le lancement : build $MAJ_INSTALLE -> $MAJ_DISPO (\`cidre play $1 --sans-maj\` pour jouer sans attendre)."
    MAJ_ETAT=en_cours; MAJ_RAISON=; MAJ_MESSAGE=; evenement_maj "$1"
    ml_os=windows; [ "$(plat "$1")" = macos ] && ml_os=macos
+   ml_vise=$MAJ_DISPO
    if telecharger "$1" "$ml_os" maj; then
-      MAJ_ETAT=faite; MAJ_INSTALLE=$(champ "$1" buildid)
-      dire "Mise a jour faite : build $MAJ_INSTALLE."
+      MAJ_INSTALLE=$(champ "$1" buildid)
+      if entier "$ml_vise" && entier "$MAJ_INSTALLE" && [ "$MAJ_INSTALLE" -lt "$ml_vise" ]; then
+         # SteamCMD a fini sans rien installer (« already up to date ») : le
+         # build reste en retard. Pas une mise a jour faite, et pas de nouvelle
+         # tentative pour ce build (maj_etat : ignoree, sans_effet).
+         MAJ_ETAT=ignoree; MAJ_RAISON=sans_effet; MAJ_DISPO=$ml_vise
+         dire "Mise a jour sans effet : SteamCMD dit le jeu a jour mais le laisse au build $MAJ_INSTALLE (publie : $ml_vise) ; elle ne sera pas retentee pour ce build. Lancement de la version installee."
+      else
+         MAJ_ETAT=faite
+         dire "Mise a jour faite : build $MAJ_INSTALLE."
+      fi
    else
       MAJ_ETAT=echouee; MAJ_INSTALLE=$(champ "$1" buildid)
       dire "$MAJ_MESSAGE Lancement de la version installee (build $MAJ_INSTALLE)."
@@ -521,7 +610,9 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
   cidre library [--json] [--refresh]   les jeux que possede ton compte (installes ou non)
                                   --json : "source":"bouteille" (avec "origine", "bouteille", "chemin") sur
                                   un jeu deja installe par CrossOver, Whisky ou Heroic, que cidre import reprend
-  cidre updates [--json] [--refresh]   les jeux installes dont une version plus recente est publiee
+  cidre updates [--json] [--refresh] [--fond]   les jeux installes dont une version plus recente est publiee
+                                  (lue dans le cache du client Steam, sinon demandee a Steam par SteamCMD)
+                                  --fond : rafraichir en arriere-plan et rendre la main aussitot
                                   --json : "etat" par jeu -- a_jour, disponible, en_cours ("avancement" en %,
                                   "octets", "total"), echouee ("raison", "message"), ignoree ("raison" :
                                   option, branche, sans_effet), inconnu -- et "source" (cidre : Cidre met a
@@ -562,11 +653,11 @@ USAGE
 
 cmd=${1:-help}; [ $# -gt 0 ] && shift
 # --json (n'importe ou) : sortie pour une interface (Verger), stable et parsable
-JSON=non; MAJ=non; SANS_MAJ=non
+JSON=non; MAJ=non; SANS_MAJ=non; FOND=non
 # `run` transmet ses arguments tels quels au programme
 [ "$cmd" = run ] || for a in "$@"; do
    shift
-   case $a in --json) JSON=oui ;; --refresh) MAJ=oui ;; --sans-maj|--no-update) SANS_MAJ=oui ;; *) set -- "$@" "$a" ;; esac
+   case $a in --json) JSON=oui ;; --refresh) MAJ=oui ;; --sans-maj|--no-update) SANS_MAJ=oui ;; --fond|--background) FOND=oui ;; *) set -- "$@" "$a" ;; esac
 done
 case "$cmd" in
   list|ls)
@@ -1039,22 +1130,33 @@ case "$cmd" in
     # Gardee en cache une demi-heure ; --refresh la redemande, et un jeu
     # installe depuis aussi. Un jeu du dossier Cidre porte en plus l'etat de sa
     # mise a jour (maj_etat) : c'est Cidre qui la fait.
+    # Le cache du client Steam, frais et complet, dispense de SteamCMD.
     neuf=non
     [ "$MAJ" = oui ] || appinfo_perime && neuf=oui
     [ "$neuf" = oui ] || for id in $(appids); do appinfo_sans "$id" && { neuf=oui; break; }; done
+    if [ "$neuf" = oui ] && [ "$MAJ" != oui ] && client_frais; then
+      u_ids=$(for id in $(appids); do [ -n "$(champ "$id" buildid)" ] && echo "$id"; done)
+      [ "$(builds_client $u_ids | wc -l)" -eq "$(printf '%s\n' $u_ids | grep -c .)" ] && neuf=non
+    fi
+    # --fond (Verger, a son ouverture) : la demande part detachee, et la main
+    # revient tout de suite ; elle servira au premier lancement.
+    if [ "$FOND" = oui ]; then
+      [ "$neuf" = non ] || ( trap '' HUP; appinfo_rafraichir ) </dev/null >/dev/null 2>&1 3>&- &
+      exit 0
+    fi
     if [ "$neuf" = oui ]; then
       appinfo_rafraichir
       case $? in
         0) ;;
         2) echo "SteamCMD introuvable (ni tools/steamcmd/ ni PATH)." >&2; exit 1 ;;
         *) # ce qu'on savait reste vrai : un build publie ne recule pas
-           [ -s "$APPINFO" ] || { echo "Steam n'a pas repondu (hors ligne ?)." >&2; exit 1; }
-           echo "Steam n'a pas repondu (hors ligne ?) : etat lu le $(date -r "$(stat -f %m "$APPINFO")" '+%Y-%m-%d a %H:%M')." >&2 ;;
+           [ -s "$APPINFO" ] || [ -s "$CLIENT_APPINFO" ] || { echo "Steam n'a pas repondu (hors ligne ?)." >&2; exit 1; }
+           echo "Steam n'a pas repondu (hors ligne ?) : etat lu le $(date -r "$(stat -f %m "$APPINFO" 2>/dev/null || stat -f %m "$CLIENT_APPINFO")" '+%Y-%m-%d a %H:%M')." >&2 ;;
       esac
     fi
-    [ -s "$APPINFO" ] || { [ "$JSON" = oui ] && echo "[]"; exit 0; }
     [ "$JSON" = oui ] && printf '['
     sep=""
+    mkdir -p "$(dirname "$APPINFO")"
     builds >"$APPINFO.builds.$$"
     while IFS="$TAB" read -r u_a u_i u_p; do
       [ "$u_p" -le "$u_i" ] && u_j=true || u_j=false

@@ -47,7 +47,7 @@ Ce que fait le lancement, cas par cas :
 |---|---|
 | Jeu du client Steam (natif macOS, ou Windows par le wrapper) | rien : Steam le met à jour lui-même avant de le lancer |
 | Jeu hors Steam (`cidre add`) | rien : pas de build à comparer |
-| Jeu du dossier Cidre, à jour | lancement ; la vérification lit un cache de 30 minutes (`cidre updates`) |
+| Jeu du dossier Cidre, à jour | lancement, sans attendre : le build publié est lu dans le cache du client Steam, sinon dans celui de `cidre updates` (30 minutes) ; SteamCMD n'est interrogé, 8 s au plus, que si aucun des deux n'est frais |
 | Build plus récent publié | téléchargement de ce qui a changé (SteamCMD, session mémorisée), puis lancement |
 | Jeu repris d'une bouteille (`cidre import`) | comme un jeu téléchargé : mis à jour sur place ; la bouteille garde sa version (clone APFS : seuls les fichiers changés prennent de la place) |
 | Option à `false`, ou `--sans-maj` | lancement de la version installée ; la mise à jour connue est annoncée en une ligne |
@@ -55,6 +55,15 @@ Ce que fait le lancement, cas par cas :
 | Hors ligne, Steam trop lent (plus de 8 s), SteamCMD absent | une ligne le dit, lancement de la version installée |
 | Session Steam absente, place insuffisante, échec en route | une ligne dit pourquoi et quoi faire, lancement de la version installée ; la tentative est reprise au lancement suivant |
 | Mise à jour du même jeu déjà en cours ailleurs | refus (code 4) : le jeu serait lancé à moitié remplacé |
+
+Le build publié vient de deux sources, et la plus grande l'emporte : le cache
+du client Steam (`appcache/appinfo.vdf`, lu par `cidre-outil builds`, sans
+réseau), tenu pour frais s'il a été écrit depuis moins de 30 minutes, ou si le
+client tourne et a relu les fiches de son compte depuis moins de 30 minutes
+(il le fait toutes les quinze minutes environ et ne réécrit son cache que si
+l'une a changé) ; et `cache/appinfo.txt`, que remplit SteamCMD sans compte.
+`cidre updates --fond` rafraîchit ce dernier en arrière-plan (Verger le fait à
+son ouverture) ; une seule demande à SteamCMD tourne à la fois.
 
 Un build installé plus récent que le build « publié » est tenu pour à jour :
 les builds de Steam ne font que croître, c'est la fiche lue qui est en retard.
