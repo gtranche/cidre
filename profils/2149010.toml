@@ -32,12 +32,15 @@ dx12 = true
 # correctif winemac de l'EDID (mode emule), c'etait celle de la dalle Retina
 # (3456x2234 sur un MacBook Pro 16") et le jeu rendait 4 fois plus de pixels que
 # l'espace n'en montre (12 fps contre 75 en 1728x1084, M1 Max, 2026-10-14). Remis
-# a 0, il redetecte la taille de l'espace. Ne vaut qu'avec ce correctif.
+# a 0, il redetecte la taille de l'espace. Ne vaut qu'avec ce correctif. LN
+# garde sa resolution dans la section de sa propre classe (TarsierUtilities),
+# pas dans celle d'Unreal ([/Script/Engine.GameUserSettings], qu'il n'utilise
+# pas) : l'id -2 remplace une premiere entree qui visait cette derniere.
 [[reglages_jeu]]
-id = "resolution-edid"
+id = "resolution-edid-2"
 fichier = "AppData/Local/Little Nightmares Enhanced Edition/Saved/Config/WindowsNoEditor/GameUserSettings.ini"
 format = "ini"
-section = "/Script/Engine.GameUserSettings"
+section = "/Script/TarsierUtilities.TarGameUserSettings"
 valeurs = { "ResolutionSizeX" = "0", "ResolutionSizeY" = "0", "LastUserConfirmedResolutionSizeX" = "0", "LastUserConfirmedResolutionSizeY" = "0" }
 
 [compat]
