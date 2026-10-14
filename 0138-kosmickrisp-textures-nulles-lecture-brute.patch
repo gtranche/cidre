@@ -1,0 +1,28 @@
+Generated-by: LLM
+
+KosmicKrisp : lectures de texture d un descripteur nul laissees brutes (CIDRE_TEXTURES_NULLES_SANS_BRANCHE) : Metal rend 0 pour une poignee nulle (sample, read, gather, bias, gradient sondes), donc ni branche ni select ; le select de 0136 passait par le contournement 10 (bcsel garde par buf0) qui triplait le temps d un filtre de 32 lectures ; txf_ms et les lectures sparse gardent le select
+
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_null_images.c
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_null_images.c
+@@ -91,8 +91,21 @@
+ }
+ 
+ static bool
++tex_returns_zero_on_null(const nir_instr *instr)
++{
++   if (!tex_reads_texels(instr))
++      return false;
++
++   const nir_tex_instr *tex = nir_instr_as_tex(instr);
++   return tex->op != nir_texop_txf_ms && !tex->is_sparse;
++}
++
++static bool
+ lower(nir_builder *b, nir_instr *instr, UNUSED void *data)
+ {
++   if (kk_null_texture_select_enabled() && tex_returns_zero_on_null(instr))
++      return false;
++
+    b->cursor = nir_before_instr(instr);
+ 
+    nir_def *def;
