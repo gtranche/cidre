@@ -1,0 +1,83 @@
+Generated-by: LLM
+
+KosmicKrisp : horodatages de calcul precis (CIDRE_HORODATAGES_PRECIS) : granularite Metal 4 Precise et une case par ecriture dans un meme encodeur, pour mesurer le temps GPU de chaque dispatch (VKD3D_TIMESTAMP_PROFILE)
+
+--- a/src/kosmickrisp/bridge/mtl_encoder.h
++++ b/src/kosmickrisp/bridge/mtl_encoder.h
+@@ -9,6 +9,7 @@
+ 
+ #include "mtl_types.h"
+ 
++#include <stdbool.h>
+ #include <stdint.h>
+ 
+ /* Common encoder utils */
+@@ -142,7 +143,8 @@ void mtl_draw_indexed_primitives_indirect(mtl_render_encoder *encoder,
+                                           uint64_t addr);
+ 
+ void mtl_compute_write_timestamp(mtl_compute_encoder *encoder,
+-                                 mtl_counter_heap *heap, uint32_t index);
++                                 mtl_counter_heap *heap, uint32_t index,
++                                 bool precise);
+ 
+ void mtl_render_write_timestamp(mtl_render_encoder *encoder,
+                                 enum mtl_render_stages stage,
+--- a/src/kosmickrisp/bridge/mtl_encoder.m
++++ b/src/kosmickrisp/bridge/mtl_encoder.m
+@@ -498,13 +498,16 @@
+ 
+ void
+ mtl_compute_write_timestamp(mtl_compute_encoder *encoder,
+-                            mtl_counter_heap *heap, uint32_t index)
++                            mtl_counter_heap *heap, uint32_t index,
++                            bool precise)
+ {
+    @autoreleasepool {
+       id<MTL4ComputeCommandEncoder> enc =
+          (id<MTL4ComputeCommandEncoder>)encoder;
+       id<MTL4CounterHeap> h = (id<MTL4CounterHeap>)heap;
+-      [enc writeTimestampWithGranularity:MTL4TimestampGranularityRelaxed
++      [enc writeTimestampWithGranularity:precise
++                                            ? MTL4TimestampGranularityPrecise
++                                            : MTL4TimestampGranularityRelaxed
+                                 intoHeap:h
+                                  atIndex:index];
+    }
+--- a/src/kosmickrisp/vulkan/kk_query_pool.c
++++ b/src/kosmickrisp/vulkan/kk_query_pool.c
+@@ -388,6 +388,15 @@ kk_pipeline_stages_to_mtl_render_stage(VkPipelineStageFlags2 vk_flags)
+    return MTL_RENDER_STAGE_TILE;
+ }
+ 
++static bool
++kk_precise_timestamps(void)
++{
++   static int enabled = -1;
++   if (enabled < 0)
++      enabled = getenv("CIDRE_HORODATAGES_PRECIS") != NULL;
++   return enabled;
++}
++
+ static mtl_counter_heap *
+ kk_ts_heap_for(const struct kk_query_pool *pool, uint32_t query,
+                uint32_t *index_out)
+@@ -455,7 +464,8 @@ kk_CmdWriteTimestamp2(VkCommandBuffer commandBuffer,
+       bool reused = false;
+       util_dynarray_foreach(&cmd->ts_stage_map, struct kk_ts_stage_entry,
+                             entry) {
+-         if (entry->stage == KK_TS_STAGE_COMPUTE && entry->pool == pool) {
++         if (entry->stage == KK_TS_STAGE_COMPUTE && entry->pool == pool &&
++             !kk_precise_timestamps()) {
+             heap = entry->heap;
+             heap_index = entry->index;
+             reused = true;
+@@ -470,7 +480,8 @@ kk_CmdWriteTimestamp2(VkCommandBuffer commandBuffer,
+                                            .index = heap_index};
+          util_dynarray_append(&cmd->ts_stage_map, entry);
+ 
+-         mtl_compute_write_timestamp(cmd->metal.compute, heap, heap_index);
++         mtl_compute_write_timestamp(cmd->metal.compute, heap, heap_index,
++                                     kk_precise_timestamps());
+       }
+    }
+ 
