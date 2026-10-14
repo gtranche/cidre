@@ -1,0 +1,166 @@
+Generated-by: LLM
+
+KosmicKrisp : la trace (CIDRE_DISPATCH_TRACE=<dossier>) couvre aussi les passes de rendu : MSL de chaque nuanceur de fragment (fs-%p.metal) et une ligne par passe dans passes.txt (taille, attachements couleur, dessins, nuanceurs de fragment et leurs dessins)
+
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+@@ -320,6 +320,14 @@
+    struct vk_command_buffer vk;
+ 
+    struct {
++      const void *fs[8];
++      uint32_t fs_draws[8];
++      uint32_t fs_count;
++      uint32_t draws;
++      uint32_t width, height, color_count;
++   } pass_trace;
++
++   struct {
+       mtl_command_allocator *allocator;
+       mtl_command_buffer *cmd_buf;
+       mtl_render_encoder *render;
+@@ -429,6 +437,9 @@
+ void kk_barrier_stats_print(void);
+ void kk_draw_stats_print(void);
+ void kk_cs_end_render_pass(struct kk_cmd_buffer *cmd);
++
++bool kk_pass_trace_enabled(void);
++void kk_pass_trace_draw(struct kk_cmd_buffer *cmd, const void *fs);
+ void kk_cmd_bind_root_to_argument_table(struct kk_cmd_buffer *cmd,
+                                         uint64_t addr);
+ 
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+@@ -8,6 +8,7 @@
+ #include "kk_cmd_buffer.h"
+ #include "kk_debug.h"
+ 
++#include "util/simple_mtx.h"
+ #include "util/u_atomic.h"
+ 
+ #include <stdlib.h>
+@@ -638,6 +639,13 @@
+ 
+    kk_encoder_update_debug(cmd, cmd->metal.render);
+    cmd->state.argtable_addr0 = KK_ARGTABLE_UNKNOWN;
++
++   if (kk_pass_trace_enabled()) {
++      memset(&cmd->pass_trace, 0, sizeof(cmd->pass_trace));
++      cmd->pass_trace.width = state->render.area.extent.width;
++      cmd->pass_trace.height = state->render.area.extent.height;
++      cmd->pass_trace.color_count = state->render.color_att_count;
++   }
+ 
+    if (conflicts_older)
+       mtl_barrier_after_queue_stages(cmd->metal.render, MTL_STAGE_ALL,
+@@ -833,7 +841,62 @@
+    util_dynarray_clear(&cmd->post_render_writes);
+ }
+ 
++bool
++kk_pass_trace_enabled(void)
++{
++   static int enabled = -1;
++   if (enabled < 0)
++      enabled = getenv("CIDRE_DISPATCH_TRACE") != NULL;
++   return enabled;
++}
++
+ void
++kk_pass_trace_draw(struct kk_cmd_buffer *cmd, const void *fs)
++{
++   cmd->pass_trace.draws++;
++   for (uint32_t i = 0; i < cmd->pass_trace.fs_count; i++) {
++      if (cmd->pass_trace.fs[i] == fs) {
++         cmd->pass_trace.fs_draws[i]++;
++         return;
++      }
++   }
++   if (cmd->pass_trace.fs_count < ARRAY_SIZE(cmd->pass_trace.fs)) {
++      cmd->pass_trace.fs[cmd->pass_trace.fs_count] = fs;
++      cmd->pass_trace.fs_draws[cmd->pass_trace.fs_count] = 1;
++      cmd->pass_trace.fs_count++;
++   }
++}
++
++static void
++kk_pass_trace_end(struct kk_cmd_buffer *cmd)
++{
++   static FILE *log = NULL;
++   static simple_mtx_t log_lock = SIMPLE_MTX_INITIALIZER;
++   static unsigned lines = 0;
++   char line[512];
++   int n = snprintf(line, sizeof(line), "RP %ux%u c%u d%u",
++                    cmd->pass_trace.width, cmd->pass_trace.height,
++                    cmd->pass_trace.color_count, cmd->pass_trace.draws);
++   for (uint32_t i = 0; i < cmd->pass_trace.fs_count && n < (int)sizeof(line) - 40; i++)
++      n += snprintf(line + n, sizeof(line) - n, "%s%p:%u", i ? "," : " fs=",
++                    cmd->pass_trace.fs[i], cmd->pass_trace.fs_draws[i]);
++   memset(&cmd->pass_trace, 0, sizeof(cmd->pass_trace));
++
++   simple_mtx_lock(&log_lock);
++   if (!log) {
++      char path[1024];
++      snprintf(path, sizeof(path), "%s/passes.txt", getenv("CIDRE_DISPATCH_TRACE"));
++      log = fopen(path, "a");
++   }
++   if (log) {
++      fprintf(log, "%s\n", line);
++      if (++lines % 256 == 0)
++         fflush(log);
++   }
++   simple_mtx_unlock(&log_lock);
++}
++
++void
+ cs_end(struct kk_cmd_buffer *cmd)
+ {
+    assert(cmd);
+@@ -842,6 +905,8 @@
+ 
+    /* Render first as it may open a compute encoder for post render writes. */
+    if (cmd->metal.render) {
++      if (kk_pass_trace_enabled())
++         kk_pass_trace_end(cmd);
+       end_encoder(cmd, cmd->metal.render);
+       cmd->metal.render = NULL;
+ 
+@@ -888,6 +953,8 @@
+ 
+    kk_collect_render_images(cmd, &cmd->closing_writes);
+ 
++   if (kk_pass_trace_enabled())
++      kk_pass_trace_end(cmd);
+    cmd->metal.render_closing = cmd->metal.render;
+    cmd->metal.closing_needs_barrier = false;
+    cmd->metal.render = NULL;
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -2901,6 +2901,9 @@
+       if (data->per_sequence_root_addr)
+          kk_cmd_bind_root_to_argument_table(cmd, cmd->state.gfx.root_override);
+ 
++      if (kk_pass_trace_enabled())
++         kk_pass_trace_draw(cmd, cmd->state.shaders[MESA_SHADER_FRAGMENT]);
++
+       kk_dispatch_draw(cmd, draw_data);
+    }
+ 
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -1616,6 +1616,15 @@
+       mesa_logi("%s\n", data->code);
+ 
+    const char *trace_dir = getenv("CIDRE_DISPATCH_TRACE");
++   if (trace_dir && stage == MESA_SHADER_FRAGMENT && data->code) {
++      char path[1024];
++      snprintf(path, sizeof(path), "%s/fs-%p.metal", trace_dir, (void *)shader);
++      FILE *f = fopen(path, "w");
++      if (f) {
++         fprintf(f, "%s\n", data->code);
++         fclose(f);
++      }
++   }
+    if (trace_dir && stage == MESA_SHADER_COMPUTE && data->code) {
+       char path[1024];
+       snprintf(path, sizeof(path), "%s/cs-%p.metal", trace_dir, (void *)shader);
