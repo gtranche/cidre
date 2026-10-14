@@ -263,6 +263,10 @@ distants() {
 # dossier (les colonnes suivantes ne sont pas lues).
 # Pose ETAT et le compte rendu.
 steam_dabord() {
+   # d'abord, faire descendre le nuage par le client (seance Steam au nom du
+   # jeu, attendue jusqu'a la fin de sa synchro) : ce que Steam a la-haut est
+   # alors sur ce Mac, et remotecache.vdf dit ce que garde le nuage
+   l=$(sh "$R/tests/seance_steam_cloud.sh" "$APPID" 2>/dev/null) && [ -z "$l" ] || dire "$l"
    NSTEAM=0; nbout=0
    while IFS="$TAB" read -r s d reste; do
       NSTEAM=$((NSTEAM + $(compter "$d")))

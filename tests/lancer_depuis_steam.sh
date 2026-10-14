@@ -517,6 +517,15 @@ fi
 # client macOS ne resout pas ces racines), restauration depuis le dossier des
 # copies de Cidre de ce qui y est plus recent. Non destructif, non bloquant.
 # cf. tests/sync_saves_steam.sh, tests/lier_saves_steam.sh.
+# Un jeu lance par `cidre play` (CIDRE_SEANCE=1), et non par le bouton de Steam :
+# le client ne synchronise pas son nuage au lancement, seulement a la sortie.
+# Une seance Steam au nom du jeu, ouverte puis fermee, declenche cette synchro
+# (qui descend le nuage) et on attend sa fin : le jeu trouve des le premier
+# lancement une sauvegarde faite ailleurs. ~1 s quand tout est a jour ; rien si
+# le client est ferme ou hors ligne. cf. tests/seance_steam_cloud.sh.
+if [ -n "$JEU" ] && [ "${CIDRE_SEANCE:-}" = 1 ] && [ "${CIDRE_SANS_STEAM:-}" != 1 ]; then
+   sh "$R/tests/seance_steam_cloud.sh" "$JEU" 2>&1 | tee -a "$JOURNAL" || true
+fi
 if [ -n "$JEU" ]; then
    sh "$R/tests/sync_saves_steam.sh" "$JEU" restore >>"$JOURNAL" 2>&1 || true
 fi

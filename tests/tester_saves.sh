@@ -6,11 +6,15 @@
 # que le jeu declare a Steam Cloud, sans rien perdre) et le dossier des copies
 # de tests/sync_saves_steam.sh. Enfin les sauvegardes d'un jeu repris d'une
 # bouteille (tests/reprendre_saves_bouteille.sh) : plus anciennes, plus recentes,
-# absentes, jeu que Steam synchronise. Rien n'est lance, rien de reel n'est touche.
+# absentes, jeu que Steam synchronise ; et la seance Steam qui fait descendre le
+# nuage avant un lancement (tests/seance_steam_cloud.sh, avec un faux client).
+# Rien n'est lance, rien de reel n'est touche.
 #   sh tests/tester_saves.sh
 set -u
 R=$(cd "$(dirname "$0")/.." && pwd)
 S="$R/tests/deviner_saves.sh"
+# jamais de vraie seance Steam pendant les essais (tests/seance_steam_cloud.sh)
+export CIDRE_SEANCE_STEAM=0
 T=$(mktemp -d "${TMPDIR:-/tmp}/tester-saves.XXXXXX")
 trap 'rm -rf "$T"' EXIT
 nb=0; ko=0
@@ -372,6 +376,62 @@ mkdir -p "$C/saves/9105"; echo "copie plus recente" >"$C/saves/9105/s.sav"; touc
 CIDRE_FICHE_STEAM_CLOUD=- sh "$Y" 9105 restore >/dev/null 2>&1
 verif "jeu sans Steam Cloud : la copie de Cidre plus recente est toujours restauree" "copie plus recente" "$(cat "$U/AppData/Roaming/Jeu 95/s.sav")"
 unset CIDRE_STEAM_USERDATA
+
+
+echo "== seance Steam avant le lancement : faire descendre le nuage (tests/seance_steam_cloud.sh)"
+SC="$R/tests/seance_steam_cloud.sh"
+FS="$T/faux-steam"; mkdir -p "$FS/logs" "$FS/Steam.AppBundle"
+JC="$FS/logs/cloud_log.txt"; : >"$JC"
+# un faux cidre-outil : il ajoute au journal du client ce que dit FAUX_JOURNAL,
+# et rend FAUX_SORTIE / FAUX_RC ; chaque appel est note
+cat >"$T/outil-faux" <<'FIN'
+#!/bin/sh
+echo "$*" >>"$FAUX_APPELS"
+[ -z "${FAUX_JOURNAL:-}" ] || printf '%b' "$FAUX_JOURNAL" >>"$CIDRE_CLOUD_LOG"
+printf '%b' "${FAUX_SORTIE:-nuage_compte=1\nnuage_jeu=1\netat=ok\n}"
+exit ${FAUX_RC:-0}
+FIN
+chmod +x "$T/outil-faux"
+export FAUX_APPELS="$T/appels"
+connexion() { printf '[2026-10-14 09:00:00] [%s, 0,0,0,0] etat\n' "$1" >>"$FS/logs/connection_log.txt"; }
+seance() { # <fiche> [env...] : la sortie du script ; les appels de l'outil dans $FAUX_APPELS
+   : >"$FAUX_APPELS"
+   CIDRE_STEAM_DIR="$FS" CIDRE_CLOUD_LOG="$JC" CIDRE_OUTIL="$T/outil-faux" CIDRE_STEAM_TOURNE="${TOURNE:-true}" \
+   CIDRE_FICHE_STEAM_CLOUD="$1" CIDRE_SEANCE_ATTENTE="${ATT:-3}" CIDRE_SEANCE_STEAM="${SEANCE:-1}" sh "$SC" 77 2>&1
+}
+appels() { wc -l <"$FAUX_APPELS" | tr -d ' '; }
+h=$(date '+%Y-%m-%d %H:%M:%S')
+connexion "Logged On"
+verif "jeu Windows seulement : rien, pas de seance" "|0" "$(seance copie)|$(appels)"
+verif "CIDRE_SEANCE_STEAM=0 : rien" "|0" "$(SEANCE=0 seance steam-api)|$(appels)"
+verif "client ferme : dit, pas de seance, pas d'ouverture" "1|0" "$(TOURNE=false seance steam-api | grep -c 'client Steam ferme')|$(appels)"
+connexion "Logged Off"
+verif "client hors ligne : dit, pas de seance" "1|0" "$(seance steam-api | grep -c 'hors ligne, nuage non verifie')|$(appels)"
+connexion "Logged On"
+o=$(FAUX_JOURNAL="[$h] [AppID 77] Starting sync (up,AC Exit,)\n[$h] [AppID 77] Download OK for file user_0.dat\n[$h] [AppID 77] Download OK for file opts.json\n[$h] [AppID 77] YldWriteCacheDirectoryToFile - saved\n" seance steam-api)
+verif "le nuage descend : seance au nom du jeu, fichiers comptes" "seance 77|1" "$(cat "$FAUX_APPELS")|$(printf '%s\n' "$o" | grep -c '2 fichier(s) descendu(s) du nuage, 0 envoye(s), avant le lancement')"
+o=$(FAUX_JOURNAL="[$h] [AppID 77] Starting sync (up,AC Exit,)\n[$h] [AppID 77] Currently already synced to global change number '9', should be nothing to download\n[$h] [AppID 77] YldWriteCacheDirectoryToFile - saved\n" seance "$PEAK")
+verif "deja a jour (dossier lie aussi)" "1" "$(printf '%s\n' "$o" | grep -c 'a jour avec le nuage')"
+o=$(FAUX_JOURNAL="[$h] [AppID 77] Starting sync (up,AC Exit,)\n[$h] [AppID 77] Failed sync for 'up,AC Exit,' [login=false][offlineMode=true]\n" seance steam-api)
+verif "synchro refusee par le client : le jeu part quand meme" "1" "$(printf '%s\n' "$o" | grep -c 'synchro impossible')"
+o=$(FAUX_JOURNAL="[$h] [AppID 77] Starting sync (up,AC Exit,)\n[$h] [AppID 77] Conflict detected for file x\n[$h] [AppID 77] YldWriteCacheDirectoryToFile - saved\n" seance steam-api)
+verif "conflit : on dit d'ouvrir Steam" "1" "$(printf '%s\n' "$o" | grep -c 'signale un conflit')"
+# une synchro finie AVANT la seance (deja au journal) ne compte pas
+t=$(date +%s); o=$(ATT=1 seance steam-api); d=$(( $(date +%s) - t ))
+verif "rien de neuf au journal : attente bornee, le jeu part" "1" "$(printf '%s\n' "$o" | grep -c 'synchro pas finie apres')"
+[ $d -le 4 ] && ok "attente bornee ($d s pour 1 s demandee)" || echec "attente de $d s pour 1 s demandee"
+o=$(FAUX_JOURNAL="[$h] [AppID 78] Starting sync (up,AC Exit,)\n[$h] [AppID 78] YldWriteCacheDirectoryToFile - saved\n" ATT=1 seance steam-api)
+verif "la synchro d'un autre jeu ne compte pas" "1" "$(printf '%s\n' "$o" | grep -c 'synchro pas finie')"
+o=$(FAUX_SORTIE='etat=seance_refusee\ninit=2\ndetail=No subscription\n' FAUX_RC=4 seance steam-api)
+verif "seance refusee (jeu non possede...) : dit pourquoi" "1" "$(printf '%s\n' "$o" | grep -c 'a refuse la seance (No subscription)')"
+o=$(FAUX_SORTIE='nuage_compte=1\nnuage_jeu=0\netat=ok\n' seance steam-api)
+verif "Steam Cloud coupe pour ce jeu : dit, sans attendre" "1" "$(printf '%s\n' "$o" | grep -c 'Steam Cloud est coupe pour ce jeu')"
+verif "toujours 0" "0" "$(FAUX_RC=4 seance steam-api >/dev/null; echo $?)"
+if [ -x "$R/build/cidre-outil" ]; then
+   verif "cidre-outil seance : appid invalide" "2" "$("$R/build/cidre-outil" seance 7x >/dev/null 2>&1; echo $?)"
+   o=$(CIDRE_STEAM_API=/nonexistent "$R/build/cidre-outil" seance 7); rc=$?
+   verif "cidre-outil seance : sans bibliotheque, client tenu pour ferme" "etat=bibliotheque_absente 3" "$o $rc"
+fi
 
 echo "== bouteille : ce qu'en dit l'etat des sauvegardes"
 e=$(CIDRE_FICHE_STEAM_CLOUD=- sh "$Y" 9101 etat)

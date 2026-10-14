@@ -58,6 +58,8 @@ mkdir -p "$HOME" "$CIDRE_DIR/games"
 export WINEPREFIX="$T/pfx"; UC="$WINEPREFIX/drive_c/users/joueur"; mkdir -p "$UC/AppData"
 export CIDRE_FICHE_STEAM_CLOUD=- CIDRE_FICHE_SAUVEGARDES=- CIDRE_FICHE_DOSSIERS_STEAM=- CIDRE_MAISON="$T/maison"
 unset CIDRE_PREFIXE_UTIL CIDRE_JEU_DOSSIER CIDRE_SAVES_DIR CIDRE_SAVES_STEAM CIDRE_PS CIDRE_LSOF
+# jamais de vraie seance Steam (tests/seance_steam_cloud.sh) : le client de ce Mac est peut-etre ouvert
+export CIDRE_SEANCE_STEAM=0
 TAB=$(printf '\t')
 STEAM="drive_c/Program Files (x86)/Steam/steamapps"
 octets() { find "$1" -type f -exec stat -f %z {} + | awk '{ t += $1 } END { print t + 0 }'; }
@@ -362,7 +364,7 @@ cache_steam() { # <appid> <fichier> <taille> <platformstosync2>
       "$1" "$2" "$3" "$([ "$3" -gt 0 ] && echo 1791067661 || echo 0)" "$([ "$3" -gt 0 ] && echo 1791067661 || echo 0)" \
       "$([ "$3" -gt 0 ] && echo 425f5cba8cfeb4a6143972c5766c2d4dbea3d7f9 || echo 0000000000000000000000000000000000000000)" "$4" >"$UD/$1/remotecache.vdf"
 }
-for n in 14 15 16; do
+for n in 14 15 16 17; do
    jeu "$BS" 20$n "Jeu $n" "Jeu$n" 4 5
    mkdir -p "$BU/AppData/LocalLow/Dev$n/Jeu$n"; echo "bouteille $n" >"$BU/AppData/LocalLow/Dev$n/Jeu$n/partie.sav"
 done
@@ -467,6 +469,25 @@ verif "dossier vide mais fichiers connus dans le nuage : Steam d'abord, rien n'e
 contient "fichiers connus dans le nuage : on le dit" "Steam     : 1 fichier(s) dans le nuage, que le client Steam connait (pas encore sur ce Mac)" "$(cat "$T/err")"
 sortie=$(CIDRE_FICHE_STEAM_CLOUD="$(lien 16)" sh "$R/cidre" import 2016 --json 2>"$T/err")
 verif "le nuage n'a qu'un fichier declare pour Windows : comble, sans conflit possible" "copie 1 false bouteille 16" "$(cs etat "$sortie") $(cs fichiers "$sortie") $(cs conflit_possible "$sortie") $(cat "$T/maison/Library/Application Support/Dev16.Jeu16/partie.sav" 2>/dev/null)"
+# 2017 : dossier vide, rien de connu du nuage AVANT ; la seance Steam (un faux
+# client) fait descendre l'etat du nuage : il a une sauvegarde pour macOS.
+# Le comblement ne se decide qu'apres : Steam d'abord.
+mkdir -p "$HOME/Library/Application Support/Steam/logs" "$HOME/Library/Application Support/Steam/Steam.AppBundle"
+printf '[2026-10-14 09:00:00] [Logged On, 0,0,0,0] etat\n' >"$HOME/Library/Application Support/Steam/logs/connection_log.txt"
+cat >"$T/outil-seance" <<'FIN'
+#!/bin/sh
+J="$HOME/Library/Application Support/Steam/logs/cloud_log.txt"; h=$(date '+%Y-%m-%d %H:%M:%S')
+printf '[%s] [AppID %s] Starting sync (up,AC Exit,)\n[%s] [AppID %s] Download OK for file Dev17/Jeu17/partie.sav\n' "$h" "$2" "$h" "$2" >>"$J"
+mkdir -p "$HOME/Library/Application Support/Steam/userdata/4242/$2"
+printf '"%s"\n{\n\t"Dev17/Jeu17/partie.sav"\n\t{\n\t\t"size"\t\t"9"\n\t\t"remotetime"\t\t"1791067661"\n\t\t"platformstosync2"\t\t"-1"\n\t}\n}\n' "$2" >"$HOME/Library/Application Support/Steam/userdata/4242/$2/remotecache.vdf"
+printf '[%s] [AppID %s] YldWriteCacheDirectoryToFile - saved\n' "$h" "$2" >>"$J"
+printf 'nuage_compte=1\nnuage_jeu=1\netat=ok\n'
+FIN
+chmod +x "$T/outil-seance"
+sortie=$(CIDRE_SEANCE_STEAM=1 CIDRE_OUTIL="$T/outil-seance" CIDRE_STEAM_TOURNE=true CIDRE_FICHE_STEAM_CLOUD="$(lien 17)" sh "$R/cidre" import 2017 --json 2>"$T/err")
+verif "seance avant de combler : le nuage a une sauvegarde -> Steam d'abord, rien copie, pas de conflit possible" "steam_prioritaire 0 true false" \
+   "$(cs etat "$sortie") $(cs fichiers "$sortie") $(cs steam_distants "$sortie") $(cs conflit_possible "$sortie")"
+contient "seance avant de combler : le compte rendu dit ce que le nuage a fait descendre" "saves: Steam Cloud : 1 fichier(s) descendu(s) du nuage" "$(cat "$T/err")"
 
 echo "  -- sauvegardes dans le dossier du jeu"
 sortie=$(CIDRE_FICHE_SAUVEGARDES='jeu:save' sh "$R/cidre" import 2009 --json 2>"$T/err")

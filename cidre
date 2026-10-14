@@ -730,7 +730,9 @@ case "$cmd" in
       echo "lancement Cidre : $(basename "$EXE")  (appid $id)"
       echo "  (dossier : $CDIR)"
       temoin_en_cours "$id"
-      SteamAppId=$id SteamGameId=$id SteamOverlayGameId=$id \
+      # (CIDRE_SEANCE : le client ne synchronisera pas le nuage au lancement,
+      # le lanceur l'y pousse -- tests/seance_steam_cloud.sh)
+      SteamAppId=$id SteamGameId=$id SteamOverlayGameId=$id CIDRE_SEANCE=1 \
         sh "$LANCEUR" "$EXE"
     else
       # Jeu du client Steam (natif, ou Windows par le wrapper) : Steam le met a

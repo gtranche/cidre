@@ -3,6 +3,7 @@
  *    cidre-outil session <steamcmd.sh> <arguments de SteamCMD...>
  *    cidre-outil bibliotheque [--texte] [--bouteilles <liste|->] <licences.txt> [appid installe ...]
  *    cidre-outil builds <appinfo.vdf> <appid ...>
+ *    cidre-outil seance <appid>
  *
  * Livre construit dans le runtime (build/cidre-outil) : un Mac sans outils de
  * developpement n'a ni Python ni compilateur, et `/usr/bin/python3` n'y est
@@ -37,8 +38,20 @@
  * sans reseau ni SteamCMD, le client Steam suivant les fiches de son compte.
  * Un jeu absent du cache, ou sans branche publique, ne donne pas de ligne ; un
  * fichier illisible ou d'un autre format, rien du tout (code 1).
+ *
+ * seance -- ouvre puis ferme une seance Steam au nom d'un jeu, sans le lancer.
+ * Le client Steam de macOS ne synchronise Steam Cloud au lancement que pour les
+ * jeux qu'il lance lui-meme ; pour un jeu lance par Cidre, il ne le fait qu'a la
+ * sortie (« up,AC Exit »), et cette synchro de sortie compare aussi le nuage et
+ * descend ce qui y est plus recent. Une seance juste avant le lancement la
+ * declenche (tests/seance_steam_cloud.sh attend sa fin dans cloud_log.txt).
+ * Bibliotheque : celle que livre le client lui-meme (Steam Helper.app,
+ * libsteam_api.dylib, universelle, signee Valve), ou CIDRE_STEAM_API. Le client
+ * n'est jamais ouvert ici. Sortie : des lignes `cle=valeur` ; codes 0 seance
+ * faite, 3 client absent ou ferme, 4 seance refusee (jeu non possede...).
  */
 #include <ctype.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <signal.h>
 #include <stdint.h>
@@ -873,6 +886,48 @@ static int cmd_bibliotheque(int argc, char **argv)
    return fflush(stdout) || ferror(stdout) ? 1 : 0;
 }
 
+/* --- seance ------------------------------------------------------------- */
+
+static int cmd_seance(const char *appid)
+{
+   if (!*appid || strspn(appid, "0123456789") != strlen(appid)) {
+      fprintf(stderr, "usage: cidre-outil seance <appid>\n");
+      return 2;
+   }
+   char defaut[2048];
+   snprintf(defaut, sizeof defaut, "%s/Library/Application Support/Steam/Steam.AppBundle/Steam/Contents/MacOS/"
+            "Frameworks/Steam Helper.app/Contents/MacOS/libsteam_api.dylib", getenv("HOME") ? getenv("HOME") : "");
+   const char *chemin = getenv("CIDRE_STEAM_API") ? getenv("CIDRE_STEAM_API") : defaut;
+   void *h = dlopen(chemin, RTLD_NOW | RTLD_LOCAL);
+   if (!h) { printf("etat=bibliotheque_absente\n"); return 3; }
+   int (*est_lance)(void) = (int (*)(void))dlsym(h, "SteamAPI_IsSteamRunning");
+   int (*init)(char *) = (int (*)(char *))dlsym(h, "SteamAPI_InitFlat");   /* SteamErrMsg : char[1024] */
+   void (*rappels)(void) = (void (*)(void))dlsym(h, "SteamAPI_RunCallbacks");
+   void (*fin)(void) = (void (*)(void))dlsym(h, "SteamAPI_Shutdown");
+   void *(*stockage)(void) = (void *(*)(void))dlsym(h, "SteamAPI_SteamRemoteStorage_v016");
+   int (*nuage_compte)(void *) = (int (*)(void *))dlsym(h, "SteamAPI_ISteamRemoteStorage_IsCloudEnabledForAccount");
+   int (*nuage_jeu)(void *) = (int (*)(void *))dlsym(h, "SteamAPI_ISteamRemoteStorage_IsCloudEnabledForApp");
+   if (!est_lance || !init || !rappels || !fin) { printf("etat=bibliotheque_incomplete\n"); return 3; }
+   /* le client doit deja tourner : on ne l'ouvre jamais */
+   if (!est_lance()) { printf("etat=client_ferme\n"); return 3; }
+   setenv("SteamAppId", appid, 1);
+   setenv("SteamGameId", appid, 1);
+   char err[1024] = "";
+   int r = init(err);
+   if (r != 0) {
+      for (char *c = err; *c; c++) if (*c == '\n') *c = ' ';
+      printf("etat=seance_refusee\ninit=%d\ndetail=%s\n", r, err);
+      return 4;
+   }
+   void *rs = stockage ? stockage() : NULL;
+   if (rs && nuage_compte && nuage_jeu)
+      printf("nuage_compte=%d\nnuage_jeu=%d\n", nuage_compte(rs), nuage_jeu(rs));
+   for (int i = 0; i < 4; i++) { rappels(); usleep(50000); }
+   fin();
+   printf("etat=ok\n");
+   return fflush(stdout) ? 1 : 0;
+}
+
 int main(int argc, char **argv)
 {
    if (argc >= 3 && !strcmp(argv[1], "session"))
@@ -881,8 +936,11 @@ int main(int argc, char **argv)
       return cmd_bibliotheque(argc - 2, argv + 2);
    if (argc >= 3 && !strcmp(argv[1], "builds"))
       return cmd_builds(argc - 2, argv + 2);
+   if (argc == 3 && !strcmp(argv[1], "seance"))
+      return cmd_seance(argv[2]);
    fprintf(stderr, "usage: cidre-outil session <steamcmd.sh> <arguments...>\n"
                    "       cidre-outil bibliotheque [--texte] [--bouteilles <liste|->] <licences.txt> [appid installe ...]\n"
-                   "       cidre-outil builds <appinfo.vdf> <appid ...>\n");
+                   "       cidre-outil builds <appinfo.vdf> <appid ...>\n"
+                   "       cidre-outil seance <appid>\n");
    return 2;
 }
