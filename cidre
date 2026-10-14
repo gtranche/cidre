@@ -569,7 +569,7 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
   cidre list [--json]             liste tes jeux + plateforme + mode de lancement
   cidre info <id> [--json]        fiche d'un jeu : plateforme, taille, chemin, options actives
                                   --json : "maj" dit ou en est sa mise a jour (jeu du dossier Cidre ; voir updates)
-  cidre play <id> [--sans-maj] [--json]
+  cidre play <id> [--sans-maj] [--accord-nuage] [--json]
                                   lance le jeu (natif via Steam, ou par la pile Cidre). Un jeu du dossier
                                   Cidre dont Steam publie un build plus recent est d'abord mis a jour ; si
                                   ce n'est pas possible (hors ligne, session absente, place...), on le dit
@@ -578,6 +578,9 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
                                   --json : la sortie standard porte des evenements, un objet par ligne
                                   ({"evenement":"maj","etat":...} puis {"evenement":"lancement"}), le reste
                                   va a l'erreur
+                                  Un jeu du dossier Cidre dont Steam croit des sauvegardes sur ce Mac qui n'y
+                                  sont plus ne part pas (code 7) : sa sortie les ferait retirer du nuage.
+                                  --accord-nuage : le lancer quand meme
   cidre running [--json]          les jeux en cours
   cidre stop [<id>]               force l'arret d'un jeu lance par Cidre (et de tout ce que Wine fait tourner)
   cidre log <id> [lignes]         la fin du journal du dernier lancement d'un jeu (sans les traces)
@@ -653,11 +656,12 @@ USAGE
 
 cmd=${1:-help}; [ $# -gt 0 ] && shift
 # --json (n'importe ou) : sortie pour une interface (Verger), stable et parsable
-JSON=non; MAJ=non; SANS_MAJ=non; FOND=non
+JSON=non; MAJ=non; SANS_MAJ=non; FOND=non; ACCORD_NUAGE=non
 # `run` transmet ses arguments tels quels au programme
 [ "$cmd" = run ] || for a in "$@"; do
    shift
-   case $a in --json) JSON=oui ;; --refresh) MAJ=oui ;; --sans-maj|--no-update) SANS_MAJ=oui ;; --fond|--background) FOND=oui ;; *) set -- "$@" "$a" ;; esac
+   case $a in --json) JSON=oui ;; --refresh) MAJ=oui ;; --sans-maj|--no-update) SANS_MAJ=oui ;; --fond|--background) FOND=oui ;;
+      --accord-nuage) ACCORD_NUAGE=oui ;; *) set -- "$@" "$a" ;; esac
 done
 case "$cmd" in
   list|ls)
@@ -732,6 +736,7 @@ case "$cmd" in
       temoin_en_cours "$id"
       # (CIDRE_SEANCE : le client ne synchronisera pas le nuage au lancement,
       # le lanceur l'y pousse -- tests/seance_steam_cloud.sh)
+      [ $ACCORD_NUAGE = oui ] && export CIDRE_ACCORD_NUAGE=1
       SteamAppId=$id SteamGameId=$id SteamOverlayGameId=$id CIDRE_SEANCE=1 \
         sh "$LANCEUR" "$EXE"
     else

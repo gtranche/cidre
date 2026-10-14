@@ -547,6 +547,17 @@ fi
 if [ -n "$JEU" ] && [ "${CIDRE_SEANCE:-}" = 1 ] && [ "${CIDRE_SANS_STEAM:-}" != 1 ]; then
    sh "$R/tests/seance_steam_cloud.sh" "$JEU" 2>&1 | tee -a "$JOURNAL" || true
 fi
+# Et avant tout : la fin de la partie ne doit pas faire retirer du nuage des
+# sauvegardes que ce Mac a perdues. La synchro de sortie du client, sans trace
+# du lancement, retire du nuage tout fichier qu'il croit synchronise ici et que
+# ses regles n'y trouvent plus. Une copie identique gardee par Cidre est remise
+# en place ; sinon le jeu ne part pas (code 7), sauf accord explicite
+# (`cidre play <id> --accord-nuage`). cf. tests/garde_nuage_steam.sh.
+if [ -n "$JEU" ] && [ "${CIDRE_SEANCE:-}" = 1 ]; then
+   g=$(sh "$R/tests/garde_nuage_steam.sh" "$JEU" ${CIDRE_ACCORD_NUAGE:+--accord} 2>&1) && gr=0 || gr=$?
+   [ -z "$g" ] || printf '%s\n' "$g" | tee -a "$JOURNAL"
+   [ $gr -eq 0 ] || exit 7
+fi
 if [ -n "$JEU" ]; then
    sh "$R/tests/sync_saves_steam.sh" "$JEU" restore >>"$JOURNAL" 2>&1 || true
 fi

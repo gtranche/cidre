@@ -47,6 +47,11 @@ seance pour un jeu dont Steam synchronise des dossiers (Auto-Cloud) : la synchro
 qu'elle declencherait pourrait retirer du nuage des fichiers que ce Mac n'a pas.
 Client Steam ferme ou hors ligne : rien n'est attendu, le jeu part avec les
 sauvegardes de ce Mac.
+Et avant de lancer un jeu du dossier Cidre, Cidre verifie que le client Steam ne
+croit pas ce Mac en possession de sauvegardes qui n'y sont plus : a la sortie
+du jeu, il les retirerait du nuage. Une copie identique gardee par Cidre est
+remise en place ; sinon le jeu ne part pas et Cidre dit lesquelles manquent
+(`cidre play <id> --accord-nuage` le lance quand meme).
 
 La regle, partout : ce que Steam Cloud synchronise a toujours la priorite -- ni
 la copie de Cidre, ni iCloud, ni une bouteille ne remplacent un fichier que

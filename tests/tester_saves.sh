@@ -445,6 +445,51 @@ if [ -x "$R/build/cidre-outil" ]; then
    verif "cidre-outil seance : sans bibliotheque, client tenu pour ferme" "etat=bibliotheque_absente 3" "$o $rc"
 fi
 
+
+echo "== garde au lancement : la sortie du jeu ne doit pas retirer du nuage ce que ce Mac a perdu"
+GN="$R/tests/garde_nuage_steam.sh"
+GS="$T/garde-steam"; GM="$T/garde-maison"; GJ="$T/garde-jeu"; mkdir -p "$GS/userdata/42/88" "$GM/Library/Application Support/Studio/Jeu" "$GJ"
+cache88() { # une entree par argument : racine|syncstate|plateformes|sha|nom
+   { printf '"88"\n{\n\t"ChangeNumber"\t\t"5"\n\t"ostype"\t\t"-102"\n'
+     for e in "$@"; do
+        IFS='|' read -r r s p h n <<FIN
+$e
+FIN
+        printf '\t"%s"\n\t{\n\t\t"root"\t\t"%s"\n\t\t"size"\t\t"5"\n\t\t"sha"\t\t"%s"\n\t\t"syncstate"\t\t"%s"\n\t\t"persiststate"\t\t"0"\n\t\t"platformstosync2"\t\t"%s"\n\t}\n' "$n" "$r" "$h" "$s" "$p"
+     done
+     printf '}\n'; } >"$GS/userdata/42/88/remotecache.vdf"
+}
+garde() { CIDRE_STEAM_DIR="$GS" CIDRE_MAISON="$GM" CIDRE_JEU_DOSSIER="$GJ" sh "$GN" 88 "$@" 2>&1; }
+echo "partie" >"$T/slot.sav"; SHA=$(shasum -a 1 "$T/slot.sav" | cut -d' ' -f1)
+verif "aucun remotecache : rien a dire, 0" "|0" "$(rm -f "$GS/userdata/42/88/remotecache.vdf"; garde)|$?"
+cache88 "7|1|-1|$SHA|Studio/Jeu/slot.sav"
+cp "$T/slot.sav" "$GM/Library/Application Support/Studio/Jeu/slot.sav"
+verif "fichier synchronise present : rien a dire" "|0" "$(garde)|$?"
+rm "$GM/Library/Application Support/Studio/Jeu/slot.sav"
+o=$(garde); rc=$?
+verif "fichier synchronise ABSENT, aucune copie : lancement refuse" "1" "$rc"
+verif "le refus dit lequel, pourquoi, et comment passer outre" "1 1 1" "$(printf '%s\n' "$o" | grep -c 'Studio/Jeu/slot.sav') $(printf '%s\n' "$o" | grep -c 'les retirerait du nuage : lancement arrete') $(printf '%s\n' "$o" | grep -c 'cidre play 88 --accord-nuage')"
+o=$(garde --accord); rc=$?
+verif "--accord : lance quand meme, en le disant" "0 1" "$rc $(printf '%s\n' "$o" | grep -c 'le client Steam les retirera du nuage')"
+# une copie de Cidre differente de celle du nuage ne sert pas
+mkdir -p "$C/saves/88/.history/avant-lien-1/0.macos"; echo "autre partie" >"$C/saves/88/.history/avant-lien-1/0.macos/slot.sav"
+verif "copie de Cidre differente du nuage : pas remise, refus" "1" "$(garde >/dev/null; echo $?)"
+[ ! -e "$GM/Library/Application Support/Studio/Jeu/slot.sav" ] && ok "la copie differente n'est pas remise" || echec "une copie differente a ete remise"
+# une copie identique (meme SHA-1 que dans le nuage) est remise en place
+cp -p "$T/slot.sav" "$C/saves/88/.history/avant-lien-1/slot.sav"; touch -t 202606010000 "$C/saves/88/.history/avant-lien-1/slot.sav"
+o=$(garde); rc=$?
+verif "copie identique a celle du nuage : remise, lancement permis" "0 partie" "$rc $(cat "$GM/Library/Application Support/Studio/Jeu/slot.sav" 2>/dev/null)"
+verif "remise : date gardee, et dit" "$(stat -f %m "$C/saves/88/.history/avant-lien-1/slot.sav") 1" "$(stat -f %m "$GM/Library/Application Support/Studio/Jeu/slot.sav") $(printf '%s\n' "$o" | grep -c 'remis depuis la copie de Cidre (identique a celle du nuage)')"
+rm -rf "$C/saves/88"
+# ce que le client lui-meme epargne, ou ce qui n'est pas a nous
+cache88 "7|2|-1|$SHA|Studio/Jeu/absent1.sav" "12|1|1|$SHA|Studio/Jeu/absent2.sav" "0|1|-1|$SHA|absent3.dat" "7|1|8|$SHA|Studio/Jeu/absent4.sav"
+verif "a descendre (syncstate 2), Windows ou Linux seulement, API : rien a dire" "|0" "$(garde)|$?"
+# une racine Windows « surchargee » pour macOS : meme chemin sous Application Support ; et le dossier du jeu
+mkdir -p "$GM/Library/Application Support/Black Salt Games/DREDGE/saves" "$GJ/save"
+echo d >"$GM/Library/Application Support/Black Salt Games/DREDGE/saves/s.bin"; echo j >"$GJ/save/j.sav"
+cache88 "12|1|-1|$SHA|Black Salt Games/DREDGE/saves/s.bin" "1|1|-1|$SHA|save/j.sav"
+verif "racine Windows surchargee pour macOS, dossier du jeu : trouves" "|0" "$(garde)|$?"
+
 echo "== bouteille : ce qu'en dit l'etat des sauvegardes"
 e=$(CIDRE_FICHE_STEAM_CLOUD=- sh "$Y" 9101 etat)
 printf '%s' "$e" | plutil -convert json -o /dev/null - 2>/dev/null && ok "etat : JSON valide" || echec "etat : JSON invalide : $e"
