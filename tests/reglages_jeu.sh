@@ -6,6 +6,8 @@
 # jeu, tant que le profil utilisateur ne porte pas reglages_jeu_appliques = true.
 #
 #   reglages_jeu.sh <appid>
+#   reglages_jeu.sh <appid> nouvelles <ids>         les seules entrees a `id` absent de <ids> (liste a virgules) :
+#                                                   pour un jeu deja marque, une entree ajoutee depuis a la fiche
 #   reglages_jeu.sh <appid> temoin                  la valeur du temoin de la fiche (voir plus bas), vide s'il n'y en a pas
 #   reglages_jeu.sh <appid> temoin-change <avant>   apres la partie : si le temoin ne vaut plus <avant>, retire le marqueur
 #   reglages_jeu.sh - ruche <ruche> <cle>           hors fiche : pose sous <cle> de <ruche> (user.reg, system.reg) les
@@ -366,6 +368,11 @@ fi
 
 RC=0
 for n in $(printf '%s\n' "$REGL" | cut -f1 | awk '!vu[$0]++'); do
+   if [ "${2:-}" = nouvelles ]; then
+      id=$(printf '%s\n' "$REGL" | awk -F'\t' -v n="$n" '$1 == n && $2 == "id" { print $3; exit }')
+      case ",${3:-}," in *",$id,"*) continue ;; esac
+      [ -n "$id" ] || continue
+   fi
    entree "$n"; rc=$?
    # une erreur l emporte ; sinon un « pas maintenant » suffit a reporter le marqueur
    [ $rc -eq 1 ] && RC=1

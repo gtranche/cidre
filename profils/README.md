@@ -339,6 +339,10 @@ les pose, une fois :
   `reglages_jeu_appliques = true` dans la section du jeu du profil utilisateur
   et n'y touche plus : l'utilisateur est libre de changer ses réglages dans le
   jeu. Pour les reposer : `cidre unset <appid> reglages_jeu_appliques`.
+- Une entrée ajoutée à une fiche déjà posée chez des utilisateurs porte un
+  `id` (`id = "resolution-edid"`) : le lanceur garde les `id` posés dans
+  `reglages_jeu_ids` et pose une fois, même sur un jeu déjà marqué, les seules
+  entrées dont l'`id` est nouveau, sans reposer les autres.
 - Une ligne de journal dit ce qui a été fait (`cidre log <appid>`).
 - Le témoin (`[reglages_jeu_temoin]`, optionnel : `fichier` INI et `cle`).
   Certains jeux refont leur détection du matériel quand la carte graphique

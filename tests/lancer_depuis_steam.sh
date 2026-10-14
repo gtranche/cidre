@@ -251,6 +251,12 @@ case $FILS in ''|0|*[!0-9]*) : ;; *) dxvk_config "dxvk.numCompilerThreads=$FILS"
 if [ -z "${CIDRE_EMULATE_MODESET:-}" ] && [ "$(opt mode_emule CIDRE_MODE_EMULE)" = true ]; then
    export CIDRE_EMULATE_MODESET=1
 fi
+# En mode emule, l'EDID vu par le jeu annonce la taille de l'espace (winemac,
+# 0141) et non la definition native de la dalle : un jeu qui rend a la
+# definition « native » du moniteur (Unreal) rendait sinon 4 fois plus de
+# pixels qu'il n'en montre (Little Nightmares 12 -> 75 fps a 1728x1084).
+# retina = true garde l'EDID de la dalle, pour qui veut ce rendu en 2x.
+[ "$(opt retina CIDRE_RETINA)" = true ] && export CIDRE_RETINA=1
 
 JOURNAL=${PROTON_OUVERT_JOURNAL:-$R/build/logs/steam-${JEU:-inconnu}.log}
 mkdir -p "$(dirname "$JOURNAL")"
@@ -644,11 +650,29 @@ fi
 # profil utilisateur (reglages_jeu_appliques = true) et on n'y touche plus,
 # l'utilisateur est libre de regler son jeu. Si le fichier n'existe pas encore
 # (premier lancement), on reessaie la fois suivante. Jamais bloquant.
-if [ -n "$JEU" ] && [ "$(profil reglages_jeu_appliques)" != true ]; then
-   sh "$R/tests/reglages_jeu.sh" "$JEU" >>"$JOURNAL" 2>&1 && RCR=0 || RCR=$?
-   if [ "$RCR" -eq 0 ]; then
-      sh "$R/tests/profil_cidre.sh" "$JEU" set reglages_jeu_appliques true >>"$JOURNAL" 2>&1 \
-         && echo "    reglages du jeu : notes comme appliques (cidre unset $JEU reglages_jeu_appliques pour les reposer)" >>"$JOURNAL" || true
+# Une entree qui porte un `id` (ajoutee a la fiche apres coup : la resolution
+# redetectee une fois, 0141) atteint aussi un jeu deja marque : les `id` poses
+# sont gardes dans reglages_jeu_ids, et une entree a `id` nouveau est posee une
+# fois, sans reposer les autres.
+if [ -n "$JEU" ]; then
+   IDS_FICHE=$(sh "$R/tests/fiche_profil.sh" reglages "$JEU" 2>/dev/null | awk -F'\t' '$2 == "id" && !vu[$3]++ { printf "%s%s", (n++ ? "," : ""), $3 }')
+   if [ "$(profil reglages_jeu_appliques)" != true ]; then
+      sh "$R/tests/reglages_jeu.sh" "$JEU" >>"$JOURNAL" 2>&1 && RCR=0 || RCR=$?
+      if [ "$RCR" -eq 0 ]; then
+         sh "$R/tests/profil_cidre.sh" "$JEU" set reglages_jeu_appliques true >>"$JOURNAL" 2>&1 \
+            && echo "    reglages du jeu : notes comme appliques (cidre unset $JEU reglages_jeu_appliques pour les reposer)" >>"$JOURNAL" || true
+         [ -z "$IDS_FICHE" ] || sh "$R/tests/profil_cidre.sh" "$JEU" set reglages_jeu_ids "\"$IDS_FICHE\"" >>"$JOURNAL" 2>&1 || true
+      fi
+   elif [ -n "$IDS_FICHE" ]; then
+      IDS_FAITS=$(profil reglages_jeu_ids)
+      NOUVEAUX=$(awk -v f="$IDS_FICHE" -v d="$IDS_FAITS" 'BEGIN { n = split(f, a, ","); for (i = 1; i <= n; i++) if (index("," d ",", "," a[i] ",") == 0) print a[i] }')
+      if [ -n "$NOUVEAUX" ]; then
+         sh "$R/tests/reglages_jeu.sh" "$JEU" nouvelles "$IDS_FAITS" >>"$JOURNAL" 2>&1 && RCR=0 || RCR=$?
+         if [ "$RCR" -eq 0 ]; then
+            sh "$R/tests/profil_cidre.sh" "$JEU" set reglages_jeu_ids "\"$IDS_FICHE\"" >>"$JOURNAL" 2>&1 \
+               && echo "    reglages du jeu : nouvelles entrees de la fiche posees ($(echo $NOUVEAUX))" >>"$JOURNAL" || true
+         fi
+      fi
    fi
 fi
 # Le temoin de la fiche ([reglages_jeu_temoin]) : releve avant le jeu, compare a

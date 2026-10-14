@@ -65,6 +65,11 @@
 #                    l'image est mise a l'echelle dans la fenetre plein ecran
 #                    (EmulateModeset de Wine). false = vrai changement de mode
 #                    de l'ecran, pour un jeu qui l'exigerait.
+#   retina           en mode emule, l'EDID que voit le jeu annonce la taille de
+#                    l'espace (false, defaut) ; true garde celui de la dalle et sa
+#                    definition native (3456x2234 sur un MacBook Pro 16") : un jeu
+#                    Unreal y rend alors quatre fois plus de pixels (Little
+#                    Nightmares : 12 images/s au lieu de 75, M1 Max, 2026-10-14).
 #   gamemode         force le macOS Game Mode (gamepolicyctl set on, sans sudo) au
 #                    lancement et le rend a auto a la sortie ; n'a d'effet qu'en
 #                    vrai plein ecran, donc avec plein_ecran = true.
@@ -152,6 +157,7 @@ eac_untrusted = false
 luajit = false
 plein_ecran = true
 mode_emule = true
+retina = false
 gamemode = true
 dx12 = false
 d3d11 = "dxmt"

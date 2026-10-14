@@ -1,0 +1,87 @@
+wine11 : EDID ramene a la taille de l'espace en plein ecran emule (CIDRE_RETINA pour garder le natif)
+
+Little Nightmares Enhanced Edition (Unreal 4.27) a tourne toute une journee de
+mesures en 3456x2234 sur un MacBook Pro 16" (2026-10-14) : 12 a 29 images/s,
+75 a 1728x1084. Sans resolution enregistree, Unreal prend la definition native
+du moniteur, lue dans l'EDID ; winemac recopie celui de la dalle Retina, dont le
+mode prefere est 3456x2234. En plein ecran emule (0122), l'ecran garde sa
+resolution et l'image du jeu est reduite : quatre fois plus de pixels rendus
+pour rien. Expedition 33 avait aussi enregistre 3456x2234.
+
+Avec CIDRE_EMULATE_MODESET, le premier timing detaille de l'EDID (le mode
+prefere) est ramene a la taille du moniteur annonce (l'espace, en points), la
+somme de controle recalculee et les extensions retirees (le bloc DisplayID de la
+dalle redonnerait le natif). Fabricant, modele, serie et taille physique ne
+bougent pas. CIDRE_RETINA=1 garde l'EDID de la dalle.
+
+diff --git a/dlls/winemac.drv/display.c b/dlls/winemac.drv/display.c
+--- a/dlls/winemac.drv/display.c
++++ b/dlls/winemac.drv/display.c
+@@ -1046,6 +1046,49 @@
+     if (event->displays_changed.activating ||
+         NtUserGetWindowThread(hwnd, NULL) == GetCurrentThreadId())
+         NtUserCallNoParam(NtUserCallNoParam_DisplayModeChanged);
++}
++
++/* Cidre : en plein ecran emule (CIDRE_EMULATE_MODESET), l'ecran garde sa
++ * resolution et le jeu ne peut rien montrer au-dela de l'espace. Or l'EDID
++ * recopie de la dalle annonce son mode natif en pixels (3456x2234 sur un
++ * MacBook Pro 16") : un jeu qui prend la definition « native » du moniteur
++ * (Unreal, sans resolution enregistree) rend alors quatre fois plus de pixels,
++ * que le mode emule reduit ensuite. Le mode prefere de l'EDID est ramene a la
++ * taille de l'espace, somme de controle recalculee ; fabricant, modele, serie
++ * et taille physique restent ceux de la dalle. CIDRE_RETINA=1 garde l'EDID tel
++ * quel. */
++static const unsigned char *cidre_edid_espace(const struct macdrv_monitor *monitor,
++                                               unsigned char *copie, UINT *len)
++{
++    const char *emule = getenv("CIDRE_EMULATE_MODESET"), *retina = getenv("CIDRE_RETINA");
++    unsigned int largeur, hauteur, i, somme = 0;
++    unsigned char *dtd;
++
++    *len = monitor->edid_len;
++    if (!emule || !*emule || *emule == '0' || (retina && *retina && *retina != '0'))
++        return monitor->edid;
++    if (monitor->edid_len < 128 || !monitor->edid) return monitor->edid;
++
++    largeur = monitor->rc_monitor.size.width;
++    hauteur = monitor->rc_monitor.size.height;
++    if (!largeur || !hauteur || largeur > 4095 || hauteur > 4095) return monitor->edid;
++
++    memcpy(copie, monitor->edid, 128);
++    dtd = copie + 54;
++    if (!dtd[0] && !dtd[1]) return monitor->edid;  /* pas un timing detaille */
++
++    dtd[2] = largeur & 0xff;
++    dtd[4] = (dtd[4] & 0x0f) | ((largeur >> 4) & 0xf0);
++    dtd[5] = hauteur & 0xff;
++    dtd[7] = (dtd[7] & 0x0f) | ((hauteur >> 4) & 0xf0);
++
++    copie[126] = 0;  /* pas d'extension : celles de la dalle redonneraient le natif */
++    for (i = 0; i < 127; i++) somme += copie[i];
++    copie[127] = (256 - (somme & 0xff)) & 0xff;
++
++    TRACE("EDID ramene a %ux%u (espace plein ecran)\n", largeur, hauteur);
++    *len = 128;
++    return copie;
+ }
+ 
+ UINT macdrv_UpdateDisplayDevices(const struct gdi_device_manager *device_manager, void *param)
+@@ -1094,12 +1137,15 @@
+             /* Initialize monitors */
+             for (monitor = monitors; monitor < monitors + monitor_count; monitor++)
+             {
++                unsigned char edid_espace[128];
++                UINT edid_len;
++                const unsigned char *edid = cidre_edid_espace(monitor, edid_espace, &edid_len);
+                 struct gdi_monitor gdi_monitor =
+                 {
+                     .rc_monitor = rect_from_cgrect(monitor->rc_monitor),
+                     .rc_work = rect_from_cgrect(monitor->rc_work),
+-                    .edid_len = monitor->edid_len,
+-                    .edid = monitor->edid,
++                    .edid_len = edid_len,
++                    .edid = (unsigned char *)edid,
+                     .hdr_enabled = monitor->hdr_enabled,
+                 };
+                 device_manager->add_monitor( &gdi_monitor, param );
