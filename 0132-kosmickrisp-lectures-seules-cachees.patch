@@ -1,0 +1,34 @@
+Generated-by: LLM
+
+KosmicKrisp : lectures memoire cachees pour les acces en lecture seule malgre le contournement 6 (CIDRE_LECTURES_CACHEES)
+
+--- a/src/kosmickrisp/compiler/nir_to_msl.c
++++ b/src/kosmickrisp/compiler/nir_to_msl.c
+@@ -1064,6 +1064,15 @@
+    } else if (instr->intrinsic == nir_intrinsic_load_depth_texture_kk) {
+       P(ctx, "depth%s%s<float>", dim, arrayed);
+    }
++}
++
++static bool
++kk_cached_readonly_enabled(void)
++{
++   static int enabled = -1;
++   if (enabled < 0)
++      enabled = getenv("CIDRE_LECTURES_CACHEES") != NULL;
++   return enabled;
+ }
+ 
+ static const char *
+@@ -1072,6 +1081,11 @@
+ {
+    if ((access & ACCESS_CAN_SPECULATE) &&
+        !(access & (ACCESS_COHERENT | ACCESS_VOLATILE)))
++      return "device";
++   if (!(ctx->disabled_workarounds & BITFIELD64_BIT(6)) &&
++       kk_cached_readonly_enabled() &&
++       !(access & (ACCESS_COHERENT | ACCESS_VOLATILE | ACCESS_ATOMIC)) &&
++       ((access & ACCESS_NON_WRITEABLE) || !ctx->shader->info.writes_memory))
+       return "device";
+    if (!(ctx->disabled_workarounds & BITFIELD64_BIT(6)))
+       return "coherent device";
