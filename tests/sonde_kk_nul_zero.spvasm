@@ -1,0 +1,197 @@
+; Sonde KosmicKrisp 0135/0136 (tests/sonde_kk_nul_zero.c). Ecrit en GLSL (textureLod, texelFetch,
+; textureGather sur une vraie texture et un descripteur nul ; min/max sur zeros signes, NaN,
+; infinis), compile par glslangValidator, puis OpCapability SignedZeroInfNanPreserve et
+; OpExecutionMode SignedZeroInfNanPreserve 32 ajoutes a la main, comme dans le SPIR-V de
+; dxil-spirv (GLSL ne sait pas les demander).
+; SPIR-V
+; Version: 1.6
+; Generator: Khronos Glslang Reference Front End; 11
+; Bound: 120
+; Schema: 0
+               OpCapability Shader
+OpCapability SignedZeroInfNanPreserve
+OpExtension "SPV_KHR_float_controls"
+               OpCapability ShaderNonUniform
+               OpCapability SampledImageArrayNonUniformIndexing
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint GLCompute %main "main" %gl_GlobalInvocationID %_ %texs %smp %inp
+               OpExecutionMode %main LocalSize 64 1 1
+OpExecutionMode %main SignedZeroInfNanPreserve 32
+               OpSource GLSL 450
+               OpSourceExtension "GL_EXT_nonuniform_qualifier"
+               OpName %main "main"
+               OpName %i "i"
+               OpName %gl_GlobalInvocationID "gl_GlobalInvocationID"
+               OpName %k "k"
+               OpName %Out "Out"
+               OpMemberName %Out 0 "o"
+               OpMemberName %Out 1 "mm"
+               OpName %_ ""
+               OpName %texs "texs"
+               OpName %smp "smp"
+               OpName %a "a"
+               OpName %In "In"
+               OpMemberName %In 0 "v"
+               OpName %inp "inp"
+               OpName %b "b"
+               OpDecorate %gl_GlobalInvocationID BuiltIn GlobalInvocationId
+               OpDecorate %_arr_v4float_uint_192 ArrayStride 16
+               OpDecorate %_runtimearr_uint ArrayStride 4
+               OpDecorate %Out Block
+               OpMemberDecorate %Out 0 Offset 0
+               OpMemberDecorate %Out 1 Offset 3072
+               OpDecorate %_ Binding 2
+               OpDecorate %_ DescriptorSet 0
+               OpDecorate %texs Binding 0
+               OpDecorate %texs DescriptorSet 0
+               OpDecorate %37 NonUniform
+               OpDecorate %39 NonUniform
+               OpDecorate %40 NonUniform
+               OpDecorate %smp Binding 1
+               OpDecorate %smp DescriptorSet 0
+               OpDecorate %58 NonUniform
+               OpDecorate %59 NonUniform
+               OpDecorate %60 NonUniform
+               OpDecorate %73 NonUniform
+               OpDecorate %74 NonUniform
+               OpDecorate %75 NonUniform
+               OpDecorate %_runtimearr_float ArrayStride 4
+               OpDecorate %In Block
+               OpMemberDecorate %In 0 NonWritable
+               OpMemberDecorate %In 0 Offset 0
+               OpDecorate %inp NonWritable
+               OpDecorate %inp Binding 3
+               OpDecorate %inp DescriptorSet 0
+       %void = OpTypeVoid
+          %3 = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+%_ptr_Function_uint = OpTypePointer Function %uint
+     %v3uint = OpTypeVector %uint 3
+%_ptr_Input_v3uint = OpTypePointer Input %v3uint
+%gl_GlobalInvocationID = OpVariable %_ptr_Input_v3uint Input
+     %uint_0 = OpConstant %uint 0
+%_ptr_Input_uint = OpTypePointer Input %uint
+     %uint_1 = OpConstant %uint 1
+      %float = OpTypeFloat 32
+    %v4float = OpTypeVector %float 4
+   %uint_192 = OpConstant %uint 192
+%_arr_v4float_uint_192 = OpTypeArray %v4float %uint_192
+%_runtimearr_uint = OpTypeRuntimeArray %uint
+        %Out = OpTypeStruct %_arr_v4float_uint_192 %_runtimearr_uint
+%_ptr_StorageBuffer_Out = OpTypePointer StorageBuffer %Out
+          %_ = OpVariable %_ptr_StorageBuffer_Out StorageBuffer
+        %int = OpTypeInt 32 1
+      %int_0 = OpConstant %int 0
+         %31 = OpTypeImage %float 2D 0 0 0 1 Unknown
+     %uint_2 = OpConstant %uint 2
+%_arr_31_uint_2 = OpTypeArray %31 %uint_2
+%_ptr_UniformConstant__arr_31_uint_2 = OpTypePointer UniformConstant %_arr_31_uint_2
+       %texs = OpVariable %_ptr_UniformConstant__arr_31_uint_2 UniformConstant
+%_ptr_UniformConstant_31 = OpTypePointer UniformConstant %31
+         %41 = OpTypeSampler
+%_ptr_UniformConstant_41 = OpTypePointer UniformConstant %41
+        %smp = OpVariable %_ptr_UniformConstant_41 UniformConstant
+         %45 = OpTypeSampledImage %31
+    %v2float = OpTypeVector %float 2
+  %float_0_5 = OpConstant %float 0.5
+         %49 = OpConstantComposite %v2float %float_0_5 %float_0_5
+    %float_0 = OpConstant %float 0
+%_ptr_StorageBuffer_v4float = OpTypePointer StorageBuffer %v4float
+    %uint_64 = OpConstant %uint 64
+      %v2int = OpTypeVector %int 2
+      %int_1 = OpConstant %int 1
+         %65 = OpConstantComposite %v2int %int_1 %int_1
+   %uint_128 = OpConstant %uint 128
+    %uint_10 = OpConstant %uint 10
+       %bool = OpTypeBool
+%_ptr_Function_float = OpTypePointer Function %float
+%_runtimearr_float = OpTypeRuntimeArray %float
+         %In = OpTypeStruct %_runtimearr_float
+%_ptr_StorageBuffer_In = OpTypePointer StorageBuffer %In
+        %inp = OpVariable %_ptr_StorageBuffer_In StorageBuffer
+%_ptr_StorageBuffer_float = OpTypePointer StorageBuffer %float
+%_ptr_StorageBuffer_uint = OpTypePointer StorageBuffer %uint
+        %119 = OpConstantComposite %v3uint %uint_64 %uint_1 %uint_1
+       %main = OpFunction %void None %3
+          %5 = OpLabel
+          %i = OpVariable %_ptr_Function_uint Function
+          %k = OpVariable %_ptr_Function_uint Function
+          %a = OpVariable %_ptr_Function_float Function
+          %b = OpVariable %_ptr_Function_float Function
+         %14 = OpAccessChain %_ptr_Input_uint %gl_GlobalInvocationID %uint_0
+         %15 = OpLoad %uint %14
+               OpStore %i %15
+         %17 = OpLoad %uint %i
+         %19 = OpBitwiseAnd %uint %17 %uint_1
+               OpStore %k %19
+         %30 = OpLoad %uint %i
+         %36 = OpLoad %uint %k
+         %37 = OpCopyObject %uint %36
+         %39 = OpAccessChain %_ptr_UniformConstant_31 %texs %37
+         %40 = OpLoad %31 %39
+         %44 = OpLoad %41 %smp
+         %46 = OpSampledImage %45 %40 %44
+         %51 = OpImageSampleExplicitLod %v4float %46 %49 Lod %float_0
+         %53 = OpAccessChain %_ptr_StorageBuffer_v4float %_ %int_0 %30
+               OpStore %53 %51
+         %55 = OpLoad %uint %i
+         %56 = OpIAdd %uint %uint_64 %55
+         %57 = OpLoad %uint %k
+         %58 = OpCopyObject %uint %57
+         %59 = OpAccessChain %_ptr_UniformConstant_31 %texs %58
+         %60 = OpLoad %31 %59
+         %61 = OpLoad %41 %smp
+         %62 = OpSampledImage %45 %60 %61
+         %66 = OpImage %31 %62
+         %67 = OpImageFetch %v4float %66 %65 Lod %int_0
+         %68 = OpAccessChain %_ptr_StorageBuffer_v4float %_ %int_0 %56
+               OpStore %68 %67
+         %70 = OpLoad %uint %i
+         %71 = OpIAdd %uint %uint_128 %70
+         %72 = OpLoad %uint %k
+         %73 = OpCopyObject %uint %72
+         %74 = OpAccessChain %_ptr_UniformConstant_31 %texs %73
+         %75 = OpLoad %31 %74
+         %76 = OpLoad %41 %smp
+         %77 = OpSampledImage %45 %75 %76
+         %78 = OpImageGather %v4float %77 %49 %int_0
+         %79 = OpAccessChain %_ptr_StorageBuffer_v4float %_ %int_0 %71
+               OpStore %79 %78
+         %80 = OpLoad %uint %i
+         %83 = OpULessThan %bool %80 %uint_10
+               OpSelectionMerge %85 None
+               OpBranchConditional %83 %84 %85
+         %84 = OpLabel
+         %92 = OpLoad %uint %i
+         %93 = OpIMul %uint %uint_2 %92
+         %95 = OpAccessChain %_ptr_StorageBuffer_float %inp %int_0 %93
+         %96 = OpLoad %float %95
+               OpStore %a %96
+         %98 = OpLoad %uint %i
+         %99 = OpIMul %uint %uint_2 %98
+        %100 = OpIAdd %uint %99 %uint_1
+        %101 = OpAccessChain %_ptr_StorageBuffer_float %inp %int_0 %100
+        %102 = OpLoad %float %101
+               OpStore %b %102
+        %103 = OpLoad %uint %i
+        %104 = OpIMul %uint %uint_2 %103
+        %105 = OpLoad %float %a
+        %106 = OpLoad %float %b
+        %107 = OpExtInst %float %1 FMin %105 %106
+        %108 = OpBitcast %uint %107
+        %110 = OpAccessChain %_ptr_StorageBuffer_uint %_ %int_1 %104
+               OpStore %110 %108
+        %111 = OpLoad %uint %i
+        %112 = OpIMul %uint %uint_2 %111
+        %113 = OpIAdd %uint %112 %uint_1
+        %114 = OpLoad %float %a
+        %115 = OpLoad %float %b
+        %116 = OpExtInst %float %1 FMax %114 %115
+        %117 = OpBitcast %uint %116
+        %118 = OpAccessChain %_ptr_StorageBuffer_uint %_ %int_1 %113
+               OpStore %118 %117
+               OpBranch %85
+         %85 = OpLabel
+               OpReturn
+               OpFunctionEnd

@@ -1,0 +1,57 @@
+Generated-by: LLM
+
+KosmicKrisp : lectures de texture d un descripteur nul sans branche (CIDRE_TEXTURES_NULLES_SANS_BRANCHE) : Metal rend 0 pour une poignee nulle, la lecture se fait sans condition puis 0 est choisi ; les branches par lecture empechaient le parallelisme des lectures
+
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_null_images.c
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_null_images.c
+@@ -62,6 +62,35 @@
+ }
+ 
+ static bool
++kk_null_texture_select_enabled(void)
++{
++   static int enabled = -1;
++   if (enabled < 0)
++      enabled = getenv("CIDRE_TEXTURES_NULLES_SANS_BRANCHE") != NULL;
++   return enabled;
++}
++
++static bool
++tex_reads_texels(const nir_instr *instr)
++{
++   if (instr->type != nir_instr_type_tex)
++      return false;
++
++   switch (nir_instr_as_tex(instr)->op) {
++   case nir_texop_tex:
++   case nir_texop_txb:
++   case nir_texop_txl:
++   case nir_texop_txd:
++   case nir_texop_tg4:
++   case nir_texop_txf:
++   case nir_texop_txf_ms:
++      return true;
++   default:
++      return false;
++   }
++}
++
++static bool
+ lower(nir_builder *b, nir_instr *instr, UNUSED void *data)
+ {
+    b->cursor = nir_before_instr(instr);
+@@ -72,6 +101,14 @@
+    if (!is_null)
+       return false;
+ 
++   if (def && kk_null_texture_select_enabled() && tex_reads_texels(instr)) {
++      b->cursor = nir_after_instr(instr);
++      nir_def *zero = nir_imm_zero(b, def->num_components, def->bit_size);
++      nir_def *sel = nir_bcsel(b, is_null, zero, def);
++      nir_def_rewrite_uses_after(def, sel);
++      return true;
++   }
++
+    nir_def *zero = NULL;
+    nir_if *nif = nir_push_if(b, nir_inot(b, is_null));
+    nir_instr_remove(instr);

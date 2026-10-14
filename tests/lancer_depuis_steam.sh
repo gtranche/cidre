@@ -158,7 +158,24 @@ if [ "$(opt dx12 CIDRE_DX12)" = true ]; then
    # Annonce opt-in des capacites FL 12.x a KosmicKrisp (sparse/tiled tier 2, ROV,
    # conservative raster) pour que vkd3d-proton atteigne le Feature Level 12.1.
    # Best-effort : si le jeu cree vraiment une ressource tiled, ca peut echouer.
-   export MESA_KK_EXPERIMENTAL="${MESA_KK_EXPERIMENTAL:-custom_border,image_view_min_lod},fl12"
+   # Sans custom_border en D3D12 : l'emulation des couleurs de bord ajoute a CHAQUE
+   # lecture de texture une seconde lecture conditionnelle (banc : x1,5 sur un filtre
+   # de 32 lectures ; Little Nightmares 12 -> 16 fps). vkd3d-proton s'en passe : les
+   # bords standard restent exacts, un bord arbitraire devient noir transparent.
+   export MESA_KK_EXPERIMENTAL="${MESA_KK_EXPERIMENTAL:-image_view_min_lod},fl12"
+   # KosmicKrisp 0135 (min/max a zero signe teste en entier, exact) et 0136 (lecture
+   # de texture d'un descripteur nul sans branche : Metal rend 0) : les branchements
+   # par lecture empechent Metal de lancer les lectures en parallele. Banc : filtre de
+   # 32 lectures 2,48 -> 0,78 ms. =0 retire la variable (le pilote ne regarde que sa
+   # presence).
+   case ${CIDRE_MINMAX_ZERO_ENTIER:-1} in
+      0) unset CIDRE_MINMAX_ZERO_ENTIER ;;
+      *) export CIDRE_MINMAX_ZERO_ENTIER=1 ;;
+   esac
+   case ${CIDRE_TEXTURES_NULLES_SANS_BRANCHE:-1} in
+      0) unset CIDRE_TEXTURES_NULLES_SANS_BRANCHE ;;
+      *) export CIDRE_TEXTURES_NULLES_SANS_BRANCHE=1 ;;
+   esac
 fi
 
 # Overrides DLL propres au jeu (base de compat, cf. profils.toml). Format Wine

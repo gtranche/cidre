@@ -1,0 +1,39 @@
+Generated-by: LLM
+
+KosmicKrisp : min/max a zero signe teste en entier (CIDRE_MINMAX_ZERO_ENTIER) : ((bits(a)|bits(b))<<1)==0 au lieu d une comparaison flottante gardee par isnan ; exact, sans comparaison flottante, moins de code par lecture de texture
+
+--- a/src/kosmickrisp/compiler/nir_to_msl.c
++++ b/src/kosmickrisp/compiler/nir_to_msl.c
+@@ -259,6 +259,15 @@
+       alu_src_to_msl(ctx, instr, 1);                                           \
+    } while (0)
+ 
++static bool
++kk_minmax_integer_zero_test_enabled(void)
++{
++   static int enabled = -1;
++   if (enabled < 0)
++      enabled = getenv("CIDRE_MINMAX_ZERO_ENTIER") != NULL;
++   return enabled;
++}
++
+ static void
+ alu_fcmp_to_msl(struct nir_to_msl_ctx *ctx, nir_alu_instr *instr,
+                 const char *op)
+@@ -507,7 +516,15 @@
+       if (nir_alu_instr_is_signed_zero_preserve(instr)) {
+          const char *ftype = msl_type_for_def(ctx->types, &instr->def);
+          const char *utype = msl_uint_type(instr->def.bit_size, 1);
+-         alu_fcmp_to_msl(ctx, instr, "==");
++         if (kk_minmax_integer_zero_test_enabled()) {
++            P(ctx, "%s((as_type<%s>(", utype, utype);
++            alu_src_to_msl(ctx, instr, 0);
++            P(ctx, ") | as_type<%s>(", utype);
++            alu_src_to_msl(ctx, instr, 1);
++            P(ctx, ")) << 1) == %s(0)", utype);
++         } else {
++            alu_fcmp_to_msl(ctx, instr, "==");
++         }
+          P(ctx, " ? as_type<%s>(%s(as_type<%s>(", ftype, utype, utype);
+          alu_src_to_msl(ctx, instr, 0);
+          P(ctx, ") %s as_type<%s>(", is_min ? "|" : "&", utype);
