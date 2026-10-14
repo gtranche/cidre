@@ -18,7 +18,8 @@
 #
 # Pour les essais : CIDRE_CLIENT_STEAM_ETAT (l'etat du client Steam, au lieu de
 # l'interroger : connecte, ouvert, ferme, absent) ; SteamAppId vide = jeu hors
-# Steam, on ne parle pas du client.
+# Steam, on ne parle pas du client ; CIDRE_JOURNAUX (le dossier des marqueurs
+# d'arret, build/logs par defaut).
 set -u
 RC=${1:?usage: expliquer_sortie.sh <code> <journal> [<ligne>]}
 JOURNAL=${2:?usage: expliquer_sortie.sh <code> <journal> [<ligne>]}
@@ -32,6 +33,9 @@ segment() {
    tail -n +"${debut:-1}" "$JOURNAL"
 }
 S=$(segment "$@" | tail -n 4000)
+# le debut de ce lancement, d'apres son en-tete (« === 2026-10-14 10:39:09  appid=... »)
+DEBUT=$(segment "$@" | head -1 | sed -n 's/^=== \([0-9-]* [0-9:]*\).*/\1/p')
+[ -z "$DEBUT" ] || DEBUT=$(date -j -f '%Y-%m-%d %H:%M:%S' "$DEBUT" +%s 2>/dev/null)
 a() { case $S in *"$1"*) return 0 ;; esac; return 1; }   # le journal contient-il ce texte ?
 # une ligne du journal qui contient le motif (la premiere), sans son prefixe de fil
 ligne() { printf '%s\n' "$S" | grep -m1 -F -- "$1" | sed 's/^[0-9a-f]*://' | cut -c1-160; }
@@ -42,6 +46,21 @@ etat_steam() {
 }
 
 dire() { echo "    cause probable : $1"; [ -n "${2:-}" ] && echo "    a faire : $2"; return 0; }
+
+# Un arret demande par `cidre stop` (Verger) laisse un marqueur. Il ne vaut que
+# pour le lancement en cours : pose avant son debut, c'est le reste d'un arret
+# d'avant (2026-10-14 : un `cidre stop` de menage a fait dire « arrete a la
+# demande » au plantage du lancement suivant). Dans les deux cas il est
+# consomme ici.
+JOURNAUX=${CIDRE_JOURNAUX:-$R/build/logs}
+JEU_ID=${CIDRE_JEU:-${SteamAppId:-}}
+ARRET=non
+for m in "$JOURNAUX/arret-demande-$JEU_ID" "$JOURNAUX/arret-demande-tous"; do
+   [ -n "$JEU_ID" ] || [ "$m" = "$JOURNAUX/arret-demande-tous" ] || continue
+   [ -f "$m" ] || continue
+   if [ -z "$DEBUT" ] || [ "$(stat -f %m "$m" 2>/dev/null || echo 0)" -ge "$DEBUT" ]; then ARRET=oui; fi
+   rm -f "$m"
+done
 
 # --- signatures du journal, de la plus precise a la plus generale ---------------
 
@@ -93,10 +112,18 @@ if a "Failed to create metal view" || { a "winemetal" && a "err:"; }; then
    exit 0
 fi
 
-# Un arret demande par `cidre stop` (Verger) : rien a expliquer.
-JEU_ID=${CIDRE_JEU:-${SteamAppId:-}}
-if [ -f "$R/build/logs/arret-demande-$JEU_ID" ] || [ -f "$R/build/logs/arret-demande-tous" ]; then
-   rm -f "$R/build/logs/arret-demande-$JEU_ID" "$R/build/logs/arret-demande-tous"
+# Le pilote graphique de macOS (Metal) arrete le processus sur une assertion
+# (« failed assertion `...' ») : c'est la cause, meme si un arret a ete demande
+# ensuite pour un jeu deja tombe.
+if a "failed assertion"; then
+   as=$(printf '%s\n' "$S" | grep -m1 -o 'failed assertion .*' | sed 's/^failed assertion .//; s/.$//' | cut -c1-120)
+   dire "le pilote graphique de macOS (Metal) a refuse une operation du rendu et arrete le jeu${as:+ (« $as »)}" \
+        "c'est un defaut de Cidre, pas du jeu : « Partager mon resultat » dans Verger avec ce journal ; en attendant, essayer l'autre rendu (option d3d11 dans Verger, ou sans le vrai DirectX 12)"
+   exit 0
+fi
+
+# Un arret demande par `cidre stop` (Verger) pendant ce lancement : rien a expliquer.
+if [ "$ARRET" = oui ]; then
    dire "le jeu a ete arrete a la demande (cidre stop)" "rien a faire"
    exit 0
 fi

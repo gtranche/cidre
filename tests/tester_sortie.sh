@@ -8,6 +8,9 @@ R=$(cd "$(dirname "$0")/.." && pwd)
 S="$R/tests/expliquer_sortie.sh"
 T=$(mktemp -d "${TMPDIR:-/tmp}/tester-sortie.XXXXXX")
 trap 'rm -rf "$T"' EXIT
+# les marqueurs d'arret dans un dossier a part : ni ceux du depot ne faussent
+# les essais, ni les essais ne consomment un vrai `cidre stop`
+export CIDRE_JOURNAUX="$T/logs"; mkdir -p "$CIDRE_JOURNAUX"
 nb=0; ko=0
 ok()   { nb=$((nb + 1)); echo "  ok   $1"; }
 echec() { nb=$((nb + 1)); ko=$((ko + 1)); echo "  KO   $1" >&2; }
@@ -103,11 +106,40 @@ r=$(expliquer 1 "$(journal '    profil  : moteur=unreal anticheat=eac etat=bronz
 contient "anticheat=eac en est un" "anti-triche" "$r"
 
 echo "== arret demande par cidre stop"
-mkdir -p "$R/build/logs"; touch "$R/build/logs/arret-demande-1"
+L="$CIDRE_JOURNAUX"
+touch "$L/arret-demande-1"
 r=$(expliquer 1 "$(journal 'EasyAntiCheat: launcher error')")
 contient "cause" "arrete a la demande" "$r"
 absent "pas d'autre diagnostic" "anti-triche" "$r"
-[ -f "$R/build/logs/arret-demande-1" ] && echec "marqueur d'arret non consomme" || ok "marqueur d'arret consomme"
+[ -f "$L/arret-demande-1" ] && echec "marqueur d'arret non consomme" || ok "marqueur d'arret consomme"
+touch "$L/arret-demande-tous"
+r=$(expliquer 1 "$(journal 'rien')")
+contient "arret de tout (cidre stop sans jeu), pendant ce lancement" "arrete a la demande" "$r"
+[ -f "$L/arret-demande-tous" ] && echec "marqueur « tous » non consomme" || ok "marqueur « tous » consomme"
+# un marqueur pose avant le debut du lancement (l'en-tete dit 2026-10-12 10:00:00) est un reste
+touch -t 202610120930 "$L/arret-demande-1" "$L/arret-demande-tous"
+r=$(expliquer 1 "$(journal 'rien')")
+absent "marqueur d'avant le lancement : pas « arrete a la demande »" "arrete a la demande" "$r"
+contient "marqueur d'avant le lancement : le diagnostic ordinaire" "code 1 sans signature connue" "$r"
+[ -f "$L/arret-demande-1" ] || [ -f "$L/arret-demande-tous" ] && echec "marqueurs perimes non effaces" || ok "marqueurs perimes effaces"
+touch -t 202610121001 "$L/arret-demande-1"
+contient "marqueur pose apres le debut : arret demande" "arrete a la demande" "$(expliquer 1 "$(journal 'rien')")"
+
+echo "== assertion de Metal (PEAK, 2026-10-14 10:40)"
+PEAK='-[IOGPUMetalTexture initWithDevice:descriptor:placementSparseBytes:placementSparsePageSize:placementSparseMetaDataBytes:placementSparseResidencyBytes:args:argsSize:]:818: failed assertion `Invalid Storage Mode 0 for Placement Sparse Texture'"'"
+r=$(APPID=3527290 expliquer 1 "$(journal "$PEAK")")
+contient "cause : le pilote Metal" "le pilote graphique de macOS (Metal) a refuse une operation du rendu et arrete le jeu (« Invalid Storage Mode 0 for Placement Sparse Texture »)" "$r"
+contient "a faire" "Partager mon resultat" "$r"
+# le cas reel : un `cidre stop` de menage, bien avant ce lancement
+touch -t 202610120930 "$L/arret-demande-tous"
+r=$(APPID=3527290 expliquer 1 "$(journal "$PEAK")")
+absent "assertion + vieux marqueur : pas « arrete a la demande »" "arrete a la demande" "$r"
+contient "assertion + vieux marqueur : l'assertion" "Invalid Storage Mode 0" "$r"
+# meme un arret demande apres coup ne masque pas l'assertion (le jeu etait deja tombe)
+touch "$L/arret-demande-3527290"
+r=$(APPID=3527290 expliquer 1 "$(journal "$PEAK")")
+contient "assertion + arret demande pendant ce lancement : l'assertion l'emporte" "Invalid Storage Mode 0" "$r"
+[ -f "$L/arret-demande-3527290" ] && echec "marqueur du lancement non consomme" || ok "marqueur du lancement consomme"
 
 echo "== GPU"
 r=$(expliquer 1 "$(journal 'err:   Device error at frame 5379: Error Domain=MTLCommandBufferErrorDomain Code=2 "Caused GPU Timeout Error (00000002:kIOGPUCommandBufferCallbackErrorTimeout)"')")
