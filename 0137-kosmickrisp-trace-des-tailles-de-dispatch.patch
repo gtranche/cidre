@@ -1,0 +1,37 @@
+Generated-by: LLM
+
+KosmicKrisp : la trace des dispatchs (CIDRE_DISPATCH_TRACE=<dossier>) ecrit aussi une ligne par dispatch dans <dossier>/dispatchs.txt (nuanceur, groupes, taille de groupe), pour connaitre la taille reelle de chaque dispatch
+
+--- a/src/kosmickrisp/vulkan/kk_cmd_dispatch.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_dispatch.c
+@@ -13,6 +13,7 @@
+ #include "kk_device.h"
+ #include "kk_entrypoints.h"
+ #include "kk_shader.h"
++#include "util/simple_mtx.h"
+ 
+ #include "kosmickrisp/bridge/mtl_bridge.h"
+ 
+@@ -85,6 +86,22 @@
+       snprintf(label, sizeof(label), "CS %p g%ux%ux%u t%ux%ux%u", (void *)cs,
+                x, y, z, (unsigned)l.x, (unsigned)l.y, (unsigned)l.z);
+    mtl_encoder_set_label(enc, label);
++
++   static FILE *log = NULL;
++   static simple_mtx_t log_lock = SIMPLE_MTX_INITIALIZER;
++   static unsigned lines = 0;
++   simple_mtx_lock(&log_lock);
++   if (!log) {
++      char path[1024];
++      snprintf(path, sizeof(path), "%s/dispatchs.txt", kk_dispatch_trace_dir());
++      log = fopen(path, "a");
++   }
++   if (log) {
++      fprintf(log, "%s\n", label);
++      if (++lines % 256 == 0)
++         fflush(log);
++   }
++   simple_mtx_unlock(&log_lock);
+ }
+ 
+ VKAPI_ATTR void VKAPI_CALL
