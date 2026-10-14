@@ -1,11 +1,11 @@
-# PEAK (Unity 6 DX12). Le jeu exige le Feature Level 12.1. dx12 = true : on charge
-# vkd3d-proton arm64ec + annonce des caps FL 12.1 a KosmicKrisp (drapeau fl12). Le
-# DX12 FONCTIONNE (PEAK en D3D12 12.1, menu propre, 0 crash), MAIS le gameplay
-# freeze : fl12 annonce le sparse/tiled sans backend reel, et PEAK cree de vraies
-# tiled resources pour streamer ses textures -> non-residence silencieuse -> freeze.
-# Donc dx12 = false (D3D11 fluide, jouable) tant que le VRAI backend sparse Metal
-# (TiledResourcesTier2 reel) n'est pas ecrit dans KosmicKrisp. Repasser a true quand
-# ce sera fait. La conservative raster feinte, elle, ne gene pas.
+# PEAK (Unity 6, D3D12 avec repli D3D11). dx12 = false : le D3D11 par DXMT est
+# bien plus rapide. Le vrai D3D12 marche depuis le 2026-10-14 (vkd3d-proton,
+# KosmicKrisp 0127 pour les textures sparse, DXGI de DXVK, -force-d3d12) : meme vue,
+# 32 images/s (23 ms GPU) par defaut, 45 images/s avec -force-gfx-direct (Unity rend
+# alors en 2 listes de commandes par image au lieu de ~120, que KosmicKrisp coupe
+# chacune en passes), contre 105 images/s (10 ms GPU) en DXMT. Reste en D3D12 un gel
+# au changement d'espace macOS (bascule plein ecran d'Unity). Pour essayer :
+# CIDRE_DX12=1 et les arguments -force-d3d12 -force-gfx-direct.
 #
 # tso = false : avec l'emulation de l'ordre memoire x86 (TSO) de FEX, regarder au
 # loin fait tomber le jeu de ~100 a 13 images/s (mesure du 2026-10-13, M1 Max,

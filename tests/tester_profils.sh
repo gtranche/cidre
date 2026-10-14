@@ -16,6 +16,7 @@
 #   6. variantes par machine (blocs [[machine]], tests/machine.sh) : conditions,
 #      fusion dans [cidre] et [[reglages_jeu]], priorite, application a l'INI,
 #      fiche d'Expedition 33 sur un M1 Max et sur un iMac M4 ;
+#   6b. arguments du jeu (option arguments) : decoupage, doublons, fiche, `cidre set` ;
 #   7. sh -n sur les scripts de la chaine.
 # Tout se passe dans un dossier temporaire : ni le profil utilisateur, ni le
 # prefixe, ni le cache reels ne sont touches.
@@ -535,8 +536,27 @@ for f in $(grep -l '^\[\[machine\]\]' "$R"/profils/*.toml 2>/dev/null); do
 done
 [ $n -gt 0 ] && ok "$n fiche(s) livree(s) a variantes par machine" || echec "aucune fiche livree n a de bloc [[machine]] (Expedition 33 en porte un)"
 
+echo "== 6b. arguments du jeu (option arguments, tests/arguments_jeu.sh)"
+AJ() { sh "$R/tests/arguments_jeu.sh" "$@" | tr '\n' ' ' | sed 's/ $//'; }
+verif "arguments : decoupes aux espaces" "-force-gfx-direct -window-mode borderless" "$(AJ '  -force-gfx-direct   -window-mode borderless ' jeu.exe)"
+verif "arguments : option deja presente sautee avec sa valeur" "-force-gfx-direct" "$(AJ '-force-gfx-direct -window-mode borderless' jeu.exe -window-mode windowed)"
+verif "arguments : pas de doublon" "" "$(AJ '-force-gfx-direct' jeu.exe -force-gfx-direct)"
+verif "arguments : aucune expansion de motif" "-x*" "$(AJ '-x*' jeu.exe)"
+verif "arguments : chaine vide" "" "$(AJ '' jeu.exe)"
+printf '[jeu]\nappid = 996\n[cidre]\narguments = "-force-gfx-direct -popupwindow"\n' >"$CIDRE_PROFILS_BASE/996.toml"
+verif "arguments : lus dans la fiche" "-force-gfx-direct -popupwindow" "$(valeur 996 arguments)"
+verif "arguments : json de la fiche" '"arguments":"-force-gfx-direct -popupwindow"' "$(resoudre 996 json | grep -o '"arguments":"[^"]*"')"
+rm -f "$CIDRE_PROFILS_BASE/996.toml"
+cp "$CIDRE_PROFILS" "$T/perso.avant-arguments"
+sh "$R/cidre" set defaut arguments "-a -b" >/dev/null 2>&1
+verif "cidre set defaut arguments" "-a -b" "$(valeur 998 arguments)"
+sh "$R/cidre" set defaut arguments 'a"b' >/dev/null 2>&1; rc=$?
+verif "cidre set arguments : guillemet refuse" "2" "$rc"
+cp "$T/perso.avant-arguments" "$CIDRE_PROFILS"
+grep -q 'ARGJ=${CIDRE_ARGUMENTS:-$(profil arguments)}' "$R/tests/lancer_depuis_steam.sh" && ok "lanceur : option arguments lue" || echec "lanceur : option arguments non lue"
+
 echo "== 7. syntaxe"
-for s in cidre tests/profil_cidre.sh tests/fiche_profil.sh tests/reglages_jeu.sh tests/machine.sh tests/lancer_depuis_steam.sh tests/empaqueter_runtime.sh tests/tester_profils.sh; do
+for s in cidre tests/profil_cidre.sh tests/fiche_profil.sh tests/reglages_jeu.sh tests/machine.sh tests/lancer_depuis_steam.sh tests/arguments_jeu.sh tests/empaqueter_runtime.sh tests/tester_profils.sh; do
    sh -n "$R/$s" 2>/dev/null && ok "sh -n $s" || echec "sh -n $s"
 done
 

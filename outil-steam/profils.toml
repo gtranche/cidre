@@ -69,9 +69,20 @@
 #                    lancement et le rend a auto a la sortie ; n'a d'effet qu'en
 #                    vrai plein ecran, donc avec plein_ecran = true.
 #   dx12             vrai D3D12 via vkd3d-proton arm64ec (installe en system32,
-#                    force d3d12=n). false (defaut) = d3d12 builtin de Wine, qui
-#                    retombe en D3D11/DXVK. KosmicKrisp plafonne au FL 12.0 : un
-#                    jeu qui exige FL 12.1 (ex. PEAK) reste en D3D11 meme a true.
+#                    force d3d12=n, annonce FL 12.1 a KosmicKrisp ; le DXGI et le
+#                    D3D11 sont alors ceux de DXVK). false (defaut) = d3d12 builtin
+#                    de Wine, qui retombe en D3D11 (DXMT). Pour un jeu qui a un
+#                    rendu D3D11, DXMT reste bien plus rapide (PEAK : 105 images/s
+#                    en DXMT, 45 en D3D12 avec -force-gfx-direct, 2026-10-14) : dx12
+#                    sert aux jeux D3D12 seuls. Le Shader Model reste plafonne a 6.0
+#                    (Unreal 5.4 refuse alors le D3D12).
+#   arguments        options de ligne de commande ajoutees au jeu, separees par des
+#                    espaces, sans guillemets (ex. "-force-gfx-direct" : un jeu Unity
+#                    en D3D12 rend alors en 2 listes de commandes par image au lieu
+#                    de ~120 -- PEAK 32 -> 45 images/s). Une option deja passee au
+#                    jeu (options de lancement de Steam) n'est pas doublee.
+#                    `cidre set <id> arguments "-a -b"` ; CIDRE_ARGUMENTS pour un essai ;
+#                    `cidre play <id> -- <args>` pour un seul lancement.
 #   dxmt_config      options DXMT propres au jeu, format "d3d11.cle=valeur;..."
 #                    (ex. "d3d11.groupedBufferLoad=True"), ajoutees a DXMT_CONFIG ;
 #                    vide = rien. Changer une option recompile les shaders du jeu

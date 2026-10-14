@@ -569,7 +569,7 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
   cidre list [--json]             liste tes jeux + plateforme + mode de lancement
   cidre info <id> [--json]        fiche d'un jeu : plateforme, taille, chemin, options actives
                                   --json : "maj" dit ou en est sa mise a jour (jeu du dossier Cidre ; voir updates)
-  cidre play <id> [--sans-maj] [--accord-nuage] [--json]
+  cidre play <id> [--sans-maj] [--accord-nuage] [--json] [-- <arguments du jeu>]
                                   lance le jeu (natif via Steam, ou par la pile Cidre). Un jeu du dossier
                                   Cidre dont Steam publie un build plus recent est d'abord mis a jour ; si
                                   ce n'est pas possible (hors ligne, session absente, place...), on le dit
@@ -581,6 +581,8 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
                                   Un jeu du dossier Cidre dont Steam croit des sauvegardes sur ce Mac qui n'y
                                   sont plus ne part pas (code 7) : sa sortie les ferait retirer du nuage.
                                   --accord-nuage : le lancer quand meme
+                                  -- <arguments> : options passees au jeu pour ce lancement (jeu Cidre ou hors
+                                  Steam), en plus de l'option arguments de sa fiche (ex. -- -force-gfx-direct)
   cidre running [--json]          les jeux en cours
   cidre stop [<id>]               force l'arret d'un jeu lance par Cidre (et de tout ce que Wine fait tourner)
   cidre log <id> [lignes]         la fin du journal du dernier lancement d'un jeu (sans les traces)
@@ -658,10 +660,13 @@ cmd=${1:-help}; [ $# -gt 0 ] && shift
 # --json (n'importe ou) : sortie pour une interface (Verger), stable et parsable
 JSON=non; MAJ=non; SANS_MAJ=non; FOND=non; ACCORD_NUAGE=non
 # `run` transmet ses arguments tels quels au programme
+# Apres `--`, plus rien n'est interprete : ce sont les arguments du jeu (`play`).
+FIN_OPTIONS=non
 [ "$cmd" = run ] || for a in "$@"; do
    shift
+   if [ $FIN_OPTIONS = oui ]; then set -- "$@" "$a"; continue; fi
    case $a in --json) JSON=oui ;; --refresh) MAJ=oui ;; --sans-maj|--no-update) SANS_MAJ=oui ;; --fond|--background) FOND=oui ;;
-      --accord-nuage) ACCORD_NUAGE=oui ;; *) set -- "$@" "$a" ;; esac
+      --accord-nuage) ACCORD_NUAGE=oui ;; --) FIN_OPTIONS=oui; set -- "$@" "$a" ;; *) set -- "$@" "$a" ;; esac
 done
 case "$cmd" in
   list|ls)
@@ -710,7 +715,11 @@ case "$cmd" in
       else echo "fiche       : aucune (cidre profils maj)"; fi
     fi ;;
   play|jouer)
-    id=${1:?usage: cidre play <id> [--sans-maj] [--json]}
+    id=${1:?usage: cidre play <id> [--sans-maj] [--json] [-- <arguments du jeu>]}
+    shift
+    # Les arguments du jeu ne viennent que d'apres `--` ; le reste est ignore,
+    # comme avant.
+    if [ "${1:-}" = -- ]; then shift; else set --; fi
     CDIR="$CIDRE_GAMES/$id"
     # --json : l'evenement « lancement » clot la sortie standard ; tout ce qui
     # suit (le lanceur, le jeu) ecrit a l'erreur.
@@ -723,7 +732,7 @@ case "$cmd" in
       partir
       echo "lancement Cidre : $(basename "$EXE")  ($id)"
       temoin_en_cours "$id"
-      CIDRE_JEU=$id sh "$LANCEUR" "$EXE"
+      CIDRE_JEU=$id sh "$LANCEUR" "$EXE" "$@"
     elif [ -d "$CDIR" ]; then
       # Jeu telecharge par Cidre (hors client) : c'est Cidre qui le tient a
       # jour, puis on lance par la pile Cidre.
@@ -738,12 +747,13 @@ case "$cmd" in
       # le lanceur l'y pousse -- tests/seance_steam_cloud.sh)
       [ $ACCORD_NUAGE = oui ] && export CIDRE_ACCORD_NUAGE=1
       SteamAppId=$id SteamGameId=$id SteamOverlayGameId=$id CIDRE_SEANCE=1 \
-        sh "$LANCEUR" "$EXE"
+        sh "$LANCEUR" "$EXE" "$@"
     else
       # Jeu du client Steam (natif, ou Windows par le wrapper) : Steam le met a
       # jour lui-meme avant de le lancer.
       partir
       echo "lancement de $(nom "$id") ($id) via Steam..."
+      [ $# -eq 0 ] || echo "  (arguments ignores : un jeu du client Steam prend ses options de lancement dans Steam, ou dans l'option arguments de sa fiche)" >&2
       open "steam://run/$id"
     fi
     # `play` a attendu le jeu : on sort ici, sans rien lire de plus.
@@ -1051,11 +1061,16 @@ case "$cmd" in
         # la forme que Wine attend ; la liste est celle du lanceur
         val=$(sh "$R/tests/version_windows.sh" valider "$val") || exit 2
         val="\"$val\"" ;;
+      arguments)
+        # options de ligne de commande du jeu, separees par des espaces ; une
+        # chaine, sans guillemet ni barre oblique inverse (le profil est du TOML)
+        case $val in *'"'*|*'\'*) echo "arguments : ni guillemet ni barre oblique inverse" >&2; exit 2 ;; esac
+        val="\"$val\"" ;;
       langue)
         # une chaine : ecrite entre guillemets dans le profil (TOML)
         case $val in auto|fr|en|de|es|it|pt|ru|pl|ja|ko|zh) val="\"$val\"" ;;
           *) echo "langue attend auto ou un code : fr, en, de, es, it, pt, ru, pl, ja, ko, zh" >&2; exit 2 ;; esac ;;
-      *) echo "option inconnue : $cle (journal_detaille, tso, vsync, hud, overlay, async, narrow_barriers, garde_index, dx12, d3d11, metalfx, fils_compilation, eac_untrusted, luajit, plein_ecran, mode_emule, gamemode, maj_avant_lancement, langue, windows_version, reglages_jeu_appliques)" >&2; exit 2 ;;
+      *) echo "option inconnue : $cle (journal_detaille, tso, vsync, hud, overlay, async, narrow_barriers, garde_index, dx12, d3d11, metalfx, fils_compilation, eac_untrusted, luajit, plein_ecran, mode_emule, gamemode, maj_avant_lancement, langue, windows_version, arguments, reglages_jeu_appliques)" >&2; exit 2 ;;
     esac
     CIDRE_PROFILS=${CIDRE_PROFILS:-$CIDRE_DIR/profils.toml} sh "$R/tests/profil_cidre.sh" "$id" set "$cle" "$val" ;;
   unset)

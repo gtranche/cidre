@@ -542,6 +542,21 @@ if [ "$(opt eac_untrusted CIDRE_EAC_UNTRUSTED)" = true ]; then
    set -- "$@" -eac-untrusted
    echo "    profil : +-eac-untrusted" >>"$JOURNAL"
 fi
+#   arguments : options de ligne de commande du jeu, depuis sa fiche (ex.
+#     "-force-gfx-direct" : PEAK en vrai D3D12 rend alors en 2 listes de commandes
+#     par image au lieu de ~120, 32 -> 45 images/s au meme endroit, 2026-10-14).
+#     Un environnement explicite (CIDRE_ARGUMENTS) garde la main ; une option deja
+#     presente sur la ligne de commande n'est pas doublee (tests/arguments_jeu.sh).
+ARGJ=${CIDRE_ARGUMENTS:-$(profil arguments)}
+if [ -n "$ARGJ" ]; then
+   AJOUTS=$(sh "$R/tests/arguments_jeu.sh" "$ARGJ" "$@")
+   while IFS= read -r a; do
+      [ -n "$a" ] && set -- "$@" "$a"
+   done <<FIN_ARGUMENTS
+$AJOUTS
+FIN_ARGUMENTS
+   echo "    profil : arguments du jeu : $ARGJ" >>"$JOURNAL"
+fi
 
 # Sauvegardes. Steam d'abord : si le jeu ecrit par l'API Remote Storage, ou
 # declare a Steam Cloud un dossier pour macOS (le dossier du prefixe y est lie

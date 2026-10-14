@@ -77,6 +77,21 @@ L'état de la dernière mise à jour de chaque jeu est gardé dans
 (Mo libres exigés), `CIDRE_MAJ_VALIDER=1` (revérifier tous les fichiers).
 Essais : `sh tests/tester_maj_avant_lancement.sh`.
 
+### Arguments du jeu (`arguments`)
+
+`arguments = "-force-gfx-direct"` dans `[cidre]` ajoute ces options à la ligne de
+commande du jeu, à chaque lancement (`cidre play`, Verger, bouton « Jouer » de
+Steam). Arguments séparés par des espaces, sans guillemets ni échappement : un
+argument qui contiendrait un espace n'est pas pris en charge. Une option déjà
+passée au jeu, par exemple dans les options de lancement de Steam, n'est pas
+doublée, ni les valeurs qui la suivent. `cidre set <id> arguments "-a -b"` la
+pose pour un jeu, `CIDRE_ARGUMENTS` le temps d'un essai, et
+`cidre play <id> -- <arguments>` pour un seul lancement.
+
+Exemple mesuré (2026-10-14, PEAK en vrai D3D12, même vue) : Unity rend par
+défaut en ~120 listes de commandes par image, que KosmicKrisp ne peut pas
+fusionner ; avec `-force-gfx-direct`, 2 listes par image, et 32 → 45 images/s.
+
 ### Version de Windows (`windows_version`)
 
 Sans l'option, un jeu voit Windows 10. Une fiche (ou `cidre set <id>
@@ -146,7 +161,7 @@ lanceur = "steam"                  # steam, epic, gog, aucun
 # outil-steam/profils.toml (voir son en-tête pour le sens de chacune) :
 # langue, journal_detaille, maj_avant_lancement, tso, vsync, hud, overlay, async, narrow_barriers,
 # garde_index, fils_compilation, eac_untrusted, luajit, plein_ecran, mode_emule, gamemode,
-# dx12, d3d11, metalfx, dll_overrides, windows_version, dependances.
+# dx12, d3d11, metalfx, arguments, dll_overrides, windows_version, dependances.
 # On n'y met que ce qui diffère de [defaut].
 async = true
 fils_compilation = 6
