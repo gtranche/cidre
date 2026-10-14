@@ -410,8 +410,20 @@ verif "client hors ligne : dit, pas de seance" "1|0" "$(seance steam-api | grep 
 connexion "Logged On"
 o=$(FAUX_JOURNAL="[$h] [AppID 77] Starting sync (up,AC Exit,)\n[$h] [AppID 77] Download OK for file user_0.dat\n[$h] [AppID 77] Download OK for file opts.json\n[$h] [AppID 77] YldWriteCacheDirectoryToFile - saved\n" seance steam-api)
 verif "le nuage descend : seance au nom du jeu, fichiers comptes" "seance 77|1" "$(cat "$FAUX_APPELS")|$(printf '%s\n' "$o" | grep -c '2 fichier(s) descendu(s) du nuage, 0 envoye(s), avant le lancement')"
-o=$(FAUX_JOURNAL="[$h] [AppID 77] Starting sync (up,AC Exit,)\n[$h] [AppID 77] Currently already synced to global change number '9', should be nothing to download\n[$h] [AppID 77] YldWriteCacheDirectoryToFile - saved\n" seance "$PEAK")
-verif "deja a jour (dossier lie aussi)" "1" "$(printf '%s\n' "$o" | grep -c 'a jour avec le nuage')"
+o=$(FAUX_JOURNAL="[$h] [AppID 77] Starting sync (up,AC Exit,)\n[$h] [AppID 77] Currently already synced to global change number '9', should be nothing to download\n[$h] [AppID 77] YldWriteCacheDirectoryToFile - saved\n" seance steam-api)
+verif "deja a jour" "1" "$(printf '%s\n' "$o" | grep -c 'a jour avec le nuage')"
+# Garde : jamais de seance pour un jeu Auto-Cloud. La synchro de sortie qu'elle
+# declenche retire du nuage les fichiers que remotecache.vdf croit sur ce Mac et
+# que les regles n'y trouvent pas (Blasphemous, 2026-10-14 10:32).
+verif "garde : dossier lie (Auto-Cloud) -> pas de seance, rien a dire" "|0" "$(seance "$PEAK")|$(appels)"
+mkdir -p "$FS/userdata/42/77"
+printf '"77"\n{\n\t"ChangeNumber"\t\t"3"\n\t"user_0.dat"\n\t{\n\t\t"root"\t\t"0"\n\t\t"size"\t\t"9"\n\t}\n}\n' >"$FS/userdata/42/77/remotecache.vdf"
+o=$(FAUX_JOURNAL="[$h] [AppID 77] Starting sync (up,AC Exit,)\n[$h] [AppID 77] YldWriteCacheDirectoryToFile - saved\n" seance steam-api)
+verif "garde : API, le client ne connait que des fichiers de l'API -> seance" "1|1" "$(appels)|$(printf '%s\n' "$o" | grep -c 'a jour avec le nuage')"
+printf '"77"\n{\n\t"user_0.dat"\n\t{\n\t\t"root"\t\t"0"\n\t}\n\t"Studio/Jeu/Savegames/slot.sav"\n\t{\n\t\t"root"\t\t"7"\n\t\t"size"\t\t"0"\n\t}\n}\n' >"$FS/userdata/42/77/remotecache.vdf"
+o=$(seance steam-api)
+verif "garde : API, mais le client connait un fichier Auto-Cloud (racine 7) -> pas de seance, dit" "0|1" "$(appels)|$(printf '%s\n' "$o" | grep -c 'aussi des fichiers Auto-Cloud, pas de seance')"
+rm -f "$FS/userdata/42/77/remotecache.vdf"
 o=$(FAUX_JOURNAL="[$h] [AppID 77] Starting sync (up,AC Exit,)\n[$h] [AppID 77] Failed sync for 'up,AC Exit,' [login=false][offlineMode=true]\n" seance steam-api)
 verif "synchro refusee par le client : le jeu part quand meme" "1" "$(printf '%s\n' "$o" | grep -c 'synchro impossible')"
 o=$(FAUX_JOURNAL="[$h] [AppID 77] Starting sync (up,AC Exit,)\n[$h] [AppID 77] Conflict detected for file x\n[$h] [AppID 77] YldWriteCacheDirectoryToFile - saved\n" seance steam-api)

@@ -469,13 +469,15 @@ verif "dossier vide mais fichiers connus dans le nuage : Steam d'abord, rien n'e
 contient "fichiers connus dans le nuage : on le dit" "Steam     : 1 fichier(s) dans le nuage, que le client Steam connait (pas encore sur ce Mac)" "$(cat "$T/err")"
 sortie=$(CIDRE_FICHE_STEAM_CLOUD="$(lien 16)" sh "$R/cidre" import 2016 --json 2>"$T/err")
 verif "le nuage n'a qu'un fichier declare pour Windows : comble, sans conflit possible" "copie 1 false bouteille 16" "$(cs etat "$sortie") $(cs fichiers "$sortie") $(cs conflit_possible "$sortie") $(cat "$T/maison/Library/Application Support/Dev16.Jeu16/partie.sav" 2>/dev/null)"
-# 2017 : dossier vide, rien de connu du nuage AVANT ; la seance Steam (un faux
-# client) fait descendre l'etat du nuage : il a une sauvegarde pour macOS.
-# Le comblement ne se decide qu'apres : Steam d'abord.
+# 2017 : dossier lie vide, rien de connu du nuage. Un jeu Auto-Cloud n'a JAMAIS
+# de seance Steam (elle pourrait faire retirer du nuage des fichiers que ce Mac
+# n'a pas, cf. tests/seance_steam_cloud.sh) : le faux client n'est pas appele,
+# le dossier est comble et le conflit possible annonce.
 mkdir -p "$HOME/Library/Application Support/Steam/logs" "$HOME/Library/Application Support/Steam/Steam.AppBundle"
 printf '[2026-10-14 09:00:00] [Logged On, 0,0,0,0] etat\n' >"$HOME/Library/Application Support/Steam/logs/connection_log.txt"
 cat >"$T/outil-seance" <<'FIN'
 #!/bin/sh
+echo "$*" >>"$HOME/appels-seance"
 J="$HOME/Library/Application Support/Steam/logs/cloud_log.txt"; h=$(date '+%Y-%m-%d %H:%M:%S')
 printf '[%s] [AppID %s] Starting sync (up,AC Exit,)\n[%s] [AppID %s] Download OK for file Dev17/Jeu17/partie.sav\n' "$h" "$2" "$h" "$2" >>"$J"
 mkdir -p "$HOME/Library/Application Support/Steam/userdata/4242/$2"
@@ -485,9 +487,8 @@ printf 'nuage_compte=1\nnuage_jeu=1\netat=ok\n'
 FIN
 chmod +x "$T/outil-seance"
 sortie=$(CIDRE_SEANCE_STEAM=1 CIDRE_OUTIL="$T/outil-seance" CIDRE_STEAM_TOURNE=true CIDRE_FICHE_STEAM_CLOUD="$(lien 17)" sh "$R/cidre" import 2017 --json 2>"$T/err")
-verif "seance avant de combler : le nuage a une sauvegarde -> Steam d'abord, rien copie, pas de conflit possible" "steam_prioritaire 0 true false" \
-   "$(cs etat "$sortie") $(cs fichiers "$sortie") $(cs steam_distants "$sortie") $(cs conflit_possible "$sortie")"
-contient "seance avant de combler : le compte rendu dit ce que le nuage a fait descendre" "saves: Steam Cloud : 1 fichier(s) descendu(s) du nuage" "$(cat "$T/err")"
+verif "dossier lie : aucune seance, meme client ouvert et seance permise" "" "$(cat "$HOME/appels-seance" 2>/dev/null)"
+verif "dossier lie sans seance : comble, conflit possible annonce" "copie 1 true" "$(cs etat "$sortie") $(cs fichiers "$sortie") $(cs conflit_possible "$sortie")"
 
 echo "  -- sauvegardes dans le dossier du jeu"
 sortie=$(CIDRE_FICHE_SAUVEGARDES='jeu:save' sh "$R/cidre" import 2009 --json 2>"$T/err")

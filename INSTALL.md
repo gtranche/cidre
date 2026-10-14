@@ -37,15 +37,16 @@ ou le jeu les cherchera. Une sauvegarde plus recente deja presente cote Cidre
 n'est jamais ecrasee ; une plus ancienne est remplacee apres copie dans
 l'historique du jeu ; la bouteille n'est que lue.
 
-Avant de lancer un jeu du dossier Cidre que Steam Cloud sait synchroniser sur
-macOS (jeu qui ecrit par l'API de Steam, ou qui declare a Steam un dossier
-macOS), Cidre demande au client Steam de synchroniser son nuage -- une seance
+Avant de lancer un jeu du dossier Cidre qui ecrit ses sauvegardes par l'API de
+Steam, Cidre demande au client Steam de synchroniser son nuage -- une seance
 Steam au nom du jeu, ouverte puis fermee, l'affaire d'une seconde -- et attend
 qu'il ait fini : une sauvegarde faite sur un autre appareil est la des le
 premier lancement. A la sortie du jeu, le client envoie la partie ; si le nuage
-etait vide, c'est elle qui devient la premiere version en ligne. Client Steam
-ferme ou hors ligne : rien n'est attendu, le jeu part avec les sauvegardes de
-ce Mac.
+etait vide, c'est elle qui devient la premiere version en ligne. Jamais de
+seance pour un jeu dont Steam synchronise des dossiers (Auto-Cloud) : la synchro
+qu'elle declencherait pourrait retirer du nuage des fichiers que ce Mac n'a pas.
+Client Steam ferme ou hors ligne : rien n'est attendu, le jeu part avec les
+sauvegardes de ce Mac.
 
 La regle, partout : ce que Steam Cloud synchronise a toujours la priorite -- ni
 la copie de Cidre, ni iCloud, ni une bouteille ne remplacent un fichier que

@@ -14,10 +14,18 @@
 #
 #   seance_steam_cloud.sh <appid>
 #
-# Seulement pour un jeu que le client sait synchroniser sur macOS (fiche
-# [compat.steam_cloud] : API de Steam, ou dossier declare pour macOS, cf.
-# tests/lier_saves_steam.sh) ; un jeu Auto-Cloud « Windows seulement » n'y gagne
-# rien, le client ne resout pas ses racines. Rien non plus si le client est
+# Seulement pour un jeu qui ecrit par l'API de Steam (fiche [compat.steam_cloud]
+# methode = "api", cf. tests/lier_saves_steam.sh mode), et dont le client ne
+# connait aucun fichier Auto-Cloud. JAMAIS pour un jeu Auto-Cloud (dossier lie
+# ou Windows seulement) : la synchro de sortie que declenche la seance compare
+# les fichiers que remotecache.vdf dit presents sur ce Mac a ceux que ses regles
+# y trouvent, et retire DU NUAGE ceux qui manquent (« no longer matches any
+# patterns (2). Removing from cloud »). Vu une fois, Blasphemous le 2026-10-14
+# a 10:32 : une premiere seance avait inscrit dans remotecache.vdf ses reglages
+# macOS sans les descendre (« not attempting now ») ; la seance suivante a voulu
+# les retirer du nuage, et seul le serveur l'a empeche (« file has pending
+# changes in cloud; ignoring forget »). Les fichiers de l'API (racine 0) ne
+# relevent d'aucune regle : rien de tel. Rien non plus si le client est
 # ferme (on ne l'ouvre pas ici), hors ligne ou pas connecte : on le dit, et le
 # jeu part avec ce qu'il y a sur ce Mac. Cout quand tout est a jour : de l'ordre
 # de la seconde. Jamais bloquant, rend toujours 0 ; ecrit une ligne
@@ -37,7 +45,16 @@ J=${CIDRE_CLOUD_LOG:-$STEAM/logs/cloud_log.txt}
 ATTENTE=${CIDRE_SEANCE_ATTENTE:-20}
 
 # le client sait-il synchroniser ce jeu sur macOS ?
-case $(sh "$R/tests/lier_saves_steam.sh" "$APPID" mode 2>/dev/null) in api|lien) ;; *) exit 0 ;; esac
+case $(sh "$R/tests/lier_saves_steam.sh" "$APPID" mode 2>/dev/null) in api) ;; *) exit 0 ;; esac
+# Seconde garde, si la fiche se trompe : le client connait-il pour ce jeu un
+# fichier Auto-Cloud (racine autre que 0, l'API) ? Alors pas de seance.
+for c in "$STEAM/userdata"/*/"$APPID"/remotecache.vdf; do
+   [ -f "$c" ] || continue
+   if LC_ALL=C awk -F'"' '$2 == "root" && $4 != "0" { trouve = 1 } END { exit !trouve }' "$c"; then
+      echo "    saves: Steam Cloud : ce jeu a aussi des fichiers Auto-Cloud, pas de seance avant le lancement (elle pourrait en faire retirer du nuage)"
+      exit 0
+   fi
+done
 case $(sh "$R/tests/client_steam_natif.sh" 2>/dev/null) in
    connecte) ;;
    ouvert) echo "    saves: Steam Cloud : client Steam hors ligne, nuage non verifie : le jeu part avec les sauvegardes de ce Mac"; exit 0 ;;
