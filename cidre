@@ -584,7 +584,10 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
                                   option maj_avant_lancement = false : ne jamais mettre a jour au lancement.
                                   --json : la sortie standard porte des evenements, un objet par ligne
                                   ({"evenement":"maj","etat":...} puis {"evenement":"lancement"}), le reste
-                                  va a l'erreur
+                                  va a l'erreur ; {"evenement":"avertissement","code":"steam_cpu","cpu":<%>,
+                                  "message":...} avant le lancement si le client Steam mange deja le processeur
+                                  Le client Steam est ouvert en arriere-plan (sans fenetre) s'il etait ferme,
+                                  sa fenetre masquee s'il en montrait une ; il n'est jamais ferme
                                   Un jeu du dossier Cidre dont Steam croit des sauvegardes sur ce Mac qui n'y
                                   sont plus ne part pas (code 7) : sa sortie les ferait retirer du nuage.
                                   --accord-nuage : le lancer quand meme
@@ -733,7 +736,22 @@ case "$cmd" in
     CDIR="$CIDRE_GAMES/$id"
     # --json : l'evenement « lancement » clot la sortie standard ; tout ce qui
     # suit (le lanceur, le jeu) ecrit a l'erreur.
-    partir() { evenement '{"evenement":"lancement"}'; [ "$JSON" != oui ] || exec >&2; }
+    # Avant lui, en --json, un client Steam qui mange deja le processeur (le
+    # 2026-10-15 sur le M4 : 100 % deux jours durant, sans jeu) devient un
+    # avertissement pour Verger :
+    #   {"evenement":"avertissement","code":"steam_cpu","cpu":<%>,"message":...}
+    # La mesure passe au lanceur (CIDRE_STEAM_CPU), qui ne la refait pas ; sans
+    # --json, c'est le lanceur qui le dit. On ne ferme jamais le client.
+    partir() {
+      if [ "$JSON" = oui ] && [ "${CIDRE_SANS_STEAM:-}" != 1 ]; then
+        sc=$(sh "$R/tests/client_steam_natif.sh" cpu 2>/dev/null) || true
+        sc_p=$(printf '%s\n' "$sc" | sed -n 1p); sc_m=$(printf '%s\n' "$sc" | sed -n 2p)
+        if entier "$sc_p"; then
+          export CIDRE_STEAM_CPU=$sc_p
+          [ -z "$sc_m" ] || evenement "$(printf '{"evenement":"avertissement","code":"steam_cpu","cpu":%s,"message":%s}' "$sc_p" "$(json "$sc_m")")"
+        fi
+      fi
+      evenement '{"evenement":"lancement"}'; [ "$JSON" != oui ] || exec >&2; }
     if est_local "$id"; then
       # Jeu hors Steam : pas d'appid, son profil de lancement est range sous son id.
       EXE=$(local_champ "$id" 3)

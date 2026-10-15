@@ -515,13 +515,19 @@ fi
 # dit qu'il tourne quand le jeu est lance par `cidre play` (Verger) plutot que
 # par le bouton de Steam. Ferme, un jeu protege par le DRM de Steam demande
 # steam://run/<appid> et sort aussitot (Expedition 33 : code 53, sans une ligne
-# au journal). On l'ouvre donc et on attend qu'il soit connecte ; ce qu'on a
-# fait va au journal et a la sortie (le journal de lancement de Verger). Jamais
-# bloquant : sans client, le jeu est lance quand meme, la trace dit pourquoi il
-# tombera. CIDRE_SANS_STEAM=1 : on ne touche pas au client. Cf.
+# au journal). On l'ouvre donc (en arriere-plan, sans fenetre) et on attend
+# qu'il soit connecte ; deja ouvert, on masque sa fenetre et on dit s'il mange
+# le processeur -- jamais on ne le quitte. Ce qu'on a fait va au journal et a la
+# sortie (le journal de lancement de Verger). Jamais bloquant : sans client, le
+# jeu est lance quand meme, la trace dit pourquoi il tombera.
+# CIDRE_SANS_STEAM=1 : on ne touche pas au client. Cf.
 # tests/client_steam_natif.sh.
 if [ -n "${SteamAppId:-}" ] && [ "${CIDRE_SANS_STEAM:-}" != 1 ]; then
    sh "$R/tests/client_steam_natif.sh" assurer 2>&1 | tee -a "$JOURNAL" || true
+elif [ "${CIDRE_SANS_STEAM:-}" != 1 ]; then
+   # Jeu hors Steam : le client ne lui sert a rien, mais s'il tourne et mange
+   # le processeur, il le prend au jeu aussi.
+   sh "$R/tests/client_steam_natif.sh" cpu 2>/dev/null | sed -n '2s/^/    /p' | tee -a "$JOURNAL" || true
 fi
 
 # Le client de service : un seul a la fois, reutilise s'il tourne deja.
