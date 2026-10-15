@@ -709,8 +709,11 @@ case "$cmd" in
       f=$(sh "$R/tests/fiche_profil.sh" chemin "$id")
       if [ -n "$f" ]; then
         echo "fiche       : $f"
-        echo "compat      : $(sh "$R/tests/fiche_profil.sh" toml "$f" | awk -F"\t" '$1 == "compat" && $2 != "notes" { printf "%s=%s  ", $2, $4 }')"
-        n=$(sh "$R/tests/fiche_profil.sh" toml "$f" | awk -F"\t" '$1 == "compat" && $2 == "notes" { print $4 }'); [ -z "$n" ] || echo "notes       : $n"
+        # la compat sur ce Mac (l'entree par famille qui vaut ici, sinon [compat]), puis les familles
+        c=$(sh "$R/tests/fiche_profil.sh" compat "$id")
+        echo "compat      : $(printf '%s\n' "$c" | awk -F"\t" '$1 != "notes" && $1 != "machines" { printf "%s=%s  ", $1, $2 }')"
+        n=$(printf '%s\n' "$c" | awk -F"\t" '$1 == "notes" { print $2 }'); [ -z "$n" ] || echo "notes       : $n"
+        printf '%s\n' "$c" | awk -F"\t" '$1 == "machines" { printf "par famille : %s, %s : %s%s\n", $2, $3, $4, ($5 == "true" ? " (ce Mac)" : "") }'
         n=$(sh "$R/tests/fiche_profil.sh" variantes "$id" | tr '\n' ';' | sed 's/;$//; s/;/ ; /g'); [ -z "$n" ] || echo "variante    : pour cette machine (si $n)"
       else echo "fiche       : aucune (cidre profils maj)"; fi
     fi ;;

@@ -136,8 +136,9 @@ tests/tester_version_windows.sh`.
 ## Schéma d'une fiche
 
 Sous-ensemble de TOML volontairement simple : des tables `[nom]` et
-`[nom.sous_table]`, des tableaux de tables `[[rapports]]` (et, sous un
-`[[machine]]`, `[machine.cidre]` et `[[machine.reglages_jeu]]`), des lignes
+`[nom.sous_table]`, des tableaux de tables `[[rapports]]` et
+`[[compat.machines]]` (et, sous un `[[machine]]`, `[machine.cidre]` et
+`[[machine.reglages_jeu]]`), des lignes
 `cle = valeur` où la valeur est `true`/`false`, un entier, ou une chaîne entre
 guillemets doubles (`\"` et `\\` sont les seuls échappements ; pas de retour à la
 ligne dans une chaîne). Une table en ligne `valeurs = { "a" = "1", "b" = "2" }`
@@ -203,6 +204,20 @@ cidre_version = "1.5.0"
 fps_menu = 90                      # entier, 0 = non mesuré
 fps_jeu = 40
 notes = "..."
+voie = "dxmt"                      # la voie de rendu mesurée : dxmt, dxvk, d3d12, wined3d, natif
+
+[[compat.machines]]                # l'état sur une famille de Mac, pour une voie (voir plus bas)
+nom = "M2 et suivants"             # ce que Verger affiche
+si = "famille_gpu >= 8"            # même langage que [[machine]]
+voie = "d3d12"
+etat = "bronze"
+source = "cidre-test"
+date = "2026-10-15"
+machine = "iMac M4 24 Go"
+cidre_version = "1.5.11"
+fps_jeu = 19
+options = "dx12=true sm66=true"    # ce qu'il faut régler pour cette voie (`cidre set`), pour l'affichage
+notes = "..."
 
 [compat.steam_cloud]               # comment Steam Cloud range les sauvegardes du jeu (import, source steam)
 methode = "auto"                   # aucune, api (ISteamRemoteStorage), auto (Auto-Cloud : dossiers déclarés)
@@ -239,7 +254,10 @@ Sens des champs :
   « Variantes par machine ».
 - `[compat]` : l'état de compatibilité qui fait autorité (nos tests, source
   `cidre-test`, priment sur un import). `etat` : or (parfait), argent (jouable,
-  limites), bronze (démarre, perf/bugs), ko (non), non-teste.
+  limites), bronze (démarre, perf/bugs), ko (non), non-teste. C'est l'état sur
+  la machine de référence (`machine`), avec la voie de rendu `voie`.
+- `[[compat.machines]]` : l'état sur d'autres familles de Mac, voie par voie ;
+  voir « Compatibilité par famille de Mac ».
 - `[compat.steam_cloud]` : la configuration Steam Cloud du jeu, relevée par
   l'import ; le lanceur s'en sert pour laisser Steam synchroniser les
   sauvegardes lui-même quand il le peut (voir « Sauvegardes »).
@@ -392,16 +410,27 @@ valeurs = { "sg.ShadowQuality" = "0" }
 ```
 
 - `si` est une condition sur des faits de la machine : `fait op nombre`, `op`
-  parmi `<=`, `>=`, `<`, `>`, `==`, `!=`, plusieurs termes reliés par ` et `
-  (tous vrais). Pas de `ou` : deux blocs font l'affaire.
+  parmi `<=`, `>=`, `<`, `>`, `==`, `!=` (ou `gamme == max`, `gamme != base`),
+  plusieurs termes reliés par ` et ` (tous vrais). Pas de `ou` : deux blocs
+  font l'affaire.
 - Les faits (`sh tests/machine.sh`) :
 
   | fait | sens | M1 Max (MacBook Pro 16") | M4 (iMac 24") |
   |---|---|---|---|
+  | `famille_gpu` | la famille Metal de la carte (`MTLGPUFamilyApple<N>`, la plus haute que Metal reconnaît) : 7 = M1, 8 = M2, 9 = M3 et M4. C'est elle qui dit ce que la carte sait faire | 7 | 9 |
+  | `generation` | le numéro de la puce (M1 → 1) | 1 | 4 |
+  | `gamme` | `base`, `pro`, `max` ou `ultra` ; un mot, qui ne se compare que par `==` et `!=` | max | base |
+  | `macos` | la version majeure de macOS | 26 | 27 |
   | `coeurs_gpu` | cœurs de la carte graphique | 24 | 10 |
   | `memoire_go` | mémoire vive, en Go | 32 | 24 |
   | `ecran_largeur`, `ecran_hauteur` | l'écran principal en **points**, c'est-à-dire la résolution que le jeu voit en plein écran | 1728 × 1117 | 2240 × 1260 |
   | `puce` | le nom de la puce, pour l'affichage (ne se compare pas) | Apple M1 Max | Apple M4 |
+  | `macos_version` | la version complète, pour l'affichage (ne se compare pas) | 26.5.2 | 27.0.1 |
+
+  `famille_gpu` est lue par un appel à Metal (`osascript`, ~0,1 s), sinon
+  déduite de la génération de l'accélérateur graphique (`ioreg`,
+  `AGXAcceleratorG13X` = M1). Les faits que nomment les conditions d'une fiche
+  sont lus une fois par lecture de la fiche.
 
   Le nombre de cœurs GPU ne compare pas deux générations (un cœur de M4 vaut
   plus qu'un cœur de M1), mais il sépare les puces de base (8 à 10 cœurs) des
@@ -437,6 +466,105 @@ valeurs = { "sg.ShadowQuality" = "0" }
   `[[reglages_jeu]]` : la partie commune doit rester le bon réglage pour qui
   ne sait pas lire le reste. Les mesures d'une autre machine vont dans un
   `[[rapports]]`, `[compat]` reste celui de la machine de référence.
+- Un runtime qui lit les blocs `[[machine]]` mais pas les faits `famille_gpu`,
+  `generation`, `gamme` et `macos` (Cidre 1.5.5 à 1.5.11) tient ces faits pour
+  inconnus : la condition est fausse, le bloc ne s'applique pas. Une fiche peut
+  donc s'en servir sans risque pour ces versions.
+
+### Options par famille de Mac
+
+Une option qui n'a de sens que sur certaines cartes se pose dans un bloc
+`[[machine]]` conditionné par `famille_gpu`, et nulle part ailleurs : la partie
+commune reste le bon réglage pour toutes les autres familles et pour les
+runtimes qui ignorent le bloc. Le D3D12 d'Unreal 5 (Nanite) demande le Shader
+Model 6.6, donc les atomiques 64 bits min/max que Metal n'offre qu'à partir de
+la famille Apple8 (M2) :
+
+```toml
+[cidre]                            # toutes les machines : D3D11 par DXMT
+d3d11 = "dxmt"
+
+[[machine]]
+si = "famille_gpu >= 8"            # M2 et suivants : le vrai D3D12, Shader Model 6.6
+[machine.cidre]
+dx12 = true
+sm66 = true
+```
+
+Sur M1, sans le bloc, le jeu garde DXMT ; `sm66` y serait sans effet (le
+pilote ne trouve pas les atomiques et ne les annonce pas) mais `dx12` y ferait
+refuser le D3D12 par le jeu. Mesurer avant d'activer : Expedition 33 démarre
+en D3D12 sur M4 mais y fait 19 fps contre 35 en DXMT, sa fiche reste donc en
+DXMT partout et dit l'état du D3D12 dans `[[compat.machines]]`.
+
+## Compatibilité par famille de Mac (`[[compat.machines]]`)
+
+`[compat]` dit l'état d'un jeu sur la machine de référence. Quand il change
+d'une famille de Mac à l'autre — un jeu qui ne passe en D3D12 qu'à partir du
+M2, un autre limité par la carte d'un M1 de base —, chaque cas est une entrée
+`[[compat.machines]]`, placée après `[compat]` :
+
+```toml
+[compat]                           # la machine de référence : un M1 Max, en DXMT
+etat = "argent"
+machine = "M1 Max 32 Go"
+voie = "dxmt"
+...
+
+[[compat.machines]]
+nom = "M1"
+si = "famille_gpu <= 7"
+voie = "d3d12"
+etat = "ko"
+options = "dx12=true sm66=true"
+notes = "Unreal refuse le D3D12 : pas d'atomiques 64 bits."
+
+[[compat.machines]]
+nom = "M2 et suivants"
+si = "famille_gpu >= 8"
+voie = "dxmt"
+etat = "argent"
+machine = "iMac M4 24 Go"
+fps_jeu = 35
+
+[[compat.machines]]
+nom = "M2 et suivants"
+si = "famille_gpu >= 8"
+voie = "d3d12"
+etat = "bronze"
+fps_jeu = 19
+options = "dx12=true sm66=true"
+```
+
+- Une entrée a les champs de `[compat]` (`etat`, `source`, `date`, `machine`,
+  `cidre_version`, `fps_menu`, `fps_jeu`, `notes`), plus `nom` (le libellé
+  affiché : « M1 », « M2 et suivants »), `si` (même langage que les blocs
+  `[[machine]]`, d'ordinaire sur `famille_gpu`), `voie` (la voie de rendu dont
+  elle parle : `dxmt`, `dxvk`, `d3d12`, `wined3d`, `natif`) et `options` (ce
+  qu'il faut régler pour cette voie, en `option=valeur` séparés par des
+  espaces ; affiché, jamais appliqué).
+- La voie de la fiche sur une machine : `d3d12` si `[cidre]` (variantes
+  fondues) dit `dx12 = true`, sinon son `d3d11`, sinon le `voie` de
+  `[compat]`. Les options que l'utilisateur règle lui-même n'y entrent pas : la
+  compatibilité est celle de la fiche.
+- Sur une machine, les entrées dont `si` est vraie et dont la `voie` est celle
+  de la fiche (ou qui n'ont pas de `voie` : toutes les voies) **remplacent
+  `[compat]` tout entier**, la dernière de la fiche gagnant. Les autres entrées
+  qui s'appliquent décrivent une autre voie possible sur ce Mac (le D3D12 en
+  bronze sur un M4 dont la fiche est en DXMT).
+- `cidre info <appid> --json` rend, dans `"fiche"` : `"compat"`, l'état sur CE
+  Mac (avec `"pour"`, le `nom` de l'entrée retenue, quand ce n'est pas
+  `[compat]`) ; `"compat_reference"`, le `[compat]` écrit ; `"compat_machines"`,
+  toutes les entrées, chacune avec `"applique"` (vrai sur ce Mac). `cidre info
+  <appid>` l'écrit en clair (`compat`, puis une ligne `par famille` par entrée,
+  « (ce Mac) » sur celles qui s'appliquent), et `sh tests/fiche_profil.sh
+  compat <appid>` en lignes `cle TAB valeur`. L'état rendu à plat
+  (`profil_cidre.sh`) est celui de ce Mac ; l'index garde celui de `[compat]`.
+- Compatibilité : un runtime d'avant (Cidre ≤ 1.5.11) ne lit que `[compat]` ;
+  un Verger d'avant n'affiche rien de plus. La fiche doit donc garder dans
+  `[compat]` l'état de la machine de référence, pas un état moyen.
+- `CIDRE_MACHINE="famille_gpu=9"` montre ce que voit un M4 :
+  `CIDRE_MACHINE="famille_gpu=9" sh tests/fiche_profil.sh compat 1903340`.
 
 ## Index
 
@@ -535,13 +663,14 @@ d'écrire (`tests/deviner_saves.sh`).
 cidre profils                 # la base (cache ou copie livrée) : appid, nom, état, date
 cidre profils --json
 cidre profils maj             # télécharge l'index puis les fiches depuis GitHub main
-cidre info <appid> --json     # ... "fiche": {"jeu":{}, "cidre":{}, "compat":{}, "reglages_jeu":[{fichier, format, section, valeurs}], "variantes":["si …"], "rapports": n}
-sh tests/fiche_profil.sh <commande> ...   # chemin, plat, json, reglages, variantes, index, generer-index, maj
-sh tests/machine.sh [json | si "<condition>"]   # les faits de la machine, une condition
+cidre info <appid> --json     # ... "fiche": {"jeu":{}, "cidre":{}, "compat":{}, "reglages_jeu":[{fichier, format, section, valeurs}], "variantes":["si …"],
+                              #               "compat_reference":{}, "compat_machines":[{nom, si, voie, etat, …, applique}], "rapports": n}
+sh tests/fiche_profil.sh <commande> ...   # chemin, plat, json, reglages, compat, variantes, index, generer-index, maj
+sh tests/machine.sh [json [fait…] | si "<condition>"]   # les faits de la machine, une condition
 ```
 
-`cidre info`, `plat`, `json` et `reglages` rendent la fiche telle qu'elle vaut
-sur cette machine (variantes fondues) ; `fiche_profil.sh toml <fichier>` rend
+`cidre info`, `plat`, `json`, `reglages` et `compat` rendent la fiche telle
+qu'elle vaut sur cette machine (variantes fondues, compatibilité de ce Mac) ; `fiche_profil.sh toml <fichier>` rend
 le fichier tel quel.
 
 Variables d'environnement : `CIDRE_PROFILS_BASE` (dossier du cache),
@@ -584,10 +713,14 @@ python3 -I tests/outils/test_rapports_vers_fiches.py               # le test (in
 - Le modèle du formulaire est vide (`etat = ""`) : envoyé tel quel, il est
   refusé. Si un rapport est collé sous le modèle laissé en place, c'est le bloc
   qui donne un état qui est lu.
-- Le bloc rendu : `date`, `machine`, `cidre_version`, `etat`, `fps_menu`,
-  `fps_jeu`, `notes` (celles du joueur, sur une ligne, suivies des options avec
-  lesquelles il a lancé quand elles diffèrent de la fiche) et `incident`
-  (l'adresse de l'incident). Le diagnostic n'est ni lu ni recopié.
+- Le bloc rendu : `date`, `machine`, `famille_gpu`, `voie`, `cidre_version`,
+  `etat`, `fps_menu`, `fps_jeu`, `notes` (celles du joueur, sur une ligne,
+  suivies des options avec lesquelles il a lancé quand elles diffèrent de la
+  fiche) et `incident` (l'adresse de l'incident). Le diagnostic n'est ni lu ni
+  recopié. `famille_gpu` et `voie` sont écrits par Verger depuis sa version
+  qui affiche la compatibilité par famille ; pour un rapport plus ancien, la
+  famille est déduite du nom de la puce dans `machine` (M1 → 7, M2 → 8, M3 et
+  M4 → 9) et la voie des options du profil effectif (`dx12`, `d3d11`).
 - Le contenu d'un incident est une donnée écrite par un inconnu : l'appid ne
   sert de nom de fichier que s'il en a la forme, les caractères de contrôle
   sont retirés, un `incident` écrit dans le corps est ignoré. Ce que l'outil a
@@ -607,6 +740,14 @@ python3 -I tests/outils/test_rapports_vers_fiches.py               # le test (in
   récent. Un `[compat]` de source `cidre-test`, ou écrit à la main sans source,
   n'est jamais proposé au remplacement : le désaccord est signalé, à retester.
   Deux joueurs sur le même modèle de Mac comptent pour une machine.
+- `--proposer-compat` regarde aussi chaque famille de Mac : les rapports sont
+  rangés par famille (`famille_gpu`) et par voie, et la même règle (deux
+  machines d'accord, aucun autre état à égalité) propose une entrée
+  `[[compat.machines]]` (`si = "famille_gpu == N"`, à élargir à la main si
+  d'autres familles suivent) quand l'état de cette famille diffère de ce que la
+  fiche en dit déjà. Une entrée de source `cidre-test` n'est pas proposée au
+  remplacement : le désaccord est signalé. Un tableau par jeu résume ce que les
+  rapports disent de chaque famille.
 
 Après relecture : `git diff profils/`, commit, fermer les incidents intégrés.
 

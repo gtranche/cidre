@@ -101,6 +101,57 @@ cidre_version = "1.5.0"
 fps_menu = 130
 fps_jeu = 52
 notes = "DXMT (d3d11 = dxmt), prereglage Moyen + resolution 50 % (CurrentSelectedUpscalerQualityMode=0) : menu ~130 fps, jeu 50-55. A 66 % : menu 90, jeu 38-43. DXVK au meme endroit (66 %) : menu 12, jeu 4. Overlay Steam coupe en DXMT (fige la presentation)."
+voie = "dxmt"
+
+# La compatibilite par famille de Mac (voir README, « Compatibilite par famille
+# de Mac »). Le D3D12 d'Unreal 5 (Nanite) demande le Shader Model 6.6, donc les
+# atomiques 64 bits min/max que Metal n'offre qu'a partir de la famille Apple8
+# (M2) : option sm66, lot 0142-0146, Cidre 1.5.11. Il demarre sur le M4 mais y
+# fait 19 fps la ou DXMT en fait 35 : la fiche reste en DXMT partout, et
+# n'active pas dx12/sm66 par un bloc [[machine]] (il suffirait de
+#     [[machine]]
+#     si = "famille_gpu >= 8"
+#     [machine.cidre]
+#     dx12 = true
+#     sm66 = true
+# le jour ou le D3D12 passera devant).
+[[compat.machines]]
+nom = "M1"
+si = "famille_gpu <= 7"
+voie = "d3d12"
+etat = "ko"
+source = "cidre-test"
+date = "2026-10-15"
+machine = "M1 Max 32 Go"
+cidre_version = "1.5.11"
+options = "dx12=true sm66=true"
+notes = "Unreal refuse le D3D12 (« DirectX 12 is not supported ») : la carte n'a pas les atomiques 64 bits min/max que Nanite exige (Metal : famille Apple8, M2, et suivantes). Rester en DXMT."
+
+[[compat.machines]]
+nom = "M2 et suivants"
+si = "famille_gpu >= 8"
+voie = "dxmt"
+etat = "argent"
+source = "cidre-test"
+date = "2026-10-12"
+machine = "iMac M4 24 Go (10 coeurs GPU, ecran 4480x2520)"
+cidre_version = "1.5.3"
+fps_menu = 77
+fps_jeu = 35
+notes = "DXMT sans vsync ni TSO, Moyen + resolution 50 % : menu 72-80 fps, jeu 33-37 (GPU 30 ms, carte a 99 %). Mesure sur M4 ; M2 et M3 non essayes."
+
+[[compat.machines]]
+nom = "M2 et suivants"
+si = "famille_gpu >= 8"
+voie = "d3d12"
+etat = "bronze"
+source = "cidre-test"
+date = "2026-10-15"
+machine = "iMac M4 24 Go (10 coeurs GPU)"
+cidre_version = "1.5.11"
+fps_jeu = 19
+options = "dx12=true sm66=true"
+notes = "Unreal accepte le D3D12 en SM 6.6 et va en jeu : 19 fps / 50 ms en Bas 50 %, carte a 93-99 %, contre 35 fps en DXMT (Moyen 50 %). Mesure sur M4 ; M2 et M3 non essayes."
 
 [[rapports]]
 date = "2026-10-12"

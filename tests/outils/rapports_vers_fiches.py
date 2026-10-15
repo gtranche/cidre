@@ -39,6 +39,10 @@ Regles (cf. profils/CONTRIBUER.md) :
     le plus recent de chaque machine compte seul) et qu'aucun autre etat ne
     reunit autant de machines. Un [compat] de source « cidre-test » n'est
     jamais remplace : le desaccord est signale, a retester.
+  - la meme regle, famille de Mac par famille (famille_gpu, voie de rendu),
+    propose une entree [[compat.machines]] quand une famille s'ecarte de ce que
+    la fiche en dit. La famille d'un rapport sans `famille_gpu` (Verger
+    d'avant) se deduit du nom de la puce, sa voie des options du profil.
 """
 import argparse
 import datetime as dt
@@ -70,7 +74,13 @@ SYNONYMES = {
     "bronze": "bronze",
     "ko": "ko", "borked": "ko", "broken": "ko", "ne marche pas": "ko",
 }
-CLES_RAPPORT = ("date", "machine", "cidre_version", "etat", "fps_menu", "fps_jeu", "notes")
+CLES_RAPPORT = ("date", "machine", "famille_gpu", "voie", "cidre_version", "etat", "fps_menu", "fps_jeu", "notes")
+# les voies de rendu des fiches ([compat] voie, [[compat.machines]] voie)
+VOIES = ("dxmt", "dxvk", "d3d12", "wined3d", "natif")
+# la famille Metal (MTLGPUFamilyApple<N>) d'une generation de puce, pour les
+# rapports qui ne la donnent pas : M1 -> Apple7, M2 -> Apple8, M3 et M4 -> Apple9
+FAMILLE_DE_GENERATION = {1: 7, 2: 8, 3: 9, 4: 9}
+PUCES_DE_FAMILLE = {7: "M1", 8: "M2", 9: "M3, M4"}
 # options du profil effectif qui ne disent rien de la compatibilite : pas dans les notes
 OPTIONS_TUES = ("langue", "hud", "journal_detaille")
 MAX_NOTES = 500
@@ -315,6 +325,19 @@ def lire_rapport(incident, depot):
     else:
         av.append("machine absente : ce rapport ne comptera pas pour --proposer-compat")
 
+    if "famille_gpu" in lus:
+        v = lus["famille_gpu"]
+        if isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= 99:
+            champs["famille_gpu"] = v
+        else:
+            av.append(f"famille_gpu illisible (« {propre(v, 30)} ») : omise")
+    if "voie" in lus:
+        v = propre(lus["voie"], 20).casefold()
+        if v in VOIES:
+            champs["voie"] = v
+        elif v:
+            av.append(f"voie inconnue (« {v} ») : omise (attendu : {', '.join(VOIES)})")
+
     version = str(lus.get("cidre_version", "")).strip()
     if version:
         if re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z.+-]{0,29}", version):   # « 1.5.7 », « dev »
@@ -526,7 +549,7 @@ def proposer_compat(fiche, rapports):
     """La regle de l'en-tete. Rend (a_montrer, constat, proposition) :
     `proposition` est le dict des cles de [compat] a poser, ou None ; `a_montrer`
     dit si le constat merite l'oeil du mainteneur meme sans proposition."""
-    compat = {k: v for k, v in (fiche or {}).get("compat", {}).items() if not isinstance(v, dict)}
+    compat = {k: v for k, v in (fiche or {}).get("compat", {}).items() if not isinstance(v, (dict, list))}
     # le rapport le plus recent de chaque machine (a date egale, le dernier arrive)
     par_machine = {}
     for r in rapports:
@@ -563,6 +586,122 @@ def proposer_compat(fiche, rapports):
     prop["notes"] = (f"{len(accord)} rapports d'utilisateurs concordants ({machines})"
                      + (f", incidents {' '.join(numeros)}" if numeros else "") + ". Mesures : le plus recent.")
     return True, constat, prop
+
+
+# ------------------------------------------------------ compat par famille
+def famille_de(r):
+    """La famille Metal d'un rapport : `famille_gpu`, sinon deduite de la puce
+    nommee dans `machine` (« M4 », « iMac M1 Max »...) ; None si inconnue."""
+    v = r.get("famille_gpu")
+    if isinstance(v, int) and not isinstance(v, bool):
+        return v
+    m = re.search(r"\bM([0-9]{1,2})\b", str(r.get("machine", "")))
+    return FAMILLE_DE_GENERATION.get(int(m.group(1))) if m else None
+
+
+def voie_de(r, profil=None):
+    """La voie de rendu d'un rapport : `voie`, sinon celle des options avec
+    lesquelles il a lance (dx12, d3d11) ; "" si on ne sait pas."""
+    if r.get("voie") in VOIES:
+        return r["voie"]
+    profil = profil or {}
+    if profil.get("dx12") is True:
+        return "d3d12"
+    return profil.get("d3d11") if profil.get("d3d11") in VOIES else ""
+
+
+def evaluer_si(si, faits):
+    """La condition `si` d'une fiche (langage de tests/machine.sh) avec ces
+    faits : True, False, ou None si elle nomme un fait qu'on n'a pas."""
+    termes = str(si).split(" et ")
+    if not si or not all(len(t.split()) == 3 for t in termes):
+        return None
+    for t in termes:
+        fait, op, val = t.split()
+        if fait not in faits or op not in ("<=", ">=", "<", ">", "==", "!="):
+            return None
+        a = faits[fait]
+        if isinstance(a, int):
+            if not val.isdigit():
+                return None
+            b = int(val)
+            vrai = {"<=": a <= b, ">=": a >= b, "<": a < b, ">": a > b, "==": a == b, "!=": a != b}[op]
+        else:
+            vrai = {"==": a == val, "!=": a != val}.get(op, False)
+        if not vrai:
+            return False
+    return True
+
+
+def compat_pour(fiche, famille, voie):
+    """Ce que la fiche dit d'une famille pour une voie : (etat, source, nom de
+    l'entree ou "[compat]"), ou ("non-teste", "", None) si elle n'en dit rien."""
+    compat = (fiche or {}).get("compat", {})
+    retenue = None
+    for e in compat.get("machines", []) if isinstance(compat.get("machines"), list) else []:
+        if not isinstance(e, dict) or evaluer_si(e.get("si", ""), {"famille_gpu": famille}) is not True:
+            continue
+        if e.get("voie") in (None, "", voie):
+            retenue = e
+    if retenue is not None:
+        return retenue.get("etat", "non-teste"), retenue.get("source", ""), retenue.get("nom") or retenue.get("si")
+    # [compat] vaut pour toutes les familles qu'aucune entree ne reprend
+    if compat.get("voie") in (None, "", voie) and "etat" in compat:
+        return compat.get("etat", "non-teste"), compat.get("source", ""), "[compat]"
+    return "non-teste", "", None
+
+
+def libelle_famille(n):
+    return f"Apple{n} ({PUCES_DE_FAMILLE[n]})" if n in PUCES_DE_FAMILLE else f"Apple{n}"
+
+
+def proposer_par_famille(fiche, rapports):
+    """La regle de --proposer-compat, famille par famille et voie par voie.
+    Rend (resume, [(constat, entree ou None)]) : `resume` dit ce que les
+    rapports disent de chaque famille ; une entree est un dict a ecrire en
+    [[compat.machines]]."""
+    groupes = {}
+    for r in rapports:
+        f = famille_de(r)
+        if f is None or r.get("etat") not in ETATS or not _machine(r.get("machine", "")):
+            continue
+        groupes.setdefault((f, voie_de(r, r.get("_profil"))), []).append(r)
+    resume, res = [], []
+    for (f, voie), rs in sorted(groupes.items()):
+        par_machine = {}
+        for r in rs:
+            m = _machine(r["machine"])
+            if m not in par_machine or str(r.get("date", "")) >= str(par_machine[m].get("date", "")):
+                par_machine[m] = r
+        voix = {}
+        for r in par_machine.values():
+            voix.setdefault(r["etat"], []).append(r)
+        rang = sorted(voix.items(), key=lambda kv: -len(kv[1]))
+        decompte = ", ".join(f"{e} x{len(v)}" for e, v in rang)
+        resume.append(f"{libelle_famille(f)}, {voie or 'voie inconnue'} : {decompte}")
+        etat, accord = rang[0]
+        if len(accord) < 2 or (len(rang) > 1 and len(rang[1][1]) == len(accord)) or not voie:
+            continue
+        actuel, source, ou = compat_pour(fiche, f, voie)
+        machines = " ; ".join(r["machine"] for r in accord)
+        constat = f"{libelle_famille(f)}, {voie} : {len(accord)} machines donnent « {etat} » ({machines})."
+        if actuel == etat:
+            continue
+        if source == "cidre-test" or (ou is not None and not source and actuel != "non-teste"):
+            origine = "de source cidre-test, nos tests priment" if source else "ecrit a la main"
+            res.append((constat + f" La fiche dit « {actuel} » ({ou}, {origine}) : pas de proposition, a retester.", None))
+            continue
+        ref = max(accord, key=lambda r: str(r.get("date", "")))
+        numeros = [re.sub(r".*/", "#", str(r["incident"])) for r in accord if r.get("incident")]
+        entree = {"nom": PUCES_DE_FAMILLE.get(f, f"Apple{f}"), "si": f"famille_gpu == {f}", "voie": voie,
+                  "etat": etat, "source": "utilisateur"}
+        for cle in ("date", "machine", "cidre_version", "fps_menu", "fps_jeu"):
+            if cle in ref:
+                entree[cle] = ref[cle]
+        entree["notes"] = (f"{len(accord)} rapports d'utilisateurs concordants ({machines})"
+                           + (f", incidents {' '.join(numeros)}" if numeros else "") + ". Mesures : le plus recent.")
+        res.append((constat + (f" La fiche dit « {actuel} » ({ou})." if ou else " La fiche n'en dit rien."), entree))
+    return resume, res
 
 
 # ----------------------------------------------------------------------- main
@@ -654,7 +793,7 @@ def main(argv=None):
             integres[r["url"].lower()] = appid
         else:
             compte["a_integrer"] += 1
-            en_attente.setdefault(appid, []).append(dict(champs, incident=r["url"]))
+            en_attente.setdefault(appid, []).append(dict(champs, incident=r["url"], _profil=r["profil"]))
         print()
 
     if args.appliquer and compte["creees"]:
@@ -684,17 +823,28 @@ def main(argv=None):
             except tomllib.TOMLDecodeError:
                 continue
             attente = en_attente.get(appid, [])
-            a_montrer, constat, prop = proposer_compat(fiche, list(fiche.get("rapports", [])) + attente)
-            if not a_montrer:
+            tous = list(fiche.get("rapports", [])) + attente
+            a_montrer, constat, prop = proposer_compat(fiche, tous)
+            resume, familles = proposer_par_famille(fiche, tous)
+            if not a_montrer and not familles:
                 continue
             rien = False
             print(f"-- {appid} {propre(fiche.get('jeu', {}).get('nom', ''), MAX_NOM)}"
                   + (f" (dont {len(attente)} rapport(s) pas encore integre(s))" if attente else ""))
-            print(f"   {constat}")
+            if a_montrer:
+                print(f"   {constat}")
             if prop:
                 print("[compat]")
                 for k, v in prop.items():
                     print(f"{k} = {v}" if isinstance(v, int) else f"{k} = {chaine(v)}")
+            if familles:
+                print("   par famille de Mac : " + " ; ".join(resume))
+            for constat_f, entree in familles:
+                print(f"   {constat_f}")
+                if entree:
+                    print("[[compat.machines]]")
+                    for k, v in entree.items():
+                        print(f"{k} = {v}" if isinstance(v, int) else f"{k} = {chaine(v)}")
             print()
         if rien:
             print("   aucune : pas de jeu ou deux machines s'accordent")

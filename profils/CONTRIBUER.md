@@ -126,7 +126,10 @@ Rien n'est automatique : chaque rapport est relu.
    donnent le même état et qu'aucun autre état n'en réunit autant,
    `--proposer-compat` suggère le nouveau `[compat]` ; le mainteneur relit et
    tranche. Un `[compat]` issu de nos tests n'est jamais remplacé ainsi : le
-   désaccord vaut demande de nouveau test.
+   désaccord vaut demande de nouveau test. La même règle, famille de Mac par
+   famille (M1, M2, M3 et M4…), suggère une entrée `[[compat.machines]]`
+   quand un jeu se comporte autrement sur une famille (voir le README,
+   « Compatibilité par famille de Mac »).
 4. Les fiches partent sur `main` : `cidre profils maj` les apporte à tout le
    monde, sans attendre une release.
 
@@ -261,6 +264,9 @@ Nothing is automatic: every report is read.
    machines give the same status and no other status gathers as many,
    `--proposer-compat` suggests the new `[compat]`; the maintainer reviews and
    decides. A `[compat]` that comes from our own tests is never replaced this
-   way: the disagreement is a request to test again.
+   way: the disagreement is a request to test again. The same rule, one Mac
+   family at a time (M1, M2, M3 and M4…), suggests a `[[compat.machines]]`
+   entry when a game behaves differently on one family (see the README,
+   "Compatibilité par famille de Mac").
 4. Profiles land on `main`: `cidre profils maj` brings them to everyone,
    without waiting for a release.

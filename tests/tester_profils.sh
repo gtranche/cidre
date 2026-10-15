@@ -16,6 +16,9 @@
 #   6. variantes par machine (blocs [[machine]], tests/machine.sh) : conditions,
 #      fusion dans [cidre] et [[reglages_jeu]], priorite, application a l'INI,
 #      fiche d'Expedition 33 sur un M1 Max et sur un iMac M4 ;
+#   6c. compatibilite par famille de Mac ([[compat.machines]]) : faits famille_gpu,
+#      generation, gamme, macos ; [compat] remplace par l'entree qui vaut ici et
+#      parle de la voie de la fiche ; options par famille ; Expedition 33 ;
 #   6b. arguments du jeu (option arguments) : decoupage, doublons, fiche, `cidre set` ;
 #   7. sh -n sur les scripts de la chaine.
 # Tout se passe dans un dossier temporaire : ni le profil utilisateur, ni le
@@ -35,8 +38,8 @@ verif() { # <libelle> <attendu> <obtenu>
 export CIDRE_PROFILS="$T/perso.toml" CIDRE_PROFILS_BASE="$T/cache" CIDRE_DIR="$T/cidre"
 # la machine aussi est imposee (celle de reference, un M1 Max) : les fiches a
 # variantes par machine rendent la meme chose partout ou le test tourne
-M1MAX="coeurs_gpu=24 memoire_go=32 ecran_largeur=1728 ecran_hauteur=1117"
-IMAC_M4="coeurs_gpu=10 memoire_go=24 ecran_largeur=2240 ecran_hauteur=1260"
+M1MAX="coeurs_gpu=24 memoire_go=32 ecran_largeur=1728 ecran_hauteur=1117 famille_gpu=7 generation=1 gamme=max macos=26"
+IMAC_M4="coeurs_gpu=10 memoire_go=24 ecran_largeur=2240 ecran_hauteur=1260 famille_gpu=9 generation=4 gamme=base macos=27"
 export CIDRE_MACHINE="$M1MAX"
 mkdir -p "$CIDRE_PROFILS_BASE"
 resoudre() { sh "$R/tests/profil_cidre.sh" "$@"; }
@@ -402,10 +405,22 @@ si() { sh "$M" si "$1" >/dev/null 2>&1; echo $?; }
 # les faits : imposes par CIDRE_MACHINE, sinon lus sur la machine
 verif "machine : fait impose" "coeurs_gpu=24" "$(sh "$M" coeurs_gpu)"
 verif "machine : plusieurs faits, dans l ordre demande" "ecran_largeur=1728 memoire_go=32" "$(sh "$M" ecran_largeur memoire_go | tr '\n' ' ' | sed 's/ $//')"
-verif "machine : json" '"coeurs_gpu":24,"memoire_go":32,"ecran_largeur":1728,"ecran_hauteur":1117}' "$(sh "$M" json | sed 's/^{"puce":"[^"]*",//')"
+verif "machine : json" '"coeurs_gpu":24,"memoire_go":32,"ecran_largeur":1728,"ecran_hauteur":1117}' "$(sh "$M" json | sed 's/^{"puce":"[^"]*","generation":1,"gamme":"max","famille_gpu":7,//; s/,"macos":26,"macos_version":"[^"]*"}$/}/')"
+verif "machine : json des seuls faits demandes" '{"famille_gpu":7,"gamme":"max"}' "$(sh "$M" json famille_gpu gamme)"
 reel=$(CIDRE_MACHINE= sh "$M" coeurs_gpu memoire_go | tr '\n' ' ')
 case $reel in "coeurs_gpu="[1-9]*" memoire_go="[1-9]*) ok "machine : faits reels lus ($reel)" ;; *) echec "machine : faits reels illisibles ($reel)" ;; esac
 verif "machine : puce reelle lue" "Apple" "$(CIDRE_MACHINE= sh "$M" puce | sed -n 's/^puce=\(Apple\).*/\1/p')"
+# la famille Metal, la generation et la gamme de la puce, macOS : lus pour de vrai
+reel=$(CIDRE_MACHINE= sh "$M" famille_gpu generation gamme macos | tr '\n' ' ')
+case $reel in "famille_gpu="[7-9]" generation="[1-9]*" gamme="[a-z]*" macos="[2-9][0-9]" "|"famille_gpu="[1-9][0-9]" generation="[1-9]*" gamme="[a-z]*" macos="[2-9][0-9]" ") ok "machine : famille, generation, gamme, macOS reels lus ($reel)" ;; *) echec "machine : famille, generation, gamme ou macOS illisible ($reel)" ;; esac
+# la famille par Metal et par la generation de l AGX (repli) disent la meme chose
+mkdir -p "$T/sans-osascript"; printf '#!/bin/sh\nexit 1\n' >"$T/sans-osascript/osascript"; chmod +x "$T/sans-osascript/osascript"
+verif "machine : famille_gpu, repli ioreg = Metal" "$(CIDRE_MACHINE= sh "$M" famille_gpu)" "$(CIDRE_MACHINE= PATH="$T/sans-osascript:$PATH" sh "$M" famille_gpu)"
+# generation et gamme d apres le nom de la puce (un sysctl factice)
+mkdir -p "$T/autre-puce"; printf '#!/bin/sh\necho "$P"\n' >"$T/autre-puce/sysctl"; chmod +x "$T/autre-puce/sysctl"
+for p in "Apple M3 Pro:3 pro" "Apple M2 Ultra:2 ultra" "Apple M4:4 base" "Apple M1 Max:1 max"; do
+   verif "machine : ${p%%:*} -> generation et gamme" "${p#*:}" "$(CIDRE_MACHINE= P="${p%%:*}" PATH="$T/autre-puce:$PATH" sh "$M" generation gamme | sed 's/^[a-z]*=//' | tr '\n' ' ' | sed 's/ $//')"
+done
 # les conditions
 verif "si : <= faux" "1" "$(si 'coeurs_gpu <= 10')"
 verif "si : > vrai" "0" "$(si 'coeurs_gpu > 10')"
@@ -417,6 +432,14 @@ verif "si : fait inconnu = pas vraie (2)" "2" "$(si 'coeurs_cpu > 2')"
 verif "si : operateur inconnu = pas vraie (2)" "2" "$(si 'coeurs_gpu = 24')"
 verif "si : nombre attendu (2)" "2" "$(si 'coeurs_gpu <= dix')"
 verif "si : la puce ne se compare pas (2)" "2" "$(si 'puce == 4')"
+verif "si : famille_gpu >= 8 faux sur M1" "1" "$(si 'famille_gpu >= 8')"
+verif "si : famille_gpu == 7 et macos >= 26" "0" "$(si 'famille_gpu == 7 et macos >= 26')"
+verif "si : gamme == max" "0" "$(si 'gamme == max')"
+verif "si : gamme != max faux" "1" "$(si 'gamme != max')"
+verif "si : gamme ne s ordonne pas (2)" "2" "$(si 'gamme >= pro')"
+verif "si : gamme attend un mot (2)" "2" "$(si 'gamme == 3')"
+verif "si : macos_version ne se compare pas (2)" "2" "$(si 'macos_version == 26')"
+verif "si : famille illisible = fausse (1)" "1" "$(CIDRE_MACHINE='famille_gpu=' sh "$M" si 'famille_gpu >= 8' >/dev/null 2>&1; echo $?)"
 verif "si : condition vide (2)" "2" "$(si '')"
 verif "si : fait illisible sur la machine = fausse (1)" "1" "$(CIDRE_MACHINE='coeurs_gpu=' sh "$M" si 'coeurs_gpu <= 10' >/dev/null 2>&1; echo $?)"
 verif "syntaxe : bien formee, vraie ou non" "0" "$(sh "$M" syntaxe 'coeurs_gpu <= 10 et ecran_largeur >= 1920'; echo $?)"
@@ -535,6 +558,100 @@ for f in $(grep -l '^\[\[machine\]\]' "$R"/profils/*.toml 2>/dev/null); do
    done <"$T/si"
 done
 [ $n -gt 0 ] && ok "$n fiche(s) livree(s) a variantes par machine" || echec "aucune fiche livree n a de bloc [[machine]] (Expedition 33 en porte un)"
+
+echo "== 6c. compatibilite par famille de Mac ([[compat.machines]])"
+cat >"$CIDRE_PROFILS_BASE/995.toml" <<'FICHE'
+[jeu]
+appid = 995
+nom = "Jeu par famille"
+[cidre]
+d3d11 = "dxmt"
+[compat]
+etat = "argent"
+source = "cidre-test"
+machine = "M1 Max 32 Go"
+voie = "dxmt"
+fps_jeu = 40
+[[compat.machines]]
+nom = "M1"
+si = "famille_gpu <= 7"
+voie = "d3d12"
+etat = "ko"
+options = "dx12=true sm66=true"
+[[compat.machines]]
+nom = "M2+"
+si = "famille_gpu >= 8"
+voie = "dxmt"
+etat = "or"
+fps_jeu = 60
+[[compat.machines]]
+nom = "M2+"
+si = "famille_gpu >= 8"
+voie = "d3d12"
+etat = "bronze"
+[[compat.machines]]
+nom = "Ultra"
+si = "gamme == ultra"
+etat = "or"
+notes = "toutes voies"
+[compat.crossover]
+source = "crossover"
+FICHE
+# la meme, qui passe en D3D12 (dx12, sm66) sur les familles qui le permettent
+sed 's/^appid = 995$/appid = 994/' "$CIDRE_PROFILS_BASE/995.toml" >"$CIDRE_PROFILS_BASE/994.toml"
+printf '[[machine]]\nsi = "famille_gpu >= 8"\n[machine.cidre]\ndx12 = true\nsm66 = true\n' >>"$CIDRE_PROFILS_BASE/994.toml"
+CJ() { sh "$FP" json "$1" | grep -o "\"$2\":{[^}]*}"; }
+CM() { sh "$FP" compat "$1" | awk -F'\t' -v c="$2" '$1 == c { print $2 }'; }
+APP() { sh "$FP" compat "$1" | awk -F'\t' '$1 == "machines" { printf "%s%s", s, $5; s = " " }'; }
+verif "toml : [[compat.machines]] -> compat.machines.N" "bronze" "$(sh "$FP" toml "$CIDRE_PROFILS_BASE/995.toml" | awk -F'\t' '$1 == "compat.machines.3" && $2 == "etat" { print $4 }')"
+verif "toml : [compat.crossover] apres les entrees reste une sous-table" "crossover" "$(sh "$FP" toml "$CIDRE_PROFILS_BASE/995.toml" | awk -F'\t' '$1 == "compat.crossover" { print $4 }')"
+verif "un runtime d avant ne lit que [compat] (cle compat a plat)" "argent" "$(sh "$FP" toml "$CIDRE_PROFILS_BASE/995.toml" | awk -F'\t' '$1 == "compat" && $2 == "etat" { print $4 }')"
+# M1 Max : l entree M1 s applique, mais parle du D3D12 ; la fiche est en DXMT
+export CIDRE_MACHINE="$M1MAX"
+verif "M1 : entrees qui s appliquent" "true false false false" "$(APP 995)"
+verif "M1 : [compat] de reference" "argent  40" "$(CM 995 etat) $(CM 995 pour) $(CM 995 fps_jeu)"
+verif "M1 : etat rendu a plat" "argent" "$(valeur 995 etat)"
+# M4 : l entree M2+ en DXMT remplace [compat] tout entier
+export CIDRE_MACHINE="$IMAC_M4"
+verif "M4 : entrees qui s appliquent" "false true true false" "$(APP 995)"
+verif "M4 : compat = l entree M2+ DXMT" '"compat":{"pour":"M2+","voie":"dxmt","etat":"or","fps_jeu":60}' "$(CJ 995 compat)"
+verif "M4 : etat rendu a plat (profil_cidre.sh)" "or" "$(valeur 995 etat)"
+verif "M4 : compat_reference = [compat] ecrit" '"compat_reference":{"etat":"argent","source":"cidre-test","machine":"M1 Max 32 Go","voie":"dxmt","fps_jeu":40}' "$(CJ 995 compat_reference)"
+verif "M4 : json, 4 entrees par famille avec applique" "4 2" "$(sh "$FP" json 995 | grep -o '"applique":[a-z]*' | wc -l | tr -d ' ') $(sh "$FP" json 995 | grep -o '"applique":true' | wc -l | tr -d ' ')"
+verif "M4 : options d une entree rendues dans compat_machines" '"options":"dx12=true sm66=true"' "$(sh "$FP" json 995 | grep -o '"options":"[^"]*"')"
+verif "M4 : l index garde l etat de reference" "argent" "$(sh "$FP" toml "$CIDRE_PROFILS_BASE/995.toml" | awk -F'\t' '$1 == "compat" && $2 == "etat" { print $4 }')"
+# une entree sans voie vaut pour toutes ; la derniere qui vaut gagne
+export CIDRE_MACHINE="famille_gpu=8 gamme=ultra"
+verif "M2 Ultra : l entree sans voie, la derniere, gagne" "or Ultra dxmt toutes voies" "$(CM 995 etat) $(CM 995 pour) $(CM 995 voie) $(CM 995 notes)"
+# famille illisible : aucune entree, [compat] seul
+export CIDRE_MACHINE="famille_gpu= gamme="
+verif "famille illisible : [compat] de reference" "argent false false false false" "$(CM 995 etat) $(APP 995)"
+# options par famille : dx12 et sm66 sur M2+ seulement ; la voie suit, et avec elle la compat
+export CIDRE_MACHINE="$IMAC_M4"
+verif "M4 : dx12 et sm66 poses par le bloc famille_gpu >= 8" "true true" "$(valeur 994 dx12) $(valeur 994 sm66)"
+verif "M4 : voie d3d12, compat = l entree M2+ D3D12" "bronze d3d12 M2+" "$(CM 994 etat) $(CM 994 voie) $(CM 994 pour)"
+export CIDRE_MACHINE="$M1MAX"
+verif "M1 : ni dx12 ni sm66 (defauts livres)" "$(valeur 998 dx12) $(valeur 998 sm66)" "$(valeur 994 dx12) $(valeur 994 sm66)"
+verif "M1 : compat de reference" "argent dxmt" "$(CM 994 etat) $(CM 994 voie)"
+rm -f "$CIDRE_PROFILS_BASE/995.toml" "$CIDRE_PROFILS_BASE/994.toml"
+# Expedition 33 : D3D12 ko sur M1, DXMT argent et D3D12 bronze sur M2+ ; la fiche reste en DXMT
+verif "1903340 : 3 entrees par famille" "3" "$(sh "$FP" json 1903340 | grep -o '"applique":' | wc -l | tr -d ' ')"
+verif "1903340 M1 : compat de reference, D3D12 ko pour ce Mac" "argent M1 Max 32 Go|M1 d3d12 ko true" "$(CM 1903340 etat) $(CM 1903340 machine)|$(sh "$FP" compat 1903340 | awk -F'\t' '$1 == "machines" && $5 == "true" { print $2, $3, $4, $5 }')"
+verif "1903340 M4 : compat = M2 et suivants en DXMT" "argent M2 et suivants dxmt 35" "$(CIDRE_MACHINE="$IMAC_M4" sh "$FP" compat 1903340 | awk -F'\t' '$1 == "etat" || $1 == "pour" || $1 == "voie" || $1 == "fps_jeu" { v[$1] = $2 } END { print v["etat"], v["pour"], v["voie"], v["fps_jeu"] }')"
+verif "1903340 M4 : D3D12 bronze, pas active par la fiche" "bronze false" "$(CIDRE_MACHINE="$IMAC_M4" sh "$FP" compat 1903340 | awk -F'\t' '$1 == "machines" && $3 == "d3d12" && $5 == "true" { print $4 }') $(CIDRE_MACHINE="$IMAC_M4" sh "$R/tests/profil_cidre.sh" 1903340 | sed -n 's/^dx12=//p')"
+# les fiches livrees : chaque entree a un nom, une condition bien formee, un etat et une voie connus
+n=0
+for f in $(grep -l '^\[\[compat\.machines\]\]' "$R"/profils/*.toml 2>/dev/null); do
+   a=$(basename "$f" .toml)
+   sh "$FP" toml "$f" | awk -F'\t' '$1 ~ /^compat\.machines\.[0-9]+$/ { if (!($1 in vu)) { vu[$1] = 1; o[++n] = $1 } v[$1, $2] = $4 } END { for (k = 1; k <= n; k++) print v[o[k], "nom"] "\t" v[o[k], "si"] "\t" v[o[k], "etat"] "\t" v[o[k], "voie"] }' >"$T/cm"
+   while IFS="	" read -r nom c e v; do
+      n=$((n + 1))
+      { [ -n "$nom" ] && sh "$M" syntaxe "$c" && case $e in or|argent|bronze|ko|non-teste) true ;; *) false ;; esac && case $v in ''|dxmt|dxvk|d3d12|wined3d|natif) true ;; *) false ;; esac; } \
+         && ok "profils/$a.toml : entree « $nom » ($c, $v : $e) bien formee" || echec "profils/$a.toml : entree par famille mal formee (« $nom » « $c » « $e » « $v »)"
+   done <"$T/cm"
+done
+[ $n -gt 0 ] && ok "$n entree(s) par famille dans les fiches livrees" || echec "aucune fiche livree n a d entree [[compat.machines]] (Expedition 33 en porte)"
+export CIDRE_MACHINE="$M1MAX"
 
 echo "== 6b. arguments du jeu (option arguments, tests/arguments_jeu.sh)"
 AJ() { sh "$R/tests/arguments_jeu.sh" "$@" | tr '\n' ' ' | sed 's/ $//'; }

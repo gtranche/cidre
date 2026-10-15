@@ -270,6 +270,45 @@ def main():
         for intitule in ("### Diagnostic", "**Diagnostic**"):
             lu = par_le_formulaire("Rapport de jeu : X (42)", f"Rien à dire.\n\n{intitule}\n\netat = \"or\"\ndate = \"2026-01-02\"\n")
             assert lu["erreurs"] == ["aucun bloc [[rapports]] ni ligne « etat = ... » dans le corps"], (intitule, lu["erreurs"])
+
+        # 10. compatibilite par famille de Mac : famille_gpu et voie dans le rapport,
+        # deduites sinon ; une entree [[compat.machines]] proposee par famille
+        lu = outil.lire_rapport({"number": 11, "title": "Rapport de jeu : X (42)", "body":
+                                 '[[rapports]]\ndate = "2026-01-02"\nmachine = "M4 24 Go"\nfamille_gpu = 9\nvoie = "d3d12"\netat = "bronze"\n'}, "gtranche/cidre")
+        assert lu["erreurs"] == [] and lu["champs"]["famille_gpu"] == 9 and lu["champs"]["voie"] == "d3d12", lu
+        assert outil.bloc_toml(lu["champs"], URL + "11")[3:5] == ["famille_gpu = 9", 'voie = "d3d12"'], outil.bloc_toml(lu["champs"], URL + "11")
+        lu = outil.lire_rapport({"number": 12, "title": "Rapport de jeu : X (42)", "body":
+                                 'date = "2026-01-02"\nfamille_gpu = "neuf"\nvoie = "metal"\netat = "or"\n'}, "gtranche/cidre")
+        assert "famille_gpu" not in lu["champs"] and "voie" not in lu["champs"], lu["champs"]
+        assert any("famille_gpu illisible" in a for a in lu["avertissements"]) and any("voie inconnue" in a for a in lu["avertissements"]), lu
+        assert [outil.famille_de(x) for x in ({"machine": "iMac M4 24 Go"}, {"machine": "M1 Max 32 Go"}, {"machine": "M2 Pro"},
+                                               {"famille_gpu": 8, "machine": "M4"}, {"machine": "Intel i9"}, {"machine": "M7 Max"})] == [9, 7, 8, 8, None, None]
+        assert [outil.voie_de(*x) for x in (({"voie": "dxvk"}, {"dx12": True}), ({}, {"dx12": True, "d3d11": "dxmt"}),
+                                             ({}, {"d3d11": "dxmt"}), ({}, {}))] == ["dxvk", "d3d12", "dxmt", ""]
+        assert [outil.evaluer_si(c, {"famille_gpu": 9, "gamme": "max"}) for c in
+                ("famille_gpu >= 8", "famille_gpu <= 7", "famille_gpu >= 8 et gamme == max", "gamme != max", "coeurs_gpu > 2", "famille_gpu >= huit", "")] \
+            == [True, False, True, False, None, None, None]
+        exp33 = {"compat": {"etat": "argent", "source": "cidre-test", "voie": "dxmt", "machine": "M1 Max 32 Go", "machines": [
+            {"nom": "M1", "si": "famille_gpu <= 7", "voie": "d3d12", "etat": "ko", "source": "cidre-test"},
+            {"nom": "M2 et suivants", "si": "famille_gpu >= 8", "voie": "d3d12", "etat": "bronze", "source": "cidre-test"}]}}
+        assert outil.compat_pour(exp33, 9, "d3d12")[:2] == ("bronze", "cidre-test")
+        assert outil.compat_pour(exp33, 7, "dxmt")[2] == "[compat]" and outil.compat_pour(exp33, 7, "dxvk")[0] == "non-teste"
+        # deux M4 en D3D12 disent argent : la fiche dit bronze (cidre-test) -> signale, pas propose
+        resume, fam = outil.proposer_par_famille(exp33, [r("iMac M4 24 Go", "argent", voie="d3d12"), r("Mac mini M4 Pro 48 Go", "argent", voie="d3d12")])
+        assert resume == ["Apple9 (M3, M4), d3d12 : argent x2"] and len(fam) == 1 and fam[0][1] is None and "a retester" in fam[0][0], (resume, fam)
+        # deux M2 en DXVK disent or, la fiche n'en dit rien : une entree pour la famille 8
+        resume, fam = outil.proposer_par_famille(exp33, [r("MacBook Air M2 16 Go", "or", voie="dxvk", fps_jeu=40, incident=URL + "3"),
+                                                         r("Mac mini M2 Pro 32 Go", "or", "2026-10-12", famille_gpu=8, _profil={"d3d11": "dxvk"}, incident=URL + "4")])
+        assert len(fam) == 1 and fam[0][1] == {"nom": "M2", "si": "famille_gpu == 8", "voie": "dxvk", "etat": "or", "source": "utilisateur",
+                                              "date": "2026-10-12", "machine": "Mac mini M2 Pro 32 Go", "notes": fam[0][1]["notes"]}, fam
+        assert "#3 #4" in fam[0][1]["notes"] and "n'en dit rien" in fam[0][0]
+        # la fiche reelle d'Expedition 33 se relit, et une M1 en DXMT d'accord avec [compat] ne donne rien
+        e33 = outil.lire_fiche(os.path.join(RACINE, "profils", "1903340.toml"))
+        assert [m["nom"] for m in e33["compat"]["machines"]] == ["M1", "M2 et suivants", "M2 et suivants"]
+        assert outil.proposer_par_famille(e33, [r("M1 Max 32 Go", "argent", voie="dxmt"), r("M1 Pro 16 Go", "argent", voie="dxmt")])[1] == []
+        # une famille sans voie connue est resumee, jamais proposee
+        resume, fam = outil.proposer_par_famille({}, [r("M2 8 Go", "or"), r("M2 Max 64 Go", "or")])
+        assert resume == ["Apple8 (M2), voie inconnue : or x2"] and fam == [], (resume, fam)
         print("test_rapports_vers_fiches : OK")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

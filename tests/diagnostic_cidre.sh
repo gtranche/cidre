@@ -120,7 +120,7 @@ echo "  macOS       : $(sw_vers -productVersion 2>/dev/null) ($(sw_vers -buildVe
 echo "  modele      : $(sysctl -n hw.model 2>/dev/null) -- $(sysctl -n machdep.cpu.brand_string 2>/dev/null)"
 echo "  memoire     : $(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1073741824 )) Go"
 # ce que lisent les variantes par machine des fiches (profils/README.md)
-echo "  graphique   : $(sh "$R/tests/machine.sh" coeurs_gpu ecran_largeur ecran_hauteur 2>/dev/null | tr '\n' ' ')"
+echo "  graphique   : $(sh "$R/tests/machine.sh" famille_gpu generation gamme coeurs_gpu ecran_largeur ecran_hauteur 2>/dev/null | tr '\n' ' ')"
 echo "  processeur  : $(uname -m)"
 echo "  Rosetta     : $(oui arch -x86_64 /usr/bin/true)"
 echo "  taille page : $(sysctl -n hw.pagesize 2>/dev/null)"

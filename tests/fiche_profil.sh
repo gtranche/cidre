@@ -5,19 +5,23 @@
 #   fiche_profil.sh chemin <appid>          le fichier de la fiche (cache, sinon copie livree) ; rien si aucune
 #   fiche_profil.sh plat <appid>            les options de lancement de la fiche, en lignes TOML `cle = valeur`
 #                                           ([cidre], plus moteur/anticheat de [jeu] et etat/source de [compat])
-#   fiche_profil.sh json <appid>            la fiche en JSON : {"jeu":{},"cidre":{},"compat":{},"reglages_jeu":[...],"variantes":[...],"rapports":n}
+#   fiche_profil.sh json <appid>            la fiche en JSON : {"jeu":{},"cidre":{},"compat":{},"reglages_jeu":[...],"variantes":[...],
+#                                           "compat_reference":{},"compat_machines":[...],"rapports":n} ; "compat" est celle de CETTE machine
 #   fiche_profil.sh reglages <appid>        [reglages_jeu] en lignes TAB, une entree (section INI visee) par numero :
 #                                           `n TAB fichier|format|section TAB val`, puis `n TAB valeur TAB cle TAB val`
+#   fiche_profil.sh compat <appid>          la compatibilite sur cette machine (`cle TAB valeur`), puis les entrees par
+#                                           famille de Mac : `machines TAB nom TAB voie TAB etat TAB applique`
 #   fiche_profil.sh variantes <appid>       les conditions `si` des blocs [[machine]] qui s'appliquent ici, une par ligne
 #   fiche_profil.sh index [json]            l'index de la base : `appid <TAB> nom <TAB> etat <TAB> date <TAB> origine`
 #   fiche_profil.sh generer-index           regenere profils/index.toml depuis les fiches du depot (sur la sortie)
 #   fiche_profil.sh maj [json]              telecharge l'index puis les fiches dans le cache
 #   fiche_profil.sh toml <fichier>          (outil) le fichier a plat : `section <TAB> cle <TAB> type <TAB> valeur`
 #
-# `plat`, `json` et `reglages` rendent la fiche telle qu'elle vaut sur CETTE
-# machine : les blocs [[machine]] dont la condition `si` est vraie (tests/machine.sh)
-# sont fondus dans [cidre] et [[reglages_jeu]], les autres ignores. `toml` rend
-# le fichier tel quel.
+# `plat`, `json`, `reglages` et `compat` rendent la fiche telle qu'elle vaut sur
+# CETTE machine : les blocs [[machine]] dont la condition `si` est vraie
+# (tests/machine.sh) sont fondus dans [cidre] et [[reglages_jeu]], les autres
+# ignores ; l'entree [[compat.machines]] qui vaut ici remplace [compat]. `toml`
+# rend le fichier tel quel.
 #
 # Le cache (CIDRE_PROFILS_BASE, par defaut ~/Library/Application Support/Cidre/
 # profils-base/) prime sur la copie livree ($R/profils/). Pas de python : awk et curl.
@@ -118,18 +122,52 @@ toml_plat() {
 # reglages qui visent le meme fichier et la meme section n en font qu une. Les
 # sections machine.* ne sortent pas ; `machine.N TAB si` reste pour les blocs
 # appliques (commande `variantes`). Sans bloc [[machine]], rien ne change.
+#
+# La compatibilite par famille de Mac ([[compat.machines]], une entree par groupe
+# de machines et par voie de rendu, chacune sa condition `si`) : chaque entree
+# sort avec `applique` (vrai ou faux ici). Les entrees qui s appliquent et
+# parlent de la voie de la fiche sur cette machine (`voie` absente, ou egale a
+# d3d12 si [cidre] fondu dit dx12 = true, sinon a son d3d11, sinon au `voie` de
+# [compat]) remplacent [compat] tout entier, la derniere gagnant ; `pour` dit
+# alors laquelle (son `nom`, sinon sa condition). Le [compat] ecrit reste sous
+# compat.reference.
 fiche_plat() { # <fiche>
    B=$(mktemp "${TMPDIR:-/tmp}/fiche.XXXXXX")
    toml_plat "$1" >"$B"
-   if ! LC_ALL=C grep -q '^machine\.' "$B"; then cat "$B"; rm -f "$B"; return; fi
-   ok=" "
+   if ! LC_ALL=C grep -q '^machine\.\|^compat\.machines\.' "$B"; then cat "$B"; rm -f "$B"; return; fi
+   # les faits que nomment les conditions, lus une fois (un appel a Metal coute
+   # ~0,1 s) et passes aux evaluations comme s ils etaient imposes ; ceux que
+   # l utilisateur impose deja passent devant
+   faits=$(LC_ALL=C awk -F'\t' '($1 ~ /^machine\.[0-9]+$/ || $1 ~ /^compat\.machines\.[0-9]+$/) && $2 == "si" { n = split($4, t, " "); for (k = 1; k <= n; k++) if (t[k] ~ /^[a-z_]+$/ && t[k] != "et" && !vu[t[k]]++) print t[k] }' "$B")
+   lus=""
+   for f in $faits; do
+      case $f in puce|macos_version) continue ;; esac
+      case " ${CIDRE_MACHINE:-} " in *" $f="*) continue ;; esac
+      lus="$lus $(sh "$R/tests/machine.sh" "$f" 2>/dev/null | tr -d ' ')"
+   done
+   ok=" "; okc=" "
    for n in $(LC_ALL=C awk -F'\t' '$1 ~ /^machine\.[0-9]+$/ && $2 == "si" { print substr($1, 9) }' "$B"); do
       si=$(LC_ALL=C awk -F'\t' -v s="machine.$n" '$1 == s && $2 == "si" { print $4; exit }' "$B")
-      sh "$R/tests/machine.sh" si "$si" 2>/dev/null && ok="$ok$n "
+      CIDRE_MACHINE="${CIDRE_MACHINE:-}$lus" sh "$R/tests/machine.sh" si "$si" 2>/dev/null && ok="$ok$n "
    done
-   LC_ALL=C awk -F'\t' -v ok="$ok" '
+   for n in $(LC_ALL=C awk -F'\t' '$1 ~ /^compat\.machines\.[0-9]+$/ && $2 == "si" { print substr($1, 17) }' "$B"); do
+      si=$(LC_ALL=C awk -F'\t' -v s="compat.machines.$n" '$1 == s && $2 == "si" { print $4; exit }' "$B")
+      CIDRE_MACHINE="${CIDRE_MACHINE:-}$lus" sh "$R/tests/machine.sh" si "$si" 2>/dev/null && okc="$okc$n "
+   done
+   LC_ALL=C awk -F'\t' -v ok="$ok" -v okc="$okc" '
       {
          sec = $1
+         if (sec == "compat") {
+            # [compat] sort a la fin, une fois les entrees par famille vues
+            if (!($2 in rv)) ro[++rn] = $2
+            rv[$2] = $4; rt[$2] = $3; next
+         }
+         if (sec ~ /^compat\.machines\.[0-9]+$/) {
+            n = substr(sec, 17)
+            if (!(n in vuc)) { vuc[n] = 1; co_n[++ncm] = n }
+            mv[n, $2] = $4; mt[n, $2] = $3; mo[n, ++mn[n]] = $2
+            print; next
+         }
          if (sec ~ /^machine\./) {
             n = sec; sub(/^machine\./, "", n); sub(/\..*$/, "", n)
             if (index(ok, " " n " ") == 0) next
@@ -154,6 +192,23 @@ fiche_plat() { # <fiche>
       }
       END {
          for (k = 1; k <= cn; k++) print "cidre\t" co[k] "\t" ct[co[k]] "\t" cv[co[k]]
+         # la compat ici : la voie de la fiche sur cette machine, puis les entrees
+         # par famille qui s appliquent et parlent de cette voie
+         voie = (cv["dx12"] == "true") ? "d3d12" : (("d3d11" in cv) ? cv["d3d11"] : rv["voie"])
+         choisie = 0
+         for (k = 1; k <= ncm; k++) {
+            n = co_n[k]; a = (index(okc, " " n " ") > 0)
+            print "compat.machines." n "\tapplique\tb\t" (a ? "true" : "false")
+            if (a && (((n, "voie") in mv) ? (mv[n, "voie"] == voie) : 1)) choisie = n
+         }
+         for (k = 1; k <= rn; k++) print "compat.reference\t" ro[k] "\t" rt[ro[k]] "\t" rv[ro[k]]
+         if (!choisie) { for (k = 1; k <= rn; k++) print "compat\t" ro[k] "\t" rt[ro[k]] "\t" rv[ro[k]] }
+         else {
+            n = choisie
+            print "compat\tpour\ts\t" (((n, "nom") in mv) ? mv[n, "nom"] : mv[n, "si"])
+            for (j = 1; j <= mn[n]; j++) { c = mo[n, j]; if (c != "nom" && c != "si" && c != "options") print "compat\t" c "\t" mt[n, c] "\t" mv[n, c] }
+            if (!((n, "voie") in mv) && ("voie" in rv)) print "compat\tvoie\ts\t" rv["voie"]
+         }
          # les entrees de reglages, dans l ordre : celles qui visent le meme fichier et
          # la meme section INI n en font qu une, la derniere valeur d une cle gagne
          for (k = 1; k <= no; k++) {
@@ -248,6 +303,14 @@ case $CMD in
       while IFS= read -r v; do printf '%s%s' "$sep" "$(json_val s "$v")"; sep=","; done <"$P.v"
       rm -f "$P.v"
       printf '],'
+      # "compat" est celle de cette machine ; "compat_reference" le [compat] ecrit
+      # (la machine de reference), "compat_machines" toutes les entrees par famille
+      if LC_ALL=C grep -q '^compat\.reference	' "$P"; then r=compat.reference; else r=compat; fi
+      printf '"compat_reference":%s,"compat_machines":[' "$(objet_json "$P" "$r")"; sep=""
+      for e in $(LC_ALL=C awk -F'\t' '$1 ~ /^compat\.machines\.[0-9]+$/ && !vu[$1]++ { print $1 }' "$P"); do
+         printf '%s%s' "$sep" "$(objet_json "$P" "$e")"; sep=","
+      done
+      printf '],'
       printf '"rapports":%s}\n' "$(awk -F'\t' '$1 ~ /^rapports\.[0-9]+$/ && !vu[$1]++ {n++} END {print n+0}' "$P")"
       rm -f "$P" ;;
    reglages)
@@ -264,6 +327,17 @@ case $CMD in
             $1 == s { print n "\t" $2 "\t" $4 }
             $1 == s ".valeurs" { print n "\tvaleur\t" $2 "\t" $4 }' "$P"
       done
+      rm -f "$P" ;;
+   compat)
+      # la compat sur cette machine, `cle TAB valeur` ; puis chaque entree par
+      # famille : `machines TAB nom TAB voie TAB etat TAB applique`
+      f=$(chemin "$ARG") || exit 0
+      P=$(mktemp "${TMPDIR:-/tmp}/fiche.XXXXXX")
+      fiche_plat "$f" >"$P"
+      LC_ALL=C awk -F'\t' '
+         $1 == "compat" { print $2 "\t" $4 }
+         $1 ~ /^compat\.machines\.[0-9]+$/ { if (!($1 in vu)) { vu[$1] = 1; o[++n] = $1 } v[$1, $2] = $4 }
+         END { for (k = 1; k <= n; k++) { e = o[k]; print "machines\t" (v[e, "nom"] != "" ? v[e, "nom"] : v[e, "si"]) "\t" v[e, "voie"] "\t" v[e, "etat"] "\t" v[e, "applique"] } }' "$P"
       rm -f "$P" ;;
    variantes)
       f=$(chemin "$ARG") || exit 0
