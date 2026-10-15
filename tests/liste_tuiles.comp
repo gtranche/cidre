@@ -1,0 +1,11 @@
+#version 450
+layout(local_size_x = 64) in;
+layout(binding = 0, r32ui) uniform uimageBuffer compteur;
+layout(binding = 1, r32ui) uniform writeonly uimageBuffer liste;
+shared uint base;
+void main() {
+   if (gl_LocalInvocationIndex == 0u)
+      base = imageAtomicAdd(compteur, 0, 64u);
+   barrier();
+   imageStore(liste, int(base + gl_LocalInvocationIndex), uvec4(gl_WorkGroupID.x + 1u));
+}

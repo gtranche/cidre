@@ -1,0 +1,18 @@
+Generated-by: LLM
+
+KosmicKrisp : la garde de bornes des ecritures sur tampon texel (correctif 0045) rend le resultat de l atomique -- nir_def_rewrite_uses_after reecrivait aussi la source du phi place apres le if, qui se lisait lui-meme et ne valait que 0 ; une liste de tuiles construite par imageAtomicAdd (Unreal 5, Lumen) etait ecrite au meme endroit par tous les groupes, et le nuanceur qui la lisait bouclait sur une entree jamais ecrite (gel GPU d Expedition 33 en D3D12)
+
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
+@@ -528,7 +528,10 @@
+          nir_def *zero = nir_imm_zero(b, comps, bits);
+          nir_pop_if(b, nif);
+          nir_def *phi = nir_if_phi(b, value, zero);
+-         nir_def_rewrite_uses_after(value, phi);
++         nir_def_rewrite_uses(value, phi);
++         nir_phi_src *phi_src = nir_phi_get_src_from_block(
++            nir_instr_as_phi(nir_def_instr(phi)), nir_if_last_then_block(nif));
++         nir_src_rewrite(&phi_src->src, value);
+       } else {
+          nir_pop_if(b, nif);
+       }
