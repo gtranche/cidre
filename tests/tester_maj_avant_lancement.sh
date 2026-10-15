@@ -565,6 +565,28 @@ sleep 4
 verif "verification abandonnee : ni .rc ni .abandon laisses dans le cache" "" "$(ls "$(dirname "$A")" | grep -e '\.rc\.' -e abandon)"
 rm -f "$F/lent"
 
+echo "== 10 bis. l'executable de la fiche"
+# l'exe de la fiche ([jeu] exe, relatif au dossier du jeu) passe avant celui de la racine
+raz; jeu 9070 100; publie 9070 100
+mkdir -p "$G/9070/Habitat/Binaries/Win64" "$CIDRE_PROFILS_BASE"
+printf 'MZ vrai\n' >"$G/9070/Habitat/Binaries/Win64/Vrai.exe"; echo 100 >"$G/9070/Habitat/Binaries/Win64/version.txt"
+printf '[jeu]\nappid = 9070\nnom = "Jeu 9070"\nexe = "Habitat/Binaries/Win64/Vrai.exe"\n' >"$CIDRE_PROFILS_BASE/9070.toml"
+sh "$C" play 9070 >/dev/null 2>&1
+verif "fiche exe : l'executable de la fiche, pas celui de la racine" "Vrai.exe 100 appid=9070" "$(lance)"
+# un exe de fiche absent du disque : repli sur celui de la racine
+raz; jeu 9071 100; publie 9071 100
+printf '[jeu]\nappid = 9071\nnom = "Jeu 9071"\nexe = "absent/Rien.exe"\n' >"$CIDRE_PROFILS_BASE/9071.toml"
+sh "$C" play 9071 >/dev/null 2>&1
+verif "fiche exe absent du disque : repli sur la racine" "Jeu.exe 100 appid=9071" "$(lance)"
+rm -f "$CIDRE_PROFILS_BASE/9070.toml" "$CIDRE_PROFILS_BASE/9071.toml"
+# sans exe a la racine ni dans la fiche : le binaire Unreal du projet, pas ceux du moteur
+raz; jeu 9072 100; publie 9072 100; rm -f "$G/9072/Jeu.exe"
+mkdir -p "$G/9072/SH9/Binaries/Win64" "$G/9072/Engine/Binaries/Win64"
+printf 'MZ moteur\n' >"$G/9072/Engine/Binaries/Win64/CrashReportClient.exe"
+printf 'MZ projet\n' >"$G/9072/SH9/Binaries/Win64/SHCO.exe"; echo 100 >"$G/9072/SH9/Binaries/Win64/version.txt"
+sh "$C" play 9072 >/dev/null 2>&1
+verif "Unreal sans amorceur : le binaire du projet" "SHCO.exe 100 appid=9072" "$(lance)"
+
 echo "== 11. syntaxe, aide, documentation"
 for f in cidre tests/tester_maj_avant_lancement.sh; do
    sh -n "$R/$f" 2>/dev/null && ok "sh -n $f" || echec "sh -n $f"

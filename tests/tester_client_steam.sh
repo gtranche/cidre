@@ -63,6 +63,8 @@ touch "$T/tourne"
 verif "lance, derniere ligne Logged Off : ouvert" "ouvert" "$(sh "$S")"
 { demarrage; connexion; } >>"$JC"
 verif "lance, derniere ligne d'etat Logged On : connecte" "connecte" "$(sh "$S")"
+echo "[2026-10-12 13:04:00] [Logged Off, 0, 0] [U:1:0] CCMInterface::SetSteamID( [U:1:0] )" >>"$JC"
+verif "lance, puis une ligne du compte 0 (pont steamclient) : toujours connecte" "connecte" "$(sh "$S")"
 echo "[2026-10-12 13:05:00] [Connecting, 4, 0] [U:1:1] reconnexion" >>"$JC"
 verif "lance, en reconnexion : ouvert" "ouvert" "$(sh "$S")"
 

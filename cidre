@@ -157,7 +157,24 @@ exe_principal() {
          | grep -viE '_gl\.exe$|_server|server\.exe$|launcher|crash|unitycrash|vcredist|redist|setup|dxsetup|install' \
          | head -1)
    [ -n "$e" ] || e=$(find "$1" -maxdepth 2 -name '*.exe' 2>/dev/null | head -1)
+   # Unreal sans amorceur a la racine (Sherlock Holmes Chapter One :
+   # SH9/Binaries/Win64/SHCO.exe) : le binaire du projet, pas ceux du moteur
+   [ -n "$e" ] || e=$(find "$1" -maxdepth 4 -path '*/Binaries/Win64/*.exe' 2>/dev/null \
+         | grep -v '/Engine/Binaries/' | grep -viE 'crash|prereq|unrealcef|epicwebhelper' | head -1)
    [ -n "$e" ] && echo "$e"
+}
+# L'executable d'un jeu du dossier Cidre : celui de sa fiche (`exe` de [jeu],
+# relatif au dossier du jeu) s'il est sur le disque, sinon le premier .exe de la
+# racine. Steam lance la cible de sa configuration, pas forcement l'exe de la
+# racine : Still Wakes the Deep a a la racine un amorceur qui cherche un binaire
+# absent de la version Steam (Habitat-Win64-Shipping.exe, code 45).
+exe_du_jeu() { # <appid> <dossier du jeu>
+   f=$(sh "$R/tests/fiche_profil.sh" chemin "$1" 2>/dev/null)
+   if [ -n "$f" ]; then
+      e=$(sh "$R/tests/fiche_profil.sh" toml "$f" 2>/dev/null | awk -F'\t' '$1 == "jeu" && $2 == "exe" { print $4; exit }')
+      [ -n "$e" ] && [ -f "$2/$e" ] && { echo "$2/$e"; return; }
+   fi
+   exe_principal "$2"
 }
 # Cidre (notre wrapper) pose sur ce jeu ?
 cidre_wrap() { grep -A6 "\"$1\"$" "$STEAM"/userdata/*/config/localconfig.vdf 2>/dev/null | grep -q "lancer_depuis_steam.sh" && echo oui || echo non; }
@@ -765,7 +782,7 @@ case "$cmd" in
       # Jeu telecharge par Cidre (hors client) : c'est Cidre qui le tient a
       # jour, puis on lance par la pile Cidre.
       maj_avant_lancement "$id"
-      EXE=$(exe_principal "$CDIR")
+      EXE=$(exe_du_jeu "$id" "$CDIR")
       [ -n "$EXE" ] || { dire "aucun .exe dans $CDIR"; exit 1; }
       partir
       echo "lancement Cidre : $(basename "$EXE")  (appid $id)"
@@ -1016,7 +1033,7 @@ case "$cmd" in
     else sh "$R/tests/reprendre_jeu_bouteille.sh" "$@"; fi || exit $?
     # Apres coup : l'executable que `cidre play` lancera (ou celui que la table
     # des lanceurs lui substitue) est-il la, et est-ce un programme Windows ?
-    EXE=$(exe_principal "$CIDRE_GAMES/$id")
+    EXE=$(exe_du_jeu "$id" "$CIDRE_GAMES/$id")
     c=$(awk -v a="$id" '$1==a {print $2; exit}' "$R/outil-steam/jeux.conf" 2>/dev/null)
     [ -n "$c" ] && [ -f "$CIDRE_GAMES/$id/$c" ] && EXE="$CIDRE_GAMES/$id/$c"
     if [ -z "$EXE" ]; then echo "attention : aucun .exe a la racine de $CIDRE_GAMES/$id ni un niveau plus bas : \`cidre play $id\` ne saura pas quoi lancer (outil-steam/jeux.conf)" >&2

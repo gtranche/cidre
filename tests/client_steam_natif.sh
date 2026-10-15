@@ -153,9 +153,15 @@ diagnostic_cpu() {
 }
 
 lignes() { n=$(wc -l 2>/dev/null <"$JC") || n=0; echo $((${n:-0})); }
-# le dernier etat ecrit a partir de la ligne <n> du journal de connexion
+# le dernier etat ecrit a partir de la ligne <n> du journal de connexion. Les
+# lignes du compte 0 ([U:1:0]) ne comptent pas : le client en ecrit avant de
+# connaitre son compte, et le pont steamclient de Wine en ajoute dans le meme
+# journal pendant qu'un jeu tourne (« [Logged Off, 0, 0] [U:1:0]
+# CCMInterface::SetSteamID », 2026-10-15) ; le client, lui, connecte ou non,
+# ecrit sous le compte de l'utilisateur.
 dernier_etat() {
    tail -n "+$1" "$JC" 2>/dev/null | LC_ALL=C awk '
+      / \[U:1:0\] / { next }
       match($0, /^\[[^]]*\] \[[A-Za-z ]+,/) { e = substr($0, RSTART, RLENGTH - 1); sub(/^\[[^]]*\] \[/, "", e) }
       END { print e }'
 }
