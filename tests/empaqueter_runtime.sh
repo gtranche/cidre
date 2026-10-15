@@ -24,7 +24,12 @@ mkdir -p "$STAGE/wine/wine11-arm64"
 
 echo "== KosmicKrisp + loader Vulkan (prefix/) =="
 mkdir -p "$STAGE/prefix"
-( cd "$R/prefix" && tar cf - --exclude='*.avant-*' --exclude='*.b841' lib share bin 2>/dev/null ) | ( cd "$STAGE/prefix" && tar xf - )
+( cd "$R/prefix" && tar cf - --exclude='*.avant-*' --exclude='*.b841' lib share bin libexec 2>/dev/null ) | ( cd "$STAGE/prefix" && tar xf - )
+# GStreamer (videos Media Foundation, winegstreamer) : ses plugins et son
+# gst-plugin-scanner (libexec) sont dans prefix/ ; sans eux, un jeu qui lit une
+# video .mp4 reste sur un ecran noir.
+[ -f "$STAGE/prefix/libexec/gstreamer-1.0/gst-plugin-scanner" ] ||
+   { echo "GStreamer absent de prefix/ : sh tests/construire_gstreamer.sh, puis reconstruire Wine" >&2; exit 1; }
 # L'ICD json : chemin a reecrire a l'install -> on le neutralise avec un jeton.
 for j in "$STAGE/prefix/share/vulkan/icd.d/"*.json; do
    [ -f "$j" ] && sed -i '' "s#$R#@@CIDRE@@#g" "$j"

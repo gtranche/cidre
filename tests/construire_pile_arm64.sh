@@ -40,18 +40,27 @@ WPATH="/opt/homebrew/opt/bison/bin:/usr/local/opt/bison/bin:$MINGW:$PATH"
 # laisse les manettes ; configure sans SDL, winebus ignore les manettes IOHID
 # (« ignoring hidraw device ») et aucun jeu ne voit la manette. Un arbre
 # configure sans SDL est reconfigure (tout Wine se recompile une fois).
+# GStreamer (tests/construire_gstreamer.sh, dans prefix/) : winegstreamer, seul
+# decodeur H.264/AAC de Wine 11 et repli du demultiplexeur .mp4 sans FFmpeg.
+# Sans lui, aucune video Media Foundation ne joue (Sherlock Holmes Chapter One
+# restait sur un ecran noir). Un arbre configure sans GStreamer est reconfigure.
+[ -f "$R/prefix/lib/pkgconfig/gstreamer-1.0.pc" ] || sh "$R/tests/construire_gstreamer.sh"
 if [ ! -f "$R/build/wine11-arm64-ec/Makefile" ] ||
-   ! grep -q '^#define SONAME_LIBSDL2 ' "$R/build/wine11-arm64-ec/include/config.h"; then
+   ! grep -q '^#define SONAME_LIBSDL2 ' "$R/build/wine11-arm64-ec/include/config.h" ||
+   ! grep -q '^GSTREAMER_LIBS *=.*-lgstreamer-1.0' "$R/build/wine11-arm64-ec/Makefile"; then
    mkdir -p "$R/build/wine11-arm64-ec"
-   ( cd "$R/build/wine11-arm64-ec" && PATH=$WPATH "$R/src/wine11/configure" \
+   ( cd "$R/build/wine11-arm64-ec" && PATH=$WPATH \
+        PKG_CONFIG_PATH="$R/prefix/lib/pkgconfig:/opt/homebrew/lib/pkgconfig" "$R/src/wine11/configure" \
         --prefix="$R/wine/wine11-arm64" \
         --host=aarch64-apple-darwin --build=aarch64-apple-darwin \
         --enable-archs=i386,arm64ec,aarch64 --disable-tests --without-x \
         --without-oss --without-gphoto --without-sane --without-pcap --without-usb \
-        --without-gstreamer --without-krb5 --without-gssapi --without-ffmpeg \
+        --without-krb5 --without-gssapi --without-ffmpeg \
         LDFLAGS="-L$R/prefix/lib" CPPFLAGS="-I$R/prefix/include" )
    grep -q '^#define SONAME_LIBSDL2 ' "$R/build/wine11-arm64-ec/include/config.h" ||
       { echo "SDL2 introuvable pour Wine : brew install sdl2" >&2; exit 1; }
+   grep -q '^GSTREAMER_LIBS *=.*-lgstreamer-1.0' "$R/build/wine11-arm64-ec/Makefile" ||
+      { echo "GStreamer introuvable pour Wine : sh tests/construire_gstreamer.sh (brew install glib)" >&2; exit 1; }
 fi
 PATH=$WPATH make -C "$R/build/wine11-arm64-ec" -j"$J" \
    aarch64_CFLAGS="-g -O2 -DWINE_TEB_SANS_X18" \

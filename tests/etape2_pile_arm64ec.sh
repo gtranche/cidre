@@ -53,6 +53,16 @@ for l in libfreetype.6.dylib libfontconfig.1.dylib libSDL2-2.0.0.dylib; do
    elif [ -f /opt/homebrew/lib/$l ]; then ln -sf /opt/homebrew/lib/$l "$R/wine/vklib-arm64/$l"
    fi
 done
+# GStreamer du runtime (prefix/, tests/construire_gstreamer.sh) : winegstreamer
+# y decode les videos que les jeux lisent par Media Foundation (.mp4 H.264/AAC
+# des cinematiques Unreal 4). Ses plugins seulement -- ni ceux d'un GStreamer
+# Homebrew, ni ~/.local -- et un registre a lui, regenere quand le runtime bouge.
+if [ -d "$R/prefix/lib/gstreamer-1.0" ]; then
+   export GST_PLUGIN_SYSTEM_PATH="$R/prefix/lib/gstreamer-1.0"
+   export GST_PLUGIN_SCANNER="$R/prefix/libexec/gstreamer-1.0/gst-plugin-scanner"
+   export GST_REGISTRY="$R/wine/gstreamer-registre.bin"
+   unset GST_PLUGIN_PATH GST_PLUGIN_PATH_1_0
+fi
 
 # FEX est repose a chaque fois : « make install » de Wine remet ses propres
 # bouchons xtajit, et la trace dit alors « x64 emulation not implemented ».
