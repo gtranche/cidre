@@ -221,10 +221,12 @@ fiche_plat() { # <fiche>
             if (!((n, "voie") in mv) && ("voie" in rv)) print "compat\tvoie\ts\t" rv["voie"]
          }
          # les entrees de reglages, dans l ordre : celles qui visent le meme fichier et
-         # la meme section INI n en font qu une, la derniere valeur d une cle gagne
+         # la meme section INI n en font qu une, la derniere valeur d une cle gagne.
+         # Une entree a `id` reste a part (son id avec elle) : posee une fois sur un
+         # jeu deja marque, elle ne doit ni perdre son id ni entrainer les autres.
          for (k = 1; k <= no; k++) {
-            sec = ordre[k]; id = attr[sec, "fichier"] SUBSEP attr[sec, "section"]
-            if (!(id in parid)) { parid[id] = ++en; ef[en] = attr[sec, "fichier"]; es[en] = attr[sec, "section"] }
+            sec = ordre[k]; id = attr[sec, "fichier"] SUBSEP attr[sec, "section"] SUBSEP attr[sec, "id"]
+            if (!(id in parid)) { parid[id] = ++en; ef[en] = attr[sec, "fichier"]; es[en] = attr[sec, "section"]; ei[en] = attr[sec, "id"] }
             e = parid[id]
             if (attr[sec, "format"] != "") efo[e] = attr[sec, "format"]
             for (j = 1; j <= nc[sec]; j++) {
@@ -237,6 +239,7 @@ fiche_plat() { # <fiche>
             if (ef[e] != "") print "reglages_jeu." e "\tfichier\ts\t" ef[e]
             if (efo[e] != "") print "reglages_jeu." e "\tformat\ts\t" efo[e]
             if (es[e] != "") print "reglages_jeu." e "\tsection\ts\t" es[e]
+            if (ei[e] != "") print "reglages_jeu." e "\tid\ts\t" ei[e]
             for (k = 1; k <= vn[e]; k++) print "reglages_jeu." e ".valeurs\t" vo[e, k] "\t" vt[e, vo[e, k]] "\t" vv[e, vo[e, k]]
          }
       }' "$B"

@@ -81,7 +81,11 @@ verif "1903340 : aucun sg.* vise dans l INI (le jeu les recopie de sa sauvegarde
 verif "1903340 : entree 2 = la sauvegarde de reglages, format gvas, chemin a *" "gvas AppData/Local/Sandfall/Saved/SaveGames/*/SharedGameUserSettings.sav" "$(E33 | awk -F"\t" '$1==2 && $2=="format"{print $3}') $(E33 | awk -F"\t" '$1==2 && $2=="fichier"{print $3}')"
 verif "1903340 : qualite Moyen (ShadowQuality, OverallScalabilityLevel)" "1 1" "$(E33 | awk -F"\t" '$1==2 && $3=="ShadowQuality"{print $4}') $(E33 | awk -F"\t" '$1==2 && $3=="OverallScalabilityLevel"{print $4}')"
 verif "1903340 : 12 valeurs de reglages (le mode d upscaler + 11 de qualite)" "12" "$(E33 | grep -c "	valeur	")"
-verif "1903340 : memes reglages sur l iMac M4 (mesure du 2026-10-12 : Moyen 50 % y est aussi le meilleur)" "$(E33)" "$(CIDRE_MACHINE="$IMAC_M4" sh "$R/tests/fiche_profil.sh" reglages 1903340)"
+verif "1903340 : iMac M4 = les memes reglages, plus une entree a part (sortie 1920x1080, mesure du 2026-10-15)" "$(E33)" "$(CIDRE_MACHINE="$IMAC_M4" sh "$R/tests/fiche_profil.sh" reglages 1903340 | awk -F"\t" '$1 != 3')"
+E33M4() { CIDRE_MACHINE="$IMAC_M4" sh "$R/tests/fiche_profil.sh" reglages 1903340; }
+verif "1903340 : iMac M4, entree 3 a id, meme section INI que l entree 1" "sortie-imac-1920x1080 /Script/SandFall.ConfigurableGameUserSettings 1920 1080 0" "$(E33M4 | awk -F"\t" '$1==3 && $2=="id"{print $3}') $(E33M4 | awk -F"\t" '$1==3 && $2=="section"{print $3}') $(E33M4 | awk -F"\t" '$1==3 && $3=="ResolutionSizeX"{print $4}') $(E33M4 | awk -F"\t" '$1==3 && $3=="LastUserConfirmedResolutionSizeY"{print $4}') $(E33M4 | awk -F"\t" '$1==3 && $3=="FullscreenMode"{print $4}')"
+verif "1903340 : pas de sortie 1920x1080 sur un autre ecran (MacBook Air M4, 10 coeurs)" "" "$(CIDRE_MACHINE="coeurs_gpu=10 ecran_largeur=1470 ecran_hauteur=956" sh "$R/tests/fiche_profil.sh" reglages 1903340 | grep ResolutionSize)"
+verif "1903340 : pas de sortie 1920x1080 sur le M1 Max" "" "$(CIDRE_MACHINE="coeurs_gpu=24 ecran_largeur=1728 ecran_hauteur=1117" sh "$R/tests/fiche_profil.sh" reglages 1903340 | grep ResolutionSize)"
 verif "1903340 : pas de MetalFX sur l iMac M4 (7 ms de plus)" "false" "$(CIDRE_MACHINE="$IMAC_M4" sh "$R/tests/profil_cidre.sh" 1903340 | sed -n 's/^metalfx=//p')"
 verif "1903340 : un runtime d avant les blocs [[machine]] ne voit que l entree INI" "reglages_jeu.1" "$(sh "$R/tests/fiche_profil.sh" toml "$R/profils/1903340.toml" | cut -f1 | grep '^reglages_jeu' | grep -v temoin | sed 's/\.valeurs$//' | sort -u | tr '\n' ' ' | sed 's/ $//')"
 verif "1903340 : temoin = UserConfigHardwareProfile" "UserConfigHardwareProfile" "$(sh "$R/tests/fiche_profil.sh" toml "$R/profils/1903340.toml" | awk -F'\t' '$1=="reglages_jeu_temoin" && $2=="cle"{print $4}')"
@@ -739,7 +743,7 @@ rm -f "$CIDRE_PROFILS_BASE/995.toml" "$CIDRE_PROFILS_BASE/994.toml"
 # Expedition 33 : D3D12 ko sur M1, DXMT argent et D3D12 bronze sur M2+ ; la fiche reste en DXMT
 verif "1903340 : 3 entrees par famille" "3" "$(sh "$FP" json 1903340 | grep -o '"applique":' | wc -l | tr -d ' ')"
 verif "1903340 M1 : compat de reference, D3D12 ko pour ce Mac" "argent M1 Max 32 Go|M1 d3d12 ko true" "$(CM 1903340 etat) $(CM 1903340 machine)|$(sh "$FP" compat 1903340 | awk -F'\t' '$1 == "machines" && $5 == "true" { print $2, $3, $4, $5 }')"
-verif "1903340 M4 : compat = M2 et suivants en DXMT" "argent M2 et suivants dxmt 35" "$(CIDRE_MACHINE="$IMAC_M4" sh "$FP" compat 1903340 | awk -F'\t' '$1 == "etat" || $1 == "pour" || $1 == "voie" || $1 == "fps_jeu" { v[$1] = $2 } END { print v["etat"], v["pour"], v["voie"], v["fps_jeu"] }')"
+verif "1903340 M4 : compat = M2 et suivants en DXMT" "argent M2 et suivants dxmt 40" "$(CIDRE_MACHINE="$IMAC_M4" sh "$FP" compat 1903340 | awk -F'\t' '$1 == "etat" || $1 == "pour" || $1 == "voie" || $1 == "fps_jeu" { v[$1] = $2 } END { print v["etat"], v["pour"], v["voie"], v["fps_jeu"] }')"
 verif "1903340 M4 : D3D12 bronze, pas active par la fiche" "bronze false" "$(CIDRE_MACHINE="$IMAC_M4" sh "$FP" compat 1903340 | awk -F'\t' '$1 == "machines" && $3 == "d3d12" && $5 == "true" { print $4 }') $(CIDRE_MACHINE="$IMAC_M4" sh "$R/tests/profil_cidre.sh" 1903340 | sed -n 's/^dx12=//p')"
 # les fiches livrees : chaque entree a un nom, une condition bien formee, un etat et une voie connus
 n=0

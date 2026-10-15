@@ -96,6 +96,30 @@ section = "EngineSettingsData"
 "FoliageQuality" = "1"
 "ShadingQuality" = "1"
 
+# iMac 24" 4,5K a 7-10 coeurs GPU (ecran 2240x1260 points) : la sortie du jeu en
+# 1920x1080 plein ecran (mode emule, 0122 : agrandi par macOS, sans changer le mode
+# de l ecran), TSR toujours a 50 %. Mesure sur l iMac M4 le 2026-10-15, Moyen,
+# meme vue : 2240x1260 36 fps / GPU 29 ms ; 1920x1080 40 fps / 26,5 ms ; 1600x900
+# 49 fps / 21 ms.
+# Le joueur a choisi 1920x1080 sur l image (« en 1080 ce serait mieux »). La
+# sortie compte plus que prevu : TSR, post-traitement et la definition interne
+# (50 % de la sortie) en dependent. MetalFX n y aide pas (il double la sortie,
+# 4480x2520 : +7 ms). Pose une fois (id) ; le joueur peut
+# remonter la definition dans le menu du jeu.
+[[machine]]
+si = "coeurs_gpu <= 10 et ecran_largeur == 2240 et ecran_hauteur == 1260"
+[[machine.reglages_jeu]]
+id = "sortie-imac-1920x1080"
+fichier = "AppData/Local/Sandfall/Saved/Config/Windows/GameUserSettings.ini"
+section = "/Script/SandFall.ConfigurableGameUserSettings"
+[machine.reglages_jeu.valeurs]
+"ResolutionSizeX" = "1920"
+"ResolutionSizeY" = "1080"
+"LastUserConfirmedResolutionSizeX" = "1920"
+"LastUserConfirmedResolutionSizeY" = "1080"
+"FullscreenMode" = "0"
+"LastConfirmedFullscreenMode" = "0"
+
 [compat]
 etat = "argent"
 source = "cidre-test"
@@ -137,12 +161,12 @@ si = "famille_gpu >= 8"
 voie = "dxmt"
 etat = "argent"
 source = "cidre-test"
-date = "2026-10-12"
-machine = "iMac M4 24 Go (10 coeurs GPU, ecran 4480x2520)"
-cidre_version = "1.5.3"
+date = "2026-10-15"
+machine = "iMac M4 24 Go (10 coeurs GPU, ecran 2240x1260 points)"
+cidre_version = "1.5.11"
 fps_menu = 77
-fps_jeu = 35
-notes = "DXMT sans vsync ni TSO, Moyen + resolution 50 % : menu 72-80 fps, jeu 33-37 (GPU 30 ms, carte a 99 %). Mesure sur M4 ; M2 et M3 non essayes."
+fps_jeu = 40
+notes = "DXMT sans vsync ni TSO, Moyen, TSR 50 %, sortie du jeu en 1920x1080 (bloc [[machine]] de l iMac) : 40 fps / 25 ms en jeu (GPU 26,5 ms). En 2240x1260 : 36 fps ; en 1600x900 : 49. Limite par la carte (93 % occupee). Mesure sur M4 ; M2 et M3 non essayes."
 
 [[compat.machines]]
 nom = "M2 et suivants"
