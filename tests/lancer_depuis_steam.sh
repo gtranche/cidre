@@ -668,6 +668,14 @@ fi
 # redetectee une fois, 0141) atteint aussi un jeu deja marque : les `id` poses
 # sont gardes dans reglages_jeu_ids, et une entree a `id` nouveau est posee une
 # fois, sans reposer les autres.
+# Le temoin de la fiche depend aussi de l'API graphique (Expedition 33 : la carte
+# vue n'est pas la meme en DXMT, en DXVK et en D3D12) : celui que le jeu a ecrit
+# lors d'une partie dans cette voie est garde dans le profil, et remis avant le
+# jeu quand une partie dans une autre voie l'a change -- sinon le jeu refait sa
+# detection une minute apres le lancement et la partie se joue a ses reglages.
+VOIE_TEMOIN=$D3D11
+[ "$(opt dx12 CIDRE_DX12)" = true ] && VOIE_TEMOIN=d3d12
+[ -z "$JEU" ] || sh "$R/tests/reglages_jeu.sh" "$JEU" temoin-remettre "$VOIE_TEMOIN" >>"$JOURNAL" 2>&1 || true
 if [ -n "$JEU" ]; then
    IDS_FICHE=$(sh "$R/tests/fiche_profil.sh" reglages "$JEU" 2>/dev/null | awk -F'\t' '$2 == "id" && !vu[$3]++ { printf "%s%s", (n++ ? "," : ""), $3 }')
    if [ "$(profil reglages_jeu_appliques)" != true ]; then
@@ -703,7 +711,7 @@ cd "$DOSSIER"
 # `&& ... ||` : ce script est en `set -e`, et un jeu qui sort sur un code d'erreur
 # (un plantage, un arret force) l'arretait ici meme, AVANT la sauvegarde ci-dessous.
 CIDRE_OVERLAY_DYLIB=$OVERLAY sh "$R/tests/etape2_pile_arm64ec.sh" "$PROG" "$@" >>"$JOURNAL" 2>&1 && RC=0 || RC=$?
-[ -z "$TEMOIN" ] || sh "$R/tests/reglages_jeu.sh" "$JEU" temoin-change "$TEMOIN" >>"$JOURNAL" 2>&1 || true
+[ -z "$JEU" ] || sh "$R/tests/reglages_jeu.sh" "$JEU" temoin-change "$TEMOIN" "$VOIE_TEMOIN" >>"$JOURNAL" 2>&1 || true
 # Sorti sur une erreur : le code seul n'aide personne. tests/expliquer_sortie.sh
 # lit le journal de ce lancement, reconnait les signatures connues (client Steam
 # ferme, pas d'affichage, DLL manquante, prefixe abime, plantage...) et ecrit

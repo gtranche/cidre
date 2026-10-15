@@ -300,10 +300,17 @@ les pose, une fois :
   (4 octets, la taille et le reste du fichier ne bougent pas). Une propriété
   n'est touchée que si son en-tête est exactement celui attendu et qu'elle
   n'apparaît qu'une fois dans le fichier ; sinon elle est laissée, le journal
-  le dit, et les autres sont posées. Pas de `section`, pas d'ajout de
-  propriété, pas d'autre type (les flottants et les chaînes changent de forme
-  d'une version d'Unreal à l'autre). Même copie `.avant-cidre` avant la
-  première écriture.
+  le dit, et les autres sont posées. Pas d'autre type (les flottants et les
+  chaînes changent de forme d'une version d'Unreal à l'autre). Même copie
+  `.avant-cidre` avant la première écriture.
+  Unreal n'écrit pas une propriété qui vaut sa valeur par défaut : Expedition 33
+  réglé en Bas (0) n'a plus aucune `*Quality` dans sa sauvegarde. Avec
+  `section = "<nom de la structure>"` (`EngineSettingsData` pour ce jeu), une
+  propriété absente est ajoutée à la fin de cette structure (`StructProperty`),
+  dont la taille est corrigée ; en-têtes au format d'Unreal 5.4 et suivants
+  seulement. Sans `section`, une propriété absente est laissée et le journal
+  le dit (« trouvée 0 fois ») ; jusqu'à Cidre 1.5.11 c'était le cas, et la
+  qualité de la fiche n'était plus posée après une partie en Bas.
 - `format = "playerprefs"` : le jeu est en Unity et garde ses options dans les
   PlayerPrefs, que Unity range sous Windows dans le registre
   (`HKEY_CURRENT_USER\Software\<éditeur>\<jeu>`). `fichier` vaut alors
@@ -374,8 +381,12 @@ les pose, une fois :
   son INI une minute après le lancement. Le lanceur relève la valeur du témoin
   avant le jeu et la compare à la sortie : si elle a changé, il retire le
   marqueur et le dit au journal ; les réglages de la fiche sont reposés au
-  lancement suivant, et tiennent (le témoin ne bouge plus). La partie où la
-  détection a eu lieu se joue avec les réglages du jeu.
+  lancement suivant, et tiennent (le témoin ne bouge plus). La valeur relevée
+  à la sortie est gardée par voie graphique dans le profil utilisateur
+  (`reglages_jeu_temoin_dxmt`, `_dxvk`, `_d3d12`) et remise avant une partie
+  dans cette voie : passer de DXMT à D3D12 puis revenir ne fait plus repartir
+  le jeu sur ses propres réglages. Seule la toute première partie dans une
+  voie, avant qu'une valeur soit connue, se joue avec les réglages du jeu.
 
   ```toml
   [reglages_jeu_temoin]

@@ -264,6 +264,42 @@ verif "gvas : un nom partiel ne touche rien (Quality)" "2" "$(printf '%s\n' "$so
 verif "gvas : valeur non entiere laissee, dite" "2" "$(printf '%s\n' "$sortie" | grep -c "Texte = « bas » n'est pas un entier")"
 sortie=$(sh "$R/tests/reglages_jeu.sh" 999); rc=$?
 verif "gvas : relance = code 0, deja en place x2, fichier inchange" "0 2 0" "$rc $(printf '%s\n' "$sortie" | grep -c 'deja en place') $(printf '%s\n' "$sortie" | grep -c poses)"
+# une propriete absente (Unreal n ecrit pas une valeur par defaut : Expedition 33
+# en Bas) : avec `section`, ajoutee a la fin de la structure, taille corrigee
+gvas_struct() { # <nom> <contenu deja ecrit dans le fichier $1.contenu> : une StructProperty 5.4 (type SF_X de /Script/Jeu)
+   t=$(wc -c <"$2" | tr -d ' ')
+   printf "\\$(printf '%03o' $((${#1} + 1)))\\0\\0\\0%s\\0\\017\\0\\0\\0StructProperty\\0\\001\\0\\0\\0\\005\\0\\0\\0SF_X\\0\\001\\0\\0\\0\\014\\0\\0\\0/Script/Jeu\\0\\0\\0\\0\\0\\$(printf '%03o' $((t % 256)))\\$(printf '%03o' $((t / 256)))\\0\\0\\0" "$1"
+   cat "$2"
+}
+{ printf '\006\0\0\0Autre\0'; printf '\005\0\0\0None\0'; } >"$T/autre.contenu"
+{ gvas_prop ShadowQuality 2; printf '\005\0\0\0None\0'; } >"$T/moteur.contenu"
+{ printf 'GVAS\003\0\0\0entete'; gvas_struct Autre "$T/autre.contenu"; gvas_struct Moteur "$T/moteur.contenu"; printf '\005\0\0\0None\0\0\0\0\0'; } >"$SG/111/Reglages.sav"
+rm -f "$SG/111/Reglages.sav.avant-cidre" "$SG/222/Reglages.sav"
+taille_avant=$(wc -c <"$SG/111/Reglages.sav" | tr -d ' ')
+cat >"$CIDRE_PROFILS_BASE/999.toml" <<'FICHE'
+[reglages_jeu]
+fichier = "AppData/Local/Jeu/Saved/SaveGames/*/Reglages.sav"
+format = "gvas"
+section = "Moteur"
+[reglages_jeu.valeurs]
+"ShadowQuality" = "1"
+"OverallScalabilityLevel" = "1"
+"TextureQuality" = "300"
+FICHE
+sortie=$(sh "$R/tests/reglages_jeu.sh" 999); rc=$?
+verif "gvas + section : code 0, deux ajoutees, une remplacee" "0 1 1" "$rc $(printf '%s\n' "$sortie" | grep -c 'ajoutees a Moteur.*: OverallScalabilityLevel TextureQuality$') $(gvas_lire "$SG/111/Reglages.sav" ShadowQuality)"
+verif "gvas + section : valeurs relues (300 = 44 + 256)" "1 44" "$(gvas_lire "$SG/111/Reglages.sav" OverallScalabilityLevel) $(gvas_lire "$SG/111/Reglages.sav" TextureQuality)"
+verif "gvas + section : taille = avant + 57 + 48 (deux en-tetes)" "$((taille_avant + 105))" "$(wc -c <"$SG/111/Reglages.sav" | tr -d ' ')"
+hexs=$(od -An -v -tx1 "$SG/111/Reglages.sav" | tr -d ' \n')
+verif "gvas + section : taille de la structure corrigee (56 -> 161)" "a1000000" "$(printf '%s' "$hexs" | awk -v m="$(printf '/Script/Jeu' | od -An -v -tx1 | tr -d ' \n')0000000000" '{ n = 0; d = 1; while ((i = index(substr($0, d), m)) > 0) { p = d + i - 1; n++; d = p + 1 } print substr($0, p + length(m), 8) }')"
+verif "gvas + section : la structure finit par None, le fichier aussi" "1 1" "$(printf '%s' "$hexs" | grep -c '2c010000050000004e6f6e650005000000') $(printf '%s' "$hexs" | grep -c '050000004e6f6e650000000000$')"
+verif "gvas + section : l autre structure intacte" "1" "$(printf '%s' "$hexs" | grep -c '06000000417574726500050000004e6f6e6500')"
+sortie=$(sh "$R/tests/reglages_jeu.sh" 999); rc=$?
+verif "gvas + section : relance = deja en place, rien d ajoute" "0 1 0" "$rc $(printf '%s\n' "$sortie" | grep -c 'deja en place') $(printf '%s\n' "$sortie" | grep -c ajoutees)"
+sed -i '' 's/^section = "Moteur"/section = "Absente"/' "$CIDRE_PROFILS_BASE/999.toml"
+cp "$SG/111/Reglages.sav.avant-cidre" "$SG/111/Reglages.sav"
+sortie=$(sh "$R/tests/reglages_jeu.sh" 999); rc=$?
+verif "gvas + section introuvable : laissees, dit, code 0" "0 1 1" "$rc $(printf '%s\n' "$sortie" | grep -c 'pas ajoutees (Absente : structure trouvee 0 fois)') $(gvas_lire "$SG/111/Reglages.sav" ShadowQuality)"
 printf 'pas une sauvegarde' >"$SG/222/Reglages.sav"
 verif "gvas : un fichier qui n est pas GVAS -> code 1, pas touche" "1 pas une sauvegarde" "$(sh "$R/tests/reglages_jeu.sh" 999 >/dev/null; echo $?) $(cat "$SG/222/Reglages.sav")"
 printf '[reglages_jeu]\nfichier = "AppData/Local/Jeu/Saved/SaveGames/*/Absent.sav"\nformat = "gvas"\nvaleurs = { "k" = "1" }\n' >"$CIDRE_PROFILS_BASE/999.toml"
@@ -375,6 +411,18 @@ verif "temoin change : marqueur retire" "" "$(valeur 999 reglages_jeu_appliques)
 verif "temoin change : les autres reglages utilisateur du jeu restent" "false" "$(valeur 999 hud)"
 verif "temoin change sans marqueur : rien a retirer, rien dit" "" "$(sh "$R/tests/reglages_jeu.sh" 999 temoin-change CarteA)"
 verif "lancement suivant : reglages reposes (code 0)" "0 sg.ShadowQuality=1" "$(sh "$R/tests/reglages_jeu.sh" 999 >/dev/null; echo $?) $(tr -d '\r' <"$INI" | grep '^sg.ShadowQuality=')"
+# le temoin par voie graphique : garde a la sortie, remis avant une partie dans la meme voie
+sh "$R/tests/reglages_jeu.sh" 999 temoin-change CarteB dxmt >/dev/null
+verif "voie : temoin garde a la sortie (dxmt)" "CarteB" "$(valeur 999 reglages_jeu_temoin_dxmt)"
+sed -i '' 's/ProfilMateriel=CarteB/ProfilMateriel=CarteD3D12/' "$INI"
+sh "$R/tests/reglages_jeu.sh" 999 temoin-change CarteB d3d12 >/dev/null
+verif "voie : une partie D3D12 garde sa propre valeur, sans toucher a dxmt" "CarteD3D12 CarteB" "$(valeur 999 reglages_jeu_temoin_d3d12) $(valeur 999 reglages_jeu_temoin_dxmt)"
+sortie=$(sh "$R/tests/reglages_jeu.sh" 999 temoin-remettre dxmt)
+verif "voie : remis avant une partie DXMT, dit au journal" "CarteD3D12 -> CarteB ProfilMateriel=CarteB" "$(printf '%s' "$sortie" | grep -o 'CarteD3D12 -> CarteB') $(tr -d '\r' <"$INI" | grep '^ProfilMateriel=')"
+verif "voie : CRLF et autres lignes gardes" "6 6 Autre=1" "$(wc -l <"$INI" | tr -d ' ') $(grep -c "$(printf '\r')\$" "$INI") $(tr -d '\r' <"$INI" | grep '^Autre=')"
+verif "voie : deja la valeur -> rien dit" "" "$(sh "$R/tests/reglages_jeu.sh" 999 temoin-remettre dxmt)"
+verif "voie inconnue (jamais jouee) : rien" "" "$(sh "$R/tests/reglages_jeu.sh" 999 temoin-remettre dxvk)$(tr -d '\r' <"$INI" | grep -c '^ProfilMateriel=CarteB$' | sed 's/^1$//')"
+verif "voie : nom de voie douteux refuse" "" "$(sh "$R/tests/reglages_jeu.sh" 999 temoin-remettre '../x')"
 rm -f "$INI"
 verif "temoin : fichier absent -> vide, pas d erreur" " 0" "$(sh "$R/tests/reglages_jeu.sh" 999 temoin) $?"
 

@@ -77,8 +77,12 @@ cle = "UserConfigHardwareProfile"
 [[machine]]
 si = "coeurs_gpu >= 1"
 [[machine.reglages_jeu]]
+# section : la structure qui porte ces champs. Le jeu n ecrit pas un champ a sa
+# valeur par defaut (Bas = 0) : apres une partie en Bas ils sont absents, et
+# le lanceur les y ajoute (Cidre >= 1.5.12 ; avant, « trouvee 0 fois », rien pose).
 fichier = "AppData/Local/Sandfall/Saved/SaveGames/*/SharedGameUserSettings.sav"
 format = "gvas"
+section = "EngineSettingsData"
 [machine.reglages_jeu.valeurs]
 "OverallScalabilityLevel" = "1"
 "ViewDistanceQuality" = "1"

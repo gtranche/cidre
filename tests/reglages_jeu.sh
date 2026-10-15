@@ -9,7 +9,9 @@
 #   reglages_jeu.sh <appid> nouvelles <ids>         les seules entrees a `id` absent de <ids> (liste a virgules) :
 #                                                   pour un jeu deja marque, une entree ajoutee depuis a la fiche
 #   reglages_jeu.sh <appid> temoin                  la valeur du temoin de la fiche (voir plus bas), vide s'il n'y en a pas
-#   reglages_jeu.sh <appid> temoin-change <avant>   apres la partie : si le temoin ne vaut plus <avant>, retire le marqueur
+#   reglages_jeu.sh <appid> temoin-change <avant> [voie]   apres la partie : si le temoin ne vaut plus <avant>, retire
+#                                                   le marqueur ; garde sa valeur pour la voie (dxmt, dxvk, d3d12)
+#   reglages_jeu.sh <appid> temoin-remettre <voie>  avant la partie : remet la valeur gardee pour cette voie
 #   reglages_jeu.sh - ruche <ruche> <cle>           hors fiche : pose sous <cle> de <ruche> (user.reg, system.reg) les
 #                                                   lignes `nom TAB donnee` lues sur l'entree (format brut, voir poser_registre)
 #
@@ -45,7 +47,12 @@
 # le marqueur. Expedition 33 le fait quand UserConfigHardwareProfile change. Le
 # lanceur releve le temoin avant le jeu et le compare a la sortie : s'il a
 # change, le marqueur est retire et les reglages sont reposes au lancement
-# suivant (le temoin, lui, ne bouge plus).
+# suivant (le temoin, lui, ne bouge plus). La valeur relevee a la sortie est
+# gardee par voie graphique (reglages_jeu_temoin_dxmt, _dxvk, _d3d12 dans le
+# profil utilisateur) et remise avant une partie dans cette voie : changer
+# d API (DXMT -> D3D12 -> DXMT) ne fait plus repartir le jeu a ses propres
+# reglages pour une partie (constate sur le M4 le 2026-10-15). C est la valeur
+# que le jeu a lui-meme ecrite sur cette machine dans cette voie.
 set -u
 APPID=${1:-}
 [ -n "$APPID" ] || exit 3
@@ -53,6 +60,8 @@ R=$(cd "$(dirname "$0")/.." && pwd)
 PFX=${WINEPREFIX:-$R/wine/pfx-arm64ec}
 
 temoin() { # la valeur de la cle temoin dans son fichier ; vide sans temoin, sans fichier ou sans la cle
+   # (aussi dans TEMOIN_VAL, avec rel, cle et u : appeler sans $(...) pour les garder)
+   TEMOIN_VAL=
    f=$(sh "$R/tests/fiche_profil.sh" chemin "$APPID") || return 0
    t=$(sh "$R/tests/fiche_profil.sh" toml "$f" | awk -F'\t' '$1 == "reglages_jeu_temoin" && ($2 == "fichier" || $2 == "cle") { print $2 "=" $4 }')
    rel=$(printf '%s\n' "$t" | sed -n 's/^fichier=//p'); cle=$(printf '%s\n' "$t" | sed -n 's/^cle=//p')
@@ -60,13 +69,35 @@ temoin() { # la valeur de la cle temoin dans son fichier ; vide sans temoin, san
    case $cle in ''|*[!A-Za-z0-9_.]*) return 0 ;; esac
    u=$(ls -d "$PFX/drive_c/users/"*/AppData 2>/dev/null | head -1)
    [ -n "$u" ] && [ -f "$(dirname "$u")/$rel" ] || return 0
-   tr -d '\r' <"$(dirname "$u")/$rel" | awk -v c="$cle" '{ i = index($0, "="); if (i && substr($0, 1, i - 1) == c) { print substr($0, i + 1); exit } }'
+   TEMOIN_VAL=$(tr -d '\r' <"$(dirname "$u")/$rel" | awk -v c="$cle" '{ i = index($0, "="); if (i && substr($0, 1, i - 1) == c) { print substr($0, i + 1); exit } }')
+   [ -z "$TEMOIN_VAL" ] || printf '%s\n' "$TEMOIN_VAL"
 }
+voie_ok() { case ${1:-} in ''|*[!a-z0-9]*) return 1 ;; esac; }
+temoin_ok() { case ${1:-} in ''|*[!A-Za-z0-9_.-]*) return 1 ;; esac; [ ${#1} -le 200 ]; }
 case ${2:-} in
    temoin) temoin; exit 0 ;;
+   temoin-remettre)
+      # avant le jeu : la valeur gardee pour cette voie (reglages_jeu_temoin_<voie>
+      # du profil utilisateur), remise si une partie dans une autre voie l a changee
+      voie_ok "${3:-}" || exit 0
+      garde=$(sh "$R/tests/profil_cidre.sh" "$APPID" | sed -n "s/^reglages_jeu_temoin_$3=//p" | head -1)
+      temoin >/dev/null; actuel=$TEMOIN_VAL
+      temoin_ok "$garde" && temoin_ok "$actuel" && [ "$garde" != "$actuel" ] || exit 0
+      F="$(dirname "$u")/$rel"
+      LC_ALL=C awk -v c="$cle" -v v="$garde" '{
+            fin = ""; if (sub(/\r$/, "")) fin = "\r"
+            i = index($0, "="); if (!fait && i && substr($0, 1, i - 1) == c) { $0 = c "=" v; fait = 1 }
+            print $0 fin }' "$F" >"$F.cidre-tmp" && cat "$F.cidre-tmp" >"$F" && rm -f "$F.cidre-tmp" || { rm -f "$F.cidre-tmp"; exit 1; }
+      echo "    reglages du jeu : temoin $cle remis a la valeur de la voie $3 ($actuel -> $garde) : le jeu ne refera pas sa detection du materiel"
+      exit 0 ;;
    temoin-change)
-      # rien a dire si le temoin n existait pas avant (premier lancement) ou n existe plus
+      # apres le jeu : la valeur de la voie est gardee pour la remettre la prochaine
+      # fois (temoin-remettre). Puis, rien a dire si le temoin n existait pas avant
+      # (premier lancement) ou n existe plus.
       apres=$(temoin)
+      if voie_ok "${4:-}" && temoin_ok "$apres" && [ "$(sh "$R/tests/profil_cidre.sh" "$APPID" | sed -n "s/^reglages_jeu_temoin_$4=//p" | head -1)" != "$apres" ]; then
+         sh "$R/tests/profil_cidre.sh" "$APPID" set "reglages_jeu_temoin_$4" "\"$apres\""
+      fi
       [ -n "${3:-}" ] && [ -n "$apres" ] && [ "$apres" != "$3" ] || exit 0
       if [ "$(sh "$R/tests/profil_cidre.sh" "$APPID" | sed -n 's/^reglages_jeu_appliques=//p')" = true ]; then
          sh "$R/tests/profil_cidre.sh" "$APPID" unset reglages_jeu_appliques
@@ -151,12 +182,26 @@ poser_ini() { # <nom affiche>
 # n est touchee que si son en-tete est exactement celui attendu et qu elle
 # n apparait qu une fois ; sinon elle est laissee, une ligne le dit, et les
 # autres sont posees. Rend 0, ou 1 si le fichier n est pas une sauvegarde GVAS.
+#
+# Une propriete ABSENTE n est pas une propriete en place : Unreal n ecrit pas
+# un champ qui vaut sa valeur par defaut (Expedition 33 en Bas : plus aucune
+# des *Quality dans la sauvegarde, constate sur le M4 le 2026-10-15 ; le
+# lanceur disait « deja en place » et la qualite de la fiche n etait plus
+# jamais posee). Avec `section` = le nom de la structure (StructProperty) qui
+# porte ces champs (EngineSettingsData), une IntProperty absente y est ajoutee,
+# juste avant le « None » qui la ferme, et la taille de la structure est
+# corrigee ; le format des en-tetes est celui d Unreal 5.4 et suivants (nom de
+# type complet), le seul que ce code sait lire. Sans `section`, ou si la
+# structure n est pas trouvee telle qu attendue, la propriete est laissee et
+# une ligne le dit (l entree compte comme posee : la reposer a chaque
+# lancement ecraserait les choix du joueur sur les autres reglages).
 poser_gvas() { # <nom affiche>
    nom=$1
    [ "$(head -c 4 "$F" 2>/dev/null)" = GVAS ] || { echo "    reglages du jeu : $nom n'est pas une sauvegarde Unreal (GVAS)"; return 1; }
    [ "$(wc -c <"$F")" -le 4194304 ] || { echo "    reglages du jeu : $nom est trop gros pour etre retouche"; return 1; }
    cp "$F" "$F.cidre-tmp" || return 1
    HEX=$(od -An -v -tx1 "$F" | tr -d ' \n')
+   : >"$V.absentes"
    while IFS='	' read -r c v; do
       case $v in ''|*[!0-9]*) echo "    reglages du jeu : $c = « $v » n'est pas un entier, laisse"; continue ;; esac
       [ "$v" -le 2147483647 ] 2>/dev/null || { echo "    reglages du jeu : $c = $v est hors bornes, laisse"; continue; }
@@ -166,14 +211,64 @@ poser_gvas() { # <nom affiche>
       # positions du motif alignees sur un octet (en octets, depuis 0)
       pos=$(printf '%s\n' "$HEX" | awk -v m="$motif" '{ d = 1; while ((i = index(substr($0, d), m)) > 0) { p = d + i - 1; if (p % 2 == 1) printf "%d ", (p - 1) / 2; d = p + 1 } }')
       n=$(echo $pos | wc -w | tr -d ' ')
+      if [ "$n" -eq 0 ] && [ -n "$SECTION" ]; then printf '%s\t%s\n' "$c" "$v" >>"$V.absentes"; continue; fi
       [ "$n" -eq 1 ] || { echo "    reglages du jeu : propriete entiere $c trouvee $n fois dans $(basename "$F"), laissee"; continue; }
       o=$((pos + ${#motif} / 2))
       printf "$(printf '\\%03o\\%03o\\%03o\\%03o' $((v & 255)) $((v >> 8 & 255)) $((v >> 16 & 255)) $((v >> 24 & 255)))" |
          dd of="$F.cidre-tmp" bs=1 seek="$o" conv=notrunc 2>/dev/null || { rm -f "$F.cidre-tmp"; echo "    reglages du jeu : echec de la reecriture de $(basename "$F")"; return 1; }
    done <"$V"
-   [ "$(wc -c <"$F.cidre-tmp")" -eq "$(wc -c <"$F")" ] || { rm -f "$F.cidre-tmp"; echo "    reglages du jeu : echec de la reecriture de $(basename "$F")"; return 1; }
+   [ "$(wc -c <"$F.cidre-tmp")" -eq "$(wc -c <"$F")" ] || { rm -f "$F.cidre-tmp" "$V.absentes"; echo "    reglages du jeu : echec de la reecriture de $(basename "$F")"; return 1; }
+   if [ -s "$V.absentes" ]; then
+      ajouter_gvas "$nom"
+   fi
+   rm -f "$V.absentes"
    remplacer "$nom" ""
    return 0
+}
+
+# Les IntProperty de $V.absentes ajoutees en fin de la structure $SECTION de
+# $F.cidre-tmp. Rend 0, ou 1 (rien ajoute, une ligne dit pourquoi).
+ajouter_gvas() { # <nom affiche>
+   od -An -v -tx1 "$F.cidre-tmp" | tr -d ' \n' >"$V.hex"
+   # en-tete de la structure : nom, « StructProperty », 1 parametre de type
+   ms=$(printf '%02x000000%s000f000000%s0001000000' $((${#SECTION} + 1)) "$(printf '%s' "$SECTION" | od -An -v -tx1 | tr -d ' \n')" "$(printf 'StructProperty' | od -An -v -tx1 | tr -d ' \n')")
+   LC_ALL=C awk -F'\t' -v ms="$ms" -v hexf="$V.hex" '
+      function h2i(s,   i, r) { r = 0; for (i = 1; i <= length(s); i++) r = r * 16 + index("0123456789abcdef", substr(s, i, 1)) - 1; return r }
+      function le32(o) { return h2i(substr(H, 2*o+7, 2) substr(H, 2*o+5, 2) substr(H, 2*o+3, 2) substr(H, 2*o+1, 2)) }
+      function hle32(v,   s, i) { s = ""; for (i = 0; i < 4; i++) { s = s sprintf("%02x", v % 256); v = int(v / 256) } return s }
+      function hstr(t,   s, i) { s = ""; for (i = 1; i <= length(t); i++) s = s sprintf("%02x", ord[substr(t, i, 1)]); return s }
+      # un nom de type : chaine, nombre de parametres, puis chaque parametre (recursif)
+      function sauter_type(o,   L, n, i) {
+         L = le32(o); if (L < 1 || L > 256) return -1
+         o += 4 + L; n = le32(o); o += 4; if (n > 8) return -1
+         for (i = 0; i < n; i++) { o = sauter_type(o); if (o < 0) return -1 }
+         return o
+      }
+      BEGIN { for (i = 32; i < 127; i++) ord[sprintf("%c", i)] = i; getline H <hexf }
+      { ajout = ajout hle32(length($1) + 1) hstr($1) "00" hle32(12) hstr("IntProperty") "00" hle32(0) hle32(4) "00" hle32($2 + 0); noms = noms " " $1 }
+      END {
+         n = 0; d = 1
+         while ((i = index(substr(H, d), ms)) > 0) { p = d + i - 1; if (p % 2 == 1) { n++; pos = (p - 1) / 2 } d = p + 1 }
+         if (n != 1) { print "structure trouvee " n " fois"; exit 1 }
+         o = sauter_type(pos + length(ms) / 2)
+         if (o < 0) { print "nom de type illisible"; exit 1 }
+         taille = le32(o)
+         if (substr(H, 2*(o+4)+1, 2) != "00") { print "en-tete avec options (GUID, index...)"; exit 1 }
+         fin = o + 5 + taille
+         if (2*fin > length(H) || substr(H, 2*(fin-9)+1, 18) != "050000004e6f6e6500") { print "structure sans « None » final a la place attendue"; exit 1 }
+         # nouvelle taille, puis les proprietes juste avant le None de la structure
+         printf "%s%s%s%s%s\n", substr(H, 1, 2*o), hle32(taille + length(ajout) / 2), substr(H, 2*o+9, 2*(fin-9) - 2*o - 8), ajout, substr(H, 2*(fin-9)+1) >(hexf ".neuf")
+         print "ok" noms
+      }' "$V.absentes" >"$V.msg" 2>&1 && r=0 || r=1
+   if [ $r -eq 0 ] && xxd -r -p "$V.hex.neuf" >"$F.cidre-tmp.2" 2>/dev/null && [ "$(head -c 4 "$F.cidre-tmp.2")" = GVAS ]; then
+      cat "$F.cidre-tmp.2" >"$F.cidre-tmp"
+      echo "    reglages du jeu : ajoutees a $SECTION dans $(basename "$F") (absentes : le jeu ne les ecrit pas a leur valeur par defaut) :$(sed 's/^ok//' "$V.msg")"
+   else
+      r=1
+      echo "    reglages du jeu : $(cut -f1 "$V.absentes" | tr '\n' ' ')absentes de $(basename "$F") et pas ajoutees ($SECTION : $(head -1 "$V.msg")), laissees"
+   fi
+   rm -f "$V.hex" "$V.hex.neuf" "$V.msg" "$F.cidre-tmp.2"
+   return $r
 }
 
 # Formats registre et playerprefs : le jeu range ses reglages dans le registre
