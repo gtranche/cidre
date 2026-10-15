@@ -24,7 +24,7 @@ mkdir -p "$STAGE/wine/wine11-arm64"
 
 echo "== KosmicKrisp + loader Vulkan (prefix/) =="
 mkdir -p "$STAGE/prefix"
-( cd "$R/prefix" && tar cf - lib share bin 2>/dev/null ) | ( cd "$STAGE/prefix" && tar xf - )
+( cd "$R/prefix" && tar cf - --exclude='*.avant-*' --exclude='*.b841' lib share bin 2>/dev/null ) | ( cd "$STAGE/prefix" && tar xf - )
 # L'ICD json : chemin a reecrire a l'install -> on le neutralise avec un jeton.
 for j in "$STAGE/prefix/share/vulkan/icd.d/"*.json; do
    [ -f "$j" ] && sed -i '' "s#$R#@@CIDRE@@#g" "$j"
