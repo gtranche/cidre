@@ -20,15 +20,22 @@ cache de l'outil : il tourne dessus sans reseau (--sans-reseau). On verifie :
     metadonnees Steam) : methode, racines par systeme apres `rootoverrides`,
     liens proposes seulement quand la meme regle vaut sur macOS ou que les
     motifs se repondent, jamais vers le dossier du jeu ni une racine entiere ;
-    et la lecture de SteamCMD, sur un faux SteamCMD.
+    et la lecture de SteamCMD, sur un faux SteamCMD ;
+  - le mode catalogue (--catalogue-protondb), sur un cache fabrique : les jeux
+    de l'export ProtonDB sans version macOS, nommes par le magasin Steam (ou par
+    l'export s'il ne les montre plus), la page du wiki trouvee par ses liens
+    vers Steam et verifiee dans l'infobox, rien d'ecrit a la main reecrit ;
+    et tests/outils/verifier_catalogue.py, qui le voit si on y touche.
 """
 import gzip
 import importlib.util
+import io
 import json
 import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import tomllib
 
@@ -141,6 +148,90 @@ def charger_outil():
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
     return m
+
+
+def unitaires_catalogue(tmp):
+    """--catalogue-protondb sur un cache fabrique, sans reseau."""
+    cache, profils = os.path.join(tmp, "cat-cache"), os.path.join(tmp, "cat-profils")
+    os.makedirs(profils)
+
+    def poser(cle, corps, statut=200):
+        p = os.path.join(cache, cle)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump({"date": DATE, "statut": statut, "corps": corps}, f)
+    WIN, MAC, RETIRE = "990000011", "990000012", "990000013"
+    # l'export : trois jeux ; le titre le plus recent fait foi
+    rapports = [{"app": {"steam": {"appId": WIN}, "title": "Vieux titre"}, "timestamp": 100, "responses": {"verdict": "yes"}},
+                {"app": {"steam": {"appId": WIN}, "title": "Jeu Catalogue"}, "timestamp": 200, "responses": {"verdict": "yes"}},
+                {"app": {"steam": {"appId": MAC}, "title": "Jeu Mac"}, "timestamp": 100, "responses": {}},
+                {"app": {"steam": {"appId": RETIRE}, "title": "Jeu Retire"}, "timestamp": 100, "responses": {}}]
+    os.makedirs(os.path.join(cache, "protondb", "export"))
+    brut = json.dumps(rapports).encode()
+    with tarfile.open(os.path.join(cache, "protondb", "export", "reports_oct1_2026.tar.gz"), "w:gz") as t:
+        info = tarfile.TarInfo("reports_piiremoved.json")
+        info.size = len(brut)
+        t.addfile(info, io.BytesIO(brut))
+    poser(f"steam/magasin/{WIN}.json", {"nom": "Jeu Catalogue", "type": 0, "plateformes": ["windows"]})
+    poser(f"steam/magasin/{MAC}.json", {"nom": "Jeu Mac", "type": 0, "plateformes": ["windows", "macos"]})
+    poser(f"steam/magasin/{RETIRE}.json", None, 404)
+    poser(f"protondb/resumes/{WIN}.json", {"tier": "gold", "confidence": "good", "score": 0.7, "total": 12,
+                                           "trendingTier": "gold", "bestReportedTier": "platinum"})
+    # la carte : la page du jeu, et une liste qui le lie aussi (rejetee : pas d'infobox a son appid)
+    poser("pcgw/carte-steam.json", {WIN: ["Liste de jeux", "Jeu Catalogue"]})
+    poser("agw/carte-steam.json", {})
+
+    def page(titre, texte):
+        poser(f"pcgw/pages/{titre.replace(' ', '%20')}.json",
+              {"query": {"pages": [{"title": titre, "revisions": [{"slots": {"main": {"content": texte}}}]}]}})
+    page("Liste de jeux", "Des jeux.")
+    page("Jeu Catalogue", "{{Infobox game\n|engines = \n{{Infobox game/row/engine|Unity}}\n|steam appid = " + WIN + "\n}}\n")
+    # une fiche ecrite a la main : son moteur ne bouge pas
+    avant = '[jeu]\nappid = 990000011\nmoteur = "unreal"\n\n[compat]\netat = "ok"\ndate = "2025-12-01"\n'
+    with open(os.path.join(profils, f"{WIN}.toml"), "w", encoding="utf-8") as f:
+        f.write(avant)
+    depot = os.path.join(tmp, "cat-depot")
+    shutil.copytree(profils, depot)
+    rapport = os.path.join(tmp, "cat-rapport.json")
+    r = subprocess.run([sys.executable, "-I", OUTIL, "--catalogue-protondb", "--sans-reseau", "--cache", cache,
+                        "--profils", profils, "--date", DATE, "--rapport", rapport],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    rap = json.load(open(rapport))
+    assert rap["catalogue"]["windows_seulement"] == 1 and rap["catalogue"]["mac_natif"] == 1 \
+        and rap["catalogue"]["hors_magasin"] == 1, rap
+    assert sorted(os.listdir(profils)) == [f"{WIN}.toml", f"{RETIRE}.toml"], os.listdir(profils)
+    w = tomllib.load(open(os.path.join(profils, f"{WIN}.toml"), "rb"))
+    assert w["jeu"]["moteur"] == "unreal" and w["compat"]["etat"] == "ok", w
+    assert any(c["champ"] == "jeu.moteur" for c in rap["contradictions"]), rap["contradictions"]
+    assert w["jeu"]["nom"] == "Jeu Catalogue" and w["jeu"]["sources"]["nom"] == f"steam {DATE}", w
+    assert w["jeu"]["plateformes_steam"] == "windows", w
+    assert w["compat"]["protondb"]["palier"] == "gold" and w["compat"]["protondb"]["score"] == 70, w
+    assert w["compat"]["pcgamingwiki"]["url"].endswith("/Jeu_Catalogue"), w
+    assert w["compat"]["pcgamingwiki"]["correspondance"] == "appid", w
+    assert open(os.path.join(profils, f"{WIN}.toml")).read().startswith(avant.split("\n\n")[0]), "fiche reecrite"
+    x = tomllib.load(open(os.path.join(profils, f"{RETIRE}.toml"), "rb"))
+    assert x["jeu"]["nom"] == "Jeu Retire" and x["jeu"]["sources"]["nom"] == f"protondb {DATE}", x
+    assert "plateformes_steam" not in x["jeu"] and "protondb" in x["compat"], x  # l'export, sans resume
+    assert "crossover" not in json.dumps(w) + json.dumps(x)
+    # le verificateur : rien de change a la main, l'index va avec les fiches
+    verif = os.path.join(ICI, "verifier_catalogue.py")
+    outil = os.path.join(RACINE, "tests", "fiche_profil.sh")
+    if os.path.exists(outil):
+        idx = subprocess.run(["sh", outil, "generer-index", profils], capture_output=True, text=True, check=True).stdout
+        with open(os.path.join(profils, "index.toml"), "w") as f:
+            f.write(idx)
+        r = subprocess.run([sys.executable, "-I", verif, depot, profils], capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr + r.stdout
+        with open(os.path.join(profils, f"{WIN}.toml")) as f:
+            t = f.read()
+        with open(os.path.join(profils, f"{WIN}.toml"), "w") as f:
+            f.write(t.replace('moteur = "unreal"', 'moteur = "unity"'))
+        r = subprocess.run([sys.executable, "-I", verif, depot, profils], capture_output=True, text=True)
+        assert r.returncode == 1 and "jeu.moteur" in r.stderr, r.stderr
+        os.remove(os.path.join(profils, f"{RETIRE}.toml"))
+        r = subprocess.run([sys.executable, "-I", verif, depot, profils], capture_output=True, text=True)
+        assert r.returncode == 1 and f"{RETIRE} sans fiche" in r.stderr, r.stderr
 
 
 def unitaires_steam_cloud(tmp):
@@ -432,6 +523,7 @@ def main():
             print("fiche_profil.sh absent : lecture shell non verifiee", file=sys.stderr)
         unitaires_crossover(tmp)
         unitaires_steam_cloud(tmp)
+        unitaires_catalogue(tmp)
         print("test_importer_profils : OK")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

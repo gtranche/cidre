@@ -13,6 +13,9 @@
 #      registre factice (formats registre et playerprefs) ;
 #   4. le marqueur reglages_jeu_appliques dans le profil utilisateur ;
 #   5. `fiche_profil.sh maj` contre une copie locale (file://), et sans reseau ;
+#   5b. `maj` par l'archive de la base (file://) : echange du cache, archive refusee
+#      (chemin douteux, fiche manquante) -> fiches une a une ; fiche provisoire
+#      d'un jeu sans fiche (ProtonDB et magasin Steam factices, file://) ;
 #   6. variantes par machine (blocs [[machine]], tests/machine.sh) : conditions,
 #      fusion dans [cidre] et [[reglages_jeu]], priorite, application a l'INI,
 #      fiche d'Expedition 33 sur un M1 Max et sur un iMac M4 ;
@@ -36,6 +39,8 @@ verif() { # <libelle> <attendu> <obtenu>
 }
 # un environnement isole : pas de profil utilisateur, cache vide, sauf dit autrement
 export CIDRE_PROFILS="$T/perso.toml" CIDRE_PROFILS_BASE="$T/cache" CIDRE_DIR="$T/cidre"
+# ni archive de la base, ni fiches provisoires reelles (5b les essaie en file://)
+export CIDRE_PROFILS_ARCHIVE= CIDRE_PROFILS_PROVISOIRES="$T/provisoires"
 # la machine aussi est imposee (celle de reference, un M1 Max) : les fiches a
 # variantes par machine rendent la meme chose partout ou le test tourne
 M1MAX="coeurs_gpu=24 memoire_go=32 ecran_largeur=1728 ecran_hauteur=1117 famille_gpu=7 generation=1 gamme=max macos=26"
@@ -398,6 +403,55 @@ sortie=$(CIDRE_PROFILS_URL="file://$T/nulle-part/" sh "$R/tests/fiche_profil.sh"
 verif "hors reseau : code 1" "1" "$rc"
 verif "hors reseau : json ok=false" '{"ok":false' "$(printf '%s' "$sortie" | cut -c1-11)"
 verif "hors reseau : cache intact" "" "$(cmp "$CIDRE_PROFILS_BASE/1903340.toml" "$R/profils/1903340.toml" 2>&1)"
+
+echo "== 5b. archive de la base, fiche provisoire"
+FP="$R/tests/fiche_profil.sh"
+mkdir -p "$T/arch"
+( cd "$R/profils" && COPYFILE_DISABLE=1 tar -czf "$T/arch/base.tar.gz" index.toml [0-9]*.toml )
+rm -rf "$CIDRE_PROFILS_BASE"
+sortie=$(CIDRE_PROFILS_ARCHIVE="file://$T/arch/base.tar.gz" sh "$FP" maj json); rc=$?
+verif "archive : code 0" "0" "$rc"
+verif "archive : mode et total" "\"mode\":\"archive\",\"fiches\":$n,\"gardees\":0,\"total\":$n" "$(printf '%s' "$sortie" | grep -o '"mode":"archive","fiches":[0-9]*,"gardees":[0-9]*,"total":[0-9]*')"
+verif "archive : index en cache" "" "$(cmp "$CIDRE_PROFILS_BASE/index.toml" "$R/profils/index.toml" 2>&1)"
+verif "archive : fiche en cache identique" "" "$(cmp "$CIDRE_PROFILS_BASE/1903340.toml" "$R/profils/1903340.toml" 2>&1)"
+verif "archive : horodatage pose" "20" "$(cut -c1-2 "$CIDRE_PROFILS_BASE/horodatage")"
+verif "archive : pas de dossier de travail laisse" "" "$(ls "$(dirname "$CIDRE_PROFILS_BASE")" | grep -e '\.nouveau\.' -e '\.ancien\.')"
+sortie=$(CIDRE_PROFILS_ARCHIVE="file://$T/arch/base.tar.gz" sh "$FP" maj json)
+verif "json : origine d'une fiche du cache, puis de la copie livree" '"origine":"cache" "origine":"livree"' "$(sh "$FP" json 1903340 | grep -o '"origine":"[a-z]*"') $(CIDRE_PROFILS_BASE="$T/vide" sh "$FP" json 1903340 | grep -o '"origine":"[a-z]*"')"
+verif "archive : seconde maj, rien de change" "\"fiches\":0,\"gardees\":$n" "$(printf '%s' "$sortie" | grep -o '"fiches":[0-9]*,"gardees":[0-9]*')"
+# une archive douteuse est refusee : on passe aux fiches une a une (ici, la copie du depot)
+mkdir -p "$T/douteuse/sous" && cp "$R/profils/index.toml" "$T/douteuse/" && cp "$R/profils/1903340.toml" "$T/douteuse/sous/"
+( cd "$T/douteuse" && tar -czf "$T/arch/douteuse.tar.gz" index.toml sous/1903340.toml )
+printf '[cidre]\ntso = false\n' >"$CIDRE_PROFILS_BASE/1903340.toml"
+# (un petit depot d une fiche, pour ne pas reprendre toute la base une a une)
+mkdir -p "$T/petit" && cp "$R/profils/1903340.toml" "$T/petit/" && sh "$FP" generer-index "$T/petit" >"$T/petit/index.toml"
+sortie=$(CIDRE_PROFILS_ARCHIVE="file://$T/arch/douteuse.tar.gz" CIDRE_PROFILS_URL="file://$T/petit/" sh "$FP" maj json 2>"$T/err"); rc=$?
+verif "archive a sous-dossier : refusee, fiches une a une (code 0)" "0 1" "$rc $(grep -c 'archive refusee' "$T/err")"
+verif "archive a sous-dossier : la fiche changee est reprise" "" "$(cmp "$CIDRE_PROFILS_BASE/1903340.toml" "$R/profils/1903340.toml" 2>&1)"
+( cd "$R/profils" && tar -czf "$T/arch/incomplete.tar.gz" index.toml 1903340.toml )
+sortie=$(CIDRE_PROFILS_ARCHIVE="file://$T/arch/incomplete.tar.gz" CIDRE_PROFILS_URL="file://$T/nulle-part/" sh "$FP" maj json 2>"$T/err"); rc=$?
+verif "archive sans les fiches de son index : refusee, cache intact" "1 1 " "$rc $(grep -c 'archive incomplete' "$T/err") $(cmp "$CIDRE_PROFILS_BASE/1903340.toml" "$R/profils/1903340.toml" 2>&1)"
+# fiche provisoire : un jeu installe sans fiche
+mkdir -p "$T/pdb"
+printf '{\n  "bestReportedTier": "platinum",\n  "confidence": "good",\n  "score": 0.666,\n  "tier": "gold",\n  "total": 42,\n  "trendingTier": "silver"\n}\n' >"$T/pdb/777001.json"
+printf '{"response":{"store_items":[{"item_type":0,"id":777001,"success":1,"visible":true,"name":"Jeu \\"Essai\\" \\u2122 \\\\ fin","appid":777001,"type":0,"platforms":{"windows":true,"vr_support":{},"steam_deck_compat_category":3},"best_purchase_option":{"purchase_option_name":"Autre nom"}}]}}' >"$T/magasin.json"
+prov() { CIDRE_PROTONDB_URL="file://$T/pdb/" CIDRE_STEAM_MAGASIN_URL="file://$T/magasin.json" sh "$FP" provisoire "$@"; }
+verif "provisoire : ecrite" "$CIDRE_PROFILS_PROVISOIRES/777001.toml" "$(prov 777001)"
+verif "provisoire : chemin" "$CIDRE_PROFILS_PROVISOIRES/777001.toml" "$(sh "$FP" chemin 777001)"
+j=$(sh "$FP" json 777001)
+verif "provisoire : json jeu" '"jeu":{"appid":777001,"nom":"Jeu \"Essai\"  \\ fin","plateformes_steam":"windows","provisoire":true}' "$(printf '%s' "$j" | grep -o '"jeu":{[^}]*}')"
+verif "provisoire : json protondb" '"protondb":{"palier":"gold","tendance":"silver","meilleur_palier":"platinum","confiance":"good","rapports":42,"score":67,"source":"protondb"' "$(printf '%s' "$j" | grep -o '"protondb":{[^}]*"source":"protondb"')"
+verif "provisoire : json origine, compat non teste" '"etat":"non-teste" "origine":"provisoire"' "$(printf '%s' "$j" | grep -o '"etat":"non-teste"' | head -1) $(printf '%s' "$j" | grep -o '"origine":"[a-z]*"')"
+verif "provisoire : TOML relu par l'analyseur" "gold" "$(sh "$FP" toml "$CIDRE_PROFILS_PROVISOIRES/777001.toml" | awk -F'\t' '$1 == "compat.protondb" && $2 == "palier" { print $4 }')"
+verif "provisoire : plat (options) sans surprise" 'etat = "non-teste"' "$(sh "$FP" plat 777001)"
+verif "provisoire : jeu deja dans la base, rien d ecrit" "0 " "$(prov 1903340 >/dev/null; echo $?) $(ls "$CIDRE_PROFILS_PROVISOIRES" | grep 1903340)"
+verif "provisoire : jeu inconnu de ProtonDB, code 3, rien d ecrit" "3 " "$(prov 777002 2>/dev/null; echo $?) $(ls "$CIDRE_PROFILS_PROVISOIRES" | grep 777002)"
+verif "provisoire : magasin muet, fiche quand meme (sans nom)" "0 " "$(CIDRE_PROTONDB_URL="file://$T/pdb/" CIDRE_STEAM_MAGASIN_URL="file://$T/nulle-part.json" sh "$FP" provisoire 777003 >/dev/null 2>&1; cp "$T/pdb/777001.json" "$T/pdb/777003.json"; CIDRE_PROTONDB_URL="file://$T/pdb/" CIDRE_STEAM_MAGASIN_URL="file://$T/nulle-part.json" sh "$FP" provisoire 777003 >/dev/null; echo $?) $(sh "$FP" json 777003 | grep -o '"nom":"[^"]*"')"
+verif "provisoire : appid douteux refuse" "2" "$(prov '../x' 2>/dev/null; echo $?)"
+cp "$R/profils/1903340.toml" "$CIDRE_PROFILS_PROVISOIRES/1903340.toml"
+CIDRE_PROFILS_ARCHIVE="file://$T/arch/base.tar.gz" sh "$FP" maj >/dev/null
+verif "archive : une provisoire que la base couvre s'en va, les autres restent" "777001.toml 777003.toml" "$(ls "$CIDRE_PROFILS_PROVISOIRES" | tr '\n' ' ' | sed 's/ $//')"
+rm -rf "$CIDRE_PROFILS_PROVISOIRES"
 
 echo "== 6. variantes par machine"
 M="$R/tests/machine.sh"; FP="$R/tests/fiche_profil.sh"

@@ -193,8 +193,9 @@ class Toile:
             json.dump(obj, f, ensure_ascii=False, indent=1)
         os.replace(tmp, p)
 
-    def get(self, url, cle, binaire=False):
-        """Rend {'date', 'statut', 'corps'} ; corps = JSON decode ou texte."""
+    def get(self, url, cle, binaire=False, pause=None):
+        """Rend {'date', 'statut', 'corps'} ; corps = JSON decode ou texte.
+        `pause` remplace PAUSE pour cette requete (chargements en lot du catalogue)."""
         if not binaire:
             vu = self.lire_cache(cle)
             if vu is not None:
@@ -202,11 +203,12 @@ class Toile:
         if self.sans_reseau:
             return {"date": aujourdhui(), "statut": 0, "corps": None, "hors_ligne": True}
         hote = urllib.parse.urlsplit(url).netloc
-        attente = PAUSE - (time.monotonic() - self.dernier.get(hote, 0))
+        attente = (PAUSE if pause is None else pause) - (time.monotonic() - self.dernier.get(hote, 0))
         if attente > 0:
             time.sleep(attente)
         statut, corps = 0, None
-        for essai in range(4):
+        essais_429 = 0
+        for essai in range(4 + 6):  # 4 essais, et jusqu'a 6 de plus si l'hote dit d'attendre (429)
             req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/json, text/plain, */*"})
             try:
                 with urllib.request.urlopen(req, timeout=60) as r:
@@ -215,13 +217,22 @@ class Toile:
                 break
             except urllib.error.HTTPError as e:
                 statut, brut = e.code, b""
-                if statut in (429, 500, 502, 503, 504) and essai < 3:
-                    time.sleep(2 * (essai + 1) + (5 if statut == 429 else 0))
+                if statut == 429 and essais_429 < 6:
+                    # Cloudflare (PCGW, AGW) : on attend ce qu'il demande (Retry-After), au moins 15 s
+                    essais_429 += 1
+                    try:
+                        attendre = int(e.headers.get("Retry-After") or 0)
+                    except ValueError:
+                        attendre = 0
+                    time.sleep(max(15, min(attendre, 300)) + 1)
+                    continue
+                if statut in (500, 502, 503, 504) and essai - essais_429 < 3:
+                    time.sleep(2 * (essai - essais_429 + 1))
                     continue
                 break
             except (urllib.error.URLError, TimeoutError, OSError) as e:
                 statut, brut = -1, str(e).encode()
-                if essai < 3:
+                if essai - essais_429 < 3:
                     time.sleep(2 * (essai + 1))
                     continue
         self.dernier[hote] = time.monotonic()
@@ -751,12 +762,16 @@ def steam_appinfo_decouper(sortie):
     return blocs
 
 
-def steam_appinfo_charger(toile, appids, steamcmd=None):
+def steam_appinfo_charger(toile, appids, steamcmd=None, maximum=None):
     """Met en cache (steam/appinfo/<appid>.json) ce que Steam publie des jeux
     qui n'y sont pas encore. On ne garde que ce qui sert : la section `ufs`, le
     nom, les plateformes. Un jeu que Steam ne montre pas sans compte est note
     (statut 403) et n'ecrit rien dans la fiche."""
     manquants = [a for a in appids if str(a).isdigit() and (toile.refresh or _steam_appinfo(toile, a) is None)]
+    if maximum is not None and len(manquants) > maximum:
+        # catalogue : ~0,5 s par jeu ; le reste viendra aux passages suivants (cache garde)
+        dire(f"Steam Cloud : {len(manquants)} jeux sans configuration connue, {maximum} demandes cette fois")
+        manquants = manquants[:maximum]
     if not manquants or toile.sans_reseau:
         return 0
     scmd = steamcmd_trouver(steamcmd)
@@ -992,34 +1007,36 @@ def importer_steam_cloud(fiche, appid, toile):
 
 
 # ------------------------------------------------------------------ ProtonDB
-def protondb_resume(toile, appid):
-    r = toile.get(PROTONDB_SUMMARY.format(appid=appid), f"protondb/resumes/{appid}.json")
+def protondb_resume(toile, appid, reseau=True):
+    """reseau=False (catalogue) : le cache seul ; protondb_resumes_charger,
+    borne et poli, est seul a demander a ProtonDB."""
+    if not reseau:
+        r = toile.lire_cache(f"protondb/resumes/{appid}.json") or {"date": None, "statut": 0, "corps": None}
+    else:
+        r = toile.get(PROTONDB_SUMMARY.format(appid=appid), f"protondb/resumes/{appid}.json")
     if r["statut"] != 200 or not isinstance(r["corps"], dict):
         return None, r["date"]
     return r["corps"], r["date"]
 
 
-def protondb_export_indexer(toile, appids):
-    """L'export public des rapports (bdefore/protondb-data, tar.gz mensuel de
-    ~70 Mo) est telecharge une fois, puis reduit a un index par appid :
-    lanceur, options de lancement, anti-triche signale, verdicts recents.
-    L'index est complete pour les appids qui n'y sont pas encore (l'archive en
-    cache suffit, meme hors reseau). Rend (dossier de l'index, date de l'export)."""
+_MOIS = {m: i for i, m in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), 1)}
+
+
+def _cle_export(n):
+    m = re.match(r"reports_([a-z]{3})(\d+)_(\d{4})\.tar\.gz$", n)
+    return (int(m.group(3)), _MOIS.get(m.group(1), 0), int(m.group(2))) if m else (0, 0, 0)
+
+
+def protondb_export_date(nom):
+    return dt.date(*_cle_export(nom)).isoformat()
+
+
+def protondb_export_archive(toile):
+    """Le nom du dernier export mensuel en cache (protondb/export/), telecharge
+    s'il n'y en a pas (ou sous --refresh, s'il y en a un plus recent) ; None sinon."""
     dossier = os.path.join(toile.cache, "protondb", "export")
     os.makedirs(dossier, exist_ok=True)
-    marque = os.path.join(dossier, "index-fait.json")
-    index_dir = os.path.join(dossier, "index")
-    etat = json.load(open(marque)) if os.path.exists(marque) else None
-    if etat and not isinstance(etat.get("appids"), list):
-        etat["appids"] = []  # ancien marqueur (compteur) : on recompte
-    voulus = set(map(str, appids))
-    if etat and not toile.refresh and voulus <= set(etat.get("appids", [])):
-        return index_dir, etat["date"]
-    mois = {m: i for i, m in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), 1)}
-
-    def cle(n):
-        m = re.match(r"reports_([a-z]{3})(\d+)_(\d{4})\.tar\.gz", n)
-        return (int(m.group(3)), mois.get(m.group(1), 0), int(m.group(2))) if m else (0, 0, 0)
+    cle = _cle_export
     locaux = [n for n in os.listdir(dossier) if cle(n) != (0, 0, 0)]
     nom = max(locaux, key=cle) if locaux else None
     if (not nom or toile.refresh) and not toile.sans_reseau:
@@ -1039,6 +1056,52 @@ def protondb_export_indexer(toile, appids):
                     dire("ProtonDB : export indisponible (", r["statut"], ")")
         else:
             dire("ProtonDB : liste des exports indisponible")
+    return nom
+
+
+def protondb_export_titres(toile):
+    """Tous les jeux notes dans l'export ProtonDB : {appid: titre du rapport le
+    plus recent}, la date de l'export, et {appid: nombre de rapports}. C'est la
+    liste du catalogue."""
+    nom = protondb_export_archive(toile)
+    if not nom:
+        return {}, None, {}
+    with tarfile.open(os.path.join(toile.cache, "protondb", "export", nom), "r:gz") as t:
+        membre = next(m for m in t.getmembers() if m.name.endswith(".json"))
+        rapports = json.load(t.extractfile(membre))
+    titres, quand, comptes = {}, {}, collections.Counter()
+    for x in rapports:
+        try:
+            a = str(x["app"]["steam"]["appId"])
+        except (KeyError, TypeError):
+            continue
+        if not a.isdigit():
+            continue
+        ts = x.get("timestamp") or 0
+        comptes[a] += 1
+        if a not in titres or ts >= quand[a]:
+            titres[a] = (x["app"].get("title") or "").strip()
+            quand[a] = ts
+    return titres, protondb_export_date(nom), dict(comptes)
+
+
+def protondb_export_indexer(toile, appids):
+    """L'export public des rapports (bdefore/protondb-data, tar.gz mensuel de
+    ~70 Mo) est telecharge une fois, puis reduit a un index par appid :
+    lanceur, options de lancement, anti-triche signale, verdicts recents.
+    L'index est complete pour les appids qui n'y sont pas encore (l'archive en
+    cache suffit, meme hors reseau). Rend (dossier de l'index, date de l'export)."""
+    dossier = os.path.join(toile.cache, "protondb", "export")
+    os.makedirs(dossier, exist_ok=True)
+    marque = os.path.join(dossier, "index-fait.json")
+    index_dir = os.path.join(dossier, "index")
+    etat = json.load(open(marque)) if os.path.exists(marque) else None
+    if etat and not isinstance(etat.get("appids"), list):
+        etat["appids"] = []  # ancien marqueur (compteur) : on recompte
+    voulus = set(map(str, appids))
+    if etat and not toile.refresh and voulus <= set(etat.get("appids", [])):
+        return index_dir, etat["date"]
+    nom = protondb_export_archive(toile)
     if not nom:
         dire("ProtonDB : pas d'export en cache, on continue sans")
         return (index_dir if os.path.isdir(index_dir) else None), (etat or {}).get("date")
@@ -1061,7 +1124,7 @@ def protondb_export_indexer(toile, appids):
     for a in manquants:
         with open(os.path.join(index_dir, f"{a}.json"), "w", encoding="utf-8") as f:
             json.dump(_indexer_rapports(par_app.get(a, [])), f, ensure_ascii=False, indent=1)
-    date = dt.date(*cle(nom)).isoformat()
+    date = protondb_export_date(nom)
     with open(marque + ".tmp", "w") as f:
         json.dump({"date": date, "export": nom, "appids": sorted(deja | voulus)}, f)
     os.replace(marque + ".tmp", marque)
@@ -1125,7 +1188,7 @@ def protondb_index(index_dir, appid):
 # ------------------------------------------------------------ PCGamingWiki
 def wiki_page(toile, api, prefixe, titre):
     """Wikitexte d'une page (API MediaWiki, pas index.php : Cloudflare)."""
-    cle = f"{prefixe}/pages/{urllib.parse.quote(titre, safe='')}.json"
+    cle = _cle_page(prefixe, titre)
     url = api + "?" + urllib.parse.urlencode({
         "action": "query", "prop": "revisions", "rvprop": "content|timestamp",
         "rvslots": "main", "titles": titre, "redirects": 1,
@@ -1164,11 +1227,15 @@ def infobox_appids(texte):
     return principal, cotes
 
 
-def trouver_page(toile, api, prefixe, appid, nom_steam):
-    """Page du jeu : par appid dans l'infobox, sinon par titre Steam."""
-    candidats = wiki_chercher_appid(toile, api, prefixe, appid)
-    if nom_steam:
-        candidats = candidats + [nom_steam, re.sub(r"[®™©]", "", nom_steam).strip()]
+def trouver_page(toile, api, prefixe, appid, nom_steam, carte=None):
+    """Page du jeu : par appid dans l'infobox, sinon par titre Steam. Avec une
+    carte (catalogue : wiki_carte_steam), seulement les pages qu'elle donne."""
+    if carte is not None:
+        candidats = list(carte.get(str(appid), []))
+    else:
+        candidats = wiki_chercher_appid(toile, api, prefixe, appid)
+        if nom_steam:
+            candidats = candidats + [nom_steam, re.sub(r"[®™©]", "", nom_steam).strip()]
     vus = set()
     repli = None
     for t in candidats:
@@ -1699,6 +1766,246 @@ def importer_crossover(fiche, appid, nom, crossover, bilan):
             "import": f"bouteille {gabarit} (32 bits)", "source_import": "crossover"})
 
 
+# ------------------------------------------------- catalogue (chargements en lot)
+# `--catalogue-protondb` : tous les jeux notes sur ProtonDB, pas seulement la
+# bibliotheque. Une requete par jeu et par source (recherche dans les wikis
+# comprise) prendrait une journee : on charge donc en lot, dans le meme cache que
+# les fonctions unitaires, qui le relisent ensuite sans rien redemander.
+STEAM_MAGASIN = "https://api.steampowered.com/IStoreBrowseService/GetItems/v1?"
+MAGASIN_LOT = 100
+WIKI_LOT = 50          # pages par requete (limite de l'API MediaWiki hors robot)
+# ProtonDB coupe l'acces (plus aucune connexion) a qui le presse : constate le
+# 2026-10-15 a ~12 requetes/s, coupure apres ~12 500 resumes. Un seul fil, 2 par seconde.
+RESUMES_PAUSE = 0.5
+RESUMES_ECHECS_MAX = 5  # echecs de suite (coupure, 429, 5xx) : on s'arrete, on ne s'acharne pas
+WIKI_PAUSE = 1.5       # PCGW et AGW sont derriere Cloudflare, qui coupe vite (429, Retry-After)
+
+
+def steam_magasin_charger(toile, appids):
+    """Nom, type et plateformes que le magasin Steam publie, sans compte, par
+    lots de 100 (IStoreBrowseService/GetItems). Cache steam/magasin/<appid>.json ;
+    un jeu retire du magasin y est note statut 404. Rend {appid: entree}."""
+    vus, manquants = {}, []
+    for a in appids:
+        e = None if toile.refresh else toile.lire_cache(f"steam/magasin/{a}.json")
+        if e is None:
+            manquants.append(a)
+        else:
+            vus[a] = e
+    if toile.sans_reseau:
+        return vus
+    for debut in range(0, len(manquants), MAGASIN_LOT):
+        lot = manquants[debut:debut + MAGASIN_LOT]
+        demande = {"ids": [{"appid": int(a)} for a in lot],
+                   "context": {"language": "english", "country_code": "US"},
+                   "data_request": {"include_platforms": True}}
+        url = STEAM_MAGASIN + urllib.parse.urlencode({"input_json": json.dumps(demande, separators=(",", ":"))})
+        r = toile.get(url, f"steam/magasin-lots/{lot[0]}-{len(lot)}.json", binaire=True, pause=0.5)
+        if r["statut"] != 200:
+            dire(f"magasin Steam : lot {debut // MAGASIN_LOT + 1} en echec ({r['statut']})")
+            continue
+        try:
+            items = json.loads(r["corps"]).get("response", {}).get("store_items", [])
+        except ValueError:
+            continue
+        recus = {}
+        for it in items:
+            a = str(it.get("appid") or it.get("id") or "")
+            if not a:
+                continue
+            if it.get("success") != 1:
+                recus[a] = {"date": aujourdhui(), "statut": 404, "corps": None}
+                continue
+            p = it.get("platforms") or {}
+            pf = [n for n, k in (("windows", "windows"), ("macos", "mac"), ("linux", "steamos_linux")) if p.get(k)]
+            recus[a] = {"date": aujourdhui(), "statut": 200,
+                        "corps": {"nom": it.get("name"), "type": it.get("type"), "plateformes": pf}}
+        for a in lot:
+            e = recus.get(a, {"date": aujourdhui(), "statut": 404, "corps": None})
+            toile.ecrire_cache(f"steam/magasin/{a}.json", e)
+            vus[a] = e
+        if (debut // MAGASIN_LOT) % 50 == 49:
+            dire(f"magasin Steam : {min(debut + MAGASIN_LOT, len(manquants))}/{len(manquants)}")
+    return vus
+
+
+def protondb_resumes_charger(toile, appids, maximum=None, priorite=None):
+    """Les resumes ProtonDB (palier, confiance...) des jeux qui n'en ont pas
+    encore en cache, un par un, a 2 requetes/s ; protondb_resume les relit
+    ensuite. `priorite` (appid -> nombre de rapports dans l'export) range les
+    plus rapportes d'abord, `maximum` borne le passage : le reste vient aux
+    suivants (le cache se garde d'un mois a l'autre). Apres RESUMES_ECHECS_MAX
+    echecs de suite, on s'arrete : ProtonDB ne veut plus de nous pour un temps."""
+    manquants = [a for a in appids if toile.refresh or toile.lire_cache(f"protondb/resumes/{a}.json") is None]
+    if priorite:
+        manquants.sort(key=lambda a: -priorite.get(a, 0))
+    if maximum is not None and len(manquants) > maximum:
+        dire(f"ProtonDB : {len(manquants)} resumes manquants, {maximum} demandes cette fois")
+        manquants = manquants[:maximum]
+    if not manquants or toile.sans_reseau:
+        return 0
+    faits, echecs = 0, 0
+    for i, a in enumerate(manquants, 1):
+        r = toile.get(PROTONDB_SUMMARY.format(appid=a), f"protondb/resumes/{a}.json", pause=RESUMES_PAUSE)
+        if r["statut"] in (200, 404):
+            faits, echecs = faits + 1, 0
+        else:
+            echecs += 1
+            if echecs >= RESUMES_ECHECS_MAX:
+                dire(f"ProtonDB : {echecs} echecs de suite ({r['statut']}) : arret apres {faits} resumes ; "
+                     "les fiches se font avec l'export seul, le reste viendra au prochain passage")
+                break
+        if i % 1000 == 0 or i == len(manquants):
+            dire(f"ProtonDB : {i}/{len(manquants)} resumes")
+    return faits
+
+
+# Les liens que l'infobox d'un jeu pose vers sa page Steam : le magasin sur PCGW,
+# SteamDB sur AGW (qui ne lie le magasin que par endroits).
+MOTIFS_STEAM = {"pcgw": ("store.steampowered.com/app/",),
+                "agw": ("store.steampowered.com/app/", "steamdb.info/app/")}
+
+
+def wiki_carte_steam(toile, api, prefixe):
+    """{appid: [titres]} : les pages de l'espace principal qui lient la page
+    Steam d'un jeu (list=exturlusage, 500 liens par requete). C'est l'infobox
+    qui pose ces liens ; trouver_page verifie ensuite l'appid dans l'infobox
+    (une liste de jeux lie aussi des pages Steam). Cache {prefixe}/carte-steam.json."""
+    cle = f"{prefixe}/carte-steam.json"
+    vu = toile.lire_cache(cle)
+    if vu is not None or toile.sans_reseau:
+        return {a: t for a, t in ((vu or {}).get("corps") or {}).items()}
+    # une carte interrompue (429 a repetition, coupure) reprend ou elle en etait
+    partiel = toile.lire_cache(cle + ".partiel") or {}
+    carte = collections.defaultdict(list, partiel.get("carte") or {})
+    etape = partiel.get("etape") or {}
+    requetes = 0
+    passes = [(m, p) for m in MOTIFS_STEAM.get(prefixe, MOTIFS_STEAM["pcgw"]) for p in ("https", "http")]
+    for i, (motif, proto) in enumerate(passes):
+        if i < etape.get("i", 0):
+            continue
+        suite = etape.get("suite", {}) if i == etape.get("i", 0) else {}
+        while True:
+            q = {"action": "query", "list": "exturlusage", "euquery": motif,
+                 "euprotocol": proto, "eunamespace": 0, "eulimit": 500, "format": "json"}
+            q.update(suite)
+            r = toile.get(api + "?" + urllib.parse.urlencode(q), "", binaire=True, pause=WIKI_PAUSE)
+            if r["statut"] != 200:
+                toile.ecrire_cache(cle + ".partiel", {"etape": {"i": i, "suite": suite}, "carte": dict(carte)})
+                dire(f"{prefixe} : carte Steam interrompue ({r['statut']}) apres {len(carte)} appid(s) : "
+                     "relancer reprendra ici ; on continue sans ce wiki pour les autres")
+                return dict(carte)
+            corps = json.loads(r["corps"])
+            for x in corps.get("query", {}).get("exturlusage", []):
+                m = re.search(r"(?:store\.steampowered\.com|steamdb\.info)/app/(\d+)", x.get("url", ""))
+                if m and x.get("title") and x["title"] not in carte[m.group(1)]:
+                    carte[m.group(1)].append(x["title"])
+            requetes += 1
+            if requetes % 50 == 0:
+                dire(f"{prefixe} : carte Steam, {len(carte)} appid(s) apres {requetes} requetes")
+                toile.ecrire_cache(cle + ".partiel", {"etape": {"i": i, "suite": corps.get("continue", {})}, "carte": dict(carte)})
+            if "continue" not in corps:
+                break
+            suite = corps["continue"]
+    toile.ecrire_cache(cle, {"date": aujourdhui(), "statut": 200, "corps": dict(carte)})
+    try:
+        os.remove(toile.chemin(cle + ".partiel"))
+    except OSError:
+        pass
+    dire(f"{prefixe} : {len(carte)} appid(s) lies depuis les pages du wiki")
+    return dict(carte)
+
+
+def _cle_page(prefixe, titre):
+    """Le fichier du cache d'une page : son titre, ou une empreinte du titre s'il
+    est trop long pour un nom de fichier (255 octets sur APFS)."""
+    nom = urllib.parse.quote(titre, safe='')
+    if len(nom) > 200:
+        import hashlib
+        nom = "sha1-" + hashlib.sha1(titre.encode("utf-8")).hexdigest()
+    return f"{prefixe}/pages/{nom}.json"
+
+
+def wiki_pages_charger(toile, api, prefixe, titres):
+    """Le wikitexte des pages par lots de 50, range dans le cache sous la cle
+    qu'emploie wiki_page pour une page seule (meme forme de reponse)."""
+    manquants = [t for t in dict.fromkeys(titres)
+                 if toile.refresh or toile.lire_cache(_cle_page(prefixe, t)) is None]
+    if not manquants or toile.sans_reseau:
+        return 0
+    faits, reste, tours = 0, list(manquants), 0
+    while reste and tours < 5:
+        tours += 1
+        suivants = []
+        for debut in range(0, len(reste), WIKI_LOT):
+            lot = reste[debut:debut + WIKI_LOT]
+            q = {"action": "query", "prop": "revisions", "rvprop": "content|timestamp", "rvslots": "main",
+                 "titles": "|".join(lot), "format": "json", "formatversion": 2}
+            r = toile.get(api + "?" + urllib.parse.urlencode(q), "", binaire=True, pause=WIKI_PAUSE)
+            if r["statut"] != 200:
+                suivants += lot
+                continue
+            try:
+                corps = json.loads(r["corps"])
+            except ValueError:
+                suivants += lot
+                continue
+            norm = {n["to"]: n["from"] for n in corps.get("query", {}).get("normalized", [])}
+            recues = set()
+            for p in corps.get("query", {}).get("pages", []):
+                t = p.get("title")
+                demande = norm.get(t, t)
+                if demande not in lot:
+                    continue
+                if not p.get("missing") and not p.get("revisions"):
+                    continue  # reponse tronquee (trop grosse) : au tour suivant
+                toile.ecrire_cache(_cle_page(prefixe, demande),
+                                   {"date": aujourdhui(), "statut": 200, "corps": {"query": {"pages": [p]}}})
+                recues.add(demande)
+                faits += 1
+            suivants += [t for t in lot if t not in recues]
+            if (debut // WIKI_LOT) % 40 == 39:
+                dire(f"{prefixe} : {faits}/{len(manquants)} pages")
+        reste = suivants
+    if reste:
+        dire(f"{prefixe} : {len(reste)} page(s) non recues")
+    return faits
+
+
+def catalogue_protondb(toile, profils, garder_mac=False):
+    """Les jeux du catalogue : tout appid note dans l'export ProtonDB, sans les
+    jeux qui ont une version macOS native (sauf --avec-mac), plus les fiches
+    deja ecrites. Rend (appids tries, {appid: {nom, plateformes, source_nom}}, bilan)."""
+    titres, date, comptes = protondb_export_titres(toile)
+    if not titres:
+        return [], {}, {}
+    magasin = steam_magasin_charger(toile, sorted(titres, key=int))
+    existantes = {n[:-5] for n in os.listdir(profils) if n.endswith(".toml") and n != "index.toml"} if os.path.isdir(profils) else set()
+    par_appid, bilan = {}, collections.Counter()
+    for a in sorted(set(titres) | {x for x in existantes if x.isdigit()}, key=int):
+        e = magasin.get(a) or {}
+        c = e.get("corps") if e.get("statut") == 200 else None
+        pf = (c or {}).get("plateformes") or []
+        if c is None:
+            bilan["hors_magasin"] += 1
+        elif "macos" in pf:
+            bilan["mac_natif"] += 1
+            if not garder_mac and a not in existantes:
+                continue
+        elif "windows" not in pf:
+            bilan["sans_windows"] += 1
+            if a not in existantes:
+                continue
+        else:
+            bilan["windows_seulement"] += 1
+        nom = (c or {}).get("nom") or titres.get(a) or None
+        par_appid[a] = {"nom": nom, "plateformes": pf or None, "rapports": comptes.get(a, 0),
+                        "source_nom": "steam" if (c or {}).get("nom") else "protondb"}
+    bilan["export"] = len(titres)
+    bilan["date_export"] = date
+    return list(par_appid), par_appid, dict(bilan)
+
+
 # ------------------------------------------------------------------- import
 def _compteur(d, n=5):
     """{'steam': 97, 'bottles': 2} -> "steam:97 bottles:2" (le README interdit les tables en ligne)."""
@@ -1706,7 +2013,11 @@ def _compteur(d, n=5):
 
 
 def importer(appid, nom_steam, plateformes, toile, index_dir, date_export, profils, aujourd,
-             sources=SOURCES, crossover=None, bilan_crossover=None, bilan_steam=None):
+             sources=SOURCES, crossover=None, bilan_crossover=None, bilan_steam=None,
+             cartes=None, source_nom="steam"):
+    """cartes : {"pcgw": {...}, "agw": {...}} en mode catalogue (aucune recherche
+    par jeu) ; source_nom : "protondb" quand le nom vient de l'export (jeu retire
+    du magasin Steam)."""
     chemin = os.path.join(profils, f"{appid}.toml")
     doc = lire_toml(chemin) if os.path.exists(chemin) else {}
     fiche = Fiche(doc)
@@ -1714,8 +2025,8 @@ def importer(appid, nom_steam, plateformes, toile, index_dir, date_export, profi
     nom_connu = nom_steam or jeu.get("nom")  # sans bibliotheque : le nom deja dans la fiche
     if "appid" not in jeu:
         fiche.ecrire("jeu", "appid", int(appid) if str(appid).isdigit() else str(appid))
-    if nom_steam and "steam" in sources:
-        fiche.poser("jeu", "nom", nom_steam, "steam", aujourd, appid)
+    if nom_steam and ("steam" in sources or source_nom != "steam"):
+        fiche.poser("jeu", "nom", nom_steam, source_nom, aujourd, appid)
     if plateformes and "steam" in sources:
         fiche.poser("jeu", "plateformes_steam", " ".join(sorted(plateformes)), "steam", aujourd, appid)
     if "steam" in sources:
@@ -1725,7 +2036,7 @@ def importer(appid, nom_steam, plateformes, toile, index_dir, date_export, profi
     signaux = {}
 
     # --- ProtonDB : resume public (palier) + export des rapports (index local)
-    resume, date_r = protondb_resume(toile, appid) if "protondb" in sources else (None, None)
+    resume, date_r = protondb_resume(toile, appid, reseau=not cartes) if "protondb" in sources else (None, None)
     if resume:
         for k_src, k in (("tier", "palier"), ("trendingTier", "tendance"), ("bestReportedTier", "meilleur_palier"),
                          ("confidence", "confiance"), ("total", "rapports")):
@@ -1759,7 +2070,8 @@ def importer(appid, nom_steam, plateformes, toile, index_dir, date_export, profi
         fiche.poser("compat.protondb", "rapports_export", idx["total"], "protondb", d, appid)
 
     # --- PCGamingWiki : infobox, modele API, Middleware, Game data, Availability
-    titre, texte, date_p, comment = (trouver_page(toile, PCGW_API, "pcgw", appid, nom_steam)
+    titre, texte, date_p, comment = (trouver_page(toile, PCGW_API, "pcgw", appid, nom_steam,
+                                                  cartes["pcgw"] if cartes else None)
                                      if "pcgamingwiki" in sources else (None, None, None, None))
     ex = {}
     if texte:
@@ -1778,15 +2090,17 @@ def importer(appid, nom_steam, plateformes, toile, index_dir, date_export, profi
 
     # --- AppleGamingWiki : meme titre que PCGW en general
     titres = [t for t in (titre, nom_steam, re.sub(r"[®™©]", "", nom_steam or "").strip()) if t]
+    if cartes:  # catalogue : seulement les pages qui lient le jeu (deja chargees)
+        titres = list(cartes["agw"].get(str(appid), []))
     titre_a, texte_a, date_a = None, None, None
     for t in dict.fromkeys(titres) if "applegamingwiki" in sources else ():
         titre_a, texte_a, date_a = wiki_page(toile, AGW_API, "agw", t)
         if texte_a:
             principal, _ = infobox_appids(texte_a)
-            if str(appid) in principal or not principal:
+            if str(appid) in principal or (not principal and not cartes):
                 break
         titre_a, texte_a = None, None
-    if not texte_a and "applegamingwiki" in sources:
+    if not texte_a and "applegamingwiki" in sources and not cartes:
         for t in wiki_chercher_appid(toile, AGW_API, "agw", appid)[:2]:
             titre_a, texte_a, date_a = wiki_page(toile, AGW_API, "agw", t)
             if texte_a and str(appid) in infobox_appids(texte_a)[0]:
@@ -1903,8 +2217,21 @@ def main(argv=None):
     ap.add_argument("--sans-export", action="store_true", help="ne pas telecharger l'export ProtonDB (resumes seulement)")
     ap.add_argument("--neuves-seulement", action="store_true", help="ne pas toucher aux fiches qui existent deja (ecrites a la main)")
     ap.add_argument("--windows-seulement", action="store_true", help="ignorer les jeux qui ont une version macOS native")
-    ap.add_argument("--sources", default=",".join(SOURCES),
-                    help="sources a interroger, separees par des virgules (defaut : toutes) : " + ", ".join(SOURCES))
+    ap.add_argument("--sources", default=None,
+                    help="sources a interroger, separees par des virgules (defaut : toutes ; sans crossover sous "
+                         "--catalogue-protondb) : " + ", ".join(SOURCES))
+    ap.add_argument("--catalogue-protondb", action="store_true",
+                    help="sans appid : tous les jeux notes dans l'export ProtonDB qui n'ont pas de version macOS "
+                         "native (et les fiches deja ecrites), charges en lot ; les wikis par leurs liens vers Steam")
+    ap.add_argument("--limite", type=int, help="--catalogue-protondb : seulement les N premiers jeux (essai)")
+    ap.add_argument("--avec-mac", action="store_true", help="--catalogue-protondb : garder aussi les jeux a version macOS native")
+    ap.add_argument("--resumes-max", type=int,
+                    help="--catalogue-protondb : demander a ProtonDB au plus N resumes manquants (2 par seconde ; "
+                         "les plus rapportes d'abord)")
+    ap.add_argument("--steam-cloud-max", type=int,
+                    help="ne demander a SteamCMD la configuration Steam Cloud que de N jeux au plus (~0,5 s par jeu)")
+    ap.add_argument("--sans-steam-cloud", action="store_true",
+                    help="ne pas demander a SteamCMD la configuration Steam Cloud des jeux qui ne l'ont pas encore")
     ap.add_argument("--sans-crossover-windows-version", action="store_true",
                     help="ne pas poser [cidre] windows_version depuis les recettes CrossOver (pose par defaut : le "
                          "lanceur regle la version a chaque lancement, par jeu) ; les fiches concernees sortent "
@@ -1919,15 +2246,27 @@ def main(argv=None):
     a = ap.parse_args(argv)
 
     aujourd = a.date or aujourdhui()
+    if a.sources is None:
+        # Les recettes CrossOver ne vont qu'aux jeux de la bibliotheque (une part non
+        # substantielle de leur base, cf. en-tete) : jamais au catalogue entier.
+        a.sources = ",".join(x for x in SOURCES if not (a.catalogue_protondb and x == "crossover"))
     sources = tuple(x.strip() for x in a.sources.split(",") if x.strip())
     inconnues = [x for x in sources if x not in SOURCES]
     if inconnues:
         ap.error(f"source(s) inconnue(s) : {' '.join(inconnues)} (connues : {' '.join(SOURCES)})")
     toile = Toile(a.cache, refresh=a.refresh, sans_reseau=a.sans_reseau)
     existantes = a.fiches_existantes and not a.appids
-    biblio = bibliotheque_steam(a.bibliotheque) if ((not a.appids and not existantes) or a.bibliotheque) else []
+    catalogue = a.catalogue_protondb and not a.appids
+    biblio = bibliotheque_steam(a.bibliotheque) if ((not a.appids and not existantes and not catalogue) or a.bibliotheque) else []
     par_appid = {str(g["appid"]): g for g in biblio if g.get("appid")}
     appids = [str(x) for x in a.appids] if a.appids else list(par_appid)
+    cartes, bilan_catalogue = None, None
+    if catalogue:
+        appids, par_appid, bilan_catalogue = catalogue_protondb(toile, a.profils, a.avec_mac)
+        if a.limite:
+            appids = appids[:a.limite]
+        dire("catalogue ProtonDB : " + ", ".join(f"{k} {v}" for k, v in sorted(bilan_catalogue.items()))
+             + f" -> {len(appids)} jeu(x)")
     if existantes:
         appids = sorted((n[:-5] for n in os.listdir(a.profils) if n.endswith(".toml") and n != "index.toml"),
                         key=lambda x: (not x.isdigit(), int(x) if x.isdigit() else 0, x))
@@ -1952,15 +2291,28 @@ def main(argv=None):
     crossover = {"index": index_crossover, "date": date_crossover, "poser_windows_version": not a.sans_crossover_windows_version}
     bilan_crossover = bilan_crossover_vide()
     bilan_steam = {}
-    if "steam" in sources:
-        steam_appinfo_charger(toile, appids, a.steamcmd)
+    if "steam" in sources and not a.sans_steam_cloud:
+        steam_appinfo_charger(toile, appids, a.steamcmd, a.steam_cloud_max)
+    if catalogue:
+        if "protondb" in sources:
+            protondb_resumes_charger(toile, appids, a.resumes_max,
+                                     {k: v.get("rapports", 0) for k, v in par_appid.items()})
+        voulus = set(appids)
+        cartes = {"pcgw": {}, "agw": {}}
+        for src, prefixe, api in (("pcgamingwiki", "pcgw", PCGW_API), ("applegamingwiki", "agw", AGW_API)):
+            if src not in sources:
+                continue
+            carte = {k: v for k, v in wiki_carte_steam(toile, api, prefixe).items() if k in voulus}
+            cartes[prefixe] = carte
+            wiki_pages_charger(toile, api, prefixe, [t for ts in carte.values() for t in ts])
 
     ecrites, contradictions, erreurs = 0, [], []
     for i, appid in enumerate(appids, 1):
         g = par_appid.get(appid, {})
         try:
             mod, contra = importer(appid, g.get("nom"), g.get("plateformes"), toile, index_dir, date_export,
-                                   a.profils, aujourd, sources, crossover, bilan_crossover, bilan_steam)
+                                   a.profils, aujourd, sources, crossover, bilan_crossover, bilan_steam,
+                                   cartes, g.get("source_nom", "steam"))
         except Exception as e:  # une fiche cassee ne doit pas arreter les 1200 autres
             erreurs.append({"appid": appid, "erreur": f"{type(e).__name__}: {e}"})
             dire(f"[{i}/{len(appids)}] {appid} {g.get('nom', '')} : ERREUR {type(e).__name__}: {e}")
@@ -1972,6 +2324,7 @@ def main(argv=None):
     if a.index:
         generer_index(a.profils)
     rapport = {"date": aujourd, "appids": len(appids), "fiches_modifiees": ecrites,
+               **({"catalogue": bilan_catalogue} if bilan_catalogue else {}),
                "contradictions": contradictions, "erreurs": erreurs, "requetes": toile.requetes}
     if crossover["index"]:
         b = bilan_crossover

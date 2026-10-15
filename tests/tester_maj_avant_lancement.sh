@@ -56,6 +56,8 @@ mkdir -p "$F/publie" "$F/bin" "$T/home"
 export HOME="$T/home" CIDRE_DIR="$T/cidre" CIDRE_PROFILS="$T/perso.toml" CIDRE_PROFILS_BASE="$T/profils-base"
 export CIDRE_STEAMCMD="$F/steamcmd.sh" CIDRE_LANCEUR="$F/lanceur.sh" CIDRE_STEAM_USER=essai
 export CIDRE_MAJ_BUDGET=5
+# `cidre dl` ecrit en fond une fiche provisoire (ProtonDB) : pas de reseau ici
+export CIDRE_PROTONDB_URL="file://$T/nulle-part/"
 unset CIDRE_MAJ_AVANT_LANCEMENT CIDRE_MAJ_TTL CIDRE_MAJ_LIBRE_MIN CIDRE_ESSAI_LIBRE_KO CIDRE_MAJ_VALIDER 2>/dev/null
 # `open` (le client Steam) : un faux, devant le vrai
 printf '#!/bin/sh\necho "$*" >>"%s/ouvertures"\n' "$F" >"$F/bin/open"; chmod +x "$F/bin/open"
@@ -436,6 +438,14 @@ raz; sh "$C" dl 9040 </dev/null >/dev/null 2>&1
 raz; publie 9041 100; sortie=$(sh "$C" dl 9041 </dev/null 2>&1)
 verif "cidre dl d'un nouveau jeu : installe, etat faite" "100 faite" "$(build 9041) $(etat 9041 etat)"
 verif "nouveau jeu : cidre updates le voit sans attendre la fin du cache" "1" "$(sh "$C" updates | grep -c '^9041 *a jour$')"
+# un jeu sans fiche dans la base : `cidre dl` lui en ecrit une provisoire, en fond (ProtonDB factice)
+mkdir -p "$T/pdb" && printf '{"tier": "gold", "confidence": "strong", "score": 0.81, "total": 209, "trendingTier": "gold", "bestReportedTier": "platinum"}' >"$T/pdb/9043.json"
+raz; publie 9043 100
+CIDRE_PROTONDB_URL="file://$T/pdb/" CIDRE_STEAM_MAGASIN_URL="file://$T/nulle-part.json" sh "$C" dl 9043 </dev/null >/dev/null 2>&1
+n=0; while [ $n -lt 50 ] && [ ! -s "$CIDRE_DIR/profils-provisoires/9043.toml" ]; do sleep 0.1; n=$((n + 1)); done
+i=$(sh "$C" info 9043 --json 2>/dev/null)
+contient "cidre dl d'un jeu sans fiche : fiche provisoire, que cidre info --json rend" '"protondb":{"palier":"gold","tendance":"gold","meilleur_palier":"platinum","confiance":"strong","rapports":209,"score":81,' "$i"
+contient "fiche provisoire : marquee comme telle" '"origine":"provisoire"' "$i"
 raz; echo sans_session >"$F/mode"
 sortie=$(sh "$C" dl 9042 </dev/null 2>&1); rc=$?
 verif "cidre dl sans session : code 3, pas de dossier vide, pas d'etat" "3  " "$rc $(ls "$G" | grep 9042) $(ls "$M" | grep 9042)"

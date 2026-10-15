@@ -1,11 +1,14 @@
 # Base de profils par jeu
 
 Une fiche par jeu, `profils/<appid>.toml`, plus un index `profils/index.toml`.
-Les fiches vivent dans le dépôt, indépendamment des releases : Cidre les
-télécharge depuis la branche `main` (`cidre profils maj`) et les garde en cache
-dans `~/Library/Application Support/Cidre/profils-base/`. Sans réseau, la copie
-livrée dans le runtime (ce dossier, empaqueté par `tests/empaqueter_runtime.sh`)
-sert de repli.
+Les fiches écrites ou vérifiées à la main vivent dans le dépôt ; le catalogue
+entier (une fiche par jeu noté sur ProtonDB sans version macOS native, voir
+« Catalogue ») est généré chaque mois et publié en une archive. Cidre prend
+l'archive (`cidre profils maj`), sinon les fiches du dépôt une à une, et les
+garde en cache dans `~/Library/Application Support/Cidre/profils-base/`. Sans
+réseau, la copie livrée dans le runtime (ce dossier, empaqueté par
+`tests/empaqueter_runtime.sh`) sert de repli. Un jeu qu'on installe sans
+fiche en reçoit une provisoire (voir « Fiche provisoire »).
 
 Lecture : `tests/fiche_profil.sh` (analyse, accès, mise à jour), via
 `tests/profil_cidre.sh` (résolution des options de lancement), le lanceur
@@ -27,8 +30,8 @@ Clé par clé, du plus fort au plus faible :
 5. `outil-steam/profils.toml`, section `[defaut]` (les réglages généraux livrés).
 
 Une clé absente d'une couche est prise dans la suivante. Le cache téléchargé
-prime sur la copie livrée ; `cidre profils maj` le rafraîchit et retire du
-cache les fiches qui ne sont plus dans l'index.
+prime sur la copie livrée, qui prime sur une fiche provisoire ; `cidre profils
+maj` le rafraîchit et retire du cache les fiches qui ne sont plus dans l'index.
 
 ### Mise à jour avant le lancement (`maj_avant_lancement`)
 
@@ -569,14 +572,17 @@ options = "dx12=true sm66=true"
 ## Index
 
 `profils/index.toml` : une table `[<appid>]` par fiche, avec `nom`, `etat`,
-`date`. C'est lui que `cidre profils maj` télécharge d'abord pour savoir quelles
-fiches prendre. Il se régénère depuis les fiches :
+`date`, `empreinte`. Sans archive, c'est lui que `cidre profils maj` télécharge
+d'abord pour savoir quelles fiches prendre. Il se régénère depuis les fiches :
 
 ```sh
 sh tests/fiche_profil.sh generer-index > profils/index.toml
+sh tests/fiche_profil.sh generer-index build/catalogue > build/catalogue/index.toml   # un autre dossier
 ```
 
-`tests/tester_profils.sh` vérifie qu'il est à jour.
+`tests/tester_profils.sh` vérifie qu'il est à jour. Un index ne part jamais
+sans les fiches qu'il nomme : ni dans un commit, ni dans l'archive (`maj` la
+refuse si une fiche manque).
 
 ## Sauvegardes : Steam Cloud d'abord (`[compat.steam_cloud]`)
 
@@ -662,10 +668,10 @@ d'écrire (`tests/deviner_saves.sh`).
 ```sh
 cidre profils                 # la base (cache ou copie livrée) : appid, nom, état, date
 cidre profils --json
-cidre profils maj             # télécharge l'index puis les fiches depuis GitHub main
-cidre info <appid> --json     # ... "fiche": {"jeu":{}, "cidre":{}, "compat":{}, "reglages_jeu":[{fichier, format, section, valeurs}], "variantes":["si …"],
-                              #               "compat_reference":{}, "compat_machines":[{nom, si, voie, etat, …, applique}], "rapports": n}
-sh tests/fiche_profil.sh <commande> ...   # chemin, plat, json, reglages, compat, variantes, index, generer-index, maj
+cidre profils maj             # l'archive de la base (une requête), sinon l'index puis les fiches depuis GitHub main
+cidre info <appid> --json     # ... "fiche": {"jeu":{}, "cidre":{}, "compat":{}, "protondb":{}|null, "reglages_jeu":[{fichier, format, section, valeurs}], "variantes":["si …"],
+                              #               "compat_reference":{}, "compat_machines":[{nom, si, voie, etat, …, applique}], "origine": "cache|livree|provisoire", "rapports": n}
+sh tests/fiche_profil.sh <commande> ...   # chemin, plat, json, reglages, compat, variantes, index, generer-index, maj, provisoire
 sh tests/machine.sh [json [fait…] | si "<condition>"]   # les faits de la machine, une condition
 ```
 
@@ -674,10 +680,81 @@ qu'elle vaut sur cette machine (variantes fondues, compatibilité de ce Mac) ; `
 le fichier tel quel.
 
 Variables d'environnement : `CIDRE_PROFILS_BASE` (dossier du cache),
-`CIDRE_PROFILS_URL` (origine des téléchargements, par défaut
-`https://raw.githubusercontent.com/gtranche/cidre/main/profils/` ; un
-`file:///…/` sert aux tests), `CIDRE_PROFILS` (profil utilisateur),
-`CIDRE_MACHINE` (faits de la machine imposés, pour les tests et les essais).
+`CIDRE_PROFILS_ARCHIVE` (l'archive de la base, par défaut
+`https://github.com/gtranche/cidre/releases/download/profils-base/profils-base.tar.gz` ;
+vide = jamais d'archive), `CIDRE_PROFILS_URL` (origine des fiches une à une,
+par défaut `https://raw.githubusercontent.com/gtranche/cidre/main/profils/` ; un
+`file:///…/` sert aux tests), `CIDRE_PROFILS_PROVISOIRES` (dossier des fiches
+provisoires), `CIDRE_PROTONDB_URL` et `CIDRE_STEAM_MAGASIN_URL` (ce que
+`provisoire` interroge ; `file://` pour les tests), `CIDRE_PROFILS` (profil
+utilisateur), `CIDRE_MACHINE` (faits de la machine imposés, pour les tests et
+les essais).
+
+## Catalogue : tous les jeux notés sur ProtonDB
+
+`importer_profils.py --catalogue-protondb` prend pour liste de jeux l'export
+mensuel de ProtonDB (34 293 appids au 2026-10-01), demande au magasin Steam
+(sans compte, `IStoreBrowseService/GetItems`, par lots de 100) le nom et les
+plateformes de chacun, et garde ceux qui n'ont pas de version macOS native
+(25 306), ceux que le magasin ne montre plus (1 022) et les fiches déjà
+écrites : 26 818 fiches. Rien n'y est demandé jeu par jeu aux wikis : la page
+d'un jeu se trouve par les liens que son infobox pose vers Steam
+(`list=exturlusage`, 500 par requête : le magasin sur PCGamingWiki, 52 112
+appids ; SteamDB et le magasin sur AppleGamingWiki, 642), le wikitexte se
+charge par lots de 50 pages, et l'appid est vérifié dans l'infobox comme pour
+une fiche seule. Les résumés ProtonDB se prennent un par un, deux par seconde
+au plus, les jeux les plus rapportés d'abord : ProtonDB coupe tout accès à qui
+va plus vite (constaté le 2026-10-15 : plus aucune connexion après ~12 500
+résumés à ~12 par seconde), et le chargement s'arrête de lui-même après cinq
+échecs de suite. `--resumes-max N` borne un passage, comme `--steam-cloud-max N`
+la configuration Steam Cloud par SteamCMD (~0,5 s par jeu) ; le reste vient aux
+passages suivants, et une fiche sans résumé garde ce que dit l'export
+(`rapports_export`, `verdicts_recents`, lanceurs, anti-triche signalé). Les recettes
+CrossOver ne sont jamais demandées pour le catalogue (une part non
+substantielle de leur base seulement, voir plus bas) : celles des fiches du
+dépôt restent telles quelles.
+
+```sh
+cp -R profils build/catalogue
+python3 -I tests/outils/importer_profils.py --catalogue-protondb --profils build/catalogue \
+        --rapport build/rapport-catalogue.json            # --limite N pour un essai
+sh tests/fiche_profil.sh generer-index build/catalogue > build/catalogue/index.toml
+python3 -I tests/outils/verifier_catalogue.py profils build/catalogue   # rien d'écrit à la main n'a bougé
+```
+
+Le catalogue n'est pas commité (des dizaines de milliers de fichiers que chaque
+export ProtonDB change presque tous) : `.github/workflows/profils.yml` le
+régénère le 3 de chaque mois à partir des fiches du dépôt, vérifie que les
+valeurs sans provenance, `cidre-test`, `utilisateur` ou `crossover` n'ont pas
+bougé (`verifier_catalogue.py`), et publie `profils-base.tar.gz` (un tar.gz à
+plat : `index.toml` et les fiches) sur la release `profils-base`, une
+pré-release que `/releases/latest` ne voit pas. `cidre profils maj` la
+télécharge, refuse une archive qui contiendrait autre chose que des fiches à
+plat ou dont l'index nommerait une fiche absente, la déballe à côté du cache
+et l'échange avec lui d'un coup. Sans archive publiée, ou refusée, `maj` revient
+aux fiches du dépôt une à une.
+
+Mesures du 2026-10-15 (export du 2026-10-01) : 26 818 fiches, 35,5 Mo de texte
+(109 Mo sur le disque, ~16 Mo d'objets git par instantané, presque tous
+renouvelés chaque mois) ; l'archive fait 4,9 Mo. `maj` par l'archive : 6 s
+avec un cache vide, 10 s sinon, plus le téléchargement ; une à une, il
+faudrait ~0,3 s par fiche de réseau (plus de deux heures) et l'index relu
+pour chacune.
+
+## Fiche provisoire
+
+Quand `cidre dl` (jeu Windows) ou `cidre install` installe un jeu que la base ne
+connaît pas, `fiche_profil.sh provisoire <appid>` lui écrit en fond une fiche
+locale, `~/Library/Application Support/Cidre/profils-provisoires/<appid>.toml` :
+le résumé public de ProtonDB (`[compat.protondb]`, mêmes clés que l'importeur),
+le nom et les plateformes du magasin Steam, `[compat] etat = "non-teste"` et
+`[jeu] provisoire = true`. Deux requêtes courtes, curl, awk et sed seulement
+(pas de python3, qui échoue sur un Mac dont la licence Xcode n'est pas
+acceptée). Rien si le jeu a déjà une fiche ; rien non plus si ProtonDB ne le
+connaît pas (code 3). La vraie fiche passe devant dès qu'elle existe (cache ou
+copie livrée), et `maj` retire les provisoires que la base couvre désormais.
+`cidre info <appid> --json` la rend avec `"origine":"provisoire"` ;
+`"protondb"` y porte le palier.
 
 ## Rapports d'utilisateurs (`tests/outils/rapports_vers_fiches.py`)
 

@@ -1,0 +1,100 @@
+# La base de profils entiere (profils/README.md, « Catalogue ») : une fiche pour
+# chaque jeu note sur ProtonDB qui n'a pas de version macOS native, en plus des
+# fiches du depot. Generee chaque mois apres l'export ProtonDB (le 1er), jamais
+# commitee : publiee en une archive, profils-base.tar.gz, sur la release
+# `profils-base` (pre-release : /releases/latest, que lit Verger, ne la voit pas).
+# `cidre profils maj` la prend en une requete.
+#
+# Les fiches du depot sont le point de depart : l'importeur les retouche ligne a
+# ligne, et une valeur sans provenance, cidre-test, utilisateur ou crossover
+# n'est jamais reecrite (tests/outils/verifier_catalogue.py le verifie avant de
+# publier). Les recettes CrossOver ne sont pas interrogees ici (cf. en-tete de
+# l'importeur) : celles deja dans les fiches du depot restent telles quelles.
+name: profils
+on:
+  schedule:
+    - cron: "17 3 3 * *"   # le 3 de chaque mois, 03:17 UTC
+  workflow_dispatch:
+    inputs:
+      limite:
+        description: "Seulement les N premiers jeux du catalogue (essai ; vide = tous)"
+        required: false
+      publier:
+        description: "Remplacer l'archive publiee (sinon : artefact du run)"
+        type: boolean
+        default: true
+permissions:
+  contents: write
+concurrency:
+  group: profils
+  cancel-in-progress: false
+jobs:
+  catalogue:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+      - name: Outils
+        run: |
+          sudo apt-get update -q
+          # gawk : les scripts awk de fiche_profil.sh sont ecrits pour awk BSD/POSIX, pas mawk
+          # lib32gcc-s1 : SteamCMD (32 bits) lit la configuration Steam Cloud des jeux, sans compte
+          sudo apt-get install -y -q gawk lib32gcc-s1
+          mkdir -p tools/steamcmd
+          curl -fsSL https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz | tar -xz -C tools/steamcmd
+      - name: Mois
+        id: mois
+        run: echo "mois=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
+      - name: Cache des reponses
+        uses: actions/cache@v4
+        with:
+          path: build/cache-profils
+          key: cache-profils-${{ github.run_id }}
+          restore-keys: cache-profils-
+      - name: Oublier ce qui date d'un autre mois
+        # Une reprise dans le mois ne redemande rien. Le mois suivant, l'export
+        # ProtonDB, le magasin Steam et les wikis se redemandent ; les resumes
+        # ProtonDB (2 par seconde au plus : ProtonDB coupe qui va plus vite) et la
+        # configuration Steam Cloud (~0,5 s par jeu) se gardent et se completent de
+        # mois en mois, les jeux les plus rapportes d'abord.
+        run: |
+          C=build/cache-profils
+          if [ "$(cat "$C/mois" 2>/dev/null)" != "${{ steps.mois.outputs.mois }}" ]; then
+            rm -rf "$C/protondb/export" "$C/pcgw" "$C/agw" "$C/steam/magasin"
+            mkdir -p "$C" && echo "${{ steps.mois.outputs.mois }}" > "$C/mois"
+          fi
+      - name: Catalogue
+        env:
+          LIMITE: ${{ inputs.limite }}
+        run: |
+          rm -rf build/catalogue && mkdir -p build && cp -R profils build/catalogue
+          rm -f build/catalogue/README.md build/catalogue/CONTRIBUER.md
+          # rc 1 = quelques fiches en erreur (listees dans le rapport) : on publie quand meme
+          python3 -I tests/outils/importer_profils.py --catalogue-protondb ${LIMITE:+--limite "$LIMITE"} --resumes-max 6000 --steam-cloud-max 8000 \
+            --profils build/catalogue --rapport build/rapport-catalogue.json || [ $? -eq 1 ]
+          sh tests/fiche_profil.sh generer-index build/catalogue > build/catalogue/index.toml
+      - name: Verifier (valeurs a la main intactes, index complet)
+        run: python3 -I tests/outils/verifier_catalogue.py profils build/catalogue
+      - name: Archive
+        run: |
+          cd build/catalogue
+          ls | grep -E '^[A-Za-z0-9_-]+\.toml$' | tar -czf ../profils-base.tar.gz -T -
+          cd ..
+          echo "$(tar -tzf profils-base.tar.gz | wc -l) fichiers, $(wc -c < profils-base.tar.gz) octets" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Garder l'archive (artefact du run)
+        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.publier }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: profils-base
+          path: |
+            build/profils-base.tar.gz
+            build/rapport-catalogue.json
+      - name: Publier sur la release profils-base
+        if: ${{ github.event_name == 'schedule' || inputs.publier }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view profils-base >/dev/null 2>&1 || gh release create profils-base --prerelease --latest=false \
+            --title "Base de profils (catalogue ProtonDB)" \
+            --notes "Archive de la base de profils, regeneree chaque mois par .github/workflows/profils.yml. Lue par \`cidre profils maj\`. Ce n'est pas une version de Cidre."
+          gh release upload profils-base build/profils-base.tar.gz build/rapport-catalogue.json --clobber

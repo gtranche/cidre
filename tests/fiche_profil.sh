@@ -2,19 +2,24 @@
 # La base de profils par jeu (profils/<appid>.toml, voir profils/README.md) :
 # ou est la fiche d'un jeu, ce qu'elle contient, et sa mise a jour depuis GitHub.
 #
-#   fiche_profil.sh chemin <appid>          le fichier de la fiche (cache, sinon copie livree) ; rien si aucune
+#   fiche_profil.sh chemin <appid>          le fichier de la fiche (cache, sinon copie livree, sinon fiche
+#                                           provisoire) ; rien si aucune
 #   fiche_profil.sh plat <appid>            les options de lancement de la fiche, en lignes TOML `cle = valeur`
 #                                           ([cidre], plus moteur/anticheat de [jeu] et etat/source de [compat])
-#   fiche_profil.sh json <appid>            la fiche en JSON : {"jeu":{},"cidre":{},"compat":{},"reglages_jeu":[...],"variantes":[...],
-#                                           "compat_reference":{},"compat_machines":[...],"rapports":n} ; "compat" est celle de CETTE machine
+#   fiche_profil.sh json <appid>            la fiche en JSON : {"jeu":{},"cidre":{},"compat":{},"protondb":{}|null,
+#                                           "reglages_jeu":[...],"variantes":[...],"compat_reference":{},"compat_machines":[...],
+#                                           "origine":"cache|livree|provisoire","rapports":n} ; "compat" est celle de CETTE machine
 #   fiche_profil.sh reglages <appid>        [reglages_jeu] en lignes TAB, une entree (section INI visee) par numero :
 #                                           `n TAB fichier|format|section TAB val`, puis `n TAB valeur TAB cle TAB val`
 #   fiche_profil.sh compat <appid>          la compatibilite sur cette machine (`cle TAB valeur`), puis les entrees par
 #                                           famille de Mac : `machines TAB nom TAB voie TAB etat TAB applique`
 #   fiche_profil.sh variantes <appid>       les conditions `si` des blocs [[machine]] qui s'appliquent ici, une par ligne
 #   fiche_profil.sh index [json]            l'index de la base : `appid <TAB> nom <TAB> etat <TAB> date <TAB> origine`
-#   fiche_profil.sh generer-index           regenere profils/index.toml depuis les fiches du depot (sur la sortie)
-#   fiche_profil.sh maj [json]              telecharge l'index puis les fiches dans le cache
+#   fiche_profil.sh generer-index [dossier] regenere l'index des fiches du depot, ou de ce dossier (sur la sortie)
+#   fiche_profil.sh maj [json]              met le cache a jour : l'archive de la base (une requete), sinon
+#                                           l'index puis les fiches une a une
+#   fiche_profil.sh provisoire <appid>      jeu sans fiche : en ecrit une provisoire (resume ProtonDB, nom et
+#                                           plateformes du magasin Steam) ; rien s'il a deja une fiche
 #   fiche_profil.sh toml <fichier>          (outil) le fichier a plat : `section <TAB> cle <TAB> type <TAB> valeur`
 #
 # `plat`, `json`, `reglages` et `compat` rendent la fiche telle qu'elle vaut sur
@@ -24,13 +29,19 @@
 # rend le fichier tel quel.
 #
 # Le cache (CIDRE_PROFILS_BASE, par defaut ~/Library/Application Support/Cidre/
-# profils-base/) prime sur la copie livree ($R/profils/). Pas de python : awk et curl.
+# profils-base/) prime sur la copie livree ($R/profils/), qui prime sur les fiches
+# provisoires (CIDRE_PROFILS_PROVISOIRES, par defaut .../Cidre/profils-provisoires/).
+# Pas de python : awk et curl.
 set -u
 R=$(cd "$(dirname "$0")/.." && pwd)
 CIDRE_DIR=${CIDRE_DIR:-$HOME/Library/Application Support/Cidre}
 BASE=${CIDRE_PROFILS_BASE:-$CIDRE_DIR/profils-base}
 LIVRE=$R/profils
+PROV=${CIDRE_PROFILS_PROVISOIRES:-$CIDRE_DIR/profils-provisoires}
 URL=${CIDRE_PROFILS_URL:-https://raw.githubusercontent.com/gtranche/cidre/main/profils/}
+# la base entiere en une archive (tar.gz a plat : index.toml + <appid>.toml), publiee
+# par .github/workflows/profils.yml ; vide = pas d archive (fiches une a une)
+ARCHIVE=${CIDRE_PROFILS_ARCHIVE-https://github.com/gtranche/cidre/releases/download/profils-base/profils-base.tar.gz}
 CMD=${1:-}; ARG=${2:-}; FORMAT=${3:-}
 
 # Le sous-ensemble de TOML des fiches, a plat : une ligne `section TAB cle TAB
@@ -236,7 +247,7 @@ fiche_plat() { # <fiche>
 id_sur() { case $1 in ''|*[!A-Za-z0-9_-]*) return 1 ;; esac; return 0; }
 chemin() { # <appid> : la fiche a lire, cache d abord
    id_sur "$1" || return 1
-   for f in "$BASE/$1.toml" "$LIVRE/$1.toml"; do [ -f "$f" ] && { echo "$f"; return 0; }; done
+   for f in "$BASE/$1.toml" "$LIVRE/$1.toml" "$PROV/$1.toml"; do [ -f "$f" ] && { echo "$f"; return 0; }; done
    return 1
 }
 # JSON : une valeur typee d apres la 3e colonne
@@ -270,6 +281,51 @@ objet_json() { # <fichier a plat> <section>
       BEGIN { printf "{" } END { printf "}" }' "$1"
 }
 
+# `maj` par l archive : telechargee, verifiee (rien que des fiches a plat, chaque
+# fiche de l index presente), deballee a cote du cache puis echangee avec lui d un
+# coup. Les fiches provisoires que la base couvre desormais s en vont. rc 0 = cache
+# remplace ; 1 = archive absente ou refusee (l appelant passe aux fiches une a une).
+maj_archive() {
+   A=$(mktemp -d "${TMPDIR:-/tmp}/profils-archive.XXXXXX")
+   code=$(curl -sS -L --connect-timeout 10 --max-time 300 -o "$A/base.tar.gz" -w '%{http_code}' "$ARCHIVE" 2>"$A/erreurs"); rc=$?
+   case $rc:$code in
+      0:200|0:000) ;;
+      *) echo "base de profils : archive indisponible ($rc/$code, $ARCHIVE) ; fiches une a une" >&2; rm -rf "$A"; return 1 ;;
+   esac
+   if ! tar -tzf "$A/base.tar.gz" >"$A/liste" 2>/dev/null || [ ! -s "$A/liste" ] \
+      || LC_ALL=C grep -qv '^\(\./\)\{0,1\}[A-Za-z0-9_-]*\.toml$' "$A/liste" \
+      || ! LC_ALL=C grep -q '^\(\./\)\{0,1\}index\.toml$' "$A/liste"; then
+      echo "base de profils : archive refusee (contenu inattendu) ; fiches une a une" >&2; rm -rf "$A"; return 1
+   fi
+   mkdir -p "$(dirname "$BASE")"
+   N="$BASE.nouveau.$$"; rm -rf "$N"; mkdir -p "$N"
+   if ! tar -xzf "$A/base.tar.gz" -C "$N" 2>/dev/null; then
+      echo "base de profils : archive illisible ; fiches une a une" >&2; rm -rf "$A" "$N"; return 1
+   fi
+   # l index ne va jamais sans les fiches qu il nomme
+   manque=$(toml_plat "$N/index.toml" | cut -f1 | awk '!vu[$0]++' | while read -r a; do [ -f "$N/$a.toml" ] || echo "$a"; done | head -3)
+   if [ -n "$manque" ]; then
+      echo "base de profils : archive incomplete (pas de fiche pour $(echo $manque)) ; fiches une a une" >&2
+      rm -rf "$A" "$N"; return 1
+   fi
+   # fiches nouvelles ou changees : empreintes de l ancien index contre le nouveau
+   n=$( { [ -f "$BASE/index.toml" ] && toml_plat "$BASE/index.toml" | sed 's/^/A\t/'; toml_plat "$N/index.toml" | sed 's/^/N\t/'; } \
+      | LC_ALL=C awk -F'\t' '$1 == "N" { ids[$2] = 1 } $3 == "empreinte" { e[$1, $2] = $5 }
+         END { for (a in ids) { t++; if (e["A", a] != e["N", a]) c++ } print c + 0, t + 0 }')
+   total=${n#* }; n=${n% *}
+   date '+%Y-%m-%dT%H:%M:%S%z' >"$N/horodatage"
+   if [ -d "$BASE" ]; then mv "$BASE" "$BASE.ancien.$$" && mv "$N" "$BASE" && rm -rf "$BASE.ancien.$$"
+   else mv "$N" "$BASE"; fi
+   for f in "$PROV"/*.toml; do [ -f "$f" ] && [ -f "$BASE/$(basename "$f")" ] && rm -f "$f"; done
+   rm -rf "$A"
+   if [ "$FORMAT" = json ] || [ "$ARG" = json ]; then
+      printf '{"ok":true,"mode":"archive","fiches":%s,"gardees":%s,"total":%s,"rates":[],"horodatage":"%s"}\n' "$n" "$((total - n))" "$total" "$(cat "$BASE/horodatage")"
+   else
+      echo "base de profils : $total fiche(s) (archive), $n nouvelle(s) ou mise(s) a jour, dans $BASE"
+   fi
+   return 0
+}
+
 case $CMD in
    toml) toml_plat "$ARG" ;;
    chemin) chemin "$ARG" ;;
@@ -283,9 +339,14 @@ case $CMD in
          }' ;;
    json)
       f=$(chemin "$ARG") || { echo null; exit 0; }
+      # avant fiche_plat, qui reprend $f pour ses propres boucles
+      case $f in "$BASE"/*) origine=cache ;; "$LIVRE"/*) origine=livree ;; *) origine=provisoire ;; esac
       P=$(mktemp "${TMPDIR:-/tmp}/fiche.XXXXXX")
       fiche_plat "$f" >"$P"
       printf '{"jeu":%s,"cidre":%s,"compat":%s,' "$(objet_json "$P" jeu)" "$(objet_json "$P" cidre)" "$(objet_json "$P" compat)"
+      # le resume ProtonDB importe ([compat.protondb]), ou null
+      if LC_ALL=C grep -q '^compat\.protondb	' "$P"; then printf '"protondb":%s,' "$(objet_json "$P" compat.protondb)"
+      else printf '"protondb":null,'; fi
       # "reglages_jeu" : toujours un tableau, une entree par section visee ([reglages_jeu]
       # simple = une entree ; [[reglages_jeu]] = une par element), vide s il n y en a pas
       printf '"reglages_jeu":['; sep=""
@@ -311,7 +372,7 @@ case $CMD in
          printf '%s%s' "$sep" "$(objet_json "$P" "$e")"; sep=","
       done
       printf '],'
-      printf '"rapports":%s}\n' "$(awk -F'\t' '$1 ~ /^rapports\.[0-9]+$/ && !vu[$1]++ {n++} END {print n+0}' "$P")"
+      printf '"origine":"%s","rapports":%s}\n' "$origine" "$(awk -F'\t' '$1 ~ /^rapports\.[0-9]+$/ && !vu[$1]++ {n++} END {print n+0}' "$P")"
       rm -f "$P" ;;
    reglages)
       # Une entree = une section INI visee : [reglages_jeu] simple (entree 1) ou
@@ -365,7 +426,7 @@ case $CMD in
       echo "# tests/tester_profils.sh verifie qu'il est a jour. C'est lui que \`cidre profils maj\`"
       echo "# telecharge d'abord, pour savoir quelles fiches prendre : seules celles dont"
       echo "# l'empreinte (md5 du fichier) a change sont retelechargees."
-      for f in "$LIVRE"/*.toml; do
+      for f in "${ARG:-$LIVRE}"/*.toml; do
          [ -f "$f" ] || continue
          a=$(basename "$f" .toml); [ "$a" = index ] && continue
          toml_plat "$f" | LC_ALL=C awk -F'\t' -v a="$a" -v h="$(md5 -q "$f" 2>/dev/null || md5sum "$f" | cut -c1-32)" '
@@ -373,10 +434,14 @@ case $CMD in
             END { print ""; print "[" a "]"; print "nom = \"" c["nom"] "\""; print "etat = \"" (c["etat"] == "" ? "non-teste" : c["etat"]) "\""; print "date = \"" c["date"] "\""; print "empreinte = \"" h "\"" }'
       done ;;
    maj)
+      command -v curl >/dev/null 2>&1 || { echo "curl introuvable" >&2; exit 1; }
+      # L archive de la base d abord (CIDRE_PROFILS_ARCHIVE ; vide = jamais) : une
+      # requete, toutes les fiches du catalogue. Sans archive publiee, ou en echec :
+      # l index puis les fiches une a une, comme avant.
+      if [ -n "$ARCHIVE" ]; then maj_archive && exit 0; fi
       # L index d abord, puis chaque fiche qu il nomme, dans un dossier de travail ;
       # on ne remplace le cache qu une fois tout recu. Les fiches sorties de l index
       # quittent le cache. Sans reseau : message, code 1, la copie livree sert.
-      command -v curl >/dev/null 2>&1 || { echo "curl introuvable" >&2; exit 1; }
       T=$(mktemp -d "${TMPDIR:-/tmp}/profils-maj.XXXXXX")
       prendre() { curl -fsSL --connect-timeout 10 --max-time 60 -o "$T/$1" "$URL$1" 2>>"$T/erreurs"; }
       if ! prendre index.toml; then
@@ -416,5 +481,114 @@ case $CMD in
          [ -z "$rates" ] || echo "  non recues :$rates" >&2
       fi
       [ -z "$rates" ] ;;
+   provisoire)
+      # Un jeu qu on installe et que la base ne connait pas : une fiche provisoire,
+      # locale, hors du cache (que `maj` remplace en bloc). Le resume public de
+      # ProtonDB (palier, confiance, nombre de rapports), le nom et les plateformes
+      # du magasin Steam ; deux requetes courtes, curl, awk et sed (pas de python :
+      # sur un Mac dont la licence Xcode n est pas acceptee, python3 echoue). Rien
+      # si le jeu a deja une fiche, provisoire comprise. rc 0 = ecrite ou deja la ;
+      # 3 = ProtonDB ne connait pas le jeu (rien d ecrit) ; 1 = reseau ou erreur.
+      a=$ARG
+      case $a in ''|*[!0-9]*) echo "usage: fiche_profil.sh provisoire <appid Steam>" >&2; exit 2 ;; esac
+      chemin "$a" >/dev/null && exit 0
+      command -v curl >/dev/null 2>&1 || { echo "curl introuvable" >&2; exit 1; }
+      PDB=${CIDRE_PROTONDB_URL:-https://www.protondb.com/api/v1/reports/summaries/}
+      MAG=${CIDRE_STEAM_MAGASIN_URL:-https://api.steampowered.com/IStoreBrowseService/GetItems/v1}
+      T=$(mktemp -d "${TMPDIR:-/tmp}/fiche-provisoire.XXXXXX")
+      code=$(curl -sS -L --connect-timeout 5 --max-time 15 -o "$T/resume.json" -w '%{http_code}' "$PDB$a.json" 2>/dev/null); rc=$?
+      # 200 en http ; 000 et code 0 pour un file:// (tests) ; 404, ou 37 (fichier absent) : jeu inconnu
+      case $rc:$code in
+         0:200|0:000) ;;
+         0:404|37:*) rm -rf "$T"; echo "ProtonDB ne connait pas $a : pas de fiche provisoire" >&2; exit 3 ;;
+         *) rm -rf "$T"; echo "ProtonDB injoignable ($rc/$code) : pas de fiche provisoire pour $a" >&2; exit 1 ;;
+      esac
+      # le resume : un objet JSON plat (cles connues, chaines sans virgule ni guillemet, nombres)
+      LC_ALL=C tr -d '\n\r' <"$T/resume.json" | LC_ALL=C awk -v RS=, '
+         {
+            if (!match($0, /"[A-Za-z]+"[ \t]*:/)) next
+            k = substr($0, RSTART + 1, RLENGTH - 1); sub(/"[ \t]*:$/, "", k)
+            v = substr($0, RSTART + RLENGTH); gsub(/^[ \t]+|[ \t}]+$/, "", v)
+            if (v ~ /^".*"$/) { v = substr(v, 2, length(v) - 2); if (v !~ /^[A-Za-z0-9 _.-]*$/) next; print k "\ts\t" v }
+            else if (v ~ /^-?[0-9]+(\.[0-9]+)?$/) print k "\tn\t" v
+         }' >"$T/resume"
+      grep -q '^tier	s	' "$T/resume" || { rm -rf "$T"; echo "resume ProtonDB illisible pour $a" >&2; exit 1; }
+      # nom et plateformes : le magasin Steam (sans compte) ; facultatif
+      demande=$(printf '{"ids":[{"appid":%s}],"context":{"language":"english","country_code":"US"},"data_request":{"include_platforms":true}}' "$a" \
+         | sed 's/{/%7B/g; s/}/%7D/g; s/\[/%5B/g; s/\]/%5D/g; s/"/%22/g; s/:/%3A/g; s/,/%2C/g')
+      case $MAG in file://*) ;; *) MAG="$MAG?input_json=$demande" ;; esac   # file:// : une reponse toute faite (tests)
+      curl -fsS --connect-timeout 5 --max-time 15 -o "$T/magasin.json" "$MAG" 2>/dev/null || : >"$T/magasin.json"
+      LC_ALL=C awk '
+         # la premiere chaine "cle":"..." (echappements \" et \\ compris) a partir de s
+         function chaine(s, cle,   i, j, c, v) {
+            i = index(s, "\"" cle "\":\""); if (!i) return ""
+            v = ""
+            for (j = i + length(cle) + 4; j <= length(s); j++) {
+               c = substr(s, j, 1)
+               if (c == "\\") { j++; c = substr(s, j, 1); if (c == "u") { j += 4; continue } }
+               else if (c == "\"") break
+               v = v c
+            }
+            return v
+         }
+         { t = t $0 }
+         END {
+            if (t !~ /"success":1[,}]/) exit
+            n = chaine(t, "name"); gsub(/[\001-\037]/, "", n)
+            if (n != "") print "nom\t" n
+            p = ""; i = index(t, "\"platforms\":{")
+            if (i) {
+               q = substr(t, i, 200); sub(/}.*/, "", q)
+               if (q ~ /"windows":true/) p = p " windows"
+               if (q ~ /"mac":true/) p = p " macos"
+               if (q ~ /"steamos_linux":true/) p = p " linux"
+            }
+            # dans l ordre de l importeur : linux macos windows
+            if (p != "") { m = ""; if (p ~ /linux/) m = m " linux"; if (p ~ /macos/) m = m " macos"; if (p ~ /windows/) m = m " windows"; print "plateformes\t" substr(m, 2) }
+         }' "$T/magasin.json" >"$T/magasin"
+      jour=$(date +%Y-%m-%d)
+      nom=$(awk -F'\t' '$1 == "nom" { print $2; exit }' "$T/magasin")
+      pf=$(awk -F'\t' '$1 == "plateformes" { print $2; exit }' "$T/magasin")
+      esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+      {
+         printf '# %s -- fiche PROVISOIRE, ecrite par Cidre a l installation (%s) :\n' "${nom:-$a}" "$jour"
+         echo "# le jeu n'a pas encore de fiche dans la base. Seuls le resume public de ProtonDB"
+         echo "# et le magasin Steam y sont repris ; la vraie fiche (\`cidre profils maj\`) passe"
+         echo "# devant des qu'elle existe. Fichier local, jamais publie."
+         echo
+         echo "[jeu]"
+         echo "appid = $a"
+         [ -z "$nom" ] || printf 'nom = "%s"\n' "$(esc "$nom")"   # printf : le echo de sh lit les \
+         [ -z "$pf" ] || echo "plateformes_steam = \"$pf\""
+         echo "provisoire = true"
+         if [ -n "$nom$pf" ]; then
+            echo; echo "[jeu.sources]"
+            [ -z "$nom" ] || echo "nom = \"steam $jour\""
+            [ -z "$pf" ] || echo "plateformes_steam = \"steam $jour\""
+         fi
+         echo
+         echo "[compat]"
+         echo "etat = \"non-teste\""
+         echo "date = \"$jour\""
+         echo
+         echo "[compat.protondb]"
+         # memes cles que tests/outils/importer_profils.py ; score en pourcents
+         LC_ALL=C awk -F'\t' '
+            { v[$1] = $3; t[$1] = $2 }
+            function sortir(src, dst) { if (!(src in v)) return; if (t[src] == "s") print dst " = \"" v[src] "\""; else print dst " = " v[src] }
+            END {
+               sortir("tier", "palier"); sortir("trendingTier", "tendance"); sortir("bestReportedTier", "meilleur_palier")
+               sortir("confidence", "confiance"); sortir("total", "rapports")
+               if ("score" in v && t["score"] == "n") printf "score = %d\n", int(v["score"] * 100 + 0.5)
+            }' "$T/resume"
+         echo "source = \"protondb\""
+         echo "date = \"$jour\""
+         echo "url = \"https://www.protondb.com/app/$a\""
+      } >"$T/fiche.toml"
+      # la fiche doit se relire avant d entrer
+      toml_plat "$T/fiche.toml" | LC_ALL=C grep -q '^compat\.protondb	palier	' || { rm -rf "$T"; echo "fiche provisoire illisible pour $a" >&2; exit 1; }
+      mkdir -p "$PROV" && mv -f "$T/fiche.toml" "$PROV/$a.toml.tmp" && mv -f "$PROV/$a.toml.tmp" "$PROV/$a.toml"
+      rm -rf "$T"
+      echo "$PROV/$a.toml" ;;
    *) sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac
