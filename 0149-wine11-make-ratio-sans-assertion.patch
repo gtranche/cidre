@@ -1,0 +1,45 @@
+wine11 : make_ratio approxime un rapport irreductible au lieu d'asserter
+
+win32u range les rapports de DPI dans des unsigned short et les multiplie
+entre eux en 32 bits : chaque terme doit rester sous 65536. Un mode emule
+1496x967 sur une sortie 1728x1117 (mode emule Cidre, 0122) donne
+96 * 1117 / 967, irreductible (967 est premier) : assertion
+« num / d < 65536 » dans make_ratio des ChangeDisplaySettings, et le jeu sort
+en code 1 (Sherlock Holmes Chapter One, changement de definition dans le menu,
+2026-10-15). On divise alors les deux termes par le meme facteur, arrondis
+(erreur relative sous 2e-5), en UINT avant de remplir la structure.
+
+Sonde : sonde_mode.exe (ChangeDisplaySettings 1496x967 puis GetDpiForMonitor),
+CIDRE_EMULATE_MODESET=1, prefixe clone. Sans 0149 : assertion, code 1. Avec :
+1496x967 accepte, DPI brut 111 x 111 ; 1280x800 inchange (130 x 134).
+
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -319,10 +319,23 @@
+ 
+ static struct ratio make_ratio( UINT num, UINT den )
+ {
+-    UINT d = gcd( num, den );
+-    struct ratio r = { num / d, den / d };
+-    assert( num / d < 65536 );
+-    assert( den / d < 65536 );
++    UINT d = gcd( num, den ), k;
++    struct ratio r;
++
++    num /= d;
++    den /= d;
++    /* struct ratio holds 16-bit terms, multiplied together in 32 bits (min_ratio,
++     * map_dpi_rect). An irreducible ratio such as 96 * 1084 / 967 (a 1496x967
++     * mode emulated on a 1728x1084 output) does not fit: approximate it instead
++     * of asserting, the relative error stays below 2e-5. */
++    if (num >= 65536 || den >= 65536)
++    {
++        k = max( num, den ) / 65535 + 1;
++        num = max( (num + k / 2) / k, 1 );
++        den = max( (den + k / 2) / k, 1 );
++    }
++    r.num = num;
++    r.den = den;
+     return r;
+ }
+ 
