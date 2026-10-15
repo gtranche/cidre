@@ -9,6 +9,8 @@
 #   sonde_img64_vk            atomiques 64 bits sur image R64_UINT (CIDRE_ATOMIQUES_64=1, M2+)
 #   sonde_liste_tuiles        resultat d'une atomique sur tampon texel (correctif 0145) : juste
 #   d3d12caps.exe             ce qu'un jeu voit en D3D12 (sh tests/sonde_d3d12caps.sh)
+#   d3d12partage.exe          ressource et fence partagees (correctif 0146) :
+#                             CAPS_EXE=d3d12partage.exe sh tests/sonde_d3d12caps.sh -> « FIN sans faute »
 # Lancer une sonde Vulkan (pilote du runtime, ou un autre par son manifeste ICD) :
 #   VK_DRIVER_FILES=<icd.json> DYLD_FALLBACK_LIBRARY_PATH=prefix/lib CIDRE_DERIVEES_CALCUL=1 \
 #     build/sonde_derivees build/derivees_quads.spv build/derivees_lineaire.spv   (0 faux)
@@ -23,4 +25,5 @@ for s in sonde_derivees sonde_atom64_vk sonde_img64_vk sonde_liste_tuiles; do
    cc -arch arm64 -std=c11 -O2 -I"$R/prefix/include" "$DIR/$s.c" -L"$R/prefix/lib" -lvulkan -o "$R/build/$s"
 done
 "$R/toolchain/llvm-mingw/bin/arm64ec-w64-mingw32-clang" -O2 "$DIR/d3d12caps.c" -o "$R/build/d3d12caps.exe" -ld3d12 -luuid
-echo "construit : sonde_sm66, sonde_derivees, sonde_atom64_vk, sonde_img64_vk, sonde_liste_tuiles, d3d12caps.exe (+ .spv)"
+"$R/toolchain/llvm-mingw/bin/arm64ec-w64-mingw32-clang" -O2 "$DIR/d3d12partage.c" -o "$R/build/d3d12partage.exe" -ld3d12 -luuid
+echo "construit : sonde_sm66, sonde_derivees, sonde_atom64_vk, sonde_img64_vk, sonde_liste_tuiles, d3d12caps.exe, d3d12partage.exe (+ .spv)"
