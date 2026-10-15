@@ -1,0 +1,16 @@
+wine11 : wine/cidre_sync.h declare dans include/Makefile.in (makedep)
+
+L en-tete ajoute par 0103 (synchro en process) n etait pas dans la liste des
+en-tetes : toute regeneration du Makefile de Wine echouait depuis 0103 (vu en
+reconfigurant Wine avec SDL2 pour les manettes).
+
+--- a/include/Makefile.in
++++ b/include/Makefile.in
+@@ -1115,6 +1115,7 @@
+ 	wine/afd.h \
+ 	wine/asm.h \
+ 	wine/atsvc.idl \
++	wine/cidre_sync.h \
+ 	wine/condrv.h \
+ 	wine/dcetypes.idl \
+ 	wine/debug.h \

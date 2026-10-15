@@ -34,14 +34,26 @@ ninja -C "$R/build/mesa" -j"$J"
 ninja -C "$R/build/mesa" install >/dev/null
 
 echo "== Wine 11 arm64 -> wine/wine11-arm64 =="
-if [ ! -f "$R/build/wine11-arm64-ec/Makefile" ]; then
+# bison >= 3 (celui de macOS est trop vieux) et les compilateurs mingw.
+WPATH="/opt/homebrew/opt/bison/bin:/usr/local/opt/bison/bin:$MINGW:$PATH"
+# SDL2 (Homebrew, brew install sdl2) : winebus.sys le charge par dlopen et lui
+# laisse les manettes ; configure sans SDL, winebus ignore les manettes IOHID
+# (« ignoring hidraw device ») et aucun jeu ne voit la manette. Un arbre
+# configure sans SDL est reconfigure (tout Wine se recompile une fois).
+if [ ! -f "$R/build/wine11-arm64-ec/Makefile" ] ||
+   ! grep -q '^#define SONAME_LIBSDL2 ' "$R/build/wine11-arm64-ec/include/config.h"; then
    mkdir -p "$R/build/wine11-arm64-ec"
-   ( cd "$R/build/wine11-arm64-ec" && "$R/src/wine11/configure" \
+   ( cd "$R/build/wine11-arm64-ec" && PATH=$WPATH "$R/src/wine11/configure" \
         --prefix="$R/wine/wine11-arm64" \
         --host=aarch64-apple-darwin --build=aarch64-apple-darwin \
-        --enable-archs=i386,arm64ec,aarch64 --disable-tests --without-x )
+        --enable-archs=i386,arm64ec,aarch64 --disable-tests --without-x \
+        --without-oss --without-gphoto --without-sane --without-pcap --without-usb \
+        --without-gstreamer --without-krb5 --without-gssapi --without-ffmpeg \
+        LDFLAGS="-L$R/prefix/lib" CPPFLAGS="-I$R/prefix/include" )
+   grep -q '^#define SONAME_LIBSDL2 ' "$R/build/wine11-arm64-ec/include/config.h" ||
+      { echo "SDL2 introuvable pour Wine : brew install sdl2" >&2; exit 1; }
 fi
-make -C "$R/build/wine11-arm64-ec" -j"$J" \
+PATH=$WPATH make -C "$R/build/wine11-arm64-ec" -j"$J" \
    aarch64_CFLAGS="-g -O2 -DWINE_TEB_SANS_X18" \
    arm64ec_CFLAGS="-g -O2 -DWINE_TEB_SANS_X18" install
 

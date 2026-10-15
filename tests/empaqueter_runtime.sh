@@ -142,9 +142,11 @@ fi
 echo "$CIDRE_VERSION" >"$STAGE/VERSION"
 
 echo "== bibliotheques Homebrew embarquees (libs/) =="
-# Le pilote Vulkan lie zstd et SPIRV-Tools, Wine charge FreeType par dlopen :
-# on les livre, pour qu'une machine sans Homebrew fasse tourner les jeux.
-python3 "$R/tests/embarquer_dependances.py" "$STAGE" /opt/homebrew/lib/libfreetype.6.dylib
+# Le pilote Vulkan lie zstd et SPIRV-Tools, Wine charge FreeType et SDL2 (les
+# manettes, winebus.sys) par dlopen : on les livre, pour qu'une machine sans
+# Homebrew fasse tourner les jeux.
+python3 "$R/tests/embarquer_dependances.py" "$STAGE" /opt/homebrew/lib/libfreetype.6.dylib \
+   /opt/homebrew/lib/libSDL2-2.0.0.dylib
 
 echo "== compression (zstd) =="
 ( cd "$(dirname "$STAGE")" && tar cf - cidre ) | zstd -15 -T${CIDRE_FILS:-0} -o "$OUT" -f

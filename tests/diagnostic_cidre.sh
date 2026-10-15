@@ -136,6 +136,7 @@ for f in wine/wine11-arm64/bin/wine wine/wine11-arm64/bin/wineserver \
          wine/wine11-arm64/lib/wine/aarch64-windows/xtajit64.dll \
          prefix/lib/libvulkan.1.dylib prefix/lib/libvulkan_kosmickrisp.dylib \
          libs/libSPIRV-Tools.dylib libs/libfreetype.6.dylib libs/libzstd.1.dylib \
+         libs/libSDL2-2.0.0.dylib \
          dxvk/async/d3d11.dll dxvk/async/dxgi.dll \
          build/faux_steam.exe build/cidre-outil build/sonde-wx tools/steamcmd/steamcmd; do piece "$f"; done
 echo "  wine        : $(file -b "$WINE" 2>/dev/null | cut -c1-60)"

@@ -45,8 +45,10 @@ export FEX_HOSTFEATURES=${FEX_HOSTFEATURES:-enablecrypto}
 mkdir -p "$R/wine/vklib-arm64"
 ln -sf "$R/prefix/lib/libvulkan.1.dylib" "$R/wine/vklib-arm64/libMoltenVK.dylib"
 # Un runtime installe embarque FreeType dans libs/ (aucun Homebrew requis) ; un
-# depot de developpement prend celui de Homebrew.
-for l in libfreetype.6.dylib libfontconfig.1.dylib; do
+# depot de developpement prend celui de Homebrew. SDL2 : winebus.sys le charge
+# par dlopen pour les manettes (sans lui, une manette Xbox 360 vue par macOS
+# n'arrive jamais au jeu : winebus laisse les manettes IOHID a SDL).
+for l in libfreetype.6.dylib libfontconfig.1.dylib libSDL2-2.0.0.dylib; do
    if [ -f "$R/libs/$l" ]; then ln -sf "$R/libs/$l" "$R/wine/vklib-arm64/$l"
    elif [ -f /opt/homebrew/lib/$l ]; then ln -sf /opt/homebrew/lib/$l "$R/wine/vklib-arm64/$l"
    fi
