@@ -76,7 +76,13 @@
 #   dx12             vrai D3D12 via vkd3d-proton arm64ec (installe en system32,
 #                    force d3d12=n, annonce FL 12.1 a KosmicKrisp ; le DXGI et le
 #                    D3D11 sont alors ceux de DXVK). false (defaut) = d3d12 builtin
-#                    de Wine, qui retombe en D3D11 (DXMT). Pour un jeu qui a un
+#                    de Wine, qui echoue a tous les Feature Levels sur KosmicKrisp
+#                    (sonde d3d12caps, 2026-10-15) : le jeu retombe en D3D11 (DXMT).
+#                    Un jeu dont la fiche ne donne que D3D12 (api_disponibles =
+#                    "d3d12") passe a dx12 = true par defaut, sauf valeur posee par
+#                    la fiche ou l'utilisateur ; un jeu qui offre aussi D3D11 ou
+#                    Vulkan garde false (regle : D3D12 seulement sans autre choix).
+#                    Pour un jeu qui a un
 #                    rendu D3D11, DXMT reste bien plus rapide (PEAK : 105 images/s
 #                    en DXMT, 45 en D3D12 avec -force-gfx-direct, 2026-10-14) : dx12
 #                    sert aux jeux D3D12 seuls. Le Shader Model reste plafonne a 6.0

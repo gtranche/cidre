@@ -1290,6 +1290,13 @@ def pcgw_extraire(texte):
             out["api_disponibles"] = " ".join(apis)
             if len(apis) == 1:
                 out["api"] = apis[0]  # une seule API : c'est celle que le jeu demande
+            elif "d3d12" in apis:
+                # D3D12 et une autre : l'API la plus rapide sous Cidre (D3D11 par
+                # DXMT, sinon Vulkan) ; D3D12 seulement quand il n'y a pas le choix
+                for prefere in ("d3d11", "vulkan"):
+                    if prefere in apis:
+                        out["api"] = prefere
+                        break
         b32 = booleen_wiki(c.get("windows 32-bit exe"))
         b64 = booleen_wiki(c.get("windows 64-bit exe"))
         if b64:

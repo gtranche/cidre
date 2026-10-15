@@ -332,7 +332,7 @@ case $CMD in
    plat)
       f=$(chemin "$ARG") || exit 0
       fiche_plat "$f" | LC_ALL=C awk -F'\t' '
-         $1 == "cidre" || ($1 == "jeu" && ($2 == "moteur" || $2 == "anticheat")) || ($1 == "compat" && ($2 == "etat" || $2 == "source")) {
+         $1 == "cidre" || ($1 == "jeu" && ($2 == "moteur" || $2 == "anticheat" || $2 == "api_disponibles")) || ($1 == "compat" && ($2 == "etat" || $2 == "source")) {
             v = $4
             if ($3 == "s") { gsub(/\\/, "\\\\", v); gsub(/"/, "\\\"", v); v = "\"" v "\"" }
             print $2 " = " v

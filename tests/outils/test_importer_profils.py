@@ -385,7 +385,7 @@ def main():
 
         # 2. les champs importes, avec source et date
         assert d["jeu"]["bits"] == 64 and d["jeu"]["bits_32_aussi"] is True
-        assert d["jeu"]["api_disponibles"] == "d3d11 d3d12" and "api" not in d["jeu"], d["jeu"]
+        assert d["jeu"]["api_disponibles"] == "d3d11 d3d12" and d["jeu"]["api"] == "d3d11", d["jeu"]
         assert d["jeu"]["moteur_nom"] == "Unity"
         # ... dont l'inventaire Steam Cloud (source steam, date de la lecture)
         sc = d["compat"]["steam_cloud"]

@@ -104,6 +104,15 @@ awk -v appid="$APPID" -v format="$FORMAT" -v perso=2 '
       if (!(cle in valeur) || rang >= rangde[cle]) { valeur[cle] = val; rangde[cle] = rang; estchaine[cle] = chaine }
    }
    END {
+      # D3D12 seulement : le vrai D3D12 (vkd3d-proton, option dx12) par defaut. Le
+      # d3d12 integre a Wine echoue a tous les Feature Levels sur KosmicKrisp, et un
+      # jeu sans autre API ne demarrerait pas. Une valeur posee par la fiche ou
+      # l utilisateur (rang >= 1) passe avant. Un jeu qui offre aussi D3D11 ou
+      # Vulkan garde dx12 = false : son repli prend l API plus rapide (DXMT).
+      if (valeur["api_disponibles"] == "d3d12" && (!("dx12" in valeur) || rangde["dx12"] < 1)) {
+         if (!("dx12" in valeur)) ordre[++n] = "dx12"
+         valeur["dx12"] = "true"; estchaine["dx12"] = 0
+      }
       if (format == "json" || format == "perso") {
          printf "{"; premier = 1
          for (k = 1; k <= n; k++) {
