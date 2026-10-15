@@ -14,6 +14,12 @@ name: profils
 on:
   schedule:
     - cron: "17 3 3 * *"   # le 3 de chaque mois, 03:17 UTC
+  # Une fiche corrigee dans le depot doit partir sans attendre le mois suivant :
+  # l'archive prime sur les fiches une a une pour `cidre profils maj`. Dans le mois,
+  # le cache des reponses evite de tout redemander.
+  push:
+    branches: [main]
+    paths: ["profils/**"]
   workflow_dispatch:
     inputs:
       limite:
@@ -90,7 +96,7 @@ jobs:
             build/profils-base.tar.gz
             build/rapport-catalogue.json
       - name: Publier sur la release profils-base
-        if: ${{ github.event_name == 'schedule' || inputs.publier }}
+        if: ${{ github.event_name == 'schedule' || github.event_name == 'push' || inputs.publier }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
