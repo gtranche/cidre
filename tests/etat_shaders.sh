@@ -12,6 +12,9 @@
 #   - KosmicKrisp (D3D12, et D3D11 par DXVK) : les pipelines Metal dans
 #     ~/Library/Application Support/Cidre/vkd3d-cache/<appid> ;
 #   - vkd3d-proton : vkd3d-proton.cache dans le dossier de l'executable.
+# Un jeu Vulkan natif (Detroit: Become Human) passe par KosmicKrisp sans option
+# qui le dise : sa voie, « vulkan », est apprise a la premiere partie (des
+# archives KosmicKrisp ecrites alors que la voie D3D11 etait DXMT).
 # Ces caches ne survivent pas a tout : le binaire Metal est a refaire apres une
 # mise a jour de macOS (son compilateur change) ou sur un autre Mac, et les
 # pipelines de KosmicKrisp apres une mise a jour de Cidre qui change le MSL
@@ -30,7 +33,7 @@
 #   en_cache           rien a annoncer
 #
 # usage :
-#   etat_shaders.sh voie <id>                      dxmt | dxvk | d3d12
+#   etat_shaders.sh voie <id>                      dxmt | dxvk | d3d12 | vulkan
 #   etat_shaders.sh etat <id> [<voie>]             lignes cle=valeur
 #   etat_shaders.sh json <id> [<voie>]             un objet JSON
 #   etat_shaders.sh message <id> [<voie>]          la phrase a dire, vide si rien
@@ -58,12 +61,27 @@ voie() {
    val() { printf '%s\n' "$p" | sed -n "s/^$1=//p" | head -1; }
    case ${CIDRE_DX12:-} in 1) echo d3d12; return ;; 0) ;; *) [ "$(val dx12)" = true ] && { echo d3d12; return; } ;; esac
    d=${CIDRE_D3D11:-$(val d3d11)}
-   case $d in dxmt) echo dxmt ;; *) echo dxvk ;; esac
+   case $d in dxmt) v=dxmt ;; *) v=dxvk ;; esac
+   # appris d'une partie precedente : le jeu est en Vulkan (KosmicKrisp)
+   if [ -f "$ETATS/$ID.vulkan" ] && [ ! "$ETATS/$ID.$v" -nt "$ETATS/$ID.vulkan" ]; then v=vulkan; fi
+   echo $v
 }
 
 VOIE=${3:-}
 case $ACTION in noter) ;; *) [ -n "$VOIE" ] || VOIE=$(voie) ;; esac
-case $VOIE in dxmt|dxvk|d3d12) ;; *) echo "voie inconnue : $VOIE" >&2; exit 2 ;; esac
+case $VOIE in dxmt|dxvk|d3d12|vulkan) ;; *) echo "voie inconnue : $VOIE" >&2; exit 2 ;; esac
+# La partie a ecrit des archives KosmicKrisp alors que la voie D3D11 etait DXMT :
+# le jeu est en Vulkan (DXMT ne passe pas par KosmicKrisp).
+if [ "$ACTION" = noter ] && [ "$VOIE" = dxmt ]; then
+   case ${4:-} in ''|*[!0-9]*) ;; *)
+      repere="$ETATS/.debut.$$"; mkdir -p "$ETATS"
+      touch -t "$(date -r "$4" +%Y%m%d%H%M.%S)" "$repere" 2>/dev/null
+      if [ -f "$repere" ] && find "$CIDRE_DIR/vkd3d-cache/$ID" -maxdepth 1 -name '*.mtl4archive' -newer "$repere" 2>/dev/null | grep -q .; then
+         VOIE=vulkan
+      fi
+      rm -f "$repere" ;;
+   esac
+fi
 F="$ETATS/$ID.$VOIE"
 lu() { sed -n "s/^$1=//p" "$F" 2>/dev/null | head -1; }
 
