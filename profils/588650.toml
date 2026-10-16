@@ -19,6 +19,13 @@ tso = false
 # 887A0004 » du 2026-10-13 n'etait pas DXMT : sans variante i386, c'est le d3d11
 # builtin de Wine qui refusait (tests/sonde_heaps.sh). L'ecran noir de la premiere
 # manche DXMT i386 venait du plein ecran exclusif du Wine d'avant 0122.
+# x87 emule en double precision (X87ReducedPrecision de FEX, le defaut de Proton
+# ARM64) : M1 Max, DXMT i386, 2026-10-16, manches entrelacees 0/1/0, meme scene,
+# 12 releves chacune : CPU du jeu 63-64 % -> 50 % -> 62-63 %, a fps egales (120,
+# plafond de l'ecran). Gain d'energie sur ce Mac, de fps sur un Mac plus faible.
+# Image non verifiee (la capture a echoue) : un jeu x87 qui tremble ou glisse se
+# remet aux 80 bits par fex_x87_reduit = false.
+fex_x87_reduit = true
 
 [compat]
 etat = "or"
