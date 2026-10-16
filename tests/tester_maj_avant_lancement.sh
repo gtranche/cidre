@@ -137,6 +137,10 @@ case $mode in
       exit 8 ;;
    sans_effet)
       echo "Success! App '$app' already up to date." ;;
+   sans_effet_valide)
+      # (avec validate : verification de tous les fichiers, puis le meme silence sur le build)
+      echo " Update state (0x5) verifying install, progress: 99.00 (990 / 1000)"
+      echo "Success! App '$app' fully installed." ;;
    long)
       echo " Update state (0x61) downloading, progress: 12.50 (125 / 1000)"
       sleep 60 ;;
@@ -361,7 +365,7 @@ contient "passe A : SteamCMD dit exactement ce qu'il a dit" "Success! App '35272
 sans "passe A : pas de « Mise a jour faite »" "Mise a jour faite" "$sortie"
 contient "passe A : le message juste" "Mise a jour sans effet : SteamCMD dit le jeu a jour mais le laisse au build 25000000 (publie : 25739797) ; elle ne sera pas retentee pour ce build. Lancement de la version installee." "$sortie"
 verif "passe A : le jeu part dans sa version installee" "25000000 Jeu.exe 25000000 appid=3527290" "$(build 3527290) $(lance)"
-verif "passe A : la tentative est notee (faite, vers 25739797, sans effet)" "faite 25000000 25739797 25000000" "$(etat 3527290 etat) $(etat 3527290 build_avant) $(etat 3527290 build_vise) $(etat 3527290 build_apres)"
+verif "passe A : la tentative est notee sans effet, vers 25739797" "sans_effet 25000000 25739797 25000000" "$(etat 3527290 etat) $(etat 3527290 build_avant) $(etat 3527290 build_vise) $(etat 3527290 build_apres)"
 m=$(maj_de 3527290); verif "passe A : cidre info dit ignoree, sans_effet" '"ignoree" "sans_effet"' "$(champ_json "$m" etat) $(champ_json "$m" raison)"
 raz; sortie=$(sh "$C" play 3527290 2>&1)
 verif "passe A, lancement suivant : pas de nouvelle tentative" "0 Jeu.exe 25000000 appid=3527290" "$(appels app_update) $(lance)"
@@ -370,6 +374,29 @@ raz; vieillir; sh "$C" play 3527290 >/dev/null 2>&1
 verif "passe A, cache vieilli : redemande a Steam, toujours pas de nouvelle tentative" "1 0" "$(appels 'login anonymous') $(appels app_update)"
 raz; echo sans_effet >"$F/mode"; jeu 3527290 25000000; rm -f "$M/3527290"; sh "$C" play 3527290 --json >"$T/evts" 2>/dev/null
 contient "passe A, --json : l'evenement dit ignoree, sans_effet" '{"evenement":"maj","etat":"ignoree","build_installe":25000000,"build_disponible":25739797,"raison":"sans_effet"' "$(cat "$T/evts")"
+# B1 de l'essai reel (16/10) : la meme chose avec validate (CIDRE_MAJ_VALIDER=1) ;
+# SteamCMD verifie tout, dit « Success! App '3527290' fully installed. » et
+# laisse le manifeste a 25000000.
+raz; echo sans_effet_valide >"$F/mode"; jeu 3527290 25000000; rm -f "$M/3527290"
+sortie=$(CIDRE_MAJ_VALIDER=1 sh "$C" play 3527290 2>&1)
+verif "B1 : validate demande" "1" "$(appels 'app_update 3527290 .*validate')"
+contient "B1 : SteamCMD dit exactement ce qu'il a dit" "Success! App '3527290' fully installed." "$sortie"
+sans "B1 : pas de « Mise a jour faite »" "Mise a jour faite" "$sortie"
+contient "B1 : le message juste" "Mise a jour sans effet : SteamCMD dit le jeu a jour mais le laisse au build 25000000 (publie : 25739797)" "$sortie"
+verif "B1 : etat sans_effet, et non faite" "sans_effet 25000000" "$(etat 3527290 etat) $(etat 3527290 build_apres)"
+m=$(maj_de 3527290); verif "B1 : cidre info dit ignoree, sans_effet" '"ignoree" "sans_effet"' "$(champ_json "$m" etat) $(champ_json "$m" raison)"
+u=$(sh "$C" updates --json | tr '{' '\n' | grep '"appid": 3527290,')
+verif "B1 : cidre updates dit ignoree, sans_effet" '"ignoree" "sans_effet"' "$(champ_json "$u" etat) $(champ_json "$u" raison)"
+raz; CIDRE_MAJ_VALIDER=1 sh "$C" play 3527290 >/dev/null 2>&1
+verif "B1, relance : pas de nouvelle tentative" "0" "$(appels app_update)"
+# l'etat « faite » qu'ecrivait le Cidre d'avant pour la meme passe vaut « sans effet »
+printf 'etat=faite\nbuild_avant=25000000\nbuild_vise=25739797\nbuild_apres=25000000\n' >"$M/3527290"
+m=$(maj_de 3527290); verif "etat « faite » d'un Cidre d'avant : lu comme sans effet" '"ignoree" "sans_effet"' "$(champ_json "$m" etat) $(champ_json "$m" raison)"
+# cidre dl, meme passe : il le dit
+raz; echo sans_effet_valide >"$F/mode"; rm -f "$M/3527290"
+sortie=$(sh "$C" dl 3527290 </dev/null 2>&1)
+contient "cidre dl sans effet : le dit" "SteamCMD dit le jeu a jour, mais son build reste 25000000 (publie : 25739797) : rien n'a ete installe." "$sortie"
+verif "cidre dl sans effet : etat sans_effet" "sans_effet" "$(etat 3527290 etat)"
 echo ok >"$F/mode"; sh "$C" rm 3527290 >/dev/null 2>&1
 
 echo "== 7. --json : les evenements de cidre play"

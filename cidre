@@ -887,7 +887,7 @@ maj_etat() { # <appid> [cache]
    # mais deja tente sans effet » aussi.
    me_revoir=non
    if ! entier "$MAJ_DISPO"; then me_revoir=oui
-   elif ! connu_frais "$1" && { [ "$MAJ_DISPO" -le "$MAJ_INSTALLE" ] || { [ "$me_f" = faite ] && [ "$me_v" = "$MAJ_DISPO" ]; }; }; then me_revoir=oui; fi
+   elif ! connu_frais "$1" && { [ "$MAJ_DISPO" -le "$MAJ_INSTALLE" ] || { [ "$me_f" = sans_effet ] && [ "$me_v" = "$MAJ_DISPO" ]; }; }; then me_revoir=oui; fi
    if [ $me_revoir = oui ]; then
       if [ "${2:-}" != cache ] && { appinfo_perime || appinfo_sans "$1"; }; then
          appinfo_rafraichir_borne
@@ -905,7 +905,8 @@ maj_etat() { # <appid> [cache]
    me_b=$(branche "$1")
    if [ -n "$me_b" ] && [ "$me_b" != public ]; then MAJ_ETAT=ignoree; MAJ_RAISON=branche; return; fi
    case $me_f in
-     faite) [ "$me_v" = "$MAJ_DISPO" ] && { MAJ_ETAT=ignoree; MAJ_RAISON=sans_effet; return; } ;;
+     # (« faite » : ecrit ainsi par un Cidre d'avant le 16/10 pour une passe sans effet)
+     sans_effet|faite) [ "$me_v" = "$MAJ_DISPO" ] && { MAJ_ETAT=ignoree; MAJ_RAISON=sans_effet; return; } ;;
      echouee|en_cours)
         if [ -z "$me_v" ] || [ "$me_v" = "$MAJ_DISPO" ]; then
            MAJ_ETAT=echouee; MAJ_RAISON=$(maj_champ "$1" raison); MAJ_RAISON=${MAJ_RAISON:-interrompue}
@@ -1034,7 +1035,14 @@ telecharger() { # <appid> <windows|macos> <dl|maj>
    if [ "$t_rc" -eq 0 ] && { grep -q "Error! App '" "$MAJ_ETATS/$t_id.sortie" 2>/dev/null || ! grep -q '"StateFlags"[[:space:]]*"4"' "$t_acf" 2>/dev/null; }; then t_rc=1; fi
    maj_oublier avancement rc
    if [ "$t_rc" -eq 0 ]; then
-      maj_noter "$t_id" etat=faite "build_avant=$t_avant" "build_vise=$t_vise" "build_apres=$(champ "$t_id" buildid)"
+      # SteamCMD a fini sans erreur. S'il a laisse le build sous celui qu'on
+      # visait (« already up to date », ou « fully installed » apres une
+      # verification), rien n'a ete installe : c'est une passe sans effet, pas
+      # une mise a jour faite. (Essai reel du 16/10 : manifeste abaisse a la
+      # main, fichiers deja a jour, SteamCMD ne recrit pas le buildid.)
+      t_apres=$(champ "$t_id" buildid); t_e=faite
+      entier "$t_vise" && entier "$t_apres" && [ "$t_apres" -lt "$t_vise" ] && t_e=sans_effet
+      maj_noter "$t_id" "etat=$t_e" "build_avant=$t_avant" "build_vise=$t_vise" "build_apres=$t_apres"
       # APPINFO ignore le jeu, ou dit plus ancien que ce qu'on vient
       # d'installer : il est en retard. (Plus recent : la mise a jour a ete sans
       # effet, et il dit vrai.)
@@ -1676,6 +1684,8 @@ case "$cmd" in
     [ $rc -eq 3 ] && { echo "Session Steam non memorisee : connecte-toi (\`cidre login\`)." >&2; exit 3; }
     dire
     if [ $rc -eq 0 ]; then
+      [ "$(maj_champ "$id" etat)" != sans_effet ] ||
+         dire "SteamCMD dit le jeu a jour, mais son build reste $(maj_champ "$id" build_apres) (publie : $(maj_champ "$id" build_vise)) : rien n'a ete installe. \`cidre play\` ne retentera pas ce build."
       dire "OK. Contenu telecharge :"
       [ "$JSON" = oui ] && exec >&2
       ls -la "$DEST" 2>/dev/null | head
