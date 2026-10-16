@@ -13,8 +13,27 @@ nom = "steam 2026-10-11"
 plateformes_steam = "steam 2026-10-11"
 
 [compat]
-etat = "non-teste"
-date = "2026-10-11"
+etat = "bronze"
+source = "cidre-test"
+date = "2026-10-16"
+machine = "M1 Max 32 Go"
+cidre_version = "1.5.11 + 0150"
+fps_jeu = 30
+notes = "DXMT, 1728x1084 : va en jeu (lobby et partie d'investigation), 30 a 55 fps, mais les pieces eclairees par des neons ou lampes emissives restent quasi noires. L'eclairage direct marche (tableaux sous spots bien eclaires) ; les emissifs n'eclairent leur entourage que par Lumen, qu'Unreal 5.6 n'active pas sur M1 (pas de Lumen en D3D11, ni en D3D12 sans SM 6.6 ni atomiques 64 bits). Sans contournement par Engine.ini : ombres coupees, MegaLights/clustered/culling/Lumen a 0, exposition fixe + SSGI n'eclairent pas les pieces. Avant 0150 (pont Steam), plantage au demarrage : SteamFriends018::GetFriendRelationship pris pour un retour par pointeur cache."
+voie = "dxmt"
+
+[[compat.machines]]
+nom = "M1"
+si = "famille_gpu <= 7"
+voie = "d3d12"
+etat = "bronze"
+source = "cidre-test"
+date = "2026-10-16"
+machine = "M1 Max 32 Go"
+cidre_version = "1.5.11 + 0150"
+fps_jeu = 30
+options = "dx12=true"
+notes = "Unreal accepte le D3D12 sur M1 (SM5, sans Nanite ni Lumen) et va en jeu a 30 fps, avec la meme obscurite qu'en DXMT : rien a gagner, rester en DXMT."
 
 [compat.protondb]
 palier = "gold"
