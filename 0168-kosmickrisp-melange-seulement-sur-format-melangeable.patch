@@ -1,0 +1,41 @@
+Generated-by: LLM
+
+KosmicKrisp : pas de melange sur un format que Metal ne sait pas melanger -- kk_native_blend_cb (correctif 0024) activait le melange Metal natif sans regarder le format de la cible ; Vulkan ignore le melange sur un format entier, Metal refuse le pipeline et arrete le processus (« Blending is enabled for render target 0; however, the pixelformat MTLPixelFormatR32Uint for this render target is not blendable » : Detroit: Become Human sur M4, deux fois en jeu apres un changement de qualite). La decision suit la capacite de melange de la table des formats (entiers signes et non signes de toutes tailles : non) ; elle sert a la descente du nuanceur, a l'etat du pipeline et a la cle dynamique, qui restent coherentes ; ces cibles repassent par nir_lower_blend, qui ne melange pas les entiers. COLOR_ATTACHMENT_BLEND_BIT n'est plus annonce pour ces formats. Sonde sonde_melange_entier (blend ONE/ONE ; R32_UINT, R32G32B32A32_UINT, R16_SINT, R32G32B32A32_SINT, temoin R32_SFLOAT) : avant, assertion Metal ; apres, 0 texel faux, melange ignore sur les entiers et applique sur le flottant, BLEND annonce seulement pour le flottant (M1).
+
+--- a/src/kosmickrisp/vulkan/kk_image.c
++++ b/src/kosmickrisp/vulkan/kk_image.c
+@@ -79,7 +79,9 @@ kk_get_image_plane_format_features(struct kk_physical_device *pdev,
+       features |= VK_FORMAT_FEATURE_2_BLIT_DST_BIT;
+       // TODO_KOSMICKRISP Support snorm formats once the following spec issue is
+       // resolved: https://gitlab.khronos.org/vulkan/vulkan/-/issues/4293
+-      if (!vk_format_is_snorm(vk_format))
++      /* Cidre (0168) : pas de melange annonce sur un format que Metal ne sait
++       * pas melanger (entiers) : l'application ne doit pas l'activer. */
++      if (!vk_format_is_snorm(vk_format) && va_format->blend)
+          features |= VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BLEND_BIT;
+    }
+ 
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -513,6 +513,21 @@ kk_native_blend_cb(const struct vk_color_blend_state *cb, uint32_t i,
+    if (!att->blend_enable || att->write_mask != BITFIELD_MASK(4))
+       return false;
+ 
++   /* Vulkan ignore le melange sur une cible entiere ; Metal refuse un pipeline
++    * qui l'active sur un format non melangeable et arrete le processus
++    * (« Blending is enabled for render target 0; however, the pixelformat
++    * MTLPixelFormatR32Uint ... is not blendable », Detroit: Become Human). La
++    * table des formats porte la capacite de melange de Metal (entiers signes et
++    * non signes de toutes tailles : non) ; ces formats repassent par
++    * nir_lower_blend, qui ne melange pas les entiers. La decision est la meme
++    * pour la descente du nuanceur, l'etat du pipeline et la cle dynamique.
++    */
++   if (format != PIPE_FORMAT_NONE) {
++      const struct kk_va_format *vf = kk_get_va_format(format);
++      if (vf == NULL || !vf->blend || util_format_is_pure_integer(format))
++         return false;
++   }
++
+    if (att->color_blend_op >= VK_BLEND_OP_ZERO_EXT ||
+        att->alpha_blend_op >= VK_BLEND_OP_ZERO_EXT)
+       return false;
