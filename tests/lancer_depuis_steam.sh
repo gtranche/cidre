@@ -74,6 +74,14 @@ dxvk_config() { export DXVK_CONFIG="${DXVK_CONFIG:+$DXVK_CONFIG;}$1"; }
 # jeu ; CIDRE_PIPELINE_CACHE=0 (ou cache_pipelines=0 dans le profil) le coupe.
 if [ -n "$JEU" ] && [ "$(opt cache_pipelines CIDRE_PIPELINE_CACHE)" != false ]; then
    export MESA_KK_PIPELINE_CACHE="${MESA_KK_PIPELINE_CACHE:-$HOME/Library/Application Support/Cidre/vkd3d-cache/$JEU}"
+   # Pipelines precompiles livres par Cidre pour ce jeu, cette famille de GPU et
+   # ce KosmicKrisp (tests/precompil_kk.sh, `cidre precompil`) : l'AIR et
+   # l'archive de cette architecture, consultes avant toute compilation (0165).
+   # Un MESA_KK_PRECOMPIL explicite garde la main.
+   if [ -z "${MESA_KK_PRECOMPIL:-}" ]; then
+      PRECOMPIL=$(sh "$R/tests/precompil_kk.sh" dossier "$JEU" 2>/dev/null || true)
+      [ -z "$PRECOMPIL" ] || export MESA_KK_PRECOMPIL="$PRECOMPIL"
+   fi
 fi
 
 # Langue du jeu. langue = "auto" (defaut) : la langue de macOS, sinon l'anglais ;
@@ -340,6 +348,7 @@ DEBUT_EPOCH=$(date +%s)
    # profils/README.md, deja fondus dans le profil ci-dessus) : dire lesquelles jouent.
    VARIANTES=$(sh "$R/tests/fiche_profil.sh" variantes "$JEU" 2>/dev/null | tr '\n' ';' | sed 's/;$//; s/;/ ; /g')
    [ -z "$VARIANTES" ] || echo "    fiche   : variante pour cette machine (si $VARIANTES)"
+   [ -z "${MESA_KK_PRECOMPIL:-}" ] || echo "    precompil : pipelines precompiles livres ($MESA_KK_PRECOMPIL)"
    [ -z "${CIDRE_DECK:-}" ] || echo "    deck    : mode Deck simule (IsSteamRunningOnSteamDeck rend vrai)"
    [ -z "$DECK_COUPE" ] || echo "    deck    : coupe en D3D12 (la fiche le demande ; CIDRE_DECK=1 pour forcer)"
 } >>"$JOURNAL"

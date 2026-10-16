@@ -105,7 +105,8 @@ for f in etape2_pile_arm64ec.sh lancer_depuis_steam.sh brancher_jeux_steam.sh \
          installer_fex.sh profil_cidre.sh cidre_install.sh compte_steam.sh \
          majs_steam.awk brancher_jeux_steam.awk configurer_cidre.sh langue_jeu.sh langue_cidre.sh depots_langue.awk \
          installer_steamcmd.sh installer_client_steam_windows.sh diagnostic_cidre.sh \
-         fiche_profil.sh reglages_jeu.sh arguments_jeu.sh version_windows.sh machine.sh client_steam_natif.sh expliquer_sortie.sh deviner_saves.sh repli_dxmt.sh lier_saves_steam.sh prefixe_a_jour.sh etat_shaders.sh; do
+         fiche_profil.sh reglages_jeu.sh arguments_jeu.sh version_windows.sh machine.sh client_steam_natif.sh expliquer_sortie.sh deviner_saves.sh repli_dxmt.sh lier_saves_steam.sh prefixe_a_jour.sh etat_shaders.sh \
+         precompil_kk.sh; do
    livrer "tests/$f"
 done
 # La base de profils par jeu (profils/README.md) : la copie livree, repli de
@@ -139,6 +140,13 @@ rm "$STAGE/tests/cidre_outil.c"
 livrer tests/sonde_wx.c
 cc -arch arm64 -mmacosx-version-min=13.0 -O1 -Wall -Wextra -o "$STAGE/build/sonde-wx" "$STAGE/tests/sonde_wx.c"
 rm "$STAGE/tests/sonde_wx.c"
+# Pipelines precompiles de KosmicKrisp (tests/precompil_kk.sh) : l'architecture
+# GPU de la machine (build/puce-gpu), et la version du generateur de MSL de ce
+# runtime (kk-msl.txt, empreinte de la serie de correctifs mesa) qui choisit les
+# paquets compatibles.
+cc -arch arm64 -mmacosx-version-min=13.0 -O1 -Wall -Wextra -fobjc-arc -framework Foundation -framework Metal \
+   -o "$STAGE/build/puce-gpu" "$R/tests/puce_gpu.m"
+sh "$R/tests/precompil_kk.sh" kk >"$STAGE/kk-msl.txt"
 # Garde-fou : rien de ce qu'on livre ne doit appeler python3.
 if grep -rnE '(^|[^[:alnum:]_/.-])python3?([^[:alnum:]_.-]|$)' "$STAGE/cidre" "$STAGE/tests" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#'; then
    echo "un script livre appelle python : un Mac sans outils de developpement ne l'a pas" >&2; exit 1

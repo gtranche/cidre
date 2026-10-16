@@ -1308,6 +1308,13 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
   cidre dl <appid> [windows|macos] [--vers <emplacement>]
                                   telecharge (ou met a jour) le jeu dans un emplacement Cidre, hors du client :
                                   la ou il est deja, sinon --vers, sinon l'emplacement par defaut
+                                  ; un jeu Windows recoit ensuite ses pipelines precompiles s'il y en a (cidre precompil)
+  cidre precompil <id> [--json]   telecharge les pipelines precompiles du jeu pour ce Mac (KosmicKrisp : D3D12,
+                                  Vulkan) : le premier lancement ne les compile plus ; rien s'il n'y en a pas
+                                  --json : {"evenement":"precompil","etat":"en_cours","octets","total"} puis
+                                  installe | absent | sans_reseau | echoue
+  cidre precompil <id> etat [--json]    installe | disponible | absent | sans_reseau, architecture, taille
+  cidre precompil <id> retirer    les supprime
   cidre bottles [--json]          les jeux Steam Windows deja installes par CrossOver, Whisky ou Heroic
   cidre import <appid> [<bouteille>] [--move] [--vers <emplacement>] [--json]
                                   reprend un de ces jeux dans le dossier Cidre sans le retelecharger : clone
@@ -1415,10 +1422,13 @@ case "$cmd" in
     mj=null; [ "$(source_de "$id")" = cidre ] && { maj_etat "$id" cache; mj="{$(maj_json "$id")}"; }
     # ses shaders sur ce Mac (tests/etat_shaders.sh), pour un jeu Windows (ou sans .exe pres de la racine)
     sh_=null; case $(plat "$id") in windows|inconnu) sh_=$(CIDRE_CHEMIN_JEU=$(chemin "$id") sh "$R/tests/etat_shaders.sh" json "$id" 2>/dev/null || echo null) ;; esac
+    # ses pipelines precompiles (tests/precompil_kk.sh) : l'index en cache seulement, pas de reseau ici
+    pc_=null; case $(plat "$id") in windows|inconnu) pc_=$(CIDRE_PRECOMPIL_SANS_RESEAU=1 sh "$R/tests/precompil_kk.sh" etat "$id" --json 2>/dev/null || echo null) ;; esac
     if [ "$JSON" = oui ]; then
       # "fiche" : la fiche de la base de profils (profils/README.md), ou null
       # "shaders" : {"etat","raison","voie","dernier","cumul","macos","message"}, ou null
-      fiche_json "$id"; printf ',"sauvegardes":%s,"options":%s,"options_perso":%s,"maj":%s,"fiche":%s,"shaders":%s}\n' "$sv" "$opts" "$(sh "$R/tests/profil_cidre.sh" "$id" perso)" "$mj" "$(sh "$R/tests/fiche_profil.sh" json "$id")" "$sh_"
+      # "precompil" : {"etat" (installe, disponible, absent, sans_reseau),"arch","famille","kk","taille"}, ou null
+      fiche_json "$id"; printf ',"sauvegardes":%s,"options":%s,"options_perso":%s,"maj":%s,"fiche":%s,"shaders":%s,"precompil":%s}\n' "$sv" "$opts" "$(sh "$R/tests/profil_cidre.sh" "$id" perso)" "$mj" "$(sh "$R/tests/fiche_profil.sh" json "$id")" "$sh_" "${pc_:-null}"
     else
       echo "id          : $id"
       echo "nom         : $(nom "$id")"
@@ -1780,12 +1790,24 @@ case "$cmd" in
       [ "$JSON" = oui ] && exec >&2
       ls -la "$DEST" 2>/dev/null | head
       find "$DEST" -maxdepth 3 \( -name '*.exe' -o -name '*.app' \) 2>/dev/null | head
+      # Ses pipelines precompiles, s'il y en a pour ce Mac : a l'installation,
+      # pas au premier lancement. Jamais bloquant.
+      [ "$os" != windows ] || sh "$R/tests/precompil_kk.sh" telecharger "$id" 2>&1 || true
     else
       # la cause probable et quoi faire, en derniere ligne : c'est elle qu'une interface montre
       dire "Echec SteamCMD (rc=$rc). Si 'Invalid Password', relance et saisis bien mot de passe + Steam Guard."
       [ -z "$MAJ_MESSAGE" ] || dire "$MAJ_MESSAGE"
       exit $rc
     fi ;;
+  precompil|pipelines)
+    # Pipelines precompiles de KosmicKrisp pour ce jeu (tests/precompil_kk.sh).
+    id=${1:?usage: cidre precompil <id> [etat|retirer] [--json]}
+    case ${2:-} in
+      etat) sh "$R/tests/precompil_kk.sh" etat "$id" $( [ "$JSON" = oui ] && echo --json) ;;
+      retirer) sh "$R/tests/precompil_kk.sh" retirer "$id" ;;
+      ''|--json) sh "$R/tests/precompil_kk.sh" telecharger "$id" $( [ "$JSON" = oui ] && echo --json) ;;
+      *) echo "usage: cidre precompil <id> [etat|retirer] [--json]" >&2; exit 2 ;;
+    esac ;;
   bottles|bouteilles)
     # Les jeux qu'un autre outil a deja installes, et que `cidre import` reprend.
     export CIDRE_JEUX_CONNUS="$IDS_EMPL"
