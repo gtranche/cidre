@@ -1,0 +1,45 @@
+# Detroit: Become Human (Quantic Dream, Vulkan natif). Mesure sur iMac M4 (macOS 27.0.1),
+# runtime 1.5.12 + pilote KosmicKrisp de main (0163-0168), le 2026-10-16 :
+#   - premier lancement : le jeu precompile toute sa liste de pipelines (99 453 pipelines,
+#     151 182 bibliotheques MSL, ~11 min de creation de pipelines apres ~25 min de MSL la
+#     toute premiere fois) ; MTLCompilerService sature (600-900 % de CPU), c'est attendu ;
+#   - sans 0164 : 111 bibliotheques refusees (« thread_index_in_simdgroup » en vertex) et
+#     l'ecran restait a 98 % ; sans 0166 : VkPipelineCache.bin a 0 octet + CorruptedCache,
+#     98 % sans fin ; avec les deux : cache de 1,31 Go ecrit, le jeu arrive en jeu ;
+#   - sans 0168 : arret par Metal en jeu apres un changement de qualite (melange natif sur
+#     une cible R32Uint) ;
+#   - 30 fps pile en jeu : FIFO a la demi-cadence (vsync = true par defaut), comme DREDGE ;
+#     vsync = false (choix du joueur), gain pas encore mesure sur ce jeu.
+# Au demarrage, le jeu affiche « carte graphique inconnue » et attend un clic : KosmicKrisp
+# annonce Apple (0x106b) et le peripherique 100, inconnus de sa liste. vk_identite (0167)
+# annonce une RX 580 (carte recommandee du jeu, 2019) a Vulkan, et la meme a DXGI (DXMT,
+# que DXGI_Helper.dll interroge) ; laquelle des deux voies declenche l'avertissement n'est
+# pas encore verifie, les deux sont posees. Changer d'identite ecarte le cache de pipelines
+# (recompilation au lancement suivant).
+[jeu]
+appid = 1222140
+nom = "Detroit: Become Human"
+exe = "DetroitBecomeHuman.exe"
+moteur = "autre"
+api = "vulkan"
+bits = 64
+anticheat = "none"
+lanceur = "steam"
+
+[cidre]
+vk_identite = "1002:67df:AMD Radeon RX 580 Series"
+# En jeu, 30 fps pile : la vsync FIFO (defaut) tombe a la demi-cadence des qu'une image
+# depasse 16,7 ms a 60 Hz. Sans vsync, le jeu peut monter au-dessus de 30, au prix de
+# dechirures (choix du joueur, 2026-10-16 ; gain pas encore mesure sur ce jeu).
+vsync = false
+
+[compat]
+etat = "bronze"
+source = "cidre-test"
+date = "2026-10-16"
+machine = "iMac M4"
+cidre_version = "1.5.12 + KosmicKrisp 0163-0168 (main 1b2a85b)"
+fps_menu = 0
+fps_jeu = 30
+notes = "Vulkan natif. Premier lancement tres long (precompilation de 99 453 pipelines, cache Vulkan de 1,31 Go ensuite). En jeu a 30 fps, plafonne par la vsync FIFO ; image « decalee » d'apres le joueur, qualite a baisser. Avertissement « carte graphique inconnue » au demarrage sans vk_identite. A refaire apres 0168 (arret Metal en jeu corrige)."
+voie = "natif"

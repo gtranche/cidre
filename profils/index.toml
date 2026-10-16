@@ -952,6 +952,12 @@ etat = "non-teste"
 date = "2026-10-11"
 empreinte = "4f24650611a20ad2227b372398a31841"
 
+[1222140]
+nom = "Detroit: Become Human"
+etat = "bronze"
+date = "2026-10-16"
+empreinte = "4246470204e326a4997a0f8b9edf93bc"
+
 [1222370]
 nom = "Necromunda: Hired Gun"
 etat = "non-teste"
