@@ -1,0 +1,80 @@
+Generated-by: LLM
+
+KosmicKrisp : KK_WORKAROUND_10 sans court-circuit (CIDRE_W10_SANS_COURT_CIRCUIT, eteint par defaut) -- la valeur surement vraie que W10 met dans la condition des bcsel de calcul s'ecrivait (ulong)&buf0 && c, un court-circuit donc du flot de controle ; le compilateur AGX serialise alors chaque indice de shuffle par r0h (4b286d7e d'Expedition 33 en D3D12 : 1 030 mov contre 27, 3,70 -> 3,56 ms au banc seul, 2,55 ms avec 0157). Ecrite avec un & bit a bit, la valeur reste dans la condition sans branche ; conditions vectorielles inchangees. Sonde sonde_w10 (scans inclusifs vec4, forme du CTS que W10 corrige) : 0 faute sur 3,3 M invocations, avec et sans l'option, M1 macOS 26.5. Les contournements coupes et les options CIDRE qui changent le code entrent desormais dans pipelineCacheUUID : le cache de pipelines de vkd3d resservait des nuanceurs compiles sous d'autres options d'un lancement a l'autre.
+
+--- a/src/kosmickrisp/compiler/nir_to_msl.c
++++ b/src/kosmickrisp/compiler/nir_to_msl.c
+@@ -262,6 +262,22 @@ alu_funclike_precise(struct nir_to_msl_ctx *ctx, nir_alu_instr *instr,
+       alu_src_to_msl(ctx, instr, 1);                                           \
+    } while (0)
+ 
++/* CIDRE_W10_SANS_COURT_CIRCUIT : KK_WORKAROUND_10 met une valeur surement
++ * vraie dans la condition des bcsel de calcul. Ecrite avec &&, elle cree un
++ * court-circuit, donc du flot de controle, et le compilateur AGX serialise
++ * alors chaque indice de shuffle par r0h (4b286d7e d'Expedition 33 : 1 030 mov).
++ * Avec un & bit a bit, la valeur reste dans la condition sans branche.
++ * Conditions vectorielles : forme && d'origine.
++ */
++static bool
++kk_w10_sans_court_circuit_enabled(void)
++{
++   static int enabled = -1;
++   if (enabled < 0)
++      enabled = getenv("CIDRE_W10_SANS_COURT_CIRCUIT") != NULL;
++   return enabled;
++}
++
+ static bool
+ kk_minmax_integer_zero_test_enabled(void)
+ {
+@@ -650,9 +666,19 @@ alu_to_msl(struct nir_to_msl_ctx *ctx, nir_alu_instr *instr)
+    case nir_op_bcsel:
+       /* KK_WORKAROUND_10 All shaders will have buf0 bound */
+       if (!(ctx->disabled_workarounds & BITFIELD_BIT(10)) &&
+-          ctx->shader->info.stage == MESA_SHADER_COMPUTE)
+-         P(ctx, "(ulong)&buf0.contents[0] && ");
+-      alu_src_to_msl(ctx, instr, 0);
++          ctx->shader->info.stage == MESA_SHADER_COMPUTE) {
++         if (kk_w10_sans_court_circuit_enabled() &&
++             nir_ssa_alu_instr_src_components(instr, 0) == 1) {
++            P(ctx, "(((ulong)&buf0.contents[0] != 0) & bool(");
++            alu_src_to_msl(ctx, instr, 0);
++            P(ctx, "))");
++         } else {
++            P(ctx, "(ulong)&buf0.contents[0] && ");
++            alu_src_to_msl(ctx, instr, 0);
++         }
++      } else {
++         alu_src_to_msl(ctx, instr, 0);
++      }
+       P(ctx, " ? ");
+       alu_src_to_msl(ctx, instr, 1);
+       P(ctx, " : ");
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -1083,6 +1083,25 @@ kk_physical_device_init_pipeline_cache(struct kk_physical_device *pdev)
+                                                               : 0u;
+    _mesa_blake3_update(&blake3_ctx, &atomic64_mode, sizeof(atomic64_mode));
+ 
++   /* Les contournements coupes et les options de Cidre qui changent le code
++    * produit entrent dans la cle : sinon le cache de pipelines de vkd3d resert,
++    * d'un lancement a l'autre, des nuanceurs compiles sous d'autres options.
++    * (Le mode des atomiques 64 bits est hache a part, plus haut.)
++    */
++   _mesa_blake3_update(&blake3_ctx, &pdev->settings.disabled_workarounds,
++                       sizeof(pdev->settings.disabled_workarounds));
++   static const char *const options_codegen[] = {
++      "CIDRE_TEXTURES_NULLES_SANS_BRANCHE",
++      "CIDRE_LECTURES_CACHEES",
++      "CIDRE_MINMAX_ZERO_ENTIER",
++      "CIDRE_DERIVEES_CALCUL",
++      "CIDRE_W10_SANS_COURT_CIRCUIT",
++   };
++   for (unsigned i = 0; i < ARRAY_SIZE(options_codegen); i++) {
++      uint8_t pose = getenv(options_codegen[i]) != NULL;
++      _mesa_blake3_update(&blake3_ctx, &pose, 1);
++   }
++
+    unsigned char blake3[BLAKE3_KEY_LEN];
+    _mesa_blake3_final(&blake3_ctx, blake3);
+ 

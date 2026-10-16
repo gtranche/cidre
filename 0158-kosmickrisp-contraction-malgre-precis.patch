@@ -1,0 +1,49 @@
+Generated-by: LLM
+
+KosmicKrisp : contraction malgre NoContraction (CIDRE_CONTRACTION_MALGRE_PRECIS, eteint par defaut) -- vkd3d pose NoContraction sur les operations DXIL sans tous les drapeaux fast, dont les precise d'Unreal 5 (Nanite : ~760 operations et 193 dx.precise sur af04ff33 d'Expedition 33), et KK les traduit en math_mode(safe) : plus de fma. Le convertisseur d'Apple contracte sur le meme DXIL. Avec l'option : af04ff33 31,6 -> 27,5 Ko de code, -6 points sur les 22 PSO de calcul les plus couteux. Les comparaisons gardent KK_WORKAROUND_14. Risque : ecarts entre passes qui recalculent la meme valeur (fissures Nanite) ; option par fiche, a verifier a l'image.
+
+--- a/src/kosmickrisp/compiler/nir_to_msl.c
++++ b/src/kosmickrisp/compiler/nir_to_msl.c
+@@ -278,6 +278,22 @@ kk_w10_sans_court_circuit_enabled(void)
+    return enabled;
+ }
+ 
++/* CIDRE_CONTRACTION_MALGRE_PRECIS : ignore nir_fp_no_contract et
++ * nir_fp_no_reassoc (NoContraction de SPIR-V, que vkd3d pose sur les operations
++ * DXIL sans tous les drapeaux fast, dont les `precise` du jeu). Le convertisseur
++ * d'Apple fait de meme sur le meme DXIL. Risque : ecarts entre passes qui
++ * recalculent la meme valeur (fissures Nanite) ; option par fiche, a verifier a
++ * l'image. Les comparaisons gardent KK_WORKAROUND_14.
++ */
++static bool
++kk_contraction_malgre_precis_enabled(void)
++{
++   static int enabled = -1;
++   if (enabled < 0)
++      enabled = getenv("CIDRE_CONTRACTION_MALGRE_PRECIS") != NULL;
++   return enabled;
++}
++
+ static bool
+ kk_minmax_integer_zero_test_enabled(void)
+ {
+@@ -2233,7 +2249,8 @@ alu_fp_math_mode_pragma(struct nir_to_msl_ctx *ctx, const nir_alu_instr *alu)
+          return "safe";
+    }
+ 
+-   if (fp_math_ctrl & (nir_fp_no_contract | nir_fp_no_reassoc))
++   if ((fp_math_ctrl & (nir_fp_no_contract | nir_fp_no_reassoc)) &&
++       !kk_contraction_malgre_precis_enabled())
+       return "safe";
+ 
+    /* TODO_KOSMICKRISP nir_fp_preserve_signed_zero should be preserved even if
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -1095,6 +1095,7 @@ kk_physical_device_init_pipeline_cache(struct kk_physical_device *pdev)
+       "CIDRE_LECTURES_CACHEES",
+       "CIDRE_MINMAX_ZERO_ENTIER",
+       "CIDRE_DERIVEES_CALCUL",
++      "CIDRE_CONTRACTION_MALGRE_PRECIS",
+       "CIDRE_IMAGES_NULLES_SANS_BRANCHE",
+       "CIDRE_W10_SANS_COURT_CIRCUIT",
+    };

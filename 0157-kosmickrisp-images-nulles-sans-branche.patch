@@ -1,0 +1,85 @@
+Generated-by: LLM
+
+KosmicKrisp : images de stockage et tampons de texels nuls sans branche (CIDRE_IMAGES_NULLES_SANS_BRANCHE, eteint par defaut), suite de 0136 pour les textures -- image_load, size, samples et levels sont executes puis remplaces par 0 si la poignee est nulle (select), image_store est execute tel quel ; atomiques et lectures creuses gardent la branche. Sonde sonde_images_nulles (M1, 300 passes) : lire ou ecrire par une poignee nulle ne fait aucune faute et ne touche aucune autre ressource, la lecture rend 0 mais la taille rend 1 (d'ou le select). Avec 0156 : 4b286d7e d'Expedition 33 sans aucune branche, 43,9 -> 34,6 Ko de code et 3,70 -> 2,55 ms au banc ; -6 % de code AGX sur les 22 PSO de calcul les plus couteux.
+
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_null_images.c
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_null_images.c
+@@ -70,6 +70,48 @@ kk_null_texture_select_enabled(void)
+    return enabled;
+ }
+ 
++/* CIDRE_IMAGES_NULLES_SANS_BRANCHE : meme traitement pour les images de
++ * stockage et les tampons de texels. Sonde sonde_images_nulles (M1, 300 passes,
++ * 2026-10-16) : lire ou ecrire par une poignee nulle ne fait aucune faute et ne
++ * touche aucune autre ressource ; la lecture rend 0, mais la taille rend 1. D'ou :
++ * lecture et requetes executees puis remplacees par 0 si la poignee est nulle
++ * (select), ecriture executee telle quelle. Atomiques et lectures creuses gardent
++ * la branche.
++ */
++static bool
++kk_null_image_select_enabled(void)
++{
++   static int enabled = -1;
++   if (enabled < 0)
++      enabled = getenv("CIDRE_IMAGES_NULLES_SANS_BRANCHE") != NULL;
++   return enabled;
++}
++
++static bool
++image_select_on_null(const nir_instr *instr)
++{
++   if (instr->type != nir_instr_type_intrinsic)
++      return false;
++
++   switch (nir_instr_as_intrinsic(instr)->intrinsic) {
++   case nir_intrinsic_bindless_image_load:
++   case nir_intrinsic_bindless_image_size:
++   case nir_intrinsic_bindless_image_samples:
++   case nir_intrinsic_bindless_image_levels:
++      return true;
++   default:
++      return false;
++   }
++}
++
++static bool
++image_store_ignores_null(const nir_instr *instr)
++{
++   return instr->type == nir_instr_type_intrinsic &&
++          nir_instr_as_intrinsic(instr)->intrinsic ==
++             nir_intrinsic_bindless_image_store;
++}
++
+ static bool
+ tex_reads_texels(const nir_instr *instr)
+ {
+@@ -106,6 +148,9 @@ lower(nir_builder *b, nir_instr *instr, UNUSED void *data)
+    if (kk_null_texture_select_enabled() && tex_returns_zero_on_null(instr))
+       return false;
+ 
++   if (kk_null_image_select_enabled() && image_store_ignores_null(instr))
++      return false;
++
+    b->cursor = nir_before_instr(instr);
+ 
+    nir_def *def;
+@@ -114,7 +159,8 @@ lower(nir_builder *b, nir_instr *instr, UNUSED void *data)
+    if (!is_null)
+       return false;
+ 
+-   if (def && kk_null_texture_select_enabled() && tex_reads_texels(instr)) {
++   if (def && ((kk_null_texture_select_enabled() && tex_reads_texels(instr)) ||
++               (kk_null_image_select_enabled() && image_select_on_null(instr)))) {
+       b->cursor = nir_after_instr(instr);
+       nir_def *zero = nir_imm_zero(b, def->num_components, def->bit_size);
+       nir_def *sel = nir_bcsel(b, is_null, zero, def);
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -1095,6 +1095,7 @@ kk_physical_device_init_pipeline_cache(struct kk_physical_device *pdev)
+       "CIDRE_LECTURES_CACHEES",
+       "CIDRE_MINMAX_ZERO_ENTIER",
+       "CIDRE_DERIVEES_CALCUL",
++      "CIDRE_IMAGES_NULLES_SANS_BRANCHE",
+       "CIDRE_W10_SANS_COURT_CIRCUIT",
+    };
+    for (unsigned i = 0; i < ARRAY_SIZE(options_codegen); i++) {

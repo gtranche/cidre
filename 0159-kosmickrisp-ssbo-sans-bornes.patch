@@ -1,0 +1,71 @@
+Generated-by: LLM
+
+KosmicKrisp : SSBO sans bornes (CIDRE_SSBO_SANS_BORNES, eteint par defaut) -- les SSBO prennent le format d'adresse sans robustesse (64bit_global_32bit_offset) meme si le pipeline demande robustBufferAccess2, comme le convertisseur d'Apple pour les tampons bruts (indice masque, lecture directe) ; plus de test de borne ni de lecture decoupee en scalaires par acces. Les indices de descripteurs restent bornes. Avec 0156-0158 : 22 PSO de calcul les plus couteux d'Expedition 33 a 0,762 du code de depart, contre 0,751 pour le convertisseur d'Apple ; branches au niveau d'Apple. Risque : faute GPU si le jeu lit hors d'un tampon ; option par fiche.
+
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
+@@ -1206,7 +1206,7 @@ kk_nir_lower_descriptors(nir_shader *nir,
+          rs->uniform_buffers !=
+             VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED ||
+          rs->images != VK_PIPELINE_ROBUSTNESS_IMAGE_BEHAVIOR_DISABLED,
+-      .ssbo_addr_format = kk_buffer_addr_format(rs->storage_buffers),
++      .ssbo_addr_format = kk_ssbo_addr_format(rs->storage_buffers),
+       .ubo_addr_format = kk_buffer_addr_format(rs->uniform_buffers),
+    };
+ 
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -1095,6 +1095,7 @@ kk_physical_device_init_pipeline_cache(struct kk_physical_device *pdev)
+       "CIDRE_LECTURES_CACHEES",
+       "CIDRE_MINMAX_ZERO_ENTIER",
+       "CIDRE_DERIVEES_CALCUL",
++      "CIDRE_SSBO_SANS_BORNES",
+       "CIDRE_CONTRACTION_MALGRE_PRECIS",
+       "CIDRE_IMAGES_NULLES_SANS_BRANCHE",
+       "CIDRE_W10_SANS_COURT_CIRCUIT",
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -56,7 +56,7 @@ kk_get_spirv_options(struct vk_physical_device *vk_pdev,
+       rs = &rs_all_supported;
+    return (struct spirv_to_nir_options){
+       .environment = NIR_SPIRV_VULKAN,
+-      .ssbo_addr_format = kk_buffer_addr_format(rs->storage_buffers),
++      .ssbo_addr_format = kk_ssbo_addr_format(rs->storage_buffers),
+       .phys_ssbo_addr_format = nir_address_format_64bit_global,
+       .ubo_addr_format = kk_buffer_addr_format(rs->uniform_buffers),
+       .shared_addr_format = nir_address_format_32bit_offset,
+@@ -1112,7 +1112,7 @@ kk_lower_nir(struct kk_device *dev, nir_shader *nir, bool emulated_stage,
+    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_global,
+             nir_address_format_64bit_global);
+    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ssbo,
+-            kk_buffer_addr_format(rs->storage_buffers));
++            kk_ssbo_addr_format(rs->storage_buffers));
+    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ubo,
+             kk_buffer_addr_format(rs->uniform_buffers));
+ 
+--- a/src/kosmickrisp/vulkan/kk_shader.h
++++ b/src/kosmickrisp/vulkan/kk_shader.h
+@@ -296,6 +296,23 @@ kk_buffer_addr_format(VkPipelineRobustnessBufferBehaviorEXT robustness)
+    }
+ }
+ 
++/* CIDRE_SSBO_SANS_BORNES : les SSBO prennent le format d'adresse sans
++ * robustesse meme si le pipeline la demande (robustBufferAccess2 de vkd3d), comme
++ * le convertisseur d'Apple pour les tampons bruts. Plus de test de borne par
++ * lecture ni de lectures decoupees en scalaires. Risque : faute GPU si le jeu lit
++ * hors d'un tampon ; option par fiche. Les indices de descripteurs restent bornes.
++ */
++static inline nir_address_format
++kk_ssbo_addr_format(VkPipelineRobustnessBufferBehaviorEXT robustness)
++{
++   static int sans_bornes = -1;
++   if (sans_bornes < 0)
++      sans_bornes = getenv("CIDRE_SSBO_SANS_BORNES") != NULL;
++   if (sans_bornes)
++      return nir_address_format_64bit_global_32bit_offset;
++   return kk_buffer_addr_format(robustness);
++}
++
+ struct kk_root_layout;
+ 
+ bool
