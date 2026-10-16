@@ -12,6 +12,28 @@ plateformes_steam = "windows"
 nom = "steam 2026-10-11"
 plateformes_steam = "steam 2026-10-11"
 
+# M2 et suivants : le vrai D3D12 en Shader Model 6.6 eclaire les pieces. Unreal 5.6
+# y active Lumen, seul a eclairer les pieces par leurs neons emissifs (sur M1, sans
+# SM 6.6 ni atomiques 64 bits, elles restent noires en DXMT comme en D3D12). Mesure
+# sur l iMac M4 (10 coeurs GPU) le 2026-10-16, meme piece :
+#     DXMT (defaut)                                      pieces aux neons noires
+#     D3D12, reglages par defaut, 2240x1260              8 fps   GPU 113 ms
+#     D3D12, tout au minimum, 1600x900, FSR Ultra Perf. 18 fps   GPU  55 ms
+#     idem + generation d images FSR 3                  32 fps affiches (~16 reels)
+# Pas active par defaut : decision de l utilisateur le 2026-10-16 (DXMT partout,
+# trop lent en D3D12 sur un M4 de base). Pour l activer sur M2 et suivants :
+#     cidre set 1929610 dx12 true
+#     cidre set 1929610 sm66 true
+#     cidre set 1929610 arguments -dx12      (sans -dx12 le jeu reste en D3D11)
+# puis, dans le menu du jeu : tout au minimum (l Illumination globale ne descend
+# pas sous Elevee, ce qui garde Lumen), FSR Ultra Performance, sortie 1600x900, et
+# au besoin la generation d images. Ces reglages vivent dans
+# Saved/SaveGames/OptionsRelease.sav (structure GraphicQuality, UpscalingMethod,
+# FSRFrameGenMode), absente d une sauvegarde neuve et d un en-tete Unreal 5.6 que
+# le format gvas ne sait pas completer : une fiche ne peut pas les poser.
+# Pistes pour la lumiere en DXMT/M1 : Lumen sans atomiques 64 bits natifs
+# (emulation), et performance du D3D12 (generateur AIR direct).
+
 [compat]
 etat = "bronze"
 source = "cidre-test"
@@ -34,6 +56,19 @@ cidre_version = "1.5.11 + 0150"
 fps_jeu = 30
 options = "dx12=true"
 notes = "Unreal accepte le D3D12 sur M1 (SM5, sans Nanite ni Lumen) et va en jeu a 30 fps, avec la meme obscurite qu'en DXMT : rien a gagner, rester en DXMT."
+
+[[compat.machines]]
+nom = "M2 et suivants"
+si = "famille_gpu >= 8"
+voie = "d3d12"
+etat = "bronze"
+source = "cidre-test"
+date = "2026-10-16"
+machine = "iMac M4 24 Go (10 coeurs GPU, ecran 2240x1260 points)"
+cidre_version = "1.5.11"
+fps_jeu = 18
+options = "dx12=true sm66=true arguments=-dx12"
+notes = "En SM 6.6, Lumen s'active : les pieces aux neons sont eclairees comme sur PC. Reglages du jeu par defaut en 2240x1260 : 8 fps / GPU 113 ms. Tout au minimum (l'Illumination globale ne descend pas sous Elevee, ce qui garde Lumen), 1600x900, FSR Ultra Performance : 18 fps / 55 ms. Avec en plus la generation d'images FSR 3 (elle marche sous vkd3d-proton/KosmicKrisp) : 32 fps affiches, environ 16 reels, latence d'entree accrue. Limite par la carte d'un M4 a 10 coeurs ; un M Pro/Max devrait faire mieux. Mesure sur M4 ; M2 et M3 non essayes."
 
 [compat.protondb]
 palier = "gold"
