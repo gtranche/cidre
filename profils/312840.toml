@@ -10,6 +10,10 @@ plateformes_steam = "macos windows"
 api_disponibles = "d3d9 opengl"
 bits = 32
 drm = "steam"
+# Le jeu lui-meme, pas le lanceur Qt d'Aspyr (Fahrenheit.exe) : celui-ci range ses DLL
+# (Qt5, SDL2, libgcc) dans Fahrenheit.exe.local\, redirection que Wine ignore
+# (c0000135, code 53). Le lanceur ne montre que l'EULA et les actualites.
+exe = "FahrenheitSub.exe"
 
 [jeu.sources]
 nom = "steam 2026-10-13"
