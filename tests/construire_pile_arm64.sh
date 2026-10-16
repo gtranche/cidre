@@ -80,6 +80,14 @@ for pair in "src/dxvk:build/dxvk-winarm64ec" "src/dxvk-async:build/dxvk-async-wi
    ninja -C "$R/$bld" -j"$J"
 done
 
+echo "== DXVK i386 (d3d9 des jeux 32 bits, option d3d9) =="
+# Le cross-file amont build-win32.txt, mingw i686 : un jeu 32 bits ne charge
+# rien de system32. Seul d3d9.dll est livre (dxvk/i386) ; le lanceur le pose
+# en syswow64 au lancement d'un jeu 32 bits en d3d9 = "dxvk".
+[ -f "$R/build/dxvk-win32/build.ninja" ] || meson setup "$R/build/dxvk-win32" "$R/src/dxvk" \
+   --cross-file "$R/src/dxvk/build-win32.txt" -Dbuildtype=release
+ninja -C "$R/build/dxvk-win32" -j"$J" src/d3d9/d3d9.dll
+
 echo "== vkd3d-proton arm64ec (vrai D3D12, option dx12) =="
 # Meme chaine arm64ec que DXVK. hexpthk=1 -> chargeable par un jeu x64 sous FEX
 # (l'ancien build arm64 pur etait inchargeable). enable_tests=false : on ne veut

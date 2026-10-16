@@ -880,6 +880,15 @@ sh "$R/cidre" set defaut arguments 'a"b' >/dev/null 2>&1; rc=$?
 verif "cidre set arguments : guillemet refuse" "2" "$rc"
 cp "$T/perso.avant-arguments" "$CIDRE_PROFILS"
 grep -q 'ARGJ=${CIDRE_ARGUMENTS:-$(profil arguments)}' "$R/tests/lancer_depuis_steam.sh" && ok "lanceur : option arguments lue" || echec "lanceur : option arguments non lue"
+# d3d9 : dxvk ou wined3d, rien d'autre ; le lanceur la lit et pose le =n/=b
+cp "$CIDRE_PROFILS" "$T/perso.avant-d3d9"
+sh "$R/cidre" set defaut d3d9 wined3d >/dev/null 2>&1
+verif "cidre set defaut d3d9 wined3d" "wined3d" "$(valeur 998 d3d9)"
+sh "$R/cidre" set defaut d3d9 opengl >/dev/null 2>&1; rc=$?
+verif "cidre set d3d9 : valeur inconnue refusee" "2" "$rc"
+cp "$T/perso.avant-d3d9" "$CIDRE_PROFILS"
+grep -q 'D3D9=$(opt d3d9 CIDRE_D3D9)' "$R/tests/lancer_depuis_steam.sh" && grep -q 'D3D9_OV="d3d9=n"' "$R/tests/lancer_depuis_steam.sh" \
+   && ok "lanceur : option d3d9 lue" || echec "lanceur : option d3d9 non lue"
 
 echo "== 6d. version macOS 32 bits seulement (traitee en jeu Windows)"
 # Un faux client Steam : Fahrenheit (312840) installe en version macOS. Ses

@@ -146,6 +146,10 @@
 #                    rend pas en DXMT). Mesure sur Expedition 33 : x3 a x4. Avec
 #                    "dxmt", l'overlay Steam est COUPE pour ce lancement : sa
 #                    bibliotheque fige la presentation DXMT a la premiere image.
+#   d3d9             rendu Direct3D 9 : "dxvk" (DXVK -> Vulkan -> KosmicKrisp ->
+#                    Metal ; sa variante i386 posee en syswow64) ou "wined3d" (le
+#                    builtin de Wine, sur l'OpenGL de macOS). Sans valeur : dxvk
+#                    pour un jeu 32 bits, wined3d pour un jeu 64 bits.
 #   deck             mode Deck simule (wine11 0160) : le pont Steam repond oui a
 #                    IsSteamRunningOnSteamDeck. Un jeu « Verifie Steam Deck » prend
 #                    alors seul sa configuration Deck (definition, prereglages,

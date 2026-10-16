@@ -42,6 +42,17 @@ for d in d3d11 dxgi d3d10core d3d9 d3d8; do
    cp "$R/build/dxvk-async-winarm64ec/src/$d/$d.dll" "$STAGE/dxvk/async/" 2>/dev/null || true
 done
 
+# DXVK d3d9 i386 (option d3d9, jeux 32 bits) : le lanceur le pose en syswow64.
+# Depouille de ses symboles (16 -> ~5 Mo). Absent, un jeu 32 bits en D3D9
+# retombe sur wined3d.
+mkdir -p "$STAGE/dxvk/i386"
+if [ -f "$R/build/dxvk-win32/src/d3d9/d3d9.dll" ]; then
+   cp "$R/build/dxvk-win32/src/d3d9/d3d9.dll" "$STAGE/dxvk/i386/"
+   i686-w64-mingw32-strip "$STAGE/dxvk/i386/d3d9.dll" 2>/dev/null || true
+else
+   echo "  dxvk i386 : d3d9.dll ABSENT (tests/construire_pile_arm64.sh) ; un jeu 32 bits en D3D9 restera sur wined3d"
+fi
+
 # vkd3d-proton arm64ec (vrai D3D12, option dx12). lancer_depuis_steam.sh installe
 # ces DLL en system32 et force d3d12=n quand l'option dx12 est vraie ; sinon le
 # d3d12 builtin de Wine (repli D3D11) est utilise. Cherche $R/vkd3d/*.dll au lancement.

@@ -1,0 +1,36 @@
+wine11 : la mise a l'echelle de la swapchain s'ajoute a la chaine pNext du jeu (0169)
+
+win32u_vkCreateSwapchainKHR remplacait create_info_host.pNext par sa
+VkSwapchainPresentScalingCreateInfoEXT des que la taille de la swapchain
+differait du rectangle client -- DPI virtualise ou mode d'ecran emule
+(EmulateModeset, option mode_emule). Toute la chaine de l'application partait.
+DXVK y met le VkImageFormatListCreateInfo de VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR,
+que le WSI de Mesa (wsi_configure_image) va chercher sans le trouver : lecture
+a l'adresse 0 dans KosmicKrisp, « vkCreateSwapchainKHR Exception 0xc0000005 in
+Unix call ». Fahrenheit Remastered (312840, D3D9 par DXVK i386, plein ecran
+1024x768 emule) tombait la au demarrage, M4, 2026-10-16.
+
+La structure passe devant la chaine du jeu, et seulement si le jeu n'en a pas
+deja mis une.
+
+--- aa/dlls/win32u/vulkan.c
++++ bb/dlls/win32u/vulkan.c
+@@ -1879,8 +1879,16 @@
+         instance->extensions.has_VK_EXT_surface_maintenance1 &&
+         physical_device->extensions.has_VK_KHR_swapchain_maintenance1)
+     {
+-        scaling.scalingBehavior = VK_PRESENT_SCALING_STRETCH_BIT_EXT;
+-        create_info_host.pNext = &scaling;
++        /* Devant la chaine de l'application, jamais a sa place : DXVK y met le
++         * VkImageFormatListCreateInfo qu'exige VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR,
++         * et le WSI de Mesa le cherche sans filet (wsi_configure_image : lecture a
++         * l'adresse 0 des que la taille differe, mode d'ecran emule compris). */
++        if (!find_next_struct( create_info_host.pNext, VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_SCALING_CREATE_INFO_EXT ))
++        {
++            scaling.scalingBehavior = VK_PRESENT_SCALING_STRETCH_BIT_EXT;
++            scaling.pNext = create_info_host.pNext;
++            create_info_host.pNext = &scaling;
++        }
+     }
+ 
+     if (!(swapchain = calloc( 1, sizeof(*swapchain) ))) return VK_ERROR_OUT_OF_HOST_MEMORY;

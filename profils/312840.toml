@@ -26,6 +26,12 @@ mac_32bits = "steam 2026-10-16"
 
 [cidre]
 dependances = "vcrun2005"
+# D3D9 par DXVK i386 (KosmicKrisp) : avec le d3d9 builtin de Wine (wined3d sur
+# l'OpenGL de macOS), Direct3DCreate9 rendait NULL -- « Failed to create Direct3D
+# object » au demarrage (M4, 2026-10-16). Le plein ecran 1024x768 du jeu passe par
+# le mode emule (mode_emule, a garder : sans lui le jeu demande une definition
+# absurde) et demande Wine 0169 (chaine pNext de la swapchain).
+d3d9 = "dxvk"
 
 [cidre.sources]
 dependances = "crossover 2026-10-13"

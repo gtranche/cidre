@@ -582,6 +582,49 @@ else
    rm -f "$WINDLL/winemetal.dll" "$WINUNIX/winemetal.so" "$SYS32/winemetal.dll"
 fi
 
+# Rendu Direct3D 9 : d3d9 = "dxvk" (DXVK -> Vulkan -> KosmicKrisp -> Metal) ou
+# "wined3d" (le d3d9 builtin de Wine, sur l'OpenGL de macOS). Sans choix, un jeu
+# 32 bits part en dxvk : son wined3d i386 passe par les relais wow64 d'opengl32,
+# sur un OpenGL que macOS ne fait plus evoluer, quand l'i386 sur Vulkan tient
+# depuis DREDGE (winevulkan rebase, §251). Un jeu 64 bits garde wined3d tant
+# qu'aucun n'a ete essaye en DXVK arm64ec sur cette pile. Le d3d9 de DXVK ne
+# depend ni de son dxgi ni de son d3d11 : il cohabite avec DXMT. Sa variante
+# i386 ($R/dxvk/i386, a defaut build/dxvk-win32) va en syswow64, l'arm64ec est
+# deja en system32 (cidre setup) ; =n les fait prendre au chargeur, qui ne
+# garde le builtin que pour une DLL factice de Wine. CIDRE_DXVK32_DIR=<dossier>
+# (essais) : un d3d9.dll i386 pris avant celui du runtime.
+est_dxvk() { LC_ALL=C grep -q -a -i dxvk "$1" 2>/dev/null; }
+D3D9=$(opt d3d9 CIDRE_D3D9)
+case $D3D9 in
+   dxvk|wined3d) ;;
+   *) if est_pe32 "$DOSSIER/$PROG"; then D3D9=dxvk; else D3D9=wined3d; fi ;;
+esac
+if [ "$D3D9" = dxvk ]; then
+   if est_pe32 "$DOSSIER/$PROG"; then
+      D9=
+      for cand in ${CIDRE_DXVK32_DIR:+"$CIDRE_DXVK32_DIR/d3d9.dll"} "$R/dxvk/i386/d3d9.dll" "$R/build/dxvk-win32/src/d3d9/d3d9.dll"; do
+         [ -f "$cand" ] && { D9=$cand; break; }
+      done
+      if [ -z "$D9" ] || [ ! -d "$SYSWOW" ]; then
+         echo "    d3d9  : dxvk demande mais pas de d3d9.dll i386 de DXVK (ni $R/dxvk/i386 ni build/dxvk-win32) : wined3d" >>"$JOURNAL"
+         D3D9=wined3d
+      else
+         poser "$D9" "$SYSWOW/d3d9.dll"
+         echo "    d3d9  : dxvk i386 pose depuis $(dirname "$D9")" >>"$JOURNAL"
+      fi
+   elif ! est_dxvk "$SYS32/d3d9.dll"; then
+      echo "    d3d9  : dxvk demande mais system32/d3d9.dll n'est pas celui de DXVK (cidre setup) : wined3d" >>"$JOURNAL"
+      D3D9=wined3d
+   else
+      echo "    d3d9  : dxvk (arm64ec, system32)" >>"$JOURNAL"
+   fi
+fi
+[ "$D3D9" = dxvk ] && D3D9_OV="d3d9=n" || D3D9_OV="d3d9=b"
+case ";${CIDRE_DLL_OVERRIDES:-};" in
+   *";d3d9="*) : ;;
+   *) export CIDRE_DLL_OVERRIDES="${CIDRE_DLL_OVERRIDES:+$CIDRE_DLL_OVERRIDES;}$D3D9_OV" ;;
+esac
+
 # Journal detaille : par defaut on fait taire Wine (WINEDEBUG=-all), ce qui rend
 # muet aussi un Wine qui ne demarre pas. journal_detaille = true lui laisse ses
 # messages d'erreur, pour le client de service comme pour le jeu.
