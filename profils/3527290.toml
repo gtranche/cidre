@@ -36,6 +36,11 @@ lanceur = "steam"
 [cidre]
 dx12 = false
 tso = false
+# async = true : en DXMT, un dessin dont le pipeline compile encore est saute au
+# lieu de geler l'image (d3d11.asyncPipelines, correctif 0152). Manche du
+# 2026-10-16 (M1 Max, cache de shaders vide) : sans, 2 ou 3 ralentissements au
+# debut ; avec, aucun, rien ne manque, pas de plantage.
+async = true
 
 [compat]
 etat = "or"
