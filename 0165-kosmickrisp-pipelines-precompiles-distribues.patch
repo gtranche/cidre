@@ -1,0 +1,311 @@
+Generated-by: LLM
+
+KosmicKrisp : pipelines precompiles et distribues (recolte, AIR et archives par puce)
+
+Au premier lancement d'un jeu, KosmicKrisp compile chaque bibliotheque depuis
+son MSL puis chaque pipeline pour la puce, dans MTLCompilerService : Detroit:
+Become Human en a 99 453, des heures sur un M4. Cidre veut livrer ce travail
+fait d'avance, par jeu et par architecture de GPU.
+
+Metal retrouve un pipeline dans une archive par l'empreinte de ses fonctions
+AIR : une bibliotheque compilee ici depuis le MSL n'a jamais l'empreinte de
+l'AIR fait hors ligne (elle change meme d'un processus a l'autre). D'ou deux
+modes, tout dans mtl_compiler.m, une bibliotheque etant designee par une cle
+(SHA-256 de son MSL et de ses options) :
+
+- MESA_KK_RECOLTE=<dossier> : chaque bibliotheque ecrit une fois son MSL
+  (msl/<cle>.metal, options dans <cle>.opts) et chaque pipeline une ligne de
+  pipelines.<pid>.jsonl (fonctions par cle et nom, etat en valeurs numeriques
+  de Metal, les memes en MTL3 et MTL4). L'outil hors ligne de Cidre en tire
+  l'AIR (outil metal, memes options), rejoue les pipelines par l'ancienne API
+  (archive de la puce locale, relue telle quelle par les recherches MTL4) et
+  fait les autres puces par metal-tt depuis le script de cette archive.
+- MESA_KK_PRECOMPIL=<dossier> : une bibliotheque dont air/<cle>.metallib
+  existe est chargee depuis ce fichier au lieu d'etre compilee, et les
+  archives archives/*.metallib sont consultees avec le cache local
+  (MESA_KK_PIPELINE_CACHE, que Cidre pose pour tout jeu). Une archive faite
+  pour une autre puce ne s'ouvre pas et est ignoree ; une cle absente (MSL
+  change par une evolution de KosmicKrisp ou une option CIDRE_*) retombe sur
+  la compilation habituelle.
+
+MESA_KK_COMPILE_STATS=1 compte en plus les bibliotheques chargees depuis l'AIR,
+et affiche aussi le bilan a la sortie du processus (un jeu qui quitte sans
+detruire son device ne passait jamais par mtl_compiler_flush_archive).
+Essai sans jeu (M1 Max, macOS 26.5, bancs Vulkan natifs, cache local vide) :
+recolte, puis paquet (AIR + archive g13s rejouee + g16g par metal-tt), puis
+lecture : 0 bibliotheque compilee (22/22, 22/22, 21/21 chargees depuis l'AIR),
+21/21 pipelines lus dans l'archive dans chaque banc, meme resultat de calcul ;
+temoin sans paquet : tout compile. Preuve de concept (programme natif) : archive faite par
+metal-tt pour applegpu_g13s, relue par MTL4 : trouvee ; archive g16g seule :
+refusee a l'ouverture ; archive multi-architecture : trouvee.
+
+--- a/src/kosmickrisp/bridge/mtl_compiler.m	2026-10-16 19:59:22
++++ b/src/kosmickrisp/bridge/mtl_compiler.m	2026-10-16 20:28:52
+@@ -19,6 +19,7 @@
+ 
+ #import <objc/runtime.h>
+ 
++#include <CommonCrypto/CommonDigest.h>
+ #include <pthread.h>
+ #include <stdatomic.h>
+ #include <string.h>
+@@ -27,6 +28,113 @@
+ 
+ static const void *kk_archives_key = &kk_archives_key;
+ 
++/* Precompilation distribuee (Cidre). Une bibliotheque est designee par une cle :
++ * SHA-256 de son MSL et de ses options de compilation.
++ *
++ * MESA_KK_RECOLTE=<dossier> : chaque bibliotheque ecrit une fois son MSL
++ * (msl/<cle>.metal, options dans msl/<cle>.opts) et chaque pipeline une ligne
++ * de pipelines.<pid>.jsonl : ses fonctions (cle, nom) et son etat en valeurs
++ * numeriques. Un outil hors ligne en tire l'AIR (outil metal) et les archives
++ * de chaque architecture (metal-tt).
++ *
++ * MESA_KK_PRECOMPIL=<dossier> : une bibliotheque dont air/<cle>.metallib
++ * existe est chargee depuis ce fichier au lieu d'etre compilee depuis le MSL,
++ * et les archives archives/*.metallib sont consultees avant toute compilation.
++ * Une archive faite pour une autre puce ne s'ouvre pas et est ignoree ; une
++ * cle absente retombe sur la compilation habituelle. Les archives ne servent
++ * qu'avec l'AIR distribue : Metal retrouve un pipeline par l'empreinte de ses
++ * fonctions AIR, et un MSL compile ici n'a pas celle de l'AIR fait hors ligne. */
++static const void *kk_lib_key_key = &kk_lib_key_key;
++static _Atomic uint32_t kk_stat_lib_air;
++static pthread_mutex_t kk_recolte_mutex = PTHREAD_MUTEX_INITIALIZER;
++static FILE *kk_recolte_pipelines;
++
++static const char *
++kk_env_dir(const char *name)
++{
++   const char *v = getenv(name);
++   return v && v[0] ? v : NULL;
++}
++
++static NSString *
++kk_library_key(const char *src, uint32_t version, uint32_t math_mode, uint32_t fp_fns)
++{
++   CC_SHA256_CTX c;
++   unsigned char h[CC_SHA256_DIGEST_LENGTH];
++   uint32_t opts[3] = {version, math_mode, fp_fns};
++   CC_SHA256_Init(&c);
++   CC_SHA256_Update(&c, src, (CC_LONG)strlen(src));
++   CC_SHA256_Update(&c, opts, sizeof(opts));
++   CC_SHA256_Final(h, &c);
++   char hex[2 * CC_SHA256_DIGEST_LENGTH + 1];
++   for (unsigned i = 0; i < CC_SHA256_DIGEST_LENGTH; i++)
++      snprintf(hex + 2 * i, 3, "%02x", h[i]);
++   return [NSString stringWithUTF8String:hex];
++}
++
++/* Ecrit un fichier une fois (s'il existe deja, rien), en passant par un
++ * fichier temporaire pour qu'un autre processus ne lise jamais une moitie. */
++static void
++kk_write_once(NSString *path, NSData *data)
++{
++   NSFileManager *fm = [NSFileManager defaultManager];
++   if ([fm fileExistsAtPath:path])
++      return;
++   NSString *tmp = [path stringByAppendingFormat:@".%d.tmp", (int)getpid()];
++   if ([data writeToFile:tmp atomically:NO])
++      [fm moveItemAtPath:tmp toPath:path error:NULL];
++   [fm removeItemAtPath:tmp error:NULL];
++}
++
++static void
++kk_recolte_library(const char *dir, NSString *key, const char *src,
++                   uint32_t version, uint32_t math_mode, uint32_t fp_fns)
++{
++   NSString *base = [[NSString stringWithUTF8String:dir] stringByAppendingPathComponent:@"msl"];
++   [[NSFileManager defaultManager] createDirectoryAtPath:base withIntermediateDirectories:YES
++                                              attributes:nil error:NULL];
++   NSString *opts = [NSString stringWithFormat:@"%u %u %u\n", version, math_mode, fp_fns];
++   kk_write_once([base stringByAppendingPathComponent:[key stringByAppendingString:@".opts"]],
++                 [opts dataUsingEncoding:NSUTF8StringEncoding]);
++   kk_write_once([base stringByAppendingPathComponent:[key stringByAppendingString:@".metal"]],
++                 [NSData dataWithBytes:src length:strlen(src)]);
++}
++
++static void
++kk_recolte_line(NSString *line)
++{
++   const char *dir = kk_env_dir("MESA_KK_RECOLTE");
++   if (!dir)
++      return;
++   pthread_mutex_lock(&kk_recolte_mutex);
++   if (!kk_recolte_pipelines) {
++      [[NSFileManager defaultManager] createDirectoryAtPath:[NSString stringWithUTF8String:dir]
++                                withIntermediateDirectories:YES attributes:nil error:NULL];
++      char path[2048];
++      snprintf(path, sizeof(path), "%s/pipelines.%d.jsonl", dir, (int)getpid());
++      kk_recolte_pipelines = fopen(path, "a");
++   }
++   if (kk_recolte_pipelines) {
++      fputs(line.UTF8String, kk_recolte_pipelines);
++      fputc('\n', kk_recolte_pipelines);
++      fflush(kk_recolte_pipelines);
++   }
++   pthread_mutex_unlock(&kk_recolte_mutex);
++}
++
++/* ["<cle>","<nom>"] d'une fonction, ou null */
++static NSString *
++kk_recolte_function(MTL4FunctionDescriptor *fd)
++{
++   if (![fd isKindOfClass:[MTL4LibraryFunctionDescriptor class]])
++      return @"null";
++   MTL4LibraryFunctionDescriptor *lfd = (MTL4LibraryFunctionDescriptor *)fd;
++   NSString *key = objc_getAssociatedObject(lfd.library, kk_lib_key_key);
++   if (key == nil || lfd.name == nil)
++      return @"null";
++   return [NSString stringWithFormat:@"[\"%@\",\"%@\"]", key, lfd.name];
++}
++
+ static NSArray<id<MTL4Archive>> *
+ kk_compiler_archives(id<MTL4Compiler> comp)
+ {
+@@ -206,6 +314,10 @@
+    if (cached < 0) {
+       const char *e = getenv("MESA_KK_COMPILE_STATS");
+       cached = (e && e[0] && e[0] != '0') ? 1 : 0;
++      /* aussi a la sortie : un jeu (ou un banc) qui quitte sans detruire son
++         device ne passe jamais par mtl_compiler_flush_archive */
++      if (cached)
++         atexit(kk_print_compile_stats);
+    }
+    return cached == 1;
+ }
+@@ -263,6 +375,22 @@
+                            : sa < sb ? NSOrderedDescending : NSOrderedSame;
+          }];
+          NSMutableArray *archives = [NSMutableArray array];
++         const char *pre = kk_env_dir("MESA_KK_PRECOMPIL");
++         if (pre) {
++            NSString *adir = [[NSString stringWithUTF8String:pre] stringByAppendingPathComponent:@"archives"];
++            for (NSString *aname in [fm contentsOfDirectoryAtPath:adir error:NULL]) {
++               if (![aname hasSuffix:@".metallib"])
++                  continue;
++               /* une archive faite pour une autre puce ne s'ouvre pas : ignoree */
++               id<MTL4Archive> archive =
++                  [dev newArchiveWithURL:[NSURL fileURLWithPath:[adir stringByAppendingPathComponent:aname]]
++                                   error:NULL];
++               if (archive != nil) {
++                  [archives addObject:archive];
++                  [archive release];
++               }
++            }
++         }
+          for (NSString *path in paths) {
+             id<MTL4Archive> archive =
+                [dev newArchiveWithURL:[NSURL fileURLWithPath:path] error:NULL];
+@@ -294,9 +422,10 @@
+ kk_print_compile_stats(void)
+ {
+    fprintf(stderr,
+-           "KK compile: library %u calls / %.1f s, pipeline %u calls / %.1f s, %u from archives\n",
++           "KK compile: library %u calls / %.1f s (%u from AIR), pipeline %u calls / %.1f s, %u from archives\n",
+            atomic_load(&kk_stat_lib_count),
+            atomic_load(&kk_stat_lib_ns) / 1.0e9,
++           atomic_load(&kk_stat_lib_air),
+            atomic_load(&kk_stat_pipe_count),
+            atomic_load(&kk_stat_pipe_ns) / 1.0e9,
+            atomic_load(&kk_stat_pipe_hits));
+@@ -349,21 +478,44 @@
+       desc.source = ns_src;
+       desc.options = opts;
+ 
+-      NSError *error;
+-      bool stats = kk_compile_stats_enabled();
+-      uint64_t t0 = stats ? kk_now_ns() : 0;
+-      kk_compile_lock();
+-      id<MTLLibrary> lib = [comp newLibraryWithDescriptor:desc error:&error];
+-      kk_compile_unlock();
+-      if (stats) {
+-         atomic_fetch_add(&kk_stat_lib_ns, kk_now_ns() - t0);
+-         atomic_fetch_add(&kk_stat_lib_count, 1);
++      NSString *key = kk_library_key(src, (uint32_t)msl_version, (uint32_t)math_mode,
++                                     (uint32_t)math_fp_fns);
++      id<MTLLibrary> lib = nil;
++      const char *pre = kk_env_dir("MESA_KK_PRECOMPIL");
++      if (pre) {
++         NSString *air = [NSString stringWithFormat:@"%s/air/%@.metallib", pre, key];
++         if (access(air.fileSystemRepresentation, R_OK) == 0) {
++            lib = [comp.device newLibraryWithURL:[NSURL fileURLWithPath:air] error:NULL];
++            if (lib != nil)
++               atomic_fetch_add(&kk_stat_lib_air, 1);
++         }
+       }
+ 
+       if (lib == nil) {
+-         fprintf(stderr, "Failed to create MTLLibrary: %s\n", [error.localizedDescription UTF8String]);
++         NSError *error;
++         bool stats = kk_compile_stats_enabled();
++         uint64_t t0 = stats ? kk_now_ns() : 0;
++         kk_compile_lock();
++         lib = [comp newLibraryWithDescriptor:desc error:&error];
++         kk_compile_unlock();
++         if (stats) {
++            atomic_fetch_add(&kk_stat_lib_ns, kk_now_ns() - t0);
++            atomic_fetch_add(&kk_stat_lib_count, 1);
++         }
++
++         if (lib == nil) {
++            fprintf(stderr, "Failed to create MTLLibrary: %s\n", [error.localizedDescription UTF8String]);
++         }
+       }
+ 
++      if (lib != nil) {
++         objc_setAssociatedObject(lib, kk_lib_key_key, key, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
++         const char *rec = kk_env_dir("MESA_KK_RECOLTE");
++         if (rec)
++            kk_recolte_library(rec, key, src, (uint32_t)msl_version, (uint32_t)math_mode,
++                               (uint32_t)math_fp_fns);
++      }
++
+       return lib;
+    }
+ }
+@@ -418,6 +570,10 @@
+ 
+       if (pipeline == nil) {
+          fprintf(stderr, "Failed to create MTLComputePipelineState: %s\n", [error.localizedDescription UTF8String]);
++      } else if (kk_env_dir("MESA_KK_RECOLTE")) {
++         kk_recolte_line([NSString stringWithFormat:@"{\"t\":\"c\",\"cs\":%@,\"tg\":%llu}",
++                                                    kk_recolte_function(desc.computeFunctionDescriptor),
++                                                    (unsigned long long)max_total_threads_per_threadgroup]);
+       }
+ 
+       return pipeline;
+@@ -584,6 +740,33 @@
+ 
+       if (pipeline == nil) {
+          fprintf(stderr, "Failed to create MTLRenderPipelineState: %s\n", [error.localizedDescription UTF8String]);
++      } else if (kk_env_dir("MESA_KK_RECOLTE")) {
++         /* cibles : [indice, format, melange, src rgb, dst rgb, op rgb, src a, dst a, op a, masque] */
++         NSMutableString *col = [NSMutableString string];
++         for (unsigned i = 0; i < 8; i++) {
++            MTL4RenderPipelineColorAttachmentDescriptor *att = desc.colorAttachments[i];
++            if (att.pixelFormat == MTLPixelFormatInvalid)
++               continue;
++            [col appendFormat:@"%s[%u,%lu,%d,%lu,%lu,%lu,%lu,%lu,%lu,%lu]", col.length ? "," : "", i,
++                              (unsigned long)att.pixelFormat,
++                              att.blendingState == MTL4BlendStateEnabled,
++                              (unsigned long)att.sourceRGBBlendFactor,
++                              (unsigned long)att.destinationRGBBlendFactor,
++                              (unsigned long)att.rgbBlendOperation,
++                              (unsigned long)att.sourceAlphaBlendFactor,
++                              (unsigned long)att.destinationAlphaBlendFactor,
++                              (unsigned long)att.alphaBlendOperation,
++                              (unsigned long)att.writeMask];
++         }
++         kk_recolte_line([NSString stringWithFormat:
++            @"{\"t\":\"r\",\"vs\":%@,\"fs\":%@,\"topo\":%lu,\"rs\":%lu,\"a2c\":%d,\"a2o\":%d,"
++             "\"rast\":%d,\"amp\":%lu,\"col\":[%@]}",
++            kk_recolte_function(desc.vertexFunctionDescriptor),
++            kk_recolte_function(desc.fragmentFunctionDescriptor),
++            (unsigned long)desc.inputPrimitiveTopology, (unsigned long)desc.rasterSampleCount,
++            desc.alphaToCoverageState == MTL4AlphaToCoverageStateEnabled,
++            desc.alphaToOneState == MTL4AlphaToOneStateEnabled, desc.rasterizationEnabled,
++            (unsigned long)desc.maxVertexAmplificationCount, col]);
+       }
+ 
+       return pipeline;

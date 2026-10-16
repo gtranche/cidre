@@ -1,0 +1,95 @@
+Generated-by: LLM
+
+KosmicKrisp : l'archive de pipelines s'ecrit aussi sous une compilation continue
+
+Le fil de flush de 0101 n'ecrit l'archive MTL4 qu'a quiescence : il prend le
+verrou d'ecriture quand aucune compilation ne tient le verrou de lecture, ou
+demande aux nouvelles de patienter au plus 2 s (barriere douce). Apres 5 echecs
+de la barriere douce, il abandonnait jusqu'au prochain vrai creux. Un jeu qui
+precompile des milliers de pipelines au demarrage n'en laisse aucun : Detroit:
+Become Human sur le M4 (2026-10-16) a ecrit 3,4 Mo dans les deux premieres
+minutes, puis plus rien pendant 20 min, MTLCompilerService a 600 %. Si le jeu ne
+detruit pas son device a la sortie (fin brutale, arret force), tout ce qui a ete
+compile depuis est perdu et le lancement suivant recompile tout.
+
+Apres les 5 echecs, le flush passe maintenant par une barriere dure : les
+nouvelles compilations attendent (kk_flush_hard), celles en cours finissent, le
+serialiseur ecrit, puis tout repart. L'ecart entre deux flush reste borne comme
+avant (au moins 20 fois la duree du flush, jusqu'a 1 min), donc au plus ~5 % du
+temps sans compilation nouvelle. Le verrou de compilation n'est jamais pris de
+facon imbriquee (une prise par appel Metal), la barriere ne peut pas bloquer.
+MESA_KK_COMPILE_STATS=1 note « hard gate » sur ces flush.
+
+--- a/src/kosmickrisp/bridge/mtl_compiler.m	2026-10-16 19:40:51
++++ b/src/kosmickrisp/bridge/mtl_compiler.m	2026-10-16 19:40:51
+@@ -42,6 +42,9 @@
+ static atomic_bool kk_flusher_stop;
+ static atomic_bool kk_flusher_running;
+ static atomic_bool kk_flush_wanted;
++/* Barriere dure : les nouvelles compilations attendent sans limite que le flush
++   passe (voir kk_flusher_main). */
++static atomic_bool kk_flush_hard;
+ 
+ #define KK_FLUSH_INTERVAL_NS 10000000000ull
+ #define KK_FLUSH_INTERVAL_MAX_NS 60000000000ull
+@@ -62,6 +65,8 @@
+ {
+    for (int i = 0; i < KK_FLUSH_GATE_MS && atomic_load(&kk_flush_wanted); i++)
+       usleep(1000);
++   while (atomic_load(&kk_flush_hard))
++      usleep(1000);
+    pthread_rwlock_rdlock(&kk_compile_rwlock);
+ }
+ 
+@@ -142,15 +147,27 @@
+          continue;
+       if (waiting_since == 0)
+          waiting_since = t;
+-      bool gated = false;
++      bool gated = false, hard = false;
+       if (pthread_rwlock_trywrlock(&kk_compile_rwlock) != 0) {
+-         if (t - waiting_since < KK_FLUSH_STARVED_NS ||
+-             gate_failures >= KK_FLUSH_GATE_TRIES)
++         if (t - waiting_since < KK_FLUSH_STARVED_NS)
+             continue;
+          waiting_since = 0;
+-         if (!kk_flusher_gate()) {
+-            gate_failures++;
+-            continue;
++         if (gate_failures < KK_FLUSH_GATE_TRIES) {
++            if (!kk_flusher_gate()) {
++               gate_failures++;
++               continue;
++            }
++         } else {
++            /* Les compilations ne laissent jamais 2 s de creux : un jeu qui
++               precompile des milliers de pipelines au demarrage (Detroit:
++               Become Human, 2026-10-16 : plus rien d'ecrit apres la 2e minute,
++               MTLCompilerService a 600 % pendant 25 min). Sans flush, tout est
++               perdu si le jeu ne detruit pas son device a la sortie, et le
++               lancement suivant recompile tout. On arrete alors les nouvelles
++               compilations, on attend celles en cours, et on ecrit. */
++            atomic_store(&kk_flush_hard, true);
++            pthread_rwlock_wrlock(&kk_compile_rwlock);
++            hard = true;
+          }
+          gated = true;
+       }
+@@ -159,6 +176,8 @@
+       id<MTL4PipelineDataSetSerializer> ser = kk_flush_compiler.pipelineDataSetSerializer;
+       bool ok = ser != nil && kk_serialize_to_dir(ser, kk_flush_dir);
+       pthread_rwlock_unlock(&kk_compile_rwlock);
++      if (hard)
++         atomic_store(&kk_flush_hard, false);
+       uint64_t dt = kk_now_ns() - t0;
+       last = now;
+       gate_failures = 0;
+@@ -170,7 +189,7 @@
+       if (kk_compile_stats_enabled())
+          fprintf(stderr, "KK flush: %u compiled, %u from archives, %.2f s%s%s\n",
+                  now, atomic_load(&kk_stat_pipe_hits), dt / 1.0e9,
+-                 gated ? ", gated" : "", ok ? "" : ", nothing written");
++                 hard ? ", hard gate" : gated ? ", gated" : "", ok ? "" : ", nothing written");
+    }
+    return NULL;
+ }
