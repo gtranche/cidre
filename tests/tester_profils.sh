@@ -133,10 +133,48 @@ verif "jeu sans fiche : [defaut] seul" "true" "$(valeur 998 tso)"
 verif "jeu sans fiche : json null" "null" "$(sh "$R/tests/fiche_profil.sh" json 998)"
 # cache vide : la copie livree sert
 verif "copie livree en repli (1903340 garde_index)" "false" "$(valeur 1903340 garde_index)"
-# cache present : il prime
+# cache present : il prime, sauf copie livree plus recente que lui (index-depot.toml
+# de l archive, sinon l horodatage de la derniere mise a jour)
 printf '[cidre]\ngarde_index = true\n' >"$CIDRE_PROFILS_BASE/1903340.toml"
-verif "cache > copie livree (1903340 garde_index)" "true" "$(valeur 1903340 garde_index)"
-rm -f "$CIDRE_PROFILS_BASE/1903340.toml"
+E=$(md5 -q "$R/profils/1903340.toml" 2>/dev/null || md5sum "$R/profils/1903340.toml" | cut -c1-32)
+depot() { printf '[1903340]\nempreinte = "%s"\nanciennes = "%s"\n\n[1]\nempreinte = "%s"\n' "$1" "$2" "$E" >"$CIDRE_PROFILS_BASE/index-depot.toml"; }
+depot "$E" ""
+verif "cache > copie livree dont il part (empreinte)" "true" "$(valeur 1903340 garde_index)"
+depot 0123456789abcdef0123456789abcdef "aaaa $E bbbb"
+verif "cache > copie livree plus ancienne (anciennes)" "true" "$(valeur 1903340 garde_index)"
+depot 0123456789abcdef0123456789abcdef "aaaa bbbb"
+verif "copie livree inconnue de l archive > cache" "false" "$(valeur 1903340 garde_index)"
+verif "copie livree plus recente : json origine livree" '"origine":"livree"' "$(sh "$R/tests/fiche_profil.sh" json 1903340 | grep -o '"origine":"[a-z]*"')"
+verif "copie livree plus recente : chemin" "$R/profils/1903340.toml" "$(sh "$R/tests/fiche_profil.sh" chemin 1903340)"
+printf '[1]\nempreinte = "%s"\nanciennes = ""\n' "$E" >"$CIDRE_PROFILS_BASE/index-depot.toml"
+verif "fiche absente d index-depot (ecrite depuis) : copie livree > cache" "false" "$(valeur 1903340 garde_index)"
+rm -f "$CIDRE_PROFILS_BASE/index-depot.toml"
+touch -t 209901010000 "$CIDRE_PROFILS_BASE/horodatage"
+verif "sans index-depot, maj apres la copie livree : cache > copie livree" "true" "$(valeur 1903340 garde_index)"
+touch -t 200001010000 "$CIDRE_PROFILS_BASE/horodatage"
+verif "sans index-depot, copie livree plus recente que la maj : elle sert" "false" "$(valeur 1903340 garde_index)"
+rm -f "$CIDRE_PROFILS_BASE/horodatage"
+verif "sans index-depot ni horodatage : copie livree" "false" "$(valeur 1903340 garde_index)"
+verif "jeu du seul cache : le cache sert" "true" "$(printf '[cidre]\ngarde_index = true\n' >"$CIDRE_PROFILS_BASE/424243.toml"; valeur 424243 garde_index)"
+rm -f "$CIDRE_PROFILS_BASE/1903340.toml" "$CIDRE_PROFILS_BASE/424243.toml"
+# index_depot.py (workflow de l archive) sur un petit depot git : version courante
+# et versions passees de chaque fiche ; refuse un clone superficiel
+if command -v git >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+   G="$T/depot-git"; mkdir -p "$G/profils"
+   git -C "$G" init -q && git -C "$G" config user.email t@t && git -C "$G" config user.name t
+   printf '[cidre]\ndx12 = true\n' >"$G/profils/5.toml"; git -C "$G" add -A && git -C "$G" commit -qm 1
+   v1=$(md5 -q "$G/profils/5.toml" 2>/dev/null || md5sum "$G/profils/5.toml" | cut -c1-32)
+   printf '[cidre]\ndx12 = false\n' >"$G/profils/5.toml"; printf '[jeu]\n' >"$G/profils/6.toml"; printf '#\n' >"$G/profils/index.toml"
+   git -C "$G" add -A && git -C "$G" commit -qm 2
+   v2=$(md5 -q "$G/profils/5.toml" 2>/dev/null || md5sum "$G/profils/5.toml" | cut -c1-32)
+   python3 -I "$R/tests/outils/index_depot.py" "$G/profils" >"$T/index-depot.toml"; rc=$?
+   verif "index_depot.py : code 0, sections des fiches seules" "0 [5] [6]" "$rc $(grep '^\[' "$T/index-depot.toml" | tr '\n' ' ' | sed 's/ $//')"
+   verif "index_depot.py : empreinte = version courante, anciennes = la precedente" "$v2 $v1" "$(sh "$R/tests/fiche_profil.sh" toml "$T/index-depot.toml" | awk -F'\t' '$1 == "5" { printf "%s%s", (n++ ? " " : ""), $4 }')"
+   git clone -q --depth 1 "file://$G" "$T/superficiel" 2>/dev/null
+   verif "index_depot.py : clone superficiel refuse" "1" "$(python3 -I "$R/tests/outils/index_depot.py" "$T/superficiel/profils" 2>/dev/null >/dev/null; echo $?)"
+else
+   echo "  (git ou python3 absent : index_depot.py non essaye)"
+fi
 # table en ligne, chaine avec guillemets echappes
 printf '[reglages_jeu]\nfichier = "x.ini"\nvaleurs = { "a.b" = "1", c = 2, "d" = "deux \\"mots\\"" }\n' >"$CIDRE_PROFILS_BASE/997.toml"
 verif "table en ligne : 3 valeurs" "3" "$(sh "$R/tests/fiche_profil.sh" reglages 997 | grep -c "	valeur	")"

@@ -29,7 +29,8 @@
 # rend le fichier tel quel.
 #
 # Le cache (CIDRE_PROFILS_BASE, par defaut ~/Library/Application Support/Cidre/
-# profils-base/) prime sur la copie livree ($R/profils/), qui prime sur les fiches
+# profils-base/) prime sur la copie livree ($R/profils/), sauf quand celle-ci est
+# plus recente que lui (livree_plus_recente) ; tous deux priment sur les fiches
 # provisoires (CIDRE_PROFILS_PROVISOIRES, par defaut .../Cidre/profils-provisoires/).
 # Pas de python : awk et curl.
 set -u
@@ -248,8 +249,27 @@ fiche_plat() { # <fiche>
 
 # un identifiant de jeu sur : chiffres, ou local-... ; rien d autre dans un chemin
 id_sur() { case $1 in ''|*[!A-Za-z0-9_-]*) return 1 ;; esac; return 0; }
-chemin() { # <appid> : la fiche a lire, cache d abord
+empreinte() { md5 -q "$1" 2>/dev/null || md5sum "$1" | cut -c1-32; }
+# La copie livree d une fiche est-elle plus recente que sa copie en cache ? Le
+# cache vient d une archive batie sur les fiches du depot, puis enrichie par
+# l import : index-depot.toml (tests/outils/index_depot.py) y dit de quelle
+# version du depot part chaque fiche, et quelles versions l ont precedee. Une
+# copie livree connue (cette version, ou une plus ancienne) laisse le cache
+# servir ; inconnue (corrigee depuis la derniere archive, modifiee localement,
+# ou absente de l index), elle sert. Un cache sans index-depot.toml (archive
+# d avant, ou fiches une a une) : la copie livree sert si elle est plus recente
+# que la derniere mise a jour (horodatage).
+livree_plus_recente() { # <appid>
+   cmp -s "$BASE/$1.toml" "$LIVRE/$1.toml" && return 1
+   [ -f "$BASE/index-depot.toml" ] || { [ "$LIVRE/$1.toml" -nt "$BASE/horodatage" ]; return; }
+   LC_ALL=C awk -v a="[$1]" -v e="$(empreinte "$LIVRE/$1.toml")" '
+      /^\[/ { if (dedans) exit; dedans = ($0 == a); next }
+      dedans && /^(empreinte|anciennes)[ \t]*=/ { v = $0; sub(/^[^"]*"/, "", v); sub(/".*$/, "", v); if (index(" " v " ", " " e " ")) { connue = 1; exit } }
+      END { exit connue }' "$BASE/index-depot.toml"
+}
+chemin() { # <appid> : la fiche a lire, cache d abord, sauf copie livree plus recente
    id_sur "$1" || return 1
+   if [ -f "$BASE/$1.toml" ] && [ -f "$LIVRE/$1.toml" ] && livree_plus_recente "$1"; then echo "$LIVRE/$1.toml"; return 0; fi
    for f in "$BASE/$1.toml" "$LIVRE/$1.toml" "$PROV/$1.toml"; do [ -f "$f" ] && { echo "$f"; return 0; }; done
    return 1
 }
@@ -431,7 +451,7 @@ case $CMD in
       echo "# l'empreinte (md5 du fichier) a change sont retelechargees."
       for f in "${ARG:-$LIVRE}"/*.toml; do
          [ -f "$f" ] || continue
-         a=$(basename "$f" .toml); [ "$a" = index ] && continue
+         a=$(basename "$f" .toml); case $a in index|index-depot) continue ;; esac
          toml_plat "$f" | LC_ALL=C awk -F'\t' -v a="$a" -v h="$(md5 -q "$f" 2>/dev/null || md5sum "$f" | cut -c1-32)" '
             ($1 == "jeu" && $2 == "nom") || ($1 == "compat" && ($2 == "etat" || $2 == "date")) { gsub(/\\/, "\\\\", $4); gsub(/"/, "\\\"", $4); c[$2] = $4 }
             END { print ""; print "[" a "]"; print "nom = \"" c["nom"] "\""; print "etat = \"" (c["etat"] == "" ? "non-teste" : c["etat"]) "\""; print "date = \"" c["date"] "\""; print "empreinte = \"" h "\"" }'
@@ -455,7 +475,6 @@ case $CMD in
       # Incremental : une fiche deja en cache dont l'empreinte (md5, portee par
       # l'index) n'a pas change n'est pas retelechargee. Un index sans empreintes
       # (ancien) retelecharge tout.
-      empreinte() { md5 -q "$1" 2>/dev/null || md5sum "$1" | cut -c1-32; }
       n=0; gardees=0; rates=""
       for a in $(toml_plat "$T/index.toml" | cut -f1 | awk '!vu[$0]++'); do
          id_sur "$a" || continue

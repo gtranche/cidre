@@ -7,7 +7,9 @@ entier (une fiche par jeu noté sur ProtonDB sans version macOS native, voir
 l'archive (`cidre profils maj`), sinon les fiches du dépôt une à une, et les
 garde en cache dans `~/Library/Application Support/Cidre/profils-base/`. Sans
 réseau, la copie livrée dans le runtime (ce dossier, empaqueté par
-`tests/empaqueter_runtime.sh`) sert de repli. Un jeu qu'on installe sans
+`tests/empaqueter_runtime.sh`) sert de repli. Le cache prime sur la copie
+livrée, sauf quand celle-ci est plus récente que lui (voir « Catalogue »,
+`index-depot.toml`). Un jeu qu'on installe sans
 fiche en reçoit une provisoire (voir « Fiche provisoire »).
 
 Lecture : `tests/fiche_profil.sh` (analyse, accès, mise à jour), via
@@ -771,6 +773,19 @@ télécharge, refuse une archive qui contiendrait autre chose que des fiches à
 plat ou dont l'index nommerait une fiche absente, la déballe à côté du cache
 et l'échange avec lui d'un coup. Sans archive publiée, ou refusée, `maj` revient
 aux fiches du dépôt une à une.
+
+L'archive porte aussi `index-depot.toml` (`tests/outils/index_depot.py`) : pour
+chaque fiche du dépôt, le md5 de la version dont le catalogue est parti
+(`empreinte`) et ceux de ses versions précédentes dans l'historique git
+(`anciennes`). La fiche du cache est celle du dépôt enrichie par l'import ; elle
+ne doit pas masquer une correction faite depuis (constaté le 2026-10-16 :
+Sherlock Holmes Chapter One parti en D3D12 sur une copie du cache du 14/10
+sans `[cidre]`, quand la fiche livrée disait `dx12 = false`). `fiche_profil.sh
+chemin` prend donc la copie livrée quand son md5 n'est ni l'empreinte ni l'une
+des anciennes (fiche corrigée depuis l'archive, modifiée localement, ou écrite
+depuis), le cache sinon. Un cache sans `index-depot.toml` (archive d'avant,
+fiches une à une) : la copie livrée sert si son fichier est plus récent que
+l'horodatage de la dernière mise à jour.
 
 Mesures du 2026-10-15 (export du 2026-10-01) : 26 818 fiches, 35,5 Mo de texte
 (109 Mo sur le disque, ~16 Mo d'objets git par instantané, presque tous
