@@ -624,6 +624,40 @@ if [ -n "${SteamAppId:-}" ] && [ -f "$TABLE" ]; then
    fi
 fi
 
+# Reglages de FEX repris de Proton ARM64 (Steam Frame : FEX_Config.json et script
+# proton d'experimental_11.0), meme architecture que la notre (arm64ec + FEX).
+# Apres la table des lanceurs : le x87 se decide sur l'executable vraiment lance.
+# Une variable FEX_* deja posee garde la main. Defauts livres : coupes (le
+# comportement de FEX), en attendant les essais en jeu (etude-proton.md, §9.3).
+#   fex_cache_disque (true ; CIDRE_FEX_CACHE_DISQUE=1) : FEX_DISKCACHE, le
+#     code x86 traduit garde sur disque d'un lancement a l'autre (dans le prefixe,
+#     %LOCALAPPDATA%\fex-emu ; 1 Gio au plus, vieilles entrees elaguees par FEX) :
+#     moins de temps de JIT au chargement et en traversee, rien en regime.
+#   fex_x87_reduit ("auto", true ; CIDRE_FEX_X87_REDUIT=1/0) : FEX
+#     emule le x87 en double precision au lieu de 80 bits, beaucoup moins cher.
+#     Valve le met a tous les jeux (sauf l'installeur de The Witcher 3) ; « auto »
+#     le reserve aux executables 32 bits, les seuls a faire leurs calculs en x87.
+#   fex_maxinst (500 comme Proton ; 0 = le defaut de FEX, 5000 ; CIDRE_FEX_MAXINST) :
+#     taille maximale d'un bloc traduit. Des blocs courts se compilent vite (moins
+#     de saccades) ; 500 est aussi le minimum des contournements Mono de FEX.
+# --- reglages FEX : debut ---
+if [ -z "${FEX_DISKCACHE:-}" ] && [ "$(opt fex_cache_disque CIDRE_FEX_CACHE_DISQUE)" = true ]; then
+   export FEX_DISKCACHE=1
+fi
+if [ -z "${FEX_X87REDUCEDPRECISION:-}" ]; then
+   case $(opt fex_x87_reduit CIDRE_FEX_X87_REDUIT) in
+      true) export FEX_X87REDUCEDPRECISION=1 ;;
+      auto) if est_pe32 "$DOSSIER/$PROG"; then export FEX_X87REDUCEDPRECISION=1; fi ;;
+   esac
+fi
+MAXINST=${CIDRE_FEX_MAXINST:-$(profil fex_maxinst)}
+case $MAXINST in
+   ''|0|*[!0-9]*) : ;;
+   *) [ -n "${FEX_MAXINST:-}" ] || export FEX_MAXINST=$MAXINST ;;
+esac
+# --- reglages FEX : fin ---
+echo "    fex     : tso ${FEX_TSOENABLED:-1}, cache disque ${FEX_DISKCACHE:-0}, x87 reduit ${FEX_X87REDUCEDPRECISION:-0}, MaxInst ${FEX_MAXINST:-5000}" >>"$JOURNAL"
+
 # Arguments propres au profil. A poser APRES la table des lanceurs, qui remet les
 # arguments a zero quand elle remplace l'executable.
 #   eac_untrusted : EAC online est un mur -> realm « Modded » via -eac-untrusted

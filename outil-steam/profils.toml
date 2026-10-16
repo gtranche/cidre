@@ -42,6 +42,20 @@
 #                    jamais mis a jour au lancement.
 #   tso              emulation de l'ordre memoire x86 par FEX. false = gros gain
 #                    CPU (jusqu'a 3,7x mesure), risque de course sur du lock-free.
+#   Reglages de FEX repris de Proton ARM64 (Steam Frame). Coupes par defaut en
+#   attendant les essais en jeu ; a poser par jeu, ou pour tous (`cidre set defaut`).
+#   fex_cache_disque code x86 traduit par FEX garde sur disque d'un lancement a
+#                    l'autre (FEX_DISKCACHE, comme Proton ARM64) : moins de JIT au
+#                    chargement et en traversee, rien en regime. Dans le prefixe
+#                    (%LOCALAPPDATA%\fex-emu, 1 Gio au plus). false (defaut).
+#   fex_x87_reduit   x87 emule en double precision au lieu de 80 bits
+#                    (X87ReducedPrecision de FEX, defaut de Proton ARM64) : gros gain
+#                    CPU sur le code x87. false (defaut) = 80 bits ; "auto" =
+#                    executables 32 bits seulement ; true = tous (un rendu qui
+#                    tremble : revenir a false).
+#   fex_maxinst      taille maximale d'un bloc traduit par FEX : 0 (defaut) = celui de
+#                    FEX (5000) ; 500 = celui de Proton ARM64, aussi le minimum des
+#                    contournements Mono. Des blocs courts se compilent plus vite.
 #   vsync            false = syncInterval 0 (plus de plafond vblank ; tearing possible).
 #   hud              compteur fps + charge GPU a l'ecran (DXVK_HUD, MTL_HUD).
 #   overlay          overlay Steam en jeu (Maj+Tab, amis, succes, notifications) :
@@ -180,6 +194,9 @@ langue = "auto"
 journal_detaille = false
 maj_avant_lancement = true
 tso = true
+fex_cache_disque = false
+fex_x87_reduit = false
+fex_maxinst = 0
 vsync = true
 hud = false
 overlay = true
