@@ -65,3 +65,12 @@ methode = "api"
 synchro = "steam-api"
 source = "steam"
 date = "2026-10-13"
+
+[compat.steam_frame]
+categorie = "verifie"
+tso_enable = "auto"
+environnement_recommande = "proton-stable"
+build_teste = 17981020
+date_test = "2026-08-13"
+source = "steam-frame"
+date = "2026-10-16"

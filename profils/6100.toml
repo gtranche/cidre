@@ -66,3 +66,12 @@ partage = "multiplateforme"
 sans_lien = "fichiers dans le dossier du jeu"
 source = "steam"
 date = "2026-10-13"
+
+[compat.steam_frame]
+categorie = "jouable"
+tso_enable = "auto"
+environnement_recommande = "native"
+build_teste = 23985172
+date_test = "2026-10-02"
+source = "steam-frame"
+date = "2026-10-16"

@@ -59,3 +59,12 @@ partage = "multiplateforme"
 liens = "Saved Games/Owlboy/Saves => Library/Application Support/Owlboy/Saves"
 source = "steam"
 date = "2026-10-13"
+
+[compat.steam_frame]
+categorie = "verifie"
+tso_enable = "auto"
+environnement_recommande = "native"
+build_teste = 8807665
+date_test = "2026-10-02"
+source = "steam-frame"
+date = "2026-10-16"

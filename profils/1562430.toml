@@ -36,3 +36,12 @@ partage = "multiplateforme"
 liens = "AppData/LocalLow/Black Salt Games/DREDGE/saves => Library/Application Support/Black Salt Games/DREDGE/saves"
 source = "steam"
 date = "2026-10-13"
+
+[compat.steam_frame]
+categorie = "verifie"
+tso_enable = "auto"
+environnement_recommande = "proton-stable"
+build_teste = 20206241
+date_test = "2026-08-31"
+source = "steam-frame"
+date = "2026-10-16"

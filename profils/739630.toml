@@ -87,3 +87,12 @@ motifs = "saveData.txt ; SaveFile.es3 ; SaveFile.es3.bac ; SaveFile.txt ; SaveFi
 dossier_windows = "AppData/LocalLow/Kinetic Games/Phasmophobia"
 source = "steam"
 date = "2026-10-13"
+
+[compat.steam_frame]
+categorie = "non-pris-en-charge"
+tso_enable = "auto"
+environnement_recommande = "proton-stable"
+build_teste = 24297525
+date_test = "2026-07-22"
+source = "steam-frame"
+date = "2026-10-16"

@@ -25,6 +25,13 @@ racines par systeme, motifs, et qui synchronise sous Cidre) vient de ses
 metadonnees publiques, lues par SteamCMD sans compte (`app_info_print`,
 section `ufs`) -- voir steam_cloud_valeurs et « Sauvegardes » du README.
 
+Source `steam-frame` : le bilan des tests de Valve sur Steam Frame (ARM64, Wine
+arm64ec + FEX comme Cidre), meme lecture SteamCMD (`common/
+steam_frame_compatibility`) -> [compat.steam_frame] (categorie, tso_enable :
+auto, actif ou coupe, environnement recommande, build et date du test), et
+[cidre] tso = false pour un jeu que Valve fait tourner TSO coupe (true s'il le
+force actif ; rien en auto).
+
 Les reponses sont mises en cache (dossier ignore par git, --cache) : une
 seconde execution ne retelecharge rien, --refresh force. Les textes des wikis
 (CC BY-NC-SA) ne sont jamais recopies : on n'en tire que des donnees
@@ -105,11 +112,11 @@ CROSSOVER_ARCHIVE = "https://media.codeweavers.com/pub/crossover/tie/crossover.t
 CROSSOVER_PAGE = "https://www.codeweavers.com/compatibility/browse/name/?app_id={n}"
 CROSSOVER_TAILLE_MAX = 200 * 1024 * 1024  # XML decompresse : 24 Mo aujourd'hui
 
-SOURCES = ("steam", "protondb", "pcgamingwiki", "applegamingwiki", "crossover")
+SOURCES = ("steam", "protondb", "pcgamingwiki", "applegamingwiki", "crossover", "steam-frame")
 SOURCES_PROTEGEES = ("cidre-test", "utilisateur")
 # Rang d'autorite (cf. README) : une source n'ecrase que son rang ou plus bas.
 RANG = {"cidre-test": 0, "utilisateur": 1, "winehq": 2, "steam": 3, "protondb": 3,
-        "applegamingwiki": 3, "pcgamingwiki": 3, "crossover": 4}
+        "applegamingwiki": 3, "pcgamingwiki": 3, "steam-frame": 3, "crossover": 4}
 RANG_DEFAUT = 3
 MOTEURS_FICHE = ("unity", "unreal", "hashlink", "stingray", "godot", "source")
 ANTICHEAT_FICHE = ("none", "eac", "battleye", "denuvo", "vac")
@@ -762,12 +769,19 @@ def steam_appinfo_decouper(sortie):
     return blocs
 
 
-def steam_appinfo_charger(toile, appids, steamcmd=None, maximum=None):
+def steam_appinfo_charger(toile, appids, steamcmd=None, maximum=None, avec_frame=False):
     """Met en cache (steam/appinfo/<appid>.json) ce que Steam publie des jeux
     qui n'y sont pas encore. On ne garde que ce qui sert : la section `ufs`, le
-    nom, les plateformes. Un jeu que Steam ne montre pas sans compte est note
-    (statut 403) et n'ecrit rien dans la fiche."""
-    manquants = [a for a in appids if str(a).isdigit() and (toile.refresh or _steam_appinfo(toile, a) is None)]
+    nom, les plateformes, et le bloc `steam_frame_compatibility` (configuration
+    validee par Valve sur Steam Frame, source steam-frame). Un jeu que Steam ne
+    montre pas sans compte est note (statut 403) et n'ecrit rien dans la fiche.
+    avec_frame : redemander aussi les entrees lues avant que ce bloc soit garde."""
+    def a_lire(a):
+        vu = _steam_appinfo(toile, a)
+        if toile.refresh or vu is None:
+            return True
+        return avec_frame and vu.get("statut") == 200 and "frame" not in (vu.get("corps") or {})
+    manquants = [a for a in appids if str(a).isdigit() and a_lire(a)]
     if maximum is not None and len(manquants) > maximum:
         # catalogue : ~0,5 s par jeu ; le reste viendra aux passages suivants (cache garde)
         dire(f"Steam Cloud : {len(manquants)} jeux sans configuration connue, {maximum} demandes cette fois")
@@ -801,8 +815,10 @@ def steam_appinfo_charger(toile, appids, steamcmd=None, maximum=None):
                 if a not in restants:
                     continue
                 commun = corps.get("common") if isinstance(corps.get("common"), dict) else None
+                frame = (commun or {}).get("steam_frame_compatibility")
                 garde = {"ufs": corps.get("ufs") if isinstance(corps.get("ufs"), dict) else None,
-                         "nom": (commun or {}).get("name"), "oslist": (commun or {}).get("oslist")}
+                         "nom": (commun or {}).get("name"), "oslist": (commun or {}).get("oslist"),
+                         "frame": frame if isinstance(frame, dict) else None}
                 toile.ecrire_cache(f"steam/appinfo/{a}.json",
                                    {"date": aujourdhui(), "statut": 200 if commun else 403, "corps": garde})
                 restants.remove(a)
@@ -1003,6 +1019,63 @@ def importer_steam_cloud(fiche, appid, toile):
     # dans une fiche retouchee, `source` et `date` ferment le bloc, comme dans une fiche neuve
     fin = [o for o in fiche.ops if o[0] == "compat.steam_cloud" and o[1] in ("source", "date")]
     fiche.ops = [o for o in fiche.ops if o not in fin] + fin
+    return v
+
+
+# -------------------------------------------------------------- Steam Frame
+# Proton ARM64 (Steam Frame : Wine arm64ec + FEX, notre architecture) recoit de
+# Steam, jeu par jeu, le reglage TSO que Valve a fixe en testant le jeu
+# (common/steam_frame_compatibility/configuration/tso_enable, passe a FEX par
+# STEAM_FEX_TSOENABLED dans le script proton). Ses valeurs sont celles du
+# reglage « TSO » des proprietes du jeu dans le client (steamui/sp.js, 2026-10-16) :
+# 0 = Auto (le defaut de FEX : TSO actif), 1 = force actif, 2 = force coupe.
+# Frame n'a pas de TSO materiel : un jeu que Valve fait tourner TSO coupe le
+# supporte aussi sous notre FEX -> [cidre] tso = false ; force actif -> tso = true
+# (protege le jeu d'un `cidre set defaut tso false`). Auto ne dit rien : on ne
+# pose rien. Source steam-frame ; une valeur cidre-test ou utilisateur garde la
+# main (contradiction rapportee). Cf. etude-proton.md (side-session-notes).
+TSO_FRAME = {"0": "auto", "1": "actif", "2": "coupe"}
+CLES_STEAM_FRAME = ("categorie", "tso_enable", "environnement_recommande", "build_teste", "date_test")
+
+
+def steam_frame_valeurs(frame):
+    if not isinstance(frame, dict):
+        return {}
+    conf = frame.get("configuration") if isinstance(frame.get("configuration"), dict) else {}
+    v = {}
+    cat = frame.get("category")
+    if isinstance(cat, str) and cat.isdigit():
+        v["categorie"] = {"1": "non-pris-en-charge", "2": "jouable", "3": "verifie"}.get(cat, cat)
+    tso = conf.get("tso_enable")
+    if tso in TSO_FRAME:
+        v["tso_enable"] = TSO_FRAME[tso]
+    if conf.get("recommended_runtime"):
+        v["environnement_recommande"] = conf["recommended_runtime"]
+    if str(frame.get("tested_build_id", "")).isdigit():
+        v["build_teste"] = int(frame["tested_build_id"])
+    t = str(frame.get("test_timestamp", ""))
+    if t.isdigit() and int(t) > 0:
+        v["date_test"] = time.strftime("%Y-%m-%d", time.gmtime(int(t)))
+    return v
+
+
+def importer_steam_frame(fiche, appid, toile):
+    vu = _steam_appinfo(toile, appid)
+    if not vu or vu.get("statut") != 200 or not isinstance(vu.get("corps"), dict) or "frame" not in vu["corps"]:
+        return None  # pas lu (ou lu avant qu'on garde le bloc) : on ne retire rien
+    v = steam_frame_valeurs(vu["corps"]["frame"])
+    S = "compat.steam_frame"
+    for k in CLES_STEAM_FRAME:
+        if k in v:
+            fiche.poser(S, k, v[k], "steam-frame", vu["date"], appid)
+        else:
+            fiche.retirer(S, k, "steam-frame")
+    fin = [o for o in fiche.ops if o[0] == S and o[1] in ("source", "date")]
+    fiche.ops = [o for o in fiche.ops if o not in fin] + fin
+    if v.get("tso_enable") in ("actif", "coupe"):
+        fiche.poser("cidre", "tso", v["tso_enable"] == "actif", "steam-frame", vu["date"], appid)
+    else:
+        fiche.retirer("cidre", "tso", "steam-frame")
     return v
 
 
@@ -2040,6 +2113,11 @@ def importer(appid, nom_steam, plateformes, toile, index_dir, date_export, profi
         cloud = importer_steam_cloud(fiche, appid, toile)
         if cloud and bilan_steam is not None:
             bilan_steam[cloud["synchro"]] = bilan_steam.get(cloud["synchro"], 0) + 1
+    if "steam-frame" in sources:
+        frame = importer_steam_frame(fiche, appid, toile)
+        if frame is not None and bilan_steam is not None:
+            cle = f"frame_tso_{frame['tso_enable']}" if frame.get("tso_enable") else ("frame_teste" if frame else "frame_sans")
+            bilan_steam[cle] = bilan_steam.get(cle, 0) + 1
     signaux = {}
 
     # --- ProtonDB : resume public (palier) + export des rapports (index local)
@@ -2189,7 +2267,7 @@ def _ranger(doc):
             return t
         fin = ("source", "date", "url") if bloc_import else ()
         cles = [k for k in t if k != "sources" and k not in fin] + [k for k in fin if k in t] + (["sources"] if "sources" in t else [])
-        nouveau = {k: ranger_table(t[k], bloc_import=(k in ("protondb", "pcgamingwiki", "applegamingwiki", "crossover", "steam_cloud"))) for k in cles}
+        nouveau = {k: ranger_table(t[k], bloc_import=(k in ("protondb", "pcgamingwiki", "applegamingwiki", "crossover", "steam_cloud", "steam_frame"))) for k in cles}
         t.clear()
         t.update(nouveau)
         return t
@@ -2298,8 +2376,8 @@ def main(argv=None):
     crossover = {"index": index_crossover, "date": date_crossover, "poser_windows_version": not a.sans_crossover_windows_version}
     bilan_crossover = bilan_crossover_vide()
     bilan_steam = {}
-    if "steam" in sources and not a.sans_steam_cloud:
-        steam_appinfo_charger(toile, appids, a.steamcmd, a.steam_cloud_max)
+    if ("steam" in sources and not a.sans_steam_cloud) or "steam-frame" in sources:
+        steam_appinfo_charger(toile, appids, a.steamcmd, a.steam_cloud_max, avec_frame="steam-frame" in sources)
     if catalogue:
         if "protondb" in sources:
             protondb_resumes_charger(toile, appids, a.resumes_max,
@@ -2341,9 +2419,14 @@ def main(argv=None):
              + (", ".join(f"{k} sur {n} fiche(s)" for k, n in sorted(b["cidre"].items())) or "rien")
              + (f" ; windows_version retenue sur {len(b['windows_version_retenues'])} fiche(s) (--sans-crossover-windows-version)"
                 if b["windows_version_retenues"] else ""))
-    if bilan_steam:
-        rapport["steam_cloud"] = dict(sorted(bilan_steam.items()))
-        dire("Steam Cloud : " + ", ".join(f"{k} {n}" for k, n in sorted(bilan_steam.items())))
+    frame = {k: n for k, n in bilan_steam.items() if k.startswith("frame_")}
+    cloud = {k: n for k, n in bilan_steam.items() if not k.startswith("frame_")}
+    if cloud:
+        rapport["steam_cloud"] = dict(sorted(cloud.items()))
+        dire("Steam Cloud : " + ", ".join(f"{k} {n}" for k, n in sorted(cloud.items())))
+    if frame:
+        rapport["steam_frame"] = dict(sorted(frame.items()))
+        dire("Steam Frame : " + ", ".join(f"{k} {n}" for k, n in sorted(frame.items())))
     if a.rapport:
         with open(a.rapport, "w", encoding="utf-8") as f:
             json.dump(rapport, f, ensure_ascii=False, indent=1)

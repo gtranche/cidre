@@ -324,6 +324,7 @@ for a in "$@"; do case $a in
    11) bloc 11 '\t"common"\n\t{\n\t\t"name"\t\t"Onze"\n\t\t"oslist"\t\t"windows,macos"\n\t}\n\t"ufs"\n\t{\n\t\t"quota"\t\t"1000"\n\t}\n' ;;
    12) [ $n -ge 2 ] && bloc 12 '\t"common"\n\t{\n\t\t"name"\t\t"Douze"\n\t}\n' || echo "No app info for AppID 12 found, requesting..." ;;
    13) bloc 13 '\t"extended"\n\t{\n\t}\n' ;;
+   14) bloc 14 '\t"common"\n\t{\n\t\t"name"\t\t"Quatorze"\n\t\t"steam_frame_compatibility"\n\t\t{\n\t\t\t"category"\t\t"3"\n\t\t\t"test_timestamp"\t\t"1762819200"\n\t\t\t"tested_build_id"\t\t"20700245"\n\t\t\t"configuration"\n\t\t\t{\n\t\t\t\t"recommended_runtime"\t\t"proton-stable"\n\t\t\t\t"tso_enable"\t\t"2"\n\t\t\t}\n\t\t}\n\t}\n' ;;
 esac; done
 """)
     os.chmod(faux, 0o755)
@@ -337,7 +338,8 @@ esac; done
         appels = open(os.path.join(foyer, "appels"), encoding="utf-8").read().splitlines()
         assert len(appels) == 2 and appels[0].startswith("+login anonymous ") and appels[0].endswith(" +quit"), appels
         assert "+app_info_print 11" in appels[0] and "+app_info_print 11" not in appels[1] and "+app_info_print 12" in appels[1]
-        assert m._steam_appinfo(toile, "11")["corps"] == {"ufs": {"quota": "1000"}, "nom": "Onze", "oslist": "windows,macos"}
+        assert m._steam_appinfo(toile, "11")["corps"] == {"ufs": {"quota": "1000"}, "nom": "Onze", "oslist": "windows,macos",
+                                                          "frame": None}
         assert m._steam_appinfo(toile, "12")["statut"] == 200 and m._steam_appinfo(toile, "13")["statut"] == 403
         assert m.steam_appinfo_charger(toile, ["11", "12", "13"], faux) == 0 and len(open(os.path.join(foyer, "appels")).readlines()) == 2
         # dans la fiche : le jeu public oui, celui que Steam ne montre pas sans compte non
@@ -350,6 +352,45 @@ esac; done
         # hors reseau : SteamCMD n'est pas lance
         hors = m.Toile(os.path.join(tmp, "cache-vide"), sans_reseau=True)
         assert m.steam_appinfo_charger(hors, ["11"], faux) == 0 and len(open(os.path.join(foyer, "appels")).readlines()) == 2
+
+        # Steam Frame : le bilan de Valve, et tso = false quand Valve force le TSO coupe (2)
+        assert m.steam_appinfo_charger(toile, ["14"], faux) == 1
+        fiche = m.Fiche({"jeu": {"appid": 14}})
+        v = m.importer_steam_frame(fiche, "14", toile)
+        assert v == {"categorie": "verifie", "tso_enable": "coupe", "environnement_recommande": "proton-stable",
+                     "build_teste": 20700245, "date_test": "2025-11-11"}, v
+        jour = m.aujourdhui()
+        assert fiche.doc["compat"]["steam_frame"] == dict(v, source="steam-frame", date=jour), fiche.doc
+        assert fiche.doc["cidre"]["tso"] is False and fiche.doc["cidre"]["sources"]["tso"] == f"steam-frame {jour}"
+        # une valeur cidre-test garde la main, le desaccord est rapporte
+        fiche = m.Fiche({"jeu": {"appid": 14}, "cidre": {"tso": True, "sources": {"tso": "cidre-test 2026-10-01"}}})
+        m.importer_steam_frame(fiche, "14", toile)
+        assert fiche.doc["cidre"]["tso"] is True and [c["champ"] for c in fiche.contradictions] == ["cidre.tso"]
+        # un jeu sans bloc Frame : rien a poser, et un tso pose par steam-frame s'en va
+        fiche = m.Fiche({"jeu": {"appid": 11}, "cidre": {"tso": False, "sources": {"tso": "steam-frame 2026-10-01"}}})
+        assert m.importer_steam_frame(fiche, "11", toile) == {} and "tso" not in fiche.doc["cidre"]
+        # 0 = Auto (TSO de FEX par defaut) : rien a poser, et un tso pose avant par steam-frame s'en va ;
+        # 1 = force actif : tso = true
+        for brut, attendu in (("0", None), ("1", True)):
+            fiche = m.Fiche({"jeu": {"appid": 15}, "cidre": {"tso": False, "sources": {"tso": "steam-frame 2026-10-01"}}})
+            toile.ecrire_cache("steam/appinfo/15.json", {"date": "2026-10-16", "statut": 200, "corps": {
+                "frame": {"category": "3", "configuration": {"tso_enable": brut}}}})
+            v = m.importer_steam_frame(fiche, "15", toile)
+            assert v["tso_enable"] == {"0": "auto", "1": "actif"}[brut], v
+            assert fiche.doc["cidre"].get("tso") is attendu, (brut, fiche.doc)
+        # ... mais pas un tso ecrit a la main
+        fiche = m.Fiche({"jeu": {"appid": 11}, "cidre": {"tso": False}})
+        m.importer_steam_frame(fiche, "11", toile)
+        assert fiche.doc["cidre"]["tso"] is False
+        # une entree lue avant qu'on garde le bloc Frame : rien n'est retire, et avec_frame la redemande
+        vieux = m._steam_appinfo(toile, "11")
+        del vieux["corps"]["frame"]
+        toile.ecrire_cache("steam/appinfo/11.json", vieux)
+        fiche = m.Fiche({"jeu": {"appid": 11}, "cidre": {"tso": False, "sources": {"tso": "steam-frame 2026-10-01"}}})
+        assert m.importer_steam_frame(fiche, "11", toile) is None and fiche.doc["cidre"]["tso"] is False
+        assert m.steam_appinfo_charger(toile, ["11", "14"], faux) == 0
+        assert m.steam_appinfo_charger(toile, ["11", "14"], faux, avec_frame=True) == 1
+        assert "frame" in m._steam_appinfo(toile, "11")["corps"]
     finally:
         if ancien is None:
             del os.environ["CIDRE_DIR"]

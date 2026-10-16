@@ -87,3 +87,12 @@ partage = "par-plateforme"
 liens = "AppData/Local/GeometryDash => Library/Application Support/GeometryDash"
 source = "steam"
 date = "2026-10-13"
+
+[compat.steam_frame]
+categorie = "jouable"
+tso_enable = "auto"
+environnement_recommande = "proton-stable"
+build_teste = 322170
+date_test = "2026-08-25"
+source = "steam-frame"
+date = "2026-10-16"

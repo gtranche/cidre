@@ -51,3 +51,12 @@ methode = "api"
 synchro = "steam-api"
 source = "steam"
 date = "2026-10-13"
+
+[compat.steam_frame]
+categorie = "jouable"
+tso_enable = "auto"
+environnement_recommande = "native"
+build_teste = 7875636
+date_test = "2026-10-05"
+source = "steam-frame"
+date = "2026-10-16"
