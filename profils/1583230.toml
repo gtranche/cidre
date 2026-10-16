@@ -24,15 +24,23 @@ api_disponibles = "pcgamingwiki 2026-10-11"
 bits = "pcgamingwiki 2026-10-11"
 drm = "pcgamingwiki 2026-10-11"
 
+# Classe D3D12 seul par PCGW, mais le binaire a aussi le rendu D3D11 d'Unreal 4 :
+# avec -dx11 il tourne en DXMT (M1 Max, 2026-10-15).
 [cidre]
 dependances = "vcrun2019"
+arguments = "-dx11"
+dx12 = false
 
 [cidre.sources]
 dependances = "crossover 2026-10-13"
 
 [compat]
-etat = "non-teste"
-date = "2026-10-11"
+etat = "or"
+source = "cidre-test"
+date = "2026-10-15"
+machine = "M1 Max 32 Go"
+fps_jeu = 75
+notes = "Unreal 4 en D3D11 (arguments -dx11, DXMT). L'amorceur Oregon.exe lance Oregon/Binaries/Win64/Oregon-Win64-Shipping.exe sans aide. En jeu, reglages choisis par le jeu : Epique (sg.*Quality=3), definition 100 %, mais sortie 1280x720 (ResolutionSizeX/Y, FullscreenMode=1) qu'il s'est donnee seul : environ 75 fps / 16 ms. Reglages : AppData/Local/Oregon/Saved/Config/WindowsNoEditor/GameUserSettings.ini."
 
 [compat.protondb]
 palier = "platinum"
