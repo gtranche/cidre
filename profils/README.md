@@ -35,6 +35,19 @@ Une clé absente d'une couche est prise dans la suivante. Le cache téléchargé
 prime sur la copie livrée, qui prime sur une fiche provisoire ; `cidre profils
 maj` le rafraîchit et retire du cache les fiches qui ne sont plus dans l'index.
 
+### Présentation hors de l'écran et garde GPU (DXMT, environnement seul)
+
+Le DXMT de Cidre (patch 0154) cesse de présenter quand la fenêtre du jeu n'est
+plus visible, ou quand le jeu est dans un espace plein écran et perd la main sur
+un Mac à un seul écran (cmd-tab, changement d'espace) : il vide ses commandes
+sans demander de drawable. `CIDRE_PRESENTATION_CACHEE=1` rend l'ancien
+comportement (toujours présenter). Le même patch arme une garde : si un tampon
+de commandes attendu ne se termine pas en `CIDRE_GARDE_GPU` secondes (20 par
+défaut, `0` = jamais), le jeu est terminé (code 0xC1D3, message
+`cidre-garde-gpu` dans le journal) plutôt que de laisser WindowServer bloqué
+jusqu'à la panique du watchdog (gel du 2026-10-16). Ni l'un ni l'autre n'est
+une clé de profil.
+
 ### Mise à jour avant le lancement (`maj_avant_lancement`)
 
 `true` par défaut : `cidre play <id>` (et « Jouer » dans Verger) met d'abord à

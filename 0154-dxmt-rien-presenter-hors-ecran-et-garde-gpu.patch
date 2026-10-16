@@ -1,0 +1,427 @@
+dxmt : rien presenter hors de l'ecran, et terminer le jeu si le GPU ne rend plus rien
+
+Le 2026-10-16, Sherlock Holmes Chapter One (DXMT, espace plein ecran de 0081/0122)
+a fige le M1 au quatrieme changement d'espace (cmd-tab a 14:10:10). Stackshots du
+watchdog de WindowServer : son fil principal capturait l'espace qu'on quittait
+(WSCaptureMenuResolveDesktopChanges -> CaptureSurfaceMetal::Populate ->
+MetalContext::Flush) et sa soumission Metal restait bloquee dans le noyau
+(IOGPUFamily -> AGXG13X), en meme temps que celle du jeu
+(-[_MTLCommandQueue _submitAvailableCommandBuffers]) ; dxmt-finish-thr attendait
+un tampon jamais soumis. Aucun autre processus dans AGX. WindowServer ne repondait
+plus : watchdog a 40 s, panique a 120 s, redemarrage. PEAK en D3D12 fige de la
+meme facon.
+
+Une sonde native (tests/sonde_gel_espace.m : CAMetalLayer, presentation comme
+DXMT, quitte et retrouve son espace seule) ne reproduit pas le gel sur 5
+variantes ; la cause noyau reste a etablir. Ce patch fait ce que fait une appli
+Mac, et borne les degats :
+
+1. MetalLayer_isPresentable (winemetal, appel unix 146) : faux quand la fenetre
+   n'est pas visible (occlusionState), ou quand elle est dans un espace plein
+   ecran et que l'appli n'est plus active. La desactivation
+   (NSApplicationWillResignActive) precede la capture de l'espace et le
+   changement d'espace d'environ 250 ms (mesure de la sonde) ; l'occlusion vient
+   apres. Une fenetre ordinaire visible derriere une autre appli reste presentee.
+   Le critere « appli inactive » ne vaut qu'avec un seul ecran (suivi par
+   NSApplicationDidChangeScreenParametersNotification) : avec deux, un jeu plein
+   ecran sur l'un reste visible quand on clique dans une autre appli sur l'autre ;
+   seule l'occlusion compte alors.
+   CIDRE_PRESENTATION_CACHEE=1 desactive le test.
+
+2. Present1 du swapchain D3D11 : si la couche n'est pas presentable, les
+   commandes sont videes sans presenter (comme une fenetre occultee), le
+   semaphore de latence est rendu, et le fil cede 16 ms. S_OK, pas
+   DXGI_STATUS_OCCLUDED (les swapchains flip ne le recoivent jamais).
+
+3. Presenter::encodeCommands, pour les images deja en file : meme test a
+   l'encodage ; sans drawable, une passe vide sur une cible 1x1 garde l'ordre des
+   fences de l'image, et rien n'est presente. Effet de bord utile : hors de
+   l'espace actif, nextDrawable bloquait ~1 s par image (expiration), le fil
+   d'encodage aussi.
+
+4. Filet de securite (cidre-garde-gpu) : si un tampon attendu par
+   dxmt-finish-thr ne se termine pas en CIDRE_GARDE_GPU secondes (20 par defaut,
+   0 = jamais), le jeu est termine (code 0xC1D3) avec un message dans le
+   journal. La duree se compte en tours du fil de garde (250 ms) pendant une
+   meme attente, sans horloge : les horloges de Wine suivent
+   mach_continuous_time et compteraient une veille du Mac, et une premiere
+   version (GetTickCount64() | 1, soustraction non signee) a tue Sherlock au
+   demarrage (« attendu depuis 18446744073709551 s »). A valider : que la fin du processus libere bien la soumission de
+   WindowServer (manche en jeu a faire, cidre stop pendant un gel).
+
+Le D3D12 de DXMT (d3d12_command_queue.cpp) et la WSI de KosmicKrisp (PEAK) ne
+sont pas touches.
+
+Generated-by: LLM
+
+diff --git a/src/d3d11/d3d11_swapchain.cpp b/src/d3d11/d3d11_swapchain.cpp
+index 9f5f9dc..bbd5e71 100644
+--- a/src/d3d11/d3d11_swapchain.cpp
++++ b/src/d3d11/d3d11_swapchain.cpp
+@@ -766,6 +766,21 @@ public:
+       return hr;
+     }
+ 
++    if (!presenter->isPresentable()) {
++      /* Cidre : fenetre hors de l'ecran, ou espace plein ecran que l'on quitte
++         (appli inactive). On vide les commandes sans presenter, comme pour une
++         fenetre occultee, et on cede ~16 ms pour ne pas tourner a vide. Le jeu
++         presentait sans vsync pendant la capture de l'espace par WindowServer
++         quand le M1 a fige (2026-10-16). S_OK et non DXGI_STATUS_OCCLUDED :
++         les swapchains flip ne le recoivent jamais, certains jeux s'y perdent.
++         Le semaphore de latence est rendu, sinon un jeu qui l'attend se fige. */
++      device_context_->Commit();
++      lock.unlock();
++      ReleaseSemaphore(present_semaphore_, 1, nullptr);
++      Sleep(16);
++      return S_OK;
++    }
++
+     double vsync_duration =
+         std::max(SyncInterval * 1.0 /
+                      (preferred_max_frame_rate ? preferred_max_frame_rate
+diff --git a/src/dxmt/dxmt_command_queue.cpp b/src/dxmt/dxmt_command_queue.cpp
+index 92e4cf4..b68de4c 100644
+--- a/src/dxmt/dxmt_command_queue.cpp
++++ b/src/dxmt/dxmt_command_queue.cpp
+@@ -23,6 +23,7 @@
+ #include "util_env.hpp"
+ #include "util_win32_compat.h"
+ #include <atomic>
++#include <cstdio>
+ 
+ #define ASYNC_ENCODING 1
+ 
+@@ -97,6 +98,18 @@ CommandQueue::CommandQueue(WMT::Device device) :
+ 
+   counters_enabled_ = !env::getEnvVar("DXMT_COUNTERS").empty();
+ 
++  {
++    std::string garde = env::getEnvVar("CIDRE_GARDE_GPU");
++    if (!garde.empty()) {
++      try {
++        garde_gpu_ms_ = std::stoull(garde) * 1000;
++      } catch (const std::exception &) {
++      }
++    }
++    if (garde_gpu_ms_)
++      garde_gpu_thread_ = dxmt::thread([this]() { this->GardeGpuThread(); });
++  }
++
+   std::string env = env::getEnvVar("DXMT_CAPTURE_FRAME");
+ 
+   if (!env.empty()) {
+@@ -118,6 +131,8 @@ CommandQueue::~CommandQueue() {
+   SharedEventListener_destroy(shared_event_listener);
+   encodeThread.join();
+   finishThread.join();
++  if (garde_gpu_thread_.joinable())
++    garde_gpu_thread_.join();
+   for (unsigned i = 0; i < kCommandChunkCount; i++) {
+     auto &chunk = chunks[i];
+     chunk.reset();
+@@ -220,6 +235,32 @@ CommandQueue::EncodingThread() {
+   return 0;
+ }
+ 
++uint32_t
++CommandQueue::GardeGpuThread() {
++  env::setThreadName("cidre-garde-gpu");
++  constexpr uint64_t kTourMs = 250;
++  uint64_t gen_vue = 0, tours = 0;
++  while (!stopped.load()) {
++    Sleep(kTourMs);
++    uint64_t gen = attente_gpu_gen_.load(std::memory_order_relaxed);
++    if ((gen & 1) == 0) {      /* aucun tampon attendu */
++      tours = 0;
++    } else if (gen != gen_vue) { /* nouvelle attente */
++      tours = 1;
++    } else {                     /* la meme attente dure */
++      tours++;
++    }
++    gen_vue = gen;
++    if (tours * kTourMs < garde_gpu_ms_)
++      continue;
++    ERR("cidre-garde-gpu : un tampon de commandes est attendu depuis ", tours * kTourMs / 1000,
++        " s (GPU ou soumission bloques, WindowServer menace) : fin du jeu. CIDRE_GARDE_GPU=0 pour desactiver.");
++    fflush(stderr);
++    TerminateProcess(GetCurrentProcess(), 0xC1D3);
++  }
++  return 0;
++}
++
+ uint32_t
+ CommandQueue::WaitForFinishThread() {
+   env::setThreadName("dxmt-finish-thread");
+@@ -231,7 +272,9 @@ CommandQueue::WaitForFinishThread() {
+       break;
+     auto &chunk = chunks[internal_seq % kCommandChunkCount];
+     if (chunk.attached_cmdbuf.status() <= WMTCommandBufferStatusScheduled) {
++      attente_gpu_gen_.fetch_add(1, std::memory_order_relaxed); /* impaire : on attend */
+       chunk.attached_cmdbuf.waitUntilCompleted();
++      attente_gpu_gen_.fetch_add(1, std::memory_order_relaxed); /* paire : fini */
+     }
+     if (chunk.attached_cmdbuf.status() == WMTCommandBufferStatusError) {
+       ERR("Device error at frame ", chunk.frame_, ": ", chunk.attached_cmdbuf.error().description().getUTF8String());
+diff --git a/src/dxmt/dxmt_command_queue.hpp b/src/dxmt/dxmt_command_queue.hpp
+index 9e21638..4295278 100644
+--- a/src/dxmt/dxmt_command_queue.hpp
++++ b/src/dxmt/dxmt_command_queue.hpp
+@@ -200,6 +200,21 @@ private:
+   obj_handle_t shared_event_listener;
+   dxmt::thread event_listener_thread;
+ 
++  /* Cidre : filet de securite. Si un tampon de commandes attendu par
++     dxmt-finish-thr ne se termine pas en CIDRE_GARDE_GPU secondes (20 par
++     defaut, 0 = jamais), le jeu se termine : le 2026-10-16 la soumission
++     Metal de WindowServer est restee bloquee dans le noyau avec celle du jeu
++     jusqu'a la panique du watchdog (120 s) et au redemarrage du M1. Perdre le
++     jeu vaut mieux que perdre la machine. */
++  /* Generation de l'attente : impaire pendant un waitUntilCompleted, paire
++     sinon. La garde compte ses propres tours (250 ms) tant que la meme attente
++     dure : pas d'horloge (celles de Wine suivent mach_continuous_time et
++     comptent la veille du Mac), pas de soustraction qui deborde. */
++  std::atomic_uint64_t attente_gpu_gen_ = 0;
++  uint64_t garde_gpu_ms_ = 20000;
++  dxmt::thread garde_gpu_thread_;
++  uint32_t GardeGpuThread();
++
+   friend class CommandChunk;
+   uint64_t
+   GetNextEncoderId() {
+diff --git a/src/dxmt/dxmt_context.cpp b/src/dxmt/dxmt_context.cpp
+index 2d64acd..c5b0feb 100644
+--- a/src/dxmt/dxmt_context.cpp
++++ b/src/dxmt/dxmt_context.cpp
+@@ -1522,7 +1522,9 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
+       );
+       auto t1 = clock::now();
+       currentFrameStatistics().drawable_blocking_interval += (t1 - t0);
+-      if (data->after > 0)
++      if (drawable == nullptr)
++        ; /* Cidre : fenetre hors de l'ecran, rien a presenter */
++      else if (data->after > 0)
+         cmdbuf.presentDrawableAfterMinimumDuration(drawable, data->after);
+       else
+         cmdbuf.presentDrawable(drawable);
+diff --git a/src/dxmt/dxmt_presenter.cpp b/src/dxmt/dxmt_presenter.cpp
+index e5aec04..0b5b24a 100644
+--- a/src/dxmt/dxmt_presenter.cpp
++++ b/src/dxmt/dxmt_presenter.cpp
+@@ -156,7 +156,43 @@ Presenter::encodeCommands(
+     std::function<void(WMT::RenderCommandEncoder)> &&wait_fences,
+     std::function<void(WMT::RenderCommandEncoder)> &&update_fences
+ ) {
++  /* Cidre : fenetre hors de l'ecran (ou espace plein ecran qu'on quitte) --
++     pas de drawable, rien a presenter. On garde une passe vide sur une petite
++     cible a part pour que les attentes et mises a jour de fences de l'image
++     restent dans l'ordre. Sans ce saut, nextDrawable bloque ~1 s par image
++     hors de l'espace actif, et le jeu presentait pendant la capture de
++     l'espace par WindowServer (gel du 2026-10-16). */
++  if (!layer_.isPresentable()) {
++    if (placeholder_ == nullptr || placeholder_format_ != layer_props_.pixel_format) {
++      WMTTextureInfo texture_info;
++      texture_info.type = WMTTextureType2D;
++      texture_info.pixel_format = layer_props_.pixel_format;
++      texture_info.usage = WMTTextureUsageRenderTarget;
++      texture_info.options = WMTResourceStorageModePrivate;
++      texture_info.width = 1;
++      texture_info.height = 1;
++      texture_info.depth = 1;
++      texture_info.mipmap_level_count = 1;
++      texture_info.sample_count = 1;
++      texture_info.array_length = 1;
++      placeholder_ = device_.newTexture(texture_info);
++      placeholder_format_ = layer_props_.pixel_format;
++    }
++    WMTRenderPassInfo info;
++    WMT::InitializeRenderPassInfo(info);
++    info.colors[0].load_action = WMTLoadActionDontCare;
++    info.colors[0].store_action = WMTStoreActionDontCare;
++    info.colors[0].texture = placeholder_;
++    auto encoder = cmdbuf.renderCommandEncoder(info);
++    wait_fences(encoder);
++    update_fences(encoder);
++    encoder.endEncoding();
++    return {};
++  }
++
+   auto drawable = layer_.nextDrawable();
++  if (drawable == nullptr) /* expiration de nextDrawable (1 s) : meme traitement */
++    return {};
+ 
+   WMTRenderPassInfo info;
+   WMT::InitializeRenderPassInfo(info);
+diff --git a/src/dxmt/dxmt_presenter.hpp b/src/dxmt/dxmt_presenter.hpp
+index 77eb35c..20b3978 100644
+--- a/src/dxmt/dxmt_presenter.hpp
++++ b/src/dxmt/dxmt_presenter.hpp
+@@ -65,6 +65,9 @@ public:
+ 
+   PresentState synchronizeLayerProperties();
+ 
++  /* Cidre : faux si la fenetre n'est pas a l'ecran (voir MetalLayer_isPresentable). */
++  bool isPresentable() { return layer_.isPresentable(); }
++
+   WMT::MetalDrawable encodeCommands(
+       WMT::CommandBuffer cmdbuf, WMT::Texture backbuffer, DXMTPresentMetadata metadata,
+       std::function<void(WMT::RenderCommandEncoder)> &&wait_fences,
+@@ -76,6 +79,8 @@ private:
+ 
+   WMT::Device device_;
+   WMT::MetalLayer layer_;
++  WMT::Reference<WMT::Texture> placeholder_;
++  WMTPixelFormat placeholder_format_ = WMTPixelFormatInvalid;
+   InternalCommandLibrary &lib_;
+   WMTLayerProps layer_props_;
+   uint32_t sample_count_;
+diff --git a/src/winemetal/Metal.hpp b/src/winemetal/Metal.hpp
+index 35f07f0..75288cd 100644
+--- a/src/winemetal/Metal.hpp
++++ b/src/winemetal/Metal.hpp
+@@ -573,6 +573,11 @@ public:
+     return MetalDrawable{MetalLayer_nextDrawable(handle)};
+   };
+ 
++  bool
++  isPresentable() {
++    return MetalLayer_isPresentable(handle);
++  };
++
+   void
+   setProps(const WMTLayerProps &props) {
+     MetalLayer_setProps(handle, &props);
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+index 70fc792..0e01b11 100644
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -3192,6 +3192,81 @@ NTSTATUS _CacheWriter_alloc_init(void *obj);
+ NTSTATUS _CacheWriter_set(void *obj);
+ NTSTATUS _WMTSetMetalShaderCachePath(void *obj);
+ 
++
++/*
++ * Cidre : ne plus presenter quand la fenetre quitte l'ecran.
++ *
++ * Le 2026-10-16, Sherlock Holmes Chapter One (DXMT) a fige le M1 au
++ * changement d'espace : WindowServer capturait l'espace plein ecran qu'on
++ * quittait (WSCaptureMenuResolveDesktopChanges -> CaptureSurfaceMetal) et sa
++ * soumission Metal restait bloquee dans le noyau AGX en meme temps que celle
++ * du jeu ; watchdog de WindowServer, puis panique. Le jeu presentait sans
++ * vsync, en continu, pendant toute la transition. Une appli Mac cesse de
++ * dessiner quand sa fenetre n'est plus visible ; on fait de meme.
++ *
++ * Faux quand la fenetre n'est pas visible (occlusion), ou quand elle est dans
++ * un espace plein ecran et que l'appli n'est plus active : la desactivation
++ * (NSApplicationWillResignActive) precede la capture et le changement
++ * d'espace d'environ 250 ms (sonde tests/sonde_gel_espace.m), l'occlusion
++ * arrive apres. Une fenetre ordinaire visible derriere une autre appli
++ * continue d'etre presentee, et avec plusieurs ecrans seule l'occlusion compte. CIDRE_PRESENTATION_CACHEE=1 desactive le test.
++ */
++static _Atomic int cidre_appli_active = 1;
++static _Atomic int cidre_un_seul_ecran = 1;
++static int cidre_test_presentation = -1;
++
++static void
++cidre_suivre_activation(void) {
++  static dispatch_once_t once;
++  dispatch_once(&once, ^{
++    dispatch_async(dispatch_get_main_queue(), ^{
++      NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
++      atomic_store(&cidre_appli_active, NSApp ? (int)[NSApp isActive] : 1);
++      atomic_store(&cidre_un_seul_ecran, [NSScreen screens].count <= 1);
++      [nc addObserverForName:NSApplicationDidChangeScreenParametersNotification object:nil queue:nil
++                  usingBlock:^(NSNotification *n) {
++        atomic_store(&cidre_un_seul_ecran, [NSScreen screens].count <= 1); }];
++      [nc addObserverForName:NSApplicationWillResignActiveNotification object:nil queue:nil
++                  usingBlock:^(NSNotification *n) { atomic_store(&cidre_appli_active, 0); }];
++      [nc addObserverForName:NSApplicationDidResignActiveNotification object:nil queue:nil
++                  usingBlock:^(NSNotification *n) { atomic_store(&cidre_appli_active, 0); }];
++      [nc addObserverForName:NSApplicationDidBecomeActiveNotification object:nil queue:nil
++                  usingBlock:^(NSNotification *n) { atomic_store(&cidre_appli_active, 1); }];
++    });
++  });
++}
++
++static NTSTATUS
++_MetalLayer_isPresentable(void *obj) {
++  struct unixcall_generic_obj_uint64_ret *params = obj;
++  CAMetalLayer *layer = (CAMetalLayer *)params->handle;
++  params->ret = 1;
++
++  if (cidre_test_presentation < 0) {
++    const char *e = getenv("CIDRE_PRESENTATION_CACHEE");
++    cidre_test_presentation = !(e && *e == '1');
++  }
++  if (!cidre_test_presentation)
++    return STATUS_SUCCESS;
++  cidre_suivre_activation();
++
++  if (![layer.delegate isKindOfClass:NSView.class])
++    return STATUS_SUCCESS;
++  NSWindow *window = ((NSView *)layer.delegate).window;
++  if (!window)
++    return STATUS_SUCCESS;
++
++  BOOL visible = (window.occlusionState & NSWindowOcclusionStateVisible) != 0;
++  BOOL plein_ecran = (window.styleMask & NSWindowStyleMaskFullScreen) != 0;
++  /* Le critere « appli inactive » ne vaut qu'avec un seul ecran : avec deux, un
++     jeu plein ecran sur l'un reste visible quand on clique dans une autre appli
++     sur l'autre, et doit continuer d'etre presente. Il ne reste alors que
++     l'occlusion. */
++  if (!visible || (plein_ecran && atomic_load(&cidre_un_seul_ecran) && !atomic_load(&cidre_appli_active)))
++    params->ret = 0;
++  return STATUS_SUCCESS;
++}
++
+ const void *__wine_unix_call_funcs[] = {
+     &_NSObject_retain,
+     &_NSObject_release,
+@@ -3339,6 +3414,7 @@ const void *__wine_unix_call_funcs[] = {
+     &_MTLDevice_newIndirectCommandBuffer,
+     &_MTLDevice_newLibraryWithSource,
+     &_MTLTexture_getBytes,
++    &_MetalLayer_isPresentable,
+ };
+ 
+ #ifndef DXMT_NATIVE
+@@ -3489,5 +3565,6 @@ const void *__wine_unix_call_wow64_funcs[] = {
+     &_MTLDevice_newIndirectCommandBuffer,
+     &_MTLDevice_newLibraryWithSource,
+     &_MTLTexture_getBytes,
++    &_MetalLayer_isPresentable,
+ };
+ #endif
+diff --git a/src/winemetal/winemetal.h b/src/winemetal/winemetal.h
+index 3ef78b5..333bc4a 100644
+--- a/src/winemetal/winemetal.h
++++ b/src/winemetal/winemetal.h
+@@ -1861,6 +1861,11 @@ struct WMTEDRValue {
+ 
+ WINEMETAL_API void MetalLayer_getEDRValue(obj_handle_t layer, struct WMTEDRValue *value);
+ 
++/* Cidre : faux quand presenter dans cette couche n'a pas de sens -- fenetre
++   non visible, ou fenetre d'un espace plein ecran dont l'appli n'est plus
++   active (on quitte l'espace). Voir MetalLayer_isPresentable dans winemetal_unix.c. */
++WINEMETAL_API bool MetalLayer_isPresentable(obj_handle_t layer);
++
+ enum WMTDataType : uint16_t {
+   WMTDataTypeNone = 0,
+ 
+diff --git a/src/winemetal/winemetal_thunks.c b/src/winemetal/winemetal_thunks.c
+index 4483683..9823fb8 100644
+--- a/src/winemetal/winemetal_thunks.c
++++ b/src/winemetal/winemetal_thunks.c
+@@ -1344,3 +1344,12 @@ MTLTexture_getBytes(
+   params.bytes_per_image = bytes_per_image;
+   UNIX_CALL(145, &params);
+ }
++
++WINEMETAL_API bool
++MetalLayer_isPresentable(obj_handle_t layer) {
++  struct unixcall_generic_obj_uint64_ret params;
++  params.handle = layer;
++  params.ret = 1;
++  UNIX_CALL(146, &params);
++  return params.ret != 0;
++}
