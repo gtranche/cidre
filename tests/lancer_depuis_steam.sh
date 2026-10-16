@@ -710,8 +710,13 @@ cd "$DOSSIER"
 # On ne fait PLUS exec : on attend la fin du jeu pour sauvegarder apres coup.
 # `&& ... ||` : ce script est en `set -e`, et un jeu qui sort sur un code d'erreur
 # (un plantage, un arret force) l'arretait ici meme, AVANT la sauvegarde ci-dessous.
+[ -z "$JEU" ] || echo "    shaders : $(sh "$R/tests/etat_shaders.sh" etat "$JEU" "$VOIE_TEMOIN" 2>/dev/null | sed -n 's/^etat=//p')" >>"$JOURNAL"
 CIDRE_OVERLAY_DYLIB=$OVERLAY sh "$R/tests/etape2_pile_arm64ec.sh" "$PROG" "$@" >>"$JOURNAL" 2>&1 && RC=0 || RC=$?
 [ -z "$JEU" ] || sh "$R/tests/reglages_jeu.sh" "$JEU" temoin-change "$TEMOIN" "$VOIE_TEMOIN" >>"$JOURNAL" 2>&1 || true
+# Ce que le jeu a eu le temps de compiler : la voie, la duree de la partie, le
+# macOS et le Cidre du moment (tests/etat_shaders.sh), pour annoncer au
+# prochain lancement s'il faudra encore compiler (`cidre play --json`, Verger).
+[ -z "$JEU" ] || sh "$R/tests/etat_shaders.sh" noter "$JEU" "$VOIE_TEMOIN" "$DEBUT_EPOCH" >>"$JOURNAL" 2>&1 || true
 # Sorti sur une erreur : le code seul n'aide personne. tests/expliquer_sortie.sh
 # lit le journal de ce lancement, reconnait les signatures connues (client Steam
 # ferme, pas d'affichage, DLL manquante, prefixe abime, plantage...) et ecrit

@@ -602,7 +602,10 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
                                   --json : la sortie standard porte des evenements, un objet par ligne
                                   ({"evenement":"maj","etat":...} puis {"evenement":"lancement"}), le reste
                                   va a l'erreur ; {"evenement":"avertissement","code":"steam_cpu","cpu":<%>,
-                                  "message":...} avant le lancement si le client Steam mange deja le processeur
+                                  "message":...} avant le lancement si le client Steam mange deja le processeur ;
+                                  pour un jeu Windows, {"evenement":"shaders","etat":"premier_lancement"|
+                                  "cache_invalide"|"en_cache","raison":...,"message":...} : ses shaders sont-ils
+                                  deja compiles sur ce Mac (premier lancement : minutes d'ecran noir possibles)
                                   Le client Steam est ouvert en arriere-plan (sans fenetre) s'il etait ferme,
                                   sa fenetre masquee s'il en montrait une ; il n'est jamais ferme
                                   Un jeu du dossier Cidre dont Steam croit des sauvegardes sur ce Mac qui n'y
@@ -720,9 +723,12 @@ case "$cmd" in
     { [ -n "$(saves_ids | grep -x "$id")" ] || [ -n "$(saves_steam "$id")" ]; } && sv=true || sv=false
     # ou en est sa mise a jour (jeu du dossier Cidre), d'apres ce qu'on sait deja : pas de reseau ici
     mj=null; [ "$(source_de "$id")" = cidre ] && { maj_etat "$id" cache; mj="{$(maj_json "$id")}"; }
+    # ses shaders sur ce Mac (tests/etat_shaders.sh), pour un jeu Windows (ou sans .exe pres de la racine)
+    sh_=null; case $(plat "$id") in windows|inconnu) sh_=$(CIDRE_CHEMIN_JEU=$(chemin "$id") sh "$R/tests/etat_shaders.sh" json "$id" 2>/dev/null || echo null) ;; esac
     if [ "$JSON" = oui ]; then
       # "fiche" : la fiche de la base de profils (profils/README.md), ou null
-      fiche_json "$id"; printf ',"sauvegardes":%s,"options":%s,"options_perso":%s,"maj":%s,"fiche":%s}\n' "$sv" "$opts" "$(sh "$R/tests/profil_cidre.sh" "$id" perso)" "$mj" "$(sh "$R/tests/fiche_profil.sh" json "$id")"
+      # "shaders" : {"etat","raison","voie","dernier","cumul","macos","message"}, ou null
+      fiche_json "$id"; printf ',"sauvegardes":%s,"options":%s,"options_perso":%s,"maj":%s,"fiche":%s,"shaders":%s}\n' "$sv" "$opts" "$(sh "$R/tests/profil_cidre.sh" "$id" perso)" "$mj" "$(sh "$R/tests/fiche_profil.sh" json "$id")" "$sh_"
     else
       echo "id          : $id"
       echo "nom         : $(nom "$id")"
@@ -732,6 +738,11 @@ case "$cmd" in
       t=$(champ "$id" SizeOnDisk); echo "taille      : $(( ${t:-0} / 1048576 )) Mo"
       echo "sauvegardes : $sv"
       [ "$mj" = null ] || echo "mise a jour : $MAJ_ETAT${MAJ_RAISON:+ ($MAJ_RAISON)}${MAJ_DISPO:+, build $MAJ_INSTALLE -> $MAJ_DISPO}"
+      if [ "$sh_" != null ]; then
+        se=$(CIDRE_CHEMIN_JEU=$(chemin "$id") sh "$R/tests/etat_shaders.sh" etat "$id" 2>/dev/null)
+        sv_=$(printf '%s\n' "$se" | sed -n 's/^voie=//p'); sd=$(printf '%s\n' "$se" | sed -n 's/^dernier=//p')
+        echo "shaders     : $(printf '%s\n' "$se" | sed -n 's/^etat=//p')$(printf '%s\n' "$se" | sed -n 's/^raison=\(..*\)/ (\1)/p') -- voie $sv_${sd:+, derniere partie le $(date -r "$sd" '+%F %H:%M')}"
+      fi
       echo "options     : $(sh "$R/tests/profil_cidre.sh" "$id" | tr '\n' ' ')"
       f=$(sh "$R/tests/fiche_profil.sh" chemin "$id")
       if [ -n "$f" ]; then
@@ -759,7 +770,24 @@ case "$cmd" in
     #   {"evenement":"avertissement","code":"steam_cpu","cpu":<%>,"message":...}
     # La mesure passe au lanceur (CIDRE_STEAM_CPU), qui ne la refait pas ; sans
     # --json, c'est le lanceur qui le dit. On ne ferme jamais le client.
+    # Avant lui aussi, pour un jeu Windows : ses shaders sont-ils deja compiles
+    # sur ce Mac (tests/etat_shaders.sh) ? En --json,
+    #   {"evenement":"shaders","etat":"premier_lancement"|"cache_invalide"|"en_cache",
+    #    "raison":null|"macos"|"machine"|"cidre","voie":...,"message":...}
+    # que Verger annonce ; au terminal, la phrase, s'il y a quelque chose a dire.
+    annoncer_shaders() {
+      # (« inconnu » : un jeu sans .exe pres de la racine, Unreal sans amorceur)
+      case $(plat "$id") in windows|inconnu) ;; *) return 0 ;; esac
+      if [ "$JSON" = oui ]; then
+        sj=$(CIDRE_CHEMIN_JEU=$(chemin "$id") sh "$R/tests/etat_shaders.sh" json "$id" 2>/dev/null) || return 0
+        evenement "{\"evenement\":\"shaders\",${sj#\{}"
+      else
+        sm=$(CIDRE_CHEMIN_JEU=$(chemin "$id") sh "$R/tests/etat_shaders.sh" message "$id" 2>/dev/null) || true
+        [ -z "$sm" ] || echo "$sm"
+      fi
+    }
     partir() {
+      annoncer_shaders
       if [ "$JSON" = oui ] && [ "${CIDRE_SANS_STEAM:-}" != 1 ]; then
         sc=$(sh "$R/tests/client_steam_natif.sh" cpu 2>/dev/null) || true
         sc_p=$(printf '%s\n' "$sc" | sed -n 1p); sc_m=$(printf '%s\n' "$sc" | sed -n 2p)
