@@ -43,6 +43,28 @@ format = "ini"
 section = "/Script/TarsierUtilities.TarGameUserSettings"
 valeurs = { "ResolutionSizeX" = "0", "ResolutionSizeY" = "0", "LastUserConfirmedResolutionSizeX" = "0", "LastUserConfirmedResolutionSizeY" = "0" }
 
+# iMac 4,5K a 10 coeurs GPU (meme condition que la fiche d'Expedition 33) : sortie
+# du jeu en 1680x945, posee une fois (id), apres la remise a 0 ci-dessus. Mesure
+# sur l iMac M4 le 2026-10-16, D3D12, menu puis premier niveau : 2240x1260 40 fps /
+# 25 ms ; 1680x945 55 fps (choisi par le joueur sur l image). Plein ecran
+# (FullscreenMode 0, emule par 0122 et agrandi par macOS) : en fenetre plein ecran
+# (1), Unreal rendrait a la taille du bureau et ignorerait la definition posee. Le
+# joueur peut remonter la definition dans le menu du jeu.
+[[machine]]
+si = "coeurs_gpu <= 10 et ecran_largeur == 2240 et ecran_hauteur == 1260"
+[[machine.reglages_jeu]]
+id = "sortie-imac-1680x945"
+fichier = "AppData/Local/Little Nightmares Enhanced Edition/Saved/Config/WindowsNoEditor/GameUserSettings.ini"
+format = "ini"
+section = "/Script/TarsierUtilities.TarGameUserSettings"
+[machine.reglages_jeu.valeurs]
+"ResolutionSizeX" = "1680"
+"ResolutionSizeY" = "945"
+"LastUserConfirmedResolutionSizeX" = "1680"
+"LastUserConfirmedResolutionSizeY" = "945"
+"FullscreenMode" = "0"
+"LastConfirmedFullscreenMode" = "0"
+
 [compat]
 etat = "argent"
 source = "cidre-test"
@@ -82,3 +104,16 @@ motifs = "*.sav ; GameUserSettings.ini ; Input.ini"
 dossier_windows = "AppData/Local/Little Nightmares Enhanced Edition/Saved/SaveGames ; AppData/Local/Little Nightmares Enhanced Edition/Saved/Config/WindowsNoEditor"
 source = "steam"
 date = "2026-10-13"
+
+[[compat.machines]]
+nom = "iMac 4,5K (10 coeurs GPU)"
+si = "coeurs_gpu <= 10 et ecran_largeur == 2240 et ecran_hauteur == 1260"
+voie = "d3d12"
+etat = "argent"
+source = "cidre-test"
+date = "2026-10-16"
+machine = "iMac M4 24 Go (10 coeurs GPU, ecran 2240x1260 points)"
+cidre_version = "1.5.11"
+fps_jeu = 55
+options = "dx12=true"
+notes = "D3D12 (vkd3d-proton -> KosmicKrisp), sortie du jeu en 1680x945 (bloc [[machine]] de l iMac) : 55 fps ; en 2240x1260 : 40 fps / 25 ms. Premier lancement : 1 a 2 min d ecran noir (compilation des nuanceurs). Brouillard du menu juge plus dense que sur le M1 par le joueur, pas en jeu."
