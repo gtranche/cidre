@@ -157,6 +157,36 @@ rm -f "$CIDRE_PROFILS_BASE/horodatage"
 verif "sans index-depot ni horodatage : copie livree" "false" "$(valeur 1903340 garde_index)"
 verif "jeu du seul cache : le cache sert" "true" "$(printf '[cidre]\ngarde_index = true\n' >"$CIDRE_PROFILS_BASE/424243.toml"; valeur 424243 garde_index)"
 rm -f "$CIDRE_PROFILS_BASE/1903340.toml" "$CIDRE_PROFILS_BASE/424243.toml"
+# api_disponibles (importe de PCGamingWiki) = "d3d12" seulement : dx12 par defaut,
+# sauf choix explicite de la fiche ou de l utilisateur (dx12, d3d11 pour ce jeu,
+# api autre que d3d12). Exp33 partait en D3D12 au lieu de DXMT (2026-10-16).
+api12() { printf '[jeu]\n%bapi_disponibles = "d3d12"\n[jeu.sources]\napi_disponibles = "pcgamingwiki 2026-10-15"\n[cidre]\n%b' "$1" "$2" >"$CIDRE_PROFILS_BASE/424244.toml"; valeur 424244 dx12; }
+verif "api_disponibles d3d12 sans choix : dx12" "true" "$(api12 '' '')"
+verif "api_disponibles d3d12 + [jeu] api importee d3d12 : dx12" "true" "$(api12 'api = "d3d12"\n' '')"
+verif "api_disponibles d3d12 + [cidre] d3d11 = dxmt : pas de dx12" "false" "$(api12 '' 'd3d11 = "dxmt"\n')"
+verif "api_disponibles d3d12 + [cidre] d3d11 = dxvk : pas de dx12" "false" "$(api12 '' 'd3d11 = "dxvk"\n')"
+verif "api_disponibles d3d12 + [jeu] api = d3d11 : pas de dx12" "false" "$(api12 'api = "d3d11"\n' '')"
+verif "api_disponibles d3d12 + [jeu] api = vulkan : pas de dx12" "false" "$(api12 'api = "vulkan"\n' '')"
+verif "api_disponibles d3d12 + [cidre] dx12 = false : pas de dx12" "false" "$(api12 '' 'dx12 = false\n')"
+verif "api_disponibles d3d12 + api = d3d11 + dx12 = true : dx12" "true" "$(api12 'api = "d3d11"\n' 'dx12 = true\n')"
+printf '[defaut]\nd3d11 = "dxvk"\n' >"$CIDRE_PROFILS"
+verif "d3d11 du [defaut] utilisateur : pas un choix pour ce jeu, dx12" "true" "$(api12 '' '')"
+printf '[424244]\nd3d11 = "dxmt"\n' >"$CIDRE_PROFILS"
+verif "d3d11 pose par l utilisateur sur ce jeu : pas de dx12" "false" "$(api12 '' '')"
+printf '[424244]\ndx12 = true\n' >"$CIDRE_PROFILS"
+verif "dx12 pose par l utilisateur > d3d11 de la fiche" "true" "$(api12 '' 'd3d11 = "dxmt"\n')"
+rm -f "$CIDRE_PROFILS" "$CIDRE_PROFILS_BASE/424244.toml"
+# la copie enrichie d Exp33 (fiche du depot + [jeu] api_disponibles = "d3d12"),
+# reconnue par index-depot.toml : elle sert, et reste en DXMT
+{ sed '/^lanceur = /a\
+api_disponibles = "d3d12"\
+[jeu.sources]\
+api_disponibles = "pcgamingwiki 2026-10-15"
+' "$R/profils/1903340.toml"; } >"$CIDRE_PROFILS_BASE/1903340.toml"
+depot "$E" ""
+verif "1903340 copie enrichie (api_disponibles d3d12) : DXMT, pas de dx12" "enrichie dxmt false" \
+   "$(grep -q '^api_disponibles = "d3d12"' "$(sh "$R/tests/fiche_profil.sh" chemin 1903340)" && echo enrichie) $(valeur 1903340 d3d11) $(valeur 1903340 dx12)"
+rm -f "$CIDRE_PROFILS_BASE/1903340.toml" "$CIDRE_PROFILS_BASE/index-depot.toml"
 # index_depot.py (workflow de l archive) sur un petit depot git : version courante
 # et versions passees de chaque fiche ; refuse un clone superficiel
 if command -v git >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then

@@ -106,10 +106,16 @@ awk -v appid="$APPID" -v format="$FORMAT" -v perso=2 '
    END {
       # D3D12 seulement : le vrai D3D12 (vkd3d-proton, option dx12) par defaut. Le
       # d3d12 integre a Wine echoue a tous les Feature Levels sur KosmicKrisp, et un
-      # jeu sans autre API ne demarrerait pas. Une valeur posee par la fiche ou
-      # l utilisateur (rang >= 1) passe avant. Un jeu qui offre aussi D3D11 ou
+      # jeu sans autre API ne demarrerait pas. Un jeu qui offre aussi D3D11 ou
       # Vulkan garde dx12 = false : son repli prend l API plus rapide (DXMT).
-      if (valeur["api_disponibles"] == "d3d12" && (!("dx12" in valeur) || rangde["dx12"] < 1)) {
+      # api_disponibles vient du catalogue importe (PCGamingWiki) : il ne sert qu en
+      # l absence de choix. Un choix explicite passe avant : dx12 pose par la fiche
+      # ou l utilisateur (rang >= 1), d3d11 pose pour ce jeu (rang >= 2 ; celui de
+      # [defaut] n en est pas un), ou une api de la fiche autre que d3d12 (Exp33 :
+      # api = "d3d11", d3d11 = "dxmt", que PCGW donne pour D3D12 seulement).
+      choix = ("dx12" in valeur && rangde["dx12"] >= 1) || ("d3d11" in valeur && rangde["d3d11"] >= 2) \
+         || ("api" in valeur && rangde["api"] >= 2 && valeur["api"] != "d3d12")
+      if (valeur["api_disponibles"] == "d3d12" && !choix) {
          if (!("dx12" in valeur)) ordre[++n] = "dx12"
          valeur["dx12"] = "true"; estchaine["dx12"] = 0
       }
