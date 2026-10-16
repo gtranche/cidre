@@ -1,0 +1,31 @@
+#version 450
+#extension GL_EXT_shader_atomic_int64 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+// Tampon, contention moderee (16 fils par adresse) : add avec valeur rendue, CAS en boucle,
+// max avec valeur rendue, echange en chaine (chaque valeur rendue une fois et une seule).
+layout(local_size_x = 64) in;
+layout(std430, set = 0, binding = 0) buffer B {
+   uint64_t somme[1024];
+   uint64_t compteur[1024];
+   uint64_t maxi[1024];
+   uint64_t chaine[1024];
+};
+layout(std430, set = 0, binding = 1) buffer R1 { uint64_t rendu_add[]; };
+layout(std430, set = 0, binding = 2) buffer R2 { uint64_t rendu_xchg[]; };
+layout(std430, set = 0, binding = 3) buffer R3 { uint64_t rendu_max[]; };
+layout(push_constant) uniform P { uint mode; };
+void main() {
+   uint tid = gl_GlobalInvocationID.x;
+   uint k = tid & 1023u;
+   if (mode == 0u) rendu_add[tid] = atomicAdd(somme[k], 0x100000001ul);
+   if (mode == 1u) {
+      uint64_t cur = compteur[k];
+      for (uint t = 0u; t < 1000u; t++) {
+         uint64_t vu = atomicCompSwap(compteur[k], cur, cur + 0xFFFFFFFFul);
+         if (vu == cur) break;
+         cur = vu;
+      }
+   }
+   if (mode == 2u) rendu_max[tid] = atomicMax(maxi[k], (uint64_t(tid) << 32) | uint64_t(~tid));
+   if (mode == 3u) rendu_xchg[tid] = atomicExchange(chaine[k], uint64_t(tid) + 1ul);
+}

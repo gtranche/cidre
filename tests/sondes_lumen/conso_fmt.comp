@@ -1,0 +1,17 @@
+#version 450
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+layout(push_constant) uniform P { uint t; uint n; uint m; float echelle; };
+layout(set = 0, binding = 2) uniform sampler2D s2;
+layout(set = 0, binding = 3) uniform sampler3D s3;
+layout(std430, set = 0, binding = 4) buffer C { uint faux2; uint faux3; uint vus; };
+void main() {
+   uvec3 g = gl_GlobalInvocationID;
+   if (g.x >= n || g.y >= n || g.z >= n) return;
+   uvec3 p = uvec3(n - 1u) - g;
+   uint c = ((t % 4u) * (m / 4u) + (p.x + p.y * 7u + p.z * 13u) % (m / 4u));
+   float att = float(c) * echelle;
+   vec3 uv = (vec3(p) + 0.5) / float(n);
+   if (abs(texture(s3, uv).x - att) > 0.3 * echelle) atomicAdd(faux3, 1u);
+   if (p.z == 0u && abs(textureLod(s2, uv.xy, 0.0).x - att) > 0.3 * echelle) atomicAdd(faux2, 1u);
+   atomicAdd(vus, 1u);
+}

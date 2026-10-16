@@ -1,0 +1,17 @@
+#version 450
+#extension GL_EXT_shader_image_int64 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+// Relit le visbuffer par imageLoad 64 bits et par la texture R32G32 (chemin SRV de vkd3d).
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, r64ui) uniform u64image2D vis;
+layout(set = 0, binding = 1) uniform usampler2D tex;
+layout(std430, set = 0, binding = 2) buffer O { uint64_t par_image[]; };
+layout(std430, set = 0, binding = 3) buffer T { uvec2 par_texture[]; };
+layout(push_constant) uniform P { uint w, h, iters, mode; };
+void main() {
+   uint pix = gl_GlobalInvocationID.x;
+   if (pix >= w * h) return;
+   ivec2 c = ivec2(pix % w, pix / w);
+   par_image[pix] = imageLoad(vis, c).x;
+   par_texture[pix] = texelFetch(tex, c, 0).xy;
+}

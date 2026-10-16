@@ -1,0 +1,28 @@
+#version 450
+// Atomiques des nuanceurs UE de Demonologist, en charge : compteur sur tampon texel (vue a
+// decalage non aligne sur 16 octets) dont la valeur rendue sert d'indice d'ecriture dans une
+// liste (autre vue texel decalee), compteurs par tuile sur image 2D R32ui (valeur lue),
+// max sur image 2D, min/max signes sur tampon texel R32i (valeur lue).
+layout(local_size_x = 64) in;
+layout(binding = 0, r32ui) uniform uimageBuffer compteur;
+layout(binding = 1, r32ui) uniform writeonly uimageBuffer liste;
+layout(binding = 2, r32ui) uniform uimage2D tuiles;
+layout(binding = 3, r32i) uniform iimageBuffer signes;
+layout(std430, binding = 4) buffer O { uint rendu_tuile[]; };
+uint hash(uint x) { x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16; return x; }
+void main() {
+   uint gid = gl_GlobalInvocationID.x;
+   uint h = hash(gid);
+   // 1. ajout a une liste : un indice unique par fil (si la condition tient)
+   if ((h & 3u) != 0u) {
+      uint i = imageAtomicAdd(compteur, 0, 1u);
+      imageStore(liste, int(i), uvec4(gid + 1u));
+   }
+   // 2. compteur par tuile 2D (64x64 tuiles), valeur lue
+   ivec2 t = ivec2(h & 63u, (h >> 6) & 63u);
+   rendu_tuile[gid] = imageAtomicAdd(tuiles, t, 1u) | (uint(t.x + 64 * t.y) << 16);
+   // 3. min/max signes sur tampon texel, valeur lue (rangee pour verifier la plage)
+   int s = int(h) >> 8;
+   imageAtomicMin(signes, 0, s);
+   imageAtomicMax(signes, 1, s);
+}

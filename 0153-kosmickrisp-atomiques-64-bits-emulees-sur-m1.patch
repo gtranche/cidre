@@ -1,0 +1,997 @@
+Generated-by: LLM
+
+KosmicKrisp : atomiques 64 bits emulees sur Apple7 (M1), pour qu Unreal 5 passe en SM 6.6 en D3D12 (Lumen, Nanite) -- CIDRE_ATOMIQUES_64 (option sm66) prend sur M1 une voie par verrous : table de 65 536 verrous 32 bits en buffer(3), chaque atomique 64 bits (tampon, image, partagee) sous verrou, exacte valeur rendue comprise ; min/max sans valeur rendue evitent le verrou quand le mot haut suffit (visbuffer de Nanite) ; les images R32G32 vues en R64 par vkd3d sont rendues lineaires et adressees en memoire (adresse et pas dans le second mot du descripteur d image de stockage d une vue 2D, qui garde ses 16 octets : vkd3d-proton en tire la disposition de ses descripteurs mutables, et un descripteur de 32 octets faisait sortir Expedition 33 en code 3 sur M4) ; CIDRE_ATOMIQUES_64_EMULEES force l emulation sur M2+ ; deux pieges du compilateur Metal d Apple7 contournes (plantage sur une valeur 64 bits faite de deux atomic_load, interblocage SIMD du verrou a break) ; UUID de cache selon le mode
+
+--- a/src/compiler/nir/nir_intrinsics.py	2026-10-16 20:09:57
++++ b/src/compiler/nir/nir_intrinsics.py	2026-10-16 20:09:57
+@@ -3314,6 +3314,8 @@
+ load("buffer_ptr_kk", [], [BINDING], [CAN_ELIMINATE, CAN_REORDER])
+ # Represents a pointer to the start of the per-draw data buffer
+ load("per_draw_ptr_kk", [], [], [CAN_ELIMINATE, CAN_REORDER])
++# Represents a pointer to the spin lock table of the emulated 64-bit atomics
++load("atomic64_locks_ptr_kk", [], [], [CAN_ELIMINATE, CAN_REORDER])
+ # Opaque texture<T> handle, with DEST_TYPE representing T
+ load("texture_handle_kk", [1], [DEST_TYPE, IMAGE_DIM, IMAGE_ARRAY, ACCESS, FLAGS], [CAN_ELIMINATE])
+ # Same as above but for depth<T> textures, T is always float
+--- a/src/kosmickrisp/compiler/msl_nir_gather_common.c	2026-10-16 20:09:57
++++ b/src/kosmickrisp/compiler/msl_nir_gather_common.c	2026-10-16 20:09:57
+@@ -22,3 +22,17 @@
+    return nir_shader_intrinsics_pass(nir, uses_per_draw_data, nir_metadata_all,
+                                      NULL);
+ }
++
++static bool
++uses_atomic64_locks(UNUSED nir_builder *b, nir_intrinsic_instr *intr,
++                    UNUSED void *data)
++{
++   return intr->intrinsic == nir_intrinsic_load_atomic64_locks_ptr_kk;
++}
++
++bool
++msl_gather_uses_atomic64_locks(nir_shader *nir)
++{
++   return nir_shader_intrinsics_pass(nir, uses_atomic64_locks,
++                                     nir_metadata_all, NULL);
++}
+--- a/src/kosmickrisp/compiler/msl_private.h	2026-10-16 20:09:57
++++ b/src/kosmickrisp/compiler/msl_private.h	2026-10-16 20:09:57
+@@ -25,6 +25,7 @@
+    struct _mesa_string_buffer *text;
+    uint64_t disabled_workarounds;
+    bool uses_per_draw_data;
++   bool uses_atomic64_locks;
+    unsigned short indentlevel;
+    struct io_slot_info inputs_info[NUM_TOTAL_VARYING_SLOTS];
+    struct io_slot_info outputs_info[NUM_TOTAL_VARYING_SLOTS];
+--- a/src/kosmickrisp/compiler/msl_type_inference.c	2026-10-16 20:09:57
++++ b/src/kosmickrisp/compiler/msl_type_inference.c	2026-10-16 20:09:57
+@@ -379,6 +379,7 @@
+       set_type(types, &instr->def, TYPE_UINT);
+       break;
+    case nir_intrinsic_load_buffer_ptr_kk:
++   case nir_intrinsic_load_atomic64_locks_ptr_kk:
+       set_type(types, &instr->def, TYPE_UINT);
+       break;
+    // The defs of these instructions don't participate in type inference
+--- a/src/kosmickrisp/compiler/nir_to_msl.c	2026-10-16 20:09:57
++++ b/src/kosmickrisp/compiler/nir_to_msl.c	2026-10-16 20:09:57
+@@ -104,10 +104,13 @@
+    P_IND(ctx, "constant SamplerTable &sampler_table [[buffer(1)]]");
+    if (ctx->uses_per_draw_data) {
+       P(ctx, ",\n");
+-      P_IND(ctx, "constant Buffer &per_draw [[buffer(2)]]\n");
+-   } else {
+-      P(ctx, "\n");
++      P_IND(ctx, "constant Buffer &per_draw [[buffer(2)]]");
+    }
++   if (ctx->uses_atomic64_locks) {
++      P(ctx, ",\n");
++      P_IND(ctx, "device uint *atomic64_locks [[buffer(3)]]");
++   }
++   P(ctx, "\n");
+ }
+ 
+ static const char *
+@@ -1456,6 +1459,9 @@
+    case nir_intrinsic_load_per_draw_ptr_kk:
+       P(ctx, "(ulong)&per_draw.contents[0];\n");
+       break;
++   case nir_intrinsic_load_atomic64_locks_ptr_kk:
++      P(ctx, "(ulong)atomic64_locks;\n");
++      break;
+    case nir_intrinsic_load_global: {
+       enum gl_access_qualifier access = nir_intrinsic_access(instr);
+       const char *type = msl_type_for_def(ctx->types, &instr->def);
+@@ -2514,6 +2520,7 @@
+    nir_function_impl *impl = nir_shader_get_entrypoint(ctx->shader);
+    ctx->types = msl_infer_types(ctx->shader);
+    ctx->uses_per_draw_data = msl_gather_uses_per_draw_data(ctx->shader);
++   ctx->uses_atomic64_locks = msl_gather_uses_atomic64_locks(ctx->shader);
+ 
+    /* TODO_KOSMICKRISP
+     * Reindex blocks and ssa. This allows us to optimize things we don't at the
+--- a/src/kosmickrisp/compiler/nir_to_msl.h	2026-10-16 20:09:57
++++ b/src/kosmickrisp/compiler/nir_to_msl.h	2026-10-16 20:09:57
+@@ -99,6 +99,7 @@
+ bool msl_nir_lower_fs_combined_depth_clamp_clip(nir_shader *nir);
+ 
+ bool msl_gather_uses_per_draw_data(nir_shader *nir);
++bool msl_gather_uses_atomic64_locks(nir_shader *nir);
+ 
+ static const nir_shader_compiler_options kk_nir_options = {
+    .lower_fdph = true,
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c	2026-10-16 20:09:57
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c	2026-10-16 20:09:57
+@@ -287,10 +287,13 @@
+ 
+    {
+       mtl_argument_table_descriptor *desc = mtl_new_argument_table_descriptor();
+-      /* Root at 0, samplers at 1 and per draw data at 2 */
+-      mtl_set_max_buffer_binding_count(desc, 3u);
++      /* Root at 0, samplers at 1, per draw data at 2 and the locks of the
++       * emulated 64-bit atomics at 3 */
++      mtl_set_max_buffer_binding_count(desc, dev->atomic64_locks ? 4u : 3u);
+       cmd->argument_table = mtl_new_argument_table(dev->mtl_handle, desc);
+       mtl_set_address(cmd->argument_table, dev->samplers.table.bo->gpu, 1u);
++      if (dev->atomic64_locks)
++         mtl_set_address(cmd->argument_table, dev->atomic64_locks->gpu, 3u);
+       cmd->state.argtable_addr0 = KK_ARGTABLE_UNKNOWN;
+       mtl_release(desc);
+    }
+--- a/src/kosmickrisp/vulkan/kk_descriptor_set.c	2026-10-16 20:09:57
++++ b/src/kosmickrisp/vulkan/kk_descriptor_set.c	2026-10-16 20:09:57
+@@ -13,7 +13,9 @@
+ #include "kk_descriptor_set_layout.h"
+ #include "kk_device.h"
+ #include "kk_entrypoints.h"
++#include "kk_image.h"
+ #include "kk_image_view.h"
++#include "kk_shader.h"
+ #include "kk_physical_device.h"
+ #include "kk_sampler.h"
+ 
+@@ -202,6 +204,25 @@
+       desc.image_gpu_resource_id = view->planes[plane].storage_gpu_resource_id;
+       desc.array_image_gpu_resource_id =
+          view->planes[plane].storage_array_gpu_resource_id;
++
++      struct kk_device *dev =
++         container_of(view->vk.base.device, struct kk_device, vk);
++      if (kk_atomic64_emulated(kk_device_physical(dev)) &&
++          view->vk.view_type == VK_IMAGE_VIEW_TYPE_2D) {
++         struct kk_image *image =
++            container_of(view->vk.image, struct kk_image, vk);
++         const struct kk_image_plane *iplane =
++            &image->planes[view->planes[plane].image_plane];
++         const uint64_t pitch8 = iplane->layout.linear_stride_B / 8u;
++         uint64_t word = 0;
++         if (image->atomic64_linear && iplane->mem != NULL &&
++             view->vk.base_mip_level == 0 && view->vk.base_array_layer == 0 &&
++             iplane->addr < (1ull << KK_ATOMIC64_ADDR_BITS) &&
++             (iplane->addr & 7u) == 0 &&
++             iplane->layout.linear_stride_B % 8u == 0 && pitch8 <= 0xffffu)
++            word = iplane->addr | (pitch8 << KK_ATOMIC64_ADDR_BITS);
++         desc.array_image_gpu_resource_id = word;
++      }
+    }
+ 
+    assert(sizeof(desc) <= dst_size);
+--- a/src/kosmickrisp/vulkan/kk_descriptor_types.h	2026-10-16 20:09:57
++++ b/src/kosmickrisp/vulkan/kk_descriptor_types.h	2026-10-16 20:09:57
+@@ -45,6 +45,15 @@
+ static_assert(sizeof(struct kk_storage_image_descriptor) == 16,
+               "kk_storage_image_descriptor has no holes");
+ 
++/* Emulated 64-bit atomics (kk_nir_lower_atomic64.c): while they are on, the
++ * array_image_gpu_resource_id word of a 2D storage view -- unused by 2D views
++ * -- holds, for a linear image made for them (struct kk_image::atomic64_linear),
++ * the GPU address of texel (0, 0) in its low 48 bits and the row pitch / 8 in
++ * its high 16 bits, and 0 for any other image. The descriptor keeps its 16
++ * bytes: vkd3d-proton lays out its mutable descriptors from
++ * storageImageDescriptorSize, a larger size changes that layout everywhere. */
++#define KK_ATOMIC64_ADDR_BITS 48u
++
+ /* Metal wants a texture buffer to start on a 16 byte boundary whatever the
+  * format (measured: minimumTextureBufferAlignmentForPixelFormat: returns 16
+  * for every format), while Vulkan lets a VkBufferView start at any texel once
+--- a/src/kosmickrisp/vulkan/kk_device.c	2026-10-16 20:09:57
++++ b/src/kosmickrisp/vulkan/kk_device.c	2026-10-16 20:09:57
+@@ -334,9 +334,20 @@
+    if (result != VK_SUCCESS)
+       goto fail_query_table;
+ 
++   if (kk_atomic64_emulated(pdev)) {
++      result = kk_alloc_bo(dev, &dev->vk.base,
++                           KK_ATOMIC64_LOCK_COUNT * sizeof(uint32_t), 256,
++                           &dev->atomic64_locks);
++      if (result != VK_SUCCESS)
++         goto fail_sampler_heap;
++      memset(dev->atomic64_locks->cpu, 0,
++             KK_ATOMIC64_LOCK_COUNT * sizeof(uint32_t));
++      kk_bo_set_label(dev->atomic64_locks, "atomiques 64 bits : verrous");
++   }
++
+    result = kk_device_init_lib(dev);
+    if (result != VK_SUCCESS)
+-      goto fail_sampler_heap;
++      goto fail_atomic64_locks;
+ 
+    result = kk_device_init_shader_cache(dev);
+    if (result != VK_SUCCESS)
+@@ -354,6 +365,9 @@
+ 
+ fail_lib:
+    kk_device_finish_lib(dev);
++fail_atomic64_locks:
++   if (dev->atomic64_locks)
++      kk_destroy_bo(dev, dev->atomic64_locks);
+ fail_sampler_heap:
+    kk_destroy_sampler_heap(dev, &dev->samplers);
+ fail_query_table:
+@@ -406,6 +420,8 @@
+    kk_device_finish_lib(dev);
+    kk_query_table_finish(dev, &dev->occlusion_queries);
+    kk_destroy_sampler_heap(dev, &dev->samplers);
++   if (dev->atomic64_locks)
++      kk_destroy_bo(dev, dev->atomic64_locks);
+ 
+    /* Geometry heap */
+    if (dev->heap)
+--- a/src/kosmickrisp/vulkan/kk_device.h	2026-10-16 20:09:57
++++ b/src/kosmickrisp/vulkan/kk_device.h	2026-10-16 20:09:57
+@@ -94,6 +94,10 @@
+    struct kk_sampler_heap samplers;
+    struct kk_query_table occlusion_queries;
+ 
++   /* Spin locks of the emulated 64-bit atomics (KK_ATOMIC64_LOCK_COUNT 32-bit
++    * words, zero when free), bound at buffer(3). NULL unless emulated. */
++   struct kk_bo *atomic64_locks;
++
+    /* Track all heaps the user allocated so we can set them all as resident when
+     * recording as required by Metal. */
+    struct kk_residency_set residency_set;
+--- a/src/kosmickrisp/vulkan/kk_image.c	2026-10-16 20:09:57
++++ b/src/kosmickrisp/vulkan/kk_image.c	2026-10-16 20:09:57
+@@ -548,6 +548,56 @@
+ static void kk_image_finish(struct kk_device *dev, struct kk_image *image,
+                             const VkAllocationCallbacks *pAllocator);
+ 
++static bool
++kk_format_is_atomic64(VkFormat format)
++{
++   return format == VK_FORMAT_R64_UINT || format == VK_FORMAT_R64_SINT;
++}
++
++/* With emulated 64-bit atomics, the images that may carry them are the ones
++ * vkd3d-proton creates for D3D12 64-bit typed UAVs: R32G32_UINT with an
++ * R64_UINT view in their format list (or R64 themselves). Metal only makes 2D
++ * linear textures without mips, layers or samples; any other such image keeps
++ * its tiling and its 64-bit atomics are dropped (said once). */
++static bool
++kk_image_wants_atomic64_linear(struct kk_device *dev,
++                               const VkImageCreateInfo *info)
++{
++   if (!kk_atomic64_emulated(kk_device_physical(dev)))
++      return false;
++   if (!(info->usage & VK_IMAGE_USAGE_STORAGE_BIT))
++      return false;
++
++   bool candidate = kk_format_is_atomic64(info->format);
++   if (!candidate) {
++      const VkImageFormatListCreateInfo *list =
++         vk_find_struct_const(info->pNext, IMAGE_FORMAT_LIST_CREATE_INFO);
++      for (uint32_t i = 0; list && i < list->viewFormatCount; i++)
++         candidate |= kk_format_is_atomic64(list->pViewFormats[i]);
++   }
++   if (!candidate)
++      return false;
++
++   if (info->imageType != VK_IMAGE_TYPE_2D || info->mipLevels != 1 ||
++       info->arrayLayers != 1 || info->samples != VK_SAMPLE_COUNT_1_BIT ||
++       (info->flags & (VK_IMAGE_CREATE_SPARSE_BINDING_BIT |
++                       VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT))) {
++      static bool said = false;
++      if (!said) {
++         said = true;
++         fprintf(stderr,
++                 "KK: atomiques 64 bits emulees : image %ux%ux%u, %u mips, "
++                 "%u couches, %u echantillons, non linearisable ; ses "
++                 "atomiques 64 bits seront ignorees\n",
++                 info->extent.width, info->extent.height, info->extent.depth,
++                 info->mipLevels, info->arrayLayers, info->samples);
++      }
++      return false;
++   }
++
++   return true;
++}
++
+ static VkResult
+ kk_image_init(struct kk_device *dev, struct kk_image *image,
+               const VkImageCreateInfo *pCreateInfo)
+@@ -576,6 +626,7 @@
+    image->plane_count = vk_format_get_plane_count(pCreateInfo->format);
+    image->disjoint = image->plane_count > 1 &&
+                      (pCreateInfo->flags & VK_IMAGE_CREATE_DISJOINT_BIT);
++   image->atomic64_linear = kk_image_wants_atomic64_linear(dev, pCreateInfo);
+ 
+    const struct vk_format_ycbcr_info *ycbcr_info =
+       vk_format_get_ycbcr_info(pCreateInfo->format);
+@@ -589,6 +640,8 @@
+       kk_image_layout_init(dev, &image->vk, vk_format_to_pipe_format(format),
+                            width_scale, height_scale,
+                            &image->planes[plane].layout);
++      if (image->atomic64_linear)
++         kk_image_layout_force_linear(dev, &image->planes[plane].layout);
+    }
+ 
+    image->is_sparse =
+--- a/src/kosmickrisp/vulkan/kk_image.h	2026-10-16 20:09:57
++++ b/src/kosmickrisp/vulkan/kk_image.h	2026-10-16 20:09:57
+@@ -57,6 +57,10 @@
+     * la creation, ses tuiles sont mappees par vkQueueBindSparse. */
+    bool is_sparse;
+ 
++   /* Emulated 64-bit atomics (Apple7): the image is linear so shaders can
++    * reach its texels at plane.addr + y * linear_stride_B + x * 8. */
++   bool atomic64_linear;
++
+    uint8_t plane_count;
+    struct kk_image_plane planes[3];
+ };
+--- a/src/kosmickrisp/vulkan/kk_image_layout.c	2026-10-16 20:09:57
++++ b/src/kosmickrisp/vulkan/kk_image_layout.c	2026-10-16 20:09:57
+@@ -250,13 +250,15 @@
+    layout->linear = image->tiling != VK_IMAGE_TILING_OPTIMAL;
+    layout->optimized_layout = kk_image_layout_can_optimize(
+       pdev, image->usage, image->tiling, image->create_flags, format);
++   /* Only Apple8+ has 64-bit texture atomics. The emulated path never uses
++    * Metal texture atomics on these formats: it works on the linear memory. */
+    bool atomics = supported_format->atomic;
+    if (format == PIPE_FORMAT_R64_UINT || format == PIPE_FORMAT_R64_SINT)
+-      atomics = kk_atomic64_enabled(pdev);
++      atomics = kk_atomic64_native(pdev);
+    else if ((format == PIPE_FORMAT_R32G32_UINT ||
+              format == PIPE_FORMAT_R32G32_SINT) &&
+             (image->usage & VK_IMAGE_USAGE_STORAGE_BIT) &&
+-            kk_atomic64_enabled(pdev))
++            kk_atomic64_native(pdev))
+       atomics = true;
+    layout->usage = vk_image_usage_flags_to_mtl_texture_usage(
+       image->usage, image->create_flags, atomics);
+@@ -283,4 +285,16 @@
+    } else {
+       kk_image_layout_calc_tiled(dev, layout);
+    }
++}
++
++/* Emulated 64-bit image atomics address the texels as plain memory, which
++ * needs a known row-major layout: such images are made linear (a texture over
++ * the memory's buffer) whatever tiling the application asked for. */
++void
++kk_image_layout_force_linear(const struct kk_device *dev,
++                             struct kk_image_layout *layout)
++{
++   layout->linear = true;
++   layout->optimized_layout = false;
++   kk_image_layout_calc_linear(dev, layout);
+ }
+--- a/src/kosmickrisp/vulkan/kk_image_layout.h	2026-10-16 20:09:57
++++ b/src/kosmickrisp/vulkan/kk_image_layout.h	2026-10-16 20:09:57
+@@ -221,4 +221,7 @@
+                           const uint8_t width_scale, const uint8_t height_scale,
+                           struct kk_image_layout *layout);
+ 
++void kk_image_layout_force_linear(const struct kk_device *dev,
++                                  struct kk_image_layout *layout);
++
+ #endif /* KK_IMAGE_LAYOUT_H */
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_atomic64.c	1970-01-01 01:00:00
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_atomic64.c	2026-10-16 20:09:57
+@@ -0,0 +1,503 @@
++/*
++ * Copyright 2026 Cidre
++ * SPDX-License-Identifier: MIT
++ */
++
++/* Emulated 64-bit atomics for GPUs without any (Apple7, M1).
++ *
++ * Every 64-bit atomic takes a 32-bit spin lock picked by hashing its address
++ * in a device wide table (struct kk_device::atomic64_locks, bound at
++ * buffer(3)); under the lock, the two 32-bit halves are read and written with
++ * 32-bit atomics, between device scope fences. All the operations are exact,
++ * returned values included, as long as every 64-bit atomic on a given address
++ * goes through this path, which it does here.
++ *
++ * The lock loop exits on the result of the release (see emit_locked_rmw): a
++ * SIMD group whose lanes compete for the same lock never waits for the losers
++ * before the winner releases it.
++ *
++ * min/max whose result is unused first read the high word without the lock:
++ * when it alone proves the operation has nothing to do (the stored value is
++ * beyond the operand), that read is a valid linearization point and the lock
++ * is skipped. This is the common case of Nanite's visibility buffer
++ * (depth << 32 | id) for occluded fragments.
++ *
++ * 64-bit image atomics (D3D12 64-bit typed UAVs, R32G32_UINT memory viewed as
++ * R64_UINT) run on the linear memory of the image, see
++ * struct kk_image::atomic64_linear and KK_ATOMIC64_ADDR_BITS. Loads and
++ * stores of those images go through memory too, so they see the atomics of
++ * the same dispatch. An image without that memory falls back to 32-bit
++ * texture reads and writes, and its atomics do nothing.
++ *
++ * Shared memory 64-bit atomics use the same device locks, hashed by offset,
++ * on threadgroup data.
++ */
++
++#include "kk_descriptor_types.h"
++#include "kk_shader.h"
++
++#include "nir.h"
++#include "nir_builder.h"
++
++#include <stdio.h>
++
++static nir_def *
++lock_word_addr(nir_builder *b, nir_def *key)
++{
++   nir_def *locks = nir_load_atomic64_locks_ptr_kk(b, 1, 64);
++   nir_def *idx = nir_iand_imm(b, key, KK_ATOMIC64_LOCK_COUNT - 1u);
++   return nir_iadd(b, locks, nir_u2u64(b, nir_ishl_imm(b, idx, 2)));
++}
++
++static void
++device_fence(nir_builder *b, nir_variable_mode modes)
++{
++   nir_barrier(b, .execution_scope = SCOPE_NONE,
++               .memory_scope = SCOPE_DEVICE,
++               .memory_semantics = NIR_MEMORY_ACQ_REL, .memory_modes = modes);
++}
++
++struct word_access {
++   bool shared;
++   nir_def *addr; /* 64-bit global address or 32-bit shared offset */
++   unsigned base; /* shared base */
++};
++
++/* Under the lock the words are read with a read-modify-write (add 0), not an
++ * atomic load: the Apple7 Metal backend (AGXMetalG13X, macOS 26) crashes
++ * compiling a 64-bit value assembled from two atomic_load results and then
++ * compared or added (XPC_ERROR_CONNECTION_INTERRUPTED); from RMW results it
++ * compiles. The lock-free peek of the high word stays a 32-bit load and a
++ * 32-bit compare, which compile. */
++static nir_def *
++load_word(nir_builder *b, const struct word_access *w, unsigned off, bool rmw)
++{
++   nir_def *a = nir_iadd_imm(b, w->addr, off);
++   if (w->shared) {
++      return nir_shared_atomic(b, 32, a, nir_imm_int(b, 0),
++                               .atomic_op = nir_atomic_op_iadd,
++                               .base = w->base);
++   }
++   if (rmw) {
++      return nir_global_atomic(b, 32, a, nir_imm_int(b, 0),
++                               .atomic_op = nir_atomic_op_iadd);
++   }
++   return nir_build_load_global(b, 1, 32, a, .align_mul = 4,
++                                .access = ACCESS_ATOMIC | ACCESS_COHERENT |
++                                          ACCESS_VOLATILE);
++}
++
++static void
++store_word(nir_builder *b, const struct word_access *w, unsigned off,
++           nir_def *v)
++{
++   nir_def *a = nir_iadd_imm(b, w->addr, off);
++   if (w->shared) {
++      nir_shared_atomic(b, 32, a, v, .atomic_op = nir_atomic_op_xchg,
++                        .base = w->base);
++      return;
++   }
++   nir_build_store_global(b, v, a, .align_mul = 4,
++                          .access = ACCESS_ATOMIC | ACCESS_COHERENT |
++                                    ACCESS_VOLATILE);
++}
++
++static nir_def *
++apply_op(nir_builder *b, nir_atomic_op op, nir_def *old, nir_def *data)
++{
++   switch (op) {
++   case nir_atomic_op_iadd: return nir_iadd(b, old, data);
++   case nir_atomic_op_imin: return nir_imin(b, old, data);
++   case nir_atomic_op_umin: return nir_umin(b, old, data);
++   case nir_atomic_op_imax: return nir_imax(b, old, data);
++   case nir_atomic_op_umax: return nir_umax(b, old, data);
++   case nir_atomic_op_iand: return nir_iand(b, old, data);
++   case nir_atomic_op_ior: return nir_ior(b, old, data);
++   case nir_atomic_op_ixor: return nir_ixor(b, old, data);
++   case nir_atomic_op_xchg: return data;
++   default: UNREACHABLE("unsupported 64-bit atomic op");
++   }
++}
++
++/* True when the high word alone shows that min/max leaves the value as is. */
++static nir_def *
++high_word_settles(nir_builder *b, nir_atomic_op op, nir_def *cur_hi,
++                  nir_def *data)
++{
++   nir_def *hi = nir_unpack_64_2x32_split_y(b, data);
++   switch (op) {
++   case nir_atomic_op_umax: return nir_ult(b, hi, cur_hi);
++   case nir_atomic_op_imax: return nir_ilt(b, hi, cur_hi);
++   case nir_atomic_op_umin: return nir_ult(b, cur_hi, hi);
++   case nir_atomic_op_imin: return nir_ilt(b, cur_hi, hi);
++   default: return NULL;
++   }
++}
++
++/* Emits the locked read-modify-write and returns the old value (NULL when the
++ * result is unused). cmp is only for compare-exchange. */
++static nir_def *
++emit_locked_rmw(nir_builder *b, const struct word_access *w, nir_def *key,
++                nir_atomic_op op, bool swap, nir_def *cmp, nir_def *data,
++                bool result_used)
++{
++   nir_variable_mode modes = w->shared ? nir_var_mem_shared : nir_var_mem_global;
++   nir_def *lock = lock_word_addr(b, key);
++
++   nir_if *skip_if = NULL;
++   if (!swap && !result_used &&
++       (op == nir_atomic_op_umax || op == nir_atomic_op_imax ||
++        op == nir_atomic_op_umin || op == nir_atomic_op_imin)) {
++      nir_def *settles =
++         high_word_settles(b, op, load_word(b, w, 4, false), data);
++      skip_if = nir_push_if(b, nir_inot(b, settles));
++   }
++
++   /* The loop exits on the result of the release, which keeps the release
++    * inside the loop. With the more usual
++    * "if (acquired) { ...; release; break; }", the Apple7 Metal compiler
++    * moves the critical section past the loop: lanes of one SIMD group that
++    * share a lock then wait forever for each other (GPU watchdog,
++    * kIOGPUCommandBufferCallbackErrorImpactingInteractivity). Plain exchange,
++    * no test-and-test-and-set: on Apple7 a relaxed atomic load of the lock
++    * keeps seeing it taken long after its release (up to 40x slower). */
++   nir_loop *loop = nir_push_loop(b);
++   nir_def *prev = nir_global_atomic(b, 32, lock, nir_imm_int(b, 1),
++                                     .atomic_op = nir_atomic_op_xchg);
++   nir_def *got = nir_ieq_imm(b, prev, 0);
++
++   nir_if *got_if = nir_push_if(b, got);
++   device_fence(b, modes);
++   nir_def *lo = load_word(b, w, 0, true);
++   nir_def *hi = load_word(b, w, 4, true);
++   nir_def *old = nir_pack_64_2x32_split(b, lo, hi);
++   nir_def *val = swap ? nir_bcsel(b, nir_ieq(b, old, cmp), data, old)
++                       : apply_op(b, op, old, data);
++   nir_push_if(b, nir_ine(b, val, old));
++   store_word(b, w, 0, nir_unpack_64_2x32_split_x(b, val));
++   store_word(b, w, 4, nir_unpack_64_2x32_split_y(b, val));
++   nir_pop_if(b, NULL);
++   device_fence(b, modes);
++   nir_def *released = nir_global_atomic(b, 32, lock, nir_imm_int(b, 0),
++                                         .atomic_op = nir_atomic_op_xchg);
++   nir_def *fin = nir_ine_imm(b, released, 0);
++   nir_push_else(b, got_if);
++   nir_def *not_yet = nir_imm_false(b);
++   nir_def *no_old = nir_imm_int64(b, 0);
++   nir_pop_if(b, got_if);
++   nir_def *done = nir_if_phi(b, fin, not_yet);
++   nir_def *old_out = nir_if_phi(b, old, no_old);
++
++   nir_push_if(b, done);
++   nir_jump(b, nir_jump_break);
++   nir_pop_if(b, NULL);
++   nir_pop_loop(b, loop);
++
++   if (skip_if != NULL) {
++      nir_pop_if(b, skip_if);
++      return NULL;
++   }
++   return old_out;
++}
++
++static bool
++lower_memory_atomic(nir_builder *b, nir_intrinsic_instr *intr)
++{
++   bool shared;
++   switch (intr->intrinsic) {
++   case nir_intrinsic_global_atomic:
++   case nir_intrinsic_global_atomic_swap:
++      shared = false;
++      break;
++   case nir_intrinsic_shared_atomic:
++   case nir_intrinsic_shared_atomic_swap:
++      shared = true;
++      break;
++   default:
++      return false;
++   }
++   if (intr->def.bit_size != 64)
++      return false;
++
++   bool swap = intr->intrinsic == nir_intrinsic_global_atomic_swap ||
++               intr->intrinsic == nir_intrinsic_shared_atomic_swap;
++   nir_atomic_op op = nir_intrinsic_atomic_op(intr);
++
++   b->cursor = nir_before_instr(&intr->instr);
++   struct word_access w = {
++      .shared = shared,
++      .addr = intr->src[0].ssa,
++      .base = shared ? nir_intrinsic_base(intr) : 0,
++   };
++
++   /* Shared words are hashed by offset only: workgroups whose words share a
++    * lock merely wait for each other. */
++   nir_def *key =
++      shared ? nir_ushr_imm(b, nir_iadd_imm(b, w.addr, w.base), 3)
++             : nir_u2u32(b, nir_ushr_imm(b, w.addr, 3));
++
++   bool used = !nir_def_is_unused(&intr->def);
++   nir_def *old = emit_locked_rmw(b, &w, key, op, swap,
++                                  swap ? intr->src[1].ssa : NULL,
++                                  intr->src[swap ? 2 : 1].ssa, used);
++   if (used)
++      nir_def_rewrite_uses(&intr->def, old);
++   nir_instr_remove(&intr->instr);
++   return true;
++}
++
++/* --- 64-bit images ------------------------------------------------------ */
++
++static bool
++image_is_64bit(nir_intrinsic_instr *intr)
++{
++   switch (intr->intrinsic) {
++   case nir_intrinsic_bindless_image_load:
++   case nir_intrinsic_bindless_image_atomic:
++   case nir_intrinsic_bindless_image_atomic_swap:
++      return intr->def.bit_size == 64;
++   case nir_intrinsic_bindless_image_store:
++      return intr->src[3].ssa->bit_size == 64;
++   default:
++      return false;
++   }
++}
++
++static void
++warn_once(const char *what)
++{
++   static bool said = false;
++   if (!said) {
++      said = true;
++      fprintf(stderr, "KK: atomiques 64 bits emulees : %s\n", what);
++   }
++}
++
++static nir_intrinsic_instr *
++texture_handle_of(nir_intrinsic_instr *intr)
++{
++   nir_instr *parent = nir_def_instr(intr->src[0].ssa);
++   if (parent->type != nir_instr_type_intrinsic)
++      return NULL;
++   nir_intrinsic_instr *h = nir_instr_as_intrinsic(parent);
++   return h->intrinsic == nir_intrinsic_load_texture_handle_kk ? h : NULL;
++}
++
++/* 32-bit image load returning the two words of the R32G32 texel. */
++static nir_def *
++fallback_texture_load(nir_builder *b, nir_intrinsic_instr *intr)
++{
++   nir_intrinsic_instr *ld =
++      nir_intrinsic_instr_create(b->shader, nir_intrinsic_bindless_image_load);
++   for (unsigned i = 0; i < 4; i++)
++      ld->src[i] = nir_src_for_ssa(intr->src[i].ssa);
++   ld->num_components = 4;
++   nir_intrinsic_set_image_dim(ld, nir_intrinsic_image_dim(intr));
++   nir_intrinsic_set_image_array(ld, nir_intrinsic_image_array(intr));
++   nir_intrinsic_set_format(ld, PIPE_FORMAT_R32G32_UINT);
++   nir_intrinsic_set_access(ld, nir_intrinsic_access(intr));
++   nir_intrinsic_set_dest_type(ld, nir_type_uint32);
++   nir_def_init(&ld->instr, &ld->def, 4, 32);
++   nir_builder_instr_insert(b, &ld->instr);
++   return nir_pack_64_2x32(b, nir_channels(b, &ld->def, 0x3));
++}
++
++static void
++fallback_texture_store(nir_builder *b, nir_intrinsic_instr *intr,
++                       nir_def *value)
++{
++   nir_def *words = nir_unpack_64_2x32(b, value);
++   nir_def *texel = nir_vec4(b, nir_channel(b, words, 0),
++                             nir_channel(b, words, 1), nir_imm_int(b, 0),
++                             nir_imm_int(b, 0));
++   nir_intrinsic_instr *st =
++      nir_intrinsic_instr_create(b->shader, nir_intrinsic_bindless_image_store);
++   st->src[0] = nir_src_for_ssa(intr->src[0].ssa);
++   st->src[1] = nir_src_for_ssa(intr->src[1].ssa);
++   st->src[2] = nir_src_for_ssa(intr->src[2].ssa);
++   st->src[3] = nir_src_for_ssa(texel);
++   st->src[4] = nir_src_for_ssa(intr->src[4].ssa);
++   st->num_components = 4;
++   nir_intrinsic_set_image_dim(st, nir_intrinsic_image_dim(intr));
++   nir_intrinsic_set_image_array(st, nir_intrinsic_image_array(intr));
++   nir_intrinsic_set_format(st, PIPE_FORMAT_R32G32_UINT);
++   nir_intrinsic_set_access(st, nir_intrinsic_access(intr));
++   nir_intrinsic_set_src_type(st, nir_type_uint32);
++   nir_builder_instr_insert(b, &st->instr);
++}
++
++static nir_def *
++texel_result(nir_builder *b, nir_intrinsic_instr *intr, nir_def *v)
++{
++   if (intr->def.num_components == 1)
++      return v;
++   nir_def *zero = nir_imm_int64(b, 0);
++   nir_def *chan[4] = {v, zero, zero, nir_imm_int64(b, 1)};
++   return nir_vec(b, chan, intr->def.num_components);
++}
++
++static bool
++lower_image64(nir_builder *b, nir_intrinsic_instr *intr)
++{
++   if (!image_is_64bit(intr))
++      return false;
++
++   b->cursor = nir_before_instr(&intr->instr);
++
++   nir_intrinsic_instr *handle = texture_handle_of(intr);
++   enum glsl_sampler_dim dim = nir_intrinsic_image_dim(intr);
++   bool array = nir_intrinsic_image_array(intr);
++   bool is_load = intr->intrinsic == nir_intrinsic_bindless_image_load;
++   bool is_store = intr->intrinsic == nir_intrinsic_bindless_image_store;
++   bool is_swap = intr->intrinsic == nir_intrinsic_bindless_image_atomic_swap;
++
++   if (handle == NULL || dim != GLSL_SAMPLER_DIM_2D || array) {
++      warn_once("image 64 bits non 2D, en tableau ou a poignee indirecte : "
++                "atomiques ignorees");
++      if (is_load) {
++         nir_def_replace(&intr->def,
++                         texel_result(b, intr, fallback_texture_load(b, intr)));
++      } else if (is_store) {
++         fallback_texture_store(b, intr, nir_channel(b, intr->src[3].ssa, 0));
++         nir_instr_remove(&intr->instr);
++      } else {
++         nir_def_replace(&intr->def, nir_imm_int64(b, 0));
++      }
++      return true;
++   }
++
++   /* The handle reads the resource id at this address (2D, not an array);
++    * the next word of struct kk_storage_image_descriptor holds the texel
++    * address and the row pitch (KK_ATOMIC64_ADDR_BITS). */
++   nir_def *word = nir_build_load_global_constant(
++      b, 1, 64,
++      nir_iadd_imm(b, handle->src[0].ssa,
++                   offsetof(struct kk_storage_image_descriptor,
++                            array_image_gpu_resource_id)),
++      .align_mul = 8);
++   nir_def *base =
++      nir_iand_imm(b, word, (1ull << KK_ATOMIC64_ADDR_BITS) - 1ull);
++   nir_def *pitch = nir_ishl_imm(
++      b, nir_u2u32(b, nir_ushr_imm(b, word, KK_ATOMIC64_ADDR_BITS)), 3);
++
++   nir_intrinsic_instr *sz =
++      nir_intrinsic_instr_create(b->shader, nir_intrinsic_bindless_image_size);
++   sz->src[0] = nir_src_for_ssa(intr->src[0].ssa);
++   sz->src[1] = nir_src_for_ssa(nir_imm_int(b, 0));
++   sz->num_components = 2;
++   nir_intrinsic_set_image_dim(sz, GLSL_SAMPLER_DIM_2D);
++   nir_intrinsic_set_image_array(sz, false);
++   nir_intrinsic_set_format(sz, PIPE_FORMAT_R32G32_UINT);
++   nir_intrinsic_set_access(sz, nir_intrinsic_access(intr));
++   nir_def_init(&sz->instr, &sz->def, 2, 32);
++   nir_builder_instr_insert(b, &sz->instr);
++   nir_def *width = nir_channel(b, &sz->def, 0);
++   nir_def *height = nir_channel(b, &sz->def, 1);
++
++   nir_def *coord = intr->src[1].ssa;
++   nir_def *x = nir_u2u32(b, nir_channel(b, coord, 0));
++   nir_def *y = nir_u2u32(b, nir_channel(b, coord, 1));
++   nir_def *inside = nir_iand(b, nir_ult(b, x, width), nir_ult(b, y, height));
++   nir_def *addr =
++      nir_iadd(b, base,
++               nir_iadd(b, nir_imul(b, nir_u2u64(b, y), nir_u2u64(b, pitch)),
++                        nir_u2u64(b, nir_ishl_imm(b, x, 3))));
++   nir_def *has_mem = nir_ine_imm(b, base, 0);
++
++   nir_if *mem_if = nir_push_if(b, has_mem);
++   nir_def *mem_val = NULL;
++   {
++      nir_if *in_if = nir_push_if(b, inside);
++      nir_def *in_val = NULL;
++      if (is_load) {
++         nir_def *words = nir_build_load_global(
++            b, 2, 32, addr, .align_mul = 8,
++            .access = nir_intrinsic_access(intr) & (ACCESS_COHERENT |
++                                                    ACCESS_VOLATILE));
++         in_val = nir_pack_64_2x32(b, words);
++      } else if (is_store) {
++         nir_build_store_global(
++            b, nir_unpack_64_2x32(b, nir_channel(b, intr->src[3].ssa, 0)),
++            addr, .align_mul = 8,
++            .access = nir_intrinsic_access(intr) & (ACCESS_COHERENT |
++                                                    ACCESS_VOLATILE));
++      } else if (is_swap) {
++         in_val = nir_global_atomic_swap(b, 64, addr, intr->src[3].ssa,
++                                         intr->src[4].ssa,
++                                         .atomic_op = nir_intrinsic_atomic_op(intr));
++      } else {
++         in_val = nir_global_atomic(b, 64, addr, intr->src[3].ssa,
++                                    .atomic_op = nir_intrinsic_atomic_op(intr));
++      }
++      nir_push_else(b, in_if);
++      nir_def *out_val = is_store ? NULL : nir_imm_int64(b, 0);
++      nir_pop_if(b, in_if);
++      if (!is_store)
++         mem_val = nir_if_phi(b, in_val, out_val);
++   }
++   nir_push_else(b, mem_if);
++   nir_def *tex_val = NULL;
++   if (is_load)
++      tex_val = fallback_texture_load(b, intr);
++   else if (is_store)
++      fallback_texture_store(b, intr, nir_channel(b, intr->src[3].ssa, 0));
++   else
++      tex_val = nir_imm_int64(b, 0);
++   nir_pop_if(b, mem_if);
++
++   if (is_store) {
++      nir_instr_remove(&intr->instr);
++   } else {
++      nir_def *v = nir_if_phi(b, mem_val, tex_val);
++      nir_def_replace(&intr->def, is_load ? texel_result(b, intr, v) : v);
++   }
++   return true;
++}
++
++static bool
++lower_image64_instr(nir_builder *b, nir_intrinsic_instr *intr,
++                    UNUSED void *data)
++{
++   return lower_image64(b, intr);
++}
++
++/* What remains of a 64-bit image handle is used with 32-bit texture ops (the
++ * fallbacks and size queries): Apple7 has no ulong textures. */
++static bool
++retype_handle_instr(UNUSED nir_builder *b, nir_intrinsic_instr *intr,
++                    UNUSED void *data)
++{
++   if (intr->intrinsic != nir_intrinsic_load_texture_handle_kk)
++      return false;
++   nir_alu_type t = nir_intrinsic_dest_type(intr);
++   if (nir_alu_type_get_type_size(t) != 64)
++      return false;
++   nir_intrinsic_set_dest_type(intr, nir_type_uint32);
++   return true;
++}
++
++static bool
++lower_memory_atomic_instr(nir_builder *b, nir_intrinsic_instr *intr,
++                          UNUSED void *data)
++{
++   return lower_memory_atomic(b, intr);
++}
++
++bool
++kk_nir_lower_atomic64_emul(nir_shader *nir)
++{
++   bool progress = false;
++
++   /* Images first: they turn into 64-bit global atomics lowered next. */
++   progress |= nir_shader_intrinsics_pass(nir, lower_image64_instr,
++                                          nir_metadata_none, NULL);
++   progress |= nir_shader_intrinsics_pass(nir, retype_handle_instr,
++                                          nir_metadata_all, NULL);
++   /* Drops the phis of unread image atomic results, so their global atomics
++    * are seen unused and get the lock-free peek. */
++   if (progress)
++      nir_opt_dce(nir);
++   progress |= nir_shader_intrinsics_pass(nir, lower_memory_atomic_instr,
++                                          nir_metadata_none, NULL);
++   return progress;
++}
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c	2026-10-16 20:09:57
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c	2026-10-16 20:09:57
+@@ -1075,6 +1075,14 @@
+    _mesa_blake3_update(&blake3_ctx, instance->driver_build_sha,
+                        sizeof(instance->driver_build_sha));
+ 
++   /* The MSL of a shader with 64-bit atomics depends on the path taken
++    * (CIDRE_ATOMIQUES_64, CIDRE_ATOMIQUES_64_EMULEES): a cache filled with
++    * one must not serve the other. */
++   const uint8_t atomic64_mode = kk_atomic64_native(pdev)     ? 1u
++                                 : kk_atomic64_emulated(pdev) ? 2u
++                                                              : 0u;
++   _mesa_blake3_update(&blake3_ctx, &atomic64_mode, sizeof(atomic64_mode));
++
+    unsigned char blake3[BLAKE3_KEY_LEN];
+    _mesa_blake3_final(&blake3_ctx, blake3);
+ 
+--- a/src/kosmickrisp/vulkan/kk_shader.c	2026-10-16 20:09:57
++++ b/src/kosmickrisp/vulkan/kk_shader.c	2026-10-16 20:09:57
+@@ -860,16 +860,52 @@
+    return enabled;
+ }
+ 
+-bool
+-kk_atomic64_enabled(const struct kk_physical_device *pdev)
++static bool
++kk_atomic64_requested(void)
+ {
+    static int enabled = -1;
+    if (enabled < 0)
+       enabled = getenv("CIDRE_ATOMIQUES_64") != NULL;
+-   return enabled && pdev->info.gpu_apple_family >= 8;
++   return enabled;
+ }
+ 
++/* CIDRE_ATOMIQUES_64_EMULEES forces the lock based path on Apple8+ too, so
++ * the emulation can be checked against the native min/max on the same GPU. */
+ static bool
++kk_atomic64_force_emulated(void)
++{
++   static int enabled = -1;
++   if (enabled < 0)
++      enabled = getenv("CIDRE_ATOMIQUES_64_EMULEES") != NULL;
++   return enabled;
++}
++
++/* Native path: Metal 64-bit min/max (Apple8+), the rest split in two 32-bit
++ * atomics. */
++bool
++kk_atomic64_native(const struct kk_physical_device *pdev)
++{
++   return kk_atomic64_requested() && !kk_atomic64_force_emulated() &&
++          pdev->info.gpu_apple_family >= 8;
++}
++
++/* Emulated path (Apple7 has no 64-bit atomic at all): every 64-bit atomic
++ * takes a 32-bit spin lock from a device wide table, see
++ * kk_nir_lower_atomic64.c. */
++bool
++kk_atomic64_emulated(const struct kk_physical_device *pdev)
++{
++   return (kk_atomic64_requested() || kk_atomic64_force_emulated()) &&
++          !kk_atomic64_native(pdev);
++}
++
++bool
++kk_atomic64_enabled(const struct kk_physical_device *pdev)
++{
++   return kk_atomic64_native(pdev) || kk_atomic64_emulated(pdev);
++}
++
++static bool
+ split_atomic64_instr(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data)
+ {
+    if (intr->intrinsic != nir_intrinsic_global_atomic || intr->def.bit_size != 64)
+@@ -1080,7 +1116,7 @@
+    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ubo,
+             kk_buffer_addr_format(rs->uniform_buffers));
+ 
+-   if (kk_atomic64_enabled(pdev))
++   if (kk_atomic64_native(pdev))
+       NIR_PASS(_, nir, kk_nir_split_atomic64);
+ 
+    NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
+@@ -1168,6 +1204,12 @@
+     */
+    NIR_PASS(_, nir, kk_nir_lower_descriptors, rs, set_layout_count,
+             set_layouts, kk_root_layout_identity(), NULL);
++
++   /* After descriptor lowering (the 64-bit image ops are bindless by now and
++    * their descriptor address is known) and before the image robustness
++    * passes, which must see the 32-bit fallbacks this creates. */
++   if (kk_atomic64_emulated(pdev))
++      NIR_PASS(_, nir, kk_nir_lower_atomic64_emul);
+ 
+    /* KK_WORKAROUND_16 - must be called after kk_nir_lower_descriptors(), which
+     * lowers all image intrinsics to be bindless */
+--- a/src/kosmickrisp/vulkan/kk_shader.h	2026-10-16 20:09:57
++++ b/src/kosmickrisp/vulkan/kk_shader.h	2026-10-16 20:09:57
+@@ -320,6 +320,13 @@
+ 
+ struct kk_physical_device;
+ bool kk_atomic64_enabled(const struct kk_physical_device *pdev);
++bool kk_atomic64_native(const struct kk_physical_device *pdev);
++bool kk_atomic64_emulated(const struct kk_physical_device *pdev);
++
++/* Emulated 64-bit atomics: number of 32-bit lock words in the device table
++ * bound at buffer(3). Power of two. */
++#define KK_ATOMIC64_LOCK_COUNT (1u << 16)
++bool kk_nir_lower_atomic64_emul(nir_shader *nir);
+ 
+ bool kk_nir_lower_textures(nir_shader *nir);
+ 
+--- a/src/kosmickrisp/vulkan/meson.build	2026-10-16 20:09:57
++++ b/src/kosmickrisp/vulkan/meson.build	2026-10-16 20:09:57
+@@ -95,6 +95,7 @@
+   'kk_nir_lower_image_view_min_lod.c',
+   'kk_nir_lower_multiview.c',
+   'kk_nir_lower_null_images.c',
++  'kk_nir_lower_atomic64.c',
+   'kk_nir_lower_textures.c',
+   'kk_nir_lower_vbo.h',
+   'kk_nir_lower_vbo.c',

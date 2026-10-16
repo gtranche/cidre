@@ -1,0 +1,14 @@
+#version 450
+// Reference de cout : max 32 bits natif sur la profondeur seule.
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, r32ui) uniform uimage2D vis;
+layout(push_constant) uniform P { uint w, h, iters, mode; };
+uint hash(uint x) { x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16; return x; }
+void main() {
+   uint tid = gl_GlobalInvocationID.x;
+   for (uint i = 0u; i < iters; i++) {
+      uint hh = hash(tid * 7919u + i * 104729u);
+      uint pix = (tid / 4u + i * 37u) % (w * h);
+      imageAtomicMax(vis, ivec2(pix % w, pix / w), hash(hh));
+   }
+}

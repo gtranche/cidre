@@ -1,0 +1,23 @@
+#version 450
+// Producteur lourd : beaucoup de groupes ; le DERNIER groupe a finir ecrit les arguments du
+// dispatch indirect suivant (nombre de groupes propre au tour t).
+layout(local_size_x = 64) in;
+layout(push_constant) uniform P { uint t; uint groupes; };
+layout(std430, set = 0, binding = 0) buffer A { uint args[4]; uint fini; uint pad[3]; uint compte[]; };
+layout(std430, set = 0, binding = 1) buffer S { uint sale[]; };
+shared uint dernier;
+void main() {
+   // un peu de travail pour etaler le dispatch dans le temps
+   uint x = gl_GlobalInvocationID.x;
+   for (uint i = 0u; i < 64u; i++) x = x * 1664525u + 1013904223u;
+   sale[gl_GlobalInvocationID.x] = x;
+   barrier();
+   if (gl_LocalInvocationIndex == 0u)
+      dernier = atomicAdd(fini, 1u);
+   barrier();
+   if (gl_LocalInvocationIndex == 0u && dernier == groupes - 1u) {
+      memoryBarrierBuffer();
+      args[0] = (t * 7u) % 50u + 1u; args[1] = 1u; args[2] = 1u;
+      fini = 0u;
+   }
+}

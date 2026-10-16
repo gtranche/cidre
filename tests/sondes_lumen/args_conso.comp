@@ -1,0 +1,6 @@
+#version 450
+// Consommateur indirect : chaque fil compte dans la case de son tour.
+layout(local_size_x = 64) in;
+layout(push_constant) uniform P { uint t; uint groupes; };
+layout(std430, set = 0, binding = 0) buffer A { uint args[4]; uint fini; uint pad[3]; uint compte[]; };
+void main() { atomicAdd(compte[t], 1u); }

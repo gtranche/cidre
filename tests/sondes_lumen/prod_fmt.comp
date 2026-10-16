@@ -1,0 +1,15 @@
+#version 450
+// Tour t : ecrit un code entier (mis a l'echelle) dependant du tour dans une image 2D et 3D
+// de format quelconque (ecriture sans format).
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+layout(push_constant) uniform P { uint t; uint n; uint m; float echelle; };
+layout(set = 0, binding = 0) uniform writeonly image2D i2;
+layout(set = 0, binding = 1) uniform writeonly image3D i3;
+void main() {
+   uvec3 p = gl_GlobalInvocationID;
+   if (p.x >= n || p.y >= n || p.z >= n) return;
+   uint c = ((t % 4u) * (m / 4u) + (p.x + p.y * 7u + p.z * 13u) % (m / 4u));
+   vec4 v = vec4(float(c) * echelle);
+   imageStore(i3, ivec3(p), v);
+   if (p.z == 0u) imageStore(i2, ivec2(p.xy), v);
+}

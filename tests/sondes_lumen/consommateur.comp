@@ -1,0 +1,19 @@
+#version 450
+// Tour t : relit en ordre inverse (autres coeurs) le tampon, l'image par imageLoad et par la
+// texture ; compte les valeurs perimees.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(push_constant) uniform P { uint t; uint w; uint h; };
+layout(std430, set = 0, binding = 0) buffer D { uint donnees[]; };
+layout(set = 0, binding = 1, r32ui) uniform readonly uimage2D img;
+layout(set = 0, binding = 2) uniform usampler2D tex;
+layout(std430, set = 0, binding = 3) buffer C { uint faux_tampon; uint faux_image; uint faux_texture; uint vus; };
+void main() {
+   uvec2 g = gl_GlobalInvocationID.xy;
+   if (g.x >= w || g.y >= h) return;
+   uvec2 p = uvec2(w - 1u - g.x, h - 1u - g.y);
+   uint attendu = t * 1000003u + p.y * w + p.x;
+   if (donnees[p.y * w + p.x] != attendu) atomicAdd(faux_tampon, 1u);
+   if (imageLoad(img, ivec2(p)).x != attendu) atomicAdd(faux_image, 1u);
+   if (texelFetch(tex, ivec2(p), 0).x != attendu) atomicAdd(faux_texture, 1u);
+   atomicAdd(vus, 1u);
+}

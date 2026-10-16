@@ -1,0 +1,13 @@
+#version 450
+#extension GL_KHR_shader_subgroup_quad : require
+// Echanges de quad (QuadReadAcrossX/Y/Diagonal, QuadReadLaneAt) sans divergence.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(std430, set = 0, binding = 0) buffer O { uint res[]; };
+void main() {
+   uint gid = gl_WorkGroupID.x * 64u + gl_LocalInvocationIndex;
+   uint v = gid * 7u + 3u;
+   res[gid * 4u + 0u] = subgroupQuadSwapHorizontal(v);
+   res[gid * 4u + 1u] = subgroupQuadSwapVertical(v);
+   res[gid * 4u + 2u] = subgroupQuadSwapDiagonal(v);
+   res[gid * 4u + 3u] = subgroupQuadBroadcast(v, 2u);
+}

@@ -1,0 +1,47 @@
+#version 450
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_vote : require
+#extension GL_KHR_shader_subgroup_ballot : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+#extension GL_KHR_shader_subgroup_shuffle : require
+#extension GL_KHR_shader_subgroup_quad : require
+// Operations de vague des nuanceurs de Demonologist (Lumen), en flot divergent : chaque lane
+// ecrit 24 resultats ; le CPU les recalcule (sous-groupe = 32 invocations consecutives).
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(std430, set = 0, binding = 0) buffer O { uint res[]; };
+const uint N = 24u;
+void main() {
+   uint li = gl_LocalInvocationIndex;
+   uint gid = gl_WorkGroupID.x * 64u + li;
+   uint v = (gid * 2654435761u) >> 7;
+   float fv = float(v & 1023u) * 0.25 - 100.0;
+   uint b = gid * N;
+   for (uint k = 0u; k < N; k++) res[b + k] = 0xdeadbeefu;
+   // Divergence : lane active si (v % 3 != 0) ; les autres sortent.
+   if ((v % 3u) == 0u) return;
+   res[b + 0] = subgroupBroadcastFirst(v);
+   res[b + 1] = subgroupShuffle(v, (gl_SubgroupInvocationID + 5u) & 31u);
+   res[b + 2] = subgroupMin(v);
+   res[b + 3] = subgroupElect() ? 1u : 0u;
+   res[b + 4] = subgroupAll((v & 1u) == 0u) ? 1u : 0u;
+   res[b + 5] = subgroupAny((v & 7u) == 5u) ? 1u : 0u;
+   uvec4 bal = subgroupBallot((v & 1u) == 1u);
+   res[b + 6] = bal.x;
+   res[b + 7] = subgroupBallotBitCount(bal);
+   res[b + 8] = subgroupBallotExclusiveBitCount(bal);
+   res[b + 9] = subgroupBallotInclusiveBitCount(bal);
+   res[b + 10] = subgroupOr(v & 0xffu);
+   res[b + 11] = subgroupAnd(v | 0xffffff00u);
+   res[b + 12] = subgroupBallotFindLSB(bal);
+   res[b + 13] = subgroupMax(v);
+   res[b + 14] = floatBitsToUint(subgroupAdd(fv));
+   res[b + 15] = subgroupExclusiveAdd(v & 0xffu);
+   res[b + 16] = floatBitsToUint(subgroupMin(fv));
+   res[b + 17] = floatBitsToUint(subgroupMax(fv));
+   res[b + 18] = subgroupInclusiveAdd(v & 0xffu);
+   res[b + 19] = gl_SubgroupInvocationID;
+   res[b + 20] = subgroupAllEqual(v >> 30) ? 1u : 0u;
+   res[b + 21] = subgroupBallotFindMSB(bal);
+   res[b + 22] = subgroupAdd(1u);
+   res[b + 23] = subgroupBroadcast(v, 7u);
+}
