@@ -1,0 +1,214 @@
+Generated-by: LLM
+
+KosmicKrisp et runtime Vulkan : le cache de pipelines est compresse (zstd) -- KosmicKrisp y met le MSL complet de chaque nuanceur et le runtime commun le NIR precompile, ~268 Ko par pipeline sur les nuanceurs de calcul d'Expedition 33 ; Detroit: Become Human (99 453 pipelines, 151 182 bibliotheques MSL) obtenait de vkGetPipelineCacheData un cache de plusieurs Go, l'ecrivait a 0 octet (VkPipelineCache.bin) et posait CorruptedCache, l'ecran de chargement restant a 98 %. MSL (kk_shader.c) et NIR (vk_pipeline.c) sont compresses a la serialisation, taille compressee 0 = brut ; CIDRE_CACHE_BRUT=1 garde l'ancien stockage et entre dans pipelineCacheUUID. Sonde cache_vkd3d (114 nuanceurs de calcul reels d'Exp33) : 268,4 -> 41,6 Ko par pipeline, aller-retour 114/114 ; sonde_cache_pipelines (graphique + calcul) : 7 767 -> 4 044 octets, aller-retour juste ; KK et winevulkan rendaient des donnees correctes sur un petit cache : seule la taille est en cause.
+
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -1095,6 +1095,7 @@ kk_physical_device_init_pipeline_cache(struct kk_physical_device *pdev)
+       "CIDRE_LECTURES_CACHEES",
+       "CIDRE_MINMAX_ZERO_ENTIER",
+       "CIDRE_DERIVEES_CALCUL",
++      "CIDRE_CACHE_BRUT",
+       "CIDRE_SSBO_SANS_BORNES",
+       "CIDRE_CONTRACTION_MALGRE_PRECIS",
+       "CIDRE_IMAGES_NULLES_SANS_BRANCHE",
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -6,6 +6,7 @@
+  */
+ 
+ #include "kk_shader.h"
++#include "util/compress.h"
+ 
+ #include "kk_cmd_buffer.h"
+ #include "kk_debug.h"
+@@ -3018,6 +3019,25 @@ kk_compile_shaders(struct vk_device *device, uint32_t shader_count,
+    return result;
+ }
+ 
++/* Le MSL de chaque nuanceur part dans le cache de pipelines Vulkan. Un jeu qui
++ * cree des dizaines de milliers de pipelines (Detroit: Become Human : 99 453
++ * pipelines, 151 182 bibliotheques MSL, ~210 Ko de MSL par nuanceur) obtenait
++ * un cache de plusieurs Go que vkGetPipelineCacheData rend tel quel : le jeu
++ * l'ecrivait a 0 octet et le declarait corrompu. Le MSL est donc compresse
++ * (zstd, ~7,7x sur du MSL reel) ; taille compressee 0 = stocke brut.
++ * CIDRE_CACHE_BRUT=1 garde l'ancien stockage (A/B). Le format du cache
++ * change, mais la cle (pipelineCacheUUID) change avec le build : un ancien
++ * cache est ecarte avant d'arriver ici.
++ */
++static bool
++kk_cache_brut(void)
++{
++   static int brut = -1;
++   if (brut < 0)
++      brut = getenv("CIDRE_CACHE_BRUT") != NULL;
++   return brut;
++}
++
+ static void
+ kk_msl_serialize(struct kk_shader *shader, mesa_shader_stage stage,
+                  struct blob *blob)
+@@ -3025,10 +3045,26 @@ kk_msl_serialize(struct kk_shader *shader, mesa_shader_stage stage,
+    struct msl_compile_data *data = &shader->msl_data[stage];
+    uint32_t entrypoint_length = strlen(data->entrypoint_name) + 1;
+    uint32_t code_length = strlen(data->code) + 1;
++   uint8_t *packed = NULL;
++   size_t packed_length = 0;
++   if (!kk_cache_brut()) {
++      size_t max = util_compress_max_compressed_len(code_length);
++      packed = max ? malloc(max) : NULL;
++      if (packed != NULL)
++         packed_length = util_compress_deflate((const uint8_t *)data->code,
++                                               code_length, packed, max);
++      if (packed_length == 0 || packed_length >= code_length)
++         packed_length = 0;
++   }
+    blob_write_uint32(blob, entrypoint_length);
+    blob_write_uint32(blob, code_length);
++   blob_write_uint32(blob, (uint32_t)packed_length);
+    blob_write_bytes(blob, data->entrypoint_name, entrypoint_length);
+-   blob_write_bytes(blob, data->code, code_length);
++   if (packed_length)
++      blob_write_bytes(blob, packed, packed_length);
++   else
++      blob_write_bytes(blob, data->code, code_length);
++   free(packed);
+ }
+ 
+ static bool
+@@ -3057,6 +3093,7 @@ kk_msl_deserialize(struct blob_reader *blob, mesa_shader_stage stage,
+ {
+    const uint32_t entrypoint_length = blob_read_uint32(blob);
+    const uint32_t code_length = blob_read_uint32(blob);
++   const uint32_t packed_length = blob_read_uint32(blob);
+    struct msl_compile_data *data = &shader->msl_data[stage];
+    data->entrypoint_name = ralloc_array(NULL, char, entrypoint_length);
+    if (data->entrypoint_name == NULL)
+@@ -3067,9 +3104,17 @@ kk_msl_deserialize(struct blob_reader *blob, mesa_shader_stage stage,
+       return VK_ERROR_OUT_OF_HOST_MEMORY;
+ 
+    blob_copy_bytes(blob, (void *)data->entrypoint_name, entrypoint_length);
+-   blob_copy_bytes(blob, (void *)data->code, code_length);
++   if (packed_length) {
++      const uint8_t *packed = blob_read_bytes(blob, packed_length);
++      if (blob->overrun ||
++          !util_compress_inflate(packed, packed_length, (uint8_t *)data->code,
++                                 code_length))
++         return VK_ERROR_INCOMPATIBLE_SHADER_BINARY_EXT;
++   } else {
++      blob_copy_bytes(blob, (void *)data->code, code_length);
++   }
+ 
+-   if (blob->overrun)
++   if (blob->overrun || data->code[code_length - 1] != '\0')
+       return VK_ERROR_INCOMPATIBLE_SHADER_BINARY_EXT;
+ 
+    return VK_SUCCESS;
+--- a/src/vulkan/runtime/vk_pipeline.c
++++ b/src/vulkan/runtime/vk_pipeline.c
+@@ -38,6 +38,8 @@
+ #include "vk_sampler.h"
+ #include "vk_shader.h"
+ #include "vk_shader_module.h"
++
++#include "util/compress.h"
+ #include "vk_util.h"
+ 
+ #include "nir_serialize.h"
+@@ -741,6 +743,20 @@ fail_blob:
+    return NULL;
+ }
+ 
++/* Cidre (0166) : le NIR precompile de chaque nuanceur part dans le cache de
++ * pipelines Vulkan a cote du MSL de KosmicKrisp (~40 Ko par pipeline sur les
++ * nuanceurs de calcul d'Expedition 33). Il est compresse (zstd) comme le MSL ;
++ * taille compressee 0 = stocke brut. CIDRE_CACHE_BRUT=1 garde l'ancien stockage.
++ */
++static bool
++vk_pipeline_cache_brut(void)
++{
++   static int brut = -1;
++   if (brut < 0)
++      brut = getenv("CIDRE_CACHE_BRUT") != NULL;
++   return brut;
++}
++
+ static bool
+ vk_pipeline_precomp_shader_serialize(struct vk_pipeline_cache_object *obj,
+                                      struct blob *blob)
+@@ -755,8 +771,24 @@ vk_pipeline_precomp_shader_serialize(struct vk_pipeline_cache_object *obj,
+    blob_write_bytes(blob, shader->embedded_samplers,
+                     shader->embedded_sampler_count *
+                     sizeof(*shader->embedded_samplers));
++   uint8_t *packed = NULL;
++   size_t packed_size = 0;
++   if (!vk_pipeline_cache_brut() && shader->nir_blob.size > 0) {
++      size_t max = util_compress_max_compressed_len(shader->nir_blob.size);
++      packed = max ? malloc(max) : NULL;
++      if (packed != NULL)
++         packed_size = util_compress_deflate(shader->nir_blob.data,
++                                             shader->nir_blob.size, packed, max);
++      if (packed_size >= shader->nir_blob.size)
++         packed_size = 0;
++   }
+    blob_write_uint64(blob, shader->nir_blob.size);
+-   blob_write_bytes(blob, shader->nir_blob.data, shader->nir_blob.size);
++   blob_write_uint64(blob, packed_size);
++   if (packed_size)
++      blob_write_bytes(blob, packed, packed_size);
++   else
++      blob_write_bytes(blob, shader->nir_blob.data, shader->nir_blob.size);
++   free(packed);
+ 
+    return !blob->out_of_memory;
+ }
+@@ -779,20 +811,36 @@ vk_pipeline_precomp_shader_deserialize(struct vk_device *device,
+       blob_read_bytes(blob, embedded_sampler_count * sizeof(*embedded_samplers));
+ 
+    uint64_t nir_size = blob_read_uint64(blob);
+-   if (blob->overrun || nir_size > SIZE_MAX)
++   uint64_t packed_size = blob_read_uint64(blob);
++   if (blob->overrun || nir_size > SIZE_MAX || packed_size > SIZE_MAX)
+       return NULL;
+ 
+-   const void *nir_data = blob_read_bytes(blob, nir_size);
+-   if (blob->overrun)
+-      return NULL;
++   void *unpacked = NULL;
++   const void *nir_data;
++   if (packed_size) {
++      const void *packed = blob_read_bytes(blob, packed_size);
++      unpacked = malloc(nir_size ? nir_size : 1);
++      if (blob->overrun || unpacked == NULL ||
++          !util_compress_inflate(packed, packed_size, unpacked, nir_size)) {
++         free(unpacked);
++         return NULL;
++      }
++      nir_data = unpacked;
++   } else {
++      nir_data = blob_read_bytes(blob, nir_size);
++      if (blob->overrun)
++         return NULL;
++   }
+ 
+    VK_MULTIALLOC(ma);
+    VK_MULTIALLOC_DECL(&ma, struct vk_pipeline_precomp_shader, shader, 1);
+    VK_MULTIALLOC_DECL(&ma, struct vk_sampler_state, samplers,
+                       embedded_sampler_count);
+    if (!vk_multialloc_zalloc(&ma, &device->alloc,
+-                             VK_SYSTEM_ALLOCATION_SCOPE_DEVICE))
++                             VK_SYSTEM_ALLOCATION_SCOPE_DEVICE)) {
++      free(unpacked);
+       return NULL;
++   }
+ 
+    assert(sizeof(shader->cache_key) == key_size);
+    memcpy(shader->cache_key, key_data, sizeof(shader->cache_key));
+@@ -813,6 +861,7 @@ vk_pipeline_precomp_shader_deserialize(struct vk_device *device,
+ 
+    blob_init(&shader->nir_blob);
+    blob_write_bytes(&shader->nir_blob, nir_data, nir_size);
++   free(unpacked);
+    if (shader->nir_blob.out_of_memory)
+       goto fail_cache_obj;
+ 
