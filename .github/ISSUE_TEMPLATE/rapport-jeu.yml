@@ -29,15 +29,17 @@ body:
       label: Rapport
       description: |
         Depuis Verger (« Partager mon résultat ») ce champ et le titre sont déjà remplis : relis et envoie. S'il est arrivé vide, colle ici le rapport copié dans Verger (« Copier le rapport »), à la place du modèle.
-        À la main : dans le titre, remplace NOM DU JEU et APPID (le nombre dans l'adresse de la page Steam du jeu) ; ci-dessous, remplis les guillemets. `etat` vaut `or` (parfait), `argent` (jouable avec des limites), `bronze` (démarre mais lent ou bogué) ou `ko` (ne marche pas) ; `cidre status` donne la version ; laisse à 0 les images par seconde que tu n'as pas mesurées. Tu peux écrire ce que tu veux sous le bloc.
+        À la main : dans le titre, remplace NOM DU JEU et APPID (le nombre dans l'adresse de la page Steam du jeu) ; ci-dessous, remplis les guillemets. `etat` vaut `or` (parfait), `argent` (jouable avec des limites), `bronze` (démarre mais lent ou bogué) ou `ko` (ne marche pas) ; la puce, la mémoire, le modèle et la version de macOS sont dans le menu Pomme > « À propos de ce Mac » ; `cidre status` donne la version de Cidre ; laisse à 0 les images par seconde que tu n'as pas mesurées. Tu peux écrire ce que tu veux sous le bloc.
 
         From Verger ("Share My Result") this field and the title are already filled in: review and submit. If it came up empty, paste the report copied in Verger ("Copy the Report") here, replacing the template.
-        By hand: in the title, replace NOM DU JEU (the game's name) and APPID (the number in the game's Steam store URL); below, fill in the quotes. `etat` is `or` (perfect), `argent` (playable with limits), `bronze` (starts but slow or buggy) or `ko` (does not work); `cidre status` prints the version; leave unmeasured frame rates at 0. Keys stay in French; write anything you like below the block.
+        By hand: in the title, replace NOM DU JEU (the game's name) and APPID (the number in the game's Steam store URL); below, fill in the quotes. `etat` is `or` (perfect), `argent` (playable with limits), `bronze` (starts but slow or buggy) or `ko` (does not work); the chip, memory, model and macOS version are in the Apple menu > "About This Mac"; `cidre status` prints the Cidre version; leave unmeasured frame rates at 0. Keys stay in French; write anything you like below the block.
       value: |
         ```toml
         [[rapports]]
         date = ""            # AAAA-MM-JJ
         machine = ""         # M1 Max 32 Go
+        modele = ""          # MacBook Pro 14 pouces 2023, ou Mac15,9
+        macos_version = ""   # 26.5.2
         cidre_version = ""   # 1.5.10
         etat = ""            # or, argent, bronze, ko
         fps_menu = 0

@@ -74,7 +74,7 @@ SYNONYMES = {
     "bronze": "bronze",
     "ko": "ko", "borked": "ko", "broken": "ko", "ne marche pas": "ko",
 }
-CLES_RAPPORT = ("date", "machine", "famille_gpu", "voie", "cidre_version", "etat", "fps_menu", "fps_jeu", "notes")
+CLES_RAPPORT = ("date", "machine", "modele", "macos_version", "famille_gpu", "voie", "cidre_version", "etat", "fps_menu", "fps_jeu", "notes")
 # les voies de rendu des fiches ([compat] voie, [[compat.machines]] voie)
 VOIES = ("dxmt", "dxvk", "d3d12", "wined3d", "natif")
 # la famille Metal (MTLGPUFamilyApple<N>) d'une generation de puce, pour les
@@ -85,6 +85,7 @@ PUCES_DE_FAMILLE = {7: "M1", 8: "M2", 9: "M3, M4"}
 OPTIONS_TUES = ("langue", "hud", "journal_detaille")
 MAX_NOTES = 500
 MAX_MACHINE = 80
+MAX_MODELE = 60
 MAX_NOM = 120
 
 
@@ -324,6 +325,18 @@ def lire_rapport(incident, depot):
         champs["machine"] = machine
     else:
         av.append("machine absente : ce rapport ne comptera pas pour --proposer-compat")
+
+    # le modele (« Mac15,9 », ou en clair a la main) et la version de macOS : ce que
+    # la puce ne dit pas (ecran, coeurs GPU) et ce qui change sous le jeu (Metal)
+    modele = propre(lus.get("modele", ""), MAX_MODELE)
+    if modele:
+        champs["modele"] = modele
+    macos = str(lus.get("macos_version", "")).strip()
+    if macos:
+        if re.fullmatch(r"[0-9]{2}(\.[0-9]{1,3}){0,2}", macos):
+            champs["macos_version"] = macos
+        else:
+            av.append(f"macos_version illisible (« {propre(macos, 30)} ») : omise (attendu : 26.5.2)")
 
     if "famille_gpu" in lus:
         v = lus["famille_gpu"]

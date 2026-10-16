@@ -279,6 +279,8 @@ date = "2026-10-13"
 [[rapports]]                       # une remontée d'utilisateur (Verger) ; zéro, une ou plusieurs
 date = "2026-10-11"
 machine = "M1 Max 32 Go"
+modele = "MacBookPro18,2"           # hw.model, ou le nom en clair
+macos_version = "26.5.2"
 cidre_version = "1.5.0"
 etat = "argent"
 fps_menu = 90
@@ -856,11 +858,16 @@ python3 -I tests/outils/test_rapports_vers_fiches.py               # le test (in
 - Le modèle du formulaire est vide (`etat = ""`) : envoyé tel quel, il est
   refusé. Si un rapport est collé sous le modèle laissé en place, c'est le bloc
   qui donne un état qui est lu.
-- Le bloc rendu : `date`, `machine`, `famille_gpu`, `voie`, `cidre_version`,
+- Le bloc rendu : `date`, `machine`, `modele`, `macos_version`, `famille_gpu`, `voie`, `cidre_version`,
   `etat`, `fps_menu`, `fps_jeu`, `notes` (celles du joueur, sur une ligne,
   suivies des options avec lesquelles il a lancé quand elles diffèrent de la
   fiche) et `incident` (l'adresse de l'incident). Le diagnostic n'est ni lu ni
-  recopié. `famille_gpu` et `voie` sont écrits par Verger depuis sa version
+  recopié. `modele` (l'identifiant `hw.model`, « Mac15,9 », ou le nom en clair
+  d'un rapport écrit à la main) et `macos_version` (« 26.5.2 », le fait de même
+  nom) situent la machine au-delà de la puce : écran et cœurs GPU, version de
+  Metal ; une `macos_version` qui n'en a pas la forme est omise et signalée.
+  Verger les écrit depuis la version qui affiche la compatibilité par Mac sur
+  son site. `famille_gpu` et `voie` sont écrits par Verger depuis sa version
   qui affiche la compatibilité par famille ; pour un rapport plus ancien, la
   famille est déduite du nom de la puce dans `machine` (M1 → 7, M2 → 8, M3 et
   M4 → 9) et la voie des options du profil effectif (`dx12`, `d3d11`).

@@ -277,6 +277,14 @@ def main():
                                  '[[rapports]]\ndate = "2026-01-02"\nmachine = "M4 24 Go"\nfamille_gpu = 9\nvoie = "d3d12"\netat = "bronze"\n'}, "gtranche/cidre")
         assert lu["erreurs"] == [] and lu["champs"]["famille_gpu"] == 9 and lu["champs"]["voie"] == "d3d12", lu
         assert outil.bloc_toml(lu["champs"], URL + "11")[3:5] == ["famille_gpu = 9", 'voie = "d3d12"'], outil.bloc_toml(lu["champs"], URL + "11")
+        # 11. modele et version de macOS (Verger, ou a la main), recopies tels quels
+        lu = outil.lire_rapport({"number": 13, "title": "Rapport de jeu : X (42)", "body":
+                                 '[[rapports]]\ndate = "2026-01-02"\nmachine = "M4 24 Go"\nmodele = "Mac16,2"\nmacos_version = "27.0.1"\netat = "or"\n'}, "gtranche/cidre")
+        assert lu["erreurs"] == [] and lu["champs"]["modele"] == "Mac16,2" and lu["champs"]["macos_version"] == "27.0.1", lu
+        assert outil.bloc_toml(lu["champs"], URL + "13")[2:5] == ['machine = "M4 24 Go"', 'modele = "Mac16,2"', 'macos_version = "27.0.1"'], outil.bloc_toml(lu["champs"], URL + "13")
+        lu = outil.lire_rapport({"number": 14, "title": "Rapport de jeu : X (42)", "body":
+                                 'date = "2026-01-02"\nmacos_version = "Tahoe"\netat = "or"\n'}, "gtranche/cidre")
+        assert "macos_version" not in lu["champs"] and any("macos_version illisible" in a for a in lu["avertissements"]), lu
         lu = outil.lire_rapport({"number": 12, "title": "Rapport de jeu : X (42)", "body":
                                  'date = "2026-01-02"\nfamille_gpu = "neuf"\nvoie = "metal"\netat = "or"\n'}, "gtranche/cidre")
         assert "famille_gpu" not in lu["champs"] and "voie" not in lu["champs"], lu["champs"]
