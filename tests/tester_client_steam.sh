@@ -241,15 +241,21 @@ mkdir -p "$T/cidre" "$T/home"; : >"$T/jeu.exe"
 printf 'local-essai\tEssai\t%s\n' "$T/jeu.exe" >"$T/cidre/jeux-locaux.conf"
 printf '#!/bin/sh\necho "lanceur CIDRE_STEAM_CPU=${CIDRE_STEAM_CPU:-vide}" >&2\n' >"$T/lanceur.sh"
 jouer() { HOME="$T/home" CIDRE_DIR="$T/cidre" CIDRE_LANCEUR="$T/lanceur.sh" sh "$R/cidre" play local-essai "$@" 2>"$T/play.err"; }
+# (l'evenement « shaders » de tests/etat_shaders.sh passe avant les autres : on
+# le verifie a part, puis on l'ecarte pour ne regarder que l'avertissement)
+sans_shaders() { grep -v '^{"evenement":"shaders"'; }
 sortie=$(CIDRE_STEAM_CPU=97 jouer --json)
+verif "trois evenements : shaders, avertissement, lancement" "shaders avertissement lancement" "$(printf '%s\n' "$sortie" | sed 's/^{"evenement":"\([a-z]*\)".*/\1/' | tr '\n' ' ' | sed 's/ $//')"
+contient "jeu jamais joue ici : premier lancement" '{"evenement":"shaders","etat":"premier_lancement"' "$sortie"
+sortie=$(printf '%s\n' "$sortie" | sans_shaders)
 verif "deux evenements, avertissement d'abord" "avertissement lancement" "$(printf '%s\n' "$sortie" | sed 's/^{"evenement":"\([a-z]*\)".*/\1/' | tr '\n' ' ' | sed 's/ $//')"
 contient "code steam_cpu, cpu 97" '"code":"steam_cpu","cpu":97,"message":"client Steam : steam_osx prend 97 %' "$sortie"
 if command -v python3 >/dev/null 2>&1; then
    printf '%s\n' "$sortie" | python3 -c 'import json,sys; [json.loads(l) for l in sys.stdin]' 2>/dev/null && ok "JSON valide, ligne a ligne" || echec "JSON invalide : $sortie"
 fi
 contient "la mesure passe au lanceur" "lanceur CIDRE_STEAM_CPU=97" "$(cat "$T/play.err")"
-verif "a 40 % : le seul lancement" '{"evenement":"lancement"}' "$(CIDRE_STEAM_CPU=40 jouer --json)"
-verif "CIDRE_SANS_STEAM=1 : rien" '{"evenement":"lancement"}' "$(CIDRE_STEAM_CPU=97 CIDRE_SANS_STEAM=1 jouer --json)"
+verif "a 40 % : le seul lancement" '{"evenement":"lancement"}' "$(CIDRE_STEAM_CPU=40 jouer --json | sans_shaders)"
+verif "CIDRE_SANS_STEAM=1 : rien" '{"evenement":"lancement"}' "$(CIDRE_STEAM_CPU=97 CIDRE_SANS_STEAM=1 jouer --json | sans_shaders)"
 sortie=$(CIDRE_STEAM_CPU=97 jouer)
 case $sortie in *steam_cpu*|*"prend 97"*) echec "sans --json, cidre ne dit rien (c'est au lanceur)" ;; *) ok "sans --json, cidre le laisse au lanceur" ;; esac
 # la ligne du lanceur pour un jeu hors Steam : la 2e ligne de « cpu », indentee
