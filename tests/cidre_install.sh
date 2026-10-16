@@ -26,11 +26,16 @@ if [ ! -x "$SCMD" ]; then
    xattr -cr "$SCMD_DIR" 2>/dev/null || true
 fi
 
-# 2) plateforme : auto -> macos si version Apple Silicon dispo, sinon windows.
+# 2) plateforme : auto -> macos si Steam en distribue une version qui tourne ici
+#    (pas une version 32 bits seulement, que macOS ne lance plus depuis
+#    Catalina), sinon windows. `cidre install` tranche avant, fiche comprise ;
+#    ici, le cache du client Steam seul (cidre-outil plateformes).
 if [ "$PLAT" = auto ]; then
-   if LC_ALL=C grep -aqs "macosapplesilicon" "$STEAM/appcache/appinfo.vdf" \
-      && grep -aqs "$APPID" "$STEAM/appcache/appinfo.vdf" ; then PLAT=macos; else PLAT=windows; fi
-   # garde-fou : la detection appinfo est approximative -> on confirmera a l'ecran
+   PLAT=windows
+   if [ -x "$R/build/cidre-outil" ] && [ -f "$STEAM/appcache/appinfo.vdf" ]; then
+      "$R/build/cidre-outil" plateformes "$STEAM/appcache/appinfo.vdf" "$APPID" 2>/dev/null \
+         | awk -F'\t' '$2 ~ /(^|,)macos(,|$)/ && $4 == "non" { ok = 1 } END { exit !ok }' && PLAT=macos
+   fi
 fi
 case "$PLAT" in macos|windows) ;; *) echo "plateforme invalide: $PLAT" >&2; exit 2;; esac
 

@@ -226,7 +226,7 @@ verif "la bouteille est intacte, au fichier pres" "$AVANT" "$(cliche "$T/CrossOv
 echo "ecrit par Cidre" >>"$G/3527290/PEAK.exe"
 verif "ecrire dans la copie ne touche pas la bouteille" "$AVANT" "$(cliche "$T/CrossOver"; cliche "$T/Whisky"; cliche "$T/Heroic"; cliche "$T/Ailleurs"; cliche "$T/Disque D"; cliche "$T/Prefixes Heroic")"
 fiche=$(sh "$R/cidre" list --json | grep '"id":"3527290"')
-contient "cidre list --json : un jeu Cidre, installe" "{\"id\":\"3527290\",\"appid\":3527290,\"nom\":\"PEAK\",\"plateforme\":\"windows\",\"lancement\":\"cidre\",\"source\":\"cidre\",\"installe\":true,\"wrapper\":null,\"chemin\":\"$G/3527290\",\"taille\":$PEAK_OCTETS,\"dernier_lancement\":1790000000,\"emplacement\":\"principal\",\"en_ligne\":true,\"deplacement\":null}" "$fiche"
+contient "cidre list --json : un jeu Cidre, installe" "{\"id\":\"3527290\",\"appid\":3527290,\"nom\":\"PEAK\",\"plateforme\":\"windows\",\"lancement\":\"cidre\",\"source\":\"cidre\",\"installe\":true,\"wrapper\":null,\"chemin\":\"$G/3527290\",\"taille\":$PEAK_OCTETS,\"dernier_lancement\":1790000000,\"emplacement\":\"principal\",\"en_ligne\":true,\"deplacement\":null,\"mac_32bits\":null}" "$fiche"
 verif "cidre info : source" "source      : cidre" "$(sh "$R/cidre" info 3527290 2>/dev/null | grep '^source')"
 verif "repris : plus propose, dans aucune bouteille" "" "$(champs 3527290)"
 verif "reprises.conf : appid, source, bouteille, racine, mode" "3527290${TAB}crossover${TAB}Steam${TAB}$CX${TAB}clone" "$(cut -f1-5 "$CIDRE_DIR/reprises.conf")"
@@ -306,7 +306,7 @@ if [ -x "$R/build/cidre-outil" ] && [ -f "$VRAI_HOME/Library/Application Support
    printf '620\tPortal 2\tcrossover\tMes "Jeux"\t/b/common/Portal 2\t7\t1000\n620\tPortal 2\theroic\tdefault\t/h/Portal 2\t6\t1000\n400\tPortal\twhisky\tW\t/w/Portal\t3\t900\n424242424\tJeu Du Manifeste\theroic\tdefault\t/h/Jeu\t5\t77\n' >"$T/b.tsv"
    bib=$(HOME=$VRAI_HOME "$R/build/cidre-outil" bibliotheque --bouteilles "$T/b.tsv" "$T/licences.txt" 400)
    printf '%s' "$bib" | plutil -convert xml1 -o /dev/null - 2>/dev/null && ok "JSON valide" || echec "JSON invalide : $bib"
-   contient "jeu d'une bouteille : source, origine, bouteille, chemin (la premiere ligne)" '{"appid": 620, "nom": "Portal 2", "plateformes": ["windows", "macos", "linux"], "installe": false, "source": "bouteille", "origine": "crossover", "bouteille": "Mes \"Jeux\"", "chemin": "/b/common/Portal 2", "buildid": 7, "taille": 1000}' "$(printf '%s' "$bib" | sed 's/"plateformes": \[[^]]*\]/"plateformes": ["windows", "macos", "linux"]/g')"
+   contient "jeu d'une bouteille : source, origine, bouteille, chemin (la premiere ligne)" '{"appid": 620, "nom": "Portal 2", "plateformes": ["windows", "macos", "linux"], "mac_32bits": true, "installe": false, "source": "bouteille", "origine": "crossover", "bouteille": "Mes \"Jeux\"", "chemin": "/b/common/Portal 2", "buildid": 7, "taille": 1000}' "$(printf '%s' "$bib" | sed 's/"plateformes": \[[^]]*\]/"plateformes": ["windows", "macos", "linux"]/g')"
    contient "jeu deja installe : pas de source" '"installe": true}' "$(printf '%s' "$bib" | tr '{' '\n' | grep '"appid": 400,')"
    contient "jeu hors des licences : montre, au nom de son manifeste" '{"appid": 424242424, "nom": "Jeu Du Manifeste", "plateformes": ["windows"], "installe": false, "source": "bouteille", "origine": "heroic", "bouteille": "default", "chemin": "/h/Jeu", "buildid": 5, "taille": 77}' "$bib"
    verif "sans --bouteilles : rien ne change" "0" "$(HOME=$VRAI_HOME "$R/build/cidre-outil" bibliotheque "$T/licences.txt" 400 | grep -c bouteille)"

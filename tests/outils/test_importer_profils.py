@@ -339,7 +339,7 @@ esac; done
         assert len(appels) == 2 and appels[0].startswith("+login anonymous ") and appels[0].endswith(" +quit"), appels
         assert "+app_info_print 11" in appels[0] and "+app_info_print 11" not in appels[1] and "+app_info_print 12" in appels[1]
         assert m._steam_appinfo(toile, "11")["corps"] == {"ufs": {"quota": "1000"}, "nom": "Onze", "oslist": "windows,macos",
-                                                          "frame": None}
+                                                          "osextended": "", "mac64": False, "frame": None}
         assert m._steam_appinfo(toile, "12")["statut"] == 200 and m._steam_appinfo(toile, "13")["statut"] == 403
         assert m.steam_appinfo_charger(toile, ["11", "12", "13"], faux) == 0 and len(open(os.path.join(foyer, "appels")).readlines()) == 2
         # dans la fiche : le jeu public oui, celui que Steam ne montre pas sans compte non
@@ -352,6 +352,40 @@ esac; done
         # hors reseau : SteamCMD n'est pas lance
         hors = m.Toile(os.path.join(tmp, "cache-vide"), sans_reseau=True)
         assert m.steam_appinfo_charger(hors, ["11"], faux) == 0 and len(open(os.path.join(foyer, "appels")).readlines()) == 2
+
+        # Version macOS 32 bits seulement (osextended sans macos64) : [jeu] mac_32bits = true,
+        # source steam ; retiree quand Steam declare une version 64 bits
+        fiche = m.Fiche({"jeu": {"appid": 11}})
+        assert m.importer_mac_32bits(fiche, "11", toile) is True
+        assert fiche.doc["jeu"]["mac_32bits"] is True and fiche.doc["jeu"]["sources"]["mac_32bits"] == f"steam {m.aujourdhui()}"
+        for corps, attendu in (({"oslist": "windows,macos", "osextended": "macos64", "mac64": False}, False),
+                               ({"oslist": "windows,macos", "osextended": "macos64,macosapplesilicon"}, False),
+                               ({"oslist": "windows,macos", "osextended": "", "mac64": True}, False),
+                               ({"oslist": "windows", "osextended": ""}, None)):
+            toile.ecrire_cache("steam/appinfo/16.json", {"date": "2026-10-16", "statut": 200, "corps": corps})
+            fiche = m.Fiche({"jeu": {"appid": 16, "mac_32bits": True, "sources": {"mac_32bits": "steam 2026-10-01"}}})
+            assert m.importer_mac_32bits(fiche, "16", toile) is attendu, corps
+            assert "mac_32bits" not in fiche.doc["jeu"], (corps, fiche.doc)
+        # lu avant qu'on garde osextended : on ne retire rien ; une valeur a la main reste
+        toile.ecrire_cache("steam/appinfo/16.json", {"date": "2026-10-16", "statut": 200, "corps": {"oslist": "windows,macos"}})
+        fiche = m.Fiche({"jeu": {"appid": 16, "mac_32bits": True, "sources": {"mac_32bits": "steam 2026-10-01"}}})
+        assert m.importer_mac_32bits(fiche, "16", toile) is None and fiche.doc["jeu"]["mac_32bits"] is True
+        toile.ecrire_cache("steam/appinfo/16.json", {"date": "2026-10-16", "statut": 200,
+                                                     "corps": {"oslist": "windows,macos", "osextended": "macos64"}})
+        fiche = m.Fiche({"jeu": {"appid": 16, "mac_32bits": True}})
+        m.importer_mac_32bits(fiche, "16", toile)
+        assert fiche.doc["jeu"]["mac_32bits"] is True
+        # osarch 64 sur l'entree de lancement ou le depot macOS vaut declaration 64 bits
+        assert m.steam_mac64_declare({"config": {"launch": {"0": {"config": {"oslist": "macos", "osarch": "64"}}}}})
+        assert m.steam_mac64_declare({"depots": {"5": {"config": {"oslist": "macos", "osarch": "64"}}}})
+        assert not m.steam_mac64_declare({"depots": {"5": {"config": {"oslist": "windows", "osarch": "64"}},
+                                                     "6": {"config": {"oslist": "macos"}}}})
+        # une entree d'avant osextended, d'un jeu macOS, est redemandee sous avec_mac
+        appels_avant = len(open(os.path.join(foyer, "appels")).readlines())
+        toile.ecrire_cache("steam/appinfo/11.json", {"date": "2026-10-01", "statut": 200, "corps": {"oslist": "windows,macos"}})
+        assert m.steam_appinfo_charger(toile, ["11", "12"], faux, avec_mac=True) == 1
+        assert len(open(os.path.join(foyer, "appels")).readlines()) == appels_avant + 1
+        assert m._steam_appinfo(toile, "11")["corps"]["osextended"] == ""
 
         # Steam Frame : le bilan de Valve, et tso = false quand Valve force le TSO coupe (2)
         assert m.steam_appinfo_charger(toile, ["14"], faux) == 1

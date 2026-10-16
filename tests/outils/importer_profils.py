@@ -769,18 +769,51 @@ def steam_appinfo_decouper(sortie):
     return blocs
 
 
-def steam_appinfo_charger(toile, appids, steamcmd=None, maximum=None, avec_frame=False):
+def steam_mac64_declare(corps):
+    """Une entree de lancement (config/launch) ou un depot macOS qui dit
+    osarch 64 : certains editeurs ne cochent pas « 64 Bit Binaries Included »
+    (osextended macos64) mais le disent la (Battle Chasers: Nightwar)."""
+    entrees = list(_vdf_liste(((corps.get("config") or {}).get("launch")) if isinstance(corps.get("config"), dict) else None))
+    depots = corps.get("depots") if isinstance(corps.get("depots"), dict) else {}
+    entrees += [d for k, d in depots.items() if k.isdigit()]
+    for e in entrees:
+        conf = e.get("config") if isinstance(e, dict) and isinstance(e.get("config"), dict) else {}
+        if "macos" in str(conf.get("oslist", "")).split(",") and str(conf.get("osarch", "")) == "64":
+            return True
+    return False
+
+
+def steam_mac_32bits(garde):
+    """La version macOS du jeu n'existe-t-elle qu'en 32 bits ? Depuis Catalina,
+    macOS ne lance plus le 32 bits et Rosetta 2 ne le traduit pas ; le client
+    Steam exige osextended macos64 (ou macosapplesilicon). True, False, ou None
+    (pas de version macOS, ou entree lue avant qu'on garde osextended)."""
+    if not isinstance(garde, dict) or "osextended" not in garde:
+        return None
+    if "macos" not in str(garde.get("oslist") or "").split(","):
+        return None
+    ext = str(garde.get("osextended") or "").split(",")
+    return not ("macos64" in ext or "macosapplesilicon" in ext or garde.get("mac64"))
+
+
+def steam_appinfo_charger(toile, appids, steamcmd=None, maximum=None, avec_frame=False, avec_mac=False):
     """Met en cache (steam/appinfo/<appid>.json) ce que Steam publie des jeux
     qui n'y sont pas encore. On ne garde que ce qui sert : la section `ufs`, le
     nom, les plateformes, et le bloc `steam_frame_compatibility` (configuration
     validee par Valve sur Steam Frame, source steam-frame). Un jeu que Steam ne
     montre pas sans compte est note (statut 403) et n'ecrit rien dans la fiche.
-    avec_frame : redemander aussi les entrees lues avant que ce bloc soit garde."""
+    avec_frame : redemander aussi les entrees lues avant que ce bloc soit garde ;
+    avec_mac : de meme pour `osextended` (version macOS 32 bits seulement), des
+    jeux qui ont une version macOS."""
     def a_lire(a):
         vu = _steam_appinfo(toile, a)
         if toile.refresh or vu is None:
             return True
-        return avec_frame and vu.get("statut") == 200 and "frame" not in (vu.get("corps") or {})
+        corps = vu.get("corps") or {}
+        if avec_mac and vu.get("statut") == 200 and "osextended" not in corps \
+                and "macos" in str(corps.get("oslist") or "").split(","):
+            return True
+        return avec_frame and vu.get("statut") == 200 and "frame" not in corps
     manquants = [a for a in appids if str(a).isdigit() and a_lire(a)]
     if maximum is not None and len(manquants) > maximum:
         # catalogue : ~0,5 s par jeu ; le reste viendra aux passages suivants (cache garde)
@@ -818,6 +851,8 @@ def steam_appinfo_charger(toile, appids, steamcmd=None, maximum=None, avec_frame
                 frame = (commun or {}).get("steam_frame_compatibility")
                 garde = {"ufs": corps.get("ufs") if isinstance(corps.get("ufs"), dict) else None,
                          "nom": (commun or {}).get("name"), "oslist": (commun or {}).get("oslist"),
+                         "osextended": (commun or {}).get("osextended") or "",
+                         "mac64": steam_mac64_declare(corps),
                          "frame": frame if isinstance(frame, dict) else None}
                 toile.ecrire_cache(f"steam/appinfo/{a}.json",
                                    {"date": aujourdhui(), "statut": 200 if commun else 403, "corps": garde})
@@ -1020,6 +1055,23 @@ def importer_steam_cloud(fiche, appid, toile):
     fin = [o for o in fiche.ops if o[0] == "compat.steam_cloud" and o[1] in ("source", "date")]
     fiche.ops = [o for o in fiche.ops if o not in fin] + fin
     return v
+
+
+def importer_mac_32bits(fiche, appid, toile):
+    """[jeu] mac_32bits = true quand la version macOS n'existe qu'en 32 bits :
+    Cidre traite alors le jeu comme un jeu Windows seulement (cidre dl, cidre
+    install auto, Verger). Retire si Steam declare desormais une version 64 bits."""
+    vu = _steam_appinfo(toile, appid)
+    if not vu or vu.get("statut") != 200:
+        return None
+    m = steam_mac_32bits(vu.get("corps"))
+    if m is None and "osextended" not in (vu.get("corps") or {}):
+        return None  # lu avant qu'on garde osextended : on ne retire rien
+    if m:
+        fiche.poser("jeu", "mac_32bits", True, "steam", vu["date"], appid)
+    else:
+        fiche.retirer("jeu", "mac_32bits", "steam")
+    return m
 
 
 # -------------------------------------------------------------- Steam Frame
@@ -2052,22 +2104,33 @@ def wiki_pages_charger(toile, api, prefixe, titres):
     return faits
 
 
-def catalogue_protondb(toile, profils, garder_mac=False):
+def catalogue_protondb(toile, profils, garder_mac=False, steamcmd=None, mac_max=None):
     """Les jeux du catalogue : tout appid note dans l'export ProtonDB, sans les
     jeux qui ont une version macOS native (sauf --avec-mac), plus les fiches
-    deja ecrites. Rend (appids tries, {appid: {nom, plateformes, source_nom}}, bilan)."""
+    deja ecrites. Une version macOS 32 bits seulement n'est pas native (macOS
+    ne la lance plus) : ces jeux-la restent, lus par SteamCMD (au plus
+    `mac_max` nouveaux par passage). Rend (appids tries, {appid: {nom,
+    plateformes, source_nom}}, bilan)."""
     titres, date, comptes = protondb_export_titres(toile)
     if not titres:
         return [], {}, {}
     magasin = steam_magasin_charger(toile, sorted(titres, key=int))
     existantes = {n[:-5] for n in os.listdir(profils) if n.endswith(".toml") and n != "index.toml"} if os.path.isdir(profils) else set()
     par_appid, bilan = {}, collections.Counter()
-    for a in sorted(set(titres) | {x for x in existantes if x.isdigit()}, key=int):
+    tous = sorted(set(titres) | {x for x in existantes if x.isdigit()}, key=int)
+    if not garder_mac:
+        macs = [a for a in tous if "macos" in (((magasin.get(a) or {}).get("corps") or {}).get("plateformes") or [])
+                and (magasin.get(a) or {}).get("statut") == 200]
+        steam_appinfo_charger(toile, macs, steamcmd, mac_max, avec_mac=True)
+    for a in tous:
         e = magasin.get(a) or {}
         c = e.get("corps") if e.get("statut") == 200 else None
         pf = (c or {}).get("plateformes") or []
+        vu = _steam_appinfo(toile, a) if "macos" in pf else None
         if c is None:
             bilan["hors_magasin"] += 1
+        elif "macos" in pf and vu and vu.get("statut") == 200 and steam_mac_32bits(vu.get("corps")):
+            bilan["mac_32bits"] += 1
         elif "macos" in pf:
             bilan["mac_natif"] += 1
             if not garder_mac and a not in existantes:
@@ -2110,6 +2173,7 @@ def importer(appid, nom_steam, plateformes, toile, index_dir, date_export, profi
     if plateformes and "steam" in sources:
         fiche.poser("jeu", "plateformes_steam", " ".join(sorted(plateformes)), "steam", aujourd, appid)
     if "steam" in sources:
+        importer_mac_32bits(fiche, appid, toile)
         cloud = importer_steam_cloud(fiche, appid, toile)
         if cloud and bilan_steam is not None:
             bilan_steam[cloud["synchro"]] = bilan_steam.get(cloud["synchro"], 0) + 1
@@ -2347,7 +2411,7 @@ def main(argv=None):
     appids = [str(x) for x in a.appids] if a.appids else list(par_appid)
     cartes, bilan_catalogue = None, None
     if catalogue:
-        appids, par_appid, bilan_catalogue = catalogue_protondb(toile, a.profils, a.avec_mac)
+        appids, par_appid, bilan_catalogue = catalogue_protondb(toile, a.profils, a.avec_mac, a.steamcmd, a.steam_cloud_max)
         if a.limite:
             appids = appids[:a.limite]
         dire("catalogue ProtonDB : " + ", ".join(f"{k} {v}" for k, v in sorted(bilan_catalogue.items()))
@@ -2357,7 +2421,7 @@ def main(argv=None):
                         key=lambda x: (not x.isdigit(), int(x) if x.isdigit() else 0, x))
     if a.windows_seulement:  # ... sauf ceux qui ont deja une fiche (version Windows testee sous Cidre)
         appids = [x for x in appids if x not in par_appid or "macos" not in par_appid[x].get("plateformes", [])
-                  or os.path.exists(os.path.join(a.profils, f"{x}.toml"))]
+                  or par_appid[x].get("mac_32bits") or os.path.exists(os.path.join(a.profils, f"{x}.toml"))]
     if a.neuves_seulement:
         appids = [x for x in appids if not os.path.exists(os.path.join(a.profils, f"{x}.toml"))]
         if not appids:
@@ -2377,7 +2441,8 @@ def main(argv=None):
     bilan_crossover = bilan_crossover_vide()
     bilan_steam = {}
     if ("steam" in sources and not a.sans_steam_cloud) or "steam-frame" in sources:
-        steam_appinfo_charger(toile, appids, a.steamcmd, a.steam_cloud_max, avec_frame="steam-frame" in sources)
+        steam_appinfo_charger(toile, appids, a.steamcmd, a.steam_cloud_max, avec_frame="steam-frame" in sources,
+                              avec_mac="steam" in sources)
     if catalogue:
         if "protondb" in sources:
             protondb_resumes_charger(toile, appids, a.resumes_max,

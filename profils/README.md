@@ -199,6 +199,7 @@ exe = "Expedition33_Steam.exe"     # relatif au dossier du jeu
 moteur = "unreal"                  # unity, unreal, hashlink, stingray, godot, source, autre
 api = "d3d11"                      # d3d11, d3d12, opengl, vulkan (ce que le jeu demande d'abord)
 bits = 64                          # 32 ou 64
+mac_32bits = true                  # optionnel : la version macOS n'existe qu'en 32 bits
 anticheat = "none"                 # none, eac, battleye, denuvo, vac
 lanceur = "steam"                  # steam, epic, gog, aucun
 
@@ -295,6 +296,18 @@ Sens des champs :
 - `[jeu]` identifie le jeu : `appid`, `nom`, `exe`, `moteur`, `api`, `bits`,
   `anticheat`, `lanceur`. Données, jamais exécutées : le lanceur prend
   l'exécutable que Steam lui donne (ou `outil-steam/jeux.conf`).
+- `[jeu] mac_32bits = true` : Steam distribue une version macOS, mais en 32
+  bits seulement (i386, PowerPC). macOS ne la lance plus depuis Catalina et
+  Rosetta 2 ne traduit pas le 32 bits : Cidre traite le jeu en Windows
+  seulement (`cidre dl` et `cidre install auto` prennent la version Windows,
+  `cidre play` refuse la version macOS installée par Steam, code 9 ; Verger
+  n'offre pas « Version macOS (par Steam) »). Importé de Steam (source
+  `steam`) : `common/osextended` sans `macos64` ni `macosapplesilicon` (la case
+  « 64 Bit Binaries Included » que le client exige), et aucune entrée de
+  lancement ni aucun dépôt macOS en `osarch` 64. `false`, posé à la main,
+  corrige un éditeur qui n'a pas coché la case. Un jeu installé se juge
+  d'abord sur ses binaires (`file`), puis sur la fiche, puis sur le cache du
+  client Steam (`cidre-outil plateformes`).
 - `[cidre]` : les options de lancement. `moteur`, `anticheat` (de `[jeu]`),
   `etat` et `source` (de `[compat]`) sont aussi rendus par `profil_cidre.sh`,
   à plat, comme avant la migration.
@@ -752,7 +765,8 @@ les essais).
 mensuel de ProtonDB (34 293 appids au 2026-10-01), demande au magasin Steam
 (sans compte, `IStoreBrowseService/GetItems`, par lots de 100) le nom et les
 plateformes de chacun, et garde ceux qui n'ont pas de version macOS native
-(25 306), ceux que le magasin ne montre plus (1 022) et les fiches déjà
+(25 306 ; une version macOS 32 bits seulement n'en est pas une : ces jeux
+restent, lus par SteamCMD, `mac_32bits` au bilan), ceux que le magasin ne montre plus (1 022) et les fiches déjà
 écrites : 26 818 fiches. Rien n'y est demandé jeu par jeu aux wikis : la page
 d'un jeu se trouve par les liens que son infobox pose vers Steam
 (`list=exturlusage`, 500 par requête : le magasin sur PCGamingWiki, 52 112
@@ -968,6 +982,7 @@ Proton) ou le verdict AppleGamingWiki (CrossOver, GPTK) ne sont pas notre
 | Source (licence) | Donnée | Champ de la fiche |
 |---|---|---|
 | Bibliothèque Steam (`cidre library`) | nom, plateformes du dépôt | `[jeu] nom`, `plateformes_steam` (`"windows"` ou `"macos windows"`) |
+| Steam, métadonnées publiques du jeu (`app_info_print`, `common/osextended`, `osarch` des entrées de lancement et dépôts macOS) | version macOS 64 bits déclarée ou non | `[jeu] mac_32bits = true` quand la version macOS n'est qu'en 32 bits (retiré si Steam en déclare une 64 bits) |
 | Steam, métadonnées publiques du jeu (`app_info_print`, section `ufs` : la configuration Steam Cloud) | méthode (API Remote Storage ou Auto-Cloud), règles `savefiles` (racine, chemin, motif, plateformes) et `rootoverrides` par système | `[compat.steam_cloud] methode` (`aucune`, `api`, `auto`), `racine_windows` et `racine_macos` (`Racine/chemin`, après `rootoverrides`), `motifs` (+ `motifs_macos` s'ils diffèrent), `dossier_windows` (convention Cidre), `partage`, `liens` (`dossier du préfixe => dossier sous le dossier personnel`) ou `sans_lien` (pourquoi pas), `synchro` (`steam-api`, `steam-lien`, `copie`, `aucune`) ; voir « Sauvegardes » |
 | ProtonDB, API publique des résumés (données utilisateurs) | palier, tendance, meilleur palier, confiance, score, nombre de rapports | `[compat.protondb] palier`, `tendance`, `meilleur_palier`, `confiance`, `score` (0-100), `rapports`, `url` |
 | ProtonDB, export JSON public des rapports (dépôt `bdefore/protondb-data`) | options de lancement les plus citées (2 ans), lanceur utilisé, « lanceur secondaire » (le jeu a son propre lanceur), anti-triche signalé, verdicts récents | `options_lancement_1..3` (`"… (xN)"`), `lanceurs_signales`, `lanceur_secondaire` (`"non:7 oui:1"`), `anticheat_signale`, `verdicts_recents`, `rapports_export` ; et `[jeu] anticheat` si PCGW est muet et qu'un seul anti-triche est signalé |

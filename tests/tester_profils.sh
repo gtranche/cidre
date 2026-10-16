@@ -23,6 +23,8 @@
 #      generation, gamme, macos ; [compat] remplace par l'entree qui vaut ici et
 #      parle de la voie de la fiche ; options par famille ; Expedition 33 ;
 #   6b. arguments du jeu (option arguments) : decoupage, doublons, fiche, `cidre set` ;
+#   6d. version macOS 32 bits seulement : binaire installe (faux Mach-O), fiche,
+#      cache du client Steam ; list/play/dl/install la traitent en jeu Windows ;
 #   7. sh -n sur les scripts de la chaine.
 # Tout se passe dans un dossier temporaire : ni le profil utilisateur, ni le
 # prefixe, ni le cache reels ne sont touches.
@@ -846,8 +848,70 @@ verif "cidre set arguments : guillemet refuse" "2" "$rc"
 cp "$T/perso.avant-arguments" "$CIDRE_PROFILS"
 grep -q 'ARGJ=${CIDRE_ARGUMENTS:-$(profil arguments)}' "$R/tests/lancer_depuis_steam.sh" && ok "lanceur : option arguments lue" || echec "lanceur : option arguments non lue"
 
+echo "== 6d. version macOS 32 bits seulement (traitee en jeu Windows)"
+# Un faux client Steam : Fahrenheit (312840) installe en version macOS. Ses
+# executables sont de faux Mach-O (l'en-tete suffit a `file`) : i386 seul, puis
+# x86_64. Un faux `open` : si la garde manquait, rien ne partirait pour de vrai.
+H=$T/home32; SAF="$H/Library/Application Support/Steam/steamapps"; APPF="$SAF/common/Fahrenheit/Fahrenheit.app"
+mkdir -p "$APPF/Contents/MacOS" "$T/bin32"
+printf '"AppState"\n{\n\t"appid"\t\t"312840"\n\t"name"\t\t"Fahrenheit: Indigo Prophecy Remastered"\n\t"StateFlags"\t\t"4"\n\t"installdir"\t\t"Fahrenheit"\n}\n' >"$SAF/appmanifest_312840.acf"
+printf '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>CFBundleExecutable</key><string>Fahrenheit</string></dict></plist>\n' >"$APPF/Contents/Info.plist"
+macho() { # <fichier> <32|64>
+   if [ "$2" = 32 ]; then printf '\316\372\355\376\007\000\000\000\003\000\000\000\002\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000' >"$1"
+   else printf '\317\372\355\376\007\000\000\001\003\000\000\000\002\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000' >"$1"; fi
+}
+printf '#!/bin/sh\necho "open $*" >>"%s/open.txt"\n' "$T" >"$T/bin32/open"; chmod +x "$T/bin32/open"
+cidre32() { HOME=$H PATH="$T/bin32:$PATH" CIDRE_DIR="$T/cidre32" sh "$R/cidre" "$@"; }
+champ_json() { sed -n "s/.*\"$1\":\\([a-z]*\\).*/\\1/p"; }
+macho "$APPF/Contents/MacOS/Fahrenheit" 32
+verif "binaire i386 : Mach-O 32 bits pour file" "oui" "$(file -b "$APPF/Contents/MacOS/Fahrenheit" | grep -q 'Mach-O executable i386' && echo oui)"
+l=$(cidre32 list --json)
+verif "list --json : mac_32bits true" "true" "$(printf '%s' "$l" | champ_json mac_32bits)"
+verif "list --json : lance par Cidre, pas en natif" "cidre" "$(printf '%s' "$l" | sed -n 's/.*"lancement":"\([a-z]*\)".*/\1/p')"
+verif "list --json : la plateforme installee reste macos" "macos" "$(printf '%s' "$l" | sed -n 's/.*"plateforme":"\([a-z]*\)".*/\1/p')"
+verif "list : texte" "oui" "$(cidre32 list | grep -q 'Mac 32 bits : cidre dl 312840' && echo oui)"
+p=$(cidre32 play 312840 --json 2>"$T/play32.err"); rc=$?
+verif "play : refuse, code 9" "9" "$rc"
+verif "play --json : evenement mac_32bits" "mac_32bits" "$(printf '%s' "$p" | sed -n 's/.*"code":"\([a-z_0-9]*\)".*/\1/p')"
+verif "play : dit quoi faire" "oui" "$(grep -q 'cidre dl 312840' "$T/play32.err" && echo oui)"
+verif "play : Steam n'est pas appele" "" "$(cat "$T/open.txt" 2>/dev/null)"
+cidre32 dl 312840 macos >/dev/null 2>&1; verif "dl macos : refuse (code 9)" "9" "$?"
+cidre32 install 312840 macos >/dev/null 2>&1; verif "install macos : refuse (code 9)" "9" "$?"
+# le binaire installe prime sur la fiche (profils/312840.toml dit mac_32bits = true)
+verif "la fiche livree de Fahrenheit dit mac_32bits" "true" "$(sh "$R/tests/fiche_profil.sh" toml "$R/profils/312840.toml" | awk -F'\t' '$1 == "jeu" && $2 == "mac_32bits" { print $4 }')"
+macho "$APPF/Contents/MacOS/Fahrenheit" 64
+l=$(cidre32 list --json)
+verif "binaire x86_64 installe : mac_32bits false (le binaire prime)" "false" "$(printf '%s' "$l" | champ_json mac_32bits)"
+verif "binaire x86_64 installe : natif" "natif" "$(printf '%s' "$l" | sed -n 's/.*"lancement":"\([a-z]*\)".*/\1/p')"
+# un .app sans Mach-O (script) : on ne sait pas, la fiche tranche
+printf '#!/bin/sh\n' >"$APPF/Contents/MacOS/Fahrenheit"
+verif "sans Mach-O : la fiche tranche" "true" "$(cidre32 list --json | champ_json mac_32bits)"
+rm -f "$APPF/Contents/MacOS/Fahrenheit"
+# un jeu Windows : null
+mkdir -p "$SAF/common/Fahrenheit-win"; : >"$SAF/common/Fahrenheit-win/Jeu.exe"
+sed 's/"Fahrenheit"$/"Fahrenheit-win"/' "$SAF/appmanifest_312840.acf" >"$SAF/m.acf" && mv "$SAF/m.acf" "$SAF/appmanifest_312840.acf"
+verif "jeu Windows : mac_32bits null" "null" "$(cidre32 list --json | sed -n 's/.*"mac_32bits":\([a-z]*\).*/\1/p')"
+# le cache du client Steam (cidre-outil plateformes), quand il est la : Steam
+# ne declare pas de version macOS 64 bits pour Fahrenheit, Portal 2 ; il en
+# declare une pour Surviving Mars
+AI="$HOME/Library/Application Support/Steam/appcache/appinfo.vdf"
+if [ -x "$R/build/cidre-outil" ] && [ ! "$R/tests/cidre_outil.c" -nt "$R/build/cidre-outil" ] && [ -f "$AI" ] &&
+   [ "$("$R/build/cidre-outil" plateformes "$AI" 312840 464920 620 | wc -l | tr -d ' ')" = 3 ]; then
+   pf=$("$R/build/cidre-outil" plateformes "$AI" 312840 464920 620)
+   verif "cache du client : Fahrenheit en 32 bits" "oui" "$(printf '%s\n' "$pf" | awk -F'\t' '$1 == 312840 { print $4 }')"
+   verif "cache du client : Portal 2 en 32 bits" "oui" "$(printf '%s\n' "$pf" | awk -F'\t' '$1 == 620 { print $4 }')"
+   verif "cache du client : Surviving Mars en 64 bits (macos64)" "non" "$(printf '%s\n' "$pf" | awk -F'\t' '$1 == 464920 { print $4 }')"
+   printf 'License packageID 1:\n - Apps    : 312840, 464920, (2 in total)\n' >"$T/licences32.txt"
+   b=$(HOME=$HOME "$R/build/cidre-outil" bibliotheque "$T/licences32.txt")
+   verif "library : mac_32bits sur Fahrenheit seulement" "1" "$(printf '%s' "$b" | grep -o '"mac_32bits": true' | wc -l | tr -d ' ')"
+   b=$(HOME=$HOME "$R/build/cidre-outil" bibliotheque --mac64 312840, --mac32 464920, "$T/licences32.txt")
+   verif "library : --mac64 (fiche) leve Fahrenheit, --mac32 marque Surviving Mars" "464920" "$(printf '%s' "$b" | tr '}' '\n' | grep '"mac_32bits": true' | sed -n 's/.*"appid": \([0-9]*\).*/\1/p')"
+else
+   echo "  (cidre-outil ou cache du client Steam absent : plateformes non verifiees)"
+fi
+
 echo "== 7. syntaxe"
-for s in cidre tests/profil_cidre.sh tests/fiche_profil.sh tests/reglages_jeu.sh tests/machine.sh tests/lancer_depuis_steam.sh tests/arguments_jeu.sh tests/empaqueter_runtime.sh tests/tester_profils.sh tests/prefixe_a_jour.sh; do
+for s in cidre tests/cidre_install.sh tests/profil_cidre.sh tests/fiche_profil.sh tests/reglages_jeu.sh tests/machine.sh tests/lancer_depuis_steam.sh tests/arguments_jeu.sh tests/empaqueter_runtime.sh tests/tester_profils.sh tests/prefixe_a_jour.sh; do
    sh -n "$R/$s" 2>/dev/null && ok "sh -n $s" || echec "sh -n $s"
 done
 

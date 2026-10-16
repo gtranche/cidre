@@ -10,6 +10,7 @@ plateformes_steam = "macos windows"
 moteur = "unity"
 moteur_nom = "Unity"
 drm = "steam"
+mac_32bits = true
 
 [jeu.sources]
 nom = "steam 2026-10-13"
@@ -17,6 +18,7 @@ plateformes_steam = "steam 2026-10-13"
 moteur = "pcgamingwiki 2026-10-11"
 moteur_nom = "pcgamingwiki 2026-10-11"
 drm = "pcgamingwiki 2026-10-11"
+mac_32bits = "steam 2026-10-16"
 
 [compat]
 etat = "non-teste"

@@ -13,6 +13,7 @@ api_disponibles = "d3d9 opengl vulkan"
 bits = 64
 bits_32_aussi = true
 drm = "drm-free"
+mac_32bits = true
 
 [jeu.sources]
 nom = "steam 2026-10-13"
@@ -23,6 +24,7 @@ api_disponibles = "pcgamingwiki 2026-10-11"
 bits = "pcgamingwiki 2026-10-11"
 bits_32_aussi = "pcgamingwiki 2026-10-11"
 drm = "pcgamingwiki 2026-10-11"
+mac_32bits = "steam 2026-10-16"
 
 [compat]
 etat = "non-teste"

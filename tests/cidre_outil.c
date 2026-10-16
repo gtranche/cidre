@@ -1,8 +1,9 @@
 /* cidre-outil : ce que le script `cidre` ne sait pas faire en sh.
  *
  *    cidre-outil session <steamcmd.sh> <arguments de SteamCMD...>
- *    cidre-outil bibliotheque [--texte] [--bouteilles <liste|->] <licences.txt> [appid installe ...]
+ *    cidre-outil bibliotheque [--texte] [--bouteilles <liste|->] [--mac32|--mac64 <appid,...>] <licences.txt> [appid installe ...]
  *    cidre-outil builds <appinfo.vdf> <appid ...>
+ *    cidre-outil plateformes <appinfo.vdf> <appid ...>
  *    cidre-outil seance <appid>
  *
  * Livre construit dans le runtime (build/cidre-outil) : un Mac sans outils de
@@ -30,6 +31,19 @@
  * bouteille CrossOver, Whisky ou Heroic a deja installes. Un jeu non installe
  * qui s'y trouve porte "source": "bouteille", avec "origine", "bouteille",
  * "chemin", "buildid" et "taille" : `cidre import` le reprend.
+ * Un jeu dont la version macOS n'existe qu'en 32 bits (i386, PowerPC) porte
+ * "mac_32bits": true (voir plateformes) ; --mac32 et --mac64 <appid,...>
+ * imposent la reponse (les fiches de la base de profils, `mac_32bits`).
+ *
+ * plateformes -- pour chaque jeu demande, une ligne « appid <TAB> oslist <TAB>
+ * osextended <TAB> mac_32bits (oui|non) », d'apres le cache du client Steam.
+ * Depuis macOS Catalina (10.15), le 32 bits ne se lance plus, et Rosetta 2 ne
+ * le traduit pas. Steam marque une version macOS 64 bits par `osextended`
+ * (common) : `macos64`, et `macosapplesilicon` pour l'arm64 ; certains
+ * editeurs ne le posent pas, mais disent `osarch` 64 sur l'entree de
+ * lancement ou le depot macOS (Battle Chasers: Nightwar). Une version macOS
+ * sans rien de tout cela est 32 bits (Portal 2, Left 4 Dead 2, Mafia II,
+ * Fahrenheit Remastered) : Cidre la traite comme un jeu Windows seulement.
  *
  * builds -- le build de la branche publique de chaque jeu demande, tel que le
  * client Steam le garde dans son cache (appcache/appinfo.vdf) : une ligne
@@ -365,13 +379,29 @@ static void lire_paquets(const char *chemin, const Ens *a_completer, Ens *possed
 
 /* ce qu'on retient de la section `common` d'une application */
 typedef struct {
-   const char *nom, *type, *os;
+   const char *nom, *type, *os, *osext;
+   int mac64; /* une entree de lancement ou un depot macOS dit osarch 64 */
 } Commun;
 
 typedef struct {
    Commun sous_appinfo, racine; /* appinfo/common, ou common a la racine */
    int a_appinfo;
+   /* l'entree de lancement (config/launch/<n>/config) ou le depot
+    * (depots/<n>/config) en cours de lecture : macOS ? 64 bits ? */
+   const char *entree;
+   int genre, mac, a64;
+   Commun *ou;
 } Fiche;
+
+static void entree_finir(Fiche *f)
+{
+   if (f->ou && f->mac && f->a64)
+      f->ou->mac64 = 1;
+   f->entree = NULL;
+   f->genre = f->mac = f->a64 = 0;
+}
+
+static int dans_liste(const char *liste, const char *mot);
 
 static void visite_appinfo(Lecteur *L, int prof, const char *cle, int type, const char *chaine, int64_t entier)
 {
@@ -380,6 +410,28 @@ static void visite_appinfo(Lecteur *L, int prof, const char *cle, int type, cons
    Commun *c = NULL;
    if (prof == 0 && type == VDF_DICT && !strcmp(cle, "appinfo"))
       f->a_appinfo = 1;
+   int base = prof >= 1 && !strcmp(L->cles[0], "appinfo");
+   if (type == VDF_CHAINE && (!strcmp(cle, "oslist") || !strcmp(cle, "osarch"))) {
+      const char *entree = NULL;
+      int genre = 0;
+      if (prof == base + 4 && !strcmp(L->cles[base], "config") && !strcmp(L->cles[base + 1], "launch") &&
+          !strcmp(L->cles[base + 3], "config"))
+         entree = L->cles[base + 2], genre = 1;
+      else if (prof == base + 3 && !strcmp(L->cles[base], "depots") && !strcmp(L->cles[base + 2], "config"))
+         entree = L->cles[base + 1], genre = 2;
+      if (entree) {
+         if (entree != f->entree || genre != f->genre) {
+            entree_finir(f);
+            f->entree = entree;
+            f->genre = genre;
+            f->ou = base ? &f->sous_appinfo : &f->racine;
+         }
+         if (!strcmp(cle, "oslist"))
+            f->mac = dans_liste(chaine, "macos");
+         else
+            f->a64 = !strcmp(chaine, "64");
+      }
+   }
    if (prof == 2 && !strcmp(L->cles[0], "appinfo") && !strcmp(L->cles[1], "common"))
       c = &f->sous_appinfo;
    else if (prof == 1 && !strcmp(L->cles[0], "common"))
@@ -392,6 +444,28 @@ static void visite_appinfo(Lecteur *L, int prof, const char *cle, int type, cons
       c->type = chaine;
    else if (!strcmp(cle, "oslist"))
       c->os = chaine;
+   else if (!strcmp(cle, "osextended"))
+      c->osext = chaine;
+}
+
+/* `mot` est-il un des elements de la liste `liste` (separee par des virgules) ? */
+static int dans_liste(const char *liste, const char *mot)
+{
+   size_t m = strlen(mot);
+   for (const char *p = liste ? liste : ""; *p;) {
+      size_t l = strcspn(p, ",");
+      if (l == m && !strncmp(p, mot, l))
+         return 1;
+      p += l + (p[l] ? 1 : 0);
+   }
+   return 0;
+}
+
+/* La version macOS de ce jeu n'existe qu'en 32 bits (voir l'en-tete) */
+static int mac_32bits(const Commun *c)
+{
+   return dans_liste(c->os, "macos") && !dans_liste(c->osext, "macos64") &&
+          !dans_liste(c->osext, "macosapplesilicon") && !c->mac64;
 }
 
 typedef struct {
@@ -503,6 +577,7 @@ static int lire_appinfo(const char *chemin, const Ens *voulus, Jeux *jeux)
       Lecteur L = { .d = a.d, .pos = debut, .fin = fin, .table = a.table,
                     .ntable = a.ntable, .visite = visite_appinfo, .ctx = &f };
       if (vdf_lire(&L, 0) == 0) {
+         entree_finir(&f);
          size_t i = 0;
          while (i < jeux->n && jeux->v[i].appid != appid)
             i++;
@@ -722,10 +797,14 @@ static int cmd_bibliotheque(int argc, char **argv)
 {
    int texte = 0;
    Bouteilles bouteilles = { 0 };
+   Ens force32 = { 0 }, force64 = { 0 };
    for (; argc > 0 && !strncmp(argv[0], "--", 2); argc--, argv++) {
       if (!strcmp(argv[0], "--texte"))
          texte = 1;
-      else if (!strcmp(argv[0], "--bouteilles") && argc > 1) {
+      else if ((!strcmp(argv[0], "--mac32") || !strcmp(argv[0], "--mac64")) && argc > 1) {
+         ens_ajoute_nombres(argv[0][5] == '3' ? &force32 : &force64, argv[1], argv[1] + strlen(argv[1]));
+         argc--, argv++;
+      } else if (!strcmp(argv[0], "--bouteilles") && argc > 1) {
          lire_bouteilles(argv[1], &bouteilles);
          argc--, argv++;
       } else
@@ -745,6 +824,8 @@ static int cmd_bibliotheque(int argc, char **argv)
       if (argv[i][0] && strspn(argv[i], "0123456789") == strlen(argv[i]))
          ens_ajoute_nombres(&installes, argv[i], argv[i] + strlen(argv[i]));
    ens_trie(&installes);
+   ens_trie(&force32);
+   ens_trie(&force64);
 
    /* Une licence : « License packageID <n>: », puis plus bas « - Apps : ... »,
     * la liste (peut-etre tronquee par « ... ») suivie de « (<n> in total) ». */
@@ -847,17 +928,19 @@ static int cmd_bibliotheque(int argc, char **argv)
       const Jeu *j = &jeux.v[i];
       const char *premier = j->windows == 1 ? "windows" : "macos";
       const char *second = j->windows == 2 ? "windows" : j->macos == 2 ? "macos" : NULL;
+      int m32 = j->macos && !ens_contient(&force64, j->appid) &&
+                (ens_contient(&force32, j->appid) || mac_32bits(&j->c));
       int installe = ens_contient(&installes, j->appid);
       const Bouteille *b = installe ? NULL : bouteille_de(&bouteilles, j->appid);
       if (texte) {
          /* le nom sur 40 colonnes : coupe et complete en caracteres, pas en octets */
          const unsigned char *u = (const unsigned char *)j->c.nom;
          int colonnes = 0;
-         char os[16];
+         char os[24];
          printf("%-9u ", j->appid);
          for (size_t k = 0; u[k] && colonnes < 40; colonnes++)
             utf8_ecrire(utf8_lire(u, &k));
-         snprintf(os, sizeof os, "%s%s%s", premier, second ? "," : "", second ? second : "");
+         snprintf(os, sizeof os, "%s%s%s%s", premier, second ? "," : "", second ? second : "", m32 ? "(32)" : "");
          printf("%*s %-15s %s", 40 - colonnes, "", os, installe ? "oui" : b ? "a reprendre" : "");
          if (b)
             printf(" (%s : %s)", b->origine, b->bouteille);
@@ -868,7 +951,10 @@ static int cmd_bibliotheque(int argc, char **argv)
          printf(", \"plateformes\": [\"%s\"", premier);
          if (second)
             printf(", \"%s\"", second);
-         printf("], \"installe\": %s", installe ? "true" : "false");
+         printf("]");
+         if (m32)
+            printf(", \"mac_32bits\": true");
+         printf(", \"installe\": %s", installe ? "true" : "false");
          if (b) {
             printf(", \"source\": \"bouteille\", \"origine\": ");
             json_chaine(b->origine);
@@ -883,6 +969,26 @@ static int cmd_bibliotheque(int argc, char **argv)
    }
    if (!texte)
       puts("]");
+   return fflush(stdout) || ferror(stdout) ? 1 : 0;
+}
+
+/* --- plateformes ------------------------------------------------------- */
+
+static int cmd_plateformes(int argc, char **argv)
+{
+   Ens voulus = { 0 };
+   for (int i = 1; i < argc; i++)
+      ens_ajoute_nombres(&voulus, argv[i], argv[i] + strlen(argv[i]));
+   ens_trie(&voulus);
+   Jeux jeux = { 0 };
+   if (lire_appinfo(argv[0], &voulus, &jeux))
+      return 1;
+   for (size_t i = 0; i < jeux.n; i++) {
+      const Commun *c = &jeux.v[i].c;
+      /* sans oslist, Steam considere le jeu comme Windows */
+      printf("%u\t%s\t%s\t%s\n", jeux.v[i].appid, c->os && *c->os ? c->os : "windows",
+             c->osext ? c->osext : "", mac_32bits(c) ? "oui" : "non");
+   }
    return fflush(stdout) || ferror(stdout) ? 1 : 0;
 }
 
@@ -936,11 +1042,14 @@ int main(int argc, char **argv)
       return cmd_bibliotheque(argc - 2, argv + 2);
    if (argc >= 3 && !strcmp(argv[1], "builds"))
       return cmd_builds(argc - 2, argv + 2);
+   if (argc >= 3 && !strcmp(argv[1], "plateformes"))
+      return cmd_plateformes(argc - 2, argv + 2);
    if (argc == 3 && !strcmp(argv[1], "seance"))
       return cmd_seance(argv[2]);
    fprintf(stderr, "usage: cidre-outil session <steamcmd.sh> <arguments...>\n"
-                   "       cidre-outil bibliotheque [--texte] [--bouteilles <liste|->] <licences.txt> [appid installe ...]\n"
+                   "       cidre-outil bibliotheque [--texte] [--bouteilles <liste|->] [--mac32|--mac64 <appid,...>] <licences.txt> [appid installe ...]\n"
                    "       cidre-outil builds <appinfo.vdf> <appid ...>\n"
+                   "       cidre-outil plateformes <appinfo.vdf> <appid ...>\n"
                    "       cidre-outil seance <appid>\n");
    return 2;
 }

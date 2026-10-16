@@ -9,12 +9,14 @@ nom = "Jack Orlando Director's Cut"
 plateformes_steam = "macos windows"
 bits = 32
 drm = "steam"
+mac_32bits = true
 
 [jeu.sources]
 nom = "steam 2026-10-13"
 plateformes_steam = "steam 2026-10-13"
 bits = "pcgamingwiki 2026-10-11"
 drm = "pcgamingwiki 2026-10-11"
+mac_32bits = "steam 2026-10-16"
 
 [compat]
 etat = "non-teste"

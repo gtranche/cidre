@@ -10,6 +10,7 @@ plateformes_steam = "macos windows"
 api_disponibles = "d3d6 opengl"
 bits = 32
 drm = "steam"
+mac_32bits = true
 
 [jeu.sources]
 nom = "steam 2026-10-13"
@@ -17,6 +18,7 @@ plateformes_steam = "steam 2026-10-13"
 api_disponibles = "pcgamingwiki 2026-10-11"
 bits = "pcgamingwiki 2026-10-11"
 drm = "pcgamingwiki 2026-10-11"
+mac_32bits = "steam 2026-10-16"
 
 [cidre]
 dependances = "dotnet40 directmusic"
