@@ -244,11 +244,18 @@ empl_indexer() {
       EMPL_LISTE=$EMPL_LISTE$ei_id$TAB$ei_p${TAB}oui$NL
       for ei_d in "$ei_p"/*; do
          [ -d "$ei_d" ] || continue
+         # Le manifeste du jeu, pas celui des Steamworks Redist (228980) que
+         # SteamCMD pose a cote : le premier par ordre alphabetique cachait
+         # tout jeu d'appid classe apres lui (Fahrenheit, 312840).
          ei_a=
-         for ei_m in "$ei_d"/steamapps/appmanifest_*.acf; do
-            [ -f "$ei_m" ] || continue
-            ei_a=${ei_m##*/appmanifest_}; ei_a=${ei_a%.acf}; break
-         done
+         if [ -f "$ei_d/steamapps/appmanifest_${ei_d##*/}.acf" ]; then ei_a=${ei_d##*/}
+         else
+            for ei_m in "$ei_d"/steamapps/appmanifest_*.acf; do
+               [ -f "$ei_m" ] || continue
+               ei_a=${ei_m##*/appmanifest_}; ei_a=${ei_a%.acf}
+               [ "$ei_a" = 228980 ] || break
+            done
+         fi
          # un telechargement qui commence n'a pas encore de manifeste
          [ -n "$ei_a" ] || ei_a=${ei_d##*/}
          entier "$ei_a" && [ "$ei_a" != 228980 ] || continue
@@ -384,7 +391,10 @@ empl_detecter() {
          [ -f "$dt_c/$MARQUE" ] || continue
          dt_i=$(marque_id "$dt_c")
          printf '%s' "$EMPL_LISTE" | awk -F'\t' -v i="$dt_i" '$1 == i { t = 1 } END { exit !t }' && continue
-         dt_n=0; for dt_m in "$dt_c"/*/steamapps/appmanifest_*.acf; do [ -f "$dt_m" ] && dt_n=$((dt_n + 1)); done
+         dt_n=0; for dt_m in "$dt_c"/*/steamapps/appmanifest_*.acf; do
+            case $dt_m in */appmanifest_228980.acf) continue ;; esac
+            [ -f "$dt_m" ] && dt_n=$((dt_n + 1))
+         done
          printf '%s\t%s\t%s\n' "$dt_c" "$dt_i" "$dt_n"
       done
    done
