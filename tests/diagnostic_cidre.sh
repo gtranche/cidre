@@ -173,6 +173,10 @@ echo "  client Steam designe au registre : $(LC_ALL=C grep -a '^"SteamClientDll6
 # protege se ferme aussitot (code 53). Le lanceur l'ouvre de lui-meme.
 echo "  client Steam de macOS : $(sh "$R/tests/client_steam_natif.sh" 2>/dev/null)"
 
+# Ou vivent les jeux Cidre : ce Mac, des disques externes (branches ou non).
+titre "Emplacements des jeux"
+sh "$R/cidre" emplacements 2>&1 | sed 's/^/  /'
+
 titre "Processus"
 ps -axo pid=,etime=,command= | grep -E "lancer_depuis_steam|etape2_pile|wineserver|[A-Za-z]:\\\\" | grep -v grep \
    | awk '{printf "  %s  depuis %s  ", $1, $2; for (i = 3; i <= NF && i <= 5; i++) printf "%s ", $i; print ""}' | cut -c1-200 | head -30 >"$T/processus"

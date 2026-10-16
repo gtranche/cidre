@@ -202,7 +202,11 @@ EOF
          nombre "$appid" && [ "$m" = "$lib/appmanifest_$appid.acf" ] || { dire "ignore : $m (manifeste illisible)"; continue; }
          [ "$appid" = 228980 ] && continue   # Steamworks Common Redistributables
          qui="$appid ${nom:-?} ($src : $nomb)"
-         [ -d "$JEUX_CIDRE/$appid" ] && { dire "ignore : $qui, deja dans le dossier Cidre"; continue; }
+         # deja dans un emplacement Cidre (CIDRE_JEUX_CONNUS, donne par `cidre` ;
+         # sinon le dossier principal)
+         if [ -n "${CIDRE_JEUX_CONNUS+x}" ]; then
+            case " $CIDRE_JEUX_CONNUS " in *" $appid "*) dire "ignore : $qui, deja dans le dossier Cidre"; continue ;; esac
+         elif [ -d "$JEUX_CIDRE/$appid" ]; then dire "ignore : $qui, deja dans le dossier Cidre"; continue; fi
          case $etat in 4|6) ;; *) dire "ignore : $qui, installation incomplete (StateFlags ${etat:-absent})"; continue ;; esac
          case $rep in ''|.|..|*/*) dire "ignore : $qui, installdir invalide"; continue ;; esac
          dossier="$lib/common/$rep"

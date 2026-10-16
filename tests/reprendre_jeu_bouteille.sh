@@ -37,7 +37,8 @@
 set -u
 R=$(cd "$(dirname "$0")/.." && pwd)
 CIDRE_DIR=${CIDRE_DIR:-$HOME/Library/Application Support/Cidre}
-JEUX="$CIDRE_DIR/games"
+# l'emplacement Cidre ou va le jeu (`cidre import` donne celui par defaut, ou --vers)
+JEUX=${CIDRE_JEUX_DEST:-$CIDRE_DIR/games}
 usage() { echo "usage: cidre import <appid> [<bouteille>] [--move]" >&2; exit 2; }
 APPID=; QUI=; DEPLACER=non
 for a in "$@"; do
@@ -50,6 +51,8 @@ done
 case $APPID in ''|*[!0-9]*) usage ;; esac
 DEST="$JEUX/$APPID"
 [ -e "$DEST" ] && { echo "$APPID est deja dans le dossier Cidre : $DEST" >&2; exit 1; }
+# deja dans un autre emplacement (CIDRE_JEUX_CONNUS : les appids que `cidre` y connait)
+case " ${CIDRE_JEUX_CONNUS:-} " in *" $APPID "*) echo "$APPID est deja dans un emplacement Cidre (\`cidre info $APPID\`)" >&2; exit 1 ;; esac
 
 # Le jeu, tel que le decrit le detecteur (il pese le dossier : pas de --rapide).
 L=$(sh "$R/tests/trouver_jeux_bouteilles.sh" --complet | awk -F'\t' -v a="$APPID" -v q="$QUI" \

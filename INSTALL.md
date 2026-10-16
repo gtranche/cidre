@@ -69,6 +69,21 @@ le jeu les range, il le dit : `cidre import <appid> --saves --dossier <dossier
 de la bouteille>` le lui montre. `cidre import <appid> --saves` rattrape un jeu
 repris par un Cidre plus ancien, ou rejoue depuis dans la bouteille.
 
+**Des jeux sur un disque externe ?** Les jeux telecharges par Cidre vivent dans
+des emplacements, comme les dossiers de bibliotheque de Steam : celui de ce Mac
+(`~/Library/Application Support/Cidre/games`), et les disques ou dossiers que tu
+ajoutes (Verger : Reglages > Stockage ; `cidre emplacements ajouter /Volumes/<disque>`,
+qui y cree un dossier « Jeux Cidre »). Un nouveau jeu va dans l'emplacement par
+defaut (`cidre emplacements defaut <id>`) ou celui que tu choisis
+(`cidre dl <appid> --vers <id>`). `cidre move <appid> <emplacement>` (Verger :
+« Deplacer vers... » sur la fiche du jeu) copie le jeu, verifie la copie, puis
+efface l'original ; sauvegardes, prefixe et reglages ne bougent pas, et un
+deplacement interrompu reprend ou il en etait. Un jeu copie a la main dans un
+emplacement est reconnu. Disque debranche : ses jeux restent listes, « hors
+ligne », et reviennent quand tu le rebranches, meme sous un autre nom. APFS
+convient le mieux a un disque reserve au Mac ; exFAT marche aussi (Mac et
+Windows) ; FAT32 est refuse (fichiers de 4 Go au plus).
+
 Un jeu marche, ou ne marche pas ? Le dire sert a tous les joueurs : Verger a un
 bouton « Partager mon resultat » sur la page de chaque jeu. La marche a suivre,
 et comment proposer une fiche de jeu : [profils/CONTRIBUER.md](profils/CONTRIBUER.md)

@@ -226,7 +226,7 @@ verif "la bouteille est intacte, au fichier pres" "$AVANT" "$(cliche "$T/CrossOv
 echo "ecrit par Cidre" >>"$G/3527290/PEAK.exe"
 verif "ecrire dans la copie ne touche pas la bouteille" "$AVANT" "$(cliche "$T/CrossOver"; cliche "$T/Whisky"; cliche "$T/Heroic"; cliche "$T/Ailleurs"; cliche "$T/Disque D"; cliche "$T/Prefixes Heroic")"
 fiche=$(sh "$R/cidre" list --json | grep '"id":"3527290"')
-contient "cidre list --json : un jeu Cidre, installe" "{\"id\":\"3527290\",\"appid\":3527290,\"nom\":\"PEAK\",\"plateforme\":\"windows\",\"lancement\":\"cidre\",\"source\":\"cidre\",\"installe\":true,\"wrapper\":null,\"chemin\":\"$G/3527290\",\"taille\":$PEAK_OCTETS,\"dernier_lancement\":1790000000}" "$fiche"
+contient "cidre list --json : un jeu Cidre, installe" "{\"id\":\"3527290\",\"appid\":3527290,\"nom\":\"PEAK\",\"plateforme\":\"windows\",\"lancement\":\"cidre\",\"source\":\"cidre\",\"installe\":true,\"wrapper\":null,\"chemin\":\"$G/3527290\",\"taille\":$PEAK_OCTETS,\"dernier_lancement\":1790000000,\"emplacement\":\"principal\",\"en_ligne\":true,\"deplacement\":null}" "$fiche"
 verif "cidre info : source" "source      : cidre" "$(sh "$R/cidre" info 3527290 2>/dev/null | grep '^source')"
 verif "repris : plus propose, dans aucune bouteille" "" "$(champs 3527290)"
 verif "reprises.conf : appid, source, bouteille, racine, mode" "3527290${TAB}crossover${TAB}Steam${TAB}$CX${TAB}clone" "$(cut -f1-5 "$CIDRE_DIR/reprises.conf")"

@@ -15,34 +15,511 @@ STEAM="$HOME/Library/Application Support/Steam"
 SA="$STEAM/steamapps"
 STEAMCMD=${STEAMCMD:-/opt/homebrew/bin/steamcmd}
 CIDRE_DIR=${CIDRE_DIR:-$HOME/Library/Application Support/Cidre}
-# Dossier des jeux telecharges par Cidre, HORS du client Steam (zero ecrasement).
+TAB=$(printf '\t'); NL='
+'
+# Les jeux telecharges par Cidre vivent HORS du client Steam (zero ecrasement),
+# dans des emplacements, comme les dossiers de bibliotheque de Steam : le
+# principal (id `principal`, sur ce Mac, toujours la), et ceux que l'on ajoute
+# (`cidre emplacements ajouter`), sur un disque externe par exemple. Un jeu y
+# est un dossier qui porte son manifeste SteamCMD
+# (<dossier>/steamapps/appmanifest_<appid>.acf), nomme d'apres son appid -- ou
+# autrement, s'il a ete copie a la main. Les dossiers caches (.xxx) sont des
+# travaux en cours (deplacement, reprise d'une bouteille) : jamais des jeux.
 CIDRE_GAMES="$CIDRE_DIR/games"
+# Les emplacements ajoutes, TAB-separe : id, chemin (le dernier ou on l'a vu).
+EMPLACEMENTS="$CIDRE_DIR/emplacements.conf"
+# l'id de l'emplacement ou vont les nouveaux jeux (absent : principal)
+EMPL_DEFAUT="$CIDRE_DIR/emplacements.defaut"
+# Ce qu'on sait des jeux de chaque emplacement (<id>.jeux), pour en parler
+# quand son disque est debranche : ils sont alors « hors ligne », ni
+# desinstalles ni perdus, et reviennent quand on le rebranche.
+EMPL_CACHE="$CIDRE_DIR/emplacements"
+# Chaque emplacement ajoute porte une marque a sa racine (id=<id>) : c'est elle
+# qui le fait reconnaitre quand son volume change de nom ou de point de montage.
+MARQUE=.cidre-emplacement
+VOLUMES=${CIDRE_VOLUMES:-/Volumes}
+VOLUMES=$(cd "$VOLUMES" 2>/dev/null && pwd -P || printf '%s' "$VOLUMES")
+# l'etat de chaque deplacement de jeu (`cidre move`), en lignes `cle=valeur`
+DEPLACEMENTS="$CIDRE_DIR/deplacements"
 # Jeux hors Steam, ajoutes par `cidre add`. TAB-separe : id (local-...), nom,
 # chemin de l'executable. Un jeu = une ligne.
 LOCAUX="$CIDRE_DIR/jeux-locaux.conf"
 
-# Un jeu vit dans le dossier Cidre (telecharge par `cidre dl`, prioritaire,
+# Un jeu vit dans un emplacement Cidre (telecharge par `cidre dl`, prioritaire,
 # comme pour `cidre play`), dans le client Steam, ou hors Steam (id local-...).
+# L'index des emplacements (empl_indexer, au lancement) dit ou.
 est_local() { case $1 in local-*) return 0 ;; esac; return 1; }
 local_champ() { awk -F'\t' -v i="$1" -v n="$2" '$1==i {print $n; exit}' "$LOCAUX" 2>/dev/null; }
-source_de() { est_local "$1" && { echo local; return; }; [ -d "$CIDRE_GAMES/$1" ] && echo cidre || echo steam; }
-acf()   { [ -d "$CIDRE_GAMES/$1" ] && echo "$CIDRE_GAMES/$1/steamapps/appmanifest_$1.acf" || echo "$SA/appmanifest_$1.acf"; }
-champ() { est_local "$1" && return; sed -n 's/.*"'"$2"'"[[:space:]]*"\(.*\)".*/\1/p' "$(acf "$1")" 2>/dev/null | head -1; }
+# le dossier d'un jeu sur un emplacement branche (rien, et 1, sinon) ; jd_q :
+# le meme dans jd_r, sans rien ecrire (sans sous-shell : champ() en abuse)
+jd_q() { case $1 in ''|*[!0-9]*) return 1 ;; esac; eval "jd_r=\${JD_$1:-}"; [ -n "$jd_r" ]; }
+jd() { jd_q "$1" && printf '%s' "$jd_r"; }
+# un jeu dont l'emplacement est debranche
+hors_ligne() { case $1 in ''|*[!0-9]*) return 1 ;; esac; eval "[ -n \"\${JH_$1:-}\" ]"; }
+# l'id de l'emplacement d'un jeu (rien : client Steam, hors Steam)
+empl_de() { case $1 in ''|*[!0-9]*) return 1 ;; esac; eval "printf '%s' \"\${JE_$1:-}\""; }
+source_de() { est_local "$1" && { echo local; return; }; { jd "$1" >/dev/null || hors_ligne "$1"; } && echo cidre || echo steam; }
+acf()   { if jd_q "$1"; then echo "$jd_r/steamapps/appmanifest_$1.acf"; else echo "$SA/appmanifest_$1.acf"; fi; }
+champ() {
+   est_local "$1" && return
+   # emplacement debranche : ce qu'en garde son cache
+   if hors_ligne "$1"; then
+      case $2 in name) ch_v=JN ;; SizeOnDisk) ch_v=JT ;; StateFlags) ch_v=JS ;; buildid) ch_v=JB ;; LastPlayed) ch_v=JL ;; *) return ;; esac
+      eval "printf '%s' \"\${${ch_v}_$1:-}\""; return
+   fi
+   sed -n 's/.*"'"$2"'"[[:space:]]*"\(.*\)".*/\1/p' "$(acf "$1")" 2>/dev/null | head -1
+}
 nom()   { est_local "$1" && { local_champ "$1" 2; return; }; champ "$1" name | sed 's/\\"/"/g; s/\\\\/\\/g'; }
 dir()   { champ "$1" installdir; }
 chemin() {
    est_local "$1" && { dirname "$(local_champ "$1" 3)"; return; }
-   [ -d "$CIDRE_GAMES/$1" ] && echo "$CIDRE_GAMES/$1" || echo "$SA/common/$(dir "$1")"
+   jd "$1" && return
+   # hors ligne : le dernier chemin connu (absent tant que le disque l'est)
+   hors_ligne "$1" && { eval "printf '%s\n' \"\${JH_$1}\""; return; }
+   echo "$SA/common/$(dir "$1")"
 }
 connu() { # le jeu existe-t-il pour Cidre ?
    est_local "$1" && { [ -n "$(local_champ "$1" 1)" ]; return; }
-   [ -f "$(acf "$1")" ] || [ -d "$CIDRE_GAMES/$1" ]
+   [ -f "$(acf "$1")" ] || jd "$1" >/dev/null || hors_ligne "$1"
 }
-# appids Steam : manifestes du client + dossiers Cidre (sans Steamworks Redist 228980)
+# appids Steam : manifestes du client + jeux des emplacements, branches ou non
+# (sans Steamworks Redist 228980)
 appids() {
    { for f in "$SA"/appmanifest_*.acf; do [ -f "$f" ] && basename "$f" | sed 's/[^0-9]//g'; done
-     for d in "$CIDRE_GAMES"/*/; do [ -d "$d" ] && basename "$d"; done
+     printf '%s\n' $IDS_EMPL
    } | grep -E '^[0-9]+$' | grep -vx 228980 | sort -un
+}
+
+# --- Emplacements -----------------------------------------------------------
+# Efface un dossier. Sur exFAT (macOS 26), un nom accentue que lit `rm -rf`
+# (decompose, NFD) ne s'efface pas : le volume ne l'efface que sous sa forme
+# composee (NFC). Une seconde passe, entree par entree, sous cette forme.
+effacer() { # <dossier>
+   rm -rf "${1:?}" 2>/dev/null
+   [ -e "$1" ] || [ -L "$1" ] || return 0
+   find "$1" -depth 2>/dev/null | /usr/bin/iconv -f UTF-8-MAC -t UTF-8 2>/dev/null | while IFS= read -r ef_f; do
+      if [ -d "$ef_f" ] && [ ! -L "$ef_f" ]; then rmdir "$ef_f" 2>/dev/null; else rm -f "$ef_f" 2>/dev/null; fi
+   done
+   rm -rf "${1:?}" 2>/dev/null
+   [ ! -e "$1" ]
+}
+marque_id() { sed -n 's/^id=//p' "$1/$MARQUE" 2>/dev/null | head -1; }
+empl_marquer() { # <id> <dossier>
+   printf 'id=%s\n' "$1" >"$2/$MARQUE.tmp.$$" 2>/dev/null && mv "$2/$MARQUE.tmp.$$" "$2/$MARQUE" 2>/dev/null &&
+      rm -f "$2/._$MARQUE" 2>/dev/null; [ -f "$2/$MARQUE" ]
+}
+# principal, puis les emplacements ajoutes : id TAB chemin note
+empl_conf() {
+   printf 'principal\t%s\n' "$CIDRE_GAMES"
+   [ -f "$EMPLACEMENTS" ] && awk -F'\t' '$1 ~ /^[a-z0-9-]+$/ && $1 != "principal" && $2 ~ /^\// && !vu[$1]++ { print $1 "\t" $2 }' "$EMPLACEMENTS"
+}
+empl_noter_chemin() { # <id> <chemin> : un emplacement retrouve ailleurs (volume renomme)
+   I=$1 C=$2 awk -F'\t' -v OFS='\t' '$1 == ENVIRON["I"] { $2 = ENVIRON["C"] } { print }' "$EMPLACEMENTS" >"$EMPLACEMENTS.tmp.$$" &&
+      mv "$EMPLACEMENTS.tmp.$$" "$EMPLACEMENTS"
+}
+# le volume d'un chemin sous /Volumes (rien ailleurs)
+volume_de() { case $1 in "$VOLUMES"/?*) vd_v=${1#"$VOLUMES"/}; printf '%s' "${vd_v%%/*}" ;; esac; }
+# un chemin sur un volume qui n'est pas monte
+volume_absent() { va_v=$(volume_de "$1"); [ -n "$va_v" ] && [ ! -d "$VOLUMES/$va_v" ]; }
+# Ou est l'emplacement <id>, note en <chemin> ? A son chemin, s'il y porte sa
+# marque. Sinon son volume a pu changer de nom ou de point de montage : on
+# cherche la marque au meme endroit des autres volumes, puis a leur racine et
+# un niveau plus bas. Rien : il est debranche.
+empl_trouver() { # <id> <chemin>
+   et_m=$(marque_id "$2")
+   [ "$et_m" = "$1" ] && { printf '%s' "$2"; return 0; }
+   # un dossier sans marque (effacee) au chemin note : c'est le notre ; un
+   # dossier qui porte une autre marque est un autre emplacement
+   if [ -z "$et_m" ] && [ -d "$2" ] && [ -n "$(volume_de "$2")" ] && empl_marquer "$1" "$2"; then printf '%s' "$2"; return 0; fi
+   case $2 in "$VOLUMES"/?*) ;; *) [ -z "$et_m" ] && [ -d "$2" ] && { printf '%s' "$2"; return 0; }; return 1 ;; esac
+   et_r=${2#"$VOLUMES"/}; case $et_r in */*) et_r=${et_r#*/} ;; *) et_r= ;; esac
+   for et_v in "$VOLUMES"/*; do
+      [ -d "$et_v" ] && [ ! -L "$et_v" ] || continue     # (Macintosh HD : un lien vers /)
+      for et_c in "$et_v${et_r:+/$et_r}" "$et_v" "$et_v"/*; do
+         [ -f "$et_c/$MARQUE" ] && [ "$(marque_id "$et_c")" = "$1" ] && { printf '%s' "$et_c"; return 0; }
+      done
+   done
+   return 1
+}
+acf_flags() { sed -n 's/.*"StateFlags"[[:space:]]*"\(.*\)".*/\1/p' "$1/steamapps/appmanifest_$2.acf" 2>/dev/null | head -1; }
+# Un jeu trouve sur un emplacement branche. Deux exemplaires (copie a la main,
+# deplacement inacheve) : le premier trouve reste -- principal d'abord, puis
+# dans l'ordre des ajouts --, sauf s'il est inacheve et l'autre entier ; les
+# autres sont notes dans JX_<appid>.
+empl_retenir() { # <appid> <dossier> <emplacement>
+   eval "er_v=\${JD_$1:-}"
+   if [ -n "$er_v" ]; then
+      if [ "$(acf_flags "$er_v" "$1")" != 4 ] && [ "$(acf_flags "$2" "$1")" = 4 ]; then
+         eval "JX_$1=\${JX_$1:-}\$er_v\$TAB; JD_$1=\$2; JE_$1=\$3"
+      else eval "JX_$1=\${JX_$1:-}\$2\$TAB"; fi
+      return
+   fi
+   eval "JD_$1=\$2; JE_$1=\$3; JH_$1="
+   IDS_EMPL="$IDS_EMPL $1"
+}
+# Les jeux d'un emplacement debranche, d'apres son cache (un jeu deja vu
+# ailleurs, branche, y reste).
+empl_hors_ligne() { # <id> <chemin>
+   [ -f "$EMPL_CACHE/$1.jeux" ] || return 0
+   while IFS="$TAB" read -r eh_a eh_d eh_n eh_t eh_p eh_s eh_b eh_l eh_m; do
+      entier "$eh_a" || continue
+      eval "eh_v=\${JD_$eh_a:-}\${JH_$eh_a:-}"; [ -z "$eh_v" ] || continue
+      for eh_x in eh_n eh_t eh_p eh_s eh_b eh_l; do eval "[ \"\$$eh_x\" != - ] || $eh_x="; done
+      eval "JH_$eh_a=\$2/\$eh_d; JE_$eh_a=\$1; JN_$eh_a=\$eh_n; JT_$eh_a=\$eh_t; JP_$eh_a=\$eh_p; JS_$eh_a=\$eh_s; JB_$eh_a=\$eh_b; JL_$eh_a=\$eh_l"
+      IDS_EMPL="$IDS_EMPL $eh_a"
+   done <"$EMPL_CACHE/$1.jeux"
+}
+# Le cache d'un emplacement branche : une ligne par jeu -- appid, dossier, nom,
+# taille, plateforme, StateFlags, buildid, dernier lancement, date du manifeste
+# (- pour un champ vide). Une ligne n'est refaite que si le manifeste a change,
+# le fichier n'est recrit que s'il change.
+empl_cache_maj() { # <id>
+   ec_f="$EMPL_CACHE/$1.jeux"
+   # les jeux de cet emplacement (appid TAB dossier), et la date de leur manifeste
+   ec_q=$(for ec_a in $IDS_EMPL; do
+             eval "ec_e=\${JE_$ec_a:-}; ec_d=\${JD_$ec_a:-}"
+             [ "$ec_e" = "$1" ] && [ -n "$ec_d" ] && printf '%s\t%s\n' "$ec_a" "$ec_d"
+          done)
+   [ -n "$ec_q" ] || [ -f "$ec_f" ] || return 0
+   ec_v=$ec_f; [ -f "$ec_v" ] || ec_v=/dev/null
+   # Une passe : la ligne du cache quand le manifeste n'a pas change, sinon
+   # « ? appid dossier date », a refaire.
+   ec_n=$( { printf '%s\n' "$ec_q" | while IFS="$TAB" read -r ec_a ec_d; do
+                [ -n "$ec_a" ] && printf '%s\0' "$ec_d/steamapps/appmanifest_$ec_a.acf"
+             done | xargs -0 stat -f "M$TAB%m$TAB%N" 2>/dev/null
+             printf '%s\n' "$ec_q" | sed "s/^/Q$TAB/"
+           } | awk -F'\t' -v OFS='\t' '
+         FILENAME != "-" { vieux[$1 FS $2 FS $9] = $0; next }
+         $1 == "M" { a = $3; sub(/.*\/appmanifest_/, "", a); sub(/\.acf$/, "", a); m[a] = $2; next }
+         $1 == "Q" && $2 != "" { d = $3; sub(/.*\//, "", d); t = ($2 in m) ? m[$2] : "-"
+                                 k = $2 FS d FS t
+                                 if (t != "-" && (k in vieux)) print vieux[k]; else print "?", $2, d, t }' "$ec_v" - 2>/dev/null)
+   case $ec_n in *"?$TAB"*)
+      ec_r=
+      while IFS= read -r ec_l; do
+         case $ec_l in
+           "?$TAB"*)
+              IFS="$TAB" read -r ec_x ec_a ec_d ec_m <<EOF
+$ec_l
+EOF
+              ec_l=$ec_a$TAB$ec_d
+              for ec_v in "$(champ "$ec_a" name)" "$(champ "$ec_a" SizeOnDisk)" "$(plat "$ec_a")" "$(champ "$ec_a" StateFlags)" \
+                          "$(champ "$ec_a" buildid)" "$(champ "$ec_a" LastPlayed)" "$ec_m"; do
+                 ec_l=$ec_l$TAB$(printf '%s' "${ec_v:--}" | tr '\t\n' '  ')
+              done ;;
+         esac
+         [ -n "$ec_l" ] && ec_r=$ec_r$ec_l$NL
+      done <<EOF
+$ec_n
+EOF
+      ec_n=$ec_r ;;
+   *) [ -z "$ec_n" ] || ec_n=$ec_n$NL ;;
+   esac
+   [ "$(printf '%s' "$ec_n")" = "$(cat "$ec_f" 2>/dev/null)" ] && return 0
+   mkdir -p "$EMPL_CACHE" 2>/dev/null && printf '%s' "$ec_n" >"$ec_f.tmp.$$" 2>/dev/null && mv "$ec_f.tmp.$$" "$ec_f"
+}
+# L'index des jeux des emplacements, fait une fois au lancement de `cidre` :
+#   EMPL_LISTE   id TAB chemin TAB en_ligne (oui|non), une ligne par
+#                emplacement, principal d'abord
+#   JD_<appid>   le dossier du jeu, sur un emplacement branche
+#   JE_<appid>   l'id de son emplacement
+#   JH_<appid>   le dernier chemin connu d'un jeu dont l'emplacement est
+#                debranche ; JN_, JT_, JP_, JS_, JB_, JL_ : son nom, sa taille,
+#                sa plateforme, StateFlags, buildid et dernier lancement, lus
+#                dans le cache de l'emplacement
+#   JX_<appid>   ses autres exemplaires (TAB apres chacun)
+#   IDS_EMPL     tous ces appids
+empl_indexer() {
+   EMPL_LISTE=; IDS_EMPL=
+   while IFS="$TAB" read -r ei_id ei_c; do
+      [ -n "$ei_id" ] || continue
+      if [ "$ei_id" = principal ]; then ei_p=$ei_c
+      elif ei_p=$(empl_trouver "$ei_id" "$ei_c"); then
+         [ "$ei_p" = "$ei_c" ] || empl_noter_chemin "$ei_id" "$ei_p"
+      else
+         EMPL_LISTE=$EMPL_LISTE$ei_id$TAB$ei_c${TAB}non$NL
+         empl_hors_ligne "$ei_id" "$ei_c"
+         continue
+      fi
+      EMPL_LISTE=$EMPL_LISTE$ei_id$TAB$ei_p${TAB}oui$NL
+      for ei_d in "$ei_p"/*; do
+         [ -d "$ei_d" ] || continue
+         ei_a=
+         for ei_m in "$ei_d"/steamapps/appmanifest_*.acf; do
+            [ -f "$ei_m" ] || continue
+            ei_a=${ei_m##*/appmanifest_}; ei_a=${ei_a%.acf}; break
+         done
+         # un telechargement qui commence n'a pas encore de manifeste
+         [ -n "$ei_a" ] || ei_a=${ei_d##*/}
+         entier "$ei_a" && [ "$ei_a" != 228980 ] || continue
+         empl_retenir "$ei_a" "$ei_d" "$ei_id"
+      done
+      empl_cache_maj "$ei_id"
+   done <<EOF
+$(empl_conf)
+EOF
+}
+# Un emplacement designe par son id, son chemin, le nom de son volume (ou un
+# chemin sous la racine de ce volume) : ER_ID, ER_CHEMIN, ER_EN_LIGNE.
+# 1 : aucun ; 2 : plusieurs.
+empl_resoudre() { # <designation>
+   ER_ID=; ER_CHEMIN=; ER_EN_LIGNE=; er_n=0
+   case $1 in interne|mac|"Ce Mac") set -- principal ;; esac
+   er_p=; [ -d "$1" ] && er_p=$(cd "$1" && pwd -P)
+   while IFS="$TAB" read -r er_i er_c er_e; do
+      [ -n "$er_i" ] || continue
+      [ "$1" = "$er_i" ] && { ER_ID=$er_i; ER_CHEMIN=$er_c; ER_EN_LIGNE=$er_e; return 0; }
+      er_ok=non
+      if [ "${1%/}" = "$er_c" ] || [ "$1" = "$(empl_nom "$er_i" "$er_c")" ]; then er_ok=oui
+      elif [ -n "$er_p" ] && [ "$er_e" = oui ]; then
+         er_q=$(cd "$er_c" && pwd -P)
+         if [ "$er_p" = "$er_q" ]; then er_ok=oui
+         # la racine d'un volume : l'emplacement qu'il porte
+         elif [ "$(volume_de "$er_p")" != "" ] && [ "$er_p" = "$VOLUMES/$(volume_de "$er_p")" ]; then
+            case $er_q in "$er_p"/*) er_ok=oui ;; esac
+         fi
+      fi
+      [ $er_ok = oui ] || continue
+      er_n=$((er_n + 1)); ER_ID=$er_i; ER_CHEMIN=$er_c; ER_EN_LIGNE=$er_e
+   done <<EOF
+$EMPL_LISTE
+EOF
+   [ $er_n -eq 1 ] && return 0
+   [ $er_n -eq 0 ] && return 1
+   return 2
+}
+# le nom d'un emplacement pour le joueur : « Ce Mac », son volume, ou son dossier
+empl_nom() { # <id> <chemin>
+   [ "$1" = principal ] && { printf 'Ce Mac'; return; }
+   en_v=$(volume_de "$2"); [ -n "$en_v" ] && { printf '%s' "$en_v"; return; }
+   case $2 in "$HOME"/*) printf '~/%s' "${2#"$HOME"/}" ;; *) printf '%s' "$2" ;; esac
+}
+# l'emplacement ou vont les nouveaux jeux (principal s'il n'existe plus)
+empl_defaut() {
+   ed_i=$(cat "$EMPL_DEFAUT" 2>/dev/null)
+   printf '%s' "$EMPL_LISTE" | awk -F'\t' -v i="$ed_i" '$1 == i { t = 1 } END { exit !t }' || ed_i=principal
+   printf '%s' "$ed_i"
+}
+empl_champ() { # <id> <2 : chemin, 3 : en_ligne>
+   printf '%s' "$EMPL_LISTE" | awk -F'\t' -v i="$1" -v n="$2" '$1 == i { print $n; exit }'
+}
+# Le message d'un jeu dont l'emplacement est debranche (code 8 des commandes).
+hors_ligne_message() { # <id>
+   hm_e=$(empl_de "$1"); hm_c=$(empl_champ "$hm_e" 2)
+   printf "%s est sur « %s », qui n'est pas branche : branche ce disque, puis recommence. Le jeu n'est ni desinstalle ni perdu." \
+      "$(nom "$1")" "$(empl_nom "$hm_e" "$hm_c")"
+}
+# l'etat du dernier deplacement d'un jeu (`cidre move`)
+depl_champ() { sed -n "s/^$2=//p" "$DEPLACEMENTS/$1" 2>/dev/null | head -1; }
+# (le verrou de tests/deplacer_jeu.sh, tenu des la preparation, fait foi)
+depl_en_cours() { kill -0 "$(cat "$DEPLACEMENTS/$1.verrou/pid" 2>/dev/null)" 2>/dev/null; }
+# Le volume d'un dossier : VI_MONTAGE (point de montage), VI_FS (apfs, exfat,
+# msdos, hfs, smbfs...), VI_LIBRE et VI_TOTAL (octets). 1 : illisible.
+volume_infos() { # <chemin>
+   VI_MONTAGE=; VI_FS=; VI_LIBRE=; VI_TOTAL=
+   vi_l=$(df -Pk "$1" 2>/dev/null | awk 'NR == 2 { t = $2; l = $4; for (i = 1; i <= 5; i++) $i = ""; sub(/^ +/, ""); print t "\t" l "\t" $0 }')
+   [ -n "$vi_l" ] || return 1
+   IFS="$TAB" read -r vi_t vi_f VI_MONTAGE <<EOF
+$vi_l
+EOF
+   VI_TOTAL=$((vi_t * 1024)); VI_LIBRE=$((vi_f * 1024))
+   VI_FS=$(mount | M=" on $VI_MONTAGE (" awk 'index($0, ENVIRON["M"]) { s = substr($0, index($0, ENVIRON["M"]) + length(ENVIRON["M"])); sub(/[,)].*/, "", s); print s; exit }')
+}
+# les jeux d'un emplacement (d'apres l'index) : nombre, puis octets
+empl_jeux() { # <id>
+   ej_n=0; ej_o=0
+   for ej_a in $IDS_EMPL; do
+      [ "$(empl_de "$ej_a")" = "$1" ] || continue
+      ej_n=$((ej_n + 1)); ej_t=$(champ "$ej_a" SizeOnDisk); entier "$ej_t" && ej_o=$((ej_o + ej_t))
+   done
+   printf '%s %s' "$ej_n" "$ej_o"
+}
+# essayer d'ecrire dans un dossier, plutot que demander les droits (NTFS : lecture seule)
+inscriptible() { : >"$1/.cidre-essai.$$" 2>/dev/null && rm -f "${1:?}/.cidre-essai.$$"; }
+# Un emplacement en JSON (`cidre emplacements --json`) :
+#   id, nom (« Ce Mac », le volume, ou le dossier), chemin, volume (null sur ce
+#   Mac), en_ligne, defaut (les nouveaux jeux y vont), principal, amovible,
+#   systeme_fichiers, libre et total (octets ; null debranche), inscriptible,
+#   jeux et taille_jeux (d'apres le cache s'il est debranche), remarque (une
+#   phrase pour le joueur, ou null).
+empl_json() { # <id> <chemin> <en_ligne>
+   ej_d=false; [ "$(empl_defaut)" = "$1" ] && ej_d=true
+   ej_p=false; [ "$1" = principal ] && ej_p=true
+   ej_v=$(volume_de "$2")
+   set -- "$1" "$2" "$3" $(empl_jeux "$1")
+   ej_fs=null; ej_li=null; ej_to=null; ej_am=false; ej_w=null; ej_r=
+   if [ "$3" = oui ]; then
+      [ "$1" = principal ] && mkdir -p "$2" 2>/dev/null
+      if volume_infos "$2"; then
+         ej_fs=$(json "$VI_FS"); ej_li=$VI_LIBRE; ej_to=$VI_TOTAL
+      fi
+      if [ "$1" != principal ]; then
+         ej_i=$(diskutil info -plist "$VI_MONTAGE" 2>/dev/null | plutil -extract Internal raw - 2>/dev/null)
+         [ "$ej_i" = false ] && ej_am=true
+      fi
+      inscriptible "$2" && ej_w=true || ej_w=false
+      case $VI_FS in
+        exfat) ej_r="exFAT : lisible aussi par Windows, mais sans droits Unix ni clones APFS ; APFS convient mieux a un disque reserve au Mac." ;;
+        msdos) ej_r="FAT32 : aucun fichier de plus de 4 Go ; beaucoup de jeux n'y tiennent pas. Reformate le disque en APFS ou exFAT." ;;
+        smbfs|nfs|afpfs|webdav) ej_r="Volume reseau : les jeux y chargent lentement." ;;
+      esac
+      [ $ej_w = false ] && ej_r="Lecture seule (NTFS ?) : Cidre ne peut rien y installer ni y deplacer."
+   else
+      # (debranche : c'est donc un disque qu'on retire)
+      ej_am=true
+      ej_r="Debranche : branche le disque « $(empl_nom "$1" "$2") » pour retrouver ses $4 jeux."
+      [ "$4" -gt 1 ] || ej_r="Debranche : branche le disque « $(empl_nom "$1" "$2") » pour retrouver ses jeux."
+   fi
+   [ "$3" = oui ] && ej_l=true || ej_l=false
+   printf '{"id":%s,"nom":%s,"chemin":%s,"volume":%s,"en_ligne":%s,"defaut":%s,"principal":%s,"amovible":%s,"systeme_fichiers":%s,"libre":%s,"total":%s,"inscriptible":%s,"jeux":%s,"taille_jeux":%s,"remarque":%s}' \
+      "$(json "$1")" "$(json "$(empl_nom "$1" "$2")")" "$(json "$2")" "$(json_ou_null "$ej_v")" "$ej_l" "$ej_d" "$ej_p" "$ej_am" \
+      "$ej_fs" "$ej_li" "$ej_to" "$ej_w" "$4" "$5" "$(json_ou_null "$ej_r")"
+}
+# Les emplacements Cidre presents sur les volumes branches et pas encore
+# ajoutes (retires, ou venus d'un autre Mac) : chemin TAB id TAB nombre de jeux.
+empl_detecter() {
+   for dt_v in "$VOLUMES"/*; do
+      [ -d "$dt_v" ] && [ ! -L "$dt_v" ] || continue
+      for dt_c in "$dt_v" "$dt_v"/*; do
+         [ -f "$dt_c/$MARQUE" ] || continue
+         dt_i=$(marque_id "$dt_c")
+         printf '%s' "$EMPL_LISTE" | awk -F'\t' -v i="$dt_i" '$1 == i { t = 1 } END { exit !t }' && continue
+         dt_n=0; for dt_m in "$dt_c"/*/steamapps/appmanifest_*.acf; do [ -f "$dt_m" ] && dt_n=$((dt_n + 1)); done
+         printf '%s\t%s\t%s\n' "$dt_c" "$dt_i" "$dt_n"
+      done
+   done
+}
+empl_lister() {
+   if [ "$JSON" = oui ]; then
+      printf '{"emplacements":['; el_s=
+      while IFS="$TAB" read -r el_i el_c el_e; do
+         [ -n "$el_i" ] || continue
+         printf '%s\n  ' "$el_s"; empl_json "$el_i" "$el_c" "$el_e"; el_s=,
+      done <<EOF
+$EMPL_LISTE
+EOF
+      printf '\n],"detectes":['; el_s=
+      empl_detecter | while IFS="$TAB" read -r el_c el_i el_n; do
+         printf '%s{"chemin":%s,"id":%s,"volume":%s,"jeux":%s}' "$el_s" "$(json "$el_c")" "$(json "$el_i")" "$(json_ou_null "$(volume_de "$el_c")")" "$el_n"; el_s=,
+      done
+      printf ']}\n'
+      return
+   fi
+   printf "%-22s %-18s %-10s %-9s %-5s %s\n" ID EMPLACEMENT ETAT LIBRE JEUX CHEMIN
+   el_df=$(empl_defaut)
+   while IFS="$TAB" read -r el_i el_c el_e; do
+      [ -n "$el_i" ] || continue
+      set -- $(empl_jeux "$el_i")
+      if [ "$el_e" = oui ]; then el_t=branche; volume_infos "$el_c" && el_l=$(awk -v o="$VI_LIBRE" 'BEGIN { if (o >= 10737418240) printf "%.0f Go", o / 1073741824; else if (o >= 1073741824) printf "%.1f Go", o / 1073741824; else printf "%.0f Mo", o / 1048576 }') || el_l=?
+      else el_t=DEBRANCHE; el_l=-; fi
+      el_m=$el_i; [ "$el_i" = "$el_df" ] && el_m="$el_i *"
+      printf "%-22s %-18.18s %-10s %-9s %-5s %s\n" "$el_m" "$(empl_nom "$el_i" "$el_c")" "$el_t" "$el_l" "$1" "$el_c"
+   done <<EOF
+$EMPL_LISTE
+EOF
+   echo "(* : les nouveaux jeux y vont ; \`cidre emplacements defaut <id>\` pour changer)"
+   empl_detecter | while IFS="$TAB" read -r el_c el_i el_n; do
+      echo "detecte, pas encore ajoute : $el_c ($el_n jeux) -- cidre emplacements ajouter '$el_c'"
+   done
+}
+# un id neuf, lisible : le nom du volume ou du dossier, et quatre chiffres hexa
+empl_nouvel_id() { # <chemin>
+   ni_b=$(volume_de "$1"); [ -n "$ni_b" ] || ni_b=$(basename "$1")
+   ni_b=$(printf '%s' "$ni_b" | /usr/bin/iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C sed 's/[^a-z0-9]\{1,\}/-/g; s/^-//; s/-$//' | cut -c1-20)
+   while :; do
+      ni_i=${ni_b:-disque}-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')
+      printf '%s' "$EMPL_LISTE" | awk -F'\t' -v i="$ni_i" '$1 == i { t = 1 } END { exit !t }' || { printf '%s' "$ni_i"; return; }
+   done
+}
+empl_refus() { # <code> <message>
+   echo "$2" >&2
+   [ "$JSON" = oui ] && printf '{"erreur":%s}\n' "$(json "$2")"
+   exit "$1"
+}
+empl_ajouter() { # <chemin>
+   [ -n "$1" ] || { echo "usage: cidre emplacements ajouter <dossier ou disque>" >&2; exit 2; }
+   ea_c=$1; case $ea_c in /*) ;; *) ea_c="$PWD/$ea_c" ;; esac
+   [ -d "$ea_c" ] && ea_c=$(cd "$ea_c" && pwd -P)
+   # La racine d'un volume : l'emplacement qu'il porte deja, sinon un dossier
+   # « Jeux Cidre » dessus (le reste du disque n'est pas a Cidre).
+   if [ -n "$(volume_de "$ea_c")" ] && [ "$ea_c" = "$VOLUMES/$(volume_de "$ea_c")" ]; then
+      ea_r=$ea_c; ea_c="$ea_r/Jeux Cidre"
+      for ea_x in "$ea_r" "$ea_r"/*; do [ -f "$ea_x/$MARQUE" ] && { ea_c=$ea_x; break; }; done
+   fi
+   if [ ! -d "$ea_c" ]; then
+      [ -d "$(dirname "$ea_c")" ] || empl_refus 1 "dossier introuvable : $(dirname "$ea_c")"
+      mkdir "$ea_c" 2>/dev/null || empl_refus 1 "impossible de creer $ea_c (disque en lecture seule ?)"
+   fi
+   ea_c=$(cd "$ea_c" && pwd -P)
+   # deja un emplacement ? ni dedans, ni autour d'un autre
+   while IFS="$TAB" read -r ea_i ea_k ea_e; do
+      [ -n "$ea_i" ] || continue
+      [ "$ea_e" = oui ] && [ -d "$ea_k" ] && ea_k=$(cd "$ea_k" && pwd -P)
+      if [ "$ea_k" = "$ea_c" ]; then
+         echo "deja un emplacement : $ea_i ($ea_c)" >&2
+         [ "$JSON" = oui ] && { empl_json "$ea_i" "$ea_c" "$ea_e"; echo; }
+         exit 0
+      fi
+      case $ea_c in "$ea_k"/*) empl_refus 1 "$ea_c est dans l'emplacement « $(empl_nom "$ea_i" "$ea_k") » ($ea_k)" ;; esac
+      case $ea_k in "$ea_c"/*) empl_refus 1 "$ea_c contient l'emplacement « $(empl_nom "$ea_i" "$ea_k") » ($ea_k)" ;; esac
+   done <<EOF
+$EMPL_LISTE
+EOF
+   volume_infos "$ea_c"
+   [ "$VI_FS" = msdos ] && empl_refus 1 "$(empl_nom - "$ea_c") est en FAT32 : aucun fichier de plus de 4 Go, beaucoup de jeux n'y tiennent pas. Reformate-le en APFS (Mac seulement) ou exFAT (Mac et Windows)."
+   inscriptible "$ea_c" || empl_refus 1 "$ea_c est en lecture seule (NTFS ?) : Cidre ne pourrait rien y installer."
+   # L'id : celui de sa marque (un emplacement retire puis rajoute, ou venu
+   # d'un autre Mac : ses jeux sont retrouves tels quels), sinon un neuf.
+   ea_i=$(marque_id "$ea_c")
+   if [ -n "$ea_i" ] && printf '%s' "$EMPL_LISTE" | awk -F'\t' -v i="$ea_i" '$1 == i { t = 1 } END { exit !t }'; then
+      # deja connu, debranche ailleurs : c'est lui, a un autre endroit
+      empl_noter_chemin "$ea_i" "$ea_c"
+   else
+      case $ea_i in ''|principal|*[!a-z0-9-]*) ea_i=$(empl_nouvel_id "$ea_c") ;; esac
+      empl_marquer "$ea_i" "$ea_c" || empl_refus 1 "impossible d'ecrire la marque de l'emplacement dans $ea_c"
+      mkdir -p "$CIDRE_DIR" && printf '%s\t%s\n' "$ea_i" "$ea_c" >>"$EMPLACEMENTS"
+   fi
+   empl_indexer
+   set -- $(empl_jeux "$ea_i")
+   if [ "$JSON" = oui ]; then empl_json "$ea_i" "$ea_c" oui; echo
+   else
+      echo "emplacement ajoute : $ea_i  « $(empl_nom "$ea_i" "$ea_c") »  $ea_c"
+      [ "$1" -eq 0 ] || echo "  $1 jeu(x) deja la, reconnus"
+      case $VI_FS in exfat) echo "  exFAT : lisible aussi par Windows ; sans droits Unix ni clones APFS (APFS convient mieux a un disque reserve au Mac)" ;; esac
+      echo "  y installer un jeu : cidre dl <appid> --vers $ea_i ; y deplacer un jeu : cidre move <appid> $ea_i"
+   fi
+}
+empl_retirer() { # <emplacement>
+   [ -n "$1" ] || { echo "usage: cidre emplacements retirer <emplacement>" >&2; exit 2; }
+   empl_resoudre "$1"; case $? in 1) empl_refus 2 "emplacement inconnu : $1" ;; 2) empl_refus 2 "plusieurs emplacements repondent a « $1 » : donne son id" ;; esac
+   [ "$ER_ID" = principal ] && empl_refus 1 "l'emplacement principal (ce Mac) ne se retire pas"
+   for er_f in "$DEPLACEMENTS"/*; do
+      case ${er_f##*/} in *[!0-9]*) continue ;; esac
+      [ -f "$er_f" ] || continue; er_a=${er_f##*/}
+      depl_en_cours "$er_a" || continue
+      { [ "$(depl_champ "$er_a" de)" = "$ER_ID" ] || [ "$(depl_champ "$er_a" vers)" = "$ER_ID" ]; } &&
+         empl_refus 4 "un deplacement de jeu vers ou depuis cet emplacement est en cours (appid $er_a) : attends sa fin"
+   done
+   set -- $(empl_jeux "$ER_ID")
+   I=$ER_ID awk -F'\t' '$1 != ENVIRON["I"]' "$EMPLACEMENTS" >"$EMPLACEMENTS.tmp.$$" && mv "$EMPLACEMENTS.tmp.$$" "$EMPLACEMENTS"
+   rm -f "${EMPL_CACHE:?}/${ER_ID:?}.jeux"
+   [ "$(cat "$EMPL_DEFAUT" 2>/dev/null)" = "$ER_ID" ] && rm -f "${EMPL_DEFAUT:?}"
+   if [ "$JSON" = oui ]; then printf '{"retire":%s,"jeux":%s}\n' "$(json "$ER_ID")" "$1"
+   else
+      echo "emplacement retire : $ER_ID ($ER_CHEMIN)"
+      [ "$1" -eq 0 ] || echo "  ses $1 jeu(x) restent sur le disque, sans etre listes ; \`cidre emplacements ajouter '$ER_CHEMIN'\` les retrouve"
+   fi
+}
+empl_choisir_defaut() { # <emplacement>
+   [ -n "$1" ] || { echo "usage: cidre emplacements defaut <emplacement>" >&2; exit 2; }
+   empl_resoudre "$1"; case $? in 1) empl_refus 2 "emplacement inconnu : $1" ;; 2) empl_refus 2 "plusieurs emplacements repondent a « $1 » : donne son id" ;; esac
+   if [ "$ER_ID" = principal ]; then rm -f "${EMPL_DEFAUT:?}"
+   else mkdir -p "$CIDRE_DIR" && printf '%s\n' "$ER_ID" >"$EMPL_DEFAUT"; fi
+   if [ "$JSON" = oui ]; then printf '{"defaut":%s}\n' "$(json "$ER_ID")"
+   else
+      echo "les nouveaux jeux iront dans : $(empl_nom "$ER_ID" "$ER_CHEMIN") ($ER_ID)"
+      [ "$ER_EN_LIGNE" = oui ] || echo "  (il est debranche : rebranche-le avant d'installer un jeu)"
+   fi
 }
 # tous les jeux : appids Steam, puis jeux hors Steam
 ids() { appids; awk -F'\t' '/^local-/ {print $1}' "$LOCAUX" 2>/dev/null; }
@@ -79,8 +556,32 @@ fiche_json() {
    t=$(champ "$1" SizeOnDisk); d=$(champ "$1" LastPlayed)
    # un jeu hors Steam n'a pas d'appid : `id` est la cle commune a tous les jeux
    est_local "$1" && a=null || a=$1
-   printf '{"id":"%s","appid":%s,"nom":%s,"plateforme":"%s","lancement":"%s","source":"%s","installe":%s,"wrapper":%s,"chemin":%s,"taille":%s,"dernier_lancement":%s' \
-      "$1" "$a" "$(json "$(nom "$1")")" "$p" "$l" "$s" "$inst" "$w" "$(json "$(chemin "$1")")" "${t:-0}" "${d:-0}"
+   # "emplacement" : l'id de l'emplacement d'un jeu Cidre (null ailleurs) ;
+   # "en_ligne" : false quand son disque est debranche (il reste installe) ;
+   # "deplacement" : son deplacement en cours ou inacheve (null sinon)
+   fj_e=null; fj_l=true
+   if est_local "$1"; then [ ! -f "$(local_champ "$1" 3)" ] && volume_absent "$(local_champ "$1" 3)" && fj_l=false
+   elif [ "$s" = cidre ]; then eval "fj_e=\\\"\${JE_$1:-}\\\""; hors_ligne "$1" && fj_l=false; fi
+   printf '{"id":"%s","appid":%s,"nom":%s,"plateforme":"%s","lancement":"%s","source":"%s","installe":%s,"wrapper":%s,"chemin":%s,"taille":%s,"dernier_lancement":%s,"emplacement":%s,"en_ligne":%s,"deplacement":%s' \
+      "$1" "$a" "$(json "$(nom "$1")")" "$p" "$l" "$s" "$inst" "$w" "$(json "$(chemin "$1")")" "${t:-0}" "${d:-0}" "$fj_e" "$fj_l" "$(depl_json "$1")"
+}
+# Le deplacement d'un jeu, en JSON : null, ou {"etat": en_cours (avec
+# "phase", "avancement" en %, "octets", "total"), interrompu ou echoue (avec
+# "raison" et "message") ; "de" et "vers" : les ids des emplacements}.
+depl_json() { # <id>
+   [ -f "$DEPLACEMENTS/$1" ] || depl_en_cours "$1" || { printf null; return; }
+   dj_e=$(depl_champ "$1" etat)
+   # arrete pendant l'effacement de l'original : le jeu est arrive, c'est fait
+   if ! depl_en_cours "$1" && [ -n "$(depl_champ "$1" vers)" ] && [ "$(depl_champ "$1" vers)" = "$(empl_de "$1")" ]; then printf null; return; fi
+   [ "$dj_e" = en_cours ] && ! depl_en_cours "$1" && dj_e=interrompu
+   depl_en_cours "$1" && dj_e=en_cours
+   dj_p=; dj_o=; dj_t=
+   [ "$dj_e" != en_cours ] || [ ! -f "$DEPLACEMENTS/$1.avancement" ] || read -r dj_p dj_o dj_t <"$DEPLACEMENTS/$1.avancement"
+   case $dj_p in ''|*[!0-9.]*) dj_p=null ;; esac
+   printf '{"etat":"%s","phase":%s,"de":%s,"vers":%s,"avancement":%s,"octets":%s,"total":%s,"raison":%s,"message":%s}' \
+      "$dj_e" "$(json_ou_null "$(depl_champ "$1" phase)")" "$(json_ou_null "$(depl_champ "$1" de)")" "$(json_ou_null "$(depl_champ "$1" vers)")" \
+      "$dj_p" "$(nombre "$dj_o")" "$(nombre "$dj_t")" \
+      "$(json_ou_null "$(depl_champ "$1" raison)")" "$(json_ou_null "$(depl_champ "$1" message)")"
 }
 
 # SteamCMD a son propre dossier de travail, a part du client Steam. Par defaut
@@ -143,7 +644,10 @@ steam_user() {
 
 # plateforme reellement INSTALLEE (definitif d'apres les fichiers)
 plat() {
-   est_local "$1" && { [ -f "$(local_champ "$1" 3)" ] && echo windows || echo absent; return; }
+   # (un jeu hors Steam dont le disque est debranche reste un jeu Windows)
+   est_local "$1" && { pl_e=$(local_champ "$1" 3); { [ -f "$pl_e" ] || volume_absent "$pl_e"; } && echo windows || echo absent; return; }
+   # emplacement debranche : ce qu'on en savait
+   hors_ligne "$1" && { eval "pl_p=\${JP_$1:-}"; echo "${pl_p:-inconnu}"; return; }
    d=$(chemin "$1")
    [ -d "$d" ] || { echo absent; return; }
    find "$d" -maxdepth 3 -name '*.app' -type d 2>/dev/null | grep -q . && { echo macos; return; }
@@ -190,7 +694,7 @@ MAJ_ETATS="$CIDRE_DIR/maj"
 MAJ_TTL=${CIDRE_MAJ_TTL:-30}                 # minutes pendant lesquelles APPINFO fait foi
 MAJ_BUDGET=${CIDRE_MAJ_BUDGET:-8}            # secondes accordees a Steam avant un lancement
 MAJ_LIBRE_MIN=${CIDRE_MAJ_LIBRE_MIN:-1024}   # Mo libres sous lesquels on ne telecharge rien
-TAB=$(printf '\t'); CR=$(printf '\r')
+CR=$(printf '\r')
 # le lanceur de la pile Cidre (CIDRE_LANCEUR : un autre, pour les essais)
 LANCEUR=${CIDRE_LANCEUR:-$R/tests/lancer_depuis_steam.sh}
 entier() { case $1 in ''|*[!0-9]*) return 1 ;; esac; }
@@ -450,7 +954,7 @@ maj_interrompre() {
    maj_oublier avancement rc
    exit 130
 }
-# Telecharge un jeu dans le dossier Cidre, ou l'y met a jour : c'est `cidre dl`
+# Telecharge un jeu dans un emplacement Cidre, ou l'y met a jour : c'est `cidre dl`
 # (mode dl : fichiers reverifies ; au terminal, SteamCMD peut demander le mot de
 # passe) et la mise a jour d'avant lancement de `cidre play` (mode maj : session
 # memorisee ou rien, seul ce qui a change est telecharge, et les fichiers que
@@ -458,9 +962,12 @@ maj_interrompre() {
 # doit rester lancable si la mise a jour echoue : on note d'ou l'on part
 # (build_avant), ou l'on va (build_vise) et pourquoi on s'est arrete. Rend 0, ou
 # le code de SteamCMD (3 : pas de session) ; MAJ_RAISON et MAJ_MESSAGE disent
-# alors pourquoi.
+# alors pourquoi. Le jeu va la ou il est deja, sinon dans DL_DEST (`cidre dl`).
 telecharger() { # <appid> <windows|macos> <dl|maj>
-   t_id=$1; t_os=$2; t_mode=$3; DEST="$CIDRE_GAMES/$t_id"; MAJ_RAISON=; MAJ_MESSAGE=
+   t_id=$1; t_os=$2; t_mode=$3; MAJ_RAISON=; MAJ_MESSAGE=
+   # (emplacement debranche : surtout pas un second exemplaire ailleurs)
+   if hors_ligne "$t_id"; then MAJ_RAISON=debranche; MAJ_MESSAGE=$(hors_ligne_message "$t_id"); return 8; fi
+   DEST=$(jd "$t_id") || DEST=${DL_DEST:-$CIDRE_GAMES/$t_id}
    t_acf="$DEST/steamapps/appmanifest_$t_id.acf"
    SCMD=$(resolve_steamcmd)
    [ -n "$SCMD" ] || { MAJ_RAISON=steamcmd_absent; MAJ_MESSAGE="SteamCMD introuvable (ni tools/steamcmd/ ni PATH)."; return 1; }
@@ -473,14 +980,16 @@ telecharger() { # <appid> <windows|macos> <dl|maj>
       [ "$(champ "$t_id" StateFlags)" = 4 ] && t_avant=$(champ "$t_id" buildid)
       t_vise=$(build_publie "$t_id")
    fi
-   mkdir -p "$CIDRE_GAMES"
-   t_libre=${CIDRE_ESSAI_LIBRE_KO:-$(df -Pk "$CIDRE_GAMES" 2>/dev/null | awk 'NR == 2 { print $4 }')}
+   mkdir -p "$(dirname "$DEST")"
+   t_libre=${CIDRE_ESSAI_LIBRE_KO:-$(df -Pk "$(dirname "$DEST")" 2>/dev/null | awk 'NR == 2 { print $4 }')}
    if entier "$t_libre" && [ "$t_libre" -lt $((MAJ_LIBRE_MIN * 1024)) ]; then
       MAJ_RAISON=disque; MAJ_MESSAGE=$(maj_message disque "$((t_libre / 1024)) Mo libres, il en faut au moins $MAJ_LIBRE_MIN")
       [ ! -f "$t_acf" ] || maj_noter "$t_id" etat=echouee "raison=$MAJ_RAISON" "message=$MAJ_MESSAGE" "build_avant=$t_avant" "build_vise=$t_vise"
       return 1
    fi
    mkdir -p "$DEST"
+   # un nouveau jeu entre dans l'index (champ, plat... le trouvent la)
+   jd "$t_id" >/dev/null || { eval "JD_$t_id=\$DEST; JE_$t_id=\${DL_EMPL:-principal}; JH_$t_id="; IDS_EMPL="$IDS_EMPL $t_id"; }
    maj_noter "$t_id" etat=en_cours "pid=$$" "build_avant=$t_avant" "build_vise=$t_vise"
    maj_oublier avancement rc; : >"$MAJ_ETATS/$t_id.sortie"
    t_val=validate; [ "$t_mode" = maj ] && [ "${CIDRE_MAJ_VALIDER:-0}" != 1 ] && t_val=
@@ -591,6 +1100,9 @@ usage() {
    cat <<USAGE
 cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
   cidre list [--json]             liste tes jeux + plateforme + mode de lancement
+                                  --json : "emplacement" (id de l'emplacement d'un jeu Cidre, null ailleurs),
+                                  "en_ligne" (false : son disque est debranche ; il reste installe),
+                                  "deplacement" (null, ou etat d'un deplacement en cours ou inacheve)
   cidre info <id> [--json]        fiche d'un jeu : plateforme, taille, chemin, options actives
                                   --json : "maj" dit ou en est sa mise a jour (jeu du dossier Cidre ; voir updates)
   cidre play <id> [--sans-maj] [--accord-nuage] [--json] [-- <arguments du jeu>]
@@ -613,6 +1125,9 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
                                   --accord-nuage : le lancer quand meme
                                   -- <arguments> : options passees au jeu pour ce lancement (jeu Cidre ou hors
                                   Steam), en plus de l'option arguments de sa fiche (ex. -- -force-gfx-direct)
+                                  Un jeu dont le disque est debranche ne part pas (code 8, et en --json
+                                  {"evenement":"erreur","code":"hors_ligne","message":...}) ; un jeu en cours
+                                  de deplacement non plus (code 4)
   cidre running [--json]          les jeux en cours
   cidre stop [<id>]               force l'arret d'un jeu lance par Cidre (et de tout ce que Wine fait tourner)
   cidre log <id> [lignes]         la fin du journal du dernier lancement d'un jeu (sans les traces)
@@ -652,9 +1167,11 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
                                   "octets", "total"), echouee ("raison", "message"), ignoree ("raison" :
                                   option, branche, sans_effet), inconnu -- et "source" (cidre : Cidre met a
                                   jour ; steam : le client Steam s'en charge)
-  cidre dl <appid> [windows|macos]   telecharge (ou met a jour) le jeu DANS le dossier Cidre, hors du client
+  cidre dl <appid> [windows|macos] [--vers <emplacement>]
+                                  telecharge (ou met a jour) le jeu dans un emplacement Cidre, hors du client :
+                                  la ou il est deja, sinon --vers, sinon l'emplacement par defaut
   cidre bottles [--json]          les jeux Steam Windows deja installes par CrossOver, Whisky ou Heroic
-  cidre import <appid> [<bouteille>] [--move] [--json]
+  cidre import <appid> [<bouteille>] [--move] [--vers <emplacement>] [--json]
                                   reprend un de ces jeux dans le dossier Cidre sans le retelecharger : clone
                                   APFS, immediat et sans place prise ; la bouteille n'est pas modifiee
                                   ses sauvegardes sont ramenees de la bouteille la ou le jeu les cherchera,
@@ -678,24 +1195,56 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
   cidre logout                    oublie la session Steam (les jeux installes restent jouables)
   cidre install <appid> [auto|macos|windows]   installe le depot dans le client Steam
   cidre wrap                      (re)pose le wrapper Cidre sur les jeux Windows-only
+ Emplacements (ou vivent les jeux Cidre : ce Mac, un disque externe...)
+  cidre emplacements [--json]     les emplacements : branches ou non, place libre, nombre de jeux ; ceux
+                                  detectes sur un disque branche mais pas encore ajoutes
+                                  --json : {"emplacements":[{"id","nom","chemin","volume","en_ligne","defaut",
+                                  "principal","amovible","systeme_fichiers","libre","total","inscriptible",
+                                  "jeux","taille_jeux","remarque"}],"detectes":[{"chemin","id","volume","jeux"}]}
+  cidre emplacements ajouter <dossier ou disque> [--json]
+                                  ajoute un emplacement (la racine d'un disque : un dossier « Jeux Cidre »
+                                  dessus) ; ses jeux sont reconnus, meme copies a la main ; FAT32 et lecture
+                                  seule refuses. Une marque a sa racine le fait retrouver si le disque change
+                                  de nom. Debranche, ses jeux sont « hors ligne » (ni desinstalles ni perdus)
+  cidre emplacements retirer <emplacement> [--json]   l'oublier (ses jeux restent sur le disque)
+  cidre emplacements defaut <emplacement> [--json]    ou vont les nouveaux jeux (dl, import)
+                                  <emplacement> : son id, son nom (volume), ou son chemin ; principal = ce Mac
+  cidre move <appid> <emplacement> [--verifier-contenu] [--json]
+                                  deplace un jeu Cidre : copie verifiee (fichiers, tailles, liens ; octets avec
+                                  --verifier-contenu), puis suppression de l'original ; sauvegardes, prefixe et
+                                  options ne bougent pas. Refuse si le jeu tourne (4), si la place manque (5),
+                                  si un disque est debranche (8) ; interrompu (130), il reprend ou il en etait
+                                  au move suivant. --json : evenements {"evenement":"deplacement","etat":
+                                  en_cours ("phase" preparation|copie|verification|bascule|suppression,
+                                  "avancement" en %, "octets", "total") | fait | echoue | refuse | interrompu,
+                                  "raison", "message"}
+  cidre move <appid> --arreter    arrete un deplacement en cours (la copie entamee reste, pour reprendre)
+  cidre move <appid> --annuler    abandonne un deplacement (arrete, et efface la copie entamee)
  Hors Steam
   cidre add <jeu.exe> [nom] [--json]   ajoute un jeu Windows a la bibliotheque
   cidre run <fichier.exe> [args]  lance un .exe une fois (un installeur, par exemple)
   cidre prefix                    le disque C: ou atterrissent les installeurs
-  cidre rm <id>                   retire un jeu hors Steam, ou desinstalle un jeu du dossier Cidre
+  cidre rm <id>                   retire un jeu hors Steam, ou desinstalle un jeu d'un emplacement Cidre
 USAGE
 }
 
+# Ou sont les jeux des emplacements, branches ou non (une fois par commande).
+empl_indexer
 cmd=${1:-help}; [ $# -gt 0 ] && shift
 # --json (n'importe ou) : sortie pour une interface (Verger), stable et parsable
 JSON=non; MAJ=non; SANS_MAJ=non; FOND=non; ACCORD_NUAGE=non
+# --vers <emplacement> (dl, import), --verifier-contenu, --arreter et --annuler (move)
+VERS=; VERS_ATTENDU=non; VERIFIER=non; ANNULER=non; ARRETER=non
 # `run` transmet ses arguments tels quels au programme
 # Apres `--`, plus rien n'est interprete : ce sont les arguments du jeu (`play`).
 FIN_OPTIONS=non
 [ "$cmd" = run ] || for a in "$@"; do
    shift
    if [ $FIN_OPTIONS = oui ]; then set -- "$@" "$a"; continue; fi
-   case $a in --json) JSON=oui ;; --refresh) MAJ=oui ;; --sans-maj|--no-update) SANS_MAJ=oui ;; --fond|--background) FOND=oui ;;
+   if [ $VERS_ATTENDU = oui ]; then VERS=$a; VERS_ATTENDU=non; continue; fi
+   case $a in --vers|--to|--emplacement) VERS_ATTENDU=oui ;; --vers=*|--to=*) VERS=${a#*=} ;;
+      --verifier-contenu|--verify) VERIFIER=oui ;; --annuler|--cancel) ANNULER=oui ;; --arreter|--stop) ARRETER=oui ;;
+      --json) JSON=oui ;; --refresh) MAJ=oui ;; --sans-maj|--no-update) SANS_MAJ=oui ;; --fond|--background) FOND=oui ;;
       --accord-nuage) ACCORD_NUAGE=oui ;; --) FIN_OPTIONS=oui; set -- "$@" "$a" ;; *) set -- "$@" "$a" ;; esac
 done
 case "$cmd" in
@@ -735,6 +1284,12 @@ case "$cmd" in
       echo "plateforme  : $(plat "$id")"
       echo "source      : $(source_de "$id")"
       echo "chemin      : $(chemin "$id")"
+      if [ "$(source_de "$id")" = cidre ]; then
+        ie=$(empl_de "$id")
+        echo "emplacement : $(empl_nom "$ie" "$(empl_champ "$ie" 2)") ($ie)$(hors_ligne "$id" && echo ", HORS LIGNE : disque debranche")"
+        eval "ix=\${JX_$id:-}"; [ -z "$ix" ] || echo "autres exemplaires : $(printf '%s' "$ix" | tr '\t' ' ')"
+        [ -f "$DEPLACEMENTS/$id" ] && echo "deplacement : $(depl_json "$id")"
+      fi
       t=$(champ "$id" SizeOnDisk); echo "taille      : $(( ${t:-0} / 1048576 )) Mo"
       echo "sauvegardes : $sv"
       [ "$mj" = null ] || echo "mise a jour : $MAJ_ETAT${MAJ_RAISON:+ ($MAJ_RAISON)}${MAJ_DISPO:+, build $MAJ_INSTALLE -> $MAJ_DISPO}"
@@ -761,7 +1316,7 @@ case "$cmd" in
     # Les arguments du jeu ne viennent que d'apres `--` ; le reste est ignore,
     # comme avant.
     if [ "${1:-}" = -- ]; then shift; else set --; fi
-    CDIR="$CIDRE_GAMES/$id"
+    CDIR=$(jd "$id")
     # --json : l'evenement « lancement » clot la sortie standard ; tout ce qui
     # suit (le lanceur, le jeu) ecrit a l'erreur.
     # Avant lui, en --json, un client Steam qui mange deja le processeur (le
@@ -801,14 +1356,30 @@ case "$cmd" in
       # Jeu hors Steam : pas d'appid, son profil de lancement est range sous son id.
       EXE=$(local_champ "$id" 3)
       [ -n "$EXE" ] || { echo "jeu inconnu : $id" >&2; exit 1; }
+      if [ ! -f "$EXE" ] && volume_absent "$EXE"; then
+        m="$(nom "$id") est sur « $(volume_de "$EXE") », qui n'est pas branche : branche ce disque, puis recommence."
+        evenement "$(printf '{"evenement":"erreur","code":"hors_ligne","emplacement":null,"message":%s}' "$(json "$m")")"
+        echo "$m" >&2; exit 8
+      fi
       [ -f "$EXE" ] || { echo "executable introuvable : $EXE" >&2; exit 1; }
       partir
       echo "lancement Cidre : $(basename "$EXE")  ($id)"
       temoin_en_cours "$id"
       CIDRE_JEU=$id sh "$LANCEUR" "$EXE" "$@"
-    elif [ -d "$CDIR" ]; then
+    elif hors_ligne "$id"; then
+      # Son disque est debranche : on le dit, sans rien toucher (code 8).
+      m=$(hors_ligne_message "$id")
+      evenement "$(printf '{"evenement":"erreur","code":"hors_ligne","emplacement":%s,"message":%s}' "$(json "$(empl_de "$id")")" "$(json "$m")")"
+      echo "$m" >&2
+      exit 8
+    elif [ -n "$CDIR" ] && [ -d "$CDIR" ]; then
       # Jeu telecharge par Cidre (hors client) : c'est Cidre qui le tient a
-      # jour, puis on lance par la pile Cidre.
+      # jour, puis on lance par la pile Cidre. Pas pendant qu'on le deplace.
+      if depl_en_cours "$id"; then
+        m="Ce jeu est en cours de deplacement (processus $(depl_champ "$id" pid)) : attends la fin, puis relance-le."
+        evenement "$(printf '{"evenement":"erreur","code":"deplacement","message":%s}' "$(json "$m")")"
+        echo "$m" >&2; exit 4
+      fi
       maj_avant_lancement "$id"
       EXE=$(exe_du_jeu "$id" "$CDIR")
       [ -n "$EXE" ] || { dire "aucun .exe dans $CDIR"; exit 1; }
@@ -1004,9 +1575,29 @@ case "$cmd" in
     case ${1:-} in *[!0-9]*|'') ;; *) [ "${2:-auto}" = macos ] || fiche_provisoire "$1" ;; esac
     sh "$R/tests/cidre_install.sh" "$@" ;;
   dl|download|telecharger)
-    id=${1:?usage: cidre dl <appid> [windows|macos]}; os=${2:-windows}
-    case $id in ''|*[!0-9]*) echo "usage: cidre dl <appid> [windows|macos]" >&2; exit 2 ;; esac
+    id=${1:?usage: cidre dl <appid> [windows|macos] [--vers <emplacement>]}; os=${2:-windows}
+    case $id in ''|*[!0-9]*) echo "usage: cidre dl <appid> [windows|macos] [--vers <emplacement>]" >&2; exit 2 ;; esac
     maj_en_cours "$id" && { echo "Un telechargement de ce jeu est deja en cours (processus $(maj_champ "$id" pid))." >&2; exit 4; }
+    depl_en_cours "$id" && { echo "Ce jeu est en cours de deplacement (processus $(depl_champ "$id" pid)) : attends la fin." >&2; exit 4; }
+    hors_ligne "$id" && { hors_ligne_message "$id" >&2; echo >&2; exit 8; }
+    # Ou : la ou il est deja (il y est mis a jour), sinon --vers, sinon
+    # l'emplacement par defaut.
+    DL_EMPL=$(empl_de "$id")
+    if [ -n "$DL_EMPL" ]; then
+      if [ -n "$VERS" ] && empl_resoudre "$VERS" && [ "$ER_ID" != "$DL_EMPL" ]; then
+        echo "$id est deja dans « $(empl_nom "$DL_EMPL" "$(empl_champ "$DL_EMPL" 2)") » : il y est mis a jour, pas ailleurs. Pour le changer d'emplacement : cidre move $id $VERS" >&2; exit 1
+      fi
+      DL_DEST=$(jd "$id")
+    else
+      dv=${VERS:-$(empl_defaut)}
+      empl_resoudre "$dv"
+      case $? in
+        1) echo "emplacement inconnu : $dv (voir \`cidre emplacements\`)" >&2; exit 2 ;;
+        2) echo "plusieurs emplacements repondent a « $dv » : donne son id (voir \`cidre emplacements\`)" >&2; exit 2 ;;
+      esac
+      [ "$ER_EN_LIGNE" = oui ] || { echo "L'emplacement « $(empl_nom "$ER_ID" "$ER_CHEMIN") » n'est pas branche : branche son disque, ou choisis-en un autre (--vers principal)." >&2; exit 8; }
+      DL_EMPL=$ER_ID; DL_DEST="$ER_CHEMIN/$id"
+    fi
     SCMD=$(resolve_steamcmd)
     [ -n "$SCMD" ] || { echo "SteamCMD introuvable (ni tools/steamcmd/ ni PATH)."; exit 1; }
     U=$(steam_user)
@@ -1015,7 +1606,7 @@ case "$cmd" in
     dire "  app     : $id"
     dire "  os      : $os"
     dire "  compte  : $U"
-    dire "  dossier : $CIDRE_GAMES/$id   (hors du client Steam)"
+    dire "  dossier : $DL_DEST   (hors du client Steam)"
     dire "  -> Si demande : tape TON mot de passe + code Steam Guard (une fois ; ensuite memorise)."
     dire
     [ "$os" = windows ] && fiche_provisoire "$id"
@@ -1023,6 +1614,7 @@ case "$cmd" in
     # interface, il ne le peut pas : session memorisee, ou code 3.
     telecharger "$id" "$os" dl
     rc=$?
+    [ $rc -eq 8 ] && { echo "$MAJ_MESSAGE" >&2; exit 8; }
     [ $rc -eq 3 ] && { echo "Session Steam non memorisee : connecte-toi (\`cidre login\`)." >&2; exit 3; }
     dire
     if [ $rc -eq 0 ]; then
@@ -1038,6 +1630,7 @@ case "$cmd" in
     fi ;;
   bottles|bouteilles)
     # Les jeux qu'un autre outil a deja installes, et que `cidre import` reprend.
+    export CIDRE_JEUX_CONNUS="$IDS_EMPL"
     if [ "$JSON" = oui ]; then sh "$R/tests/trouver_jeux_bouteilles.sh" --json
     else
       printf "%-9s %-32s %-22s %-8s %s\n" APPID JEU BOUTEILLE TAILLE CHEMIN
@@ -1051,29 +1644,37 @@ case "$cmd" in
       case $a in --saves|--sauvegardes) SV=oui ;; *) set -- "$@" "$a" ;; esac
     done
     id=; for a in "$@"; do case $a in -*) ;; *) id=$a; break ;; esac; done
-    [ -n "$id" ] || { echo "usage: cidre import <appid> [<bouteille>] [--move | --saves [--dossier <chemin>] [--forcer]]" >&2; exit 2; }
+    [ -n "$id" ] || { echo "usage: cidre import <appid> [<bouteille>] [--move | --saves [--dossier <chemin>] [--forcer]] [--vers <emplacement>]" >&2; exit 2; }
+    hors_ligne "$id" && { hors_ligne_message "$id" >&2; echo >&2; exit 8; }
     if [ $SV = oui ]; then
       [ "$JSON" = oui ] && set -- "$@" --json
-      sh "$R/tests/reprendre_saves_bouteille.sh" "$@"; exit $?
+      CIDRE_JEU_REPRIS=$(jd "$id") sh "$R/tests/reprendre_saves_bouteille.sh" "$@"; exit $?
     fi
+    # Le jeu va dans --vers, sinon dans l'emplacement par defaut (clone APFS
+    # s'il est sur le volume de la bouteille, copie sinon).
+    dv=${VERS:-$(empl_defaut)}
+    empl_resoudre "$dv" || { echo "emplacement inconnu ou ambigu : $dv (voir \`cidre emplacements\`)" >&2; exit 2; }
+    [ "$ER_EN_LIGNE" = oui ] || { echo "L'emplacement « $(empl_nom "$ER_ID" "$ER_CHEMIN") » n'est pas branche : branche son disque, ou choisis-en un autre (--vers principal)." >&2; exit 8; }
+    G="$ER_CHEMIN/$id"
     # (--json : la sortie est la fiche du jeu ; le compte rendu va a l'erreur)
-    if [ "$JSON" = oui ]; then sh "$R/tests/reprendre_jeu_bouteille.sh" "$@" >&2
-    else sh "$R/tests/reprendre_jeu_bouteille.sh" "$@"; fi || exit $?
+    if [ "$JSON" = oui ]; then CIDRE_JEUX_DEST=$ER_CHEMIN CIDRE_JEUX_CONNUS=$IDS_EMPL sh "$R/tests/reprendre_jeu_bouteille.sh" "$@" >&2
+    else CIDRE_JEUX_DEST=$ER_CHEMIN CIDRE_JEUX_CONNUS=$IDS_EMPL sh "$R/tests/reprendre_jeu_bouteille.sh" "$@"; fi || exit $?
+    jd "$id" >/dev/null || { eval "JD_$id=\$G; JE_$id=\$ER_ID; JH_$id="; IDS_EMPL="$IDS_EMPL $id"; }
     # Apres coup : l'executable que `cidre play` lancera (ou celui que la table
     # des lanceurs lui substitue) est-il la, et est-ce un programme Windows ?
-    EXE=$(exe_du_jeu "$id" "$CIDRE_GAMES/$id")
+    EXE=$(exe_du_jeu "$id" "$G")
     c=$(awk -v a="$id" '$1==a {print $2; exit}' "$R/outil-steam/jeux.conf" 2>/dev/null)
-    [ -n "$c" ] && [ -f "$CIDRE_GAMES/$id/$c" ] && EXE="$CIDRE_GAMES/$id/$c"
-    if [ -z "$EXE" ]; then echo "attention : aucun .exe a la racine de $CIDRE_GAMES/$id ni un niveau plus bas : \`cidre play $id\` ne saura pas quoi lancer (outil-steam/jeux.conf)" >&2
+    [ -n "$c" ] && [ -f "$G/$c" ] && EXE="$G/$c"
+    if [ -z "$EXE" ]; then echo "attention : aucun .exe a la racine de $G ni un niveau plus bas : \`cidre play $id\` ne saura pas quoi lancer (outil-steam/jeux.conf)" >&2
     elif [ "$(head -c 2 "$EXE" 2>/dev/null)" != MZ ]; then echo "attention : $EXE n'est pas un executable Windows" >&2
-    elif [ "$JSON" = non ]; then echo "  executable  : ${EXE#"$CIDRE_GAMES/$id/"}"; fi
+    elif [ "$JSON" = non ]; then echo "  executable  : ${EXE#"$G/"}"; fi
     # Ses sauvegardes sont restees dans le prefixe de la bouteille : on les
     # ramene. Le jeu est repris quoi qu'il en soit ; un refus ici se rattrape
     # (`cidre import <appid> --saves`).
     if [ "$JSON" = oui ]; then
-      sv=$(sh "$R/tests/reprendre_saves_bouteille.sh" "$id" --json)
+      sv=$(CIDRE_JEU_REPRIS=$G sh "$R/tests/reprendre_saves_bouteille.sh" "$id" --json)
       fiche_json "$id"; printf ',"reprise_sauvegardes":%s}\n' "${sv:-null}"
-    else sh "$R/tests/reprendre_saves_bouteille.sh" "$id" || true; fi ;;
+    else CIDRE_JEU_REPRIS=$G sh "$R/tests/reprendre_saves_bouteille.sh" "$id" || true; fi ;;
   status|etat)
     # VERSION est pose par l'empaqueteur ; un depot de developpement n'en a pas.
     v=$(cat "$R/VERSION" 2>/dev/null); v=${v:-dev}
@@ -1216,6 +1817,7 @@ case "$cmd" in
     fi
     # Les jeux deja installes dans une bouteille (CrossOver, Whisky, Heroic) et
     # pas encore repris : "source":"bouteille" (cidre import), sans peser leur dossier.
+    export CIDRE_JEUX_CONNUS="$IDS_EMPL"
     if [ "$JSON" = oui ]; then
       sh "$R/tests/trouver_jeux_bouteilles.sh" --rapide | "$OUTIL" bibliotheque --bouteilles - "$CACHE" $(appids)
     else
@@ -1326,15 +1928,102 @@ case "$cmd" in
     else
       # un appid, rien d'autre : pas de chemin, pas de vide
       case $id in ''|*[!0-9]*) echo "id invalide : $id" >&2; exit 2 ;; esac
-      [ -d "$CIDRE_GAMES/$id" ] || { echo "$id n'est pas dans le dossier Cidre ; un jeu du client Steam se desinstalle depuis Steam." >&2; exit 1; }
+      hors_ligne "$id" && { hors_ligne_message "$id" >&2; echo >&2; exit 8; }
+      depl_en_cours "$id" && { echo "Ce jeu est en cours de deplacement : attends la fin." >&2; exit 4; }
+      G=$(jd "$id") || { echo "$id n'est pas dans un emplacement Cidre ; un jeu du client Steam se desinstalle depuis Steam." >&2; exit 1; }
       # Certains jeux rangent leurs sauvegardes dans leur propre dossier : on
       # les met a l'abri avant de l'effacer.
       # (une copie Cidre meme si Steam synchronise ce jeu : ceinture et bretelles)
       CIDRE_SAVES_STEAM=0 WINEPREFIX="${WINEPREFIX:-$R/wine/pfx-arm64ec}" sh "$R/tests/sync_saves_steam.sh" "$id" backup
-      rm -rf "${CIDRE_GAMES:?}/${id:?}"
+      # (le dossier d'un jeu, jamais l'emplacement lui-meme)
+      case $G in */*/?*) ;; *) echo "dossier inattendu : $G" >&2; exit 1 ;; esac
+      effacer "${G:?}" || { echo "$G n'a pas pu etre efface entierement" >&2; exit 1; }
       t_id=$id; rm -f "${MAJ_ETATS:?}/${id:?}"; maj_oublier sortie avancement rc
-      echo "desinstalle : $CIDRE_GAMES/$id"
+      echo "desinstalle : $G"
     fi ;;
+  emplacements|emplacement|stockage|libraries|locations)
+    # Ou vivent les jeux Cidre (voir « Emplacements » en tete) : les lister,
+    # en ajouter un (un disque externe), en retirer un (ses jeux restent sur le
+    # disque), choisir celui ou vont les nouveaux jeux.
+    sous=${1:-}; [ $# -gt 0 ] && shift
+    case $sous in
+      ''|liste|list) empl_lister ;;
+      ajouter|add) empl_ajouter "${1:-}" ;;
+      retirer|remove|rm) empl_retirer "${1:-}" ;;
+      defaut|default) empl_choisir_defaut "${1:-}" ;;
+      *) echo "usage: cidre emplacements [ajouter <dossier ou disque> | retirer <emplacement> | defaut <emplacement>] [--json]" >&2; exit 2 ;;
+    esac ;;
+  move|deplacer|mv)
+    # Deplace un jeu Cidre vers un autre emplacement (tests/deplacer_jeu.sh :
+    # copie verifiee, puis suppression ; reprise possible).
+    id=${1:-}; dv=${2:-}
+    case $id in ''|*[!0-9]*) echo "usage: cidre move <appid> <emplacement> [--verifier-contenu] [--json] | cidre move <appid> --annuler" >&2; exit 2 ;; esac
+    mv_refus() { # <code> <raison> <message>
+      evenement "$(printf '{"evenement":"deplacement","etat":"refuse","raison":"%s","message":%s}' "$2" "$(json "$3")")"
+      echo "$3" >&2; exit "$1"
+    }
+    connu "$id" || mv_refus 1 inconnu "jeu inconnu : $id"
+    case $(source_de "$id") in
+      steam) mv_refus 1 steam "$(nom "$id") est installe par le client Steam : il se deplace depuis Steam (Reglages > Stockage)." ;;
+      local) mv_refus 1 local "$(nom "$id") est un jeu hors Steam : deplace son dossier toi-meme, puis \`cidre rm $id\` et \`cidre add\`." ;;
+    esac
+    if [ $ARRETER = oui ]; then
+      # Arreter un deplacement qui tourne (lance d'ailleurs) : la copie entamee
+      # reste, un nouveau move la reprend.
+      if depl_en_cours "$id"; then
+        p=$(cat "$DEPLACEMENTS/$id.verrou/pid" 2>/dev/null); kill -TERM "$p" 2>/dev/null
+        i=0; while [ $i -lt 50 ] && kill -0 "$p" 2>/dev/null; do sleep 0.2; i=$((i + 1)); done
+        dire "deplacement arrete : $(nom "$id") reste ou il etait ; \`cidre move $id <emplacement>\` le reprendra"
+      else dire "aucun deplacement de $(nom "$id") ne tourne"; fi
+      exit 0
+    fi
+    if [ $ANNULER = oui ]; then
+      # Abandonner un deplacement : l'arreter s'il tourne, effacer la copie
+      # entamee. L'original n'a jamais ete touche.
+      if depl_en_cours "$id"; then
+        p=$(cat "$DEPLACEMENTS/$id.verrou/pid" 2>/dev/null); kill -TERM "$p" 2>/dev/null
+        i=0; while [ $i -lt 50 ] && kill -0 "$p" 2>/dev/null; do sleep 0.2; i=$((i + 1)); done
+      fi
+      c=$(depl_champ "$id" cible)
+      [ -n "$c" ] && [ -d "$c/.cidre-deplacement-$id" ] && effacer "${c:?}/.cidre-deplacement-${id:?}"
+      rm -f "${DEPLACEMENTS:?}/${id:?}" "${DEPLACEMENTS:?}/${id:?}.avancement" "${DEPLACEMENTS:?}/${id:?}.erreurs" "${DEPLACEMENTS:?}/${id:?}".liste-*
+      evenement '{"evenement":"deplacement","etat":"annule"}'
+      dire "deplacement abandonne : $(nom "$id") reste ou il etait"
+      exit 0
+    fi
+    hors_ligne "$id" && mv_refus 8 debranche "$(hors_ligne_message "$id")"
+    [ -n "$dv" ] || { echo "usage: cidre move <appid> <emplacement> (voir \`cidre emplacements\`)" >&2; exit 2; }
+    empl_resoudre "$dv"
+    case $? in
+      1) mv_refus 2 emplacement "emplacement inconnu : $dv (voir \`cidre emplacements\` ; un disque s'ajoute par \`cidre emplacements ajouter <disque>\`)" ;;
+      2) mv_refus 2 emplacement "plusieurs emplacements repondent a « $dv » : donne son id (voir \`cidre emplacements\`)" ;;
+    esac
+    vn=$(empl_nom "$ER_ID" "$ER_CHEMIN")
+    [ "$ER_EN_LIGNE" = oui ] || mv_refus 8 debranche "L'emplacement « $vn » n'est pas branche : branche son disque, puis recommence."
+    se=$(empl_de "$id")
+    if [ "$ER_ID" = "$se" ]; then
+      # Deja la. Un deplacement vers ici arrete pendant l'effacement de
+      # l'original est fini : on range son etat et ce qui reste de l'original.
+      # (Un deplacement inacheve vers ailleurs reste a reprendre ou a annuler.)
+      if ! depl_en_cours "$id" && [ "$(depl_champ "$id" vers)" = "$ER_ID" ]; then
+        o=$(depl_champ "$id" source)
+        for r in "${o%/*}"/.cidre-supprime-"$id".*; do [ -d "$r" ] && effacer "$r"; done
+        rm -f "${DEPLACEMENTS:?}/${id:?}" "${DEPLACEMENTS:?}/${id:?}.avancement" "${DEPLACEMENTS:?}/${id:?}.erreurs"
+      fi
+      evenement "$(printf '{"evenement":"deplacement","etat":"fait","emplacement":%s,"chemin":%s,"octets":null,"duree":0}' "$(json "$ER_ID")" "$(json "$(jd "$id")")")"
+      dire "$(nom "$id") est deja dans « $vn »"
+      exit 0
+    fi
+    depl_en_cours "$id" && mv_refus 4 en_cours "Ce jeu est deja en cours de deplacement (processus $(depl_champ "$id" pid))."
+    maj_en_cours "$id" && mv_refus 4 maj "Une mise a jour de ce jeu est en cours : attends sa fin, puis deplace-le."
+    # Un deplacement inacheve vers un autre emplacement : sa copie entamee y reste.
+    c=$(depl_champ "$id" cible)
+    if [ -n "$c" ] && [ "$c" != "$ER_CHEMIN" ] && [ -d "$c/.cidre-deplacement-$id" ]; then
+      dire "copie entamee vers $c abandonnee (autre destination) : effacee"
+      effacer "${c:?}/.cidre-deplacement-${id:?}"
+    fi
+    exec env DEPL_DE="$se" DEPL_VERS="$ER_ID" DEPL_NOM="$(nom "$id")" DEPL_VOLUME="$vn" DEPL_JSON="$JSON" DEPL_VERIFIER="$VERIFIER" \
+      CIDRE_DIR="$CIDRE_DIR" sh "$R/tests/deplacer_jeu.sh" "$id" "$(jd "$id")" "$ER_CHEMIN" ;;
   help|*) usage ;;
 esac
 exit $?

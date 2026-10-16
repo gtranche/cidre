@@ -117,7 +117,10 @@ refus() { # <raison> <message>
 physique() { (cd "$1" 2>/dev/null && pwd -P); }
 outil() { case $1 in crossover) echo CrossOver ;; whisky) echo Whisky ;; heroic) echo Heroic ;; *) echo "$1" ;; esac; }
 
-[ -d "$JEUX/$APPID" ] || refus jeu_absent "$APPID n'est pas dans le dossier Cidre : le reprendre d'abord (cidre import $APPID)"
+# le dossier du jeu : celui que donne `cidre` (CIDRE_JEU_REPRIS : le jeu dans
+# son emplacement, ce Mac ou un disque externe), sinon l'emplacement principal
+JEU=${CIDRE_JEU_REPRIS:-$JEUX/$APPID}
+[ -d "$JEU" ] || refus jeu_absent "$APPID n'est pas dans le dossier Cidre : le reprendre d'abord (cidre import $APPID)"
 
 # --- la bouteille -----------------------------------------------------------
 SOURCE=; BOUTEILLE=; RACINE=
@@ -154,19 +157,19 @@ sans_prefixe() { refus prefixe_absent "le disque C: de Cidre n'existe pas encore
 
 # --- ce que le jeu s'appelle : pour l'heuristique des moteurs ---------------
 noms() {
-   m="$JEUX/$APPID/steamapps/appmanifest_$APPID.acf"
+   m="$JEU/steamapps/appmanifest_$APPID.acf"
    for c in name installdir; do
       tr -d '\r' <"$m" 2>/dev/null | sed -n 's/^[[:space:]]*"'$c'"[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' | head -1
    done
-   for e in "$JEUX/$APPID"/*.exe; do
+   for e in "$JEU"/*.exe; do
       [ -f "$e" ] || continue
       case $(basename "$e") in UnityCrashHandler*|unins*|UnrealCEFSubProcess*|CrashReport*) continue ;; esac
       basename "$e" .exe
    done
    # Unity : <jeu>_Data/app.info = l'editeur, puis le produit (LocalLow/<editeur>/<produit>)
-   for a in "$JEUX/$APPID"/*_Data/app.info; do [ -f "$a" ] && tr -d '\r' <"$a" | sed -n 2p; done
+   for a in "$JEU"/*_Data/app.info; do [ -f "$a" ] && tr -d '\r' <"$a" | sed -n 2p; done
    # Unreal : le projet est le dossier qui porte Binaries/Win64 (Local/<projet>/Saved/SaveGames)
-   for b in "$JEUX/$APPID"/*/Binaries/Win64; do
+   for b in "$JEU"/*/Binaries/Win64; do
       [ -d "$b" ] || continue
       p=$(basename "$(dirname "$(dirname "$b")")"); [ "$p" = Engine ] || printf '%s\n' "$p"
    done
@@ -318,7 +321,7 @@ steam_dabord() {
 # --- 1. ou sont-elles ? ------------------------------------------------------
 LIGNE=$(cat "$CIDRE_DIR/saves.conf" "$R/outil-steam/saves.conf" 2>/dev/null | awk -F'\t' -v a="$APPID" '$1 == a { print $2; exit }')
 STEAM_MODE=
-[ -n "$DOSSIER" ] || STEAM_MODE=$(CIDRE_PREFIXE_UTIL="$UTILC" CIDRE_JEU_DOSSIER="$JEUX/$APPID" sh "$R/tests/lier_saves_steam.sh" "$APPID" mode 2>/dev/null || true)
+[ -n "$DOSSIER" ] || STEAM_MODE=$(CIDRE_PREFIXE_UTIL="$UTILC" CIDRE_JEU_DOSSIER="$JEU" sh "$R/tests/lier_saves_steam.sh" "$APPID" mode 2>/dev/null || true)
 BU=; MEMORISER=non
 if [ -n "$DOSSIER" ]; then
    # le dossier que designe l'utilisateur : il doit etre sur le disque C: de la bouteille
@@ -360,10 +363,10 @@ if [ "$STEAM_MODE" = lien ]; then
    [ -n "$UTILC" ] && [ -d "$UTILC" ] || sans_prefixe
    # le lien se pose comme au premier lancement ; s'il ne peut pas l'etre, la
    # copie Cidre prend la main, ici comme dans sync_saves_steam.sh
-   if l=$(CIDRE_PREFIXE_UTIL="$UTILC" CIDRE_JEU_DOSSIER="$JEUX/$APPID" sh "$R/tests/lier_saves_steam.sh" "$APPID" lier 2>&1); then
+   if l=$(CIDRE_PREFIXE_UTIL="$UTILC" CIDRE_JEU_DOSSIER="$JEU" sh "$R/tests/lier_saves_steam.sh" "$APPID" lier 2>&1); then
       [ -z "$l" ] || dire "$l"
       SYNCHRO=steam_macos; attendu=; vers1=
-      CIDRE_PREFIXE_UTIL="$UTILC" CIDRE_JEU_DOSSIER="$JEUX/$APPID" sh "$R/tests/lier_saves_steam.sh" "$APPID" dossiers 2>/dev/null |
+      CIDRE_PREFIXE_UTIL="$UTILC" CIDRE_JEU_DOSSIER="$JEU" sh "$R/tests/lier_saves_steam.sh" "$APPID" dossiers 2>/dev/null |
          while IFS="$TAB" read -r w m; do
             case $w in "$UTILC"/?*) rel=${w#"$UTILC"/} ;; *) continue ;; esac
             u=$(qui_a "$rel"); [ -n "$u" ] && s="$u/$rel" || s=-
@@ -394,7 +397,7 @@ if [ -z "$ETAT" ]; then
       NOMS=$(noms); [ -n "$NOMS" ] || NOMS=-
       utilisateurs >"$LISTE"
       while IFS= read -r u; do
-         REL=$(CIDRE_PREFIXE_UTIL="$u" CIDRE_JEU_DOSSIER="$JEUX/$APPID" sh "$R/tests/deviner_saves.sh" "$APPID" 2>/dev/null) ||
+         REL=$(CIDRE_PREFIXE_UTIL="$u" CIDRE_JEU_DOSSIER="$JEU" sh "$R/tests/deviner_saves.sh" "$APPID" 2>/dev/null) ||
             REL=$(CIDRE_PREFIXE_UTIL="$u" CIDRE_JEU_DOSSIER=/nonexistent CIDRE_DEVINER_NOMS="$NOMS" sh "$R/tests/deviner_saves.sh" "$APPID" 1 2>/dev/null) || REL=
          [ -z "$REL" ] || { BU=$u; MEMORISER=oui; break; }
       done <"$LISTE"
@@ -408,7 +411,7 @@ if [ -z "$ETAT" ]; then
          dire "                Si tu sais ou elles sont : cidre import $APPID --saves --dossier <dossier sous ${u:-$RACINE/drive_c/users}>"
          MESSAGE="Sauvegardes non trouvées dans $QUI_DIT : Cidre ne sait pas où ce jeu les range" ;;
       jeu:*)
-         ETAT=avec_le_jeu; VERS="$JEUX/$APPID/${REL#jeu:}"
+         ETAT=avec_le_jeu; VERS="$JEU/${REL#jeu:}"
          dire "  sauvegardes : ce jeu les range dans son propre dossier (${REL#jeu:}) : elles sont venues avec lui"
          MESSAGE="Ce jeu range ses sauvegardes dans son propre dossier : elles sont venues avec lui" ;;
       *)
