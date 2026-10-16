@@ -35,6 +35,7 @@ sans_32_bits() {
 }
 if [ ! -d "$WINEPREFIX/drive_c/windows/system32" ]; then
    "$WB" -u >/dev/null 2>&1 || true
+   sh "$R/tests/prefixe_a_jour.sh" --marquer
 elif sans_32_bits; then
    # Reparation qui ne touche a rien d'autre : Wine cree un prefixe neuf a
    # cote, on en greffe les seuls fichiers systeme 32 bits absents, puis Wine
@@ -59,6 +60,10 @@ elif sans_32_bits; then
    if sans_32_bits; then echo "  reparation impossible : les jeux 32 bits ne demarreront pas"
    else echo "  partie 32 bits en place ($(ls "$WINEPREFIX/drive_c/windows/syswow64" | wc -l | tr -d ' ') fichiers)"; fi
 fi
+# Un prefixe garde d'un runtime precedent : Wine ne le remet a jour que si
+# wine.inf a change ; un runtime qui gagne une DLL (winegstreamer) l'exige
+# aussi, sinon ses classes COM manquent au registre.
+sh "$R/tests/prefixe_a_jour.sh"
 
 # Le runtime Visual C++, declare au registre dans ses deux vues. Wine fournit
 # ces bibliotheques (msvcp140, vcruntime140...) et les declare lui-meme, mais la

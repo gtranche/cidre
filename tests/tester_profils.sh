@@ -779,7 +779,7 @@ cp "$T/perso.avant-arguments" "$CIDRE_PROFILS"
 grep -q 'ARGJ=${CIDRE_ARGUMENTS:-$(profil arguments)}' "$R/tests/lancer_depuis_steam.sh" && ok "lanceur : option arguments lue" || echec "lanceur : option arguments non lue"
 
 echo "== 7. syntaxe"
-for s in cidre tests/profil_cidre.sh tests/fiche_profil.sh tests/reglages_jeu.sh tests/machine.sh tests/lancer_depuis_steam.sh tests/arguments_jeu.sh tests/empaqueter_runtime.sh tests/tester_profils.sh; do
+for s in cidre tests/profil_cidre.sh tests/fiche_profil.sh tests/reglages_jeu.sh tests/machine.sh tests/lancer_depuis_steam.sh tests/arguments_jeu.sh tests/empaqueter_runtime.sh tests/tester_profils.sh tests/prefixe_a_jour.sh; do
    sh -n "$R/$s" 2>/dev/null && ok "sh -n $s" || echec "sh -n $s"
 done
 
@@ -792,7 +792,7 @@ enveloppe() { # <script> : 1re commande `{`, puis ... `exit`, `}` en dernier
         !debut { debut = $0 } { avant = dernier; dernier = $0 }
         END { exit !(debut == "{" && dernier == "}" && avant ~ /^exit( |$)/) }' "$1"
 }
-for s in cidre tests/lancer_depuis_steam.sh tests/etape2_pile_arm64ec.sh; do
+for s in cidre tests/lancer_depuis_steam.sh tests/etape2_pile_arm64ec.sh tests/prefixe_a_jour.sh; do
    enveloppe "$R/$s" && ok "lu en entier avant d'executer : $s" || echec "$s n'est pas enveloppe dans { ... exit; } : une modification pendant un jeu peut executer n'importe quoi"
 done
 printf '#!/bin/sh\nset -u\necho a\nexit 0\n' >"$T/nu.sh"; printf '#!/bin/sh\n# x\n{\nset -u\necho a\nexit $?\n}\n' >"$T/enveloppe.sh"

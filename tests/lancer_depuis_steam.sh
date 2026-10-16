@@ -42,6 +42,13 @@ if ! pgrep -f '[v]ermintide2.exe' >/dev/null 2>&1; then
    sleep 1
 fi
 
+# Prefixe a jour du runtime : un runtime pose sans `cidre setup` (reconstruction
+# de Wine sur la machine de dev) peut apporter une DLL que le prefixe n'a jamais
+# inscrite -- winegstreamer le 2026-10-16 : toute video .mp4 de Media Foundation
+# echouait et Sherlock Holmes Chapter One ne quittait plus son ecran de
+# chargement. Rien a faire (quelques ms) tant que la liste des DLL n'a pas bouge.
+sh "$R/tests/prefixe_a_jour.sh"
+
 # Profil du jeu : options de lancement par appid, en donnees. Reglages generaux
 # livres dans outil-steam/profils.toml ([defaut]), fiche du jeu dans la base de
 # profils (profils/<appid>.toml, [cidre]), surcharges par l'utilisateur (ou
