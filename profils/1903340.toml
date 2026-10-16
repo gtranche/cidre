@@ -120,6 +120,22 @@ section = "/Script/SandFall.ConfigurableGameUserSettings"
 "FullscreenMode" = "0"
 "LastConfirmedFullscreenMode" = "0"
 
+# M1 (famille Metal 7) : mode Deck simule (wine11 0160). Le pont Steam repond oui a
+# IsSteamRunningOnSteamDeck ; le jeu prend alors son profil d'appareil
+# « Windows_Steamdeck », applique en memoire (l'INI ne change pas : Moyen, 50 %, TSR,
+# 1728x1084). Mesure sur M1 Max le 2026-10-16, DXMT, meme vue : 45,7 -> 58,7 fps
+# (+28 %), intervalle d'image 21,9 -> 17,05 ms, GPU 23,6 -> 21,4 ms. Moins de brume
+# volumetrique au loin, cheveux plus trames. Seconde paire, meme jour : 48,5 -> 59,6
+# fps ; intervalle d'image plat a 16,8 ms, le profil Deck plafonne a 60 images/s.
+# Choisi par l'utilisateur (2026-10-16), plafond et brume compris. Glyphes du Deck
+# avec une manette : non verifies. En D3D12 il s'effondre (24,7 -> 8,3 fps) : le
+# lanceur coupe deck dans cette voie.
+# Cf. etude-proton-lots.md (side-session-notes).
+[[machine]]
+si = "famille_gpu <= 7"
+[machine.cidre]
+deck = true
+
 [compat]
 etat = "argent"
 source = "cidre-test"

@@ -116,8 +116,17 @@ esac
 # IsSteamRunningOnSteamDeck, et a cette seule question. Le jeu peut alors aussi
 # montrer les glyphes du Deck, viser 1280x800 ou plafonner ses images : essai,
 # coupe par defaut. Cf. etude-proton.md (2026-10-16).
+# Pas en D3D12 (dx12) quand l'option vient d'une fiche ou du profil : Expedition 33
+# y tombait de 24,7 a 8,3 images/s (M1 Max, 2026-10-16), alors qu'en DXMT il gagne
+# 28 %. CIDRE_DECK=1, explicite, garde la main (essais).
+DECK_COUPE=
 case $(opt deck CIDRE_DECK) in
-   true) export CIDRE_DECK=1 ;;
+   true)
+      if [ -z "${CIDRE_DECK:-}" ] && [ "$(opt dx12 CIDRE_DX12)" = true ]; then
+         DECK_COUPE=d3d12; unset CIDRE_DECK
+      else
+         export CIDRE_DECK=1
+      fi ;;
    *)    unset CIDRE_DECK ;;
 esac
 
@@ -332,6 +341,7 @@ DEBUT_EPOCH=$(date +%s)
    VARIANTES=$(sh "$R/tests/fiche_profil.sh" variantes "$JEU" 2>/dev/null | tr '\n' ';' | sed 's/;$//; s/;/ ; /g')
    [ -z "$VARIANTES" ] || echo "    fiche   : variante pour cette machine (si $VARIANTES)"
    [ -z "${CIDRE_DECK:-}" ] || echo "    deck    : mode Deck simule (IsSteamRunningOnSteamDeck rend vrai)"
+   [ -z "$DECK_COUPE" ] || echo "    deck    : coupe en D3D12 (la fiche le demande ; CIDRE_DECK=1 pour forcer)"
 } >>"$JOURNAL"
 
 # Ce que Steam nous donne n'est pas forcement un binaire Windows : un jeu peut
