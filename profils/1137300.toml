@@ -33,26 +33,23 @@ drm = "pcgamingwiki 2026-10-11"
 arguments = "-d3d11"
 dx12 = false
 
-# Charge equivalente au Deck (etude-proton.md, 2026-10-16) : definition interne a
-# 50 %, comme Expedition 33 et Still Wakes the Deep. A 1728x1084 (sortie du mode
-# emule), 50 % rendent 0,47 Mpx, ce que rend le Deck en 1280x800 avec FSR qualite
-# (67 %, 0,46 Mpx) ; Still Wakes : 20 -> 50 fps de 100 a 50 %. Le jeu passe par
-# FSR (bUseFSR=True) : il lit FSRScreenPercentagePreset, et garde la meme valeur
-# dans sg.ResolutionQuality. Releve dans le prefixe le 2026-10-16 : 75 et 75.
-# Les qualites (sg.*Quality) restent celles du jeu et du joueur. Pose une fois (id).
+# Le jeu garde ses reglages dans SaveGames/Settings.sav (sauvegarde Unreal 4 :
+# chaque reglage est une entree « Graphics_X » suivie d un champ entier « Value »)
+# et les recopie dans GameUserSettings.ini au demarrage : poser l INI ne sert a
+# rien (l essai du 2026-10-16 a 50 % via l INI est reste a 75 %).
+# Synchro verticale coupee : en FIFO, ses 22-26 ms de GPU tombaient a la
+# demi-cadence (intervalle de 30 ms, 33 fps) ; sans elle 37 fps, dechirement
+# possible. M1 Max, DXMT, 2026-10-16. Pose une fois (id) ; le joueur peut la
+# remettre dans le menu du jeu.
+# La definition, elle, ne gagne rien ici : FSR coupe et ResolutionQuality = 50
+# dans Settings.sav donnaient 36,4 fps contre 37,2 en FSR 75 %, GPU 26 ms
+# inchange et image aussi nette (le jeu ne l a sans doute pas reprise). Le menu
+# n offre que FSR oui/non.
 [[reglages_jeu]]
-id = "definition-50"
-fichier = "AppData/Local/SH9/Saved/Config/WindowsNoEditor/GameUserSettings.ini"
-format = "ini"
-section = "ScalabilityGroups"
-valeurs = { "sg.ResolutionQuality" = "50.000000" }
-
-[[reglages_jeu]]
-id = "definition-50-fsr"
-fichier = "AppData/Local/SH9/Saved/Config/WindowsNoEditor/GameUserSettings.ini"
-format = "ini"
-section = "/Script/Engine.GameUserSettings"
-valeurs = { "FSRScreenPercentagePreset" = "50.000000" }
+id = "vsync-0"
+fichier = "AppData/Local/SH9/Saved/SaveGames/Settings.sav"
+format = "gvas"
+valeurs = { "Graphics_VerticalSync.Value" = "0" }
 
 [compat]
 etat = "bronze"

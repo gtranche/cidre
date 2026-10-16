@@ -454,6 +454,39 @@ printf '[reglages_jeu]\nfichier = "user.reg"\nformat = "registre"\nvaleurs = { "
 verif "registre : sans cle (section) -> code 1" "1" "$(sh "$R/tests/reglages_jeu.sh" 999 >/dev/null; echo $?)"
 unset CIDRE_SERVEUR_WINE
 
+# une sauvegarde Unreal 4 ou chaque reglage est une entree « Graphics_X » suivie
+# d un champ « Value » (Sherlock Holmes Chapter One) : cle « Parent.Champ »
+gvas4_entree() { # <parent> <entier 0-255> : la chaine Parent, puis IntProperty Value (en-tete Unreal 4)
+   printf "\\$(printf '%03o' $((${#1} + 1)))\\0\\0\\0%s\\0\\006\\0\\0\\0Value\\0\\014\\0\\0\\0IntProperty\\0\\004\\0\\0\\0\\0\\0\\0\\0\\0\\$(printf '%03o' "$2")\\0\\0\\0" "$1"
+}
+gvas4_lire() { # <fichier> <parent> : les valeurs (octet de poids faible) du champ Value qui suit Parent
+   od -An -v -tx1 "$1" | tr -d ' \n' | awk -v m="$(printf '%s' "$2" | od -An -v -tx1 | tr -d ' \n')000600000056616c7565000c000000496e7450726f7065727479000400000000000000" '
+      { d = 1; while ((i = index(substr($0, d), m)) > 0) { p = d + i - 1; printf "%d ", ("0x" substr($0, p + length(m) + 2, 2)) + 0; d = p + 1 } }' | sed 's/ $//'
+}
+SG4="$U/AppData/Local/Jeu4/Saved/SaveGames"; mkdir -p "$SG4"
+{ printf 'GVAS\002\0\0\0entete'; gvas4_entree Graphics_VerticalSync 1; gvas4_entree Graphics_ResolutionQuality 100; printf 'None'; gvas4_entree Graphics_Double 5; gvas4_entree Graphics_Double 6; printf 'fin'; } >"$SG4/Settings.sav"
+cp "$SG4/Settings.sav" "$T/sav4-origine"
+verif "gvas UE4 : la sauvegarde factice se relit" "1 100 5 6" "$(gvas4_lire "$SG4/Settings.sav" Graphics_VerticalSync) $(gvas4_lire "$SG4/Settings.sav" Graphics_ResolutionQuality) $(gvas4_lire "$SG4/Settings.sav" Graphics_Double)"
+cat >"$CIDRE_PROFILS_BASE/993.toml" <<'FICHE'
+[reglages_jeu]
+fichier = "AppData/Local/Jeu4/Saved/SaveGames/Settings.sav"
+format = "gvas"
+[reglages_jeu.valeurs]
+"Graphics_VerticalSync.Value" = "0"
+"Graphics_Double.Value" = "7"
+"Graphics_Absent.Value" = "1"
+"Value" = "9"
+FICHE
+sortie=$(sh "$R/tests/reglages_jeu.sh" 993); rc=$?
+verif "gvas UE4 : code 0, poses" "0 1" "$rc $(printf '%s\n' "$sortie" | grep -c poses)"
+verif "gvas UE4 : Parent.Champ pose, voisin intact" "0 100" "$(gvas4_lire "$SG4/Settings.sav" Graphics_VerticalSync) $(gvas4_lire "$SG4/Settings.sav" Graphics_ResolutionQuality)"
+verif "gvas UE4 : 1 octet change, taille inchangee" "1 $(wc -c <"$T/sav4-origine" | tr -d ' ')" "$(cmp -l "$SG4/Settings.sav" "$T/sav4-origine" | wc -l | tr -d ' ') $(wc -c <"$SG4/Settings.sav" | tr -d ' ')"
+verif "gvas UE4 : parent en double laisse, dit" "5 6 1" "$(gvas4_lire "$SG4/Settings.sav" Graphics_Double) $(printf '%s\n' "$sortie" | grep -c 'Graphics_Double.Value trouvee 2 fois')"
+verif "gvas UE4 : parent absent laisse, dit (pas d ajout)" "1" "$(printf '%s\n' "$sortie" | grep -c 'Graphics_Absent.Value trouvee 0 fois')"
+verif "gvas UE4 : « Value » seul, ambigu, laisse" "1" "$(printf '%s\n' "$sortie" | grep -c 'entiere Value trouvee 4 fois')"
+sortie=$(sh "$R/tests/reglages_jeu.sh" 993); rc=$?
+verif "gvas UE4 : relance = deja en place" "0 1" "$rc $(printf '%s\n' "$sortie" | grep -c 'deja en place')"
+
 echo "== 4. marqueur reglages_jeu_appliques"
 verif "avant : pas de marqueur" "" "$(valeur 999 reglages_jeu_appliques)"
 sh "$R/tests/profil_cidre.sh" 999 set reglages_jeu_appliques true

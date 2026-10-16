@@ -182,6 +182,10 @@ poser_ini() { # <nom affiche>
 # n est touchee que si son en-tete est exactement celui attendu et qu elle
 # n apparait qu une fois ; sinon elle est laissee, une ligne le dit, et les
 # autres sont posees. Rend 0, ou 1 si le fichier n est pas une sauvegarde GVAS.
+# Une cle « Parent.Champ » vise le champ qui suit immediatement la chaine Parent
+# (Sherlock Holmes Chapter One : Graphics_VerticalSync.Value, ou chaque reglage
+# est une entree « Graphics_X » dont le champ s appelle toujours « Value »). Les
+# en-tetes Unreal 5.4 et Unreal 4 (taille sur 8 octets) sont reconnus.
 #
 # Une propriete ABSENTE n est pas une propriete en place : Unreal n ecrit pas
 # un champ qui vaut sa valeur par defaut (Expedition 33 en Bas : plus aucune
@@ -205,13 +209,26 @@ poser_gvas() { # <nom affiche>
    while IFS='	' read -r c v; do
       case $v in ''|*[!0-9]*) echo "    reglages du jeu : $c = « $v » n'est pas un entier, laisse"; continue ;; esac
       [ "$v" -le 2147483647 ] 2>/dev/null || { echo "    reglages du jeu : $c = $v est hors bornes, laisse"; continue; }
+      # « Parent.Champ » : le champ qui suit immediatement la chaine Parent, ecrite
+      # en clair avec sa longueur (cle de table ou nom de reglage : Sherlock Holmes
+      # Chapter One range chaque reglage sous « Graphics_X » suivi d un champ
+      # « Value », Graphics_VerticalSync.Value). Sans point : le nom seul.
+      case $c in
+         *.*) champ=${c##*.}; parent=${c%.*}
+              avant=$(printf '%02x000000%s00' $((${#parent} + 1)) "$(printf '%s' "$parent" | od -An -v -tx1 | tr -d ' \n')") ;;
+         *)   champ=$c; parent=; avant= ;;
+      esac
       # l en-tete d une IntProperty : longueur du nom (zero final compris), le nom,
-      # « IntProperty », pas de sous-type, 4 octets de valeur, pas de GUID
-      motif=$(printf '%02x000000%s000c000000496e7450726f70657274790000000000040000000' $((${#c} + 1)) "$(printf '%s' "$c" | od -An -v -tx1 | tr -d ' \n')")0
-      # positions du motif alignees sur un octet (en octets, depuis 0)
-      pos=$(printf '%s\n' "$HEX" | awk -v m="$motif" '{ d = 1; while ((i = index(substr($0, d), m)) > 0) { p = d + i - 1; if (p % 2 == 1) printf "%d ", (p - 1) / 2; d = p + 1 } }')
+      # « IntProperty », puis, en Unreal 5.4, pas de sous-type, une taille de 4 octets
+      # et un octet de drapeaux ; en Unreal 4, une taille sur 8 octets et un octet
+      # de GUID. Les deux en-tetes ont la meme longueur ; la valeur suit.
+      nomhex=$(printf '%02x000000%s000c000000496e7450726f706572747900' $((${#champ} + 1)) "$(printf '%s' "$champ" | od -An -v -tx1 | tr -d ' \n')")
+      motif=$avant${nomhex}000000000400000000
+      motif4=$avant${nomhex}040000000000000000
+      # positions des motifs alignees sur un octet (en octets, depuis 0)
+      pos=$(printf '%s\n' "$HEX" | awk -v m="$motif" -v m4="$motif4" '{ for (k = 0; k < 2; k++) { mm = k ? m4 : m; d = 1; while ((i = index(substr($0, d), mm)) > 0) { p = d + i - 1; if (p % 2 == 1) printf "%d ", (p - 1) / 2; d = p + 1 } } }')
       n=$(echo $pos | wc -w | tr -d ' ')
-      if [ "$n" -eq 0 ] && [ -n "$SECTION" ]; then printf '%s\t%s\n' "$c" "$v" >>"$V.absentes"; continue; fi
+      if [ "$n" -eq 0 ] && [ -n "$SECTION" ] && [ -z "$parent" ]; then printf '%s\t%s\n' "$c" "$v" >>"$V.absentes"; continue; fi
       [ "$n" -eq 1 ] || { echo "    reglages du jeu : propriete entiere $c trouvee $n fois dans $(basename "$F"), laissee"; continue; }
       o=$((pos + ${#motif} / 2))
       printf "$(printf '\\%03o\\%03o\\%03o\\%03o' $((v & 255)) $((v >> 8 & 255)) $((v >> 16 & 255)) $((v >> 24 & 255)))" |

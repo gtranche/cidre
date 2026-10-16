@@ -369,6 +369,12 @@ les pose, une fois :
   seulement. Sans `section`, une propriété absente est laissée et le journal
   le dit (« trouvée 0 fois ») ; jusqu'à Cidre 1.5.11 c'était le cas, et la
   qualité de la fiche n'était plus posée après une partie en Bas.
+  Une clé `"Parent.Champ"` vise le champ entier qui suit immédiatement la
+  chaîne `Parent` écrite en clair dans la sauvegarde : Sherlock Holmes Chapter
+  One range chaque réglage sous une entrée `Graphics_X` dont le champ s'appelle
+  toujours `Value` (`"Graphics_VerticalSync.Value" = "0"`). Les en-têtes
+  d'Unreal 5.4 et ceux d'Unreal 4 (taille sur 8 octets) sont reconnus ; une
+  telle clé n'est jamais ajoutée si elle manque.
 - `format = "playerprefs"` : le jeu est en Unity et garde ses options dans les
   PlayerPrefs, que Unity range sous Windows dans le registre
   (`HKEY_CURRENT_USER\Software\<éditeur>\<jeu>`). `fichier` vaut alors
