@@ -1,13 +1,17 @@
 #!/bin/sh
 # Pose la langue voulue dans le fichier de reglages d'un jeu qui ne suit ni la
 # locale Windows ni Steam (table outil-steam/langues.conf). Appele par
-# lancer_depuis_steam.sh avant le jeu, quand l'option `langue` n'est pas « auto ».
+# lancer_depuis_steam.sh avant le jeu.
 # Ne reecrit que la valeur de la cle ; le reste du fichier passe tel quel. Ne
 # cree pas le fichier : sans lui, le jeu n'a pas encore tourne et l'ecrira
 # lui-meme, la langue sera posee au lancement suivant. Non bloquant.
-#   langue_jeu.sh <appid> <code>
+#   langue_jeu.sh <appid> <code> [une-fois]
+# une-fois (option `langue` = « auto », la langue du Mac) : posee une seule fois
+# par langue du Mac, notee dans ETAT/<appid> ; la langue choisie ensuite dans le
+# jeu reste la sienne. Un code du profil, lui, est repose a chaque lancement.
 set -u
-APPID=${1:-}; CODE=${2:-}
+APPID=${1:-}; CODE=${2:-}; MODE=${3:-}
+ETAT=${CIDRE_LANGUE_ETAT:-$HOME/Library/Application Support/Cidre/langue}
 [ -n "$APPID" ] && [ -n "$CODE" ] || exit 0
 R=$(cd "$(dirname "$0")/.." && pwd)
 PFX=${WINEPREFIX:-$R/wine/pfx-arm64ec}
@@ -16,6 +20,11 @@ CONF=${CIDRE_LANGUES:-$R/outil-steam/langues.conf}
 
 LIGNE=$(awk -F'\t' -v a="$APPID" '!/^#/ && $1==a {print; exit}' "$CONF")
 [ -n "$LIGNE" ] || exit 0
+if [ "$MODE" = une-fois ] && [ "$(cat "$ETAT/$APPID" 2>/dev/null)" = "$CODE" ]; then
+   echo "    langue : « $CODE » deja posee une fois (langue du Mac) ; le choix fait dans le jeu est garde"
+   exit 0
+fi
+noter() { [ "$MODE" = une-fois ] || return 0; mkdir -p "$ETAT" && printf '%s\n' "$CODE" >"$ETAT/$APPID"; }
 REL=$(printf '%s\n' "$LIGNE" | cut -f2)
 CLE=$(printf '%s\n' "$LIGNE" | cut -f3)
 VAL=$(printf '%s\n' "$LIGNE" | cut -f4 | tr ' ' '\n' | sed -n "s/^$CODE=//p" | head -1)
@@ -45,9 +54,10 @@ awk -v cle="$CLE" -v val="$VAL" '
 if cmp -s "$F" "$F.langue-tmp"; then
    rm -f "$F.langue-tmp"
    echo "    langue : $CLE = $VAL deja en place"
+   noter
 else
    # cat, pas mv : le fichier garde ses droits et son inode
-   cat "$F.langue-tmp" >"$F" && echo "    langue : $CLE = $VAL ecrit dans $REL"
+   cat "$F.langue-tmp" >"$F" && echo "    langue : $CLE = $VAL ecrit dans $REL" && noter
    rm -f "$F.langue-tmp"
 fi
 exit 0

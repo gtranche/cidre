@@ -68,6 +68,15 @@ fi
 # bouchons xtajit, et la trace dit alors « x64 emulation not implemented ».
 sh "$R/tests/installer_fex.sh" >/dev/null
 
+# Langue annoncee par Wine (lancer_depuis_steam.sh, tests/langue_cidre.sh) :
+# posee ici, pour Wine seul -- les scripts qui precedent restent en locale C.
+# Elle remplace celle que l'appelant a heritee (Steam : LC_ALL=en_US.UTF-8 ;
+# Verger : LANG=C.UTF-8), dont Wine aurait tire la locale Windows du jeu.
+if [ -n "${CIDRE_LOCALE:-}" ]; then
+   export LC_ALL="$CIDRE_LOCALE" LANG="$CIDRE_LOCALE"
+   unset LC_CTYPE LC_MESSAGES
+fi
+
 # Débogage sous winedbg : si PROTON_OUVERT_WINEDBG pointe un fichier de commandes,
 # on lance le programme sous winedbg en lui donnant ce fichier comme entrée (les
 # commandes s'exécutent quand winedbg s'arrête sur la faute). Garde-fou : ne change

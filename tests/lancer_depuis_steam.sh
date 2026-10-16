@@ -76,23 +76,27 @@ if [ -n "$JEU" ] && [ "$(opt cache_pipelines CIDRE_PIPELINE_CACHE)" != false ]; 
    export MESA_KK_PIPELINE_CACHE="${MESA_KK_PIPELINE_CACHE:-$HOME/Library/Application Support/Cidre/vkd3d-cache/$JEU}"
 fi
 
-# Langue du jeu. langue = "auto" (defaut) ne force rien : Wine annonce la langue
-# de macOS, le pont Steam relaie celle du client. Sinon un code a deux lettres
-# (ou CIDRE_LANGUE=fr), applique par deux voies -- un jeu choisit sa langue par
-# l'une ou l'autre :
-#   - la locale Windows : Wine la tire de LC_ALL / LANG, poses ici ;
+# Langue du jeu. langue = "auto" (defaut) : la langue de macOS, sinon l'anglais ;
+# un code a deux lettres (ou CIDRE_LANGUE=fr) l'impose (tests/langue_cidre.sh).
+# Un jeu choisit sa langue par l'une de trois voies :
+#   - la locale Windows : Wine la tire de LC_ALL / LANG. On ne la laisse pas a
+#     l'environnement -- Verger herite LANG=C.UTF-8 et Steam lance ses jeux sous
+#     LC_ALL=en_US.UTF-8 : Wine annoncait en-US a tous les jeux (Sherlock Holmes
+#     Chapter One en anglais). CIDRE_LOCALE la donne au seul Wine
+#     (etape2_pile_arm64ec.sh) : ce script et ses outils restent en locale C
+#     (sous fr_FR, le printf du shell refuse « 1.5 ») ;
 #   - un fichier de reglages propre au jeu : table outil-steam/langues.conf,
-#     ecrit plus bas, juste avant le lancement.
-# La troisieme voie, l'API Steam (GetCurrentGameLanguage), n'est pas forcee : le
-# pont relaie la langue reglee dans Steam, qui se change dans Steam.
+#     ecrit plus bas, juste avant le lancement ;
+#   - l'API Steam (GetCurrentGameLanguage) : le pont relaie la langue que le
+#     client Steam donne au jeu, comme Steam sous Windows ; elle se change dans Steam.
+# Le choix fait dans le jeu reste le sien : il l'enregistre dans ses reglages,
+# qu'il relit avant la locale.
 LANGUE=${CIDRE_LANGUE:-$(profil langue)}
-case $LANGUE in
-   fr) LOCALE=fr_FR ;; en) LOCALE=en_US ;; de) LOCALE=de_DE ;; es) LOCALE=es_ES ;;
-   it) LOCALE=it_IT ;; pt) LOCALE=pt_BR ;; ru) LOCALE=ru_RU ;; pl) LOCALE=pl_PL ;;
-   ja) LOCALE=ja_JP ;; ko) LOCALE=ko_KR ;; zh) LOCALE=zh_CN ;;
-   *)  LANGUE=auto; LOCALE= ;;
-esac
-[ -n "$LOCALE" ] && export LC_ALL="$LOCALE.UTF-8" LANG="$LOCALE.UTF-8"
+case $LANGUE in fr|en|de|es|it|pt|ru|pl|ja|ko|zh) ;; *) LANGUE=auto ;; esac
+LANGUES=$(sh "$R/tests/langue_cidre.sh" "$LANGUE" 2>/dev/null || true)
+langue() { printf '%s\n' "$LANGUES" | sed -n "s/^$1=//p" | head -1; }
+LANGUE_CODE=$(langue code)
+[ -z "$(langue locale)" ] || export CIDRE_LOCALE="$(langue locale)"
 
 # Ordonnancement memoire FEX. L'emulation TSO (defaut, pour la correction) taxe
 # chaque acces memoire sensible a l'ordre : mesure sur micro-banc = jusqu'a 3,7x
@@ -727,7 +731,13 @@ TEMOIN=
 cd "$DOSSIER"
 # Langue dans le fichier de reglages du jeu (outil-steam/langues.conf). Apres la
 # restauration des sauvegardes, qui peut ramener ce meme fichier de la copie.
-[ "$LANGUE" = auto ] || sh "$R/tests/langue_jeu.sh" "$JEU" "$LANGUE" >>"$JOURNAL" 2>&1 || true
+# En « auto », une fois par langue du Mac : la langue choisie ensuite dans le
+# jeu n'est plus touchee.
+echo "    langue  : $LANGUE_CODE ($([ "$LANGUE" = auto ] && echo "langue du Mac : $(langue mac)" || echo "profil")) -> locale ${CIDRE_LOCALE:-?}, Steam : langue du client" >>"$JOURNAL"
+if [ -n "$LANGUE_CODE" ]; then
+   if [ "$LANGUE" = auto ]; then sh "$R/tests/langue_jeu.sh" "$JEU" "$LANGUE_CODE" une-fois >>"$JOURNAL" 2>&1 || true
+   else sh "$R/tests/langue_jeu.sh" "$JEU" "$LANGUE_CODE" >>"$JOURNAL" 2>&1 || true; fi
+fi
 # On ne fait PLUS exec : on attend la fin du jeu pour sauvegarder apres coup.
 # `&& ... ||` : ce script est en `set -e`, et un jeu qui sort sur un code d'erreur
 # (un plantage, un arret force) l'arretait ici meme, AVANT la sauvegarde ci-dessous.

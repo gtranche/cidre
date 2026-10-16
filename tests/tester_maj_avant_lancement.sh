@@ -56,9 +56,11 @@ mkdir -p "$F/publie" "$F/bin" "$T/home"
 export HOME="$T/home" CIDRE_DIR="$T/cidre" CIDRE_PROFILS="$T/perso.toml" CIDRE_PROFILS_BASE="$T/profils-base"
 export CIDRE_STEAMCMD="$F/steamcmd.sh" CIDRE_LANCEUR="$F/lanceur.sh" CIDRE_STEAM_USER=essai
 export CIDRE_MAJ_BUDGET=5
+# la langue du Mac, qui fixe les depots de langue (tests/tester_langue.sh) : la meme partout
+export CIDRE_LANGUE_MAC=fr-FR
 # `cidre dl` ecrit en fond une fiche provisoire (ProtonDB) : pas de reseau ici
 export CIDRE_PROTONDB_URL="file://$T/nulle-part/"
-unset CIDRE_MAJ_AVANT_LANCEMENT CIDRE_MAJ_TTL CIDRE_MAJ_LIBRE_MIN CIDRE_ESSAI_LIBRE_KO CIDRE_MAJ_VALIDER 2>/dev/null
+unset CIDRE_LANGUE CIDRE_MAJ_AVANT_LANCEMENT CIDRE_MAJ_TTL CIDRE_MAJ_LIBRE_MIN CIDRE_ESSAI_LIBRE_KO CIDRE_MAJ_VALIDER 2>/dev/null
 # `open` (le client Steam) : un faux, devant le vrai
 printf '#!/bin/sh\necho "$*" >>"%s/ouvertures"\n' "$F" >"$F/bin/open"; chmod +x "$F/bin/open"
 export PATH="$F/bin:$PATH"
@@ -188,7 +190,7 @@ verif "le build installe est le nouveau" "200" "$(build 9001)"
 verif "c'est la nouvelle version qui est lancee" "Jeu.exe 200 appid=9001" "$(lance)"
 verif "un seul telechargement" "1" "$(appels 'app_update 9001')"
 verif "sans validate : seul ce qui a change" "0" "$(appels 'app_update 9001 validate')"
-contient "session du compte, dossier du jeu" "+force_install_dir $G/9001 +login essai +app_update 9001 +quit" "$(grep app_update "$F/appels")"
+contient "session du compte, dossier du jeu" "+force_install_dir $G/9001 +login essai +app_update 9001 -language french +quit" "$(grep app_update "$F/appels")"
 contient "annonce la mise a jour et la facon de passer outre" "Mise a jour avant le lancement : build 100 -> 200 (\`cidre play 9001 --sans-maj\` pour jouer sans attendre)." "$sortie"
 contient "la sortie de SteamCMD est relayee" "downloading, progress: 37.93" "$sortie"
 contient "dit que c'est fait" "Mise a jour faite : build 200." "$sortie"
@@ -429,7 +431,7 @@ echo "== 9. cidre dl et cidre rm"
 jeu 9040 100; publie 9040 100; sh "$C" updates --refresh >/dev/null 2>&1; raz; publie 9040 200
 sortie=$(sh "$C" dl 9040 </dev/null 2>&1); rc=$?
 verif "cidre dl : mis a jour (code 0)" "0 200" "$rc $(build 9040)"
-verif "cidre dl : avec validate (fichiers reverifies)" "1" "$(appels 'app_update 9040 validate')"
+verif "cidre dl : avec validate (fichiers reverifies)" "1" "$(appels 'app_update 9040 -language french validate')"
 contient "cidre dl : la sortie de SteamCMD passe telle quelle (Verger y lit l'avancement)" " Update state (0x61) downloading, progress: 37.93 (32564012 / 85850313)" "$sortie"
 [ ! -e "$A" ] && ok "cidre dl : le cache disait 100, il est jete" || echec "cidre dl : le cache en retard est reste"
 verif "apres cidre dl : cidre updates redemande et dit a jour" '1 true "a_jour"' "$(u=$(sh "$C" updates --json | tr '{' '\n' | grep '"appid": 9040,'); echo "$(appels 'login anonymous') $(champ_json "$u" a_jour) $(champ_json "$u" etat)")"

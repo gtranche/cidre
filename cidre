@@ -954,6 +954,23 @@ maj_interrompre() {
    maj_oublier avancement rc
    exit 130
 }
+# La langue Steam d'un jeu (french...) : son option `langue` (CIDRE_LANGUE la
+# remplace) ; « auto » = la langue du Mac, sinon l'anglais (tests/langue_cidre.sh).
+# SteamCMD installe les depots de cette langue (app_update -language), comme le
+# client Steam ceux de la sienne : sans elle, il prenait l'anglais.
+langue_steam() { # <appid>
+   ls_l=${CIDRE_LANGUE:-$(sh "$R/tests/profil_cidre.sh" "$1" 2>/dev/null | sed -n 's/^langue=//p' | head -1)}
+   sh "$R/tests/langue_cidre.sh" "${ls_l:-auto}" 2>/dev/null | sed -n 's/^steam=//p'
+}
+# Les depots de cette langue que Steam publie pour le jeu et que son
+# installation n'a pas (lu dans APPINFO, sans reseau ; tests/depots_langue.awk).
+# Rien : le jeu est entier, ou on n'en sait rien.
+depots_langue_manquants() { # <appid> <langue steam> <windows|macos>
+   dm_f=$(acf "$1")
+   [ -n "$2" ] && [ -s "$dm_f" ] && [ -s "$APPINFO" ] || return 0
+   LC_ALL=C awk -v appid="$1" -v langue="$2" -v os="$3" -f "$R/tests/depots_langue.awk" "$dm_f" "$APPINFO"
+}
+
 # Telecharge un jeu dans un emplacement Cidre, ou l'y met a jour : c'est `cidre dl`
 # (mode dl : fichiers reverifies ; au terminal, SteamCMD peut demander le mot de
 # passe) et la mise a jour d'avant lancement de `cidre play` (mode maj : session
@@ -993,13 +1010,16 @@ telecharger() { # <appid> <windows|macos> <dl|maj>
    maj_noter "$t_id" etat=en_cours "pid=$$" "build_avant=$t_avant" "build_vise=$t_vise"
    maj_oublier avancement rc; : >"$MAJ_ETATS/$t_id.sortie"
    t_val=validate; [ "$t_mode" = maj ] && [ "${CIDRE_MAJ_VALIDER:-0}" != 1 ] && t_val=
+   # les fichiers de la langue du jeu (et ceux sans langue) ; une installation
+   # faite dans une autre langue recoit ceux qui lui manquent, sans le reste
+   t_langue=$(langue_steam "$t_id"); t_langue=${t_langue:+-language $t_langue}
    if [ "$t_mode" = dl ] && [ -t 0 ]; then
-      scmd +@sSteamCmdForcePlatformType "$t_os" +force_install_dir "$DEST" +login "$U" +app_update "$t_id" $t_val +quit
+      scmd +@sSteamCmdForcePlatformType "$t_os" +force_install_dir "$DEST" +login "$U" +app_update "$t_id" $t_langue $t_val +quit
       t_rc=$?
    else
       # En fond, et on l'attend : `wait` se laisse interrompre par un signal, une
       # commande au premier plan non.
-      { scmd_memorise +@sSteamCmdForcePlatformType "$t_os" +force_install_dir "$DEST" +login "$U" +app_update "$t_id" $t_val +quit 2>&1
+      { scmd_memorise +@sSteamCmdForcePlatformType "$t_os" +force_install_dir "$DEST" +login "$U" +app_update "$t_id" $t_langue $t_val +quit 2>&1
         echo $? >"$MAJ_ETATS/$t_id.rc"; } | maj_suivre "$t_id" &
       t_pid=$!
       trap 'maj_interrompre' INT TERM HUP
@@ -1059,6 +1079,7 @@ maj_avant_lancement() { # <appid>
    fi
    evenement '{"evenement":"maj","etat":"verification"}'
    maj_etat "$1"
+   langue_avant_lancement "$1" && return 0
    case $MAJ_ETAT in
      disponible|echouee) ;;
      ignoree)
@@ -1092,6 +1113,42 @@ maj_avant_lancement() { # <appid>
       MAJ_ETAT=echouee; MAJ_INSTALLE=$(champ "$1" buildid)
       dire "$MAJ_MESSAGE Lancement de la version installee (build $MAJ_INSTALLE)."
    fi
+   evenement_maj "$1"
+   return 0
+}
+
+# Un jeu a jour mais installe dans une autre langue (telecharge avant que Cidre
+# ne demande celle du Mac, ou langue changee depuis) : si Steam publie des depots
+# de la langue voulue, ils sont ajoutes avant le lancement -- eux seuls, pas le
+# reste du jeu. Une fois par langue et par build (MAJ_ETATS/<appid>.langue) :
+# un depot que SteamCMD ne donne pas ne fait pas attendre chaque lancement.
+# Jamais un obstacle, comme la mise a jour. Rend 1 quand il n'y a rien a ajouter.
+langue_avant_lancement() { # <appid>
+   case $MAJ_ETAT in
+     a_jour) ;;
+     ignoree) [ "$MAJ_RAISON" = sans_effet ] || return 1 ;;
+     *) return 1 ;;
+   esac
+   la_os=windows; [ "$(plat "$1")" = macos ] && la_os=macos
+   la_l=$(langue_steam "$1")
+   la_d=$(depots_langue_manquants "$1" "$la_l" "$la_os" | sort -n | tr '\n' ' ' | sed 's/ $//')
+   [ -n "$la_d" ] || return 1
+   la_t="$la_l:$(champ "$1" buildid)"
+   [ "$(cat "$MAJ_ETATS/$1.langue" 2>/dev/null)" != "$la_t" ] || return 1
+   dire "Fichiers de langue a ajouter ($la_l : depot $la_d) avant le lancement (\`cidre play $1 --sans-maj\` pour jouer sans attendre)."
+   MAJ_ETAT=en_cours; MAJ_RAISON=; MAJ_MESSAGE=; evenement_maj "$1"
+   if telecharger "$1" "$la_os" maj; then
+      la_r=$(depots_langue_manquants "$1" "$la_l" "$la_os" | tr '\n' ' ' | sed 's/ $//')
+      if [ -z "$la_r" ]; then dire "Fichiers de langue ajoutes ($la_l)."
+      else dire "Fichiers de langue : SteamCMD n'a pas installe le depot $la_r ; ce ne sera pas retente pour ce build. Lancement tel quel."; fi
+      MAJ_ETAT=faite
+      mkdir -p "$MAJ_ETATS" && printf '%s\n' "$la_t" >"$MAJ_ETATS/$1.langue"
+   else
+      # (hors ligne, session...) : retente au prochain lancement
+      MAJ_ETAT=echouee
+      dire "$MAJ_MESSAGE Lancement de la version installee."
+   fi
+   MAJ_INSTALLE=$(champ "$1" buildid)
    evenement_maj "$1"
    return 0
 }
@@ -1605,6 +1662,7 @@ case "$cmd" in
     dire "== Cidre dl =="
     dire "  app     : $id"
     dire "  os      : $os"
+    dire "  langue  : $(langue_steam "$id")"
     dire "  compte  : $U"
     dire "  dossier : $DL_DEST   (hors du client Steam)"
     dire "  -> Si demande : tape TON mot de passe + code Steam Guard (une fois ; ensuite memorise)."

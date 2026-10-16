@@ -103,7 +103,7 @@ for f in trouver_jeux_bouteilles.sh reprendre_jeu_bouteille.sh reprendre_saves_b
 for f in etape2_pile_arm64ec.sh lancer_depuis_steam.sh brancher_jeux_steam.sh \
          installer_agent_steam.sh preparer_pont_steam_arm64.sh sync_saves_steam.sh \
          installer_fex.sh profil_cidre.sh cidre_install.sh compte_steam.sh \
-         majs_steam.awk brancher_jeux_steam.awk configurer_cidre.sh langue_jeu.sh \
+         majs_steam.awk brancher_jeux_steam.awk configurer_cidre.sh langue_jeu.sh langue_cidre.sh depots_langue.awk \
          installer_steamcmd.sh installer_client_steam_windows.sh diagnostic_cidre.sh \
          fiche_profil.sh reglages_jeu.sh arguments_jeu.sh version_windows.sh machine.sh client_steam_natif.sh expliquer_sortie.sh deviner_saves.sh repli_dxmt.sh lier_saves_steam.sh prefixe_a_jour.sh; do
    livrer "tests/$f"

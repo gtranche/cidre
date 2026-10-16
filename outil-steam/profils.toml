@@ -15,10 +15,14 @@
 # profil utilisateur, une section [<appid>] par jeu),
 # des lignes `cle = valeur` (true/false, entier, ou "chaine"). Rien d'autre.
 #
-#   langue           langue du jeu : "auto" (suivre macOS et Steam, ne rien forcer)
+#   langue           langue du jeu : "auto" (la langue de macOS, sinon l'anglais)
 #                    ou un code : fr, en, de, es, it, pt, ru, pl, ja, ko, zh. Pose
-#                    la locale Windows (LC_ALL) et, pour les jeux de la table
-#                    outil-steam/langues.conf, leur fichier de reglages.
+#                    la locale Windows (LC_ALL du seul Wine), les depots de langue
+#                    que `cidre dl` et la mise a jour installent (-language), et,
+#                    pour les jeux de la table outil-steam/langues.conf, leur
+#                    fichier de reglages (en « auto », une fois : le choix fait
+#                    dans le jeu reste le sien). L'API Steam donne au jeu la
+#                    langue du client Steam, comme sous Windows.
 #   journal_detaille laisse Wine ecrire ses messages d'erreur dans le journal du jeu
 #                    (WINEDEBUG=err+all), au lieu de le faire taire. Pour comprendre
 #                    un jeu qui ne demarre pas ; un peu plus lent, a couper ensuite.
