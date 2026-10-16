@@ -1,0 +1,275 @@
+wine11 / lsteamclient : retours par pointeur cache selon la version exacte de l'interface (Demonologist)
+
+Demonologist (appid 1929610, UE 5.6.1, SteamCorePro) plantait avant le menu :
+ACCESS_VIOLATION en ecriture a 0x0110000114532C3B sur le fil principal, dans
+lsteamclient+0x17e44 -- « *(UINT64 *)a = params.ret » de repartir, la voie du
+retour par pointeur cache. L'adresse est un CSteamID (univers 1, compte
+individuel, id 0x14532C3B), pas un pointeur.
+
+Le jeu appelle SteamFriends018 emplacement 4 avec ce CSteamID et compare le
+retour a 3 (k_EFriendRelationshipFriend) : GetFriendRelationship. Or
+signatures32.h, releve sur un steam_api i386 d'epoque SteamFriends017 et
+indexe par NOM d'interface, met a l'emplacement 4 GetFriendByIndex, qui rend
+un CSteamID par pointeur cache. SteamFriends018 a retire SetPersonaName
+(emplacement 1) : tout ISteamFriends a glisse d'un cran (mesure sur les
+enveloppes plates du steam_api64.dll du jeu : GetFriendByIndex en 3,
+GetFriendRelationship en 4).
+
+En 64 bits seul ce drapeau compte (le relais va a l'emplacement de meme rang de
+l'objet natif de meme version). Il est desormais resolu, a l'enveloppement, par
+la chaine de version exacte que le jeu transmet :
+
+- retours64.h (engendre par tests/engendrer_retours64.py) : pour chaque version
+  relevee dans les steam_api64.dll de cinq jeux (SDK 1.47 a 1.6x), les
+  emplacements a retour cache et la taille rendue -- celle-ci lue a la portee
+  des relectures par le pointeur rendu, ce qui ecarte les arguments passes par
+  reference. Concorde avec signatures32.h la ou la version est la meme
+  (SteamFriends017, SteamUser023, SteamMatchMaking009...) et ajoute trois
+  CSteamID que la table i386 ignorait (GetFriendFromSourceByIndex,
+  GetClanOfficerByIndex, GetChatMemberByIndex). Ecarts corriges ailleurs que
+  Friends : SteamGameServer014/015, SteamInput006.
+- Une version relevee sans ligne n'a aucun retour cache ; seule une version
+  inconnue retombe sur signatures32.h.
+- Garde-fou : un premier argument au-dela de 2^47 n'est jamais un tampon de
+  sortie (un CSteamID porte l'univers dans son octet haut) ; on relaie alors
+  sans decalage et on le dit une fois par emplacement en ERR.
+
+Le chemin 32 bits n'est pas touche.
+
+Reconstruire lsteamclient.dll (aarch64-windows) depuis build/wine11-arm64-ec,
+les deux drapeaux TEB, llvm-mingw dans le PATH.
+---
+--- a/dlls/lsteamclient/main.c
++++ b/dlls/lsteamclient/main.c
+@@ -124,6 +124,12 @@
+      * chercher a chaque appel revenait a parcourir les 876 entrees de la table
+      * plusieurs centaines de fois par seconde, pour un resultat constant. */
+     const struct signature_steam *sigs[NB_SIGNATURES];
++#ifdef _WIN64
++    /* Taille de la structure rendue par pointeur cache, par emplacement : celle
++     * de la version exacte quand elle a ete relevee (retours64.h), sinon celle
++     * de la table i386. Zero si la methode n'en rend pas. */
++    unsigned char tampons[NB_SIGNATURES];
++#endif
+ };
+ 
+ /*
+@@ -293,6 +299,41 @@
+ }
+ 
+ #ifdef _WIN64
++#include "retours64.h"
++
++/*
++ * Retour par pointeur cache, version par version.
++ *
++ * signatures32.h decrit les methodes par NOM d'interface, d'apres un steam_api
++ * d'epoque SteamFriends017. Mais les emplacements bougent d'une version a
++ * l'autre : SteamFriends018 a retire SetPersonaName (emplacement 1), et tout
++ * ISteamFriends a glisse d'un cran. Sur Demonologist (UE 5.6, SteamFriends018),
++ * GetFriendRelationship -- nouvel emplacement 4 -- etait pris pour
++ * GetFriendByIndex : le CSteamID passe en argument (0x0110000114532c3b) servait
++ * d'adresse de sortie, et le jeu tombait en ACCESS_VIOLATION a l'ecriture sur
++ * son fil principal, avant le menu.
++ *
++ * retours64.h donne la disposition par chaine de version exacte, relevee dans
++ * les steam_api64.dll des jeux (tests/engendrer_retours64.py). Une version
++ * relevee sans ligne n'a aucun retour cache ; seule une version inconnue
++ * retombe sur la table i386.
++ */
++static unsigned taille_retour64( const char *version, unsigned emplacement,
++                                 const struct signature_steam *sig )
++{
++    unsigned i;
++
++    if (version && version[0])
++    {
++        for (i = 0; i < ARRAY_SIZE(retours64); i++)
++            if (retours64[i].emplacement == emplacement && !strcmp( retours64[i].version, version ))
++                return retours64[i].taille;
++        for (i = 0; i < ARRAY_SIZE(versions64); i++)
++            if (!strcmp( versions64[i], version )) return 0;
++    }
++    return sig ? sig->tampon : 0;
++}
++
+ /* Un mot est-il une chaine d'invite lisible ? Sous 64 Kio il n'y a jamais de
+  * pointeur valide : repondre sans sonder evite une exception par appel. */
+ static BOOL chaine_plausible( UINT64 mot )
+@@ -317,7 +358,6 @@
+     struct objet_pe *objet = self;
+     struct appel_vtable_params params = { objet->natif, emplacement, 0, a, b, c, d, e, f, g, h, i, 0 };
+     const char *ou = objet->nom[0] ? objet->nom : "ISteamClient";
+-    const struct signature_steam *sig;
+ 
+     /* Un appel par methode et par image : en ERR, le journal coutait plus cher
+      * que le pont lui-meme. En TRACE, il ne s'active qu'a la demande. */
+@@ -355,11 +395,29 @@
+     if (objet->nom[0])
+     {
+         UINT64 neutre;
++        unsigned tampon;
+ 
+         if (voix_non_relayee( objet->nom, emplacement, &neutre )) return neutre;
+-        sig = emplacement < NB_SIGNATURES ? objet->sigs[emplacement] : NULL;
+-        if (sig && sig->tampon)
++        tampon = emplacement < NB_SIGNATURES ? objet->tampons[emplacement] : 0;
++
++        /*
++         * Un pointeur de sortie est une adresse d'utilisateur, sous 2^47. Au-dela,
++         * le premier argument est une valeur -- un CSteamID porte l'univers dans
++         * son octet haut (0x01 pour Public) -- et la disposition connue ne
++         * correspond pas a la version du jeu. Relayer sans decalage vaut mieux
++         * qu'ecrire a cette adresse.
++         */
++        if (tampon && (a >> 47))
+         {
++            static unsigned char signale[NB_SIGNATURES];
++
++            if (!signale[emplacement]++)
++                ERR( "%s emplacement %u : %s n'est pas un tampon de sortie, relaye sans decalage\n",
++                     ou, emplacement, wine_dbgstr_longlong(a) );
++            tampon = 0;
++        }
++        if (tampon)
++        {
+             /*
+              * Retour par pointeur cache (un CSteamID : classe a constructeur,
+              * que MSVC ne rend jamais dans RAX). Cote Microsoft x64 le pointeur
+@@ -378,7 +436,7 @@
+              * registre -- classe MEMORY ou mixte entier/flottant -- et le
+              * relais ne sait pas encore la traiter.
+              */
+-            if (sig->tampon != 8) { ERR( "%s emplacement %u : tampon de %u octets, non traite\n", ou, emplacement, sig->tampon ); return 0; }
++            if (tampon != 8) { ERR( "%s emplacement %u : tampon de %u octets, non traite\n", ou, emplacement, tampon ); return 0; }
+             if (!a) return 0;
+             params.a = b; params.b = c; params.c = d; params.d = e; params.e = f; params.f = g;
+             params.g = h; params.h = i; params.i = 0;
+@@ -719,7 +777,12 @@
+ 
+     /* Les signatures d'abord : la table de methodes en depend en 32 bits. */
+     for (k = 0; k < NB_SIGNATURES; k++)
++    {
+         objet->sigs[k] = signature( objet->nom[0] ? objet->nom : "SteamClient", k );
++#ifdef _WIN64
++        objet->tampons[k] = taille_retour64( objet->nom, k, objet->sigs[k] );
++#endif
++    }
+ 
+ #ifdef _WIN64
+     objet->table = table_steam_client;
+--- /dev/null
++++ b/dlls/lsteamclient/retours64.h
+@@ -0,0 +1,112 @@
++/* Engendre par tests/engendrer_retours64.py -- ne pas editer a la main.
++ * Releve dans les steam_api64.dll des jeux : pour chaque version exacte
++ * d'interface, les methodes qui rendent une structure par pointeur cache en
++ * Microsoft x64, et sa taille. Une version listee dans versions64 sans
++ * ligne ici n'en a aucune ; une version absente des deux est inconnue. */
++
++struct retour64
++{
++    const char *version;
++    unsigned    emplacement;
++    unsigned    taille;
++    const char *methode;
++};
++
++static const struct retour64 retours64[] =
++{
++    { "STEAMAPPS_INTERFACE_VERSION008", 20, 8, "GetAppOwner" },
++    { "STEAMREMOTEPLAY_INTERFACE_VERSION001", 2, 8, "GetSessionSteamID" },
++    { "STEAMREMOTEPLAY_INTERFACE_VERSION002", 2, 8, "GetSessionSteamID" },
++    { "STEAMREMOTEPLAY_INTERFACE_VERSION003", 2, 8, "GetSessionSteamID" },
++    { "SteamController007", 12, 2, "GetDigitalActionData" },
++    { "SteamController007", 15, 13, "GetAnalogActionData" },
++    { "SteamController007", 20, 40, "GetMotionData" },
++    { "SteamController008", 12, 2, "GetDigitalActionData" },
++    { "SteamController008", 15, 13, "GetAnalogActionData" },
++    { "SteamController008", 20, 40, "GetMotionData" },
++    { "SteamFriends017", 4, 8, "GetFriendByIndex" },
++    { "SteamFriends017", 19, 8, "GetClanByIndex" },
++    { "SteamFriends017", 25, 8, "GetFriendFromSourceByIndex" },
++    { "SteamFriends017", 39, 8, "GetClanOwner" },
++    { "SteamFriends017", 41, 8, "GetClanOfficerByIndex" },
++    { "SteamFriends017", 51, 8, "GetCoplayFriend" },
++    { "SteamFriends017", 57, 8, "GetChatMemberByIndex" },
++    { "SteamFriends018", 3, 8, "GetFriendByIndex" },
++    { "SteamFriends018", 18, 8, "GetClanByIndex" },
++    { "SteamFriends018", 24, 8, "GetFriendFromSourceByIndex" },
++    { "SteamFriends018", 38, 8, "GetClanOwner" },
++    { "SteamFriends018", 40, 8, "GetClanOfficerByIndex" },
++    { "SteamFriends018", 49, 8, "GetCoplayFriend" },
++    { "SteamFriends018", 55, 8, "GetChatMemberByIndex" },
++    { "SteamGameServer013", 10, 8, "GetSteamID" },
++    { "SteamGameServer013", 25, 8, "CreateUnauthenticatedUserConnection" },
++    { "SteamGameServer013", 36, 20, "GetPublicIP" },
++    { "SteamGameServer014", 10, 8, "GetSteamID" },
++    { "SteamGameServer014", 33, 20, "GetPublicIP" },
++    { "SteamGameServer014", 39, 8, "CreateUnauthenticatedUserConnection" },
++    { "SteamGameServer015", 10, 8, "GetSteamID" },
++    { "SteamGameServer015", 33, 20, "GetPublicIP" },
++    { "SteamGameServer015", 39, 8, "CreateUnauthenticatedUserConnection" },
++    { "SteamInput001", 12, 2, "GetDigitalActionData" },
++    { "SteamInput001", 15, 13, "GetAnalogActionData" },
++    { "SteamInput001", 20, 40, "GetMotionData" },
++    { "SteamInput002", 12, 2, "GetDigitalActionData" },
++    { "SteamInput002", 15, 13, "GetAnalogActionData" },
++    { "SteamInput002", 20, 40, "GetMotionData" },
++    { "SteamInput006", 17, 2, "GetDigitalActionData" },
++    { "SteamInput006", 21, 13, "GetAnalogActionData" },
++    { "SteamInput006", 29, 40, "GetMotionData" },
++    { "SteamMatchMaking009", 12, 8, "GetLobbyByIndex" },
++    { "SteamMatchMaking009", 18, 8, "GetLobbyMemberByIndex" },
++    { "SteamMatchMaking009", 35, 8, "GetLobbyOwner" },
++    { "SteamUser020", 2, 8, "GetSteamID" },
++    { "SteamUser021", 2, 8, "GetSteamID" },
++    { "SteamUser023", 2, 8, "GetSteamID" },
++};
++
++static const char * const versions64[] =
++{
++    "STEAMAPPLIST_INTERFACE_VERSION001",
++    "STEAMAPPS_INTERFACE_VERSION008",
++    "STEAMHTTP_INTERFACE_VERSION003",
++    "STEAMMUSICREMOTE_INTERFACE_VERSION001",
++    "STEAMMUSIC_INTERFACE_VERSION001",
++    "STEAMPARENTALSETTINGS_INTERFACE_VERSION001",
++    "STEAMREMOTEPLAY_INTERFACE_VERSION001",
++    "STEAMREMOTEPLAY_INTERFACE_VERSION002",
++    "STEAMREMOTEPLAY_INTERFACE_VERSION003",
++    "STEAMREMOTESTORAGE_INTERFACE_VERSION014",
++    "STEAMREMOTESTORAGE_INTERFACE_VERSION016",
++    "STEAMSCREENSHOTS_INTERFACE_VERSION003",
++    "STEAMUGC_INTERFACE_VERSION015",
++    "STEAMUGC_INTERFACE_VERSION016",
++    "STEAMUGC_INTERFACE_VERSION020",
++    "STEAMUGC_INTERFACE_VERSION021",
++    "STEAMUSERSTATS_INTERFACE_VERSION012",
++    "STEAMUSERSTATS_INTERFACE_VERSION013",
++    "SteamController007",
++    "SteamController008",
++    "SteamFriends017",
++    "SteamFriends018",
++    "SteamGameServer013",
++    "SteamGameServer014",
++    "SteamGameServer015",
++    "SteamGameServerStats001",
++    "SteamInput001",
++    "SteamInput002",
++    "SteamInput006",
++    "SteamMatchMaking009",
++    "SteamMatchMakingServers002",
++    "SteamNetworking006",
++    "SteamNetworkingMessages002",
++    "SteamNetworkingSockets009",
++    "SteamNetworkingSockets012",
++    "SteamNetworkingUtils003",
++    "SteamNetworkingUtils004",
++    "SteamParties002",
++    "SteamUser020",
++    "SteamUser021",
++    "SteamUser023",
++    "SteamUtils009",
++    "SteamUtils010",
++};
