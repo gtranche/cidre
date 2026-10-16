@@ -1,0 +1,86 @@
+wine11 : swapchain mise a l'echelle par l'hote, pas « sous-optimale » a chaque image (0170)
+
+win32u rend VK_SUBOPTIMAL_KHR a vkAcquireNextImage(2)KHR et vkQueuePresentKHR
+des que la taille de la swapchain differe du rectangle client. En mode d'ecran
+emule (option mode_emule), c'est le cas par construction : le jeu rend en
+1024x768 dans une fenetre plein ecran, et win32u fait mettre l'image a l'echelle
+par l'hote (VkSwapchainPresentScalingCreateInfoEXT, cf. 0169). DXVK recreait
+alors sa swapchain a chaque image -- Fahrenheit Remastered (312840), M4,
+2026-10-17 : 77 recreations par seconde.
+
+Une swapchain creee avec la mise a l'echelle retient la taille de la fenetre a
+sa creation et ne devient sous-optimale que si la fenetre change ; sans mise a
+l'echelle, rien ne change (comparaison a sa propre taille, comme l'amont).
+
+--- aa/dlls/win32u/vulkan.c
++++ bb/dlls/win32u/vulkan.c
+@@ -174,6 +174,10 @@
+     struct vulkan_swapchain obj;
+     struct surface *surface;
+     VkExtent2D extents;
++    /* Taille de fenetre au-dela de laquelle la swapchain est « sous-optimale » :
++     * la sienne, sauf si l'hote la met a l'echelle (VkSwapchainPresentScalingCreateInfoEXT) --
++     * alors celle de la fenetre a la creation : seul un changement de fenetre compte. */
++    VkExtent2D attendu;
+ };
+ 
+ static struct swapchain *swapchain_from_handle( VkSwapchainKHR handle )
+@@ -1851,6 +1855,7 @@
+     VkSwapchainKHR host_swapchain;
+     struct ratio raw_dpi;
+     RECT client_rect;
++    VkExtent2D attendu = create_info->imageExtent;
+     VkResult res;
+ 
+     if (!NtUserIsWindow( surface->hwnd ))
+@@ -1889,6 +1894,15 @@
+             scaling.pNext = create_info_host.pNext;
+             create_info_host.pNext = &scaling;
+         }
++        /* Mise a l'echelle par l'hote (mode d'ecran emule : 1024x768 dans une fenetre
++         * plein ecran) : l'ecart de taille est voulu. Le signaler a chaque image
++         * faisait recreer la swapchain a chaque image par DXVK (Fahrenheit, 77 fois
++         * par seconde). */
++        if (get_surface_rect( surface->hwnd, &client_rect, get_dpi_for_window( surface->hwnd ) ))
++        {
++            attendu.width = client_rect.right - client_rect.left;
++            attendu.height = client_rect.bottom - client_rect.top;
++        }
+     }
+ 
+     if (!(swapchain = calloc( 1, sizeof(*swapchain) ))) return VK_ERROR_OUT_OF_HOST_MEMORY;
+@@ -1902,6 +1916,7 @@
+     vulkan_object_init( &swapchain->obj.obj, host_swapchain );
+     swapchain->surface = surface;
+     swapchain->extents = create_info->imageExtent;
++    swapchain->attendu = attendu;
+     instance->p_insert_object( instance, &swapchain->obj.obj );
+ 
+     *ret = swapchain->obj.client.swapchain;
+@@ -1942,7 +1957,7 @@
+     res = device->p_vkAcquireNextImage2KHR( device->host.device, &acquire_info_host, image_index );
+ 
+     if (!res && get_surface_rect( surface->hwnd, &client_rect, get_dpi_for_window( surface->hwnd ) ) &&
+-        !extents_equals( &swapchain->extents, &client_rect ))
++        !extents_equals( &swapchain->attendu, &client_rect ))
+     {
+         WARN( "Swapchain size %dx%d does not match client rect %s, returning VK_SUBOPTIMAL_KHR\n",
+               swapchain->extents.width, swapchain->extents.height, wine_dbgstr_rect( &client_rect ) );
+@@ -1968,7 +1983,7 @@
+                                               image_index );
+ 
+     if (!res && get_surface_rect( surface->hwnd, &client_rect, get_dpi_for_window( surface->hwnd ) ) &&
+-        !extents_equals( &swapchain->extents, &client_rect ))
++        !extents_equals( &swapchain->attendu, &client_rect ))
+     {
+         WARN( "Swapchain size %dx%d does not match client rect %s, returning VK_SUBOPTIMAL_KHR\n",
+               swapchain->extents.width, swapchain->extents.height, wine_dbgstr_rect( &client_rect ) );
+@@ -2036,7 +2051,7 @@
+         }
+         else if (swapchain_res)
+             WARN( "Present returned status %d for swapchain %p\n", swapchain_res, swapchain );
+-        else if (!extents_equals( &swapchain->extents, &client_rect ))
++        else if (!extents_equals( &swapchain->attendu, &client_rect ))
+         {
+             WARN( "Swapchain size %dx%d does not match client rect %s, returning VK_SUBOPTIMAL_KHR\n",
+                   swapchain->extents.width, swapchain->extents.height, wine_dbgstr_rect( &client_rect ) );
