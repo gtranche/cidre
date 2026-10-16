@@ -95,6 +95,33 @@ Exemple mesuré (2026-10-14, PEAK en vrai D3D12, même vue) : Unity rend par
 défaut en ~120 listes de commandes par image, que KosmicKrisp ne peut pas
 fusionner ; avec `-force-gfx-direct`, 2 listes par image, et 32 → 45 images/s.
 
+### Clavier AZERTY : les touches à leur place (`clavier`)
+
+Un jeu qui lit les codes virtuels de Windows (`VK_W`, `WM_KEYDOWN` : Unreal,
+Unity, la plupart des jeux Win32) attend ses touches aux positions d'un
+clavier QWERTY. Wine, comme Windows, donne à chaque touche le code virtuel de
+son caractère : en AZERTY, la touche Z envoie `VK_Z`, et le joueur
+réassignait ZQSD dans chaque jeu. Un jeu qui lit les codes de balayage
+(DirectInput, Raw Input) n'est pas concerné : ce sont déjà des positions.
+
+- `clavier = "positions"` : chaque touche de caractères du bloc principal
+  prend le code virtuel de sa position QWERTY. En AZERTY : A et Q, Z et W
+  échangées ; la touche M est le `;` du jeu et la touche virgule son `M` ; la
+  rangée du haut donne `1`…`0` sans Maj (Unreal appelait la touche 1 « & »).
+  Les touches par défaut du jeu tombent là où il les attend. Sans effet sur
+  une disposition QWERTY US.
+- `clavier = "systeme"` (défaut) : le comportement de Wine.
+
+Le texte tapé (discussion, nom du personnage) reste celui de la disposition
+macOS, et le nom d'une touche (`GetKeyNameText`) aussi. Le jeu voit une
+disposition US (`00000409`) dans la langue du système, cohérente avec ses
+codes virtuels : un jeu qui adapte ses touches à une disposition AZERTY ne
+les déplace pas une seconde fois. Un jeu déjà réassigné à la main en ZQSD est
+à remettre à ses touches par défaut. Pour tous les jeux : `cidre set defaut
+clavier positions` ; pour un essai, `CIDRE_CLAVIER=positions`. La mécanique
+est dans winemac (wine11 0151) ; `tests/sonde_clavier.c` montre ce que voit
+un jeu, touche par touche.
+
 ### Version de Windows (`windows_version`)
 
 Sans l'option, un jeu voit Windows 10. Une fiche (ou `cidre set <id>
@@ -165,7 +192,7 @@ lanceur = "steam"                  # steam, epic, gog, aucun
 # outil-steam/profils.toml (voir son en-tête pour le sens de chacune) :
 # langue, journal_detaille, maj_avant_lancement, tso, vsync, hud, overlay, async, narrow_barriers,
 # garde_index, fils_compilation, eac_untrusted, luajit, plein_ecran, mode_emule, gamemode,
-# dx12, d3d11, metalfx, arguments, dll_overrides, windows_version, dependances.
+# dx12, d3d11, metalfx, clavier, arguments, dll_overrides, windows_version, dependances.
 # On n'y met que ce qui diffère de [defaut].
 async = true
 fils_compilation = 6

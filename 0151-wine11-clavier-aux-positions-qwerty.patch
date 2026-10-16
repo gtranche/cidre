@@ -1,0 +1,208 @@
+wine11 : touches aux positions QWERTY pour un clavier AZERTY (CIDRE_CLAVIER)
+
+winemac donne a chaque touche le code virtuel de son caractere, comme
+Windows : en AZERTY, la touche Z (position W du QWERTY) envoie VK_Z, la
+touche M VK_M a la position du « ; ». Un jeu qui lit les codes virtuels
+(WM_KEYDOWN ; Unreal et SDL nomment les touches par
+MapVirtualKey(MAPVK_VK_TO_CHAR), et la touche 1 s'y appelait « & ») attend
+ses touches aux positions QWERTY : le joueur reassignait A/Q, Z/W, M... dans
+chaque jeu (2026-10-16). Les codes de balayage, eux, sont deja des positions
+(DirectInput, Raw Input : rien a faire).
+
+CIDRE_CLAVIER=positions (pose par le lanceur, option `clavier` du profil) :
+chaque touche de caracteres du bloc principal (hors ` et <>) recoit le code
+virtuel de sa position QWERTY, avant que les caracteres ne distribuent les
+autres. La correspondance touche <-> code virtuel reste une bijection :
+ToUnicode, la methode de saisie (ImeToAsciiEx) et GetKeyNameText retrouvent
+la touche reelle et rendent le texte de la disposition macOS (discussion,
+noms). MapVirtualKey(VK_TO_CHAR) d'une telle touche rend le caractere QWERTY
+de sa position. Quand une touche change, le HKL annonce garde la langue du
+systeme (win32u refuse d'en changer) et prend la disposition US (00000409),
+coherente avec les codes virtuels : un jeu qui adapte ses touches a une
+disposition AZERTY ne les deplace pas une seconde fois. Sans CIDRE_CLAVIER,
+rien ne change.
+
+Sonde : tests/sonde_clavier.c (scancode -> VK -> caractere, texte, nom, HKL),
+tests/tester_clavier.sh sonde, prefixe clone.
+
+diff --color -ru pa/dlls/winemac.drv/keyboard.c pb/dlls/winemac.drv/keyboard.c
+--- a/dlls/winemac.drv/keyboard.c	2026-10-16 12:10:38
++++ b/dlls/winemac.drv/keyboard.c	2026-10-16 12:39:46
+@@ -202,6 +202,82 @@
+ };
+ 
+ 
++/* Cidre : les touches d'un jeu a leur place, quelle que soit la disposition.
++   Un jeu qui lit les codes virtuels (WM_KEYDOWN, VK_W) attend ses touches aux
++   positions du clavier QWERTY ; Wine, comme Windows, donne a chaque touche le
++   code virtuel de son caractere : en AZERTY, la touche Z envoie VK_Z, et le
++   joueur reassignait A/Q, Z/W, M... dans chaque jeu.
++   CIDRE_CLAVIER=positions (pose par le lanceur, option `clavier` du profil) :
++   chaque touche de caracteres du bloc principal prend le code virtuel de sa
++   position QWERTY, avant que les caracteres ne distribuent les autres. Les
++   codes de balayage ne changent pas (ils sont deja des positions). Le texte
++   tape reste celui de la disposition macOS : ToUnicode, la methode de saisie
++   et le nom des touches (GetKeyNameText) partent de la touche reelle.
++   MapVirtualKey(MAPVK_VK_TO_CHAR) rend le caractere QWERTY de la position :
++   Unreal et SDL nomment les touches par ce caractere (en AZERTY, la touche 1
++   s'appelait « & »). Quand une touche change, le jeu voit une disposition US
++   (HKL 0409) dans la langue du systeme, coherente avec ses codes virtuels :
++   un jeu qui adapte ses touches a une disposition AZERTY ne les deplace pas
++   une seconde fois. Sans effet sur une disposition QWERTY US. */
++static BOOL cidre_clavier_positions(void)
++{
++    const char *v = getenv("CIDRE_CLAVIER");
++
++    return v && !strcmp(v, "positions");
++}
++
++/* Le bloc principal, sans la touche en haut a gauche (Grave / ISO Section) ni
++   la touche ISO <>, que winemac traite a part. */
++static const WORD cidre_touches_caracteres[] = {
++    kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4, kVK_ANSI_5, kVK_ANSI_6,
++    kVK_ANSI_7, kVK_ANSI_8, kVK_ANSI_9, kVK_ANSI_0, kVK_ANSI_Minus, kVK_ANSI_Equal,
++    kVK_ANSI_Q, kVK_ANSI_W, kVK_ANSI_E, kVK_ANSI_R, kVK_ANSI_T, kVK_ANSI_Y,
++    kVK_ANSI_U, kVK_ANSI_I, kVK_ANSI_O, kVK_ANSI_P, kVK_ANSI_LeftBracket,
++    kVK_ANSI_RightBracket, kVK_ANSI_A, kVK_ANSI_S, kVK_ANSI_D, kVK_ANSI_F,
++    kVK_ANSI_G, kVK_ANSI_H, kVK_ANSI_J, kVK_ANSI_K, kVK_ANSI_L, kVK_ANSI_Semicolon,
++    kVK_ANSI_Quote, kVK_ANSI_Backslash, kVK_ANSI_Z, kVK_ANSI_X, kVK_ANSI_C,
++    kVK_ANSI_V, kVK_ANSI_B, kVK_ANSI_N, kVK_ANSI_M, kVK_ANSI_Comma,
++    kVK_ANSI_Period, kVK_ANSI_Slash,
++};
++
++/* Caractere QWERTY (US) d'un code virtuel de caractere. */
++static WCHAR cidre_caractere_us(UINT vkey)
++{
++    if (('A' <= vkey && vkey <= 'Z') || ('0' <= vkey && vkey <= '9')) return vkey;
++    switch (vkey)
++    {
++        case VK_OEM_MINUS:  return '-';
++        case VK_OEM_PLUS:   return '=';
++        case VK_OEM_4:      return '[';
++        case VK_OEM_6:      return ']';
++        case VK_OEM_1:      return ';';
++        case VK_OEM_7:      return '\'';
++        case VK_OEM_5:      return '\\';
++        case VK_OEM_COMMA:  return ',';
++        case VK_OEM_PERIOD: return '.';
++        case VK_OEM_2:      return '/';
++    }
++    return 0;
++}
++
++/***********************************************************************
++ *              macdrv_cidre_announce_layout
++ *
++ * Annonce au jeu une disposition US quand des touches ont pris le code
++ * virtuel de leur position QWERTY (cf. CIDRE_CLAVIER). La langue (mot bas du
++ * HKL) reste celle du systeme : win32u refuse d'en changer.
++ */
++void macdrv_cidre_announce_layout(struct macdrv_thread_data *thread_data)
++{
++    HKL hkl = thread_data->active_keyboard_layout;
++
++    if (!thread_data->cidre_positions || is_ime_hkl(hkl)) return;
++    thread_data->active_keyboard_layout =
++        UlongToHandle(MAKELONG(LOWORD(hkl), MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US)));
++    TRACE("cidre: layout %p announced as %p\n", hkl, thread_data->active_keyboard_layout);
++}
++
++
+ static const struct {
+     DWORD       vkey;
+     const char *name;
+@@ -662,6 +738,7 @@
+         { 0, 0 }
+     };
+     int vkey_range;
++    static LONG cidre_clavier_dit;
+ 
+     if (!thread_data->keyboard_layout_uchr)
+     {
+@@ -740,6 +817,34 @@
+         TRACE("\n");
+     }
+ 
++    /* Cidre : les touches qui suivent leur position QWERTY d'abord, avant que
++       les caracteres ne distribuent les codes virtuels restants. */
++    memset(thread_data->keyc_positional, 0, sizeof(thread_data->keyc_positional));
++    thread_data->cidre_positions = FALSE;
++    if (cidre_clavier_positions())
++    {
++        int moved = 0;
++
++        for (i = 0; i < ARRAY_SIZE(cidre_touches_caracteres); i++)
++        {
++            keyc = cidre_touches_caracteres[i];
++            vkey = default_map[keyc].vkey;
++            if (!thread_data->keyc2scan[keyc] || thread_data->keyc2vkey[keyc] || vkey_used[vkey]) continue;
++            /* une touche qui ne donne pas le caractere QWERTY de sa position */
++            if (!map[keyc][0][0] || map[keyc][0][1] ||
++                (map[keyc][0][0] | 0x20) != (cidre_caractere_us(vkey) | 0x20))
++                moved++;
++            thread_data->keyc2vkey[keyc] = vkey;
++            thread_data->keyc_positional[keyc] = 1;
++            vkey_used[vkey] = 1;
++            TRACE("keyc 0x%04x -> vkey 0x%04x (cidre: QWERTY position)\n", keyc, vkey);
++        }
++        thread_data->cidre_positions = moved > 0;
++        if (!InterlockedExchange(&cidre_clavier_dit, 1))
++            MESSAGE("cidre: clavier aux positions QWERTY (CIDRE_CLAVIER=positions), "
++                    "%d touches ne donnent pas le caractere QWERTY de leur position\n", moved);
++    }
++
+     /* First try to match key codes to the vkeys for the letters A through Z.
+        Try unmodified first, then with various modifier combinations in succession.
+        On the first pass, try to get a match lacking diacritical marks.  On the
+@@ -1043,6 +1148,7 @@
+     thread_data->dead_key_state = 0;
+ 
+     macdrv_compute_keyboard_layout(thread_data);
++    macdrv_cidre_announce_layout(thread_data);
+ 
+     NtUserActivateKeyboardLayout(thread_data->active_keyboard_layout, 0);
+ 
+@@ -1455,6 +1561,12 @@
+             }
+ 
+             TRACE("Found keycode %u\n", keyc);
++
++            if (thread_data->keyc_positional[keyc])
++            {
++                ret = cidre_caractere_us(wCode);
++                break;
++            }
+ 
+             deadKeyState = 0;
+             status = UCKeyTranslate(uchr, keyc, kUCKeyActionDown, 0,
+diff --color -ru pa/dlls/winemac.drv/macdrv.h pb/dlls/winemac.drv/macdrv.h
+--- a/dlls/winemac.drv/macdrv.h	2026-10-16 12:10:38
++++ b/dlls/winemac.drv/macdrv.h	2026-10-16 12:39:46
+@@ -111,6 +111,8 @@
+     HKL                         active_keyboard_layout;
+     WORD                        keyc2vkey[128];
+     WORD                        keyc2scan[128];
++    BYTE                        keyc_positional[128]; /* Cidre : code virtuel de la position QWERTY */
++    BOOL                        cidre_positions;
+ };
+ 
+ extern struct macdrv_thread_data *macdrv_init_thread_data(void);
+@@ -123,6 +125,7 @@
+ 
+ 
+ extern BOOL macdrv_ActivateKeyboardLayout(HKL hkl, UINT flags);
++extern void macdrv_cidre_announce_layout(struct macdrv_thread_data *thread_data);
+ extern void macdrv_Beep(void);
+ extern LONG macdrv_ChangeDisplaySettings(LPDEVMODEW displays, LPCWSTR primary_name, HWND hwnd, DWORD flags, LPVOID lpvoid);
+ extern LRESULT macdrv_ClipboardWindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
+diff --color -ru pa/dlls/winemac.drv/macdrv_main.c pb/dlls/winemac.drv/macdrv_main.c
+--- a/dlls/winemac.drv/macdrv_main.c	2026-10-16 12:10:38
++++ b/dlls/winemac.drv/macdrv_main.c	2026-10-16 12:39:46
+@@ -529,6 +529,7 @@
+     data->active_keyboard_layout = macdrv_get_hkl_from_source(input_source);
+     CFRelease(input_source);
+     macdrv_compute_keyboard_layout(data);
++    macdrv_cidre_announce_layout(data);
+ 
+     set_queue_display_fd(macdrv_get_event_queue_fd(data->queue));
+     pthread_setspecific( macdrv_thread_data_key, data );

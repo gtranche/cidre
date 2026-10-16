@@ -1742,11 +1742,16 @@ case "$cmd" in
         # chaine, sans guillemet ni barre oblique inverse (le profil est du TOML)
         case $val in *'"'*|*'\'*) echo "arguments : ni guillemet ni barre oblique inverse" >&2; exit 2 ;; esac
         val="\"$val\"" ;;
+      clavier)
+        # touches aux positions QWERTY pour un clavier AZERTY... (winemac 0151) :
+        # positions, ou systeme (defaut, le comportement de Wine)
+        case $val in positions|systeme) val="\"$val\"" ;;
+          *) echo "clavier attend positions ou systeme" >&2; exit 2 ;; esac ;;
       langue)
         # une chaine : ecrite entre guillemets dans le profil (TOML)
         case $val in auto|fr|en|de|es|it|pt|ru|pl|ja|ko|zh) val="\"$val\"" ;;
           *) echo "langue attend auto ou un code : fr, en, de, es, it, pt, ru, pl, ja, ko, zh" >&2; exit 2 ;; esac ;;
-      *) echo "option inconnue : $cle (journal_detaille, tso, vsync, hud, overlay, async, narrow_barriers, garde_index, dx12, sm66, d3d11, metalfx, fils_compilation, eac_untrusted, luajit, plein_ecran, mode_emule, retina, gamemode, maj_avant_lancement, langue, windows_version, arguments, reglages_jeu_appliques)" >&2; exit 2 ;;
+      *) echo "option inconnue : $cle (journal_detaille, tso, vsync, hud, overlay, async, narrow_barriers, garde_index, dx12, sm66, d3d11, metalfx, fils_compilation, eac_untrusted, luajit, plein_ecran, mode_emule, retina, gamemode, maj_avant_lancement, langue, clavier, windows_version, arguments, reglages_jeu_appliques)" >&2; exit 2 ;;
     esac
     CIDRE_PROFILS=${CIDRE_PROFILS:-$CIDRE_DIR/profils.toml} sh "$R/tests/profil_cidre.sh" "$id" set "$cle" "$val" ;;
   unset)

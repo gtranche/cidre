@@ -60,6 +60,18 @@
 #   plein_ecran      vrai plein ecran macOS (Space) auto quand le jeu couvre
 #                    l'ecran : couvre l'encoche, laisse macOS scaler une
 #                    resolution plus basse pour remplir, et autorise le Game Mode.
+#   clavier          touches d'un clavier non QWERTY (AZERTY, Dvorak...) pour les jeux
+#                    qui lisent les codes virtuels (Unreal, Unity, la plupart des jeux
+#                    Win32) : "positions" = chaque touche de caracteres est vue a sa
+#                    position QWERTY (en AZERTY : A/Q et Z/W echangees, la touche M est
+#                    le « ; » du jeu, la touche 1 son 1) -- les touches par defaut du
+#                    jeu tombent ou il les attend, sans reglage. "systeme" (defaut) = le
+#                    comportement de Wine et de Windows, chaque touche selon son
+#                    caractere. Le texte tape (discussion, noms) reste celui de la
+#                    disposition macOS. Un jeu deja reassigne a la main est a remettre a
+#                    ses touches par defaut. Pour tous les jeux : `cidre set defaut
+#                    clavier positions`. CIDRE_CLAVIER=positions pour un essai. Cf.
+#                    wine11 0151, tests/sonde_clavier.c.
 #   mode_emule       plein ecran exclusif sans changement de mode : le jeu voit
 #                    le mode qu'il demande, l'ecran garde sa resolution et
 #                    l'image est mise a l'echelle dans la fenetre plein ecran
@@ -176,5 +188,6 @@ sm66 = false
 d3d11 = "dxmt"
 dxmt_config = ""
 metalfx = false
+clavier = "systeme"
 
 # (plus de section par jeu ici : profils/<appid>.toml, section [cidre])

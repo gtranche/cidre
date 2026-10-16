@@ -266,6 +266,20 @@ fi
 # retina = true garde l'EDID de la dalle, pour qui veut ce rendu en 2x.
 [ "$(opt retina CIDRE_RETINA)" = true ] && export CIDRE_RETINA=1
 
+# Touches a leur place pour un clavier non QWERTY (winemac, 0151). Un jeu qui
+# lit les codes virtuels (VK_W...) attend ses touches aux positions QWERTY ;
+# Wine, comme Windows, les distribue selon les caracteres, et un joueur en
+# AZERTY reassignait A/Q, Z/W, M... dans chaque jeu. clavier = "positions" :
+# chaque touche de caracteres prend le code virtuel de sa position QWERTY (la
+# touche Z de l'AZERTY est le W du jeu, la touche M son « ; », la touche 1 son
+# 1). "systeme" (defaut) : le comportement de Wine. Le texte tape (discussion,
+# noms) reste celui de la disposition macOS. Un jeu deja reassigne a la main
+# est a remettre a ses touches par defaut. CIDRE_CLAVIER=positions pour un essai.
+case $(opt clavier CIDRE_CLAVIER) in
+   positions|true) export CIDRE_CLAVIER=positions ;;
+   *)              unset CIDRE_CLAVIER ;;
+esac
+
 JOURNAL=${PROTON_OUVERT_JOURNAL:-$R/build/logs/steam-${JEU:-inconnu}.log}
 mkdir -p "$(dirname "$JOURNAL")"
 # Un journal detaille peut peser lourd : au-dela de 30 Mo, on repart d'un
