@@ -1,0 +1,72 @@
+Generated-by: LLM
+
+KosmicKrisp : identite de carte annoncee aux jeux Vulkan (CIDRE_VK_IDENTITE=<fournisseur>:<peripherique>[:<nom>], hexadecimal ; eteint par defaut) -- KosmicKrisp annonce le fournisseur Apple 0x106b et le peripherique 100 ; Detroit: Become Human affiche « carte graphique inconnue » a chaque demarrage et attend un clic. L'option remplace vendorID, deviceID et deviceName de VkPhysicalDeviceProperties, comme dxgi.customVendorId/customDeviceId de DXMT et de DXVK pour DXGI (a poser des deux cotes avec la meme identite). Sous Wine, win32u remplace deviceName par le nom du GPU qu'il a enregistre (rapprochement des LUID) : seuls les identifiants passent. L'en-tete du cache de pipelines porte fournisseur et peripherique : un cache ecrit sous une autre identite est ecarte sans erreur (sonde : ECARTE puis ACCEPTE) ; la valeur entre aussi dans pipelineCacheUUID. Valeur invalide : avertissement, identite Apple gardee. La cle driconf force_vk_vendor que KosmicKrisp prevoyait n'etait jamais lue.
+
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -585,12 +585,42 @@ kk_get_device_properties(
+    float timestamp_period =
+       timestamp_frequency ? (1000000000.0f / (float)timestamp_frequency) : 1.0f;
+ 
++   /* CIDRE_VK_IDENTITE=<fournisseur>:<peripherique>[:<nom>] (hexadecimal) :
++    * identite annoncee aux jeux Vulkan qui refusent ou avertissent devant une
++    * carte inconnue (Detroit: Become Human : « carte graphique inconnue » a
++    * chaque demarrage, fournisseur Apple 0x106b, peripherique 100). Comme
++    * dxgi.customVendorId/customDeviceId de DXMT pour DXGI ; a poser des deux
++    * cotes avec la meme identite. L'en-tete du cache de pipelines porte
++    * fournisseur et peripherique : un cache ecrit sous une autre identite est
++    * ecarte, et la valeur entre aussi dans pipelineCacheUUID.
++    */
++   uint32_t ident_vendor = 0, ident_device = 0;
++   const char *ident_name = NULL;
++   const char *ident = getenv("CIDRE_VK_IDENTITE");
++   if (ident != NULL && ident[0] != '\0') {
++      char *fin = NULL;
++      unsigned long v = strtoul(ident, &fin, 16);
++      if (fin != ident && *fin == ':') {
++         const char *d = fin + 1;
++         unsigned long dv = strtoul(d, &fin, 16);
++         if (fin != d && v != 0 && v <= 0xffff && dv <= 0xffff) {
++            ident_vendor = v;
++            ident_device = dv;
++            if (*fin == ':' && fin[1] != '\0')
++               ident_name = fin + 1;
++         }
++      }
++      if (ident_vendor == 0)
++         mesa_logw("CIDRE_VK_IDENTITE=%s ignore (attendu fournisseur:peripherique[:nom], hexadecimal)", ident);
++   }
++
+    *properties = (struct vk_properties){
+       .apiVersion = kk_get_vk_version(),
+       .driverVersion = vk_get_driver_version(),
+-      .vendorID =
+-         instance->force_vk_vendor != 0 ? instance->force_vk_vendor : 0x106b,
+-      .deviceID = 100,
++      .vendorID = ident_vendor != 0              ? ident_vendor
++                  : instance->force_vk_vendor != 0 ? instance->force_vk_vendor
++                                                   : 0x106b,
++      .deviceID = ident_vendor != 0 ? ident_device : 100,
+       .deviceType = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU,
+ 
+       /* Vulkan 1.0 limits */
+@@ -1002,7 +1032,7 @@ kk_get_device_properties(
+    char gpu_name[256u];
+    mtl_device_get_name(pdev->mtl_dev_handle, gpu_name);
+    snprintf(properties->deviceName, sizeof(properties->deviceName), "%s",
+-            gpu_name);
++            ident_name != NULL ? ident_name : gpu_name);
+ 
+    /* Not sure if there are layout specific things, so for now just reporting
+     * all layouts from extensions.
+@@ -1105,6 +1135,10 @@ kk_physical_device_init_pipeline_cache(struct kk_physical_device *pdev)
+       uint8_t pose = getenv(options_codegen[i]) != NULL;
+       _mesa_blake3_update(&blake3_ctx, &pose, 1);
+    }
++   /* L'identite annoncee (0167) entre par sa valeur. */
++   const char *identite = getenv("CIDRE_VK_IDENTITE");
++   if (identite != NULL)
++      _mesa_blake3_update(&blake3_ctx, identite, strlen(identite));
+ 
+    unsigned char blake3[BLAKE3_KEY_LEN];
+    _mesa_blake3_final(&blake3_ctx, blake3);

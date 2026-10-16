@@ -423,6 +423,21 @@ if [ "$D3D11" = dxmt ] && [ "$(opt async CIDRE_ASYNC)" = true ]; then
       *) DXMTCFG="d3d11.asyncPipelines=True${DXMTCFG:+;$DXMTCFG}" ;;
    esac
 fi
+# Carte annoncee (fiche : vk_identite = "1002:67df:AMD Radeon RX 580 Series", correctif KosmicKrisp
+# 0167) : Vulkan (CIDRE_VK_IDENTITE) et DXGI (DXMT, ou DXVK pour dx12) annoncent la meme carte aux jeux
+# qui avertissent devant une carte inconnue (Detroit: Become Human). Pour DXGI, seuls les identifiants
+# (le nom de l'adaptateur reste celui de la machine). Un CIDRE_VK_IDENTITE explicite garde la main.
+VKID=$(opt vk_identite CIDRE_VK_IDENTITE)
+if [ -n "$VKID" ]; then
+   export CIDRE_VK_IDENTITE="$VKID"
+   VKVEN=${VKID%%:*}; VKDEV=${VKID#*:}; VKDEV=${VKDEV%%:*}
+   case ";$DXMTCFG;${DXMT_CONFIG:-};" in
+      *customVendorId*) ;;
+      *) DXMTCFG="dxgi.customVendorId=$VKVEN;dxgi.customDeviceId=$VKDEV${DXMTCFG:+;$DXMTCFG}" ;;
+   esac
+   [ "$D3D11" = dxmt ] || dxvk_config "dxgi.customVendorId=$VKVEN;dxgi.customDeviceId=$VKDEV"
+   echo "    carte annoncee : $VKID (Vulkan et DXGI)" >>"$JOURNAL"
+fi
 if [ "$D3D11" = dxmt ] && [ -n "$DXMTCFG" ]; then
    export DXMT_CONFIG="$DXMTCFG;${DXMT_CONFIG:-}"
    echo "    d3d11 : options DXMT du profil : $DXMTCFG" >>"$JOURNAL"
