@@ -8,13 +8,21 @@ par l'hote (VkSwapchainPresentScalingCreateInfoEXT, cf. 0169). DXVK recreait
 alors sa swapchain a chaque image -- Fahrenheit Remastered (312840), M4,
 2026-10-17 : 77 recreations par seconde.
 
+Le SUBOPTIMAL vient aussi de l'hote : le WSI Metal de KosmicKrisp n'annonce
+aucune mise a l'echelle (VkSurfacePresentScalingCapabilitiesKHR vide) et rend
+VK_SUBOPTIMAL_KHR des que la couche n'a pas la taille de la swapchain, alors
+que la couche Metal etire l'image d'elle-meme.
+
 Une swapchain creee avec la mise a l'echelle retient la taille de la fenetre a
-sa creation et ne devient sous-optimale que si la fenetre change ; sans mise a
-l'echelle, rien ne change (comparaison a sa propre taille, comme l'amont).
+sa creation et ne devient sous-optimale que si la fenetre change : win32u ne
+le signale plus lui-meme, et ecarte le SUBOPTIMAL de l'hote tant que la fenetre
+garde cette taille (resultat global recalcule). Sans mise a l'echelle, rien ne
+change (comparaison a sa propre taille, comme l'amont). Mesure : 77
+recreations par seconde -> 0, image presentee (M4, 2026-10-17).
 
 --- aa/dlls/win32u/vulkan.c
 +++ bb/dlls/win32u/vulkan.c
-@@ -174,6 +174,10 @@
+@@ -174,6 +174,11 @@
      struct vulkan_swapchain obj;
      struct surface *surface;
      VkExtent2D extents;
@@ -22,18 +30,20 @@ l'echelle, rien ne change (comparaison a sa propre taille, comme l'amont).
 +     * la sienne, sauf si l'hote la met a l'echelle (VkSwapchainPresentScalingCreateInfoEXT) --
 +     * alors celle de la fenetre a la creation : seul un changement de fenetre compte. */
 +    VkExtent2D attendu;
++    BOOL mis_a_l_echelle;
  };
  
  static struct swapchain *swapchain_from_handle( VkSwapchainKHR handle )
-@@ -1851,6 +1855,7 @@
+@@ -1851,6 +1856,8 @@
      VkSwapchainKHR host_swapchain;
      struct ratio raw_dpi;
      RECT client_rect;
 +    VkExtent2D attendu = create_info->imageExtent;
++    BOOL mis_a_l_echelle = FALSE;
      VkResult res;
  
      if (!NtUserIsWindow( surface->hwnd ))
-@@ -1889,6 +1894,15 @@
+@@ -1889,6 +1896,16 @@
              scaling.pNext = create_info_host.pNext;
              create_info_host.pNext = &scaling;
          }
@@ -41,6 +51,7 @@ l'echelle, rien ne change (comparaison a sa propre taille, comme l'amont).
 +         * plein ecran) : l'ecart de taille est voulu. Le signaler a chaque image
 +         * faisait recreer la swapchain a chaque image par DXVK (Fahrenheit, 77 fois
 +         * par seconde). */
++        mis_a_l_echelle = TRUE;
 +        if (get_surface_rect( surface->hwnd, &client_rect, get_dpi_for_window( surface->hwnd ) ))
 +        {
 +            attendu.width = client_rect.right - client_rect.left;
@@ -49,15 +60,16 @@ l'echelle, rien ne change (comparaison a sa propre taille, comme l'amont).
      }
  
      if (!(swapchain = calloc( 1, sizeof(*swapchain) ))) return VK_ERROR_OUT_OF_HOST_MEMORY;
-@@ -1902,6 +1916,7 @@
+@@ -1902,6 +1919,8 @@
      vulkan_object_init( &swapchain->obj.obj, host_swapchain );
      swapchain->surface = surface;
      swapchain->extents = create_info->imageExtent;
 +    swapchain->attendu = attendu;
++    swapchain->mis_a_l_echelle = mis_a_l_echelle;
      instance->p_insert_object( instance, &swapchain->obj.obj );
  
      *ret = swapchain->obj.client.swapchain;
-@@ -1942,7 +1957,7 @@
+@@ -1942,7 +1961,7 @@
      res = device->p_vkAcquireNextImage2KHR( device->host.device, &acquire_info_host, image_index );
  
      if (!res && get_surface_rect( surface->hwnd, &client_rect, get_dpi_for_window( surface->hwnd ) ) &&
@@ -66,7 +78,7 @@ l'echelle, rien ne change (comparaison a sa propre taille, comme l'amont).
      {
          WARN( "Swapchain size %dx%d does not match client rect %s, returning VK_SUBOPTIMAL_KHR\n",
                swapchain->extents.width, swapchain->extents.height, wine_dbgstr_rect( &client_rect ) );
-@@ -1968,7 +1983,7 @@
+@@ -1968,7 +1987,7 @@
                                                image_index );
  
      if (!res && get_surface_rect( surface->hwnd, &client_rect, get_dpi_for_window( surface->hwnd ) ) &&
@@ -75,12 +87,49 @@ l'echelle, rien ne change (comparaison a sa propre taille, comme l'amont).
      {
          WARN( "Swapchain size %dx%d does not match client rect %s, returning VK_SUBOPTIMAL_KHR\n",
                swapchain->extents.width, swapchain->extents.height, wine_dbgstr_rect( &client_rect ) );
-@@ -2036,7 +2051,7 @@
+@@ -1985,6 +2004,7 @@
+     VkSwapchainKHR swapchains_buffer[16], *swapchains = swapchains_buffer;
+     struct vulkan_device *device = queue->device;
+     const VkSwapchainKHR *client_swapchains;
++    BOOL encore_sous_optimal = FALSE;
+     VkResult res;
+ 
+     TRACE( "queue %p, present_info %p\n", queue, present_info );
+@@ -2033,17 +2053,34 @@
+             WARN( "Swapchain window %p is invalid, returning VK_ERROR_OUT_OF_DATE_KHR\n", surface->hwnd );
+             if (present_info->pResults) present_info->pResults[i] = VK_ERROR_OUT_OF_DATE_KHR;
+             if (res >= VK_SUCCESS) res = VK_ERROR_OUT_OF_DATE_KHR;
++            continue;
          }
-         else if (swapchain_res)
+-        else if (swapchain_res)
++        /* Un hote qui ne sait pas mettre a l'echelle (le WSI Metal de KosmicKrisp
++         * n'annonce aucun VkSurfacePresentScalingCapabilitiesKHR) rend SUBOPTIMAL des
++         * que la couche n'a pas la taille de la swapchain -- ce qu'on a demande. La
++         * couche Metal etire l'image d'elle-meme : tant que la fenetre n'a pas change,
++         * la presentation est bonne. */
++        if (swapchain_res == VK_SUBOPTIMAL_KHR && swapchain->mis_a_l_echelle &&
++            extents_equals( &swapchain->attendu, &client_rect ))
++        {
++            swapchain_res = VK_SUCCESS;
++            if (present_info->pResults) present_info->pResults[i] = VK_SUCCESS;
++        }
++        if (swapchain_res)
              WARN( "Present returned status %d for swapchain %p\n", swapchain_res, swapchain );
 -        else if (!extents_equals( &swapchain->extents, &client_rect ))
 +        else if (!extents_equals( &swapchain->attendu, &client_rect ))
          {
              WARN( "Swapchain size %dx%d does not match client rect %s, returning VK_SUBOPTIMAL_KHR\n",
                    swapchain->extents.width, swapchain->extents.height, wine_dbgstr_rect( &client_rect ) );
+             if (present_info->pResults) present_info->pResults[i] = VK_SUBOPTIMAL_KHR;
+-            if (!res) res = VK_SUBOPTIMAL_KHR;
++            swapchain_res = VK_SUBOPTIMAL_KHR;
+         }
++        if (swapchain_res == VK_SUBOPTIMAL_KHR) encore_sous_optimal = TRUE;
+     }
++    /* SUBOPTIMAL de l'hote ecarte pour toutes les swapchains ci-dessus : le
++     * resultat global suit. */
++    if (res == VK_SUBOPTIMAL_KHR && !encore_sous_optimal) res = VK_SUCCESS;
++    else if (res == VK_SUCCESS && encore_sous_optimal) res = VK_SUBOPTIMAL_KHR;
+ 
+     if (swapchains != swapchains_buffer) free( swapchains );
+ 
