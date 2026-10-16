@@ -55,5 +55,5 @@ serie_dxmt() {
 # FEX vit dans third_party/FEX, pas dans src/ : etape1 et la verification le
 # traitent a part.
 serie_fex() {
-   ls "$R"/0070-fex-*.patch "$R"/0118-fex-*.patch 2>/dev/null
+   ls "$R"/0070-fex-*.patch "$R"/0118-fex-*.patch "$R"/0161-fex-*.patch 2>/dev/null
 }

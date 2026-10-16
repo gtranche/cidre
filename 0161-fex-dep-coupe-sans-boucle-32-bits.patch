@@ -1,0 +1,55 @@
+fex : couper le DEP d'un invite 32 bits sans boucler (Fahrenheit Remastered)
+
+Un exe 32 bits sans IMAGE_DLLCHARACTERISTICS_NX_COMPAT (vieux jeux, lanceurs
+MinGW : DllCharacteristics = 0) fait couper le DEP par le chargeur de Wine
+(ntdll/loader.c : NtSetInformationProcess ProcessExecuteFlags,
+MEM_EXECUTE_OPTION_ENABLE). FEX parcourt alors la fenetre de l'invite dans
+InvalidationTracker::HandleProcessExecuteFlagsChange pour y promouvoir les
+pages lisibles en executables.
+
+0070 a deplace ce parcours dans la fenetre (Guest32Base, 16 Gio) mais avance
+par Address = ToHost32(BaseAddress) + RegionSize, ou BaseAddress est l'adresse
+de l'invite. La premiere region de la fenetre est la page nulle de l'invite :
+BaseAddress = 0 et ToHost32(0) rend 0 (le pointeur nul reste nul). Le parcours
+repart donc a RegionSize, sous la fenetre, remonte l'espace de l'hote jusqu'a
+Guest32Base, et recommence : boucle sans fin, avant la premiere instruction de
+l'invite. Aucun programme 32 bits sans NX_COMPAT ne demarrait.
+
+Vu sur le M4 (Cidre 1.5.12) : Fahrenheit.exe (lanceur Qt d'Aspyr, PE32,
+DllCharacteristics 0) a 100 % d'un coeur, aucune fenetre ; `sample` donne
+NtQueryVirtualMemory appele depuis xtajit.dll a
+HandleProcessExecuteFlagsChange+0x11c (et IntervalList::Insert, qui y insere
+les regions de l'hote prises pour celles de l'invite).
+
+Correctif : avancer en adresse de l'hote (Info.BaseAddress + RegionSize).
+
+Mesure (M1 Max, runtime et prefixe clones, temoin i686 MinGW) :
+
+                                   avant         apres
+  h32 --disable-nxcompat           bloque 20 s   sort en 1 s
+  h32 avec NX_COMPAT (temoin)      sort en 4 s   sort en 1 s
+
+La recette de tests/construire_fex.sh rend, sans ce correctif, un
+libwow64fex.dll aux sections .text/.rdata/.data identiques a celles du xtajit.dll
+du runtime 1.5.12.
+
+Defaut propre a 0070 (rebasage 32 bits) : rien a signaler en amont.
+
+S'applique avec patch -p1 sur third_party/FEX apres 0070 et 0118.
+
+diff --git a/Source/Windows/Common/InvalidationTracker.cpp b/Source/Windows/Common/InvalidationTracker.cpp
+index 22a031e..c695a1c 100644
+--- a/Source/Windows/Common/InvalidationTracker.cpp
++++ b/Source/Windows/Common/InvalidationTracker.cpp
+@@ -124,7 +124,10 @@ void InvalidationTracker::HandleProcessExecuteFlagsChange(ULONG Flags) {
+         DEPPromotedIntervals.Insert(ProtInterval);
+       }
+ 
+-      Address = ToHost32(BaseAddress) + Info.RegionSize;
++      /* Avancer en adresse de l'hote : la premiere region de la fenetre est la
++       * page nulle de l'invite, et ToHost32(0) rend 0 (le pointeur nul) -- le
++       * parcours repartait sous la fenetre et ne finissait jamais. */
++      Address = reinterpret_cast<uint64_t>(Info.BaseAddress) + Info.RegionSize;
+     }
+   } else {
+     for (const auto& Interval : DEPPromotedIntervals) {
