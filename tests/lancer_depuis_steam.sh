@@ -379,6 +379,16 @@ fi
 # Options DXMT propres au jeu (fiche ou profil : dxmt_config = "d3d11.cle=valeur;..."),
 # placees devant DXMT_CONFIG de l'environnement, qui garde donc le dernier mot.
 DXMTCFG=$(opt dxmt_config CIDRE_DXMT_CONFIG)
+# async = true vaut aussi pour DXMT (d3d11.asyncPipelines) : un dessin dont le
+# pipeline compile encore est saute au lieu de geler l'image (objet absent
+# quelques images, premier lancement surtout). Une valeur dans dxmt_config ou
+# DXMT_CONFIG garde la main.
+if [ "$D3D11" = dxmt ] && [ "$(opt async CIDRE_ASYNC)" = true ]; then
+   case ";$DXMTCFG;${DXMT_CONFIG:-};" in
+      *asyncPipelines*) ;;
+      *) DXMTCFG="d3d11.asyncPipelines=True${DXMTCFG:+;$DXMTCFG}" ;;
+   esac
+fi
 if [ "$D3D11" = dxmt ] && [ -n "$DXMTCFG" ]; then
    export DXMT_CONFIG="$DXMTCFG;${DXMT_CONFIG:-}"
    echo "    d3d11 : options DXMT du profil : $DXMTCFG" >>"$JOURNAL"
