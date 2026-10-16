@@ -1,0 +1,76 @@
+wine11 / lsteamclient : mode Deck simule (CIDRE_DECK=1, coupe par defaut)
+
+Un jeu « Verifie Steam Deck » choisit seul sa configuration Deck (definition,
+prereglages, upscaler) quand Steam lui dit qu'il tourne sur un Deck : c'est le
+critere DefaultConfigurationIsPerformant de Valve. Clair Obscur: Expedition 33
+porte un profil d'appareil « Windows_Steamdeck » et une fonction
+IsRunningOnSteamDeck (lus dans SandFall-Win64-Shipping.exe). Le client Steam de
+macOS repond non ; le jeu fait alors son banc automatique et se regle en Epique
+sur un GPU Apple (Still Wakes the Deep : 20 fps en Epique 100 %, 50 en Moyen).
+
+Avec CIDRE_DECK=1 (option deck de la fiche, posee par le lanceur), le pont rend
+vrai a ISteamUtils::IsSteamRunningOnSteamDeck sans appeler le natif : emplacement
+34 de SteamUtils010, la seule version qui l'a (ordre releve dans winISteamUtils.c
+du lsteamclient de Proton, experimental_11.0). Comparaison sur la chaine de
+version exacte, dans les relais 64 et 32 bits. Une ligne MESSAGE au premier appel
+dit que le jeu a pose la question (preuve pour l'essai). Sans la variable, rien ne
+change.
+
+Verifie : arm64ec et i686, clang llvm-mingw -fsyntax-only -Wall sur l'arbre
+11.18 + serie_wine11 : aucun avertissement nouveau. Essai en jeu : etude-proton.md,
+§9.1 (manche C).
+
+--- a/dlls/lsteamclient/main.c
++++ b/dlls/lsteamclient/main.c
+@@ -298,6 +298,35 @@
+     return TRUE;
+ }
+ 
++/*
++ * Mode Deck simule : CIDRE_DECK=1 (option deck de la fiche, coupee par defaut).
++ *
++ * Un jeu « Verifie Steam Deck » choisit seul sa configuration Deck -- definition,
++ * prereglages, upscaler -- quand Steam lui dit qu'il tourne sur un Deck : Valve
++ * exige que cette configuration par defaut soit jouable sur le Deck. Clair
++ * Obscur: Expedition 33 porte ainsi un profil d'appareil « Windows_Steamdeck » et
++ * une fonction IsRunningOnSteamDeck. Le client Steam de macOS repond non, et le
++ * jeu, apres son banc automatique, se regle en Epique sur un GPU Apple. On lui
++ * repond oui, a sa demande seulement : ISteamUtils::IsSteamRunningOnSteamDeck,
++ * emplacement 34 de SteamUtils010 (la seule version qui l'a ; ordre releve dans
++ * le lsteamclient de Proton). Les autres methodes restent relayees.
++ */
++static BOOL deck_simule( const char *version, unsigned emplacement, UINT64 *ret )
++{
++    static int actif = -1;
++
++    if (emplacement != 34 || strcmp( version, "SteamUtils010" )) return FALSE;
++    if (actif < 0)
++    {
++        char v[4];
++        actif = GetEnvironmentVariableA( "CIDRE_DECK", v, sizeof(v) ) == 1 && v[0] == '1';
++        if (actif) MESSAGE( "lsteamclient : mode Deck simule, IsSteamRunningOnSteamDeck rend vrai\n" );
++    }
++    if (!actif) return FALSE;
++    *ret = 1;
++    return TRUE;
++}
++
+ #ifdef _WIN64
+ #include "retours64.h"
+ 
+@@ -398,6 +427,7 @@
+         unsigned tampon;
+ 
+         if (voix_non_relayee( objet->nom, emplacement, &neutre )) return neutre;
++        if (deck_simule( objet->nom, emplacement, &neutre )) return neutre;
+         tampon = emplacement < NB_SIGNATURES ? objet->tampons[emplacement] : 0;
+ 
+         /*
+@@ -651,6 +681,7 @@
+     {
+         UINT64 neutre;
+         if (voix_non_relayee( objet->nom, emplacement, &neutre )) return neutre;
++        if (deck_simule( objet->nom, emplacement, &neutre )) return neutre;
+     }
+ 
+     dest[0] = &params.a; dest[1] = &params.b; dest[2] = &params.c;

@@ -207,7 +207,7 @@ lanceur = "steam"                  # steam, epic, gog, aucun
 # outil-steam/profils.toml (voir son en-tête pour le sens de chacune) :
 # langue, journal_detaille, maj_avant_lancement, tso, vsync, hud, overlay, async, narrow_barriers,
 # garde_index, fils_compilation, eac_untrusted, luajit, plein_ecran, mode_emule, gamemode,
-# dx12, d3d11, metalfx, clavier, arguments, dll_overrides, windows_version, dependances.
+# dx12, d3d11, metalfx, clavier, deck, arguments, dll_overrides, windows_version, dependances.
 # On n'y met que ce qui diffère de [defaut].
 async = true
 fils_compilation = 6

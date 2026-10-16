@@ -132,6 +132,12 @@
 #                    rend pas en DXMT). Mesure sur Expedition 33 : x3 a x4. Avec
 #                    "dxmt", l'overlay Steam est COUPE pour ce lancement : sa
 #                    bibliotheque fige la presentation DXMT a la premiere image.
+#   deck             mode Deck simule (wine11 0160) : le pont Steam repond oui a
+#                    IsSteamRunningOnSteamDeck. Un jeu « Verifie Steam Deck » prend
+#                    alors seul sa configuration Deck (definition, prereglages,
+#                    upscaler) au lieu de se regler en Epique apres son banc
+#                    automatique. Il peut aussi montrer les glyphes du Deck, viser
+#                    1280x800 ou plafonner ses images. Essai, false par defaut.
 #   metalfx          agrandissement MetalFX spatial x2 de la sortie (DXMT seulement,
 #                    sans effet en dxvk) : le jeu rend a la taille du bureau en points
 #                    (1728x1117 sur un 14 pouces), MetalFX produit les pixels physiques
@@ -193,5 +199,6 @@ d3d11 = "dxmt"
 dxmt_config = ""
 metalfx = false
 clavier = "systeme"
+deck = false
 
 # (plus de section par jeu ici : profils/<appid>.toml, section [cidre])

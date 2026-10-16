@@ -33,6 +33,27 @@ drm = "pcgamingwiki 2026-10-11"
 arguments = "-d3d11"
 dx12 = false
 
+# Charge equivalente au Deck (etude-proton.md, 2026-10-16) : definition interne a
+# 50 %, comme Expedition 33 et Still Wakes the Deep. A 1728x1084 (sortie du mode
+# emule), 50 % rendent 0,47 Mpx, ce que rend le Deck en 1280x800 avec FSR qualite
+# (67 %, 0,46 Mpx) ; Still Wakes : 20 -> 50 fps de 100 a 50 %. Le jeu passe par
+# FSR (bUseFSR=True) : il lit FSRScreenPercentagePreset, et garde la meme valeur
+# dans sg.ResolutionQuality. Releve dans le prefixe le 2026-10-16 : 75 et 75.
+# Les qualites (sg.*Quality) restent celles du jeu et du joueur. Pose une fois (id).
+[[reglages_jeu]]
+id = "definition-50"
+fichier = "AppData/Local/SH9/Saved/Config/WindowsNoEditor/GameUserSettings.ini"
+format = "ini"
+section = "ScalabilityGroups"
+valeurs = { "sg.ResolutionQuality" = "50.000000" }
+
+[[reglages_jeu]]
+id = "definition-50-fsr"
+fichier = "AppData/Local/SH9/Saved/Config/WindowsNoEditor/GameUserSettings.ini"
+format = "ini"
+section = "/Script/Engine.GameUserSettings"
+valeurs = { "FSRScreenPercentagePreset" = "50.000000" }
+
 [compat]
 etat = "bronze"
 source = "cidre-test"

@@ -108,6 +108,19 @@ case $(opt tso CIDRE_TSO) in
    true)  [ -n "${CIDRE_TSO:-}" ] && export FEX_TSOENABLED=1 ;;
 esac
 
+# Mode Deck simule (wine11 0160). Un jeu « Verifie Steam Deck » prend seul sa
+# configuration Deck (definition, prereglages, upscaler) quand Steam lui dit qu'il
+# tourne sur un Deck ; sur le Mac, le client repond non et le jeu se regle apres
+# son banc automatique, souvent en Epique (Still Wakes the Deep : 20 fps contre 50
+# en Moyen). deck = true (ou CIDRE_DECK=1) fait repondre oui par le pont Steam a
+# IsSteamRunningOnSteamDeck, et a cette seule question. Le jeu peut alors aussi
+# montrer les glyphes du Deck, viser 1280x800 ou plafonner ses images : essai,
+# coupe par defaut. Cf. etude-proton.md (2026-10-16).
+case $(opt deck CIDRE_DECK) in
+   true) export CIDRE_DECK=1 ;;
+   *)    unset CIDRE_DECK ;;
+esac
+
 # HUD fps/GPU a la demande : hud = true (ou CIDRE_HUD=1) -> compteur fps + charge
 # GPU a l'ecran (pratique pour regler les options graphiques en voyant l'effet).
 if [ "$(opt hud CIDRE_HUD)" = true ]; then
@@ -317,6 +330,7 @@ DEBUT_EPOCH=$(date +%s)
    # profils/README.md, deja fondus dans le profil ci-dessus) : dire lesquelles jouent.
    VARIANTES=$(sh "$R/tests/fiche_profil.sh" variantes "$JEU" 2>/dev/null | tr '\n' ';' | sed 's/;$//; s/;/ ; /g')
    [ -z "$VARIANTES" ] || echo "    fiche   : variante pour cette machine (si $VARIANTES)"
+   [ -z "${CIDRE_DECK:-}" ] || echo "    deck    : mode Deck simule (IsSteamRunningOnSteamDeck rend vrai)"
 } >>"$JOURNAL"
 
 # Ce que Steam nous donne n'est pas forcement un binaire Windows : un jeu peut
