@@ -204,6 +204,8 @@ contient "et qu'on ne le ferme pas" "Cidre ne le ferme pas" "$sortie"
 verif "toujours la (temoin intact)" "connecte" "$(sh "$S")"
 sortie=$(CIDRE_STEAM_CPU=40 sh "$S" assurer 5)
 verif "connecte a 40 % : rien d'ecrit" "" "$sortie"
+sortie=$(CIDRE_STEAM_CPU=97 CIDRE_STEAM_PAR_LE_CLIENT=1 sh "$S" assurer 5)
+verif "lance par le bouton de Steam, 97 % : rien (il lance le jeu)" "" "$sortie"
 remise oui; touch "$T/tourne"
 sortie=$(CIDRE_STEAM_CPU=97 sh "$S" assurer 1)
 contient "deja ouvert, pas connecte, 97 % : dit aussi" "prend 97 %" "$sortie"
@@ -262,6 +264,59 @@ case $sortie in *steam_cpu*|*"prend 97"*) echec "sans --json, cidre ne dit rien 
 verif "lanceur hors Steam : la ligne d'avertissement" "    client Steam : steam_osx prend 97 %" "$(CIDRE_STEAM_CPU=97 sh "$S" cpu 2>/dev/null | sed -n '2s/^/    /p' | cut -c1-39)"
 verif "lanceur hors Steam, 40 % : rien" "" "$(CIDRE_STEAM_CPU=40 sh "$S" cpu 2>/dev/null | sed -n '2s/^/    /p')"
 
+echo "== 13 ter. pendant la partie : le client en arriere-plan, rendu a la sortie"
+# de faux processus du client sous le dossier d'essai : la copie de yes en
+# steam_osx (il mange), de sleep en Steam Helper et en gameoverlayui -- et le
+# vrai taskpolicy
+M="$CIDRE_STEAM_DIR/Steam.AppBundle/Steam/Contents/MacOS"; H="$CIDRE_STEAM_DIR/Steam.AppBundle/Steam/Contents/Frameworks/Steam Helper.app/Contents/MacOS"
+# (une copie d'un binaire du systeme est tuee a l'execution : signee a nouveau)
+mkdir -p "$M" "$H"; cp /usr/bin/yes "$M/steam_osx"; cp /bin/sleep "$M/gameoverlayui"; cp /bin/sleep "$H/Steam Helper"; cp /bin/sleep "$M/ipcserver"
+for b in "$M/steam_osx" "$M/gameoverlayui" "$H/Steam Helper" "$M/ipcserver"; do codesign -f -s - "$b" 2>/dev/null; done
+# la priorite d'un processus, « mort » s'il ne tourne pas
+pri() { p=$(ps -o pri= -p "$1" 2>/dev/null | tr -d ' '); echo "${p:-mort}"; }
+libre() { p=$(pri "$1"); [ "$p" != 4 ] && [ "$p" != mort ]; }
+"$M/steam_osx" >/dev/null & fc=$!
+"$H/Steam Helper" 60 & fh=$!
+"$M/ipcserver" 60 & fi_=$!
+# l'overlay nait bride : steam_osx le lance, il herite de son bridage
+"$M/gameoverlayui" 60 & fo=$!; taskpolicy -b -p "$fo"
+sleep 30 & lanceur=$!
+sortie=$(CIDRE_STEAM_PERIODE=1 sh "$S" discret "$T/etat" "$lanceur"); rc=$?
+verif "discret : code 0" "0" "$rc"
+contient "discret : il le dit" "en arriere-plan pendant la partie (steam_osx et 1 Steam Helper" "$sortie"
+sleep 2
+verif "steam_osx bride" "4" "$(pri "$fc")"
+verif "Steam Helper bride" "4" "$(pri "$fh")"
+libre "$fo" && ok "gameoverlayui rendu a sa priorite par la veille ($(pri "$fo"))" || echec "gameoverlayui reste bride"
+libre "$fi_" && ok "ipcserver pas touche" || echec "ipcserver bride"
+v=$(cat "$T/etat.veille" 2>/dev/null)
+kill -0 "$v" 2>/dev/null && ok "la veille tourne" || echec "pas de veille"
+sortie=$(CIDRE_STEAM_DUREE_MIN=2 sh "$S" rendre "$T/etat")
+contient "rendre : ce qu'il a pris pendant la partie" "pendant la partie (" "$sortie"
+p=$(printf '%s\n' "$sortie" | sed -n 's/.*steam_osx a pris \([0-9]*\) %.*/\1/p')
+[ "${p:-0}" -gt 5 ] && ok "rendre : steam_osx mesure a $p % (il mangeait, bride)" || echec "rendre : mesure « $p » dans « $sortie »"
+libre "$fc" && libre "$fh" && ok "rendre : priorites rendues ($(pri "$fc"), $(pri "$fh"))" || echec "rendre : toujours bride"
+kill -0 "$v" 2>/dev/null && echec "rendre : la veille tourne encore" || ok "rendre : la veille est arretee"
+[ -e "$T/etat" ] || [ -e "$T/etat.veille" ] && echec "rendre : etat laisse" || ok "rendre : etat efface"
+kill -0 "$fc" 2>/dev/null && ok "le client n'est pas tue" || echec "le client a ete tue"
+verif "rendre sans etat : rien" "" "$(sh "$S" rendre "$T/etat")"
+# le lanceur tue en pleine partie : la veille rend la priorite seule
+sleep 30 & lanceur=$!
+CIDRE_STEAM_PERIODE=1 sh "$S" discret "$T/etat" "$lanceur" >/dev/null; sleep 2
+verif "lanceur 2 : bride" "4" "$(pri "$fc")"
+v=$(cat "$T/etat.veille"); kill "$lanceur"; sleep 3
+libre "$fc" && ok "lanceur tue : priorite rendue par la veille" || echec "lanceur tue : client reste bride"
+kill -0 "$v" 2>/dev/null && echec "lanceur tue : la veille tourne encore" || ok "lanceur tue : la veille s'arrete"
+rm -f "$T/etat" "$T/etat.veille" "$T/etat.liste"
+sleep 30 & lanceur=$!
+verif "CIDRE_STEAM_ARRIERE_PLAN=0 : rien" "" "$(CIDRE_STEAM_ARRIERE_PLAN=0 sh "$S" discret "$T/etat" "$lanceur")"
+libre "$fc" && [ ! -e "$T/etat" ] && ok "CIDRE_STEAM_ARRIERE_PLAN=0 : pas bride" || echec "CIDRE_STEAM_ARRIERE_PLAN=0 : bride"
+kill "$fc" "$fh" "$fo" "$fi_" "$lanceur" 2>/dev/null; wait 2>/dev/null
+verif "sans client : rien" "" "$(sh "$S" discret "$T/etat" $$)"
+[ -e "$T/etat" ] && echec "sans client : etat cree" || ok "sans client : pas de veille"
+sh "$S" discret >/dev/null 2>&1; verif "discret sans arguments refuse" "64" "$?"
+rm -rf "$CIDRE_STEAM_DIR/Steam.AppBundle/Steam"
+
 echo "== 14. usage et syntaxe"
 sh "$S" assurer abc >/dev/null 2>&1; verif "delai non numerique refuse" "64" "$?"
 sh "$S" autre >/dev/null 2>&1; verif "verbe inconnu refuse" "64" "$?"
@@ -274,7 +329,11 @@ grep -q 'client_steam_natif.sh" cpu' "$R/tests/lancer_depuis_steam.sh" && ok "le
 grep -q '"evenement":"avertissement","code":"steam_cpu"' "$R/cidre" && ok "cidre play --json : evenement avertissement steam_cpu" || echec "cidre : pas d'evenement steam_cpu"
 sh -n "$R/cidre" 2>/dev/null && ok "sh -n cidre" || echec "sh -n cidre"
 # ni quitter le client, ni lui parler par AppleScript (autorisation d'Automatisation)
-if grep -n -E 'pkill|killall|kill -|System Events|tell application|steam://exit|-shutdown' "$S" | grep -v '^[0-9]*:[[:space:]]*#' | grep -q .; then echec "client_steam_natif.sh quitte, tue ou scripte le client"; else ok "client_steam_natif.sh ne quitte ni ne scripte le client"; fi
+# (kill -0 ne fait que demander s'il vit ; le seul kill vise la veille)
+if grep -n -E 'pkill|killall|kill -[^0]|kill "\$[^v]|System Events|tell application|steam://exit|-shutdown' "$S" | grep -v '^[0-9]*:[[:space:]]*#' | grep -q .; then echec "client_steam_natif.sh quitte, tue ou scripte le client"; else ok "client_steam_natif.sh ne quitte ni ne scripte le client"; fi
+grep -q 'client_steam_natif.sh" discret' "$R/tests/lancer_depuis_steam.sh" && grep -q 'client_steam_natif.sh" rendre' "$R/tests/lancer_depuis_steam.sh" && ok "le lanceur bride le client pendant la partie et le rend" || echec "lanceur : pas de discret/rendre"
+grep -q 'CIDRE_STEAM_PAR_LE_CLIENT=\$PAR_LE_CLIENT' "$R/tests/lancer_depuis_steam.sh" && ok "le lanceur dit quand le bouton de Steam l'a lance" || echec "lanceur : CIDRE_STEAM_PAR_LE_CLIENT absent"
+grep -q 'a.unhide' "$S" && ok "masquer : rend puis masque une appli deja marquee masquee" || echec "masquer : pas de bascule unhide/hide"
 
 echo
 echo "$nb verifications, $ko en echec"

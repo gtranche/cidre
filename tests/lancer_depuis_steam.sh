@@ -805,8 +805,11 @@ fi
 # jeu est lance quand meme, la trace dit pourquoi il tombera.
 # CIDRE_SANS_STEAM=1 : on ne touche pas au client. Cf.
 # tests/client_steam_natif.sh.
+# Sans CIDRE_SEANCE, c'est le bouton de Steam qui nous lance : le client est en
+# plein lancement, sa mesure d'avant ne vaut rien (celle de la partie suit).
 if [ -n "${SteamAppId:-}" ] && [ "${CIDRE_SANS_STEAM:-}" != 1 ]; then
-   sh "$R/tests/client_steam_natif.sh" assurer 2>&1 | tee -a "$JOURNAL" || true
+   PAR_LE_CLIENT=; [ "${CIDRE_SEANCE:-}" = 1 ] || PAR_LE_CLIENT=1
+   CIDRE_STEAM_PAR_LE_CLIENT=$PAR_LE_CLIENT sh "$R/tests/client_steam_natif.sh" assurer 2>&1 | tee -a "$JOURNAL" || true
 elif [ "${CIDRE_SANS_STEAM:-}" != 1 ]; then
    # Jeu hors Steam : le client ne lui sert a rien, mais s'il tourne et mange
    # le processeur, il le prend au jeu aussi.
@@ -1034,7 +1037,18 @@ fi
 # `&& ... ||` : ce script est en `set -e`, et un jeu qui sort sur un code d'erreur
 # (un plantage, un arret force) l'arretait ici meme, AVANT la sauvegarde ci-dessous.
 [ -z "$JEU" ] || echo "    shaders : $(sh "$R/tests/etat_shaders.sh" etat "$JEU" "$VOIE_TEMOIN" 2>/dev/null | sed -n 's/^etat=//p')" >>"$JOURNAL"
+# Le client Steam en arriere-plan pendant la partie, rendu a la sortie : 99 %
+# d'un coeur releve sur le M1 le 2026-10-17, autant de moins pour le jeu sur un
+# Mac a peu de coeurs de performance. Ce qu'il a pris pendant la partie va au
+# journal. Si ce lanceur est tue, la veille s'en apercoit et rend la priorite.
+# CIDRE_STEAM_ARRIERE_PLAN=0 : ne pas y toucher. cf. tests/client_steam_natif.sh.
+ETAT_STEAM=
+if [ "${CIDRE_SANS_STEAM:-}" != 1 ]; then
+   ETAT_STEAM=${TMPDIR:-/tmp}/cidre-steam-discret.$$
+   sh "$R/tests/client_steam_natif.sh" discret "$ETAT_STEAM" $$ >>"$JOURNAL" 2>&1 || true
+fi
 CIDRE_OVERLAY_DYLIB=$OVERLAY sh "$R/tests/etape2_pile_arm64ec.sh" "$PROG" "$@" >>"$JOURNAL" 2>&1 && RC=0 || RC=$?
+[ -z "$ETAT_STEAM" ] || sh "$R/tests/client_steam_natif.sh" rendre "$ETAT_STEAM" >>"$JOURNAL" 2>&1 || true
 # Le jeu est sorti : le client de service n'a plus de raison d'etre. Une fois
 # constate que plus rien du jeu ne tourne dans le prefixe, on l'arrete, et le
 # wineserver s'en va avec ses services. Jamais un processus du jeu. Avant les
