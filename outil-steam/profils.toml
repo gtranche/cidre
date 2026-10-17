@@ -170,12 +170,18 @@
 #                    upscaler) au lieu de se regler en Epique apres son banc
 #                    automatique. Il peut aussi montrer les glyphes du Deck, viser
 #                    1280x800 ou plafonner ses images. Essai, false par defaut.
-#   metalfx          agrandissement MetalFX spatial x2 de la sortie (DXMT seulement,
-#                    sans effet en dxvk) : le jeu rend a la taille du bureau en points
-#                    (1728x1117 sur un 14 pouces), MetalFX produit les pixels physiques
-#                    au lieu de l'agrandissement flou de CoreAnimation. Mesure sur
-#                    Expedition 33 : -3 fps au menu, -2 a -4 fps en jeu. Rester en
-#                    fenetre sans bordure : le plein ecran exclusif donne un ecran noir.
+#   metalfx          agrandissement MetalFX spatial de la sortie, au lieu de
+#                    l'agrandissement flou de CoreAnimation : true, ou un facteur de
+#                    definition (0.75, 0.67, 0.5). En DXMT, x2 fixe : le jeu rend a la
+#                    taille du bureau en points (1728x1117 sur un 14 pouces), MetalFX
+#                    produit les pixels physiques ; mesure sur Expedition 33 : -3 fps au
+#                    menu, -2 a -4 fps en jeu ; rester en fenetre sans bordure (le plein
+#                    ecran exclusif donne un ecran noir). En D3D12, Vulkan et DXVK
+#                    (KosmicKrisp 0202) : l'image du jeu, a sa propre definition, est
+#                    agrandie jusqu'aux pixels physiques de la fenetre (plein ecran
+#                    emule compris). Le gain vient d'une definition de jeu plus basse :
+#                    le facteur donne celle visee (espace x facteur, journal et
+#                    CIDRE_METALFX_DEFINITION), a choisir dans le jeu ou par sa fiche.
 #   dlss             "metalfx" : DLSS Super Resolution traduit en MetalFX temporel
 #                    (MTLFXTemporalScaler) par les extensions NVIDIA de DXMT. Le jeu
 #                    voit une carte NVIDIA et propose DLSS dans ses reglages ; ses

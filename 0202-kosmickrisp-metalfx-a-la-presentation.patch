@@ -1,0 +1,530 @@
+Generated-by: LLM
+
+diff --git a/src/kosmickrisp/vulkan/kk_wsi.c b/src/kosmickrisp/vulkan/kk_wsi.c
+index d863766..caa699f 100644
+--- a/src/kosmickrisp/vulkan/kk_wsi.c
++++ b/src/kosmickrisp/vulkan/kk_wsi.c
+@@ -49,10 +49,9 @@ kk_wsi_proc_addr(VkPhysicalDevice physicalDevice, const char *pName)
+ }
+ 
+ static VkResult
+-kk_bind_drawable_to_vkimage(VkImage vk_image, void *drawable)
++kk_bind_texture_to_vkimage(VkImage vk_image, void *texture)
+ {
+    VK_FROM_HANDLE(kk_image, image, vk_image);
+-   mtl_texture *texture = mtl_drawable_get_texture(drawable);
+ 
+    /* This should only be called for swapchain binding. */
+    assert(image->plane_count == 1);
+@@ -68,6 +67,12 @@ kk_bind_drawable_to_vkimage(VkImage vk_image, void *drawable)
+    return VK_SUCCESS;
+ }
+ 
++static VkResult
++kk_bind_drawable_to_vkimage(VkImage vk_image, void *drawable)
++{
++   return kk_bind_texture_to_vkimage(vk_image, mtl_drawable_get_texture(drawable));
++}
++
+ static void
+ kk_wsi_cmd_blit_image(VkCommandBuffer vk_cmd, const VkBlitImageInfo2 *blit_info,
+                       bool opaque_alpha)
+@@ -127,6 +132,7 @@ kk_init_wsi(struct kk_physical_device *pdev)
+       return result;
+ 
+    wsi->metal.bind_drawable_to_vkimage = kk_bind_drawable_to_vkimage;
++   wsi->metal.bind_texture_to_vkimage = kk_bind_texture_to_vkimage;
+    wsi->metal.encode_drawable_present = kk_encode_drawable_present;
+    wsi->metal.cmd_blit_image = kk_wsi_cmd_blit_image;
+    wsi->metal.get_mtl4_command_queue = kk_get_mtl4_command_queue;
+diff --git a/src/vulkan/meson.build b/src/vulkan/meson.build
+index 614a33a..fff163a 100644
+--- a/src/vulkan/meson.build
++++ b/src/vulkan/meson.build
+@@ -73,7 +73,7 @@ if with_platform_macos
+   vulkan_wsi_list += '-DVK_USE_PLATFORM_METAL_EXT'
+   vulkan_wsi_deps += dependency(
+     'appleframeworks',
+-    modules : ['QuartzCore', 'Metal']
++    modules : ['QuartzCore', 'Metal', 'MetalFX', 'CoreGraphics']
+   )
+ endif
+ 
+diff --git a/src/vulkan/wsi/wsi_common.h b/src/vulkan/wsi/wsi_common.h
+index cfb921d..55ed092 100644
+--- a/src/vulkan/wsi/wsi_common.h
++++ b/src/vulkan/wsi/wsi_common.h
+@@ -153,6 +153,7 @@ struct wsi_device {
+        * make it possible. */
+       void *(*get_mtl4_command_queue)(VkDevice device);
+       VkResult (*bind_drawable_to_vkimage)(VkImage image, void *drawable);
++      VkResult (*bind_texture_to_vkimage)(VkImage image, void *texture);
+       /* Does not transfer the ownership to the command buffer. The command
+        * buffer must retain the drawable to ensure lifespan. */
+       void (*encode_drawable_present)(VkCommandBuffer cmd, void *drawable);
+diff --git a/src/vulkan/wsi/wsi_common_metal.c b/src/vulkan/wsi/wsi_common_metal.c
+index 58bb2b7..bbc0d76 100644
+--- a/src/vulkan/wsi/wsi_common_metal.c
++++ b/src/vulkan/wsi/wsi_common_metal.c
+@@ -438,6 +438,9 @@ struct wsi_metal_swapchain {
+     * wsi_metal_layer_present_with_command_buffer. */
+    struct wsi_metal_layer_present_context *present_context;
+ 
++   /* MESA_WSI_METAL_METALFX : agrandissement MetalFX a la presentation. */
++   struct wsi_metal_layer_upscaler *upscaler;
++
+    uint32_t current_image_index;
+ 
+    /* VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR */
+@@ -662,7 +665,8 @@ wsi_cmd_blit_image_to_image(const struct wsi_swapchain *chain,
+ 
+       result = wsi->EndCommandBuffer(image->blit.cmd_buffers[i]);
+ 
+-      wsi->metal.encode_drawable_present(image->blit.cmd_buffers[i], metal_image->drawable);
++      if (!metal_chain->upscaler)
++         wsi->metal.encode_drawable_present(image->blit.cmd_buffers[i], metal_image->drawable);
+    }
+ 
+    return result;
+@@ -720,7 +724,12 @@ wsi_metal_swapchain_acquire_next_image(struct wsi_swapchain *wsi_chain,
+          struct wsi_metal_image *image = &chain->images[i];
+          *image_index = i;
+          image->drawable = drawable;
+-         if (!wsi_chain->wsi->sw) {
++         if (chain->upscaler) {
++            wsi_metal_layer_upscaler_wait(chain->upscaler, i);
++            chain->base.wsi->metal.bind_texture_to_vkimage(image->base.blit.image,
++               wsi_metal_layer_upscaler_texture(chain->upscaler, i));
++            wsi_cmd_blit_image_to_image(wsi_chain, &wsi_chain->image_info, &image->base);
++         } else if (!wsi_chain->wsi->sw) {
+             chain->base.wsi->metal.bind_drawable_to_vkimage(image->base.blit.image,
+                                                             image->drawable);
+             /* Since present images will only be backed by MTLTextures after acquisition,
+@@ -823,9 +832,10 @@ wsi_metal_swapchain_stats(struct wsi_metal_swapchain *chain)
+    const double ms = wsi_metal_ms_since(&chain->stats_start);
+    if (ms < 5000.0)
+       return;
+-   fprintf(stderr, "[CIDRE_WSI] %.1f images/s, chaine %ux%u, format %d, couche opaque=%d, "
++   fprintf(stderr, "[CIDRE_WSI] %.1f images/s, chaine %ux%u%s, format %d, couche opaque=%d, "
+            "direct %u/%u, detachement=0x%x\n",
+            chain->stats_frames * 1000.0 / ms, chain->extent.width, chain->extent.height,
++           chain->upscaler ? " (MetalFX)" : "",
+            chain->vk_format, wsi_metal_layer_is_opaque(chain->surface->pLayer),
+            chain->stats_direct, chain->stats_samples, chain->stats_last_code);
+    clock_gettime(CLOCK_MONOTONIC, &chain->stats_start);
+@@ -852,7 +862,13 @@ wsi_metal_swapchain_queue_present(struct wsi_swapchain *wsi_chain,
+          present_id);
+    }
+ 
+-   if (wsi_chain->wsi->sw) {
++   if (chain->upscaler) {
++      void *mtl4_queue = NULL;
++      if (wsi_chain->wsi->metal.get_mtl4_command_queue)
++         mtl4_queue = wsi_chain->wsi->metal.get_mtl4_command_queue(wsi_chain->device);
++      wsi_metal_layer_upscale_and_present(chain->upscaler, image_index,
++                                          &image->drawable, mtl4_queue);
++   } else if (wsi_chain->wsi->sw) {
+       wsi_metal_layer_blit_and_present(chain->blit_context,
+          &image->drawable,
+          image->base.cpu_map,
+@@ -1023,6 +1039,13 @@ wsi_metal_swapchain_destroy(struct wsi_swapchain *wsi_chain,
+    if (chain->present_context)
+       wsi_destroy_metal_layer_present_context(chain->present_context);
+ 
++   if (chain->upscaler) {
++      void *mtl4_queue = NULL;
++      if (chain->base.wsi->metal.get_mtl4_command_queue)
++         mtl4_queue = chain->base.wsi->metal.get_mtl4_command_queue(chain->base.device);
++      wsi_metal_layer_upscaler_destroy(chain->upscaler, mtl4_queue);
++   }
++
+    wsi_metal_release_present_info(chain->present_info);
+ 
+    if (chain->base.wsi->metal.get_mtl4_command_queue) {
+@@ -1067,8 +1090,11 @@ wsi_metal_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+     * opaque again, see wsi_metal_opaque_mode.
+     */
+    const enum wsi_metal_opaque_mode opaque_mode = wsi_metal_opaque_mode();
++   /* MetalFX presents through a Metal 3 command buffer too. */
++   const bool metalfx = !wsi_device->sw && wsi_device->metal.bind_texture_to_vkimage &&
++      debug_get_bool_option("MESA_WSI_METAL_METALFX", false);
+    const bool present_metal3 = !wsi_device->sw &&
+-      (wsi_metal_overlay_present() || opaque_mode == WSI_METAL_OPAQUE_METAL3);
++      (wsi_metal_overlay_present() || opaque_mode == WSI_METAL_OPAQUE_METAL3 || metalfx);
+    bool layer_opaque = opaque_composition &&
+       (wsi_device->sw ||
+        (present_metal3 && opaque_mode != WSI_METAL_OPAQUE_NEVER) ||
+@@ -1150,10 +1176,18 @@ wsi_metal_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+    if (is_sw_driver)
+       chain->blit_context = wsi_create_metal_layer_blit_context();
+ 
++   if (metalfx) {
++      void *mtl4_queue = NULL;
++      if (wsi_device->metal.get_mtl4_command_queue)
++         mtl4_queue = wsi_device->metal.get_mtl4_command_queue(chain->base.device);
++      chain->upscaler = wsi_metal_layer_upscaler_create(metal_surface->pLayer,
++         chain->extent.width, chain->extent.height, num_images, mtl4_queue);
++   }
++
+    /* Opt-in: an overlay injected in the process (Steam's) only sees frames
+     * presented through a Metal 3 command buffer. A NULL context falls back to
+-    * presenting the drawable directly. */
+-   if (present_metal3) {
++    * presenting the drawable directly. MetalFX has its own Metal 3 queue. */
++   if (present_metal3 && !chain->upscaler) {
+       chain->present_context =
+          wsi_create_metal_layer_present_context(metal_surface->pLayer);
+       /* Back to Metal 4: the layer must not stay opaque. */
+@@ -1166,7 +1200,7 @@ wsi_metal_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+ 
+    fprintf(stderr, "[CIDRE_WSI] couche opaque=%d (presentation Metal %d, "
+            "MESA_WSI_METAL_OPAQUE=%s), format %d\n", layer_opaque,
+-           chain->present_context ? 3 : 4,
++           chain->present_context || chain->upscaler ? 3 : 4,
+            debug_get_option("MESA_WSI_METAL_OPAQUE", "auto"),
+            pCreateInfo->imageFormat);
+ 
+diff --git a/src/vulkan/wsi/wsi_common_metal_layer.h b/src/vulkan/wsi/wsi_common_metal_layer.h
+index 2d8d89d..e7231cc 100644
+--- a/src/vulkan/wsi/wsi_common_metal_layer.h
++++ b/src/vulkan/wsi/wsi_common_metal_layer.h
+@@ -97,4 +97,27 @@ void
+ wsi_metal_layer_remove_queue_resident(const CAMetalLayer *metal_layer,
+    void *mtl4_command_queue);
+ 
++struct wsi_metal_layer_upscaler;
++
++struct wsi_metal_layer_upscaler *
++wsi_metal_layer_upscaler_create(const CAMetalLayer *metal_layer,
++   uint32_t width, uint32_t height, uint32_t image_count,
++   void *mtl4_command_queue);
++
++void *
++wsi_metal_layer_upscaler_texture(struct wsi_metal_layer_upscaler *upscaler,
++                                 uint32_t index);
++
++void
++wsi_metal_layer_upscaler_wait(struct wsi_metal_layer_upscaler *upscaler,
++                              uint32_t index);
++
++void
++wsi_metal_layer_upscale_and_present(struct wsi_metal_layer_upscaler *upscaler,
++   uint32_t index, CAMetalDrawable **drawable_ptr, void *mtl4_command_queue);
++
++void
++wsi_metal_layer_upscaler_destroy(struct wsi_metal_layer_upscaler *upscaler,
++                                 void *mtl4_command_queue);
++
+ #endif // WSI_COMMON_METAL_LAYER_H
+diff --git a/src/vulkan/wsi/wsi_common_metal_layer.m b/src/vulkan/wsi/wsi_common_metal_layer.m
+index ac777d4..652fa2a 100644
+--- a/src/vulkan/wsi/wsi_common_metal_layer.m
++++ b/src/vulkan/wsi/wsi_common_metal_layer.m
+@@ -10,6 +10,8 @@
+ 
+ #import <QuartzCore/CAMetalLayer.h>
+ #import <Metal/Metal.h>
++#import <MetalFX/MetalFX.h>
++#import <CoreGraphics/CoreGraphics.h>
+ 
+ void
+ wsi_metal_layer_size(const CAMetalLayer *metal_layer,
+@@ -485,3 +487,298 @@ - (uint64_t)displayCompositingInternalStatus;
+    }
+ #endif
+ }
++
++/* Cidre : agrandissement MetalFX a la presentation (MESA_WSI_METAL_METALFX).
++ * L'image du jeu est copiee dans une texture a la taille de la swapchain, puis
++ * MTLFXSpatialScaler l'agrandit dans le drawable, aux pixels physiques de la
++ * couche, a la place de l'etirement de CoreAnimation. */
++struct wsi_metal_layer_upscaler {
++   id<MTLCommandQueue> commandQueue;
++   id<MTLSharedEvent> frameEvent;
++   id<MTLSharedEvent> doneEvent;
++   id<MTLFXSpatialScaler> scaler;
++   id<MTLResidencySet> residencySet;
++   uint64_t frameValue;
++   uint64_t doneValue;
++   uint32_t image_count;
++   id<MTLTexture> *textures;
++   id<MTLTexture> output;
++   id<MTLCommandBuffer> last;
++   uint64_t *done_values;
++   uint64_t frames;
++   bool stats;
++   double gpu_ms;
++   uint32_t gpu_count;
++   const char *relire;
++};
++
++static void
++wsi_metal_upscaler_relire(struct wsi_metal_layer_upscaler *u,
++                          id<MTLCommandBuffer> commandBuffer, id<MTLTexture> tex)
++{
++   NSUInteger w = tex.width, h = tex.height, pitch = w * 4;
++   if (tex.pixelFormat != MTLPixelFormatBGRA8Unorm &&
++       tex.pixelFormat != MTLPixelFormatBGRA8Unorm_sRGB)
++      return;
++   id<MTLBuffer> buf = [[tex.device newBufferWithLength:pitch * h
++                                                options:MTLResourceStorageModeShared] autorelease];
++   id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
++   [blit copyFromTexture:tex sourceSlice:0 sourceLevel:0
++            sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(w, h, 1)
++                toBuffer:buf destinationOffset:0
++       destinationBytesPerRow:pitch destinationBytesPerImage:pitch * h];
++   [blit endEncoding];
++   char *path = strdup(u->relire);
++   [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
++      FILE *f = fopen(path, "wb");
++      if (f) {
++         const uint8_t *p = buf.contents;
++         fprintf(f, "P6\n%lu %lu\n255\n", (unsigned long)w, (unsigned long)h);
++         for (NSUInteger i = 0; i < w * h; i++) {
++            uint8_t rgb[3] = { p[i * 4 + 2], p[i * 4 + 1], p[i * 4] };
++            fwrite(rgb, 1, 3, f);
++         }
++         fclose(f);
++         fprintf(stderr, "[CIDRE_METALFX] image %lux%lu relue dans %s\n",
++                 (unsigned long)w, (unsigned long)h, path);
++      }
++      free(path);
++   }];
++}
++
++static uint32_t
++wsi_metal_display_scale(const CAMetalLayer *metal_layer)
++{
++   CGFloat scale = metal_layer.contentsScale;
++   CGDisplayModeRef mode = CGDisplayCopyDisplayMode(CGMainDisplayID());
++   if (mode) {
++      size_t points = CGDisplayModeGetWidth(mode);
++      size_t pixels = CGDisplayModeGetPixelWidth(mode);
++      if (points && (CGFloat)pixels / points > scale)
++         scale = (CGFloat)pixels / points;
++      CGDisplayModeRelease(mode);
++   }
++   return scale < 1.0 ? 1 : (uint32_t)(scale + 0.5);
++}
++
++static id<MTLFXSpatialScaler>
++wsi_metal_new_scaler(id<MTLDevice> device, MTLPixelFormat format,
++                     uint32_t in_w, uint32_t in_h, uint32_t out_w, uint32_t out_h)
++{
++   MTLFXSpatialScalerDescriptor *desc = [[MTLFXSpatialScalerDescriptor alloc] init];
++   desc.colorTextureFormat = format;
++   desc.outputTextureFormat = format;
++   desc.inputWidth = in_w;
++   desc.inputHeight = in_h;
++   desc.outputWidth = out_w;
++   desc.outputHeight = out_h;
++   desc.colorProcessingMode = (format == MTLPixelFormatRGBA16Float)
++      ? MTLFXSpatialScalerColorProcessingModeHDR
++      : MTLFXSpatialScalerColorProcessingModePerceptual;
++   id<MTLFXSpatialScaler> scaler = [desc newSpatialScalerWithDevice:device];
++   [desc release];
++   return scaler;
++}
++
++struct wsi_metal_layer_upscaler *
++wsi_metal_layer_upscaler_create(const CAMetalLayer *metal_layer,
++   uint32_t width, uint32_t height, uint32_t image_count,
++   void *mtl4_command_queue)
++{
++   @autoreleasepool {
++      id<MTLDevice> device = metal_layer.device;
++      if (device == nil || ![MTLFXSpatialScalerDescriptor supportsDevice:device]) {
++         fprintf(stderr, "[CIDRE_METALFX] non pris en charge par ce GPU\n");
++         return NULL;
++      }
++
++      CGSize bounds = metal_layer.bounds.size;
++      uint32_t scale = wsi_metal_display_scale(metal_layer);
++      uint32_t out_w = MAX((uint32_t)(bounds.width * scale + 0.5), width);
++      uint32_t out_h = MAX((uint32_t)(bounds.height * scale + 0.5), height);
++      const char *sortie = getenv("MESA_WSI_METAL_METALFX_SORTIE");
++      unsigned sw = 0, sh = 0;
++      if (sortie && sscanf(sortie, "%ux%u", &sw, &sh) == 2 && sw >= width && sh >= height) {
++         out_w = sw;
++         out_h = sh;
++      }
++      if (out_w == width && out_h == height) {
++         fprintf(stderr, "[CIDRE_METALFX] %ux%u deja a la taille de la couche : rien a agrandir\n",
++                 width, height);
++         return NULL;
++      }
++
++      MTLPixelFormat format = metal_layer.pixelFormat;
++      id<MTLFXSpatialScaler> scaler =
++         wsi_metal_new_scaler(device, format, width, height, out_w, out_h);
++      if (scaler == nil && (out_w > 2 * width || out_h > 2 * height)) {
++         out_w = MIN(out_w, 2 * width);
++         out_h = MIN(out_h, 2 * height);
++         scaler = wsi_metal_new_scaler(device, format, width, height, out_w, out_h);
++      }
++      if (scaler == nil) {
++         fprintf(stderr, "[CIDRE_METALFX] MTLFXSpatialScaler refuse %ux%u -> %ux%u (format %lu)\n",
++                 width, height, out_w, out_h, (unsigned long)format);
++         return NULL;
++      }
++
++      struct wsi_metal_layer_upscaler *u = calloc(1, sizeof(*u));
++      u->textures = calloc(image_count, sizeof(id<MTLTexture>));
++      u->done_values = calloc(image_count, sizeof(uint64_t));
++      u->image_count = image_count;
++      u->scaler = scaler;
++      u->commandQueue = [device newCommandQueue];
++      u->frameEvent = [device newSharedEvent];
++      u->doneEvent = [device newSharedEvent];
++      u->stats = getenv("CIDRE_WSI_STATS") != NULL;
++      u->relire = getenv("MESA_WSI_METAL_METALFX_RELIRE");
++
++      MTLTextureDescriptor *td =
++         [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format
++                                                            width:width
++                                                           height:height
++                                                        mipmapped:NO];
++      td.storageMode = MTLStorageModePrivate;
++      td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead |
++                 scaler.colorTextureUsage;
++
++      MTLResidencySetDescriptor *rd = [[MTLResidencySetDescriptor alloc] init];
++      rd.initialCapacity = image_count;
++      u->residencySet = [device newResidencySetWithDescriptor:rd error:nil];
++      [rd release];
++
++      for (uint32_t i = 0; i < image_count; i++) {
++         u->textures[i] = [device newTextureWithDescriptor:td];
++         if (u->textures[i] == nil) {
++            wsi_metal_layer_upscaler_destroy(u, mtl4_command_queue);
++            return NULL;
++         }
++         u->textures[i].label = @"cidre-metalfx-entree";
++         [u->residencySet addAllocation:u->textures[i]];
++      }
++      /* MetalFX n'ecrit que dans une texture privee : sortie a part, copiee
++       * ensuite dans le drawable. */
++      MTLTextureDescriptor *od =
++         [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format
++                                                            width:out_w
++                                                           height:out_h
++                                                        mipmapped:NO];
++      od.storageMode = MTLStorageModePrivate;
++      od.usage = scaler.outputTextureUsage;
++      u->output = [device newTextureWithDescriptor:od];
++      if (u->output == nil) {
++         wsi_metal_layer_upscaler_destroy(u, mtl4_command_queue);
++         return NULL;
++      }
++      u->output.label = @"cidre-metalfx-sortie";
++
++      [u->residencySet commit];
++      [u->residencySet requestResidency];
++#if defined(MAC_OS_VERSION_26_0) && __MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_VERSION_26_0
++      if (mtl4_command_queue)
++         [(id<MTL4CommandQueue>)mtl4_command_queue addResidencySet:u->residencySet];
++#endif
++
++      /* Le drawable prend la taille de sortie ; la couche reste a sa taille. */
++      metal_layer.framebufferOnly = NO;
++      metal_layer.drawableSize = (CGSize){.width = out_w, .height = out_h};
++
++      fprintf(stderr, "[CIDRE_METALFX] spatial %ux%u -> %ux%u (x%.2f), %u images\n",
++              width, height, out_w, out_h, (double)out_w / width, image_count);
++      return u;
++   }
++}
++
++void *
++wsi_metal_layer_upscaler_texture(struct wsi_metal_layer_upscaler *u, uint32_t index)
++{
++   return u->textures[index];
++}
++
++void
++wsi_metal_layer_upscaler_wait(struct wsi_metal_layer_upscaler *u, uint32_t index)
++{
++   uint64_t value = u->done_values[index];
++   if (value && u->doneEvent.signaledValue < value)
++      [u->doneEvent waitUntilSignaledValue:value timeoutMS:1000];
++}
++
++void
++wsi_metal_layer_upscale_and_present(struct wsi_metal_layer_upscaler *u,
++   uint32_t index, CAMetalDrawable **drawable_ptr, void *mtl4_command_queue)
++{
++   @autoreleasepool {
++      id<CAMetalDrawable> drawable = [(id<CAMetalDrawable>)*drawable_ptr autorelease];
++      if (mtl4_command_queue != NULL) {
++         /* Attente dans un tampon a part : le temps GPU de celui de MetalFX
++          * reste le sien (CIDRE_WSI_STATS). */
++         id<MTL4CommandQueue> queue = (id<MTL4CommandQueue>)mtl4_command_queue;
++         id<MTLCommandBuffer> waitBuffer = [u->commandQueue commandBuffer];
++         uint64_t value = ++u->frameValue;
++         [queue signalEvent:u->frameEvent value:value];
++         [waitBuffer encodeWaitForEvent:u->frameEvent value:value];
++         [waitBuffer commit];
++      }
++
++      id<MTLCommandBuffer> commandBuffer = [u->commandQueue commandBuffer];
++
++      u->scaler.colorTexture = u->textures[index];
++      u->scaler.outputTexture = u->output;
++      u->scaler.inputContentWidth = u->textures[index].width;
++      u->scaler.inputContentHeight = u->textures[index].height;
++      [u->scaler encodeToCommandBuffer:commandBuffer];
++
++      id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
++      [blit copyFromTexture:u->output toTexture:drawable.texture];
++      [blit endEncoding];
++
++      if (u->relire && ++u->frames == 30)
++         wsi_metal_upscaler_relire(u, commandBuffer, drawable.texture);
++
++      if (u->stats) {
++         [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
++            u->gpu_ms += (cb.GPUEndTime - cb.GPUStartTime) * 1e3;
++            if (++u->gpu_count == 600) {
++               fprintf(stderr, "[CIDRE_METALFX] %.3f ms GPU par image (moyenne sur 600)\n",
++                       u->gpu_ms / u->gpu_count);
++               u->gpu_ms = 0;
++               u->gpu_count = 0;
++            }
++         }];
++      }
++
++      uint64_t done = ++u->doneValue;
++      [commandBuffer encodeSignalEvent:u->doneEvent value:done];
++      u->done_values[index] = done;
++
++      [commandBuffer presentDrawable:drawable];
++      [commandBuffer commit];
++      [u->last release];
++      u->last = [commandBuffer retain];
++
++      *drawable_ptr = nil;
++   }
++}
++
++void
++wsi_metal_layer_upscaler_destroy(struct wsi_metal_layer_upscaler *u,
++   void *mtl4_command_queue)
++{
++   [u->last waitUntilCompleted];
++   [u->last release];
++#if defined(MAC_OS_VERSION_26_0) && __MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_VERSION_26_0
++   if (mtl4_command_queue && u->residencySet)
++      [(id<MTL4CommandQueue>)mtl4_command_queue removeResidencySet:u->residencySet];
++#endif
++   for (uint32_t i = 0; i < u->image_count; i++)
++      [u->textures[i] release];
++   [u->output release];
++   [u->residencySet release];
++   [u->scaler release];
++   [u->frameEvent release];
++   [u->doneEvent release];
++   [u->commandQueue release];
++   free(u->textures);
++   free(u->done_values);
++   free(u);
++}

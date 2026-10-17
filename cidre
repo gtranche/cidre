@@ -1932,8 +1932,13 @@ case "$cmd" in
     [ -n "$id" ] && [ -n "$cle" ] && [ -n "$val" ] || { echo "usage: cidre set <id|defaut> <option> <valeur>" >&2; exit 2; }
     [ "$id" = defaut ] || connu "$id" || { echo "jeu inconnu : $id" >&2; exit 1; }
     case $cle in
-      journal_detaille|tso|vsync|hud|overlay|async|narrow_barriers|garde_index|dx12|sm66|metalfx|eac_untrusted|luajit|plein_ecran|mode_emule|retina|gamemode|maj_avant_lancement|reglages_jeu_appliques|deck|sync_local)
+      journal_detaille|tso|vsync|hud|overlay|async|narrow_barriers|garde_index|dx12|sm66|eac_untrusted|luajit|plein_ecran|mode_emule|retina|gamemode|maj_avant_lancement|reglages_jeu_appliques|deck|sync_local)
         case $val in true|false) ;; *) echo "$cle attend true ou false" >&2; exit 2 ;; esac ;;
+      metalfx)
+        # agrandissement MetalFX a la presentation : true, ou un facteur de
+        # definition (0.75, 0.67, 0.5) vise pour le jeu
+        case $val in true|false|0.75|0.67|0.5) ;;
+          *) echo "metalfx attend true, false, 0.75, 0.67 ou 0.5" >&2; exit 2 ;; esac ;;
       fex_cache_disque)
         # cache disque du code traduit par FEX (FEX_DISKCACHE)
         case $val in true|false) ;; *) echo "$cle attend true ou false" >&2; exit 2 ;; esac ;;
