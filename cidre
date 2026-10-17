@@ -1291,6 +1291,13 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
   cidre sync <id|all> [backup|restore]   copier les sauvegardes dans ce dossier, ou reprendre ce qui y est plus recent
   cidre status [--json]           version du runtime, prerequis, etat de l'installation
   cidre doctor                    diagnostic : ce qui est la, ce qui tourne, et si Wine demarre (texte a copier)
+  cidre diag <id> [--capture] [--sans-doctor] [--json]
+                                  archive de diagnostic d'un jeu (versions, doctor, journal, profil, fiche,
+                                  plantages, shaders, systeme), masquee (nom, comptes Steam, jetons, e-mails,
+                                  IP) ; montre ce qui partirait, puis demande avant d'envoyer
+  cidre diag envoyer <archive> [--json]
+                                  l'envoie au service de diagnostic et rend un code court (CIDRE-7K3P-Q9)
+                                  a donner a l'equipe ; « cidre diag service » : le service est-il configure ?
   cidre setup                     configure le runtime apres une installation ou une mise a jour
  Steam
   cidre library [--json] [--refresh]   les jeux que possede ton compte (installes ou non)
@@ -1896,6 +1903,28 @@ case "$cmd" in
     fi ;;
   doctor|diagnostic)
     sh "$R/tests/diagnostic_cidre.sh" ;;
+  diag)
+    # Rien ne part sans accord : en --json (Verger), la commande s'arrete a
+    # l'archive et a son resume, et Verger appelle `diag envoyer` apres le
+    # « Envoyer » du testeur ; au terminal, on demande.
+    case ${1:-} in
+      envoyer|send) shift; sh "$R/tests/envoyer_diag.sh" envoyer "$@" $( [ "$JSON" = oui ] && echo --json); exit $? ;;
+      service)      sh "$R/tests/envoyer_diag.sh" service $( [ "$JSON" = oui ] && echo --json); exit $? ;;
+    esac
+    id=${1:?usage: cidre diag <id> [--capture] [--sans-doctor] [--json]}; shift
+    if [ "$JSON" = oui ]; then sh "$R/tests/diag_cidre.sh" "$id" --json "$@"; exit $?; fi
+    sortie=$(sh "$R/tests/diag_cidre.sh" "$id" "$@") || exit $?
+    printf '%s\n' "$sortie"
+    a=$(printf '%s\n' "$sortie" | sed -n 's/^Archive : //p')
+    [ -t 0 ] || exit 0
+    if ! sh "$R/tests/envoyer_diag.sh" service | grep -q '^service : http'; then
+      echo; echo "Pas de service de diagnostic sur ce Mac : envoie l'archive a la main (formulaire GitHub, e-mail)."; exit 0
+    fi
+    printf '\nEnvoyer ce diagnostic a l equipe de Cidre ? [o/N] '
+    read -r r
+    case $r in o|O|oui|y|Y|yes) ;; *) echo "Rien n'est parti. L'archive reste ici : $a"; exit 0 ;; esac
+    c=$(sh "$R/tests/envoyer_diag.sh" envoyer "$a") || exit $?
+    echo; echo "Envoye. Ton code : $c"; echo "Donne-le a la personne qui t'aide : il lui donne acces a ce seul diagnostic, 30 jours." ;;
   setup|configurer)
     sh "$R/tests/configurer_cidre.sh" ;;
   set)

@@ -1,0 +1,29 @@
+# Le service de depot des diagnostics de Cidre (README.md : mise en place).
+# Les deux jetons ne sont pas ici : `npx wrangler secret put JETON_APP` et
+# `npx wrangler secret put JETON_ADMIN`.
+name = "cidre-diag"
+main = "worker.js"
+compatibility_date = "2025-09-01"
+workers_dev = true
+
+[[r2_buckets]]
+binding = "DIAGS"
+bucket_name = "cidre-diags"
+
+# Debit par adresse : 3 envois par minute (la periode vaut 10 ou 60 s).
+# Wrangler 4.36 ou plus. A retirer si le compte la refuse : le Worker s'en passe.
+[[ratelimits]]
+name = "LIMITE_IP"
+namespace_id = "1001"
+
+  [ratelimits.simple]
+  limit = 3
+  period = 60
+
+[vars]
+# 8 Mio par archive (tests/diag_cidre.sh reduit la sienne en dessous)
+MAX_OCTETS = "8388608"
+# au-dela, refus jusqu'au lendemain (UTC) : borne le cout d'un abus
+MAX_PAR_JOUR = "300"
+# meme duree que la regle de cycle de vie du seau (README.md)
+RETENTION_JOURS = "30"
