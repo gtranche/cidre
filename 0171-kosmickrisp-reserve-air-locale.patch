@@ -1,0 +1,136 @@
+Generated-by: LLM
+
+KosmicKrisp : reserve d'AIR locale par jeu (MESA_KK_AIR_LOCAL) -- une bibliotheque compilee depuis son MSL est ecrite en AIR (air/<cle>.metallib, cle de 0165) dans un dossier propre au jeu et relue aux lancements suivants, sans Xcode sur la machine du joueur et sans dependre du cache de Metal du processus wine (partage par tous les jeux, purgeable, vide apres une mise a jour de macOS). L'ecriture passe par -[_MTLLibrary serializeToURL:error:], API PRIVEE de Metal : si le selecteur manque (respondsToSelector), ou si l'ecriture echoue 8 fois de suite (exception comprise), la reserve est abandonnee pour le reste du processus, avec un seul message, et les bibliotheques restent compilees depuis le MSL comme sans la variable ; une reserve deja ecrite reste lue (newLibraryWithURL, API publique). Banc banc_air_local (M1 Max, 506 MSL de Detroit tires au hasard, 10 fils) : 371 ms par bibliotheque a froid, 0,5 ms cache de Metal chaud, 1,3 ms depuis l'AIR ecrit ; AIR identique a l'octet d'un processus a l'autre. Essai sans jeu (bancs Vulkan natifs et rejeux Fossilize) : reserve vide -> ecrite ; reserve pleine -> 100 % des bibliotheques depuis l'AIR local et 100 % des pipelines depuis les archives de MESA_KK_PIPELINE_CACHE ; archive ecrite depuis l'AIR retrouvee par une bibliotheque compilee depuis le MSL ; reserve non inscriptible -> repli apres 8 echecs, resultats des bancs identiques au temoin. AIR d'execution ~1,8 fois l'AIR de Xcode (Detroit : ~1,4 Go estime). MESA_KK_PRECOMPIL (paquet) reste consulte d'abord ; statistiques : « from local AIR », « local AIR written ».
+
+--- a/src/kosmickrisp/bridge/mtl_compiler.m	2026-10-17 10:34:55
++++ b/src/kosmickrisp/bridge/mtl_compiler.m	2026-10-17 10:40:54
+@@ -43,9 +43,24 @@
+  * Une archive faite pour une autre puce ne s'ouvre pas et est ignoree ; une
+  * cle absente retombe sur la compilation habituelle. Les archives ne servent
+  * qu'avec l'AIR distribue : Metal retrouve un pipeline par l'empreinte de ses
+- * fonctions AIR, et un MSL compile ici n'a pas celle de l'AIR fait hors ligne. */
++ * fonctions AIR, et un MSL compile ici n'a pas celle de l'AIR fait hors ligne.
++ *
++ * MESA_KK_AIR_LOCAL=<dossier> : reserve d'AIR propre au jeu, faite sur la
++ * machine du joueur. Une bibliotheque compilee depuis son MSL y est ecrite
++ * (air/<cle>.metallib, -[_MTLLibrary serializeToURL:error:], prive) et y est
++ * relue aux lancements suivants : sans Xcode, et sans dependre du cache de
++ * Metal du processus wine, partage par tous les jeux et purgeable (M1 Max,
++ * 506 MSL de Detroit : 371 ms par bibliotheque a froid, 1,3 ms depuis l'AIR).
++ * L'AIR ecrit est celui que Metal vient de produire, le meme d'un processus a
++ * l'autre : les archives de MESA_KK_PIPELINE_CACHE le retrouvent. */
+ static const void *kk_lib_key_key = &kk_lib_key_key;
+ static _Atomic uint32_t kk_stat_lib_air;
++static _Atomic uint32_t kk_stat_lib_air_local;
++static _Atomic uint32_t kk_stat_lib_air_written;
++
++@interface NSObject (KKSerializeLibrary)
++- (BOOL)serializeToURL:(NSURL *)url error:(NSError **)error;
++@end
+ static pthread_mutex_t kk_recolte_mutex = PTHREAD_MUTEX_INITIALIZER;
+ static FILE *kk_recolte_pipelines;
+ 
+@@ -72,6 +87,56 @@
+    return [NSString stringWithUTF8String:hex];
+ }
+ 
++static id<MTLLibrary>
++kk_library_from_air(id<MTLDevice> dev, const char *dir, NSString *key)
++{
++   NSString *air = [NSString stringWithFormat:@"%s/air/%@.metallib", dir, key];
++   if (access(air.fileSystemRepresentation, R_OK) != 0)
++      return nil;
++   return [dev newLibraryWithURL:[NSURL fileURLWithPath:air] error:NULL];
++}
++
++/* serializeToURL est prive : s'il manque, ou s'il echoue KK_AIR_LOCAL_TRIES
++ * fois de suite, on renonce a la reserve pour le reste du processus, et la
++ * bibliotheque reste compilee depuis son MSL comme sans MESA_KK_AIR_LOCAL. */
++#define KK_AIR_LOCAL_TRIES 8
++static _Atomic uint32_t kk_air_local_failures;
++
++static void
++kk_air_local_write(const char *dir, NSString *key, id<MTLLibrary> lib)
++{
++   if (atomic_load(&kk_air_local_failures) >= KK_AIR_LOCAL_TRIES)
++      return;
++   if (![(id)lib respondsToSelector:@selector(serializeToURL:error:)]) {
++      if (atomic_exchange(&kk_air_local_failures, KK_AIR_LOCAL_TRIES) < KK_AIR_LOCAL_TRIES)
++         fprintf(stderr, "KK: MESA_KK_AIR_LOCAL: serializeToURL absent, reserve d'AIR inactive\n");
++      return;
++   }
++   NSString *base = [[NSString stringWithUTF8String:dir] stringByAppendingPathComponent:@"air"];
++   NSString *path = [base stringByAppendingPathComponent:[key stringByAppendingString:@".metallib"]];
++   NSFileManager *fm = [NSFileManager defaultManager];
++   if ([fm fileExistsAtPath:path])
++      return;
++   [fm createDirectoryAtPath:base withIntermediateDirectories:YES attributes:nil error:NULL];
++   NSString *tmp = [path stringByAppendingFormat:@".%d.%p.tmp", (int)getpid(), (void *)pthread_self()];
++   bool ok = false;
++   @try {
++      ok = [(id)lib serializeToURL:[NSURL fileURLWithPath:tmp] error:NULL] &&
++           rename(tmp.fileSystemRepresentation, path.fileSystemRepresentation) == 0;
++   } @catch (NSException *e) {
++      ok = false;
++   }
++   if (ok) {
++      atomic_store(&kk_air_local_failures, 0);
++      atomic_fetch_add(&kk_stat_lib_air_written, 1);
++   } else {
++      unlink(tmp.fileSystemRepresentation);
++      if (atomic_fetch_add(&kk_air_local_failures, 1) + 1 == KK_AIR_LOCAL_TRIES)
++         fprintf(stderr, "KK: MESA_KK_AIR_LOCAL: %u echecs d'ecriture de suite, reserve d'AIR inactive\n",
++                 KK_AIR_LOCAL_TRIES);
++   }
++}
++
+ /* Ecrit un fichier une fois (s'il existe deja, rien), en passant par un
+  * fichier temporaire pour qu'un autre processus ne lise jamais une moitie. */
+ static void
+@@ -422,10 +487,13 @@
+ kk_print_compile_stats(void)
+ {
+    fprintf(stderr,
+-           "KK compile: library %u calls / %.1f s (%u from AIR), pipeline %u calls / %.1f s, %u from archives\n",
++           "KK compile: library %u calls / %.1f s (%u from AIR, %u from local AIR, %u local AIR written), "
++           "pipeline %u calls / %.1f s, %u from archives\n",
+            atomic_load(&kk_stat_lib_count),
+            atomic_load(&kk_stat_lib_ns) / 1.0e9,
+            atomic_load(&kk_stat_lib_air),
++           atomic_load(&kk_stat_lib_air_local),
++           atomic_load(&kk_stat_lib_air_written),
+            atomic_load(&kk_stat_pipe_count),
+            atomic_load(&kk_stat_pipe_ns) / 1.0e9,
+            atomic_load(&kk_stat_pipe_hits));
+@@ -482,13 +550,16 @@
+                                      (uint32_t)math_fp_fns);
+       id<MTLLibrary> lib = nil;
+       const char *pre = kk_env_dir("MESA_KK_PRECOMPIL");
++      const char *local = kk_env_dir("MESA_KK_AIR_LOCAL");
+       if (pre) {
+-         NSString *air = [NSString stringWithFormat:@"%s/air/%@.metallib", pre, key];
+-         if (access(air.fileSystemRepresentation, R_OK) == 0) {
+-            lib = [comp.device newLibraryWithURL:[NSURL fileURLWithPath:air] error:NULL];
+-            if (lib != nil)
+-               atomic_fetch_add(&kk_stat_lib_air, 1);
+-         }
++         lib = kk_library_from_air(comp.device, pre, key);
++         if (lib != nil)
++            atomic_fetch_add(&kk_stat_lib_air, 1);
++      }
++      if (lib == nil && local) {
++         lib = kk_library_from_air(comp.device, local, key);
++         if (lib != nil)
++            atomic_fetch_add(&kk_stat_lib_air_local, 1);
+       }
+ 
+       if (lib == nil) {
+@@ -505,6 +576,8 @@
+ 
+          if (lib == nil) {
+             fprintf(stderr, "Failed to create MTLLibrary: %s\n", [error.localizedDescription UTF8String]);
++         } else if (local) {
++            kk_air_local_write(local, key, lib);
+          }
+       }
+ 

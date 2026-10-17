@@ -82,6 +82,21 @@ if [ -n "$JEU" ] && [ "$(opt cache_pipelines CIDRE_PIPELINE_CACHE)" != false ]; 
       PRECOMPIL=$(sh "$R/tests/precompil_kk.sh" dossier "$JEU" 2>/dev/null || true)
       [ -z "$PRECOMPIL" ] || export MESA_KK_PRECOMPIL="$PRECOMPIL"
    fi
+   # Reserve d'AIR de ce jeu, faite ici (0171) : chaque bibliotheque compilee y
+   # est ecrite et relue aux lancements suivants, meme quand le cache de Metal
+   # du processus wine l'a oubliee. Un dossier par version du MSL de
+   # KosmicKrisp : celles d'un autre KosmicKrisp ne serviraient plus a rien.
+   # CIDRE_AIR_LOCAL=0 : pas de reserve.
+   if [ -z "${MESA_KK_AIR_LOCAL:-}" ] && [ "${CIDRE_AIR_LOCAL:-1}" != 0 ]; then
+      AIR_LOCAL="$HOME/Library/Application Support/Cidre/air-local/$JEU"
+      KK_MSL=$(sh "$R/tests/precompil_kk.sh" kk 2>/dev/null || true)
+      if [ -n "$KK_MSL" ] && [ "$KK_MSL" != inconnu ]; then
+         for d in "$AIR_LOCAL"/*; do
+            [ -d "$d" ] && [ "$(basename "$d")" != "$KK_MSL" ] && rm -rf "${d:?}"
+         done
+         export MESA_KK_AIR_LOCAL="$AIR_LOCAL/$KK_MSL"
+      fi
+   fi
 fi
 
 # Langue du jeu. langue = "auto" (defaut) : la langue de macOS, sinon l'anglais ;
@@ -349,6 +364,7 @@ DEBUT_EPOCH=$(date +%s)
    VARIANTES=$(sh "$R/tests/fiche_profil.sh" variantes "$JEU" 2>/dev/null | tr '\n' ';' | sed 's/;$//; s/;/ ; /g')
    [ -z "$VARIANTES" ] || echo "    fiche   : variante pour cette machine (si $VARIANTES)"
    [ -z "${MESA_KK_PRECOMPIL:-}" ] || echo "    precompil : pipelines precompiles livres ($MESA_KK_PRECOMPIL)"
+   [ -z "${MESA_KK_AIR_LOCAL:-}" ] || echo "    air local : $(ls "$MESA_KK_AIR_LOCAL/air" 2>/dev/null | grep -c '\.metallib$') bibliotheques en reserve ($MESA_KK_AIR_LOCAL)"
    [ -z "${CIDRE_DECK:-}" ] || echo "    deck    : mode Deck simule (IsSteamRunningOnSteamDeck rend vrai)"
    [ -z "$DECK_COUPE" ] || echo "    deck    : coupe en D3D12 (la fiche le demande ; CIDRE_DECK=1 pour forcer)"
 } >>"$JOURNAL"
