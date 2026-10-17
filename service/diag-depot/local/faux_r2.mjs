@@ -1,5 +1,5 @@
 // Un seau R2 en memoire, pour essayer le Worker sans compte Cloudflare
-// (test/worker.test.mjs, local/serveur_local.mjs). Seulement ce que le Worker utilise.
+// (test/worker.test.mjs). Seulement ce que le Worker utilise.
 async function octets(corps) {
   if (corps == null) return new Uint8Array();
   if (typeof corps === "string") return new TextEncoder().encode(corps);

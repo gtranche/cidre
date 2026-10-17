@@ -11,8 +11,8 @@
 #
 # Configuration, propre a la machine de l'equipe et jamais dans le depot
 # (service/diag-depot/README.md) : ${CIDRE_DIAG_CONF:-~/.config/cidre-diag/conf}
-#   url=https://cidre-diag.<compte>.workers.dev
-#   jeton_admin=<le secret JETON_ADMIN du Worker>
+#   url=https://diag.<domaine>
+#   jeton_admin=<la cle d administration, JETON_ADMIN du service>
 #   cle_privee=~/.config/cidre-diag/cle_privee.pem   (defaut ; la cle qui dechiffre)
 # Le diagnostic deballe va dans ${CIDRE_DIAGS_RECUS:-~/Dev/diags-recus}/<CODE>/ :
 # resume.txt d'abord, puis journal.txt, doctor.txt, plantages/...

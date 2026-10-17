@@ -11,7 +11,7 @@
 # Configuration (`cle=valeur`), la premiere trouvee :
 #   $CIDRE_DIR/diag-service.conf       (posee a la main, pour essayer un autre service)
 #   $R/outil-steam/diag-service.conf   (livree avec le runtime)
-#     url=https://cidre-diag.<compte>.workers.dev
+#     url=https://diag.<domaine>   (le service de service/diag-depot, sur Kubernetes ou Cloudflare)
 #     jeton=<jeton d'application, le meme pour tous : il ecarte les envois au hasard, pas un secret>
 #     cle=diag-cle.pem                  (cle publique RSA, relative au fichier de configuration)
 # Avec une cle, l'archive est chiffree avant de partir (enveloppe CIDRE-DIAG-1,
@@ -124,7 +124,8 @@ envoyer)
       echec 5 refuse "Le service a refuse l'envoi (HTTP $http)${msg:+ : $msg}. L'archive reste ici : $A"
    fi
    # le code est garde a cote de l'archive : le testeur peut le retrouver
-   printf '%s\t%s\t%s\n' "$code" "$(date '+%Y-%m-%d %H:%M')" "$A" >>"$CIDRE_DIR/diagnostics/envois.tsv" 2>/dev/null
+   mkdir -p "$CIDRE_DIR/diagnostics" 2>/dev/null &&
+      printf '%s\t%s\t%s\n' "$code" "$(date '+%Y-%m-%d %H:%M')" "$A" >>"$CIDRE_DIR/diagnostics/envois.tsv" 2>/dev/null
    if [ $JSON = oui ]; then
       printf '{"code":"%s","expire":%s,"chiffre":%s,"octets":%s}\n' "$code" "$(js "$expire")" "$chiffre" "$octets"
    else

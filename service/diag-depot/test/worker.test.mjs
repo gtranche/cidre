@@ -1,7 +1,8 @@
 // node --test service/diag-depot/test/
 import test from "node:test";
 import assert from "node:assert/strict";
-import worker, { ALPHABET, nouveauCode, normaliser } from "../worker.js";
+import worker from "../worker.js";
+import { ALPHABET, nouveauCode, normaliser } from "../depot.js";
 import { fauxR2 } from "../local/faux_r2.mjs";
 
 const env = (plus = {}) => ({

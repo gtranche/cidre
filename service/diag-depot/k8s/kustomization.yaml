@@ -1,0 +1,17 @@
+# kubectl apply -k k8s/   (README.md, « Mise en place sur Kubernetes »)
+# Le Secret n'est pas ici : il se cree a la main (kubectl create secret), pour
+# qu'aucun jeton ne passe jamais par le depot.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: cidre-diag
+resources:
+  - namespace.yaml
+  - pvc.yaml
+  - deployment.yaml
+  - service.yaml
+  - ingress.yaml
+images:
+  - name: cidre-diag
+    # A REMPLACER : ton registre et la version poussee
+    newName: REGISTRE/cidre-diag
+    newTag: "1.0.0"

@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cidre-diag
+  labels: { app: cidre-diag }
+spec:
+  # une seule replique : volume ReadWriteOnce, limiteur et plafond du jour en memoire
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: cidre-diag }
+  template:
+    metadata:
+      labels: { app: cidre-diag }
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: cidre-diag
+          image: cidre-diag
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - name: JETON_APP
+              valueFrom: { secretKeyRef: { name: cidre-diag-jetons, key: JETON_APP } }
+            - name: JETON_ADMIN
+              valueFrom: { secretKeyRef: { name: cidre-diag-jetons, key: JETON_ADMIN } }
+            - { name: MAX_OCTETS, value: "8388608" }
+            - { name: MAX_PAR_JOUR, value: "300" }
+            - { name: RETENTION_JOURS, value: "30" }
+            - { name: DEBIT_PAR_MINUTE, value: "3" }
+            # l'en-tete ou l'Ingress met l'adresse du client : x-real-ip pour
+            # ingress-nginx, x-forwarded-for pour Traefik (sa derniere adresse)
+            - { name: ENTETE_IP_CLIENT, value: "x-real-ip" }
+          volumeMounts:
+            - { name: donnees, mountPath: /donnees }
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits: { memory: 256Mi }
+          readinessProbe:
+            httpGet: { path: /sante, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /sante, port: http }
+            periodSeconds: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+      volumes:
+        - name: donnees
+          persistentVolumeClaim: { claimName: cidre-diag-donnees }

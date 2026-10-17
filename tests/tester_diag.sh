@@ -1,15 +1,17 @@
 #!/bin/sh
 # Essais de `cidre diag` sans compte Cloudflare ni jeu lance :
 #   - le masquage (tests/masquer_diag.awk) sur des lignes types ;
-#   - la cle de controle des codes : la meme en shell et dans le Worker ;
-#   - le circuit complet sur le Worker servi en local (node, seau en memoire) :
-#     archive chiffree -> code -> tests/outils/lire_diag.sh -> resume ; code mal
-#     tape, jeton faux, service absent ou injoignable.
+#   - la cle de controle des codes : la meme en shell et dans le service (depot.js) ;
+#   - le circuit complet sur le serveur du conteneur (service/diag-depot/serveur,
+#     lance par node sur un dossier temporaire) : archive chiffree -> code ->
+#     tests/outils/lire_diag.sh -> resume, et la meme archive ouverte par le
+#     code de l'interface de consultation (dechiffrement.js) ; code mal tape,
+#     jeton faux, service absent ou injoignable.
 #   - avec CIDRE_DIAG_JEU=<appid> : `diag_cidre.sh` sur ce jeu, sans doctor
 #     (lecture seule : ni Wine ni jeu lances), et rien de personnel dans l'archive.
 #
 #   sh tests/tester_diag.sh
-# Il faut node (le Worker) ; tout se passe dans un dossier temporaire.
+# Il faut node (le service) ; tout se passe dans un dossier temporaire.
 set -u
 R=$(cd "$(dirname "$0")/.." && pwd)
 T=$(mktemp -d) || exit 1
@@ -46,16 +48,16 @@ verifier "identifiant du rapport de plantage" "grep -q '\"crashReporterKey\" : \
 verifier "les traces de Wine et le profil restent" "grep -q '0024:trace:seh:dispatch 0x7ffe0000 ‹mac›.local d3d11=dxmt tso=true' '$T/masque'"
 verifier "comptes par categorie" "grep -q '^identifiant_steam	3' '$T/cpt' && grep -q '^ip	3' '$T/cpt'"
 
-# --- Cle de controle : shell = Worker ----------------------------------------
+# --- Cle de controle : shell = service ----------------------------------------
 if command -v node >/dev/null 2>&1; then
    A=23456789ABCDEFGHJKMNPQRSTVWXYZ
    node --input-type=module -e "
-      import { ALPHABET, controle } from '$R/service/diag-depot/worker.js';
+      import { ALPHABET, controle } from '$R/service/diag-depot/depot.js';
       for (let i = 0; i < 300; i++) { let s = ''; for (let j = 0; j < 5; j++) s += ALPHABET[Math.floor(Math.random() * 30)]; console.log(s + controle(s)); }
    " >"$T/codes"
    faux=0
    while read -r c; do sh "$R/tests/envoyer_diag.sh" code-valide "$c" || faux=$((faux + 1)); done <"$T/codes"
-   verifier "300 codes du Worker valides pour le shell" "[ $faux -eq 0 ] && [ \$(wc -l <'$T/codes') -eq 300 ]"
+   verifier "300 codes du service valides pour le shell" "[ $faux -eq 0 ] && [ \$(wc -l <'$T/codes') -eq 300 ]"
    c=$(head -1 "$T/codes"); d=$(printf '%s' "$c" | cut -c1); e=$(printf '%s' "$c" | cut -c2)
    [ "$d" = 2 ] && n=3 || n=2
    verifier "un signe faux : refuse" "! sh '$R/tests/envoyer_diag.sh' code-valide '$n$(printf '%s' "$c" | cut -c2-)'"
@@ -65,17 +67,19 @@ else
    echo "(node absent : cle de controle et circuit complet non essayes)"
 fi
 
-# --- Circuit complet sur le Worker local ------------------------------------
+# --- Circuit complet sur le serveur du conteneur, en local ------------------
 if command -v node >/dev/null 2>&1; then
    PORT=$((20000 + $$ % 20000))
-   node "$R/service/diag-depot/local/serveur_local.mjs" $PORT app-essai admin-essai >"$T/serveur" 2>&1 &
+   mkdir -p "$T/donnees"
+   PORT=$PORT DONNEES="$T/donnees" JETON_APP=app-essai-0123456789 JETON_ADMIN=admin-essai-0123456789 DEBIT_PAR_MINUTE=0 \
+      node "$R/service/diag-depot/serveur/serveur.mjs" >"$T/serveur" 2>&1 &
    SERVEUR=$!
-   i=0; while [ $i -lt 50 ] && ! grep -q pret "$T/serveur" 2>/dev/null; do sleep 0.1; i=$((i + 1)); done
+   i=0; while [ $i -lt 50 ] && ! grep -q "sur le port" "$T/serveur" 2>/dev/null; do sleep 0.1; i=$((i + 1)); done
    export CIDRE_DIR="$T/cidre"; mkdir -p "$CIDRE_DIR/diagnostics" "$T/equipe"
    /usr/bin/openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$T/equipe/cle_privee.pem" 2>/dev/null
    /usr/bin/openssl pkey -in "$T/equipe/cle_privee.pem" -pubout -out "$CIDRE_DIR/diag-cle.pem"
-   printf 'url=http://127.0.0.1:%s\njeton=app-essai\ncle=diag-cle.pem\n' $PORT >"$CIDRE_DIR/diag-service.conf"
-   printf 'url=http://127.0.0.1:%s\njeton_admin=admin-essai\ncle_privee=%s\n' $PORT "$T/equipe/cle_privee.pem" >"$T/equipe/conf"
+   printf 'url=http://127.0.0.1:%s\njeton=app-essai-0123456789\ncle=diag-cle.pem\n' $PORT >"$CIDRE_DIR/diag-service.conf"
+   printf 'url=http://127.0.0.1:%s\njeton_admin=admin-essai-0123456789\ncle_privee=%s\n' $PORT "$T/equipe/cle_privee.pem" >"$T/equipe/conf"
    export CIDRE_DIAG_CONF="$T/equipe/conf" CIDRE_DIAGS_RECUS="$T/recus"
    # une archive comme en fait diag_cidre.sh
    D="$CIDRE_DIR/diagnostics/diag-1137300-20261017-120000"
@@ -89,11 +93,22 @@ if command -v node >/dev/null 2>&1; then
    code=$(sed -n 's/.*"code":"\([^"]*\)".*/\1/p' "$T/envoi")
    verifier "envoi : code 0 et code court" "[ $rc -eq 0 ] && printf '%s' '$code' | grep -qE '^CIDRE-[2-9A-HJ-NP-TV-Z]{4}-[2-9A-HJ-NP-TV-Z]{2}$'"
    verifier "le code est garde a cote de l'archive" "grep -q '^$code' '$CIDRE_DIR/diagnostics/envois.tsv'"
-   verifier "le service ne garde que du chiffre" "curl -s -H 'Authorization: Bearer admin-essai' http://127.0.0.1:$PORT/diag/$code | head -c 12 | grep -q CIDRE-DIAG-1"
+   verifier "le service ne garde que du chiffre" "curl -s -H 'Authorization: Bearer admin-essai-0123456789' http://127.0.0.1:$PORT/diag/$code | head -c 12 | grep -q CIDRE-DIAG-1"
    minuscule=$(printf '%s' "$code" | tr 'A-Z' 'a-z' | tr '-' ' ')
    sh "$R/tests/outils/lire_diag.sh" "$minuscule" >"$T/lu"; rc=$?
    verifier "lire_diag : dechiffre et deballe" "[ $rc -eq 0 ] && cmp -s '$D/journal.txt' '$T/recus/$code/journal.txt'"
    verifier "lire_diag : resume de 20 lignes au plus, avec la cause" "[ \$(wc -l <'$T/lu') -le 20 ] && grep -q 'cause probable : essai' '$T/lu' && grep -q 'jeu 1137300' '$T/lu'"
+   # l'interface de consultation dechiffre la meme archive, dans le navigateur
+   curl -s -H 'Authorization: Bearer admin-essai-0123456789' "http://127.0.0.1:$PORT/diag/$code" >"$T/recu.cidre"
+   node --input-type=module -e "
+      import fs from 'node:fs';
+      import { importerClePrivee, ouvrirDiagnostic } from '$R/service/diag-depot/serveur/public/dechiffrement.js';
+      const cle = await importerClePrivee(fs.readFileSync('$T/equipe/cle_privee.pem', 'utf8'));
+      const o = await ouvrirDiagnostic(new Uint8Array(fs.readFileSync('$T/recu.cidre')), cle);
+      fs.writeFileSync('$T/journal-navigateur.txt', o.fichiers.find((f) => f.nom === 'journal.txt').octets);
+   " 2>"$T/navigateur.err"
+   verifier "interface : meme archive dechiffree par Web Crypto" "cmp -s '$D/journal.txt' '$T/journal-navigateur.txt'"
+   verifier "journal du serveur sans code ni jeton" "! grep -qE '$code|$(printf '%s' "$code" | cut -c7-)|essai-0123456789' '$T/serveur'"
    verifier "lire_diag --liste" "sh '$R/tests/outils/lire_diag.sh' --liste | grep -q '^$code'"
    verifier "lire_diag --fichier (archive envoyee a la main)" "sh '$R/tests/outils/lire_diag.sh' --fichier '$A' | grep -q 'cause probable : essai'"
    verifier "code mal tape : refuse avant le reseau" "! sh '$R/tests/outils/lire_diag.sh' CIDRE-0000-00 2>/dev/null"
@@ -108,7 +123,7 @@ if command -v node >/dev/null 2>&1; then
    sh "$R/tests/envoyer_diag.sh" envoyer "$A" --json >"$T/refus"; rc=$?
    verifier "jeton d'application faux : code 5, erreur refuse" "[ $rc -eq 5 ] && grep -q '\"erreur\":\"refuse\"' '$T/refus'"
    kill $SERVEUR 2>/dev/null; wait $SERVEUR 2>/dev/null; SERVEUR=
-   sed -i '' 's/^jeton=.*/jeton=app-essai/' "$CIDRE_DIR/diag-service.conf"
+   sed -i '' 's/^jeton=.*/jeton=app-essai-0123456789/' "$CIDRE_DIR/diag-service.conf"
    sh "$R/tests/envoyer_diag.sh" envoyer "$A" --json >"$T/reseau"; rc=$?
    verifier "service injoignable : code 4, erreur reseau" "[ $rc -eq 4 ] && grep -q '\"erreur\":\"reseau\"' '$T/reseau'"
    rm -f "$CIDRE_DIR/diag-service.conf"

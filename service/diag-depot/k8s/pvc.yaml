@@ -1,0 +1,12 @@
+# Les diagnostics recus (chiffres), 30 jours au plus. 300 archives par jour au
+# plafond, quelques dizaines de Ko d'ordinaire : 2 Gio laissent de la marge.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cidre-diag-donnees
+spec:
+  accessModes: ["ReadWriteOnce"]
+  # storageClassName: A_ADAPTER   (sans elle : la classe par defaut du cluster)
+  resources:
+    requests:
+      storage: 2Gi

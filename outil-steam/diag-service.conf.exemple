@@ -1,7 +1,7 @@
 # Le service de depot des diagnostics (`cidre diag envoyer`) : copier en
-# diag-service.conf une fois le Worker deploye (service/diag-depot/README.md).
+# diag-service.conf une fois le service deploye (service/diag-depot/README.md, etape 7).
 # Rien de secret ici : le jeton d'application est le meme pour tous les Cidre.
-url=https://cidre-diag.SOUS-DOMAINE.workers.dev
+url=https://diag.EXEMPLE.fr
 jeton=JETON_APP
 # la cle PUBLIQUE de l'equipe, a cote de ce fichier (la privee ne quitte pas la coordination)
 cle=diag-cle.pem

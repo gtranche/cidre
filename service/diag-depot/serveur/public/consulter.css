@@ -1,0 +1,37 @@
+:root {
+  --fond: #f6f5f2; --carte: #ffffff; --texte: #1d1d1f; --discret: #6b6b70; --bord: #dedcd6;
+  --accent: #a3342b; --accent-texte: #ffffff; --code: #f0eee9; --danger: #b3261e;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --fond: #18181a; --carte: #232326; --texte: #ececee; --discret: #9a9aa2; --bord: #3a3a3f;
+          --accent: #e0645a; --accent-texte: #18181a; --code: #2c2c30; --danger: #ff8a80; color-scheme: dark; }
+}
+* { box-sizing: border-box; }
+body { margin: 0 auto; max-width: 1100px; padding: 16px; background: var(--fond); color: var(--texte);
+       font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+h1 { font-size: 1.5rem; margin: 0.5rem 0; }
+h2 { font-size: 1.15rem; margin: 0; }
+h3 { font-size: 1rem; margin: 1rem 0 0.4rem; }
+.discret { color: var(--discret); }
+.carte { background: var(--carte); border: 1px solid var(--bord); border-radius: 10px; padding: 16px; margin: 16px 0; }
+form { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: end; }
+label { display: flex; flex-direction: column; gap: 4px; font-size: 0.9rem; }
+input { font: inherit; padding: 6px 8px; border: 1px solid var(--bord); border-radius: 6px; background: var(--fond); color: var(--texte); }
+#code { font-family: ui-monospace, Menlo, monospace; text-transform: uppercase; width: 12em; }
+button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent);
+         color: var(--accent-texte); cursor: pointer; }
+button[type=button] { background: transparent; color: var(--accent); }
+button.danger { border-color: var(--danger); color: var(--danger); }
+.barre { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between; }
+.defile { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; margin-top: 12px; font-size: 0.92rem; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--bord); white-space: nowrap; }
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: var(--code); }
+td.code { font-family: ui-monospace, Menlo, monospace; }
+pre { background: var(--code); padding: 10px; border-radius: 6px; overflow: auto; max-height: 60vh;
+      font: 12.5px/1.45 ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
+ul#fichiers { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+ul#fichiers button { font-family: ui-monospace, Menlo, monospace; font-size: 0.85rem; }
+img { max-width: 100%; border-radius: 6px; border: 1px solid var(--bord); }

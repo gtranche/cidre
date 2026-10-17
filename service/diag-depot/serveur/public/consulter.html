@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Diagnostics Cidre</title>
+<link rel="stylesheet" href="/consulter.css">
+<script type="module" src="/consulter.js"></script>
+</head>
+<body>
+<header>
+  <h1>Diagnostics Cidre</h1>
+  <p class="discret">Les archives sont chiffrées sur le Mac du testeur. Elles se déchiffrent ici, dans ton navigateur, avec la clé privée de l'équipe : elle n'est jamais envoyée au service.</p>
+</header>
+
+<section id="acces" class="carte">
+  <form id="form-acces">
+    <label><span>Clé d'administration</span>
+      <input id="cle-admin" type="password" autocomplete="off" spellcheck="false" required>
+    </label>
+    <label><span>Clé privée de déchiffrement (<code>cle_privee.pem</code>)</span>
+      <input id="cle-privee" type="file" accept=".pem,.key,text/plain">
+    </label>
+    <button type="submit">Ouvrir</button>
+    <span id="etat-acces" class="discret" role="status"></span>
+  </form>
+</section>
+
+<section id="liste-section" class="carte" hidden>
+  <div class="barre">
+    <h2>Reçus (30 derniers jours)</h2>
+    <form id="form-code">
+      <input id="code" placeholder="CIDRE-7K3P-Q9" autocomplete="off" spellcheck="false" aria-label="Code">
+      <button type="submit">Ouvrir ce code</button>
+    </form>
+    <button id="rafraichir" type="button">Rafraîchir</button>
+  </div>
+  <div class="defile">
+    <table>
+      <thead><tr><th>Code</th><th>Reçu</th><th>Jeu</th><th>Cidre</th><th>Taille</th><th>Chiffré</th></tr></thead>
+      <tbody id="liste"></tbody>
+    </table>
+  </div>
+  <p id="vide" class="discret" hidden>Aucun diagnostic reçu.</p>
+</section>
+
+<section id="detail" class="carte" hidden>
+  <div class="barre">
+    <h2 id="detail-titre"></h2>
+    <button id="telecharger" type="button">Télécharger l'archive</button>
+    <button id="effacer" type="button" class="danger">Effacer</button>
+  </div>
+  <p id="detail-etat" class="discret" role="status"></p>
+  <h3>Résumé</h3>
+  <pre id="resume"></pre>
+  <h3>Fichiers</h3>
+  <ul id="fichiers"></ul>
+  <div id="fichier-vue" hidden>
+    <h3 id="fichier-nom"></h3>
+    <pre id="fichier-texte"></pre>
+    <img id="fichier-image" alt="capture d'écran du testeur" hidden>
+  </div>
+</section>
+</body>
+</html>
