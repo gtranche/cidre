@@ -97,6 +97,8 @@ fi
 if [ -n "${CIDRE_OVERLAY_DYLIB:-}" ] && [ -f "$CIDRE_OVERLAY_DYLIB" ]; then
    export DYLD_INSERT_LIBRARIES="$CIDRE_OVERLAY_DYLIB"
    export MESA_WSI_METAL_PRESENT_WITH_COMMAND_BUFFER=1
+   # DXMT (0174) : couche BGR10A2 au lieu de RGB10A2, que l'overlay ne sait pas dessiner.
+   export CIDRE_OVERLAY_STEAM=1
 fi
 
 exec "$WINE" "$@"

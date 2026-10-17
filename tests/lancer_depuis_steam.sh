@@ -563,15 +563,14 @@ if [ "$D3D11" = dxmt ]; then
       *) export CIDRE_DLL_OVERRIDES="${CIDRE_DLL_OVERRIDES:+$CIDRE_DLL_OVERRIDES;}$DXMT_OV" ;;
    esac
    echo "    d3d11 : dxmt pose depuis $(dirname "$(source_dxmt d3d11.dll)")${DXMT32:+, i386 compris} (builtins Wine gardes dans $BUILTINS_WINE)" >>"$JOURNAL"
-   # L'overlay Steam (gameoverlayrenderer.dylib) accroche presentDrawable: ; avec
-   # DXMT la premiere image s'affiche puis plus rien n'avance (verifie sur
-   # Expedition 33 le 2026-10-11). On le coupe pour ce lancement, quoi que dise
-   # l'option overlay. CIDRE_OVERLAY_DXMT=1 le garde (diagnostic du gel).
-   if [ -n "$OVERLAY" ] && [ "${CIDRE_OVERLAY_DXMT:-}" = 1 ]; then
-      echo "    d3d11 : dxmt -> overlay Steam garde (CIDRE_OVERLAY_DXMT=1, essai)" >>"$JOURNAL"
-   elif [ -n "$OVERLAY" ]; then
+   # L'overlay Steam (gameoverlayrenderer.dylib) figeait la presentation DXMT
+   # (Expedition 33, 2026-10-11) : plus reproduit le 2026-10-17 (Sherlock, M1),
+   # et ses couleurs sont justes avec 0174 (couche BGR10A2, CIDRE_OVERLAY_STEAM
+   # pose par etape2). Il suit donc l'option overlay ; CIDRE_OVERLAY_DXMT=0 le
+   # coupe pour un lancement.
+   if [ -n "$OVERLAY" ] && [ "${CIDRE_OVERLAY_DXMT:-}" = 0 ]; then
       OVERLAY=
-      echo "    d3d11 : dxmt -> overlay Steam coupe pour ce lancement (sa bibliotheque fige la presentation DXMT)" >>"$JOURNAL"
+      echo "    d3d11 : dxmt -> overlay Steam coupe pour ce lancement (CIDRE_OVERLAY_DXMT=0)" >>"$JOURNAL"
    fi
    # metalfx = true : MetalFX spatial x2 sur la sortie (drawable aux pixels physiques
    # au lieu de l'agrandissement CoreAnimation). Sans bordure seulement : le plein

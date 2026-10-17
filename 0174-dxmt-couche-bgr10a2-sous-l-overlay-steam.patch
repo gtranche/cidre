@@ -1,0 +1,48 @@
+Generated-by: LLM
+
+diff --git a/src/dxmt/dxmt_presenter.cpp b/src/dxmt/dxmt_presenter.cpp
+--- a/src/dxmt/dxmt_presenter.cpp
++++ b/src/dxmt/dxmt_presenter.cpp
+@@ -4,6 +4,8 @@
+ #include "dxmt_format.hpp"
+ #include "dxmt_presenter.hpp"
+ #include "util_likely.hpp"
++#include "util_env.hpp"
++#include "log/log.hpp"
+ 
+ 
+ namespace dxmt {
+@@ -32,6 +34,18 @@
+   texture_info.sample_count = 1;
+   texture_info.array_length = 1;
+   gamma_lut_texture_ = device.newTexture(texture_info);
++}
++
++/* Cidre (0174) : l'overlay Steam (gameoverlayrenderer.dylib, injecte par le lanceur qui
++   pose alors CIDRE_OVERLAY_STEAM=1) dessine dans le drawable avec des pipelines BGRA8,
++   BGR10A2 ou RGBA16Float, aucun en RGB10A2 : sur une couche RGB10A2 (back buffer
++   R10G10B10A2, defaut d'Unreal) il ecrivait du BGRA8 et l'image entiere virait au bleu et
++   au violet. La passe de presentation recopie le back buffer par un nuanceur, la couche
++   peut donc etre en BGR10A2 : memes 10 bits, ordre que l'overlay sait dessiner. */
++static bool
++OverlaySteam() {
++  static const bool overlay = env::getEnvVar("CIDRE_OVERLAY_STEAM") == "1";
++  return overlay;
+ }
+ 
+ bool
+@@ -44,6 +58,14 @@
+   should_invalidated |= sample_count_ != sample_count;
+   sample_count_ = sample_count;
+   layer_props_.pixel_format = Forget_sRGB(format);
++  if (layer_props_.pixel_format == WMTPixelFormatRGB10A2Unorm && OverlaySteam()) {
++    static bool dit = false;
++    if (!dit) {
++      dit = true;
++      WARN("Cidre : overlay Steam, couche en BGR10A2 au lieu de RGB10A2");
++    }
++    layer_props_.pixel_format = WMTPixelFormatBGR10A2Unorm;
++  }
+   layer_props_.drawable_height = height;
+   layer_props_.drawable_width = width;
+   colorspace_ = colorspace;
