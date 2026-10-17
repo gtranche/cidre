@@ -1,0 +1,40 @@
+wine11 : la couche Metal hors ecran se place a l'origine du rectangle client (0171)
+
+Sous un mode d'ecran emule d'un autre format que l'ecran (option mode_emule),
+win32u etend la fenetre plein ecran a tout l'ecran et place le rectangle
+client au centre : 1024x768 sur un ecran de 1728x1117 points donne une
+surface cliente (119,0)-(1608,1117). Quand la surface Vulkan passe par le
+chemin hors ecran de winemac (CAContextSwapChain : couche Metal exportee,
+montree par un CALayerHost pose a l'origine de la vue de contenu),
+-[CAContextSwapChain resize:] ne mettait ce rectangle que dans bounds. Une
+origine de bounds ne deplace pas la couche : l'image, a la bonne taille,
+partait collee a gauche, le masque noir de gauche en mangeait le debut, et la
+surface GDI de la fenetre restait a nu sur le bord droit (bandes blanche,
+grise, noire). Fahrenheit Remastered (312840, D3D9 par DXVK i386), iMac M4
+4,5K en 1920x1200, 2026-10-17.
+
+L'origine va dans position (anchorPoint 0,0), bounds part de 0. Sonde
+tests/sonde_centrage_plein_ecran.c + tests/sonde_centrage_mesurer.py, M1,
+mode emule sans espace : 1024x768 marges 238 | 478 px, bord droit a nu
+-> 238 | 240 px, marges noires ; 1280x768 (bandes haut/bas) 80 | 80 px.
+
+--- aa/dlls/winemac.drv/cocoa_window.m
++++ bb/dlls/winemac.drv/cocoa_window.m
+@@ -3990,7 +3990,16 @@
+     OnMainThreadAsync(^{
+         [CATransaction begin];
+         [CATransaction setDisableActions:YES];
+-        [layer setBounds:mac];
++        /* Cidre (0171) : bounds est le rectangle client dans la fenetre
++         * (client_surface->monitor_rect), dont l'origine n'est pas nulle sous
++         * un mode d'ecran emule d'un autre format que l'ecran : 1024x768 sur
++         * 1728x1117 tombe en x = 119, la fenetre couvrant tout l'ecran. Mise
++         * dans bounds, cette origine ne deplace rien : le CALayerHost, a
++         * l'origine de la vue de contenu, montrait l'image collee a gauche et
++         * la surface GDI a nu sur le bord droit (Fahrenheit 312840, iMac M4,
++         * 2026-10-17). L'origine va dans position (anchorPoint 0,0). */
++        [layer setBounds:CGRectMake(0, 0, mac.size.width, mac.size.height)];
++        [layer setPosition:mac.origin];
+         [CATransaction commit];
+     });
+ }
