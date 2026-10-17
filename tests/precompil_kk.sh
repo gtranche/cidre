@@ -5,12 +5,16 @@
 # chaque bibliotheque depuis son MSL puis chaque pipeline pour la puce : des
 # minutes, des heures pour Detroit: Become Human (99 453 pipelines). Cidre peut
 # livrer ce travail fait d'avance : l'AIR des bibliotheques (le meme pour toute
-# une famille de MSL : Apple7, c'est-a-dire M1, ou Apple8 et suivants) et une
-# archive de pipelines par architecture de GPU (applegpu_g13s, g16g...).
+# une famille de MSL : Apple7, c'est-a-dire M1, ou Apple8 et suivants, et pour
+# toute version de macOS), et, en plus s'il y en a une, une archive de pipelines
+# par architecture de GPU ET version majeure de macOS (applegpu_g16g-macos27 :
+# Metal refuse une archive faite par le compilateur d'un autre macOS). Au
+# demarrage d'un jeu, KosmicKrisp cree surtout des bibliotheques (Detroit :
+# ~100 000, pour 87 pipelines Metal) : l'AIR seul fait l'essentiel du gain.
 # KosmicKrisp les prend dans le dossier MESA_KK_PRECOMPIL, que le lanceur pose.
 #
 # Les paquets sont des assets de la release « precompil » du depot, decrits par
-# precompil-index.tsv : appid, famille, kk, element (air ou une architecture),
+# precompil-index.tsv : appid, famille, kk, element (air, ou <arch>-macos<N>),
 # fichier, parties, taille, sha256 (du fichier entier). « kk » designe la version
 # du generateur de MSL de KosmicKrisp (empreinte de la serie de correctifs mesa,
 # $R/kk-msl.txt dans un runtime) : un paquet fait pour un autre KosmicKrisp ne
@@ -26,7 +30,8 @@
 #   precompil_kk.sh dossier <id>           le dossier a donner a MESA_KK_PRECOMPIL (rien si aucun)
 #   precompil_kk.sh etat <id> [--json]     installe | disponible | absent | sans_reseau, et les tailles
 #   precompil_kk.sh telecharger <id> [--json]
-#                                          prend ce qui manque (AIR + archive de cette architecture)
+#                                          prend ce qui manque (AIR, et l'archive de cette
+#                                          architecture pour ce macOS s'il y en a une)
 #   precompil_kk.sh retirer <id>
 # Variables : CIDRE_DIR, CIDRE_PRECOMPIL_SANS_RESEAU=1 (l'index en cache seulement), CIDRE_PRECOMPIL_URL (base des assets, defaut la release
 # precompil de gtranche/cidre), CIDRE_PRECOMPIL_ARCH et CIDRE_PRECOMPIL_FAMILLE
@@ -64,6 +69,8 @@ kk() {
    ( . "$R/tests/series.sh"; serie_mesa | while read -r f; do cat "$f"; done ) | shasum -a 256 | cut -c1-12
 }
 dossier_jeu() { echo "$CIDRE_DIR/precompil/$1"; }
+# l'element d'archive de ce Mac : <arch>-macos<version majeure>
+elt_archive() { echo "$1-macos$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)"; }
 
 # L'index de la release, garde un jour ; « frais » le redemande. 0 : index la ;
 # 1 : pas d'index (hors ligne, ou release absente).
@@ -82,16 +89,21 @@ index() {
    rm -f "$INDEX.tmp"
    [ -s "$INDEX" ]
 }
-# Les lignes de l'index pour ce jeu, cette famille et ce KosmicKrisp : l'AIR et
-# l'archive de cette architecture.
+# Les lignes de l'index pour ce jeu, cette famille et ce KosmicKrisp : l'AIR et,
+# s'il y en a une, l'archive de cette architecture pour ce macOS.
 entrees() { # <id> <famille> <kk> <arch>
-   awk -F'\t' -v id="$1" -v fa="$2" -v kk="$3" -v ar="$4" \
+   awk -F'\t' -v id="$1" -v fa="$2" -v kk="$3" -v ar="$(elt_archive "$4")" \
       '!/^#/ && $1 == id && $2 == fa && $3 == kk && ($4 == "air" || $4 == ar)' "$INDEX" 2>/dev/null
 }
-installe() { # <id> : le dossier si l'AIR et l'archive de cette arch sont la pour ce KosmicKrisp
+# <id> : le dossier si l'AIR est la pour ce KosmicKrisp (et l'archive de ce Mac si
+# le paquet en avait une : notee dans « elements »)
+installe() {
    d="$(dossier_jeu "$1")/$(famille)"
-   [ "$(cat "$d/kk" 2>/dev/null)" = "$(kk)" ] && [ -d "$d/air" ] && [ -f "$d/archives/$(arch).metallib" ] && echo "$d"
+   [ "$(cat "$d/kk" 2>/dev/null)" = "$(kk)" ] && [ -d "$d/air" ] || return 1
+   if grep -qx "archive" "$d/elements" 2>/dev/null; then [ -f "$d/archives/$(elt_archive "$(arch)").metallib" ] || return 1; fi
+   echo "$d"
 }
+a_air() { printf '%s\n' "$1" | cut -f4 | grep -qx air; }
 
 json_chaine() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"; }
 dire() { if [ "$JSON" = oui ]; then printf '%s\n' "$*" >&2; else printf '%s\n' "$*"; fi; }
@@ -111,7 +123,7 @@ case $ACTION in
          E=installe; T=$(du -sk "$d" 2>/dev/null | cut -f1); T=$((${T:-0} * 1024))
       elif index; then
          T=$(entrees "$ID" "$F" "$K" "$A" | awk -F'\t' '{ s += $7 } END { printf "%d", s }')
-         if [ "$(entrees "$ID" "$F" "$K" "$A" | cut -f4 | sort -u | wc -l | tr -d ' ')" = 2 ]; then E=disponible; else E=absent; T=0; fi
+         if a_air "$(entrees "$ID" "$F" "$K" "$A")"; then E=disponible; else E=absent; T=0; fi
       else
          E=sans_reseau; T=0
       fi
@@ -123,11 +135,11 @@ case $ACTION in
    telecharger)
       [ -n "$ID" ] || exit 2
       A=$(arch); F=$(famille); K=$(kk)
-      case $A:$F in inconnu:*|*:inconnu) dire "pipelines precompiles : architecture ou famille de GPU inconnue ($A, $F)"; exit 1 ;; esac
+      case $F in inconnu) dire "pipelines precompiles : famille de GPU inconnue"; exit 1 ;; esac
       if d=$(installe "$ID"); then dire "pipelines precompiles de $ID : deja installes ($d)"; evenement '{"evenement":"precompil","etat":"installe"}'; exit 0; fi
       index frais || { dire "pipelines precompiles : index injoignable (hors ligne ?)"; evenement '{"evenement":"precompil","etat":"sans_reseau"}'; exit 1; }
       L=$(entrees "$ID" "$F" "$K" "$A")
-      if [ "$(printf '%s\n' "$L" | cut -f4 | sort -u | grep -c .)" != 2 ]; then
+      if ! a_air "$L"; then
          dire "pipelines precompiles : rien pour $ID ($F, $A, KosmicKrisp $K)"
          evenement '{"evenement":"precompil","etat":"absent"}'; exit 0
       fi
@@ -157,6 +169,7 @@ case $ACTION in
       rm -rf "${DF:?}.neuf"; mkdir -p "$DF.neuf"
       for f in "$T"/*.tar.zst; do tar -xf "$f" -C "$DF.neuf" || { dire "pipelines precompiles : archive illisible"; rm -rf "${T:?}" "${DF:?}.neuf"; exit 1; }; done
       echo "$K" >"$DF.neuf/kk"
+      printf '%s\n' "$L" | cut -f4 | grep -qv '^air$' && echo archive >"$DF.neuf/elements" || : >"$DF.neuf/elements"
       rm -rf "${DF:?}" "${T:?}"; mv "$DF.neuf" "$DF"
       dire "pipelines precompiles de $ID : installes ($DF)"
       evenement '{"evenement":"precompil","etat":"installe"}' ;;

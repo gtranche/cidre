@@ -11,14 +11,19 @@
 # cette machine, relue telle quelle par les recherches MTL4 de KosmicKrisp ;
 # script de pipelines (metal-source) -> metal-tt pour chaque autre architecture.
 # Sortie, prete pour `gh release upload precompil` :
-#   <appid>-<famille>-<kk>-air.tar.zst             (air/<cle>.metallib)
-#   <appid>-<famille>-<kk>-<arch>.tar.zst          (archives/<arch>.metallib)
+#   <appid>-<famille>-<kk>-air.tar.zst             (air/<cle>.metallib : toutes puces, tout macOS)
+#   <appid>-<famille>-<kk>-<arch>-macos<N>.tar.zst (archives/<arch>-macos<N>.metallib) : une
+#   archive ne sert que sous le macOS dont le compilateur l'a faite (Metal refuse une
+#   archive de la chaine 17.6 sous macOS 27, meme visant 27) ; metal-tt les fait
+#   pour le macOS de sa chaine d'outils, le rejeu local pour celui de cette machine.
 #   (.part01, .part02... au-dela de 1,9 Gio) et les lignes de precompil-index.tsv
 #   (a ajouter a l'index de la release), voir tests/precompil_kk.sh.
 # Prerequis : Xcode et sa chaine d'outils Metal (xcodebuild -downloadComponent
 # MetalToolchain), zstd. Charge tous les coeurs : hors jeu.
 # PRECOMPIL_MACOS (defaut 26.0) : -macos-version-min de metal-tt ; PRECOMPIL_PARTIE_OCTETS :
-# taille des parties (essais).
+# taille des parties (essais) ; PRECOMPIL_AIR_SEUL=1 : l'AIR seulement (ni rejeu ni
+# archive) ; PRECOMPIL_ARCHIVES_EN_PLUS="<archive>=<arch>-macos<N> ..." : archives faites
+# ailleurs (rejeu natif sur un Mac d'un autre macOS : tests/rejouer_mtl3.m) a joindre.
 set -eu
 [ $# -ge 4 ] || { sed -n '/^#   precompiler_kk/,/^# Prerequis/p' "$0" >&2; exit 2; }
 REC=$(cd "$1" && pwd); OUT=$2; ID=$3; FAM=$4; shift 4
@@ -27,6 +32,9 @@ R=$(cd "$(dirname "$0")/.." && pwd)
 mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd); W="$OUT/travail"; mkdir -p "$W/air" "$W/archives"
 export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
 METAL=$(xcrun -f metal); T=$(dirname "$(xcrun -f metal-tt)")
+# KosmicKrisp compile en MSL 4.1 sous macOS 27 ; une chaine d'outils qui ne le
+# connait pas encore (17.6) compile le meme MSL en 4.0
+"$METAL" -std=metal4.1 -x metal -fsyntax-only /dev/null 2>/dev/null && STD41=oui || STD41=non
 MACOS=${PRECOMPIL_MACOS:-26.0}
 J=$(sysctl -n hw.ncpu)
 KK=$(sh "$R/tests/precompil_kk.sh" kk)
@@ -36,17 +44,19 @@ PARTIE=${PRECOMPIL_PARTIE_OCTETS:-$((1900 * 1048576))}   # sous la limite de 2 G
 echo "== MSL -> AIR ($(ls "$REC/msl" | grep -c '\.metal$') bibliotheques)"
 t0=$(date +%s)
 ls "$REC/msl" | sed -n 's/\.metal$//p' | xargs -P "$J" -I{} sh -c '
-   k=$1; rec=$2; w=$3; metal=$4; macos=$5
+   k=$1; rec=$2; w=$3; metal=$4; macos=$5; std41=$6
    [ -f "$w/air/$k.metallib" ] && exit 0
    set -- $(cat "$rec/msl/$k.opts")
    std="metal$(($1 >> 16)).$(($1 & 65535))"
+   [ "$std" = metal4.1 ] && [ "$std41" = non ] && std=metal4.0
    case $2 in 0) mm=safe ;; 1) mm=relaxed ;; *) mm=fast ;; esac
    case $3 in 1) ff=precise ;; *) ff=fast ;; esac
    "$metal" -std="$std" -fmetal-math-mode=$mm -fmetal-math-fp32-functions=$ff -mmacosx-version-min=$macos \
       -o "$w/air/$k.metallib.tmp" "$rec/msl/$k.metal" 2>>"$w/air.err" && mv "$w/air/$k.metallib.tmp" "$w/air/$k.metallib"
-' _ {} "$REC" "$W" "$METAL" "$MACOS"
+' _ {} "$REC" "$W" "$METAL" "$MACOS" "$STD41"
 echo "   $(ls "$W/air" | grep -c '\.metallib$') AIR en $(( $(date +%s) - t0 )) s ; erreurs : $(cat "$W/air.err" 2>/dev/null | grep -c 'error:')"
 
+if [ "${PRECOMPIL_AIR_SEUL:-}" != 1 ]; then
 echo "== rejeu des pipelines (archive de cette machine)"
 B="$R/build/rejouer-mtl3"
 [ -x "$B" ] && [ ! "$R/tests/rejouer_mtl3.m" -nt "$B" ] ||
@@ -58,7 +68,7 @@ echo "== script de pipelines (metal-source)"
 rm -rf "${W:?}/script"
 "$T/metal-source" --flatbuffers=json -o="$W/script" "$W/locale.metallib" >/dev/null 2>&1
 LOCALE=$(ls "$W/script" | grep '^applegpu_' | head -1)
-mv "$W/locale.metallib" "$W/archives/$LOCALE.metallib"
+mv "$W/locale.metallib" "$W/archives/$LOCALE-macos$(sw_vers -productVersion | cut -d. -f1).metallib"
 python3 -I "$R/tests/reecrire_script_pipelines.py" "$(find "$W/script" -name '*.mtlp-json' | head -1)" "$W/script.mtlp-json" "$W/air" | sed 's/^/   /'
 
 ARCHS="$*"
@@ -66,11 +76,16 @@ ARCHS="$*"
 for a in $ARCHS; do
    [ "$a" = "$LOCALE" ] && continue
    t0=$(date +%s)
-   if "$T/metal-tt" -arch "$a" -macos-version-min "$MACOS" "$W/script.mtlp-json" -o "$W/archives/$a.metallib" >"$W/metal-tt-$a.log" 2>&1; then
-      echo "== metal-tt $a : $(( $(date +%s) - t0 )) s, $(( $(stat -f %z "$W/archives/$a.metallib") / 1048576 )) Mo"
+   e="$a-macos${MACOS%%.*}"
+   if "$T/metal-tt" -arch "$a" -macos-version-min "$MACOS" "$W/script.mtlp-json" -o "$W/archives/$e.metallib" >"$W/metal-tt-$a.log" 2>&1; then
+      echo "== metal-tt $e : $(( $(date +%s) - t0 )) s, $(( $(stat -f %z "$W/archives/$e.metallib") / 1048576 )) Mo"
    else
-      echo "== metal-tt $a : ECHEC (voir $W/metal-tt-$a.log)"; rm -f "$W/archives/$a.metallib"
+      echo "== metal-tt $e : ECHEC (voir $W/metal-tt-$a.log)"; rm -f "$W/archives/$e.metallib"
    fi
+done
+fi
+for x in ${PRECOMPIL_ARCHIVES_EN_PLUS:-}; do
+   cp "${x%%=*}" "$W/archives/${x#*=}.metallib" && echo "== archive jointe : ${x#*=}"
 done
 
 echo "== paquets"
