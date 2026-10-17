@@ -1,0 +1,76 @@
+Generated-by: LLM
+
+diff --git a/src/vulkan/wsi/wsi_common_metal.c b/src/vulkan/wsi/wsi_common_metal.c
+--- a/src/vulkan/wsi/wsi_common_metal.c
++++ b/src/vulkan/wsi/wsi_common_metal.c
+@@ -223,7 +223,33 @@
+    VK_COLOR_SPACE_PASS_THROUGH_EXT,
+    VK_COLOR_SPACE_EXTENDED_SRGB_NONLINEAR_EXT,
+ };
++
++/* Steam's in-process overlay (gameoverlayrenderer, hooked on
++ * -[MTLCommandBuffer presentDrawable:], see 0080) has BGRA8, BGR10A2 and
++ * RGBA16Float pipelines, none for RGB10A2: it draws into an RGB10A2 drawable
++ * as BGRA8 and reads the game's pixels back as BGRA8, so the whole frame turns
++ * blue and violet as soon as the overlay is shown (UE4/UE5 default to a
++ * R10G10B10A2 back buffer, A2B10G10R10 here). With the overlay on, keep
++ * A2B10G10R10 for HDR10 only: for an SDR swap chain vkd3d-proton and DXVK then
++ * pick BGRA8 and convert in their own blit. */
++static bool
++wsi_metal_overlay_present(void)
++{
++   return debug_get_bool_option("MESA_WSI_METAL_PRESENT_WITH_COMMAND_BUFFER", false);
++}
++
++static bool
++wsi_metal_surface_format_hidden(bool overlay, VkFormat format,
++                                VkColorSpaceKHR color_space)
++{
++   if (!overlay)
++      return false;
+ 
++   return format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 &&
++          color_space != VK_COLOR_SPACE_HDR10_ST2084_EXT &&
++          color_space != VK_COLOR_SPACE_HDR10_HLG_EXT;
++}
++
+ static void
+ get_sorted_vk_formats(bool force_bgra8_unorm_first, VkFormat *sorted_formats)
+ {
+@@ -257,8 +283,13 @@
+          ? ARRAY_SIZE(available_surface_color_spaces)
+          : 1u;
+ 
++   const bool overlay = wsi_metal_overlay_present();
++
+    for (unsigned i = 0; i < ARRAY_SIZE(sorted_formats); i++) {
+       for (unsigned j = 0; j < color_space_count; j++) {
++         if (wsi_metal_surface_format_hidden(overlay, sorted_formats[i],
++                                             available_surface_color_spaces[j]))
++            continue;
+          vk_outarray_append_typed(VkSurfaceFormatKHR, &out, f) {
+             f->format = sorted_formats[i];
+             f->colorSpace = available_surface_color_spaces[j];
+@@ -286,8 +317,13 @@
+          ? ARRAY_SIZE(available_surface_color_spaces)
+          : 1u;
+ 
++   const bool overlay = wsi_metal_overlay_present();
++
+    for (unsigned i = 0; i < ARRAY_SIZE(sorted_formats); i++) {
+       for (unsigned j = 0; j < color_space_count; j++) {
++         if (wsi_metal_surface_format_hidden(overlay, sorted_formats[i],
++                                             available_surface_color_spaces[j]))
++            continue;
+          vk_outarray_append_typed(VkSurfaceFormat2KHR, &out, f) {
+             assert(f->sType == VK_STRUCTURE_TYPE_SURFACE_FORMAT_2_KHR);
+             f->surfaceFormat.format = sorted_formats[i];
+@@ -1033,7 +1069,7 @@
+     * presented through a Metal 3 command buffer. A NULL context falls back to
+     * presenting the drawable directly. */
+    if (!is_sw_driver &&
+-       debug_get_bool_option("MESA_WSI_METAL_PRESENT_WITH_COMMAND_BUFFER", false)) {
++       wsi_metal_overlay_present()) {
+       chain->present_context =
+          wsi_create_metal_layer_present_context(metal_surface->pLayer);
+    }
