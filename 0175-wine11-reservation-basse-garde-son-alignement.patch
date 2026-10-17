@@ -1,0 +1,32 @@
+Generated-by: LLM
+
+wine11 : une reservation demandee sous 4 Gio et traitee en preference sur macOS garde l alignement de sa base (plus bas bit pose : 1 Gio pour 0x40000000 et 0xc0000000, 2 Gio pour 0x80000000). Detroit: Become Human (allocateur MMDQ, DetroitBecomeHuman.exe+0x5a3f10) reserve ses arenes de 1 Gio a 1, 2 puis 3 Gio et calcule chaque bloc depuis base & ~(1 Gio - 1) ; la base rendue au premier trou libre (64 Kio) envoyait les blocs hors de l arene, MEM_COMMIT echouait (STATUS_NOT_MAPPED_VIEW), le jeu ecrivait quand meme : acces refuse en jeu au bout de 6 a 15 min (minidumps du 2026-10-17, ecritures en 0x30de0020000 et 0x82240020014 = premier bloc d une arene mal alignee). Sonde sonde_mmdq.exe (M1, prefixe clone, trou de 0x300000000 bouche) : temoin -> 3 arenes non alignees, 3 commits refuses (erreur 487) ; corrige -> 3 arenes alignees, 0 refus ; h32temps, banc_x64, h64resv2, h32resv2, h64bas sans regression (h64bas : 0x80000000 -> 0x300000000 au lieu de 0x1077a0000). Une base de 64 Kio (Vermintide 2) ne change rien ; la fenetre basse LuaJIT n est pas touchee.
+
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -5894,6 +5894,25 @@
+          * donnera jamais (__PAGEZERO). On la traite en preference, au plus
+          * proche de Windows ou la demande aboutit. */
+         TRACE( "base %p demandee sous 4 Gio, inaccessible sur macOS : traitee en preference\n", *ret );
++        /* Garder l'alignement de la base demandee. Sous Windows, une
++         * reservation a une base explicite rend cette base, donc une adresse
++         * alignee comme elle ; des allocateurs en dependent. Detroit: Become
++         * Human (allocateur MMDQ) reserve ses arenes de 1 Gio a 1, 2 puis
++         * 3 Gio et calcule l'adresse de chaque bloc de 128 Kio depuis
++         * base & ~(1 Gio - 1) ; une base rendue au premier trou libre (64 Kio
++         * seulement) envoie ses blocs hors de l'arene, le MEM_COMMIT echoue
++         * (STATUS_NOT_MAPPED_VIEW), le jeu ne le teste pas et ecrit : acces
++         * refuse en jeu au bout de 6 a 15 minutes, des que le tas depasse ses
++         * premieres arenes. On demande donc a map_view l'alignement du plus bas
++         * bit pose de la base (1 Gio pour 0x40000000 et 0xc0000000, 2 Gio pour
++         * 0x80000000) ; une base de 64 Kio (Vermintide 2) ne change rien. */
++        if ((type & MEM_RESERVE) && !align)
++        {
++            ULONG_PTR demande = (ULONG_PTR)*ret & ~(ULONG_PTR)granularity_mask;
++            ULONG_PTR bit = demande & (~demande + 1);
++
++            if (bit > (ULONG_PTR)granularity_mask + 1) align = bit;
++        }
+         *ret = NULL;
+     }
+ #endif

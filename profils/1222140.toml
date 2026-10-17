@@ -3,6 +3,7 @@
 #   - premier lancement : le jeu precompile toute sa liste de pipelines (99 453 pipelines,
 #     151 182 bibliotheques MSL, ~11 min de creation de pipelines apres ~25 min de MSL la
 #     toute premiere fois) ; MTLCompilerService sature (600-900 % de CPU), c'est attendu ;
+#     avec la reserve d'AIR locale (0171) pleine, ~6 min sans compilation Metal ;
 #   - sans 0164 : 111 bibliotheques refusees (« thread_index_in_simdgroup » en vertex) et
 #     l'ecran restait a 98 % ; sans 0166 : VkPipelineCache.bin a 0 octet + CorruptedCache,
 #     98 % sans fin ; avec les deux : cache de 1,31 Go ecrit, le jeu arrive en jeu ;
@@ -10,12 +11,16 @@
 #     une cible R32Uint) ;
 #   - 30 fps pile en jeu : FIFO a la demi-cadence (vsync = true par defaut), comme DREDGE ;
 #     vsync = false (choix du joueur), gain pas encore mesure sur ce jeu.
-# Au demarrage, le jeu affiche « carte graphique inconnue » et attend un clic : KosmicKrisp
-# annonce Apple (0x106b) et le peripherique 100, inconnus de sa liste. vk_identite (0167)
-# annonce une RX 580 (carte recommandee du jeu, 2019) a Vulkan, et la meme a DXGI (DXMT,
-# que DXGI_Helper.dll interroge) ; laquelle des deux voies declenche l'avertissement n'est
-# pas encore verifie, les deux sont posees. Changer d'identite ecarte le cache de pipelines
-# (recompilation au lancement suivant).
+# PAS d'identite de carte (vk_identite), le 2026-10-17 : annoncee en RX 580, le jeu prend sa
+# voie AMD (type 2, DetroitBecomeHuman.exe+0x6625aa) et ses personnages se deforment (yeux et
+# costume « qui sortent ») ; en Apple, voie generique (type 0), image juste. Le prix : a chaque
+# lancement, le jeu affiche « carte graphique inconnue » (OK/Annuler ; Annuler quitte) -- cliquer
+# OK. Une identite NVIDIA passerait par une 3e voie (type 1) et un controle du pilote >= 445.87
+# sur une chaine de version que nous ne maitrisons pas : non essayee.
+# Arret en jeu au bout de 6 a 15 min (code 5, acces refuse, minidumps du jeu dans son dossier) :
+# l'allocateur MMDQ du jeu reserve ses arenes de 1 Gio a 1, 2, 3 Gio et suppose leur base
+# alignee ; Wine/macOS (base sous 4 Gio traitee en preference) en rendait une non alignee, le
+# commit des blocs echouait, le jeu ecrivait quand meme -- correctif Wine en attente de numero.
 [jeu]
 appid = 1222140
 nom = "Detroit: Become Human"
@@ -27,7 +32,6 @@ anticheat = "none"
 lanceur = "steam"
 
 [cidre]
-vk_identite = "1002:67df:AMD Radeon RX 580 Series"
 # En jeu, 30 fps pile : la vsync FIFO (defaut) tombe a la demi-cadence des qu'une image
 # depasse 16,7 ms a 60 Hz. Sans vsync, le jeu peut monter au-dessus de 30, au prix de
 # dechirures (choix du joueur, 2026-10-16 ; gain pas encore mesure sur ce jeu).
@@ -36,10 +40,10 @@ vsync = false
 [compat]
 etat = "bronze"
 source = "cidre-test"
-date = "2026-10-16"
+date = "2026-10-17"
 machine = "iMac M4"
-cidre_version = "1.5.12 + KosmicKrisp 0163-0168 (main 1b2a85b)"
+cidre_version = "1.5.15 (KosmicKrisp 0164-0173)"
 fps_menu = 0
-fps_jeu = 30
-notes = "Vulkan natif. Premier lancement tres long (precompilation de 99 453 pipelines, cache Vulkan de 1,31 Go ensuite). En jeu a 30 fps, plafonne par la vsync FIFO ; image « decalee » d'apres le joueur, qualite a baisser. Avertissement « carte graphique inconnue » au demarrage sans vk_identite. A refaire apres 0168 (arret Metal en jeu corrige)."
+fps_jeu = 21
+notes = "Vulkan natif. Premier lancement tres long (precompilation de 99 453 pipelines, cache Vulkan de 1,31 Go ensuite). Avertissement « carte graphique inconnue » a chaque lancement : cliquer OK (une identite AMD deforme les personnages). Arret en jeu apres 6 a 15 min tant que le correctif Wine d'alignement des reservations n'est pas livre. 21 fps en jeu, GPU a 98 %."
 voie = "natif"
