@@ -42,6 +42,10 @@
 #                    jamais mis a jour au lancement.
 #   tso              emulation de l'ordre memoire x86 par FEX. false = gros gain
 #                    CPU (jusqu'a 3,7x mesure), risque de course sur du lock-free.
+#   sync_local       synchro Wine en process (evenements, semaphores, mutex sans
+#                    aller-retour au wineserver, comme fsync chez Proton) : -1,1 a
+#                    -1,3 ms de CPU par image sur Expedition 33. false = le
+#                    wineserver, comme avant (un jeu qui gele ou attend 2 s).
 #   Reglages de FEX repris de Proton ARM64 (Steam Frame). Coupes par defaut en
 #   attendant les essais en jeu ; a poser par jeu, ou pour tous (`cidre set defaut`).
 #   fex_cache_disque code x86 traduit par FEX garde sur disque d'un lancement a
@@ -198,6 +202,7 @@ langue = "auto"
 journal_detaille = false
 maj_avant_lancement = true
 tso = true
+sync_local = true
 fex_cache_disque = false
 fex_x87_reduit = false
 fex_maxinst = 0

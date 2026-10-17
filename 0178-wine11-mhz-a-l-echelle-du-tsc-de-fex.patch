@@ -1,0 +1,27 @@
+Generated-by: LLM
+
+wine11 : wineboot annonce en ~MHz (HKLM\Hardware\Description\System\CentralProcessor\N) la cadence du rdtsc que FEX emule, et non plus celle du compteur ARM. FEX met le compteur a l'echelle (SmallTSCScale, actif par defaut) : CNTFRQ_EL0 double jusqu'a 1 GHz au moins, soit 24 MHz -> 1536 MHz sur Apple Silicon ; ~MHz disait 24, et un jeu qui convertit des ecarts de rdtsc en temps par ~MHz voyait le temps passer 64 fois trop vite. Portage de Proton (ValveSoftware/wine 8d813e09b8, Billy Laws). Verifie par tests/banc_tas.c (invite x86-64, M1 Max) : ~MHz 24 -> 1536, rdtsc mesure 1536 MHz contre le QPC.
+
+diff --git a/programs/wineboot/wineboot.c b/programs/wineboot/wineboot.c
+index b49ad3c..8ad963d 100644
+--- a/programs/wineboot/wineboot.c
++++ b/programs/wineboot/wineboot.c
+@@ -299,10 +299,18 @@ static UINT64 read_tsc_frequency(void)
+ 
+ #elif defined(__aarch64__)
+ 
++#define FEX_TSC_SCALE_MAXIMUM 1000000000
++
+ static UINT64 read_tsc_frequency(void)
+ {
+     UINT64 tsc_frequency;
+     __asm__ volatile( "mrs %[Res], CNTFRQ_EL0" : [Res] "=r" (tsc_frequency) );
++
++    /* FEX hack in order to support games relying on this to read the x86 TSC
++     * frequency which FEX scales as below, assumes SmallTSCScale is enabled. */
++    while (tsc_frequency < FEX_TSC_SCALE_MAXIMUM)
++            tsc_frequency <<= 1;
++
+     return tsc_frequency;
+ }
+ 

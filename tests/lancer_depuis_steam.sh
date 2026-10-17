@@ -131,6 +131,17 @@ case $(opt tso CIDRE_TSO) in
    true)  [ -n "${CIDRE_TSO:-}" ] && export FEX_TSOENABLED=1 ;;
 esac
 
+# Synchro Wine en process (wine11 0103) : evenements, semaphores et mutex en
+# memoire partagee, attente par os_sync_wait_on_address, sans aller-retour au
+# wineserver (l'equivalent de fsync chez Proton). Lue par le wineserver a son
+# demarrage : le serveur de ce prefixe vient d'etre arrete plus haut, le jeu en
+# relance un qui la prend. -1,1 a -1,3 ms de CPU par image sur Expedition 33.
+# sync_local = false (ou CIDRE_SYNC_LOCAL=0) revient au wineserver.
+case $(opt sync_local CIDRE_SYNC_LOCAL) in
+   false) export CIDRE_SYNC_LOCAL=0 ;;
+   *)     export CIDRE_SYNC_LOCAL=1 ;;
+esac
+
 # Mode Deck simule (wine11 0160). Un jeu « Verifie Steam Deck » prend seul sa
 # configuration Deck (definition, prereglages, upscaler) quand Steam lui dit qu'il
 # tourne sur un Deck ; sur le Mac, le client repond non et le jeu se regle apres

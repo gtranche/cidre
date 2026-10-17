@@ -1,0 +1,51 @@
+Generated-by: LLM
+
+wine11 : le tas LFH garde autant de groupes de blocs libres par classe de taille que le pic de groupes deja alloues (group_max), au lieu de 8 (ARRAY_SIZE(affinity_mapping)), avant de les rendre au systeme. Portage de Proton (ValveSoftware/wine 31d70e4e5d, Remi Bernon, « ntdll: Keep more LFH block groups alive »). Un programme qui alloue des rafales de blocs puis les libere ne fait plus liberer puis reallouer ses groupes a chaque rafale. Banc tests/banc_tas.c (invite x86-64, M1 Max, prefixe clone, 3 manches entrelacees) : 8 fils en rafales de 20 000 blocs, 28,5 -> 20,4 ns par alloc+free (-28 %) ; 4 fils en rafales de 2 000, 25,0 -> 23,2 ns ; un bloc a la fois, 15,6 -> 15,8 ns (inchange). Contrepartie : la memoire d'un pic de groupes reste au tas. h64alerte 30 4 et h32alerte 30 4 : 30/30 ; h32temps, banc_x64, test_sync_xproc : 15/15.
+
+diff --git a/dlls/ntdll/heap.c b/dlls/ntdll/heap.c
+index feee54e..2adca7c 100644
+--- a/dlls/ntdll/heap.c
++++ b/dlls/ntdll/heap.c
+@@ -262,6 +262,9 @@ struct bin
+ 
+     /* list of groups with free blocks */
+     SLIST_HEADER groups;
++    LONG group_alloc;
++    LONG group_freed;
++    LONG group_max;
+ 
+     /* array of affinity reserved groups, interleaved with other bins to keep
+      * all pointers of the same affinity and different bin grouped together,
+@@ -1859,7 +1862,7 @@ static inline ULONG heap_current_thread_affinity(void)
+ /* acquire a group from the bin, thread takes ownership of a shared group or allocates a new one */
+ static struct group *heap_acquire_bin_group( struct heap *heap, ULONG flags, SIZE_T block_size, struct bin *bin )
+ {
+-    ULONG affinity = NtCurrentTeb()->HeapVirtualAffinity;
++    ULONG affinity = NtCurrentTeb()->HeapVirtualAffinity, count;
+     struct group *group;
+     SLIST_ENTRY *entry;
+ 
+@@ -1869,6 +1872,8 @@ static struct group *heap_acquire_bin_group( struct heap *heap, ULONG flags, SIZ
+     if ((entry = RtlInterlockedPopEntrySList( &bin->groups )))
+         return CONTAINING_RECORD( entry, struct group, entry );
+ 
++    count = InterlockedIncrement( &bin->group_alloc ) - ReadNoFence( &bin->group_freed );
++    if (count > ReadAcquire( &bin->group_max )) WriteRelease( &bin->group_max, count );
+     return group_allocate( heap, flags, block_size );
+ }
+ 
+@@ -1884,12 +1889,13 @@ static NTSTATUS heap_release_bin_group( struct heap *heap, ULONG flags, struct b
+         return STATUS_SUCCESS;
+ 
+     /* try re-using the block group instead of releasing it */
+-    if (RtlQueryDepthSList( &bin->groups ) <= ARRAY_SIZE(affinity_mapping))
++    if (RtlQueryDepthSList( &bin->groups ) <= ReadAcquire( &bin->group_max ))
+     {
+         RtlInterlockedPushEntrySList( &bin->groups, &group->entry );
+         return STATUS_SUCCESS;
+     }
+ 
++    InterlockedIncrement( &bin->group_freed );
+     return group_release( heap, flags, bin, group );
+ }
+ 
