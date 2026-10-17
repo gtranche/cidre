@@ -550,8 +550,10 @@ if [ "$D3D11" = dxmt ]; then
    # L'overlay Steam (gameoverlayrenderer.dylib) accroche presentDrawable: ; avec
    # DXMT la premiere image s'affiche puis plus rien n'avance (verifie sur
    # Expedition 33 le 2026-10-11). On le coupe pour ce lancement, quoi que dise
-   # l'option overlay.
-   if [ -n "$OVERLAY" ]; then
+   # l'option overlay. CIDRE_OVERLAY_DXMT=1 le garde (diagnostic du gel).
+   if [ -n "$OVERLAY" ] && [ "${CIDRE_OVERLAY_DXMT:-}" = 1 ]; then
+      echo "    d3d11 : dxmt -> overlay Steam garde (CIDRE_OVERLAY_DXMT=1, essai)" >>"$JOURNAL"
+   elif [ -n "$OVERLAY" ]; then
       OVERLAY=
       echo "    d3d11 : dxmt -> overlay Steam coupe pour ce lancement (sa bibliotheque fige la presentation DXMT)" >>"$JOURNAL"
    fi
