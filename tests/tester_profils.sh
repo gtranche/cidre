@@ -23,6 +23,7 @@
 #      generation, gamme, macos ; [compat] remplace par l'entree qui vaut ici et
 #      parle de la voie de la fiche ; options par famille ; Expedition 33 ;
 #   6b. arguments du jeu (option arguments) : decoupage, doublons, fiche, `cidre set` ;
+#       d3d9, dlss et generation_images (metalfx ou non) : valeurs, fiche, `cidre set`, lus par le lanceur ;
 #   6d. version macOS 32 bits seulement : binaire installe (faux Mach-O), fiche,
 #      cache du client Steam ; list/play/dl/install la traitent en jeu Windows ;
 #   7. sh -n sur les scripts de la chaine.
@@ -917,6 +918,58 @@ verif "cidre set d3d9 : valeur inconnue refusee" "2" "$rc"
 cp "$T/perso.avant-d3d9" "$CIDRE_PROFILS"
 grep -q 'D3D9=$(opt d3d9 CIDRE_D3D9)' "$R/tests/lancer_depuis_steam.sh" && grep -q 'D3D9_OV="d3d9=n"' "$R/tests/lancer_depuis_steam.sh" \
    && ok "lanceur : option d3d9 lue" || echec "lanceur : option d3d9 non lue"
+
+# dlss : metalfx ou non ; "non" livre par defaut ; la fiche le porte ; le lanceur
+# pose les extensions NVIDIA de DXMT et DXMT_ENABLE_NVEXT seulement avec metalfx
+verif "dlss : non par defaut" "non" "$(valeur 998 dlss)"
+printf '[jeu]\nappid = 996\n[cidre]\ndlss = "metalfx"\n' >"$CIDRE_PROFILS_BASE/996.toml"
+verif "dlss : lu dans la fiche" "metalfx" "$(valeur 996 dlss)"
+rm -f "$CIDRE_PROFILS_BASE/996.toml"
+cp "$CIDRE_PROFILS" "$T/perso.avant-dlss"
+sh "$R/cidre" set defaut dlss metalfx >/dev/null 2>&1
+verif "cidre set defaut dlss metalfx" "metalfx" "$(valeur 998 dlss)"
+sh "$R/cidre" set defaut dlss fsr >/dev/null 2>&1; rc=$?
+verif "cidre set dlss : valeur inconnue refusee" "2" "$rc"
+cp "$T/perso.avant-dlss" "$CIDRE_PROFILS"
+grep -q 'DLSS=$(opt dlss CIDRE_DLSS)' "$R/tests/lancer_depuis_steam.sh" && grep -q 'export DXMT_ENABLE_NVEXT=1' "$R/tests/lancer_depuis_steam.sh" \
+   && grep -q 'NVEXT_OV="nvapi64,nvngx=b"' "$R/tests/lancer_depuis_steam.sh" \
+   && ok "lanceur : option dlss lue (NVEXT, nvapi64/nvngx en builtin)" || echec "lanceur : option dlss non lue"
+verif "generation_images : non par defaut" "non" "$(valeur 998 generation_images)"
+cp "$CIDRE_PROFILS" "$T/perso.avant-fg"
+sh "$R/cidre" set defaut generation_images metalfx >/dev/null 2>&1
+verif "cidre set defaut generation_images metalfx" "metalfx" "$(valeur 998 generation_images)"
+sh "$R/cidre" set defaut generation_images oui >/dev/null 2>&1; rc=$?
+verif "cidre set generation_images : valeur inconnue refusee" "2" "$rc"
+cp "$T/perso.avant-fg" "$CIDRE_PROFILS"
+grep -q 'opt generation_images CIDRE_GENERATION_IMAGES)" = metalfx' "$R/tests/lancer_depuis_steam.sh" && grep -q 'export CIDRE_DXMT_FG=1' "$R/tests/lancer_depuis_steam.sh" \
+   && ok "lanceur : option generation_images lue (CIDRE_DXMT_FG, avec dlss seulement)" || echec "lanceur : option generation_images non lue"
+# le bloc DLSS du lanceur, joue a part sur un faux jeu dont le chemin a des espaces
+# (« SSK SSD » : le 2026-10-18 un chemin decoupe faisait mourir le lanceur avant Wine)
+N=$T/nvext; JD="$N/Jeux Cidre/1903340"; mkdir -p "$JD/Sandfall/Binaries/Win64" "$JD/Sandfall/Plugins/NVIDIA/DLSS" "$N/dxmt/nvext" "$N/windll" "$N/sys32"
+printf 'MZ' >"$JD/Sandfall/Binaries/Win64/SandFall-Win64-Shipping.exe"; printf 'MZ' >"$JD/Expedition33_Steam.exe"
+printf 'signe' >"$JD/Sandfall/Plugins/NVIDIA/DLSS/nvngx_dlss.dll"
+printf 'nvapi' >"$N/dxmt/nvext/nvapi64.dll"; printf 'nvngx' >"$N/dxmt/nvext/nvngx.dll"
+awk '/^DLSS=\$\(opt dlss CIDRE_DLSS\)$/ { p = 1 } /^# Rendu Direct3D 9/ { p = 0 } p' "$R/tests/lancer_depuis_steam.sh" >"$N/bloc.sh"
+cat >"$N/jouer.sh" <<'EOS'
+set -e
+R=$1; DOSSIER=$2; PROG=Expedition33_Steam.exe; D3D11=dxmt; JOURNAL=$R/journal
+WINDLL=$R/windll; SYS32=$R/sys32; CIDRE_DXMT_DIR=$R/dxmt; mkdir -p "$R/wine"
+opt() { eval "v=\${$2:-}"; echo "$v"; }
+est_pe32() { return 1; }
+poser() { cmp -s "$1" "$2" && return 0; cp -p "$1" "$2.cidre-tmp" && mv -f "$2.cidre-tmp" "$2"; }
+. "$R/bloc.sh"
+echo "fin ${DXMT_ENABLE_NVEXT:-0}"
+EOS
+fin=$(CIDRE_DLSS=metalfx sh "$N/jouer.sh" "$N" "$JD" 2>&1 | tail -1)
+verif "dlss : bloc du lanceur va au bout sur un chemin a espaces" "fin 1" "$fin"
+verif "dlss : leurre signe a cote de l'exe et en system32" "signe signe signe" "$(cat "$JD/nvngx.dll" "$JD/Sandfall/Binaries/Win64/nvngx.dll" "$N/sys32/nvngx.dll" 2>/dev/null | tr '\n' ' ' | sed 's/signe/signe /g; s/  */ /g; s/ $//')"
+fin=$(sh "$N/jouer.sh" "$N" "$JD" 2>&1 | tail -1)
+verif "dlss : retire au lancement suivant sans dlss" "fin 0 absent absent absent" "$fin $([ -e "$JD/nvngx.dll" ] && echo la || echo absent) $([ -e "$N/sys32/nvngx.dll" ] && echo la || echo absent) $([ -e "$N/windll/nvngx.dll" ] && echo la || echo absent)"
+# generation d'images : option d'essai, NE PAS ACTIVER (panique WindowServer du 2026-10-18) ; aucune fiche
+n=$(grep -l '^generation_images *= *"metalfx"' "$R"/profils/*.toml 2>/dev/null | wc -l | tr -d ' ')
+verif "generation_images : aucune fiche ne l'active" "0" "$n"
+grep -q 'nvngx/nvngx.dll' "$R/tests/construire_dxmt.sh" && grep -q 'enable_nvngx=true' "$R/tests/construire_dxmt.sh" \
+   && ok "construire_dxmt : nvapi64/nvngx construits et poses dans dxmt/nvext" || echec "construire_dxmt : extensions NVIDIA absentes"
 
 echo "== 6d. version macOS 32 bits seulement (traitee en jeu Windows)"
 # Un faux client Steam : Fahrenheit (312840) installe en version macOS. Ses

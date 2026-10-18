@@ -176,6 +176,22 @@
 #                    au lieu de l'agrandissement flou de CoreAnimation. Mesure sur
 #                    Expedition 33 : -3 fps au menu, -2 a -4 fps en jeu. Rester en
 #                    fenetre sans bordure : le plein ecran exclusif donne un ecran noir.
+#   dlss             "metalfx" : DLSS Super Resolution traduit en MetalFX temporel
+#                    (MTLFXTemporalScaler) par les extensions NVIDIA de DXMT. Le jeu
+#                    voit une carte NVIDIA et propose DLSS dans ses reglages ; ses
+#                    vecteurs de mouvement, sa profondeur et son jitter vont a MetalFX.
+#                    DXMT 64 bits seulement. Par fiche, jamais par defaut : un jeu qui
+#                    croit tourner sur NVIDIA peut prendre des chemins lents ailleurs.
+#                    "non" (defaut) : carte Apple, pas de DLSS.
+#   generation_images "metalfx" : avec dlss = "metalfx", DXMT genere une image
+#                    intermediaire par image rendue (MTLFXFrameInterpolator, macOS 26)
+#                    a partir de la profondeur et des vecteurs de mouvement de DLSS, et
+#                    la presente une demi-periode avant la vraie : jusqu'a deux fois
+#                    plus d'images affichees quand le CPU limite, une demi-image de
+#                    latence en plus, l'interface peut trembler. "non" (defaut).
+#                    NE PAS ACTIVER : le 2026-10-18 le M1 a panique (WindowServer bloque
+#                    dans le pilote AGX) pendant une capture d'ecran, Expedition 33 en
+#                    generation d'images ; non tranche. Aucune fiche ne la pose.
 #
 # --- base de compatibilite par jeu (inspiree des recettes CrossOver, cf.
 #     VEILLE_CROSSOVER.md). dll_overrides et windows_version sont APPLIQUES par le
@@ -235,6 +251,8 @@ sm66 = false
 d3d11 = "dxmt"
 dxmt_config = ""
 metalfx = false
+dlss = "non"
+generation_images = "non"
 clavier = "systeme"
 deck = false
 

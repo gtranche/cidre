@@ -17,6 +17,8 @@
 #                                        # et les 4 DLL i386 dans $R/dxmt/i386/ (le
 #                                        # dossier que prefere le lanceur), le
 #                                        # precedent etant garde dans $R/dxmt.precedent/
+# Les extensions NVIDIA (nvapi64.dll, nvngx.dll) vont dans $R/dxmt/nvext/ : le
+# lanceur ne les pose qu'avec dlss = "metalfx" (DLSS -> MetalFX temporel).
 # Variables : DXMT_SRC (src/dxmt), DXMT_BUILD (src/dxmt/build), DXMT_BUILD_I386
 # ($DXMT_BUILD-i386), NATIVE_LLVM (/opt/homebrew/opt/llvm@15), WINE_INSTALL
 # (wine/wine11-arm64).
@@ -68,12 +70,20 @@ if [ -f "$CROSS" ] && cmp -s "$CROSS" "$CROSS.tmp"; then rm -f "$CROSS.tmp"; els
 grep "args" "$CROSS"
 
 echo "== DXMT -> $BLD =="
+# enable_nvapi/enable_nvngx : les extensions NVIDIA de DXMT (nvapi64.dll,
+# nvngx.dll), sans effet tant que DXMT_ENABLE_NVEXT=1 n'est pas pose -- le
+# lanceur ne le pose qu'avec l'option de fiche dlss = "metalfx" (DLSS Super
+# Resolution traduit en MTLFXTemporalScaler).
+NVEXT_OPTS="-Denable_nvapi=true -Denable_nvngx=true"
 configurer() {
    meson setup "$BLD" "$SRC" --cross-file "$CROSS" --buildtype release \
-      -Dnative_llvm_path="$NATIVE_LLVM" -Dwine_install_path="$WINE_INSTALL"
+      -Dnative_llvm_path="$NATIVE_LLVM" -Dwine_install_path="$WINE_INSTALL" $NVEXT_OPTS
 }
 if [ ! -f "$BLD/build.ninja" ]; then
    configurer
+elif ! grep -q "enable_nvngx = true" "$BLD/meson-private/cmd_line.txt" 2>/dev/null; then
+   # build-dir d'avant les extensions NVIDIA : on les ajoute sans repartir a neuf
+   meson configure "$BLD" $NVEXT_OPTS
 elif ! grep -qF "cross_file = ['$CROSS']" "$BLD/meson-private/cmd_line.txt" 2>/dev/null; then
    # Build-dir configure avec un autre cross-file (celui d'amont, sans emulated-tls) :
    # meson ignore un --cross-file passe a --reconfigure, il faut repartir a neuf.
@@ -92,7 +102,7 @@ echo "== verification : aucune lecture TLS par x18 hors libc++abi natif =="
 # le lien n'atteint pas, et qu'un jeu x64 n'execute jamais). Seule cette copie
 # native est toleree.
 rc=0
-for f in d3d11/d3d11.dll dxgi/dxgi.dll d3d10/d3d10core.dll winemetal/winemetal.dll; do
+for f in d3d11/d3d11.dll dxgi/dxgi.dll d3d10/d3d10core.dll winemetal/winemetal.dll nvapi/nvapi64.dll nvngx/nvngx.dll; do
    dll="$BLD/src/$f"
    [ -f "$dll" ] || { echo "ECHEC : $dll absent"; rc=1; continue; }
    sites=$("$MINGW/llvm-objdump" -d --no-show-raw-insn "$dll" \
@@ -134,6 +144,11 @@ if [ "$ACTION" = "poser" ]; then
    mkdir -p "$R/dxmt"
    for f in d3d11/d3d11.dll dxgi/dxgi.dll d3d10/d3d10core.dll winemetal/winemetal.dll winemetal/unix/winemetal.so; do
       cp "$BLD/src/$f" "$R/dxmt/"
+   done
+   # extensions NVIDIA (dlss = "metalfx"), 64 bits seulement : DXMT les refuse en i386
+   mkdir -p "$R/dxmt/nvext"
+   for f in nvapi/nvapi64.dll nvngx/nvngx.dll; do
+      cp "$BLD/src/$f" "$R/dxmt/nvext/"
    done
    mkdir -p "$R/dxmt/i386"
    for f in d3d11/d3d11.dll dxgi/dxgi.dll d3d10/d3d10core.dll winemetal/winemetal.dll; do

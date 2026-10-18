@@ -634,6 +634,101 @@ else
    rm -f "$WINDLL/winemetal.dll" "$WINUNIX/winemetal.so" "$SYS32/winemetal.dll"
 fi
 
+# DLSS par MetalFX : dlss = "metalfx" (CIDRE_DLSS=metalfx), DXMT 64 bits seulement.
+# Les extensions NVIDIA de DXMT (nvapi64.dll, nvngx.dll, $R/dxmt/nvext) font voir
+# au jeu une carte NVIDIA (VendorId 10DE, nvapi « RTX ») et traduisent DLSS Super
+# Resolution en MTLFXTemporalScaler, avec la profondeur, les vecteurs de mouvement
+# et le jitter du jeu. Par fiche seulement : un jeu qui croit tourner sur NVIDIA
+# peut prendre des chemins lents ailleurs (wiki DXMT « Vendor Extensions »).
+# DXMT_ENABLE_NVEXT=1 fait ecrire a dxgi les cles NVIDIA du registre (NGXCore
+# FullPath = system32) ; sans lui, dxgi les retire et nvapi/nvngx refusent de se
+# charger. Le SDK NGX lie dans le jeu verifie la signature de nvngx.dll : on pose
+# a sa place une copie du nvngx_dlss.dll signe du jeu (en system32 et a cote de
+# l'executable), et =b fait charger le builtin de DXMT a sa place. Chaque fichier
+# pose est note dans $NVEXT_POSES et retire au lancement suivant sans dlss.
+DLSS=$(opt dlss CIDRE_DLSS)
+case $DLSS in metalfx) ;; *) DLSS= ;; esac
+NVEXT_POSES=$R/wine/.cidre-nvext-poses
+source_nvext() { # <fichier> : nvapi64.dll ou nvngx.dll
+   case $1 in nvapi64.dll) dev=nvapi/$1 ;; *) dev=nvngx/$1 ;; esac
+   for cand in ${CIDRE_DXMT_DIR:+"$CIDRE_DXMT_DIR/nvext/$1"} "$R/dxmt/nvext/$1" "$R/src/dxmt/build/src/$dev"; do
+      [ -f "$cand" ] && { echo "$cand"; return 0; }
+   done
+   return 1
+}
+retirer_nvext() { # [raison] : sans raison, seulement les fichiers notes (avant une pose neuve)
+   [ -f "$NVEXT_POSES" ] || return 0
+   while IFS='	' read -r dest src; do
+      [ -n "$dest" ] || continue
+      if [ -f "$dest" ] && { [ ! -f "$src" ] || cmp -s "$dest" "$src"; }; then rm -f "$dest"; fi
+   done <"$NVEXT_POSES"
+   rm -f "$NVEXT_POSES"
+   [ -n "$1" ] || return 0
+   rm -f "$WINDLL/nvapi64.dll" "$WINDLL/nvngx.dll"
+   echo "    dlss : $1 -> extensions NVIDIA retirees" >>"$JOURNAL"
+}
+poser_nvext() { # <source> <destination> : pose et note
+   poser "$1" "$2" && printf '%s\t%s\n' "$2" "$1" >>"$NVEXT_POSES"
+}
+if [ -n "$DLSS" ] && [ "$D3D11" != dxmt ]; then
+   echo "    dlss : metalfx demande mais le rendu est $D3D11 (DXMT seulement) : DLSS absent" >>"$JOURNAL"; DLSS=
+fi
+if [ -n "$DLSS" ] && est_pe32 "$DOSSIER/$PROG"; then
+   echo "    dlss : jeu 32 bits, DXMT n'a pas d'extensions NVIDIA en i386 : DLSS absent" >>"$JOURNAL"; DLSS=
+fi
+if [ -n "$DLSS" ] && ! { source_nvext nvapi64.dll >/dev/null && source_nvext nvngx.dll >/dev/null; }; then
+   echo "    dlss : metalfx demande mais nvapi64.dll/nvngx.dll introuvables (ni $R/dxmt/nvext ni src/dxmt/build) : DLSS absent" >>"$JOURNAL"; DLSS=
+fi
+if [ -n "$DLSS" ]; then
+   retirer_nvext
+   poser "$(source_nvext nvapi64.dll)" "$WINDLL/nvapi64.dll"
+   poser "$(source_nvext nvngx.dll)" "$WINDLL/nvngx.dll"
+   : >"$NVEXT_POSES"
+   [ -d "$SYS32" ] && poser_nvext "$(source_nvext nvapi64.dll)" "$SYS32/nvapi64.dll"
+   # le leurre signe : le nvngx_dlss.dll du jeu, sinon le nvngx de DXMT
+   LEURRE=$(find "$DOSSIER" -maxdepth 8 -iname nvngx_dlss.dll -type f 2>/dev/null | head -1)
+   if [ -n "$LEURRE" ]; then
+      [ -d "$SYS32" ] && poser_nvext "$LEURRE" "$SYS32/nvngx.dll"
+      # une ligne par dossier : les chemins de jeux ont des espaces (« SSK SSD »)
+      { echo "$DOSSIER"; find "$DOSSIER" -maxdepth 4 -iname '*-Shipping.exe' -type f 2>/dev/null | while IFS= read -r e; do dirname "$e"; done; } \
+         | sort -u | while IFS= read -r d; do
+         # un nvngx.dll encore la apres retirer_nvext est celui du jeu : on n'y touche pas
+         [ -e "$d/nvngx.dll" ] && continue
+         poser_nvext "$LEURRE" "$d/nvngx.dll"
+      done
+      echo "    dlss : leurre signe ${LEURRE#$DOSSIER/} -> nvngx.dll (system32 et a cote de l'executable)" >>"$JOURNAL"
+   else
+      [ -d "$SYS32" ] && poser_nvext "$(source_nvext nvngx.dll)" "$SYS32/nvngx.dll"
+      echo "    dlss : pas de nvngx_dlss.dll dans le jeu, nvngx.dll de DXMT en system32 (sans leurre signe)" >>"$JOURNAL"
+   fi
+   export DXMT_ENABLE_NVEXT=1
+   NVEXT_OV="nvapi64,nvngx=b"
+   case ";${CIDRE_DLL_OVERRIDES:-};" in
+      *";$NVEXT_OV;"*) : ;;
+      *) export CIDRE_DLL_OVERRIDES="${CIDRE_DLL_OVERRIDES:+$CIDRE_DLL_OVERRIDES;}$NVEXT_OV" ;;
+   esac
+   echo "    dlss : metalfx -> DLSS Super Resolution par MTLFXTemporalScaler (DXMT_ENABLE_NVEXT=1, nvapi64/nvngx depuis $(dirname "$(source_nvext nvngx.dll)"))" >>"$JOURNAL"
+   # generation_images = "metalfx" (CIDRE_GENERATION_IMAGES=metalfx) : DXMT fabrique une
+   # image intermediaire par image rendue (MTLFXFrameInterpolator, macOS 26), a partir de
+   # la profondeur et des vecteurs de mouvement que DLSS a recus, et la presente une
+   # demi-periode avant la vraie : deux fois plus d'images affichees quand le CPU limite,
+   # une demi-image de latence en plus. Seulement avec dlss = "metalfx" (sans DLSS, DXMT
+   # n'a ni profondeur ni vecteurs). Sous macOS 25, DXMT l'ignore.
+   # NE PAS ACTIVER : le 2026-10-18 le M1 a panique (WindowServer bloque dans le pilote
+   # AGX, watchdog 120 s) pendant une capture d'ecran, Expedition 33 en generation
+   # d'images ; la meme famille de gel que le 16/10 sans elle, non tranche. Option
+   # d'essai seulement, aucune fiche ne la pose ; le journal le rappelle.
+   if [ "$(opt generation_images CIDRE_GENERATION_IMAGES)" = metalfx ]; then
+      export CIDRE_DXMT_FG=1
+      echo "    dlss : generation d'images MetalFX (MTLFXFrameInterpolator, CIDRE_DXMT_FG=1) -- ESSAI : panique WindowServer vue le 2026-10-18 pendant une capture d'ecran, aucune capture pendant le jeu" >>"$JOURNAL"
+   fi
+else
+   if [ -f "$NVEXT_POSES" ] || [ -f "$WINDLL/nvngx.dll" ]; then retirer_nvext "sans dlss"; fi
+   if [ "$(opt generation_images CIDRE_GENERATION_IMAGES)" = metalfx ]; then
+      echo "    generation_images = metalfx sans DLSS actif : sans effet (il faut dlss = \"metalfx\")" >>"$JOURNAL"
+   fi
+fi
+
 # Rendu Direct3D 9 : d3d9 = "dxvk" (DXVK -> Vulkan -> KosmicKrisp -> Metal) ou
 # "wined3d" (le d3d9 builtin de Wine, sur l'OpenGL de macOS). Sans choix, un jeu
 # 32 bits part en dxvk : son wined3d i386 passe par les relais wow64 d'opengl32,

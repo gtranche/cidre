@@ -27,6 +27,15 @@
 #   tso_sans = "UnityPlayer.dll"                  module exempte du TSO de FEX (0179)
 #   tso_sans = "UnityPlayer.dll GameAssembly.dll"  plusieurs
 #   tso_sans = "UnityPlayer.dll;1522d00-15246a0"   une plage seulement (syntaxe de FEX)
+# Une option a choix s'ecrit en chaine, ex. :
+#   dlss = "metalfx"   DLSS du jeu traduit en MetalFX temporel par DXMT (extensions
+#                      NVIDIA : le jeu voit une carte NVIDIA) ; "non" par defaut.
+#                      A ne poser que dans la fiche d'un jeu D3D11 64 bits essaye
+#                      avec : CIDRE_DLSS=metalfx pour un essai.
+#   generation_images = "metalfx"   avec dlss = "metalfx" : une image generee par
+#                      MetalFX entre deux images rendues (macOS 26) ; "non" par defaut.
+#                      CIDRE_GENERATION_IMAGES=metalfx pour un essai. NE PAS ACTIVER dans une
+#                      fiche : panique WindowServer du 2026-10-18 pendant une capture d'ecran.
 #
 # `plat`, `json`, `reglages` et `compat` rendent la fiche telle qu'elle vaut sur
 # CETTE machine : les blocs [[machine]] dont la condition `si` est vraie

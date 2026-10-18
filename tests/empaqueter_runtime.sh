@@ -85,6 +85,14 @@ for f in d3d11/d3d11.dll dxgi/dxgi.dll d3d10/d3d10core.dll winemetal/winemetal.d
    elif [ -f "$DXMT/build-i386/src/$f" ]; then cp "$DXMT/build-i386/src/$f" "$STAGE/dxmt/i386/"
    else echo "  dxmt i386 : $b ABSENT (sh tests/construire_dxmt.sh poser) ; un jeu 32 bits en d3d11=dxmt retombera en dxvk"; fi
 done
+# extensions NVIDIA (dlss = "metalfx" : DLSS -> MetalFX temporel), 64 bits seulement
+mkdir -p "$STAGE/dxmt/nvext"
+for f in nvapi/nvapi64.dll nvngx/nvngx.dll; do
+   b=$(basename "$f")
+   if [ -f "$R/dxmt/nvext/$b" ]; then cp "$R/dxmt/nvext/$b" "$STAGE/dxmt/nvext/"
+   elif [ -f "$DXMT/build/src/$f" ]; then cp "$DXMT/build/src/$f" "$STAGE/dxmt/nvext/"
+   else echo "  dxmt nvext : $b ABSENT (sh tests/construire_dxmt.sh poser) ; l'option dlss = metalfx sera sans effet"; fi
+done
 for f in COPYING.LIB LICENSE README.md; do cp "$DXMT/$f" "$STAGE/dxmt/$f" 2>/dev/null || true; done
 
 # Outils de generation de code de Mesa : ils ne servent qu'a construire, et

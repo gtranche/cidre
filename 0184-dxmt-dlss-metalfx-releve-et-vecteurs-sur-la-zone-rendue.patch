@@ -1,0 +1,397 @@
+Generated-by: LLM
+
+dxmt : pont DLSS -> MetalFX temporel, releve et relecture (Cidre 0184)
+
+1. Vecteurs de mouvement dilates ramenes sur la zone rendue. Unreal rend dans un
+   sous-rectangle (692x434 de contenu dans une texture plus grande) et passe a DLSS des
+   vecteurs dilates a la definition de sortie. cs_downscale_dilated_mv faisait
+   correspondre la texture d'entree ENTIERE a la sortie : MetalFX lisait les vecteurs
+   d'un autre coin de l'ecran, a la mauvaise echelle (trainees au-dessus du personnage
+   d'Expedition 33, ecran titre propre). Le noyau recoit maintenant la taille du contenu
+   et celle de la sortie. Sonde tests/sonde_fg_present.cpp « sousrect » : 14,5-17,6 dB
+   sans, 19,3-21,0 dB avec (comme sans sous-rectangle).
+2. CIDRE_DXMT_STATS=1 : toutes les 2 s, images presentees par seconde, appels DLSS par
+   seconde et definitions (contenu -> sortie). Une ligne « cidre-dlss » a la creation de
+   chaque scaler : tailles, contenu, vecteurs, profondeur inversee, exposition, formats.
+3. CIDRE_DXMT_RELIRE=<f.ppm> (+ CIDRE_DXMT_RELIRE_IMAGE=n,m ou
+   CIDRE_DXMT_RELIRE_DECLENCHEUR=<fichier Windows>) : relecture de l'image presentee
+   dans le processus (jamais par capture d'ecran). La copie D3D11 est suivie de
+   PrepareFlush : sans lui, la passe blit restait ouverte sous la presentation et la
+   relecture suivante plantait (encoder_current nul).
+
+diff --git a/src/d3d11/d3d11_context_impl.cpp b/src/d3d11/d3d11_context_impl.cpp
+index 2b63ad4..f79f20b 100644
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -5270,6 +5270,12 @@ public:
+     if (pDesc->ExposureTexture && !(exposure = static_cast<D3D11ResourceCommon *>(pDesc->ExposureTexture)->texture()))
+       return;
+ 
++    g_cidre_dlss.evaluations.fetch_add(1, std::memory_order_relaxed);
++    g_cidre_dlss.in_w.store(pDesc->InputContentWidth ? pDesc->InputContentWidth : input->width(), std::memory_order_relaxed);
++    g_cidre_dlss.in_h.store(pDesc->InputContentHeight ? pDesc->InputContentHeight : input->height(), std::memory_order_relaxed);
++    g_cidre_dlss.out_w.store(output->width(), std::memory_order_relaxed);
++    g_cidre_dlss.out_h.store(output->height(), std::memory_order_relaxed);
++
+     WMTPixelFormat motion_vector_format = GetCorrectMotionVectorFormat(motion_vector->pixelFormat());
+     if (motion_vector_format == WMTPixelFormatInvalid) {
+       ERR("TemporalUpscale: invalid motion vector format ", motion_vector->pixelFormat());
+@@ -5340,6 +5346,15 @@ public:
+         flags.set(TextureAllocationFlag::GpuPrivate);
+         mv_downscaled->rename(mv_downscaled->allocate(flags));
+       }
++      WARN("cidre-dlss: MetalFX temporel, entree ", scaler_entry.input_width, "x", scaler_entry.input_height,
++           " (contenu ", pDesc->InputContentWidth, "x", pDesc->InputContentHeight, "), sortie ",
++           scaler_entry.output_width, "x", scaler_entry.output_height, ", vecteurs ",
++           pDesc->MotionVectorInDisplayRes ? "dilates a la sortie" : "a l'entree", " (", motion_vector->width(), "x",
++           motion_vector->height(), ", echelle ", pDesc->MotionVectorScaleX, " ", pDesc->MotionVectorScaleY,
++           "), profondeur ", depth->width(), "x", depth->height(), (pDesc->DepthReversed ? " inversee" : ""),
++           ", exposition ", pDesc->AutoExposure ? "auto" : (pDesc->ExposureTexture ? "texture" : "aucune"),
++           ", formats couleur ", scaler_entry.color_pixel_format, " sortie ", scaler_entry.output_pixel_format,
++           " profondeur ", scaler_entry.depth_pixel_format, " vecteurs ", motion_vector_format);
+       scaler = scaler_entry.scaler;
+       scaler_cache_.push_back(std::move(scaler_entry));
+       // to simplify implementation, the created scalers are never destroyed
+@@ -5383,8 +5398,11 @@ public:
+       scaler_info.motion_vector_highres = mv_downscaled != nullptr;
+ 
+       if (scaler_info.motion_vector_highres) {
++        /* Cidre (0184) : vecteurs dilates ramenes sur la zone rendue (contenu), pas
++           sur la texture d'entree entiere ; ils couvrent la sortie entiere */
+         enc.mv_scale_cmd.dispatch(
+-            motion_vector, mv_view, mv_downscaled, 0, props.motion_vector_scale_x, props.motion_vector_scale_y
++            motion_vector, mv_view, mv_downscaled, 0, props.motion_vector_scale_x, props.motion_vector_scale_y,
++            props.input_content_width, props.input_content_height, output->width(), output->height()
+         );
+         WMTFXTemporalScalerProps new_props = props;
+         new_props.motion_vector_scale_x = 1.0;
+diff --git a/src/d3d11/d3d11_interfaces.hpp b/src/d3d11/d3d11_interfaces.hpp
+index ff4bb2b..1c9ecc0 100644
+--- a/src/d3d11/d3d11_interfaces.hpp
++++ b/src/d3d11/d3d11_interfaces.hpp
+@@ -33,6 +33,18 @@ typedef enum MTL_FEATURE {
+   MTL_FEATURE_METALFX_TEMPORAL_SCALER = 0,
+ } MTL_FEATURE;
+ 
++/* Cidre (0184) : ce que DLSS fait faire a MetalFX, lu par le releve de la
++   swapchain (CIDRE_DXMT_STATS). Defini dans d3d11_swapchain.cpp ; ecrit par
++   TemporalUpscale, sur le fil du jeu. */
++#include <atomic>
++namespace dxmt {
++struct CidreDlssStats {
++  std::atomic<uint32_t> evaluations{0};
++  std::atomic<uint32_t> in_w{0}, in_h{0}, out_w{0}, out_h{0};
++};
++extern CidreDlssStats g_cidre_dlss;
++}
++
+ DEFINE_COM_INTERFACE("19a8e35a-38be-418f-94e3-9f7323936870", IMTLD3D11ContextExt1) : public IMTLD3D11ContextExt {
+   virtual HRESULT STDMETHODCALLTYPE CheckFeatureSupport(
+       MTL_FEATURE Feature, void *pFeatureSupportData, UINT FeatureSupportDataSize
+diff --git a/src/d3d11/d3d11_swapchain.cpp b/src/d3d11/d3d11_swapchain.cpp
+index bbd5e71..ea0a043 100644
+--- a/src/d3d11/d3d11_swapchain.cpp
++++ b/src/d3d11/d3d11_swapchain.cpp
+@@ -23,7 +23,10 @@
+ #include "wsi_window.hpp"
+ #include "dxmt_info.hpp"
+ #include "dxmt_presenter.hpp"
++#include "d3d11_interfaces.hpp"
+ #include <atomic>
++#include <chrono>
++#include <cstdio>
+ #include <cfloat>
+ #include <format>
+ 
+@@ -114,6 +117,52 @@ public:
+   };
+ };
+ 
++
++CidreDlssStats g_cidre_dlss;
++
++/* Cidre (0184) : relecture d'une image presentee, dans le processus (jamais par
++   capture d'ecran). Ecrit un PPM 8 bits depuis une texture de lecture mappee. */
++static void
++CidreEcrirePPM(const char *chemin, const D3D11_MAPPED_SUBRESOURCE &map, UINT w, UINT h, DXGI_FORMAT fmt) {
++  FILE *f = fopen(chemin, "wb");
++  if (!f) {
++    WARN("cidre-relire: ouverture de ", chemin, " impossible");
++    return;
++  }
++  fprintf(f, "P6\n%u %u\n255\n", w, h);
++  std::vector<uint8_t> ligne(w * 3);
++  auto sat = [](float v) -> uint8_t { return v <= 0 ? 0 : v >= 1 ? 255 : (uint8_t)(v * 255.0f + 0.5f); };
++  auto f16 = [](uint16_t hv) -> float {
++    uint32_t sg = (hv & 0x8000) << 16, e = (hv >> 10) & 0x1f, m = hv & 0x3ff, x;
++    if (e == 0) x = sg; else if (e == 31) x = sg | 0x7f800000 | (m << 13); else x = sg | ((e - 15 + 127) << 23) | (m << 13);
++    float r; memcpy(&r, &x, 4); return r;
++  };
++  for (UINT y = 0; y < h; y++) {
++    const uint8_t *src = (const uint8_t *)map.pData + (size_t)y * map.RowPitch;
++    for (UINT x = 0; x < w; x++) {
++      uint8_t *d = &ligne[x * 3];
++      switch (fmt) {
++      case DXGI_FORMAT_B8G8R8A8_UNORM: case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: case DXGI_FORMAT_B8G8R8A8_TYPELESS:
++      case DXGI_FORMAT_B8G8R8X8_UNORM:
++        d[0] = src[x * 4 + 2]; d[1] = src[x * 4 + 1]; d[2] = src[x * 4 + 0]; break;
++      case DXGI_FORMAT_R10G10B10A2_UNORM: case DXGI_FORMAT_R10G10B10A2_TYPELESS: {
++        uint32_t v; memcpy(&v, src + x * 4, 4);
++        d[0] = (v & 0x3ff) >> 2; d[1] = ((v >> 10) & 0x3ff) >> 2; d[2] = ((v >> 20) & 0x3ff) >> 2; break;
++      }
++      case DXGI_FORMAT_R16G16B16A16_FLOAT: {
++        const uint16_t *p = (const uint16_t *)(src + x * 8);
++        d[0] = sat(f16(p[0])); d[1] = sat(f16(p[1])); d[2] = sat(f16(p[2])); break;
++      }
++      default: /* RGBA8 */
++        d[0] = src[x * 4 + 0]; d[1] = src[x * 4 + 1]; d[2] = src[x * 4 + 2]; break;
++      }
++    }
++    fwrite(ligne.data(), 1, ligne.size(), f);
++  }
++  fclose(f);
++  WARN("cidre-relire: ", chemin, " ecrit (", w, "x", h, ", format DXGI ", (int)fmt, ")");
++}
++
+ template <bool EnableMetalFX>
+ class MTLD3D11SwapChain final : public MTLDXGISubObject<IDXGISwapChain4, MTLD3D11Device> {
+ public:
+@@ -781,6 +830,8 @@ public:
+       return S_OK;
+     }
+ 
++    CidreAvantPresent();
++
+     double vsync_duration =
+         std::max(SyncInterval * 1.0 /
+                      (preferred_max_frame_rate ? preferred_max_frame_rate
+@@ -830,9 +881,107 @@ public:
+ 
+     cmd_queue.PresentBoundary();
+ 
++    CidreApresPresent();
++
+     return hr;
+   };
+ 
++  /* Cidre (0184) : releve et relecture, inertes sans leurs variables.
++     CIDRE_DXMT_STATS=1 : toutes les 2 s, une ligne « cidre-stats » : images
++       presentees par seconde, appels DLSS (MetalFX temporel) par seconde et
++       definitions du dernier, taille de la swapchain.
++     CIDRE_DXMT_RELIRE=<fichier.ppm> : relit l'image presentee numero
++       CIDRE_DXMT_RELIRE_IMAGE (300 par defaut ; plusieurs separes par des
++       virgules, le numero est alors ajoute au nom) dans le processus. */
++  void CidreInit() {
++    cidre_init_ = true;
++    cidre_stats_ = !env::getEnvVar("CIDRE_DXMT_STATS").empty();
++    cidre_relire_ = env::getEnvVar("CIDRE_DXMT_RELIRE");
++    cidre_declencheur_ = env::getEnvVar("CIDRE_DXMT_RELIRE_DECLENCHEUR");
++    std::string images = env::getEnvVar("CIDRE_DXMT_RELIRE_IMAGE");
++    if (images.empty()) images = "300";
++    for (size_t pos = 0; pos < images.size();) {
++      size_t fin = images.find(',', pos);
++      if (fin == std::string::npos) fin = images.size();
++      uint64_t n = strtoull(images.substr(pos, fin - pos).c_str(), nullptr, 10);
++      if (n) cidre_relire_images_.push_back(n);
++      pos = fin + 1;
++    }
++    cidre_relire_plusieurs_ = cidre_relire_images_.size() > 1;
++    cidre_t0_ = std::chrono::steady_clock::now();
++  }
++
++  void CidreAvantPresent() {
++    if (!cidre_init_)
++      CidreInit();
++    cidre_presentes_++;
++    cidre_total_++;
++    if (cidre_stats_) {
++      auto t = std::chrono::steady_clock::now();
++      double dt = std::chrono::duration<double>(t - cidre_t0_).count();
++      if (dt >= 2.0) {
++        uint32_t ev = g_cidre_dlss.evaluations.exchange(0, std::memory_order_relaxed);
++        WARN(str::format(
++            "cidre-stats: ", std::format("{:.1f}", cidre_presentes_ / dt), " images/s presentees, DLSS ",
++            std::format("{:.1f}", ev / dt), "/s (", g_cidre_dlss.in_w.load(), "x", g_cidre_dlss.in_h.load(), " -> ",
++            g_cidre_dlss.out_w.load(), "x", g_cidre_dlss.out_h.load(), "), swapchain ", desc_.Width, "x", desc_.Height,
++            ", image ", cidre_total_
++        ));
++        cidre_presentes_ = 0;
++        cidre_t0_ = t;
++      }
++    }
++    cidre_relire_maintenant_ = false;
++    if (!cidre_relire_.empty())
++      for (auto n : cidre_relire_images_)
++        if (n == cidre_total_) cidre_relire_maintenant_ = true;
++    /* CIDRE_DXMT_RELIRE_DECLENCHEUR=<fichier> (chemin Windows, ex. Z:\tmp\x) : quand
++       il apparait, l'image presentee suivante est relue (numero ajoute au nom) et
++       le fichier est efface ; regarde toutes les 30 images. */
++    if (!cidre_relire_.empty() && !cidre_declencheur_.empty() && cidre_total_ % 30 == 0 &&
++        GetFileAttributesA(cidre_declencheur_.c_str()) != INVALID_FILE_ATTRIBUTES) {
++      DeleteFileA(cidre_declencheur_.c_str());
++      cidre_relire_maintenant_ = true;
++      cidre_relire_plusieurs_ = true;
++    }
++    if (cidre_relire_maintenant_) {
++      D3D11_TEXTURE2D_DESC d = {};
++      reinterpret_cast<ID3D11Texture2D *>(backbuffer_.ptr())->GetDesc(&d);
++      D3D11_TEXTURE2D_DESC sd = d;
++      sd.Usage = D3D11_USAGE_STAGING; sd.BindFlags = 0; sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ; sd.MiscFlags = 0;
++      sd.MipLevels = 1; sd.ArraySize = 1; sd.SampleDesc = {1, 0};
++      cidre_lecture_ = nullptr;
++      if (SUCCEEDED(device_->CreateTexture2D(&sd, nullptr, &cidre_lecture_))) {
++        Com<ID3D11DeviceContext> ctx;
++        device_->GetImmediateContext(&ctx);
++        ctx->CopyResource(cidre_lecture_.ptr(), backbuffer_.ptr());
++        /* la copie ouvre une passe blit : la fermer avant d'encoder la presentation,
++           sinon la copie suivante croit la passe encore ouverte */
++        device_context_->PrepareFlush();
++        cidre_lecture_format_ = d.Format; cidre_lecture_w_ = d.Width; cidre_lecture_h_ = d.Height;
++      }
++    }
++  }
++
++  void CidreApresPresent() {
++    if (!cidre_relire_maintenant_ || !cidre_lecture_)
++      return;
++    Com<ID3D11DeviceContext> ctx;
++    device_->GetImmediateContext(&ctx);
++    D3D11_MAPPED_SUBRESOURCE map;
++    if (SUCCEEDED(ctx->Map(cidre_lecture_.ptr(), 0, D3D11_MAP_READ, 0, &map))) {
++      std::string chemin = cidre_relire_;
++      if (cidre_relire_plusieurs_) {
++        auto point = chemin.rfind('.');
++        std::string num = "-" + std::to_string(cidre_total_);
++        chemin = point == std::string::npos ? chemin + num : chemin.substr(0, point) + num + chemin.substr(point);
++      }
++      CidreEcrirePPM(chemin.c_str(), map, cidre_lecture_w_, cidre_lecture_h_, cidre_lecture_format_);
++      ctx->Unmap(cidre_lecture_.ptr(), 0);
++    }
++    cidre_lecture_ = nullptr;
++  }
++
+   void UpdateStatistics(const FrameStatisticsContainer& statistics, uint64_t frame_id) {
+     hud.begin();
+     auto &frame = statistics.at(frame_id - 1); // show the previous one frame statistics
+@@ -1107,6 +1256,21 @@ private:
+   std::conditional<EnableMetalFX, Rc<SpatialScaler>, std::monostate>::type metalfx_scaler;
+   std::conditional<EnableMetalFX, Com<D3D11ResourceCommon>, std::monostate>::type upscaled_backbuffer_;
+   float scale_factor = 1.0;
++
++  /* Cidre (0184) */
++  bool cidre_init_ = false;
++  bool cidre_stats_ = false;
++  std::chrono::steady_clock::time_point cidre_t0_;
++  uint32_t cidre_presentes_ = 0;
++  uint64_t cidre_total_ = 0;
++  std::string cidre_relire_;
++  std::string cidre_declencheur_;
++  std::vector<uint64_t> cidre_relire_images_;
++  bool cidre_relire_plusieurs_ = false;
++  bool cidre_relire_maintenant_ = false;
++  Com<ID3D11Texture2D> cidre_lecture_;
++  DXGI_FORMAT cidre_lecture_format_ = DXGI_FORMAT_UNKNOWN;
++  UINT cidre_lecture_w_ = 0, cidre_lecture_h_ = 0;
+ };
+ 
+ HRESULT
+diff --git a/src/dxmt/dxmt_command.cpp b/src/dxmt/dxmt_command.cpp
+index 6498ae1..dd2b57a 100644
+--- a/src/dxmt/dxmt_command.cpp
++++ b/src/dxmt/dxmt_command.cpp
+@@ -344,12 +344,17 @@ MTLFXMVScaleContext::MTLFXMVScaleContext(
+ struct downscale_dilated_mv_desc {
+   float scale_x;
+   float scale_y;
++  float content_w; /* Cidre (0184) : zone rendue dans la texture d'entree */
++  float content_h;
++  float source_w;  /* zone couverte par les vecteurs dilates (la sortie) */
++  float source_h;
+ };
+ 
+ void
+ MTLFXMVScaleContext::dispatch(
+     const Rc<Texture> &dilated, TextureViewKey view_dilated, const Rc<Texture> &downscaled,
+-    TextureViewKey view_downscaled, float mv_scale_x, float mv_scale_y
++    TextureViewKey view_downscaled, float mv_scale_x, float mv_scale_y, uint32_t content_w, uint32_t content_h,
++    uint32_t source_w, uint32_t source_h
+ ) {
+   ctx_.startComputePass(0);
+   auto tex_dilated = ctx_.access(dilated, view_dilated, ResourceAccess::Read).texture;
+@@ -370,7 +375,15 @@ MTLFXMVScaleContext::dispatch(
+   setstencil.texture = tex_downscaled;
+   setstencil.index = 1;
+ 
+-  downscale_dilated_mv_desc desc{mv_scale_x, mv_scale_y};
++  if (!content_w || !content_h) {
++    content_w = downscaled->width(view_downscaled);
++    content_h = downscaled->height(view_downscaled);
++  }
++  if (!source_w || !source_h) {
++    source_w = dilated->width(view_dilated);
++    source_h = dilated->height(view_dilated);
++  }
++  downscale_dilated_mv_desc desc{mv_scale_x, mv_scale_y, (float)content_w, (float)content_h, (float)source_w, (float)source_h};
+   auto &setdesc = ctx_.encodeComputeCommand<wmtcmd_compute_setbytes>();
+   setdesc.type = WMTComputeCommandSetBytes;
+   void *temp = ctx_.allocate_cpu_heap(sizeof(desc), 16);
+@@ -379,8 +392,8 @@ MTLFXMVScaleContext::dispatch(
+   setdesc.length = sizeof(desc);
+   setdesc.index = 0;
+ 
+-  auto width = downscaled->width(view_downscaled);
+-  auto height = downscaled->height(view_downscaled);
++  auto width = content_w;
++  auto height = content_h;
+   auto &dispatch = ctx_.encodeComputeCommand<wmtcmd_compute_dispatch>();
+   dispatch.type = WMTComputeCommandDispatchThreads;
+   dispatch.size = {width, height, 1};
+diff --git a/src/dxmt/dxmt_command.hpp b/src/dxmt/dxmt_command.hpp
+index c9697ae..89e72f5 100644
+--- a/src/dxmt/dxmt_command.hpp
++++ b/src/dxmt/dxmt_command.hpp
+@@ -231,7 +231,8 @@ public:
+ 
+   void dispatch(
+       const Rc<Texture> &dilated, TextureViewKey view_dilated, const Rc<Texture> &downscaled,
+-      TextureViewKey view_downscaled, float mv_scale_x, float mv_scale_y
++      TextureViewKey view_downscaled, float mv_scale_x, float mv_scale_y, uint32_t content_w = 0,
++      uint32_t content_h = 0, uint32_t source_w = 0, uint32_t source_h = 0
+   );
+ 
+ private:
+diff --git a/src/dxmt/dxmt_command.metal b/src/dxmt/dxmt_command.metal
+index 516f49e..61b2ecf 100644
+--- a/src/dxmt/dxmt_command.metal
++++ b/src/dxmt/dxmt_command.metal
+@@ -633,14 +633,27 @@ struct DXMTClearUintMetadata {
+   buffer[meta.offset.x + pos] = meta.value.x;
+ }
+ 
++/* Cidre (0184) : le moteur ne rend souvent que dans un sous-rectangle de la
++   texture d'entree (Unreal : 692x434 dans une texture plus grande). Les vecteurs
++   dilates couvrent la sortie ; on les ramene sur la zone de contenu seulement,
++   a l'echelle contenu / sortie, au lieu de la texture d'entree entiere. */
++struct downscale_dilated_mv_desc {
++  float2 mv_scale;
++  float2 content_size;
++  float2 source_size;
++};
++
+ [[kernel]] void cs_downscale_dilated_mv(
+   uint2 pos [[thread_position_in_grid]],
+-  constant float2& mv_scale [[buffer(0)]],
++  constant downscale_dilated_mv_desc& desc [[buffer(0)]],
+   texture2d<float, access::read> dilated [[texture(0)]],
+   texture2d<float, access::write> downscaled [[texture(1)]]
+ ) {
+-  float2 source_size = float2(dilated.get_width(), dilated.get_height());
+-  float2 viewport_size = float2(downscaled.get_width(), downscaled.get_height());
++  float2 mv_scale = desc.mv_scale;
++  float2 source_size = desc.source_size;
++  float2 viewport_size = desc.content_size;
++  if (pos.x >= uint(viewport_size.x) || pos.y >= uint(viewport_size.y))
++    return;
+   float2 scale = viewport_size / source_size;
+   float2 sample_uv = (float2(pos) + 0.5) / viewport_size;
+   uint2 sample_pos = uint2(sample_uv * source_size);

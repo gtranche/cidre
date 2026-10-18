@@ -1,0 +1,928 @@
+Generated-by: LLM
+
+dxmt : generation d'images MetalFX (MTLFXFrameInterpolator, macOS 26) (Cidre 0185)
+
+Avec CIDRE_DXMT_FG=1 (lanceur : generation_images = "metalfx", avec dlss = "metalfx"),
+la presentation fabrique une image intermediaire entre la precedente (copiee) et
+celle-ci, avec la profondeur, les vecteurs de mouvement et le jitter que DLSS a recus
+(retenus par upscaleTemporal sur le fil de l'encodeur ; recopies a la taille de la zone
+rendue quand le moteur rend dans un sous-rectangle). L'image generee est presentee tout
+de suite, la vraie une demi-periode plus tard (moyenne glissante de l'intervalle entre
+deux Present). Variante Metal 3 de l'interpolateur (MTL4 signale sans effet sous 26.6).
+winemetal : MTLDevice_newFrameInterpolator, MTLCommandBuffer_encodeFrameInterpolation,
+MTLDevice_supportsFXFrameInterpolator (appels 147-149, 64 bits et wow64).
+IMTLD3D11ContextExtCidre::CidreFrameInterpolate : l'interpolateur sur des textures
+D3D11, pour tests/sonde_fg_metalfx.cpp (48,6 dB contre 13,5 pour un melange 50/50).
+Chemin complet hors jeu : 36 images/s rendues -> 72 affichees. En jeu (Exp33, M1) :
+35-40 -> 70-80 ; le M1 a ensuite panique (WindowServer bloque dans AGX) pendant une
+capture d'ecran de l'utilisateur, comme le 16/10 sans generation : a ne pas activer par
+defaut tant que ce n'est pas tranche.
+
+diff --git a/src/d3d11/d3d11_context_impl.cpp b/src/d3d11/d3d11_context_impl.cpp
+index f79f20b..4c657cb 100644
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -645,7 +645,8 @@ public:
+       return S_OK;
+     }
+ 
+-    if (riid == __uuidof(IMTLD3D11ContextExt) || riid == __uuidof(IMTLD3D11ContextExt1)) {
++    if (riid == __uuidof(IMTLD3D11ContextExt) || riid == __uuidof(IMTLD3D11ContextExt1) ||
++        riid == __uuidof(IMTLD3D11ContextExtCidre)) {
+       *ppvObject = ref(&ext_);
+       return S_OK;
+     }
+@@ -5206,7 +5207,7 @@ public:
+ };
+ 
+ template <typename ContextInternalState>
+-class MTLD3D11ContextExt : public IMTLD3D11ContextExt1 {
++class MTLD3D11ContextExt : public IMTLD3D11ContextExtCidre {
+   class CachedTemporalScaler {
+   public:
+     WMTPixelFormat color_pixel_format;
+@@ -5408,8 +5409,10 @@ public:
+         new_props.motion_vector_scale_x = 1.0;
+         new_props.motion_vector_scale_y = 1.0;
+         enc.upscaleTemporal(input, output, depth, mv_downscaled, mv_downscaled->fullView, exposure, scaler, new_props);
++        enc.cidre_fg.motion_format = mv_downscaled->pixelFormat(); /* Cidre (0185) */
+       } else {
+         enc.upscaleTemporal(input, output, depth, motion_vector, mv_view, exposure, scaler, props);
++        enc.cidre_fg.motion_format = motion_vector_format; /* Cidre (0185) */
+       }
+     });
+   }
+@@ -5441,10 +5444,66 @@ public:
+     return E_INVALIDARG;
+   };
+ 
++  /* Cidre (0185) : generation d'images MetalFX sur des textures D3D11 (sonde) */
++  HRESULT STDMETHODCALLTYPE CidreFrameInterpolate(const MTL_FRAME_INTERPOLATE_D3D11_DESC *pDesc) final {
++    if (!pDesc || !ctx_->device->GetMTLDevice().supportsFXFrameInterpolator())
++      return E_NOTIMPL;
++    Rc<Texture> color, prev, depth, motion, output;
++    if (!(color = static_cast<D3D11ResourceCommon *>(pDesc->Color)->texture()) ||
++        !(prev = static_cast<D3D11ResourceCommon *>(pDesc->PrevColor)->texture()) ||
++        !(depth = static_cast<D3D11ResourceCommon *>(pDesc->Depth)->texture()) ||
++        !(motion = static_cast<D3D11ResourceCommon *>(pDesc->MotionVector)->texture()) ||
++        !(output = static_cast<D3D11ResourceCommon *>(pDesc->Output)->texture()))
++      return E_INVALIDARG;
++    WMTPixelFormat motion_format = GetCorrectMotionVectorFormat(motion->pixelFormat());
++    if (motion_format == WMTPixelFormatInvalid)
++      return E_INVALIDARG;
++    WMTFXFrameInterpolatorInfo info = {};
++    info.color_format = color->pixelFormat();
++    info.output_format = output->pixelFormat();
++    info.depth_format = depth->pixelFormat();
++    info.motion_format = motion_format;
++    info.ui_format = WMTPixelFormatInvalid;
++    info.input_width = depth->width();
++    info.input_height = depth->height();
++    info.output_width = output->width();
++    info.output_height = output->height();
++    if (!interpolator_ || memcmp(&interpolator_->info, &info, sizeof(info))) {
++      interpolator_ = new FrameInterpolator(ctx_->device->GetMTLDevice(), info);
++      if (!interpolator_->valid()) {
++        ERR("CidreFrameInterpolate: MTLFXFrameInterpolator refuse (formats ", info.color_format, " ", info.depth_format,
++            " ", info.motion_format, ")");
++        interpolator_ = nullptr;
++        return E_FAIL;
++      }
++    }
++    WMTFXFrameInterpolatorProps props = {
++        pDesc->MotionVectorScaleX, pDesc->MotionVectorScaleY, pDesc->DeltaTime, pDesc->NearPlane, pDesc->FarPlane,
++        pDesc->FieldOfView, pDesc->AspectRatio, pDesc->JitterOffsetX, pDesc->JitterOffsetY, false,
++        (bool)pDesc->Reset, (bool)pDesc->DepthReversed,
++    };
++    ctx_->InvalidateCurrentPass();
++    ctx_->EmitOP([color = std::move(color), prev = std::move(prev), depth = std::move(depth),
++                  motion = std::move(motion), output = std::move(output), interpolator = interpolator_, props,
++                  motion_format](ArgumentEncodingContext &enc) mutable {
++      auto view = motion->createView(
++          {.format = motion_format,
++           .type = WMTTextureType2D,
++           .firstMiplevel = 0,
++           .miplevelCount = 1,
++           .firstArraySlice = 0,
++           .arraySize = 1}
++      );
++      enc.interpolateFrame(color, prev, depth, motion, view, output, interpolator, props);
++    });
++    return S_OK;
++  }
++
+ private:
+ 
+   MTLD3D11DeviceContextImplBase<ContextInternalState> *ctx_;
+   std::vector<CachedTemporalScaler> scaler_cache_;
++  Rc<FrameInterpolator> interpolator_;
+ };
+ 
+ struct used_dynamic_buffer {
+diff --git a/src/d3d11/d3d11_interfaces.hpp b/src/d3d11/d3d11_interfaces.hpp
+index 1c9ecc0..1a6e967 100644
+--- a/src/d3d11/d3d11_interfaces.hpp
++++ b/src/d3d11/d3d11_interfaces.hpp
+@@ -55,3 +55,31 @@ DEFINE_COM_INTERFACE("efc77ae6-2179-4c0a-b844-7661ca0dcde7", IMTLD3D11DeviceExt)
+     : public IUnknown {
+   virtual void STDMETHODCALLTYPE SetShaderExtensionSlot(UINT Slot) = 0;
+ };
++
++/* Cidre (0185) : generation d'images MetalFX sur des textures D3D11, pour la
++   sonde hors jeu (tests/sonde_dlss_metalfx.cpp) ; la presentation s'en sert par
++   un autre chemin. Couleur, precedente et sortie a la meme definition ;
++   profondeur et vecteurs a la definition de rendu. */
++struct MTL_FRAME_INTERPOLATE_D3D11_DESC {
++  ID3D11Resource *Color;
++  ID3D11Resource *PrevColor;
++  ID3D11Resource *Depth;
++  ID3D11Resource *MotionVector;
++  ID3D11Resource *Output;
++  FLOAT MotionVectorScaleX;
++  FLOAT MotionVectorScaleY;
++  FLOAT DeltaTime;
++  FLOAT NearPlane;
++  FLOAT FarPlane;
++  FLOAT FieldOfView;
++  FLOAT AspectRatio;
++  FLOAT JitterOffsetX;
++  FLOAT JitterOffsetY;
++  BOOL Reset;
++  BOOL DepthReversed;
++};
++
++DEFINE_COM_INTERFACE("6c1f3a52-0b8e-4d7e-9a1c-2f5e8d4b7c19", IMTLD3D11ContextExtCidre) : public IMTLD3D11ContextExt1 {
++  virtual HRESULT STDMETHODCALLTYPE CidreFrameInterpolate(const MTL_FRAME_INTERPOLATE_D3D11_DESC *pDesc) = 0;
++};
++
+diff --git a/src/d3d11/d3d11_swapchain.cpp b/src/d3d11/d3d11_swapchain.cpp
+index ea0a043..bb6d986 100644
+--- a/src/d3d11/d3d11_swapchain.cpp
++++ b/src/d3d11/d3d11_swapchain.cpp
+@@ -119,6 +119,7 @@ public:
+ 
+ 
+ CidreDlssStats g_cidre_dlss;
++static std::atomic<uint32_t> g_cidre_fg_interpolees{0};
+ 
+ /* Cidre (0184) : relecture d'une image presentee, dans le processus (jamais par
+    capture d'ecran). Ecrit un PPM 8 bits depuis une texture de lecture mappee. */
+@@ -563,6 +564,29 @@ public:
+     backbuffer_->AddRefPrivate();
+     backbuffer_->Release();
+ 
++    /* Cidre (0185) : copie de l'image precedente et sortie de l'interpolateur, au
++       format et a la taille du backbuffer ; textures D3D11 pour que la relecture
++       (CIDRE_DXMT_RELIRE) puisse les copier comme le backbuffer. */
++    cidre_fg_prev_ = nullptr;
++    cidre_fg_out_ = nullptr;
++    cidre_fg_generation_++;
++    if (!EnableMetalFX && CidreFgDemandee() && device_->GetMTLDevice().supportsFXFrameInterpolator()) {
++      D3D11_TEXTURE2D_DESC1 fg_desc = backbuffer_desc_;
++      fg_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET | D3D11_BIND_UNORDERED_ACCESS;
++      fg_desc.MiscFlags = 0;
++      if (FAILED(dxmt::CreateDeviceTexture2D(device_, &fg_desc, nullptr, reinterpret_cast<ID3D11Texture2D1 **>(&cidre_fg_prev_))) ||
++          FAILED(dxmt::CreateDeviceTexture2D(device_, &fg_desc, nullptr, reinterpret_cast<ID3D11Texture2D1 **>(&cidre_fg_out_)))) {
++        WARN("cidre-fg: textures de generation d'images impossibles, generation coupee");
++        cidre_fg_prev_ = nullptr;
++        cidre_fg_out_ = nullptr;
++      } else {
++        cidre_fg_prev_->AddRefPrivate();
++        cidre_fg_prev_->Release();
++        cidre_fg_out_->AddRefPrivate();
++        cidre_fg_out_->Release();
++      }
++    }
++
+     if constexpr (EnableMetalFX) {
+       D3D11_TEXTURE2D_DESC1 upscaled_desc_ = backbuffer_desc_;
+       upscaled_desc_.Height *= scale_factor;
+@@ -864,6 +888,124 @@ public:
+         ReleaseSemaphore(present_semaphore_, 1, nullptr);
+         this->UpdateStatistics(ctx.queue().statistics, ctx.currentFrameId());
+       });
++    } else if (cidre_fg_out_) {
++      /* Cidre (0185) : generation d'images MetalFX. Quand DLSS (MetalFX temporel)
++         a servi a cette image, l'interpolateur fabrique l'image intermediaire entre
++         la precedente (copiee) et celle-ci, a partir de la profondeur et des
++         vecteurs de mouvement que DLSS a recus ; elle est presentee tout de suite,
++         la vraie une demi-periode plus tard (moyenne glissante de l'intervalle
++         entre deux Present). Sans DLSS dans l'image, presentation ordinaire. */
++      auto t = std::chrono::steady_clock::now();
++      if (cidre_fg_dernier_.time_since_epoch().count()) {
++        double dt = std::chrono::duration<double>(t - cidre_fg_dernier_).count();
++        if (dt > 0 && dt < 0.25)
++          cidre_fg_intervalle_ = cidre_fg_intervalle_ > 0 ? 0.9 * cidre_fg_intervalle_ + 0.1 * dt : dt;
++      }
++      cidre_fg_dernier_ = t;
++      chunk->emitcc([
++        this, vsync_duration, state = presenter->synchronizeLayerProperties(),
++        sync_state = SyncFrame(++presentation_count_),
++        backbuffer = backbuffer_->texture(), prev = cidre_fg_prev_->texture(), out = cidre_fg_out_->texture(),
++        intervalle = cidre_fg_intervalle_, generation = cidre_fg_generation_.load()
++      ](ArgumentEncodingContext &ctx) mutable {
++        auto &fg = ctx.cidre_fg;
++        bool dlss = fg.depth && fg.motion && fg.frame == ctx.currentFrameId();
++        bool prev_ok = cidre_fg_prev_valide_ && cidre_fg_prev_generation_ == generation;
++        bool genere = false;
++        /* sous-rectangle rendu : profondeur et vecteurs recopies a sa taille */
++        Rc<Texture> fg_depth = fg.depth, fg_motion = fg.motion;
++        TextureViewKey fg_motion_view = fg.motion_view;
++        if (dlss && prev_ok && intervalle > 0 && fg.content_w && fg.content_h &&
++            (fg.content_w != fg.depth->width() || fg.content_h != fg.depth->height())) {
++          auto creer = [&](Rc<Texture> &t, WMTPixelFormat format, WMTTextureUsage usage) {
++            if (t && t->width() == fg.content_w && t->height() == fg.content_h && t->pixelFormat() == format)
++              return;
++            WMTTextureInfo ti;
++            ti.width = fg.content_w;
++            ti.height = fg.content_h;
++            ti.depth = 1;
++            ti.array_length = 1;
++            ti.mipmap_level_count = 1;
++            ti.pixel_format = format;
++            ti.sample_count = 1;
++            ti.type = WMTTextureType2D;
++            ti.usage = usage;
++            ti.options = WMTResourceStorageModePrivate;
++            t = new Texture(ti, device_->GetMTLDevice());
++            Flags<TextureAllocationFlag> flags;
++            flags.set(TextureAllocationFlag::GpuPrivate);
++            t->rename(t->allocate(flags));
++          };
++          creer(fg.depth_crop, fg.depth->pixelFormat(), (WMTTextureUsage)(WMTTextureUsageShaderRead | WMTTextureUsageRenderTarget));
++          creer(fg.motion_crop, fg.motion_format, (WMTTextureUsage)(WMTTextureUsageShaderRead | WMTTextureUsageShaderWrite));
++          ctx.copyTextureCidre(fg.depth, fg.depth_crop, fg.content_w, fg.content_h);
++          ctx.copyTextureCidre(fg.motion, fg.motion_crop, fg.content_w, fg.content_h);
++          fg_depth = fg.depth_crop;
++          fg_motion = fg.motion_crop;
++          fg_motion_view = fg.motion_crop->fullView;
++        }
++        if (dlss && prev_ok && intervalle > 0) {
++          WMTFXFrameInterpolatorInfo info = {};
++          info.color_format = backbuffer->pixelFormat();
++          info.output_format = out->pixelFormat();
++          info.depth_format = fg_depth->pixelFormat();
++          info.motion_format = fg.motion_format;
++          info.ui_format = WMTPixelFormatInvalid;
++          info.input_width = fg_depth->width();
++          info.input_height = fg_depth->height();
++          info.output_width = backbuffer->width();
++          info.output_height = backbuffer->height();
++          if (!cidre_fg_interp_ || memcmp(&cidre_fg_interp_->info, &info, sizeof(info))) {
++            cidre_fg_interp_ = new FrameInterpolator(device_->GetMTLDevice(), info);
++            if (!cidre_fg_interp_->valid()) {
++              WARN("cidre-fg: MTLFXFrameInterpolator refuse (couleur ", info.color_format, ", profondeur ",
++                   info.depth_format, ", vecteurs ", info.motion_format, ")");
++              cidre_fg_interp_ = nullptr;
++            } else {
++              WARN("cidre-fg: interpolateur ", info.input_width, "x", info.input_height, " -> ", info.output_width,
++                   "x", info.output_height, " (couleur ", info.color_format, ", profondeur ", info.depth_format,
++                   ", vecteurs ", info.motion_format, ")");
++            }
++          }
++          if (cidre_fg_interp_) {
++            WMTFXFrameInterpolatorProps props = {};
++            props.motion_vector_scale_x = fg.motion_scale_x;
++            props.motion_vector_scale_y = fg.motion_scale_y;
++            props.delta_time = (float)intervalle;
++            /* DLSS SR ne donne pas la camera : valeurs d'Unreal (Z inverse,
++               plan proche a 10 cm) et un champ vertical ordinaire */
++            props.near_plane = cidre_fg_proche_;
++            props.far_plane = cidre_fg_loin_;
++            props.field_of_view = cidre_fg_champ_;
++            props.aspect_ratio = (float)backbuffer->width() / (float)backbuffer->height();
++            props.jitter_offset_x = fg.jitter_x;
++            props.jitter_offset_y = fg.jitter_y;
++            props.ui_composited = false;
++            props.reset = fg.reset || cidre_fg_reset_suivant_;
++            props.depth_reversed = fg.depth_reversed;
++            ctx.interpolateFrame(backbuffer, prev, fg_depth, fg_motion, fg_motion_view, out, cidre_fg_interp_, props);
++            ctx.present(out, presenter, vsync_duration, state.metadata);
++            ctx.present(backbuffer, presenter, intervalle * 0.5, state.metadata);
++            genere = true;
++            cidre_fg_reset_suivant_ = false;
++            g_cidre_fg_interpolees.fetch_add(1, std::memory_order_relaxed);
++          }
++        }
++        if (!genere) {
++          ctx.present(backbuffer, presenter, vsync_duration, state.metadata);
++          cidre_fg_reset_suivant_ = true;
++        }
++        /* l'image precedente de la prochaine interpolation */
++        if (dlss) {
++          ctx.copyTextureCidre(backbuffer, prev);
++          cidre_fg_prev_valide_ = true;
++          cidre_fg_prev_generation_ = generation;
++        } else {
++          cidre_fg_prev_valide_ = false;
++        }
++        ReleaseSemaphore(present_semaphore_, 1, nullptr);
++        this->UpdateStatistics(ctx.queue().statistics, ctx.currentFrameId());
++      });
+     } else {
+       chunk->emitcc([
+         this, vsync_duration, state = presenter->synchronizeLayerProperties(),
+@@ -875,6 +1017,12 @@ public:
+         this->UpdateStatistics(ctx.queue().statistics, ctx.currentFrameId());
+       });
+     }
++    if (cidre_relire_maintenant_ && cidre_fg_out_ && cidre_lecture_interp_) {
++      Com<ID3D11DeviceContext> ctx;
++      device_->GetImmediateContext(&ctx);
++      ctx->CopyResource(cidre_lecture_interp_.ptr(), cidre_fg_out_.ptr());
++      device_context_->PrepareFlush();
++    }
+     device_context_->Commit();
+ 
+     lock.unlock(); // since PresentBoundary() will and should only stall current thread
+@@ -909,6 +1057,17 @@ public:
+     }
+     cidre_relire_plusieurs_ = cidre_relire_images_.size() > 1;
+     cidre_t0_ = std::chrono::steady_clock::now();
++    /* camera supposee de la generation d'images (DLSS SR ne la donne pas) */
++    auto flottant = [](const char *nom, float defaut) {
++      std::string v = env::getEnvVar(nom);
++      return v.empty() ? defaut : (float)atof(v.c_str());
++    };
++    cidre_fg_proche_ = flottant("CIDRE_DXMT_FG_PROCHE", cidre_fg_proche_);
++    cidre_fg_loin_ = flottant("CIDRE_DXMT_FG_LOIN", cidre_fg_loin_);
++    cidre_fg_champ_ = flottant("CIDRE_DXMT_FG_CHAMP", cidre_fg_champ_);
++    if (cidre_fg_out_)
++      WARN("cidre-fg: generation d'images MetalFX active (champ ", cidre_fg_champ_, ", plans ", cidre_fg_proche_, "-",
++           cidre_fg_loin_, ")");
+   }
+ 
+   void CidreAvantPresent() {
+@@ -921,8 +1080,11 @@ public:
+       double dt = std::chrono::duration<double>(t - cidre_t0_).count();
+       if (dt >= 2.0) {
+         uint32_t ev = g_cidre_dlss.evaluations.exchange(0, std::memory_order_relaxed);
++        uint32_t gi = g_cidre_fg_interpolees.exchange(0, std::memory_order_relaxed);
+         WARN(str::format(
+-            "cidre-stats: ", std::format("{:.1f}", cidre_presentes_ / dt), " images/s presentees, DLSS ",
++            "cidre-stats: ", std::format("{:.1f}", cidre_presentes_ / dt), " images/s rendues, ",
++            std::format("{:.1f}", (cidre_presentes_ + gi) / dt), " affichees (", std::format("{:.1f}", gi / dt),
++            " generees, intervalle moyen ", std::format("{:.1f}", cidre_fg_intervalle_ * 1000.0), " ms), DLSS ",
+             std::format("{:.1f}", ev / dt), "/s (", g_cidre_dlss.in_w.load(), "x", g_cidre_dlss.in_h.load(), " -> ",
+             g_cidre_dlss.out_w.load(), "x", g_cidre_dlss.out_h.load(), "), swapchain ", desc_.Width, "x", desc_.Height,
+             ", image ", cidre_total_
+@@ -960,6 +1122,9 @@ public:
+         device_context_->PrepareFlush();
+         cidre_lecture_format_ = d.Format; cidre_lecture_w_ = d.Width; cidre_lecture_h_ = d.Height;
+       }
++      cidre_lecture_interp_ = nullptr;
++      if (cidre_fg_out_)
++        device_->CreateTexture2D(&sd, nullptr, &cidre_lecture_interp_);
+     }
+   }
+ 
+@@ -978,8 +1143,16 @@ public:
+       }
+       CidreEcrirePPM(chemin.c_str(), map, cidre_lecture_w_, cidre_lecture_h_, cidre_lecture_format_);
+       ctx->Unmap(cidre_lecture_.ptr(), 0);
++      /* l'image generee presentee juste avant celle-ci (0185) : <nom>-generee.ppm */
++      if (cidre_lecture_interp_ && SUCCEEDED(ctx->Map(cidre_lecture_interp_.ptr(), 0, D3D11_MAP_READ, 0, &map))) {
++        auto point = chemin.rfind('.');
++        std::string gen = point == std::string::npos ? chemin + "-generee" : chemin.substr(0, point) + "-generee" + chemin.substr(point);
++        CidreEcrirePPM(gen.c_str(), map, cidre_lecture_w_, cidre_lecture_h_, cidre_lecture_format_);
++        ctx->Unmap(cidre_lecture_interp_.ptr(), 0);
++      }
+     }
+     cidre_lecture_ = nullptr;
++    cidre_lecture_interp_ = nullptr;
+   }
+ 
+   void UpdateStatistics(const FrameStatisticsContainer& statistics, uint64_t frame_id) {
+@@ -1257,6 +1430,26 @@ private:
+   std::conditional<EnableMetalFX, Com<D3D11ResourceCommon>, std::monostate>::type upscaled_backbuffer_;
+   float scale_factor = 1.0;
+ 
++  /* Cidre (0185) : generation d'images. Les champs *_prev_valide_,
++     *_prev_generation_, *_reset_suivant_ et cidre_fg_interp_ ne sont touches que
++     sur le fil de l'encodeur. */
++  static bool CidreFgDemandee() {
++    static int v = -1;
++    if (v < 0) v = env::getEnvVar("CIDRE_DXMT_FG") == "1";
++    return v == 1;
++  }
++  Com<D3D11ResourceCommon, false> cidre_fg_prev_;
++  Com<D3D11ResourceCommon, false> cidre_fg_out_;
++  std::atomic<uint64_t> cidre_fg_generation_{0};
++  uint64_t cidre_fg_prev_generation_ = ~0ull;
++  bool cidre_fg_prev_valide_ = false;
++  bool cidre_fg_reset_suivant_ = true;
++  Rc<FrameInterpolator> cidre_fg_interp_;
++  std::chrono::steady_clock::time_point cidre_fg_dernier_{};
++  double cidre_fg_intervalle_ = 0;
++  float cidre_fg_proche_ = 10.0f, cidre_fg_loin_ = 100000.0f, cidre_fg_champ_ = 60.0f;
++  Com<ID3D11Texture2D> cidre_lecture_interp_;
++
+   /* Cidre (0184) */
+   bool cidre_init_ = false;
+   bool cidre_stats_ = false;
+diff --git a/src/dxmt/dxmt_context.cpp b/src/dxmt/dxmt_context.cpp
+index c5b0feb..8af98ce 100644
+--- a/src/dxmt/dxmt_context.cpp
++++ b/src/dxmt/dxmt_context.cpp
+@@ -995,6 +995,63 @@ ArgumentEncodingContext::upscaleTemporal(
+     encoder_info->exposure = access(exposure, exposure->fullView, ResourceAccess::Read).texture;
+   }
+   endPass();
++
++  /* Cidre (0185) : retenues pour la generation d'images de la presentation qui suit */
++  cidre_fg.depth = depth;
++  cidre_fg.motion = motion_vector;
++  cidre_fg.motion_view = mvViewId;
++  cidre_fg.motion_scale_x = props.motion_vector_scale_x;
++  cidre_fg.motion_scale_y = props.motion_vector_scale_y;
++  cidre_fg.jitter_x = props.jitter_offset_x;
++  cidre_fg.jitter_y = props.jitter_offset_y;
++  cidre_fg.depth_reversed = props.depth_reversed;
++  cidre_fg.reset = props.reset;
++  cidre_fg.frame = currentFrameId();
++  cidre_fg.content_w = props.input_content_width;
++  cidre_fg.content_h = props.input_content_height;
++}
++
++/* Cidre (0185) */
++void
++ArgumentEncodingContext::interpolateFrame(
++    Rc<Texture> &color, Rc<Texture> &prev_color, Rc<Texture> &depth, Rc<Texture> &motion, TextureViewKey motionViewId,
++    Rc<Texture> &output, Rc<FrameInterpolator> &interpolator, const WMTFXFrameInterpolatorProps &props
++) {
++  assert(!encoder_current);
++  auto encoder_info = allocate<FrameInterpolateData>();
++  encoder_info->type = EncoderType::FrameInterpolate;
++  encoder_info->id = nextEncoderId();
++  encoder_info->fence_wait = {};
++  encoder_info->fence_update = {encoder_info->id};
++  encoder_info->interpolator = interpolator;
++  encoder_info->props = props;
++
++  encoder_current = encoder_info;
++  encoder_info->color = access(color, color->fullView, ResourceAccess::Read).texture;
++  encoder_info->prev_color = access(prev_color, prev_color->fullView, ResourceAccess::Read).texture;
++  encoder_info->depth = access(depth, depth->fullView, ResourceAccess::Read).texture;
++  encoder_info->motion = access(motion, motionViewId, ResourceAccess::Read).texture;
++  encoder_info->output = access(output, output->fullView, ResourceAccess::Write).texture;
++  endPass();
++}
++
++void
++ArgumentEncodingContext::copyTextureCidre(Rc<Texture> &src_, Rc<Texture> &dst_, uint32_t w, uint32_t h) {
++  startBlitPass();
++  auto src = access(src_, 0, 0, ResourceAccess::Read);
++  auto dst = access(dst_, 0, 0, ResourceAccess::Write);
++  auto &cmd = encodeBlitCommand<wmtcmd_blit_copy_from_texture_to_texture>();
++  cmd.type = WMTBlitCommandCopyFromTextureToTexture;
++  cmd.src = src;
++  cmd.src_slice = 0;
++  cmd.src_level = 0;
++  cmd.src_origin = {0, 0, 0};
++  cmd.src_size = {w ? w : src_->width(), h ? h : src_->height(), 1};
++  cmd.dst = dst;
++  cmd.dst_slice = 0;
++  cmd.dst_level = 0;
++  cmd.dst_origin = {0, 0, 0};
++  endPass();
+ }
+ 
+ void
+@@ -1618,6 +1675,28 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
+       data->~WaitForEventData();
+       break;
+     }
++    case EncoderType::FrameInterpolate: {
++      auto data = static_cast<FrameInterpolateData *>(current);
++
++      auto begin_fi = cmdbuf.blitCommandEncoder();
++      begin_fi.setLabel(WMT::String::string("BeginFrameInterpolation", WMTUTF8StringEncoding));
++      data->fence_wait.forEach([&](auto id) { begin_fi.waitForFence(fence_pool_[id]); });
++      begin_fi.updateFence(data->interpolator->fence());
++      begin_fi.endEncoding();
++
++      cmdbuf.encodeFrameInterpolation(
++          data->interpolator->interpolator(), data->color, data->prev_color, data->depth, data->motion, {},
++          data->output, data->interpolator->fence(), data->props
++      );
++
++      auto end_fi = cmdbuf.blitCommandEncoder();
++      end_fi.waitForFence(data->interpolator->fence());
++      end_fi.setLabel(WMT::String::string("EndFrameInterpolation", WMTUTF8StringEncoding));
++      data->fence_update.forEach([&](auto id) { end_fi.updateFence(fence_pool_[id]); });
++      end_fi.endEncoding();
++      data->~FrameInterpolateData();
++      break;
++    }
+     case EncoderType::TemporalUpscale: {
+       auto data = static_cast<TemporalUpscaleData *>(current);
+ 
+diff --git a/src/dxmt/dxmt_context.hpp b/src/dxmt/dxmt_context.hpp
+index dc76c65..074d01c 100644
+--- a/src/dxmt/dxmt_context.hpp
++++ b/src/dxmt/dxmt_context.hpp
+@@ -120,6 +120,7 @@ enum class EncoderType {
+   TemporalUpscale,
+   WaitForEvent,
+   SampleTimestamp,
++  FrameInterpolate, /* Cidre (0185) */
+ };
+ 
+ struct EncoderData {
+@@ -289,6 +290,37 @@ struct TemporalUpscaleData : EncoderData {
+   WMTFXTemporalScalerProps props;
+ };
+ 
++/* Cidre (0185) : generation d'images MetalFX */
++struct FrameInterpolateData : EncoderData {
++  WMT::Reference<WMT::Texture> color;
++  WMT::Reference<WMT::Texture> prev_color;
++  WMT::Reference<WMT::Texture> depth;
++  WMT::Reference<WMT::Texture> motion;
++  WMT::Reference<WMT::Texture> output;
++  Rc<FrameInterpolator> interpolator;
++  WMTFXFrameInterpolatorProps props;
++};
++
++/* Cidre (0185) : les entrees DLSS de la derniere image (profondeur, vecteurs de
++   mouvement a la definition de rendu, jitter), retenues par upscaleTemporal sur
++   le fil de l'encodeur pour que la presentation qui suit les donne a
++   l'interpolateur. frame = numero d'image DXMT ou elles ont ete vues. */
++struct CidreFgInputs {
++  Rc<Texture> depth;
++  Rc<Texture> motion;
++  TextureViewKey motion_view = 0;
++  WMTPixelFormat motion_format = WMTPixelFormatInvalid;
++  float motion_scale_x = 1.0f, motion_scale_y = 1.0f;
++  float jitter_x = 0, jitter_y = 0;
++  bool depth_reversed = false;
++  bool reset = false;
++  uint64_t frame = 0;
++  uint32_t content_w = 0, content_h = 0; /* zone rendue (0 = texture entiere) */
++  /* copies a la taille de la zone rendue, quand le moteur rend dans un
++     sous-rectangle : l'interpolateur n'a pas de notion de contenu */
++  Rc<Texture> depth_crop, motion_crop;
++};
++
+ template <PipelineKind kind>
+ constexpr DXMT_RESOURCE_RESIDENCY
+ GetResidencyMask(PipelineStage type, bool read, bool write) {
+@@ -680,6 +712,14 @@ public:
+       Rc<Texture> &exposure, Rc<TemporalScaler> &scaler, const WMTFXTemporalScalerProps &props
+   );
+ 
++  /* Cidre (0185) */
++  void interpolateFrame(
++      Rc<Texture> &color, Rc<Texture> &prev_color, Rc<Texture> &depth, Rc<Texture> &motion, TextureViewKey motionViewId,
++      Rc<Texture> &output, Rc<FrameInterpolator> &interpolator, const WMTFXFrameInterpolatorProps &props
++  );
++  void copyTextureCidre(Rc<Texture> &src, Rc<Texture> &dst, uint32_t w = 0, uint32_t h = 0);
++  CidreFgInputs cidre_fg;
++
+   void signalEvent(uint64_t value);
+   void signalEvent(WMT::Reference<WMT::Event> &&event, uint64_t value);
+   void waitEvent(WMT::Reference<WMT::Event> &&event, uint64_t value);
+diff --git a/src/dxmt/dxmt_scaler.cpp b/src/dxmt/dxmt_scaler.cpp
+index 55e0864..203e15d 100644
+--- a/src/dxmt/dxmt_scaler.cpp
++++ b/src/dxmt/dxmt_scaler.cpp
+@@ -34,4 +34,20 @@ TemporalScaler::TemporalScaler(WMT::Device device, const WMTFXTemporalScalerInfo
+   fence_ = device.newFence();
+ }
+ 
++void
++FrameInterpolator::incRef() {
++  refcount_.fetch_add(1u, std::memory_order_acquire);
++}
++
++void
++FrameInterpolator::decRef() {
++  if (refcount_.fetch_sub(1u, std::memory_order_release) == 1u)
++    delete this;
++}
++
++FrameInterpolator::FrameInterpolator(WMT::Device device, const WMTFXFrameInterpolatorInfo &info_) : info(info_) {
++  interpolator_ = device.newFrameInterpolator(info_);
++  fence_ = device.newFence();
++}
++
+ } // namespace dxmt
+diff --git a/src/dxmt/dxmt_scaler.hpp b/src/dxmt/dxmt_scaler.hpp
+index 6bc68d1..e801c96 100644
+--- a/src/dxmt/dxmt_scaler.hpp
++++ b/src/dxmt/dxmt_scaler.hpp
+@@ -47,4 +47,32 @@ private:
+   std::atomic<uint32_t> refcount_;
+ };
+ 
++/* Cidre (0185) : generation d'images MetalFX (macOS 26). */
++class FrameInterpolator {
++public:
++  void incRef();
++  void decRef();
++
++  FrameInterpolator(WMT::Device device, const WMTFXFrameInterpolatorInfo &info);
++
++  WMT::FXFrameInterpolator interpolator() {
++    return interpolator_;
++  }
++
++  WMT::Fence fence() {
++    return fence_;
++  }
++
++  bool valid() {
++    return interpolator_.handle != 0;
++  }
++
++  WMTFXFrameInterpolatorInfo info;
++
++private:
++  WMT::Reference<WMT::FXFrameInterpolator> interpolator_;
++  WMT::Reference<WMT::Fence> fence_;
++  std::atomic<uint32_t> refcount_;
++};
++
+ } // namespace dxmt
+\ No newline at end of file
+diff --git a/src/winemetal/Metal.hpp b/src/winemetal/Metal.hpp
+index 75288cd..8f8386f 100644
+--- a/src/winemetal/Metal.hpp
++++ b/src/winemetal/Metal.hpp
+@@ -602,6 +602,10 @@ class FXSpatialScaler : public Object {
+ public:
+ };
+ 
++class FXFrameInterpolator : public Object {
++public:
++};
++
+ class LogContainer : public Object {
+ public:
+   std::vector<Object>
+@@ -726,6 +730,16 @@ public:
+   ) {
+     MTLCommandBuffer_encodeTemporalScale(handle, scaler, color, output, depth, motion, exposure, fence, &props);
+   }
++
++  void
++  encodeFrameInterpolation(
++      FXFrameInterpolator interpolator, Texture color, Texture prev_color, Texture depth, Texture motion, Texture ui,
++      Texture output, Fence fence, const WMTFXFrameInterpolatorProps &props
++  ) {
++    MTLCommandBuffer_encodeFrameInterpolation(
++        handle, interpolator, color, prev_color, depth, motion, ui, output, fence, &props
++    );
++  }
+ };
+ 
+ class CommandQueue : public Object {
+@@ -983,6 +997,16 @@ public:
+     return MTLDevice_supportsFXTemporalScaler(handle);
+   }
+ 
++  bool
++  supportsFXFrameInterpolator() {
++    return MTLDevice_supportsFXFrameInterpolator(handle);
++  }
++
++  Reference<FXFrameInterpolator>
++  newFrameInterpolator(const WMTFXFrameInterpolatorInfo &info) {
++    return Reference<FXFrameInterpolator>(MTLDevice_newFrameInterpolator(handle, &info));
++  }
++
+   void
+   setShouldMaximizeConcurrentCompilation(bool value) {
+     MTLDevice_setShouldMaximizeConcurrentCompilation(handle, value);
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+index 0e01b11..61f449c 100644
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -3267,6 +3267,79 @@ _MetalLayer_isPresentable(void *obj) {
+   return STATUS_SUCCESS;
+ }
+ 
++
++/* Cidre (0185) : generation d'images MetalFX (MTLFXFrameInterpolator, macOS 26).
++   Variante Metal 3 : la variante MTL4 est signalee sans effet sous 26.6 (forum
++   Apple 840795). Sans macOS 26, l'interpolateur est absent et rien ne change. */
++static NTSTATUS
++_MTLDevice_newFrameInterpolator(void *obj) {
++  struct unixcall_mtldevice_newfxframeinterpolator *params = obj;
++  params->ret = 0;
++#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
++  if (@available(macOS 26, *)) {
++    const struct WMTFXFrameInterpolatorInfo *info = params->info.ptr;
++    MTLFXFrameInterpolatorDescriptor *desc = [[MTLFXFrameInterpolatorDescriptor alloc] init];
++    desc.colorTextureFormat = to_metal_pixel_format(info->color_format);
++    desc.outputTextureFormat = to_metal_pixel_format(info->output_format);
++    desc.depthTextureFormat = to_metal_pixel_format(info->depth_format);
++    desc.motionTextureFormat = to_metal_pixel_format(info->motion_format);
++    if (info->ui_format != WMTPixelFormatInvalid)
++      desc.uiTextureFormat = to_metal_pixel_format(info->ui_format);
++    desc.inputWidth = info->input_width;
++    desc.inputHeight = info->input_height;
++    desc.outputWidth = info->output_width;
++    desc.outputHeight = info->output_height;
++    params->ret = (obj_handle_t)[desc newFrameInterpolatorWithDevice:(id<MTLDevice>)params->device];
++    [desc release];
++  }
++#endif
++  return STATUS_SUCCESS;
++}
++
++static NTSTATUS
++_MTLCommandBuffer_encodeFrameInterpolation(void *obj) {
++#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
++  if (@available(macOS 26, *)) {
++    struct unixcall_mtlcommandbuffer_frame_interpolation *params = obj;
++    id<MTLCommandBuffer> cmdbuf = (id<MTLCommandBuffer>)params->cmdbuf;
++    id<MTLFXFrameInterpolator> fi = (id<MTLFXFrameInterpolator>)params->interpolator;
++    const struct WMTFXFrameInterpolatorProps *props = params->props.ptr;
++    fi.colorTexture = (id<MTLTexture>)params->color;
++    fi.prevColorTexture = (id<MTLTexture>)params->prev_color;
++    fi.depthTexture = (id<MTLTexture>)params->depth;
++    fi.motionTexture = (id<MTLTexture>)params->motion;
++    fi.uiTexture = (id<MTLTexture>)params->ui;
++    fi.outputTexture = (id<MTLTexture>)params->output;
++    fi.fence = (id<MTLFence>)params->fence;
++    fi.motionVectorScaleX = props->motion_vector_scale_x;
++    fi.motionVectorScaleY = props->motion_vector_scale_y;
++    fi.deltaTime = props->delta_time;
++    fi.nearPlane = props->near_plane;
++    fi.farPlane = props->far_plane;
++    fi.fieldOfView = props->field_of_view;
++    fi.aspectRatio = props->aspect_ratio;
++    fi.jitterOffsetX = props->jitter_offset_x;
++    fi.jitterOffsetY = props->jitter_offset_y;
++    fi.isUITextureComposited = props->ui_composited;
++    fi.shouldResetHistory = props->reset;
++    fi.depthReversed = props->depth_reversed;
++    [fi encodeToCommandBuffer:cmdbuf];
++  }
++#endif
++  return STATUS_SUCCESS;
++}
++
++static NTSTATUS
++_MTLDevice_supportsFXFrameInterpolator(void *obj) {
++  struct unixcall_generic_obj_uint64_ret *params = obj;
++  params->ret = 0;
++#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
++  if (@available(macOS 26, *))
++    params->ret = [MTLFXFrameInterpolatorDescriptor supportsDevice:(id<MTLDevice>)params->handle];
++#endif
++  return STATUS_SUCCESS;
++}
++
+ const void *__wine_unix_call_funcs[] = {
+     &_NSObject_retain,
+     &_NSObject_release,
+@@ -3415,6 +3488,9 @@ const void *__wine_unix_call_funcs[] = {
+     &_MTLDevice_newLibraryWithSource,
+     &_MTLTexture_getBytes,
+     &_MetalLayer_isPresentable,
++    &_MTLDevice_newFrameInterpolator,
++    &_MTLCommandBuffer_encodeFrameInterpolation,
++    &_MTLDevice_supportsFXFrameInterpolator,
+ };
+ 
+ #ifndef DXMT_NATIVE
+@@ -3566,5 +3642,8 @@ const void *__wine_unix_call_wow64_funcs[] = {
+     &_MTLDevice_newLibraryWithSource,
+     &_MTLTexture_getBytes,
+     &_MetalLayer_isPresentable,
++    &_MTLDevice_newFrameInterpolator,
++    &_MTLCommandBuffer_encodeFrameInterpolation,
++    &_MTLDevice_supportsFXFrameInterpolator,
+ };
+ #endif
+diff --git a/src/winemetal/winemetal.h b/src/winemetal/winemetal.h
+index 333bc4a..f85aa49 100644
+--- a/src/winemetal/winemetal.h
++++ b/src/winemetal/winemetal.h
+@@ -1866,6 +1866,46 @@ WINEMETAL_API void MetalLayer_getEDRValue(obj_handle_t layer, struct WMTEDRValue
+    active (on quitte l'espace). Voir MetalLayer_isPresentable dans winemetal_unix.c. */
+ WINEMETAL_API bool MetalLayer_isPresentable(obj_handle_t layer);
+ 
++/* Cidre (0185) : generation d'images MetalFX (MTLFXFrameInterpolator, macOS 26).
++   Les textures couleur (precedente, courante) et la sortie sont a la definition
++   de sortie ; profondeur et vecteurs de mouvement a la definition d'entree. */
++struct WMTFXFrameInterpolatorInfo {
++  enum WMTPixelFormat color_format;
++  enum WMTPixelFormat output_format;
++  enum WMTPixelFormat depth_format;
++  enum WMTPixelFormat motion_format;
++  enum WMTPixelFormat ui_format;
++  uint32_t input_width;
++  uint32_t input_height;
++  uint32_t output_width;
++  uint32_t output_height;
++};
++
++struct WMTFXFrameInterpolatorProps {
++  float motion_vector_scale_x;
++  float motion_vector_scale_y;
++  float delta_time;
++  float near_plane;
++  float far_plane;
++  float field_of_view;
++  float aspect_ratio;
++  float jitter_offset_x;
++  float jitter_offset_y;
++  bool ui_composited;
++  bool reset;
++  bool depth_reversed;
++};
++
++WINEMETAL_API obj_handle_t MTLDevice_newFrameInterpolator(obj_handle_t device, const struct WMTFXFrameInterpolatorInfo *info);
++
++WINEMETAL_API void MTLCommandBuffer_encodeFrameInterpolation(
++    obj_handle_t cmdbuf, obj_handle_t interpolator, obj_handle_t color, obj_handle_t prev_color, obj_handle_t depth,
++    obj_handle_t motion, obj_handle_t ui, obj_handle_t output, obj_handle_t fence,
++    const struct WMTFXFrameInterpolatorProps *props
++);
++
++WINEMETAL_API bool MTLDevice_supportsFXFrameInterpolator(obj_handle_t device);
++
+ enum WMTDataType : uint16_t {
+   WMTDataTypeNone = 0,
+ 
+diff --git a/src/winemetal/winemetal_thunks.c b/src/winemetal/winemetal_thunks.c
+index 9823fb8..8dfbff8 100644
+--- a/src/winemetal/winemetal_thunks.c
++++ b/src/winemetal/winemetal_thunks.c
+@@ -1353,3 +1353,43 @@ MetalLayer_isPresentable(obj_handle_t layer) {
+   UNIX_CALL(146, &params);
+   return params.ret != 0;
+ }
++
++/* Cidre (0185) : generation d'images MetalFX */
++WINEMETAL_API obj_handle_t
++MTLDevice_newFrameInterpolator(obj_handle_t device, const struct WMTFXFrameInterpolatorInfo *info) {
++  struct unixcall_mtldevice_newfxframeinterpolator params;
++  params.device = device;
++  WMT_MEMPTR_SET(params.info, info);
++  params.ret = 0;
++  UNIX_CALL(147, &params);
++  return params.ret;
++}
++
++WINEMETAL_API void
++MTLCommandBuffer_encodeFrameInterpolation(
++    obj_handle_t cmdbuf, obj_handle_t interpolator, obj_handle_t color, obj_handle_t prev_color, obj_handle_t depth,
++    obj_handle_t motion, obj_handle_t ui, obj_handle_t output, obj_handle_t fence,
++    const struct WMTFXFrameInterpolatorProps *props
++) {
++  struct unixcall_mtlcommandbuffer_frame_interpolation params;
++  params.cmdbuf = cmdbuf;
++  params.interpolator = interpolator;
++  params.color = color;
++  params.prev_color = prev_color;
++  params.depth = depth;
++  params.motion = motion;
++  params.ui = ui;
++  params.output = output;
++  params.fence = fence;
++  WMT_MEMPTR_SET(params.props, props);
++  UNIX_CALL(148, &params);
++}
++
++WINEMETAL_API bool
++MTLDevice_supportsFXFrameInterpolator(obj_handle_t device) {
++  struct unixcall_generic_obj_uint64_ret params;
++  params.handle = device;
++  params.ret = 0;
++  UNIX_CALL(149, &params);
++  return params.ret;
++}
+diff --git a/src/winemetal/winemetal_thunks.h b/src/winemetal/winemetal_thunks.h
+index 37645c9..2febeb6 100644
+--- a/src/winemetal/winemetal_thunks.h
++++ b/src/winemetal/winemetal_thunks.h
+@@ -216,6 +216,25 @@ struct unixcall_mtlcommandbuffer_temporal_scale {
+   struct WMTConstMemoryPointer props;
+ };
+ 
++struct unixcall_mtldevice_newfxframeinterpolator {
++  obj_handle_t device;
++  struct WMTConstMemoryPointer info;
++  obj_handle_t ret;
++};
++
++struct unixcall_mtlcommandbuffer_frame_interpolation {
++  obj_handle_t cmdbuf;
++  obj_handle_t interpolator;
++  obj_handle_t color;
++  obj_handle_t prev_color;
++  obj_handle_t depth;
++  obj_handle_t motion;
++  obj_handle_t ui;
++  obj_handle_t output;
++  obj_handle_t fence;
++  struct WMTConstMemoryPointer props;
++};
++
+ struct unixcall_mtlcommandbuffer_spatial_scale {
+   obj_handle_t cmdbuf;
+   obj_handle_t scaler;
