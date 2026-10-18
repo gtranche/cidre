@@ -101,6 +101,11 @@ if [ -n "${CIDRE_OVERLAY_DYLIB:-}" ] && [ -f "$CIDRE_OVERLAY_DYLIB" ]; then
    export CIDRE_OVERLAY_STEAM=1
 fi
 
-exec "$WINE" "$@"
+# Descripteurs 3 a 9 fermes : Wine les transmet a tous ses processus, faux_steam,
+# wineserver et services compris, qui vivent plus longtemps que le jeu. `cidre`
+# garde son erreur en fd 3 (exec 3>&2) : quand la sortie de `cidre play` part
+# dans un tube (`cidre play ... 2>&1 | tail`), le lecteur attendait la fin du tube
+# jusqu'a ce que ces processus meurent, bien apres la sortie du jeu (2026-10-18).
+exec "$WINE" "$@" 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&-
 exit $?
 }

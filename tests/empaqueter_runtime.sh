@@ -117,7 +117,7 @@ for f in etape2_pile_arm64ec.sh lancer_depuis_steam.sh brancher_jeux_steam.sh \
          majs_steam.awk brancher_jeux_steam.awk configurer_cidre.sh langue_jeu.sh langue_cidre.sh depots_langue.awk \
          installer_steamcmd.sh installer_client_steam_windows.sh diagnostic_cidre.sh \
          fiche_profil.sh reglages_jeu.sh arguments_jeu.sh version_windows.sh machine.sh client_steam_natif.sh expliquer_sortie.sh deviner_saves.sh repli_dxmt.sh lier_saves_steam.sh prefixe_a_jour.sh etat_shaders.sh \
-         precompil_kk.sh diag_cidre.sh masquer_diag.awk envoyer_diag.sh; do
+         precompil_kk.sh diag_cidre.sh masquer_diag.awk envoyer_diag.sh fin_de_partie.sh; do
    livrer "tests/$f"
 done
 # La base de profils par jeu (profils/README.md) : la copie livree, repli de

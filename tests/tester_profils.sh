@@ -981,7 +981,7 @@ else
 fi
 
 echo "== 7. syntaxe"
-for s in cidre tests/cidre_install.sh tests/profil_cidre.sh tests/fiche_profil.sh tests/reglages_jeu.sh tests/machine.sh tests/lancer_depuis_steam.sh tests/arguments_jeu.sh tests/empaqueter_runtime.sh tests/tester_profils.sh tests/prefixe_a_jour.sh; do
+for s in cidre tests/cidre_install.sh tests/profil_cidre.sh tests/fiche_profil.sh tests/reglages_jeu.sh tests/machine.sh tests/lancer_depuis_steam.sh tests/arguments_jeu.sh tests/empaqueter_runtime.sh tests/tester_profils.sh tests/prefixe_a_jour.sh tests/fin_de_partie.sh; do
    sh -n "$R/$s" 2>/dev/null && ok "sh -n $s" || echec "sh -n $s"
 done
 
@@ -994,7 +994,7 @@ enveloppe() { # <script> : 1re commande `{`, puis ... `exit`, `}` en dernier
         !debut { debut = $0 } { avant = dernier; dernier = $0 }
         END { exit !(debut == "{" && dernier == "}" && avant ~ /^exit( |$)/) }' "$1"
 }
-for s in cidre tests/lancer_depuis_steam.sh tests/etape2_pile_arm64ec.sh tests/prefixe_a_jour.sh; do
+for s in cidre tests/lancer_depuis_steam.sh tests/etape2_pile_arm64ec.sh tests/prefixe_a_jour.sh tests/fin_de_partie.sh; do
    enveloppe "$R/$s" && ok "lu en entier avant d'executer : $s" || echec "$s n'est pas enveloppe dans { ... exit; } : une modification pendant un jeu peut executer n'importe quoi"
 done
 printf '#!/bin/sh\nset -u\necho a\nexit 0\n' >"$T/nu.sh"; printf '#!/bin/sh\n# x\n{\nset -u\necho a\nexit $?\n}\n' >"$T/enveloppe.sh"
@@ -1006,6 +1006,24 @@ printf '#!/bin/sh\n{\nsleep 1\nexit 0\n}\n' >"$T/attend.sh"
 sh "$T/attend.sh" >"$T/attend.sortie" 2>&1 & pid=$!
 printf 'echo AJOUT-EXECUTE\n' >>"$T/attend.sh"; wait $pid
 verif "script enveloppe allonge pendant qu'il attend : rien d'ajoute n'est execute" "" "$(cat "$T/attend.sortie")"
+
+# Fin de partie (2026-10-18) : aucun descripteur de l'appelant au-dela de 2 ne
+# passe a Wine (faux_steam et le wineserver le tiendraient apres le jeu : un
+# `cidre play | tail` ne finissait plus), et le lanceur arrete le client de
+# service apres le jeu.
+grep -q '^exec 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&-$' "$R/tests/lancer_depuis_steam.sh" && ok "lanceur : fd 3-9 de l'appelant fermes" || echec "lanceur : fd 3-9 de l'appelant herites par Wine"
+grep -q '^exec "$WINE" "$@" 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&-$' "$R/tests/etape2_pile_arm64ec.sh" && ok "etape2 : fd 3-9 fermes avant Wine" || echec "etape2 : fd 3-9 herites par Wine"
+grep -q 'sh "$R/tests/fin_de_partie.sh"' "$R/tests/lancer_depuis_steam.sh" && ok "lanceur : client de service arrete apres le jeu" || echec "lanceur : fin_de_partie.sh non appele"
+# le mecanisme lui-meme : un fils en arriere-plan qui garde le fd 3 d'un tube
+# retient son lecteur ; ferme, le lecteur finit avec le script
+duree_tube() { # <commande sh> : secondes d'attente du lecteur d'un tube pose en fd 3
+   { sh -c "$1"; } 3>&1 >/dev/null 2>&1 | { t0=$(date +%s); cat >/dev/null; echo $(( $(date +%s) - t0 )); }
+}
+[ "$(duree_tube 'sleep 2 &')" -ge 1 ] && ok "fd 3 herite : le lecteur du tube attend le fils (le defaut corrige)" || echec "fd 3 herite : le lecteur n'attend pas, le test ne prouve rien"
+verif "fd 3 ferme : le tube se termine avec le script, pas avec son fils" "0" "$(duree_tube 'exec 3>&-; sleep 2 &')"
+# sans serveur Wine pour ce prefixe : rien a faire, tout de suite, sans bruit
+mkdir -p "$T/pfx-vide"
+verif "fin_de_partie : prefixe sans serveur, rien a faire" "0:" "$(WINEPREFIX=$T/pfx-vide sh "$R/tests/fin_de_partie.sh" 2>&1; echo "$?:")"
 
 echo
 echo "$nb verifications, $ko en echec"

@@ -23,6 +23,11 @@
 {
 set -e
 R=$(cd "$(dirname "$0")" && cd .. && pwd)
+# Descripteurs 3 a 9 de l'appelant fermes : sinon faux_steam, le wineserver et les
+# services du prefixe les heritent et les gardent apres le jeu. `cidre` met son
+# erreur en fd 3 : un `cidre play ... 2>&1 | tail` attendait la fin d'un tube
+# qu'ils tenaient encore (2026-10-18, Demonologist ; cf. tests/fin_de_partie.sh).
+exec 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&-
 
 # Hygiene avant lancement : un faux_steam ou un wineserver laisses par une
 # session precedente font planter le nouveau lancement des le demarrage
@@ -921,6 +926,11 @@ fi
 # (un plantage, un arret force) l'arretait ici meme, AVANT la sauvegarde ci-dessous.
 [ -z "$JEU" ] || echo "    shaders : $(sh "$R/tests/etat_shaders.sh" etat "$JEU" "$VOIE_TEMOIN" 2>/dev/null | sed -n 's/^etat=//p')" >>"$JOURNAL"
 CIDRE_OVERLAY_DYLIB=$OVERLAY sh "$R/tests/etape2_pile_arm64ec.sh" "$PROG" "$@" >>"$JOURNAL" 2>&1 && RC=0 || RC=$?
+# Le jeu est sorti : le client de service n'a plus de raison d'etre. Une fois
+# constate que plus rien du jeu ne tourne dans le prefixe, on l'arrete, et le
+# wineserver s'en va avec ses services. Jamais un processus du jeu. Avant les
+# reglages du jeu : un wineserver en vie leur interdit le registre.
+sh "$R/tests/fin_de_partie.sh" >>"$JOURNAL" 2>&1 || true
 [ -z "$JEU" ] || sh "$R/tests/reglages_jeu.sh" "$JEU" temoin-change "$TEMOIN" "$VOIE_TEMOIN" >>"$JOURNAL" 2>&1 || true
 # Ce que le jeu a eu le temps de compiler : la voie, la duree de la partie, le
 # macOS et le Cidre du moment (tests/etat_shaders.sh), pour annoncer au
