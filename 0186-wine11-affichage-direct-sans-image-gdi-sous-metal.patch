@@ -1,0 +1,308 @@
+wine11 : affichage direct -- plus d'image GDI sous une vue Metal qui couvre la fenetre (0186)
+
+Dans un espace plein ecran, macOS envoie le drawable d'une CAMetalLayer opaque
+directement au controleur d'affichage (direct-to-display, « Direct » dans le
+HUD Metal) seulement si rien d'autre n'est a composer dans la fenetre. winemac
+posait toujours l'image de la surface GDI de la fenetre comme contenu de la
+couche de la vue de contenu, sous la vue client du jeu : recouverte par la
+couche Metal, donc invisible, elle suffisait a faire composer chaque image par
+WindowServer (le HUD restait sur « Composited »).
+
+Quand une vue Metal visible (vue client d'un swapchain Vulkan ou de DXMT) ou
+une couche hebergee (CALayerHost) couvre toute la vue de contenu, updateLayer
+ne pose plus l'image GDI ; elle revient des que la couverture cesse (sortie du
+plein ecran, mode emule d'un autre format, vue Metal retiree). Visuellement
+rien ne change : l'image etait sous une couche opaque. CIDRE_DIRECT_GDI=1 rend
+l'ancien comportement.
+
+CIDRE_DIRECT_DIAG=1 : toutes les 2 s, pour une fenetre plein ecran, l'arbre de
+couches, l'etat du curseur et le code de detachement des CAMetalLayer sur
+stderr (journal du jeu, lignes « cidre direct: »). Ce code est celui que lit le
+HUD Metal (IOSurfaceGetDetachModeCode, ici -[CAMetalLayer
+displayCompositingInternalStatus]) : 0 = direct. Il se lit sans HUD, qui fige
+le D3D12/KosmicKrisp sur M1, et sans capture d'ecran.
+
+Sonde native (tests/sonde_affichage_direct.m), M1 Max, macOS 26, code de
+detachement par variante :
+- CAMetalLayer seule en plein ecran : 0 (direct), drawable a la taille de
+  l'ecran comme agrandi (1728x1084 sur 3456x2168), filtre nearest ou lineaire ;
+- hierarchie winemac (vue de contenu > vue client > vue Metal), fenetre non
+  opaque : 0 si la vue de contenu est vide, compose (0x70017, 0xa0017) des
+  qu'elle porte une image, meme noire ;
+- CALayerHost (chemin hors ecran) : 0 si rien dessous ;
+- RGB10A2 : 0x120017, jamais direct ; BGR10A2, BGRA8 : 0 ;
+- couche non opaque : 0xffff0002 ;
+- curseur visible : compose une fois sur deux ; cache : direct.
+
+En jeu (M1 Max, 2026-10-18, A = CIDRE_DIRECT_GDI=1, B = 0186) :
+- Dead Cells (588650, DXMT i386, BGRA8) : A compose (0x70017, 62/62 releves),
+  WindowServer 112 ms de GPU par seconde ; B direct (0x0, 63/63), WindowServer
+  0 ms/s. Les fps du HUD passent de 120,0 a 91,4 : en direct l'ecran ProMotion
+  suit le rythme de presentation de DXMT (presentAfterMinimumDuration de une
+  periode, sans displaySync), a traiter dans DXMT ;
+- Sherlock (1137300, DXMT, BGR10A2) : pas d'image GDI posee (vue de contenu
+  deja vide), compose en A comme en B (0x70017), WindowServer ~31 ms/s ;
+- Demonologist (1929610, D3D12/KosmicKrisp) : couche non opaque (0xffff0002)
+  en A comme en B, a traiter dans le WSI Metal de KosmicKrisp.
+
+Generated-by: LLM
+
+--- aa/dlls/winemac.drv/cocoa_app.h
++++ bb/dlls/winemac.drv/cocoa_app.h
+@@ -125,6 +125,7 @@
+     - (void) windowGotFocus:(WineWindow*)window;
+     - (void) cidreUpdateCursorCapture;
+     - (BOOL) cidreGetCapturePos:(NSPoint*)pos;
++    - (BOOL) cidreCursorHidden;
+ 
+     - (BOOL) waitUntilQueryDone:(bool*)done timeout:(NSDate*)timeout processEvents:(BOOL)processEvents;
+ 
+--- aa/dlls/winemac.drv/cocoa_app.m
++++ bb/dlls/winemac.drv/cocoa_app.m
+@@ -1008,6 +1008,13 @@
+             [clipCursorHandler clipCursorLocation:&cidreCapturePos];
+     }
+ 
++    /* Cidre : curseur cache par winemac (diagnostic de l'affichage direct,
++       CIDRE_DIRECT_DIAG : un curseur visible fait composer). */
++    - (BOOL) cidreCursorHidden
++    {
++        return cursorHidden;
++    }
++
+     - (BOOL) cidreGetCapturePos:(NSPoint*)pos
+     {
+         if (!cidreCursorCaptured) return FALSE;
+--- aa/dlls/winemac.drv/cocoa_window.h
++++ bb/dlls/winemac.drv/cocoa_window.h
+@@ -72,6 +72,7 @@
+        couvrant l'ecran vers un vrai plein ecran Space macOS. Latch a vie
+        de la fenetre pour ne jamais lutter contre une sortie manuelle. */
+     BOOL cidreEnteredFullScreen;
++    NSTimer* cidreDirectDiagTimer;
+ 
+     int draggingPhase;
+     NSPoint dragStartPosition;
+--- aa/dlls/winemac.drv/cocoa_window.m
++++ bb/dlls/winemac.drv/cocoa_window.m
+@@ -82,6 +82,67 @@
+         want = v && (*v == '1' || *v == 'y' || *v == 'Y' || *v == 't' || *v == 'T');
+     });
+     return want;
++}
++
++
++/* Cidre : affichage direct (direct-to-display). macOS n'envoie le drawable
++ * d'une CAMetalLayer opaque directement a l'ecran que si rien d'autre n'est a
++ * composer dans la fenetre. winemac posait toujours l'image de la surface GDI
++ * comme contenu de la couche de la vue de contenu, sous la vue Metal du jeu :
++ * invisible, recouverte, mais WindowServer composait chaque image (code de
++ * detachement 0x70017/0xa0017 au lieu de 0, M1 Max, macOS 26, 2026-10-18).
++ * Quand une vue Metal visible ou une couche hebergee couvre toute la vue de
++ * contenu, on ne pose plus cette image. CIDRE_DIRECT_GDI=1 rend l'ancien
++ * comportement. */
++static BOOL cidre_direct_keep_gdi(void)
++{
++    static BOOL keep;
++    static dispatch_once_t once;
++    dispatch_once(&once, ^{
++        const char* v = getenv("CIDRE_DIRECT_GDI");
++        keep = v && *v == '1';
++    });
++    return keep;
++}
++
++/* CIDRE_DIRECT_DIAG=1 : toutes les 2 s, pour chaque fenetre plein ecran,
++ * l'arbre de couches et le code de detachement des CAMetalLayer (0 = direct,
++ * autre valeur = compose ; c'est ce que lit le HUD Metal) sur stderr. Sert a
++ * lire l'etat sans HUD (qui fige le D3D12/KK sur M1) ni capture d'ecran. */
++static BOOL cidre_direct_diag(void)
++{
++    static BOOL diag;
++    static dispatch_once_t once;
++    dispatch_once(&once, ^{
++        const char* v = getenv("CIDRE_DIRECT_DIAG");
++        diag = v && *v == '1';
++    });
++    return diag;
++}
++
++@interface CAMetalLayer (CidreDirect)
++- (uint64_t) displayCompositingInternalStatus;
++@end
++
++static void cidre_dump_layer(CALayer* layer, int depth)
++{
++    char extra[160] = "";
++    if ([layer isKindOfClass:[CAMetalLayer class]])
++    {
++        CAMetalLayer* ml = (CAMetalLayer*)layer;
++        unsigned long long status = [ml respondsToSelector:@selector(displayCompositingInternalStatus)] ?
++                                    [ml displayCompositingInternalStatus] : ~0ULL;
++        snprintf(extra, sizeof(extra), " drawable=%.0fx%.0f fmt=%lu detachement=0x%llx%s",
++                 ml.drawableSize.width, ml.drawableSize.height, (unsigned long)ml.pixelFormat,
++                 status & 0xffffffffULL, (status & 0xffffffffULL) ? " (compose)" : " (DIRECT)");
++    }
++    fprintf(stderr, "cidre direct: %*s%s frame=(%.0f,%.0f %.0fx%.0f) opaque=%d hidden=%d contents=%d bg=%d mask=%d%s\n",
++            depth * 2, "", [NSStringFromClass([layer class]) UTF8String],
++            layer.frame.origin.x, layer.frame.origin.y, layer.frame.size.width, layer.frame.size.height,
++            layer.opaque, layer.hidden, layer.contents != nil, layer.backgroundColor != NULL,
++            layer.mask != nil, extra);
++    for (CALayer* sub in layer.sublayers)
++        cidre_dump_layer(sub, depth + 1);
+ }
+ 
+ 
+@@ -289,6 +350,7 @@
+     - (void) wine_setBackingSize:(const int*)newBackingSize;
+ 
+     - (WineMetalView*) newMetalViewWithDevice:(id<MTLDevice>)device;
++    - (BOOL) cidreMetalCoversContent;
+     - (void) addCALayerHostViewWithContextId:(CAContextID)contextId;
+     - (void) removeCALayerHostView:(CAContextID)contextId;
+ 
+@@ -310,6 +372,9 @@
+ @property (retain, readwrite, nonatomic) WineEventQueue* queue;
+ 
+ @property (nonatomic) BOOL shapeChangedSinceLastDraw;
++@property (nonatomic) BOOL cidreGDIUnderMetal;
++
++    - (void) cidreUpdateDirect;
+ @property (readonly, nonatomic) BOOL needsTransparency;
+ 
+ @property (nonatomic) BOOL usePerPixelAlpha;
+@@ -430,6 +495,15 @@
+         if (window.closing)
+             return;
+ 
++        if ([self cidreMetalCoversContent])
++        {
++            window.cidreGDIUnderMetal = TRUE;
++            layer.contents = nil;
++            [window windowDidDrawContent];
++            return;
++        }
++        window.cidreGDIUnderMetal = FALSE;
++
+         imageRect = layer.bounds;
+         imageRect.origin.x *= layer.contentsScale;
+         imageRect.origin.y *= layer.contentsScale;
+@@ -459,6 +533,36 @@
+         }
+     }
+ 
++    /* Cidre : une vue Metal visible (vue client du jeu) ou une couche
++       hebergee (CALayerHost) couvre-t-elle toute cette vue de contenu ? */
++    - (BOOL) cidreMetalCoversContent
++    {
++        NSRect bounds = [self bounds];
++
++        if (cidre_direct_keep_gdi() || NSIsEmptyRect(bounds))
++            return FALSE;
++
++        for (CALayerHost* host in [_caLayerHosts allValues])
++        {
++            if (!host.hidden && CGRectContainsRect(host.frame, NSRectToCGRect(bounds)))
++                return TRUE;
++        }
++
++        for (NSView* subview in [self subviews])
++        {
++            WineContentView* client;
++
++            if (![subview isKindOfClass:[WineContentView class]] || [subview isHidden]) continue;
++            client = (WineContentView*)subview;
++            if (!client->_metalView || [client->_metalView isHidden]) continue;
++            if (NSContainsRect([client frame], bounds) &&
++                NSContainsRect([client convertRect:[client->_metalView frame] toView:self], bounds))
++                return TRUE;
++        }
++
++        return FALSE;
++    }
++
+     - (void) setSurfaceRect:(CGRect)rect
+     {
+         surfaceRect = rect;
+@@ -601,6 +705,7 @@
+         _metalView = view;
+ 
+         [(WineWindow*)self.window windowDidDrawContent];
++        [(WineWindow*)self.window cidreUpdateDirect];
+ 
+         return _metalView;
+     }
+@@ -623,6 +728,7 @@
+         [_caLayerHosts setObject:host forKey:@(contextId)];
+ 
+         [(WineWindow*)self.window windowDidDrawContent];
++        [(WineWindow*)self.window cidreUpdateDirect];
+     }
+ 
+     - (void) removeCALayerHostView:(CAContextID)contextId
+@@ -630,6 +736,7 @@
+         NSNumber* key = @(contextId);
+         [[_caLayerHosts objectForKey:key] removeFromSuperlayer];
+         [_caLayerHosts removeObjectForKey:key];
++        [(WineWindow*)self.window cidreUpdateDirect];
+     }
+ 
+     - (void) setLayerRetinaProperties:(BOOL)mode
+@@ -752,7 +859,10 @@
+                 [self invalidateHasGLDescendant];
+         }
+         if (subview == _metalView)
++        {
+             _metalView = nil;
++            dispatch_async(dispatch_get_main_queue(), ^{ [(WineWindow*)self.window cidreUpdateDirect]; });
++        }
+         [super willRemoveSubview:subview];
+     }
+ 
+@@ -2608,8 +2718,38 @@
+     {
+         if (gl_surface_mode == GL_SURFACE_BEHIND)
+             [self checkTransparency];
++        [self cidreUpdateDirect];
+     }
+ 
++    /* Cidre : un cadre, une visibilite ou une vue Metal a change ; si la
++       couverture de la vue de contenu par la vue Metal change, redessiner la
++       vue de contenu (updateLayer pose ou retire l'image GDI). */
++    - (void) cidreUpdateDirect
++    {
++        WineContentView* view = [self contentView];
++
++        if (![view isKindOfClass:[WineContentView class]]) return;
++        if ([view cidreMetalCoversContent] != self.cidreGDIUnderMetal)
++            [view setNeedsDisplay:YES];
++        if (cidre_direct_diag() && !cidreDirectDiagTimer && (fullscreen || [self cidreInFullScreenSpace]))
++        {
++            cidreDirectDiagTimer = [[NSTimer scheduledTimerWithTimeInterval:2.0 repeats:YES block:^(NSTimer* t){
++                [self cidreDumpDirect];
++            }] retain];
++        }
++    }
++
++    - (void) cidreDumpDirect
++    {
++        if (!(fullscreen || [self cidreInFullScreenSpace]) || ![self isVisible]) return;
++        fprintf(stderr, "cidre direct: fenetre %p niveau=%ld opaque=%d plein=%d espace=%d cadre=(%.0f,%.0f %.0fx%.0f) ecran=(%.0fx%.0f) gdi_sous_metal=%d curseur_cache=%d\n",
++                self, (long)[self level], [self isOpaque], fullscreen, [self cidreInFullScreenSpace],
++                self.frame.origin.x, self.frame.origin.y, self.frame.size.width, self.frame.size.height,
++                self.screen.frame.size.width, self.screen.frame.size.height, self.cidreGDIUnderMetal,
++                [[WineApplicationController sharedController] cidreCursorHidden]);
++        cidre_dump_layer([[self contentView] layer], 0);
++    }
++
+     - (void) setRetinaMode:(BOOL)mode
+     {
+         NSRect frame;
+@@ -2909,6 +3049,7 @@
+         enteredFullScreenTime = [[NSProcessInfo processInfo] systemUptime];
+         if ([self cidreOwnsFullScreenSpace])
+             [self cidreHideFullScreenTitlebar:YES];
++        [self cidreUpdateDirect];
+         [[WineApplicationController sharedController] cidreUpdateCursorCapture];
+         if (pendingOrderOut)
+             [self doOrderOut];
