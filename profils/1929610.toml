@@ -90,9 +90,9 @@ date = "2026-10-18"
 machine = "M1 Max 32 Go"
 cidre_version = "1.5.15 + 0155 v2"
 fps_menu = 27
-fps_jeu = 0
+fps_jeu = 27
 options = "dx12=true sm66=true arguments=-dx12"
-notes = "D3D12 + SM 6.6 : Lumen s'active (atomiques 64 bits emulees, 0153 ; barrieres de calcul, 0155) et les pieces aux neons sont eclairees. Avec Lumen allege par Engine.ini (pose par la fiche) : 26,9 fps au menu (meme cout que le jeu : 19,5 au menu, 18-19,5 en partie avec les reglages d'origine), GPU 37 ms, contre 19,9 avec les reglages Lumen du jeu ; en partie, a confirmer. Image propre (drawable relu en jeu). Le HUD Metal fige le D3D12 une partie sur deux : ne pas l'activer."
+notes = "D3D12 + SM 6.6 : Lumen s'active (atomiques 64 bits emulees, 0153 ; barrieres de calcul, 0155) et les pieces aux neons sont eclairees. Avec Lumen allege par Engine.ini (pose par la fiche) : 26,9 fps au menu (meme cout que le jeu : 19,5 au menu, 18-19,5 en partie avec les reglages d'origine), GPU 37 ms, contre 19,9 avec les reglages Lumen du jeu ; en partie (manche utilisateur du 2026-10-18, 20 min) : ~27 fps, 31-35 dans les pieces, creux a 22 aux chargements, lumieres jugees bonnes ; reglages d'origine : 25-26 fps et dechirures. Image propre (drawable relu en jeu). Le HUD Metal fige le D3D12 une partie sur deux : ne pas l'activer."
 
 [[compat.machines]]
 nom = "M2 et suivants"
