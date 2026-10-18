@@ -149,6 +149,11 @@ TSO_SANS=${CIDRE_TSO_SANS:-$(profil tso_sans)}
 TSO_SANS=$(printf '%s' "$TSO_SANS" | tr -d '"' | tr -s ' \t' '::' | sed 's/^://; s/:$//')
 [ -n "$TSO_SANS" ] && [ -z "${FEX_EXTENDEDVOLATILEMETADATA:-}" ] && export FEX_EXTENDEDVOLATILEMETADATA="$TSO_SANS"
 [ "$(opt tso_msvc CIDRE_TSO_MSVC)" = true ] && export FEX_VOLATILEMETADATAALLBLOCKS=1
+# Extensions ARM de l'hote pour FEX (sous Wine/macOS il se croit sur un ARMv8.0
+# nu) : posees ici pour que le journal les dise, etape2 les garde. Par defaut
+# enablecrypto seul ; CIDRE_FEX_EXTENSIONS=1 ajoute celles de ce Mac qui
+# gagnent aux bancs (aucun gain en jeu mesure, cf. tests/extensions_fex.sh).
+export FEX_HOSTFEATURES=${FEX_HOSTFEATURES:-$(sh "$R/tests/extensions_fex.sh")}
 
 # Synchro Wine en process (wine11 0103) : evenements, semaphores et mutex en
 # memoire partagee, attente par os_sync_wait_on_address, sans aller-retour au
@@ -781,7 +786,7 @@ case $MAXINST in
    *) [ -n "${FEX_MAXINST:-}" ] || export FEX_MAXINST=$MAXINST ;;
 esac
 # --- reglages FEX : fin ---
-echo "    fex     : tso ${FEX_TSOENABLED:-1}${FEX_EXTENDEDVOLATILEMETADATA:+ sauf $FEX_EXTENDEDVOLATILEMETADATA}${FEX_VOLATILEMETADATAALLBLOCKS:+, metadonnee MSVC prise au mot}, cache disque ${FEX_DISKCACHE:-0}, x87 reduit ${FEX_X87REDUCEDPRECISION:-0}, MaxInst ${FEX_MAXINST:-5000}" >>"$JOURNAL"
+echo "    fex     : tso ${FEX_TSOENABLED:-1}${FEX_EXTENDEDVOLATILEMETADATA:+ sauf $FEX_EXTENDEDVOLATILEMETADATA}${FEX_VOLATILEMETADATAALLBLOCKS:+, metadonnee MSVC prise au mot}, cache disque ${FEX_DISKCACHE:-0}, x87 reduit ${FEX_X87REDUCEDPRECISION:-0}, MaxInst ${FEX_MAXINST:-5000}, hote ${FEX_HOSTFEATURES}" >>"$JOURNAL"
 
 # Arguments propres au profil. A poser APRES la table des lanceurs, qui remet les
 # arguments a zero quand elle remplace l'executable.

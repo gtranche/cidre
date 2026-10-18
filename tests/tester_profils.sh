@@ -1025,6 +1025,17 @@ verif "fd 3 ferme : le tube se termine avec le script, pas avec son fils" "0" "$
 mkdir -p "$T/pfx-vide"
 verif "fin_de_partie : prefixe sans serveur, rien a faire" "0:" "$(WINEPREFIX=$T/pfx-vide sh "$R/tests/fin_de_partie.sh" 2>&1; echo "$?:")"
 
+# Extensions ARM donnees a FEX (2026-10-18) : eteintes par defaut ; avec
+# CIDRE_FEX_EXTENSIONS=1, seulement celles que ce Mac annonce par sysctl,
+# jamais LSE (plus lent sur M1) ni AFP (non mesure).
+attendu=enablecrypto
+for e in FEAT_LRCPC:enablelrcpc FEAT_LRCPC2:enablelrcpc2 FEAT_FlagM2:enableflagm2; do
+   [ "$(sysctl -n "hw.optional.arm.${e%%:*}" 2>/dev/null)" = 1 ] && attendu=$attendu,${e#*:}
+done
+verif "extensions FEX : celles du Mac (CIDRE_FEX_EXTENSIONS=1)" "$attendu" "$(CIDRE_FEX_EXTENSIONS=1 sh "$R/tests/extensions_fex.sh")"
+verif "extensions FEX : par defaut, enablecrypto seul" "enablecrypto" "$(sh "$R/tests/extensions_fex.sh")"
+grep -q 'FEX_HOSTFEATURES:-$(sh "$R/tests/extensions_fex.sh")' "$R/tests/etape2_pile_arm64ec.sh" && ok "etape2 : extensions FEX du Mac" || echec "etape2 : FEX_HOSTFEATURES sans extensions_fex.sh"
+
 echo
 echo "$nb verifications, $ko en echec"
 [ $ko -eq 0 ]

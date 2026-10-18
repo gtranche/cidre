@@ -35,8 +35,9 @@ export MESA_KK_EXPERIMENTAL=${MESA_KK_EXPERIMENTAL:-custom_border,image_view_min
 # teste ce bit refuse de demarrer (Dead by Daylight : « This CPU does not support a required
 # feature (SSE4.2) »). Le CPU Apple a reellement ces instructions ; enablecrypto remet le bit
 # a la verite (SSE4.2 + AES-NI + PCLMULQDQ), ce n'est pas un maquillage. Mesure : sonde CPUID
-# ECX 0xbcc8330d -> 0xbed8330f. Separe par virgule si on ajoute d'autres drapeaux hote.
-export FEX_HOSTFEATURES=${FEX_HOSTFEATURES:-enablecrypto}
+# ECX 0xbcc8330d -> 0xbed8330f. CIDRE_FEX_EXTENSIONS=1 y ajoute les extensions ARM que
+# CE Mac annonce (sysctl) et qui gagnent aux bancs : LRCPC, LRCPC2, FlagM2 (tests/extensions_fex.sh).
+export FEX_HOSTFEATURES=${FEX_HOSTFEATURES:-$(sh "$R/tests/extensions_fex.sh")}
 
 # Ce dossier precede les chemins systeme : il sert a presenter les bonnes
 # tranches arm64. /usr/local/lib contient un libfreetype x86_64 (la pile
