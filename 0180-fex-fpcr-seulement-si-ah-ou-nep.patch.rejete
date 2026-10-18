@@ -1,0 +1,31 @@
+fex : ExitFunctionEC n'ecrit FPCR que si AH ou NEP est pose -- ESSAI ABANDONNE (2026-10-18)
+
+ExitFunctionEC (Module.S) efface AH et NEP de FPCR par mrs/and/msr a chaque
+sortie du JIT vers le code arm64ec natif. Hypothese de l'etude des projets
+voisins : l'ecriture de FPCR serait serialisante, et ces bits restent a 0 sans
+FEAT_AFP ; un tst + b.eq la sauterait.
+
+Banc tests/banc_transitions.c (M1 Max, runtime et prefixe clones, 10^7 appels
+x 3 passes internes x 4 passes entrelacees, FEX avec 0179 de part et d'autre) :
+  GetLastError                7,6 ns par aller-retour, avec comme sans ;
+  QueryPerformanceCounter     40,7 ns sans, 41,0 ns avec.
+Aucun ecart (seuil fixe : -10 %). Abandonne : msr fpcr ne coute rien de
+mesurable sur M1 a cet endroit. Pas dans serie_fex.
+
+diff --git a/Source/Windows/ARM64EC/Module.S b/Source/Windows/ARM64EC/Module.S
+--- a/Source/Windows/ARM64EC/Module.S
++++ b/Source/Windows/ARM64EC/Module.S
+@@ -80,8 +80,13 @@
+ ExitFunctionEC:
+   // Clear any the AFP NEP and AH bits in FPCR as native code won't expect their behaviour.
+   mrs x17, fpcr
++  // Cidre 0180 : n'ecrire FPCR que si AH ou NEP est pose (ecriture sous-entendue
++  // serialisante ; sans FEAT_AFP, ces bits restent a 0).
++  tst x17, #6
++  b.eq 1f
+   and x17, x17, #~6 // NEP + AH
+   msr fpcr, x17
++1:
+   LOAD_TEB x17, x16
+   ldr x17, [x17, #0x1788] // TEB->ChpeV2CpuAreaInfo
+   strb wzr, [x17, #0x0] // ChpeV2CpuAreaInfo->InSimulation

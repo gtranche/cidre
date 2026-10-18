@@ -1,0 +1,89 @@
+Generated-by: LLM
+
+kosmickrisp : visibilite des barrieres MTL4 au choix (CIDRE_VISIBILITE_BARRIERES) -- ESSAI ABANDONNE (2026-10-18)
+
+TODO de KK (bridge/mtl_encoder.m) : toutes les barrieres passent
+MTL4VisibilityOptionResourceAlias, alors que seules les requetes d'occlusion
+(et l'alias de tas) l'exigeraient. L'essai lit CIDRE_VISIBILITE_BARRIERES une
+fois : alias (defaut, inchange), device, aucune ; il ne touche que les trois
+mtl_barrier_after_* (la variante _device de 0155 reste telle quelle).
+
+Banc (M1 Max, pilote construit sur l'amont + serie_mesa + cet essai, manifeste
+ICD a part) : bench_barriere_chaine vf 40 30000 32 32 7 et f, 3 passes
+entrelacees, mode defaut et CIDRE_NARROW_BARRIERS=sur :
+  defaut      alias 24,80/24,78   device 24,72/24,77   aucune 24,75/24,76 ms
+  sur, f      alias 22,33-22,37   device 22,31-22,38   aucune 22,32-22,35 ms
+  sur, vf     alias 24,70-24,76   device 24,73-24,74   aucune 24,72-24,73 ms
+bench_barriere_vertex : 0 faute sur 600 dans les trois visibilites (mode defaut
+et sur). Aucun gain mesurable : abandonne, sans manche VT2/LN. Concorde avec
+la session Demonologist (Apple7) : la visibilite ne pese pas, c'est la
+fermeture d'encodeur qui coute (~5 ms par image). « aucune » n'a jamais tourne
+en jeu.
+Piege du banc : CIDRE_NARROW_BARRIERS= (vide) vaut le mode cible (1 de
+kk_narrow_mode), connu fautif au banc de justesse : 597 fautes sur 600 quelle
+que soit la visibilite. Le lanceur ne la pose jamais vide.
+
+--- a/src/kosmickrisp/bridge/mtl_encoder.m
++++ b/src/kosmickrisp/bridge/mtl_encoder.m
+@@ -11,6 +11,34 @@
+ #include <Metal/MTL4Counters.h>
+ #include <Metal/MTL4RenderCommandEncoder.h>
+ #include <Metal/MTLRenderPass.h>
++
++#include <stdlib.h>
++#include <string.h>
++
++/* Cidre 0181 : visibilite des barrieres MTL4, CIDRE_VISIBILITE_BARRIERES lue une
++ * fois. KK passe toujours ResourceAlias (vider les caches pour que des adresses
++ * virtuelles aliasees soient coherentes), alors que son TODO dit que seules les
++ * requetes d'occlusion l'exigent.
++ *   alias (defaut) : ResourceAlias, comme KK ;
++ *   device         : Device (coherence au niveau de la memoire du GPU) ;
++ *   aucune         : None (ordre d'execution seul, caches laisses en place). */
++static MTL4VisibilityOptions
++kk_visibilite_barrieres(void)
++{
++   static int lu = 0;
++   static MTL4VisibilityOptions v = MTL4VisibilityOptionResourceAlias;
++   if (!__atomic_load_n(&lu, __ATOMIC_ACQUIRE)) {
++      const char *e = getenv("CIDRE_VISIBILITE_BARRIERES");
++      MTL4VisibilityOptions w = MTL4VisibilityOptionResourceAlias;
++      if (e && (!strcmp(e, "aucune") || !strcmp(e, "none")))
++         w = MTL4VisibilityOptionNone;
++      else if (e && !strcmp(e, "device"))
++         w = MTL4VisibilityOptionDevice;
++      v = w;
++      __atomic_store_n(&lu, 1, __ATOMIC_RELEASE);
++   }
++   return v;
++}
+ 
+ /* Common encoder utils */
+ void
+@@ -31,7 +59,7 @@
+       /* TODO_KOSMICKRISP Expose visibility option since resource alias should only be required
+        * if occlusion queries are used */
+       [enc barrierAfterStages:(MTLStages)after_stages beforeQueueStages:(MTLStages)before_queue_stages
+-           visibilityOptions:MTL4VisibilityOptionResourceAlias];
++           visibilityOptions:kk_visibilite_barrieres()];
+    }
+ }
+ 
+@@ -42,7 +70,7 @@
+    @autoreleasepool {
+       id<MTL4CommandEncoder> enc = (id<MTL4CommandEncoder>)encoder;
+       [enc barrierAfterEncoderStages:(MTLStages)after_stages beforeEncoderStages:(MTLStages)before_queue_stages
+-           visibilityOptions:MTL4VisibilityOptionResourceAlias];
++           visibilityOptions:kk_visibilite_barrieres()];
+    }
+ }
+ 
+@@ -55,7 +83,7 @@
+       id<MTL4CommandEncoder> enc = (id<MTL4CommandEncoder>)encoder;
+       [enc barrierAfterQueueStages:(MTLStages)after_queue_stages
+                       beforeStages:(MTLStages)before_stages
+-                 visibilityOptions:MTL4VisibilityOptionResourceAlias];
++                 visibilityOptions:kk_visibilite_barrieres()];
+    }
+ }
+ 

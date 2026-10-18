@@ -102,6 +102,8 @@ appid = 999
 nom = "Jeu de test"
 [cidre]
 tso = false
+tso_sans = "UnityPlayer.dll GameAssembly.dll;1522d00-15246a0"
+tso_msvc = true
 hud = true
 fils_compilation = 3
 [compat]
@@ -127,6 +129,12 @@ verif "utilisateur > fiche (hud)" "false" "$(valeur 999 hud)"
 verif "[defaut] utilisateur > [defaut] livre (vsync)" "false" "$(valeur 999 vsync)"
 verif "[defaut] livre quand rien d'autre (async)" "false" "$(valeur 999 async)"
 verif "fiche : entier (fils_compilation)" "3" "$(valeur 999 fils_compilation)"
+verif "fiche : liste en chaine (tso_sans)" "UnityPlayer.dll GameAssembly.dll;1522d00-15246a0" "$(valeur 999 tso_sans)"
+verif "fiche : tso_msvc" "true" "$(valeur 999 tso_msvc)"
+verif "[defaut] livre : tso_msvc false" "false" "$(valeur 998 tso_msvc)"
+# la conversion du lanceur vers FEX_EXTENDEDVOLATILEMETADATA (meme commande que lancer_depuis_steam.sh)
+verif "tso_sans -> syntaxe de FEX" "UnityPlayer.dll:GameAssembly.dll;1522d00-15246a0" \
+   "$(printf '%s' "$(valeur 999 tso_sans)" | tr -d '"' | tr -s ' \t' '::' | sed 's/^://; s/:$//')"
 verif "fiche : etat/source rendus a plat" "bronze cidre-test" "$(valeur 999 etat) $(valeur 999 source)"
 verif "perso : seules les cles utilisateur du jeu" '{"hud":false}' "$(resoudre 999 perso)"
 verif "json : rapports comptes" "2" "$(sh "$R/tests/fiche_profil.sh" json 999 | sed -n 's/.*"rapports":\([0-9]*\)}$/\1/p')"

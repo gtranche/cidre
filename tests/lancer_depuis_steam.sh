@@ -130,6 +130,20 @@ case $(opt tso CIDRE_TSO) in
    false) export FEX_TSOENABLED=0 ;;
    true)  [ -n "${CIDRE_TSO:-}" ] && export FEX_TSOENABLED=1 ;;
 esac
+# TSO par module (FEX 0179), le TSO restant actif ailleurs :
+#   tso_sans = "UnityPlayer.dll" (CIDRE_TSO_SANS) : modules exemptes, separes par
+#     des espaces ; chacun est un nom de DLL/EXE (casse indifferente), ou la
+#     syntaxe de FEX `module;debut-fin,...` pour n'en exempter que des plages
+#     (decalages hexadecimaux depuis la base). Les acces que la metadonnee MSVC
+#     du module dit volatils gardent le TSO. -> FEX_EXTENDEDVOLATILEMETADATA.
+#   tso_msvc = true (CIDRE_TSO_MSVC=1) : la metadonnee volatile MSVC prise au mot
+#     dans tous les modules qui en ont une (comme l'emulateur de Windows) : seuls
+#     les acces listes gardent le TSO. -> FEX_VOLATILEMETADATAALLBLOCKS.
+# Le code sans metadonnee (JIT Mono ou il2cpp, DLL d'avant VS 2019) garde le TSO.
+TSO_SANS=${CIDRE_TSO_SANS:-$(profil tso_sans)}
+TSO_SANS=$(printf '%s' "$TSO_SANS" | tr -d '"' | tr -s ' \t' '::' | sed 's/^://; s/:$//')
+[ -n "$TSO_SANS" ] && [ -z "${FEX_EXTENDEDVOLATILEMETADATA:-}" ] && export FEX_EXTENDEDVOLATILEMETADATA="$TSO_SANS"
+[ "$(opt tso_msvc CIDRE_TSO_MSVC)" = true ] && export FEX_VOLATILEMETADATAALLBLOCKS=1
 
 # Synchro Wine en process (wine11 0103) : evenements, semaphores et mutex en
 # memoire partagee, attente par os_sync_wait_on_address, sans aller-retour au
@@ -762,7 +776,7 @@ case $MAXINST in
    *) [ -n "${FEX_MAXINST:-}" ] || export FEX_MAXINST=$MAXINST ;;
 esac
 # --- reglages FEX : fin ---
-echo "    fex     : tso ${FEX_TSOENABLED:-1}, cache disque ${FEX_DISKCACHE:-0}, x87 reduit ${FEX_X87REDUCEDPRECISION:-0}, MaxInst ${FEX_MAXINST:-5000}" >>"$JOURNAL"
+echo "    fex     : tso ${FEX_TSOENABLED:-1}${FEX_EXTENDEDVOLATILEMETADATA:+ sauf $FEX_EXTENDEDVOLATILEMETADATA}${FEX_VOLATILEMETADATAALLBLOCKS:+, metadonnee MSVC prise au mot}, cache disque ${FEX_DISKCACHE:-0}, x87 reduit ${FEX_X87REDUCEDPRECISION:-0}, MaxInst ${FEX_MAXINST:-5000}" >>"$JOURNAL"
 
 # Arguments propres au profil. A poser APRES la table des lanceurs, qui remet les
 # arguments a zero quand elle remplace l'executable.

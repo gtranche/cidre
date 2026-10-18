@@ -1,0 +1,250 @@
+fex : TSO par module -- un bloc sans acces volatil d'une plage exemptee tourne sans TSO
+
+FEX lit la metadonnee volatile que MSVC range dans les PE (/volatileMetadata,
+defaut x64 depuis VS 2019 16.10) : des plages ou elle est valide et, dedans, les
+acces qui demandent l'ordre fort. ExtendedVolatileMetadata (FEX-2510) permet d'y
+ajouter des modules ou des plages exemptes. Mais Core.cpp ne relache un bloc que
+s'il CONTIENT au moins une instruction volatile listee ; tout autre bloc, meme
+au milieu d'une plage valide ou d'un module exempte, garde le TSO complet. C'est
+le cas des boucles chaudes, qui n'ont en general aucun acces volatil. Code amont
+identique (7efd827, encore sur main) : exempter « UnityPlayer.dll » ne faisait
+rien sur la boucle de PEAK (UnityPlayer.dll +0x1522d00-0x15246a0 : plage valide
+0x52ce0-0x16d63d0, aucun acces volatil liste).
+
+Correctif : des plages « relachees » (RelaxedTSOBlockRanges) ou un bloc sans
+instruction volatile passe lui aussi sans TSO ; les instructions listees gardent
+le TSO. Elles viennent :
+  - de ExtendedVolatileMetadata : le module entier (`module`) ou ses plages
+    (`module;debut-fin,...`), nom de module desormais sans casse ;
+  - de la metadonnee MSVC, si la nouvelle option VolatileMetadataAllBlocks
+    (FEX_VOLATILEMETADATAALLBLOCKS=1) est posee : la metadonnee prise au mot,
+    comme l'emulateur de Windows. Defaut : comportement amont.
+Sans ces options, rien ne change. Le chargement journalise une ligne « TSO par
+module » par module concerne. Au passage : l'option VolatileMetadata de FEX
+n'est lue nulle part (la metadonnee est toujours chargee).
+
+Cote Cidre : tso_sans = "UnityPlayer.dll" et tso_msvc = true dans une fiche
+(tests/lancer_depuis_steam.sh -> FEX_EXTENDEDVOLATILEMETADATA,
+FEX_VOLATILEMETADATAALLBLOCKS).
+
+Banc tests/banc_tso.c (M1 Max, 30000 x 4096, 3 passes entrelacees) :
+  TSO 787 ms ; FEX_TSOENABLED=0 299 ms ;
+  FEX_EXTENDEDVOLATILEMETADATA=banc_tso.exe sans 0179 786 ms, avec 0179 299 ms ;
+  BANC_TSO.EXE 300 ms ; plage hors de la boucle 786 ms.
+
+diff --git a/FEXCore/include/FEXCore/Core/Context.h b/FEXCore/include/FEXCore/Core/Context.h
+--- a/FEXCore/include/FEXCore/Core/Context.h
++++ b/FEXCore/include/FEXCore/Core/Context.h
+@@ -187,8 +187,10 @@
+    *
+    * @param ValidRanges The set of address ranges covered by this information
+    * @param Instructions The set of instruction addresses within the given ranges for which TSO should be enabled
++   * @param RelaxedRanges Ranges in which a block holding none of Instructions also runs without TSO
+    */
+-  FEX_DEFAULT_VISIBILITY virtual void AddForceTSOInformation(const IntervalList<uint64_t>& ValidRanges, fextl::set<uint64_t>&& Instructions) = 0;
++  FEX_DEFAULT_VISIBILITY virtual void AddForceTSOInformation(const IntervalList<uint64_t>& ValidRanges, fextl::set<uint64_t>&& Instructions,
++                                                             const IntervalList<uint64_t>& RelaxedRanges = {}) = 0;
+ 
+   FEX_DEFAULT_VISIBILITY virtual void RemoveForceTSOInformation(uint64_t Address, uint64_t Size) = 0;
+ 
+diff --git a/FEXCore/Source/Interface/Context/Context.h b/FEXCore/Source/Interface/Context/Context.h
+--- a/FEXCore/Source/Interface/Context/Context.h
++++ b/FEXCore/Source/Interface/Context/Context.h
+@@ -240,7 +240,8 @@
+ 
+   void AddThunkTrampolineIRHandler(uintptr_t Entrypoint, uintptr_t GuestThunkEntrypoint) override;
+ 
+-  void AddForceTSOInformation(const IntervalList<uint64_t>& ValidRanges, fextl::set<uint64_t>&& Instructions) override;
++  void AddForceTSOInformation(const IntervalList<uint64_t>& ValidRanges, fextl::set<uint64_t>&& Instructions,
++                              const IntervalList<uint64_t>& RelaxedRanges = {}) override;
+ 
+   void RemoveForceTSOInformation(uint64_t Address, uint64_t Size) override;
+ 
+@@ -512,6 +513,10 @@
+   fextl::unordered_map<uint64_t, CustomIRHandlerEntry> CustomIRHandlers;
+   IntervalList<uint64_t> ForceTSOValidRanges; // The ranges for which ForceTSOInstructions has populated data
+   fextl::set<uint64_t> ForceTSOInstructions;
++  // Cidre 0179 : plages ou un bloc sans instruction volatile tourne lui aussi sans TSO.
++  // Hors de ces plages, seul un bloc qui contient une instruction volatile est relache
++  // (comportement amont, prudent).
++  IntervalList<uint64_t> RelaxedTSOBlockRanges;
+ 
+   bool MonoDetected = false;
+   std::atomic<uint64_t> MonoBackpatcherBlock;
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -592,6 +592,11 @@
+       if (ForceTSOValidRanges.Contains({Block.Entry, Block.Entry + Block.Size})) {
+         if (auto It = ForceTSOInstructions.lower_bound(Block.Entry); It != ForceTSOInstructions.end() && *It < Block.Entry + Block.Size) {
+           InstForceTSOIt = It;
++          BlockInForceTSOValidRange = true;
++        } else if (RelaxedTSOBlockRanges.Contains({Block.Entry, Block.Entry + Block.Size})) {
++          // Cidre 0179 : aucune instruction volatile dans ce bloc, et sa plage est
++          // declaree sure (module exempte, ou metadonnee MSVC prise au mot) : tout
++          // le bloc passe sans TSO. InstForceTSOIt reste a end().
+           BlockInForceTSOValidRange = true;
+         }
+       }
+@@ -1149,16 +1154,19 @@
+   }
+ }
+ 
+-void ContextImpl::AddForceTSOInformation(const IntervalList<uint64_t>& ValidRanges, fextl::set<uint64_t>&& Instructions) {
++void ContextImpl::AddForceTSOInformation(const IntervalList<uint64_t>& ValidRanges, fextl::set<uint64_t>&& Instructions,
++                                         const IntervalList<uint64_t>& RelaxedRanges) {
+   LogMan::Throw::AFmt(CodeInvalidationMutex.try_lock() == false, "CodeInvalidationMutex needs to be unique_locked here");
+   ForceTSOValidRanges.Insert(ValidRanges);
+   ForceTSOInstructions.merge(std::move(Instructions));
++  RelaxedTSOBlockRanges.Insert(RelaxedRanges);
+ }
+ 
+ void ContextImpl::RemoveForceTSOInformation(uint64_t Address, uint64_t Size) {
+   LogMan::Throw::AFmt(CodeInvalidationMutex.try_lock() == false, "CodeInvalidationMutex needs to be unique_locked here");
+ 
+   ForceTSOValidRanges.Remove({Address, Address + Size});
++  RelaxedTSOBlockRanges.Remove({Address, Address + Size});
+   ForceTSOInstructions.erase(ForceTSOInstructions.lower_bound(Address), ForceTSOInstructions.upper_bound(Address + Size));
+ }
+ 
+diff --git a/FEXCore/Source/Interface/Config/Config.json.in b/FEXCore/Source/Interface/Config/Config.json.in
+--- a/FEXCore/Source/Interface/Config/Config.json.in
++++ b/FEXCore/Source/Interface/Config/Config.json.in
+@@ -624,6 +624,16 @@
+         "Desc": [
+           "Use volatile metadata in PE files to inform TSO instructions when available.",
+           "When metadata is unavailable falls back to the currently enabled TSO options."
++        ]
++      },
++      "VolatileMetadataAllBlocks": {
++        "Type": "bool",
++        "Default": "false",
++        "AffectsCodeGen": "true",
++        "Desc": [
++          "Cidre 0179: inside a range covered by a PE's volatile metadata, also run blocks",
++          "that hold no listed volatile access without TSO (Windows' own emulator does so).",
++          "Default off: only blocks that hold a listed volatile access are relaxed."
+         ]
+       },
+       "X87ReducedPrecision": {
+diff --git a/Source/Common/VolatileMetadata.h b/Source/Common/VolatileMetadata.h
+--- a/Source/Common/VolatileMetadata.h
++++ b/Source/Common/VolatileMetadata.h
+@@ -19,7 +19,8 @@
+ 
+ inline void ApplyFEXExtendedVolatileMetadata(FEX::VolatileMetadata::ExtendedVolatileMetadata& ExtendedMetaData,
+                                              fextl::set<uint64_t>& VolatileInstructions, FEXCore::IntervalList<uint64_t>& VolatileValidRanges,
+-                                             uint64_t Address, uint64_t EndAddress, uint64_t FileOffset = 0, uint64_t FileOffsetEnd = ~0ULL) {
++                                             uint64_t Address, uint64_t EndAddress, uint64_t FileOffset = 0, uint64_t FileOffsetEnd = ~0ULL,
++                                             FEXCore::IntervalList<uint64_t>* RelaxedRanges = nullptr) {
+   // Load FEX extended volatile metadata.
+   // Walk the volatile instructions first if they exist.
+   for (const auto it_inst : ExtendedMetaData.VolatileInstructions) {
+@@ -38,6 +39,9 @@
+   for (const auto it_ranges : ExtendedMetaData.VolatileValidRanges) {
+     if (it_ranges.Offset >= FileOffset && it_ranges.End < FileOffsetEnd) {
+       VolatileValidRanges.Insert({Address + it_ranges.Offset - FileOffset, Address + it_ranges.End - FileOffset});
++      if (RelaxedRanges) {
++        RelaxedRanges->Insert({Address + it_ranges.Offset - FileOffset, Address + it_ranges.End - FileOffset});
++      }
+     }
+   }
+ 
+@@ -45,6 +49,10 @@
+   if (ExtendedMetaData.ModuleTSODisabled) {
+     VolatileValidRanges.Clear();
+     VolatileValidRanges.Insert({Address, EndAddress});
++    if (RelaxedRanges) {
++      RelaxedRanges->Clear();
++      RelaxedRanges->Insert({Address, EndAddress});
++    }
+   }
+ }
+ 
+diff --git a/Source/Common/VolatileMetadata.cpp b/Source/Common/VolatileMetadata.cpp
+--- a/Source/Common/VolatileMetadata.cpp
++++ b/Source/Common/VolatileMetadata.cpp
+@@ -3,6 +3,8 @@
+ 
+ #include <FEXCore/Utils/LogManager.h>
+ 
++#include <algorithm>
++#include <cctype>
+ #include <cstdlib>
+ 
+ #include <range/v3/view/split.hpp>
+@@ -35,8 +37,13 @@
+       continue;
+     }
+ 
++    // Cidre 0179 : nom de module en minuscules, comme les chemins Windows (la
++    // recherche dans ImageTracker en fait autant) : « UnityPlayer.dll » vaut
++    // « unityplayer.dll ».
++    fextl::string module_name(section_str);
++    std::transform(module_name.begin(), module_name.end(), module_name.begin(), [](unsigned char c) { return std::tolower(c); });
+     auto current_module = ExtendedMetaData
+-                            .insert_or_assign(fextl::string(section_str),
++                            .insert_or_assign(std::move(module_name),
+                                               ExtendedVolatileMetadata {
+                                                 .ModuleTSODisabled = true,
+                                               })
+diff --git a/Source/Windows/Common/ImageTracker.h b/Source/Windows/Common/ImageTracker.h
+--- a/Source/Windows/Common/ImageTracker.h
++++ b/Source/Windows/Common/ImageTracker.h
+@@ -64,6 +64,7 @@
+   FEXCore::Context::Context& CTX;
+ 
+   FEX_CONFIG_OPT(ExtendedVolatileMetadataConfig, EXTENDEDVOLATILEMETADATA);
++  FEX_CONFIG_OPT(VolatileMetadataAllBlocks, VOLATILEMETADATAALLBLOCKS);
+   fextl::unordered_map<fextl::string, FEX::VolatileMetadata::ExtendedVolatileMetadata> ExtendedMetaData;
+ 
+   std::shared_mutex ImagesLock;
+diff --git a/Source/Windows/Common/ImageTracker.cpp b/Source/Windows/Common/ImageTracker.cpp
+--- a/Source/Windows/Common/ImageTracker.cpp
++++ b/Source/Windows/Common/ImageTracker.cpp
+@@ -191,17 +191,41 @@
+   uint64_t EndAddress = Address + Nt->OptionalHeader.SizeOfImage;
+   fextl::set<uint64_t> VolatileInstructions {};
+   FEXCore::IntervalList<uint64_t> VolatileValidRanges {};
++  // Cidre 0179 : plages ou meme un bloc sans instruction volatile passe sans TSO.
++  // Amont, seul un bloc qui contient une instruction volatile est relache : un
++  // module exempte par ExtendedVolatileMetadata gardait donc le TSO sur ses
++  // boucles chaudes (PEAK : UnityPlayer.dll +0x1522d00, aucun acces volatil).
++  FEXCore::IntervalList<uint64_t> RelaxedRanges {};
+   LoadImageVolatileMetadata(VolatileInstructions, VolatileValidRanges, Module, Nt, Address, EndAddress);
++  const size_t MSVCVolatileCount = VolatileInstructions.size();
++  if (VolatileMetadataAllBlocks()) {
++    // La metadonnee MSVC prise au mot, comme le fait l'emulateur de Windows :
++    // dans une plage valide, seul un acces liste demande le TSO.
++    RelaxedRanges.Insert(VolatileValidRanges);
++  }
++  bool Extended = false;
+   if (auto It = ExtendedMetaData.find(ID); It != ExtendedMetaData.end()) {
+-    FEX::VolatileMetadata::ApplyFEXExtendedVolatileMetadata(It->second, VolatileInstructions, VolatileValidRanges, Address, EndAddress);
++    FEX::VolatileMetadata::ApplyFEXExtendedVolatileMetadata(It->second, VolatileInstructions, VolatileValidRanges, Address, EndAddress, 0,
++                                                            ~0ULL, &RelaxedRanges);
++    Extended = true;
+   }
+-  if (auto It = ExtendedMetaData.find(fextl::string {ModuleName}); It != ExtendedMetaData.end()) {
+-    FEX::VolatileMetadata::ApplyFEXExtendedVolatileMetadata(It->second, VolatileInstructions, VolatileValidRanges, Address, EndAddress);
++  if (auto It = ExtendedMetaData.find(ToLower(ModuleName)); It != ExtendedMetaData.end()) {
++    FEX::VolatileMetadata::ApplyFEXExtendedVolatileMetadata(It->second, VolatileInstructions, VolatileValidRanges, Address, EndAddress, 0,
++                                                            ~0ULL, &RelaxedRanges);
++    Extended = true;
+   }
+ 
+   if (!VolatileInstructions.empty() || !VolatileValidRanges.Empty()) {
+     LogMan::Msg::DFmt("Loaded volatile metadata for {:X}: {} entries", Address, VolatileInstructions.size());
+-    CTX.AddForceTSOInformation(VolatileValidRanges, std::move(VolatileInstructions));
++    if (Extended || VolatileMetadataAllBlocks()) {
++      uint64_t Relaxed = 0;
++      for (const auto& R : RelaxedRanges) {
++        Relaxed += R.End - R.Offset;
++      }
++      LogMan::Msg::IFmt("TSO par module : {} a {:X}, {} acces volatils MSVC, {} au total, {:#x} octets sans TSO{}", ModuleName, Address,
++                        MSVCVolatileCount, VolatileInstructions.size(), Relaxed, Extended ? " (exempte)" : "");
++    }
++    CTX.AddForceTSOInformation(VolatileValidRanges, std::move(VolatileInstructions), RelaxedRanges);
+   }
+ 
+   return ImageInfo->SectionInfo;

@@ -22,6 +22,12 @@
 #                                           plateformes du magasin Steam) ; rien s'il a deja une fiche
 #   fiche_profil.sh toml <fichier>          (outil) le fichier a plat : `section <TAB> cle <TAB> type <TAB> valeur`
 #
+# Les cles de [cidre] sont celles de outil-steam/profils.toml. Une liste s'y ecrit
+# en chaine, elements separes par des espaces (le sous-ensemble de TOML reste plat) :
+#   tso_sans = "UnityPlayer.dll"                  module exempte du TSO de FEX (0179)
+#   tso_sans = "UnityPlayer.dll GameAssembly.dll"  plusieurs
+#   tso_sans = "UnityPlayer.dll;1522d00-15246a0"   une plage seulement (syntaxe de FEX)
+#
 # `plat`, `json`, `reglages` et `compat` rendent la fiche telle qu'elle vaut sur
 # CETTE machine : les blocs [[machine]] dont la condition `si` est vraie
 # (tests/machine.sh) sont fondus dans [cidre] et [[reglages_jeu]], les autres
