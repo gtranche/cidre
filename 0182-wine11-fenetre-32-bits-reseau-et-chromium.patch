@@ -1,0 +1,249 @@
+Generated-by: LLM
+
+wine11 : un invite 32 bits dont la fenetre est rebasee (0096) fait du reseau et fait tourner Chromium -- installeur et client Battle.net (CEF 108, i386). Cinq defauts, tous de la meme famille (une adresse ou une poignee de l'invite qui franchit la frontiere hote sans etre traduite), qu'aucun programme 32 bits n'avait encore croises : aucun ne faisait de reseau.
+1. Relais wow64 portes du cote unix, sans rebasage (comme winevulkan et opengl32 avant leur correction) : ws2_32 (getaddrinfo rendait 0xC0000005 : l'installeur echouait en BLZBNTBTS00000028, aucun DNS en 32 bits), secur32/schannel_gnutls, crypt32, dnsapi. ULongToPtr y est redefini pour ajouter __wine_wow64_host_base().
+2. ntdll socket.c : u64_to_user_ptr des parametres d'ioctl afd (recvmsg, sendmsg, transmit) rebase pour un appel wow64 (l'envoi faultait dans sock_ioctl_send, le HTTPS 32 bits rendait 12157).
+3. ntdll socket.c : IOCTL_AFD_GET_EVENTS passe une poignee dans in_buffer, que le relais rebasait comme une adresse (0x4c -> 0x40000004c) : WSAEnumNetworkEvents rendait WSAENOTSOCK et toute connexion non bloquante du service reseau de Chromium echouait (ERR_FAILED sur la page de connexion).
+4. ntdll virtual.c : une section non-image projetee sans borne pendant un appel wow64 (win32u, bits d'une DIB adossee a une section : sortie logicielle de Chromium) tombait hors de la fenetre ; l'invite recevait l'adresse tronquee et faultait a la premiere ecriture (processus GPU de CEF, 0xC0000005). Plafond de l'invite par defaut, rebase par map_view.
+5. ntdll virtual.c : VirtualProtect rendait PAGE_WRITECOPY comme ancienne protection d'une page d'image deja ecrite (Windows : PAGE_READWRITE). Chromium le verifie (memoire protegee de base/) : CHECK, int3 dans libcef, rendu tue en boucle. macOS sait si la page a ete copiee ou modifiee (mincore : MINCORE_COPIED, MINCORE_MODIFIED) : on rend PAGE_READWRITE dans ce cas, sans fautes ni simulation (la simulation de Proton, WINE_SIMULATE_WRITECOPY, essayee ici : Bus error a l'amorcage, puis recursion d'exceptions sous FEX).
+Et kernelbase GetProcessMitigationPolicy remet le tampon a zero (bouchon qui laissait a Chromium une politique SystemCallDisable aleatoire).
+Temoin tests/h32fenetre.c (127.0.0.1 seulement) : 8 echecs sur le runtime v1.5.15, 0 avec 0182. Sans regression : banc_x64, h32seh, h32cxx, h32gdi, h32page, h32pipe (rc 2 avant comme apres), h32fil, h32espace, h32noacc, h32resv, h32temps, h64tls, h64kuser, h64win, h64vc, h64resv2. Construit hors arbre (ntdll.so, ws2_32.so, secur32.so, crypt32.so, dnsapi.so, kernelbase.dll i386) contre v1513/build2 ; resultat : client Battle.net 2.53.5 installe, page account.battle.net chargee (statusCode=200 state=Login).
+
+diff --git a/dlls/crypt32/unixlib.c b/dlls/crypt32/unixlib.c
+index 4b9f0da..5a36052 100644
+--- a/dlls/crypt32/unixlib.c
++++ b/dlls/crypt32/unixlib.c
+@@ -1035,6 +1035,27 @@ C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );
+ 
+ typedef ULONG PTR32;
+ 
++/*
++ * L'invite 32 bits voit A la ou l'hote utilise base + A (fenetre rebasee,
++ * correctif 0096). Ces relais wow64 vivent du cote unix, comme ceux de
++ * winevulkan et d'opengl32 : c'est donc ici qu'il faut traduire. Chaque
++ * ULongToPtr de cette section convertit une adresse de l'invite. Le sens
++ * hote -> invite (PtrToUlong) est deja juste : la base est un multiple de
++ * 4 Gio, tronquer revient a la soustraire. Hors wow64 la base vaut zero.
++ */
++NTSYSAPI ULONG_PTR CDECL __wine_wow64_host_base(void);
++
++static inline void *crypt_ptr_32to64( ULONG addr )
++{
++    static ULONG_PTR base = (ULONG_PTR)-1;
++
++    if (base == (ULONG_PTR)-1) base = __wine_wow64_host_base();
++    return addr ? (void *)(base + addr) : NULL;
++}
++
++#undef ULongToPtr
++#define ULongToPtr(a) crypt_ptr_32to64( (ULONG)(ULONG_PTR)(a) )
++
+ typedef struct
+ {
+     DWORD cbData;
+diff --git a/dlls/dnsapi/libresolv.c b/dlls/dnsapi/libresolv.c
+index 53c7736..fa1ba7d 100644
+--- a/dlls/dnsapi/libresolv.c
++++ b/dlls/dnsapi/libresolv.c
+@@ -354,6 +354,27 @@ C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );
+ 
+ typedef ULONG PTR32;
+ 
++/*
++ * L'invite 32 bits voit A la ou l'hote utilise base + A (fenetre rebasee,
++ * correctif 0096). Ces relais wow64 vivent du cote unix, comme ceux de
++ * winevulkan et d'opengl32 : c'est donc ici qu'il faut traduire. Chaque
++ * ULongToPtr de cette section convertit une adresse de l'invite. Le sens
++ * hote -> invite (PtrToUlong) est deja juste : la base est un multiple de
++ * 4 Gio, tronquer revient a la soustraire. Hors wow64 la base vaut zero.
++ */
++NTSYSAPI ULONG_PTR CDECL __wine_wow64_host_base(void);
++
++static inline void *dns_ptr_32to64( ULONG addr )
++{
++    static ULONG_PTR base = (ULONG_PTR)-1;
++
++    if (base == (ULONG_PTR)-1) base = __wine_wow64_host_base();
++    return addr ? (void *)(base + addr) : NULL;
++}
++
++#undef ULongToPtr
++#define ULongToPtr(a) dns_ptr_32to64( (ULONG)(ULONG_PTR)(a) )
++
+ static NTSTATUS wow64_resolv_get_searchlist( void *args )
+ {
+     struct
+diff --git a/dlls/kernelbase/process.c b/dlls/kernelbase/process.c
+index 08d0361..94efd70 100644
+--- a/dlls/kernelbase/process.c
++++ b/dlls/kernelbase/process.c
+@@ -969,6 +969,12 @@ BOOL WINAPI /* DECLSPEC_HOTPATCH */ GetProcessMitigationPolicy( HANDLE process,
+                                                           void *buffer, SIZE_T length )
+ {
+     FIXME( "(%p, %u, %p, %Iu): stub\n", process, policy, buffer, length );
++    /* Aucune politique active : le dire, plutot que de laisser au programme
++     * le contenu de son propre tampon. Chromium (CEF du client Battle.net) lit
++     * la politique SystemCallDisable dans une variable de pile non initialisee :
++     * sous FEX elle n'etait pas nulle, le rendu se croyait prive de win32k et
++     * s'arretait sur un CHECK. */
++    if (buffer && length) memset( buffer, 0, length );
+     return TRUE;
+ }
+ 
+diff --git a/dlls/ntdll/unix/socket.c b/dlls/ntdll/unix/socket.c
+index 4a4be77..0d64cc8 100644
+--- a/dlls/ntdll/unix/socket.c
++++ b/dlls/ntdll/unix/socket.c
+@@ -92,7 +92,13 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(winsock);
+ 
+-#define u64_to_user_ptr(u) ((void *)(uintptr_t)(u))
++/* Les champs 64 bits des parametres d'ioctl (afd_recvmsg_params,
++ * afd_sendmsg_params, afd_transmit_params) portent, depuis un invite 32 bits,
++ * une adresse de l'invite : ws2_32.dll i386 les remplit sans connaitre la base
++ * de sa fenetre. La traduire ici, comme ptr_wow32 le fait pour les tableaux de
++ * tampons (sinon l'envoi d'un invite 32 bits faute dans sock_ioctl_send). Hors
++ * wow64, l'identite. */
++#define u64_to_user_ptr(u) (in_wow64_call() ? ptr_wow32( (ULONG)(u) ) : (void *)(uintptr_t)(u))
+ 
+ union unix_sockaddr
+ {
+@@ -1671,6 +1677,13 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+             struct afd_get_events_params *params = out_buffer;
+             HANDLE reset_event = in_buffer; /* sic */
+ 
++            /* Ce « pointeur » est une poignee : le relais wow64 l'a rebasee
++             * comme une adresse de l'invite 32 bits (0x4c devenait 0x40000004c,
++             * et WSAEnumNetworkEvents rendait WSAENOTSOCK -- toute connexion
++             * non bloquante du service reseau de Chromium echouait). Tronquer
++             * a 32 bits retire la base, multiple de 4 Gio. */
++            if (in_wow64_call()) reset_event = ULongToHandle( PtrToUlong( in_buffer ) );
++
+             TRACE( "reset_event %p\n", reset_event );
+             if (in_size) FIXME( "unexpected input size %u\n", in_size );
+ 
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 9bf5cd6..39be8a0 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -2282,6 +2282,26 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
+ }
+ 
+ 
++#ifdef __APPLE__
++/***********************************************************************
++ *           page_deja_ecrite
++ *
++ * Une page en copie a l'ecriture a-t-elle ete ecrite ? Windows la rend alors
++ * PAGE_READWRITE ; Wine ne le sait pas, la page etant projetee inscriptible
++ * (l'ecriture passe sans faute), et VirtualProtect rendait PAGE_WRITECOPY comme
++ * ancienne protection. Chromium le verifie (memoire protegee de base/) : le
++ * rendu de CEF du client Battle.net s'arretait sur ce CHECK. Le noyau de macOS
++ * le sait : la page a ete copiee (projection privee d'un fichier) ou modifiee.
++ */
++static BOOL page_deja_ecrite( const void *addr )
++{
++    char etat = 0;
++
++    if (mincore( ROUND_ADDR( addr, host_page_mask ), host_page_size, &etat )) return FALSE;
++    return (etat & (MINCORE_MODIFIED | MINCORE_COPIED)) != 0;
++}
++#endif
++
+ /***********************************************************************
+  *           mprotect_range
+  *
+@@ -3980,6 +4000,17 @@ static unsigned int virtual_map_section( HANDLE handle, PVOID *addr_ptr, ULONG_P
+     res = get_mapping_info( handle, access, &sec_flags, &full_size, &pe_mapping );
+     if (res) return res;
+ 
++    /* Une vue demandee sans borne au cours d'un appel systeme d'un invite 32
++     * bits, par une bibliotheque unix qui projette pour lui -- win32u, pour les
++     * bits d'une DIB adossee a une section (NtGdiCreateDIBSection), que Chromium
++     * emploie pour sa sortie logicielle : sans borne, map_view la posait hors de
++     * la fenetre de l'invite, qui recevait l'adresse tronquee et fautait a la
++     * premiere ecriture (processus GPU du client Battle.net). Le relais wow64,
++     * lui, passe toujours un plafond. On donne celui de l'invite : map_view le
++     * reconnait et le rebase. Les images ont leur propre placement. */
++    if (user_space_wow_base && !limit_high && !*addr_ptr && !(sec_flags & SEC_IMAGE) && in_wow64_call())
++        limit_high = 0x7fffffff;
++
+     offset.QuadPart = offset_ptr ? offset_ptr->QuadPart : 0;
+ 
+     if (pe_mapping)
+@@ -6433,6 +6464,10 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T
+         /* Make sure all the pages are committed */
+         if (get_committed_size( view, base, size, &vprot, VPROT_COMMITTED ) >= size && (vprot & VPROT_COMMITTED))
+         {
++#ifdef __APPLE__
++            if ((vprot & VPROT_WRITECOPY) && page_deja_ecrite( base ))
++                vprot = (vprot & ~VPROT_WRITECOPY) | VPROT_WRITE;
++#endif
+             old = get_win32_prot( vprot, view->protect );
+             status = set_protection( view, base, size, new_prot );
+         }
+diff --git a/dlls/secur32/schannel_gnutls.c b/dlls/secur32/schannel_gnutls.c
+index 83b9f8f..d4d7e54 100644
+--- a/dlls/secur32/schannel_gnutls.c
++++ b/dlls/secur32/schannel_gnutls.c
+@@ -1638,6 +1638,27 @@ C_ASSERT(ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count);
+ 
+ typedef ULONG PTR32;
+ 
++/*
++ * L'invite 32 bits voit A la ou l'hote utilise base + A (fenetre rebasee,
++ * correctif 0096). Ces relais wow64 vivent du cote unix, comme ceux de
++ * winevulkan et d'opengl32 : c'est donc ici qu'il faut traduire. Chaque
++ * ULongToPtr de cette section convertit une adresse de l'invite. Le sens
++ * hote -> invite (PtrToUlong) est deja juste : la base est un multiple de
++ * 4 Gio, tronquer revient a la soustraire. Hors wow64 la base vaut zero.
++ */
++NTSYSAPI ULONG_PTR CDECL __wine_wow64_host_base(void);
++
++static inline void *schan_ptr_32to64( ULONG addr )
++{
++    static ULONG_PTR base = (ULONG_PTR)-1;
++
++    if (base == (ULONG_PTR)-1) base = __wine_wow64_host_base();
++    return addr ? (void *)(base + addr) : NULL;
++}
++
++#undef ULongToPtr
++#define ULongToPtr(a) schan_ptr_32to64( (ULONG)(ULONG_PTR)(a) )
++
+ typedef struct SecBufferDesc32
+ {
+     ULONG ulVersion;
+diff --git a/dlls/ws2_32/unixlib.c b/dlls/ws2_32/unixlib.c
+index d16107b..f8bbbdf 100644
+--- a/dlls/ws2_32/unixlib.c
++++ b/dlls/ws2_32/unixlib.c
+@@ -1078,6 +1078,27 @@ C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == ws_unix_funcs_count );
+ 
+ typedef ULONG PTR32;
+ 
++/*
++ * L'invite 32 bits voit A la ou l'hote utilise base + A (fenetre rebasee,
++ * correctif 0096). Ces relais wow64 vivent du cote unix, comme ceux de
++ * winevulkan et d'opengl32 : c'est donc ici qu'il faut traduire. Chaque
++ * ULongToPtr de cette section convertit une adresse de l'invite. Le sens
++ * hote -> invite (PtrToUlong) est deja juste : la base est un multiple de
++ * 4 Gio, tronquer revient a la soustraire. Hors wow64 la base vaut zero.
++ */
++NTSYSAPI ULONG_PTR CDECL __wine_wow64_host_base(void);
++
++static inline void *ws_ptr_32to64( ULONG addr )
++{
++    static ULONG_PTR base = (ULONG_PTR)-1;
++
++    if (base == (ULONG_PTR)-1) base = __wine_wow64_host_base();
++    return addr ? (void *)(base + addr) : NULL;
++}
++
++#undef ULongToPtr
++#define ULongToPtr(a) ws_ptr_32to64( (ULONG)(ULONG_PTR)(a) )
++
+ struct WS_addrinfo32
+ {
+     int   ai_flags;
