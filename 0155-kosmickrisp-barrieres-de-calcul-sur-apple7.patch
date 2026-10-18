@@ -1,10 +1,12 @@
 Generated-by: LLM
 
-KosmicKrisp : sur Apple7 (M1, macOS 26), une barriere Vulkan enregistree dans un encodeur de calcul ouvert ferme l encodeur au lieu d une barriere intra-encodeur -- Lumen d Unreal 5 (Demonologist en D3D12 SM 6.6) rendait un bruit lumineux par blocs, interface comprise, avec la barriere intra-encodeur, et juste encodeur ferme (manches T, cb du 16/10) ; Apple8+ inchange ; CIDRE_BARRIERES_CALCUL=encodeur|visibilite|couper force le mode (visibilite = barriere intra-encodeur avec MTL4VisibilityOptionDevice)
+KosmicKrisp : sur Apple7 (M1, macOS 26), une barriere Vulkan enregistree dans un encodeur de calcul ouvert ferme l encodeur quand elle precede une lecture d arguments indirects (DRAW_INDIRECT / INDIRECT_COMMAND_READ) ; les autres restent des barrieres intra-encodeur -- Lumen d Unreal 5 (Demonologist en D3D12 SM 6.6) rendait un bruit lumineux par blocs avec la seule barriere intra-encodeur (manches T, cb du 16/10) ; fermer a toutes les barrieres (v1) le corrigeait au prix de 261 encodeurs de plus par image, fermer aux seules barrieres indirectes (26 par image) rend aussi juste (7 relectures du drawable, 18/10) ; Apple8+ inchange ; CIDRE_BARRIERES_CALCUL=encodeur|visibilite|couper|indirect force le mode (visibilite = barriere intra-encodeur avec MTL4VisibilityOptionDevice)
 
---- a/src/kosmickrisp/bridge/mtl_encoder.h	2026-10-16 20:09:57
-+++ b/src/kosmickrisp/bridge/mtl_encoder.h	2026-10-16 20:09:58
-@@ -19,6 +19,10 @@
+diff --git a/src/kosmickrisp/bridge/mtl_encoder.h b/src/kosmickrisp/bridge/mtl_encoder.h
+index b3c123b..1dcf73b 100644
+--- a/src/kosmickrisp/bridge/mtl_encoder.h
++++ b/src/kosmickrisp/bridge/mtl_encoder.h
+@@ -19,6 +19,10 @@ void mtl_barrier_after_stages(void *encoder, enum mtl_stages after_stages,
  void mtl_barrier_after_encoder_stages(void *encoder,
                                        enum mtl_stages after_stages,
                                        enum mtl_stages before_queue_stages);
@@ -15,12 +17,15 @@ KosmicKrisp : sur Apple7 (M1, macOS 26), une barriere Vulkan enregistree dans un
  
  void mtl_barrier_after_queue_stages(void *encoder,
                                      enum mtl_stages after_queue_stages,
---- a/src/kosmickrisp/bridge/mtl_encoder.m	2026-10-16 20:09:58
-+++ b/src/kosmickrisp/bridge/mtl_encoder.m	2026-10-16 20:09:58
-@@ -47,6 +47,18 @@
+diff --git a/src/kosmickrisp/bridge/mtl_encoder.m b/src/kosmickrisp/bridge/mtl_encoder.m
+index e29351a..e9befef 100644
+--- a/src/kosmickrisp/bridge/mtl_encoder.m
++++ b/src/kosmickrisp/bridge/mtl_encoder.m
+@@ -46,6 +46,18 @@
+    }
  }
  
- void
++void
 +mtl_barrier_after_encoder_stages_device(void *encoder,
 +                                        enum mtl_stages after_stages,
 +                                        enum mtl_stages before_stages)
@@ -32,29 +37,32 @@ KosmicKrisp : sur Apple7 (M1, macOS 26), une barriere Vulkan enregistree dans un
 +   }
 +}
 +
-+void
+ void
  mtl_barrier_after_queue_stages(void *encoder,
                                 enum mtl_stages after_queue_stages,
-                                enum mtl_stages before_stages)
---- a/src/kosmickrisp/bridge/stubs/mtl_encoder.c	2026-10-16 20:09:57
-+++ b/src/kosmickrisp/bridge/stubs/mtl_encoder.c	2026-10-16 20:09:58
-@@ -19,6 +19,13 @@
+diff --git a/src/kosmickrisp/bridge/stubs/mtl_encoder.c b/src/kosmickrisp/bridge/stubs/mtl_encoder.c
+index 57810ab..39b2086 100644
+--- a/src/kosmickrisp/bridge/stubs/mtl_encoder.c
++++ b/src/kosmickrisp/bridge/stubs/mtl_encoder.c
+@@ -18,6 +18,13 @@ mtl_barrier_after_stages(void *encoder, enum mtl_stages after_stages,
+ {
  }
  
- void
++void
 +mtl_barrier_after_encoder_stages_device(void *encoder,
 +                                        enum mtl_stages after_stages,
 +                                        enum mtl_stages before_stages)
 +{
 +}
 +
-+void
+ void
  mtl_barrier_after_encoder_stages(void *encoder, enum mtl_stages after_stages,
                                   enum mtl_stages before_queue_stages)
- {
---- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c	2026-10-16 20:09:58
-+++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c	2026-10-16 20:09:58
-@@ -159,6 +159,7 @@
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.c b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+index 4598807..c44da2d 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+@@ -159,6 +159,7 @@ kk_resolve_close_stages(struct kk_cmd_buffer *cmd, enum kk_encoder_kind kind,
  #include "kk_entrypoints.h"
  #include "kk_format.h"
  #include "kk_image_view.h"
@@ -62,7 +70,7 @@ KosmicKrisp : sur Apple7 (M1, macOS 26), une barriere Vulkan enregistree dans un
  
  #include "kosmickrisp/bridge/mtl_bridge.h"
  #include "kosmickrisp/bridge/mtl_command_buffer.h"
-@@ -1049,6 +1050,46 @@
+@@ -1049,6 +1050,75 @@ kk_barrier_requires_encoder_split(struct kk_cmd_buffer *cmd,
            (dst & VK_ACCESS_2_INPUT_ATTACHMENT_READ_BIT);
  }
  
@@ -74,16 +82,44 @@ KosmicKrisp : sur Apple7 (M1, macOS 26), une barriere Vulkan enregistree dans un
 + * each barrier (the close puts a queue barrier on all stages). Apple8+
 + * renders right with the intra-encoder barrier.
 + *
++ * Only the barriers that make indirect arguments visible need the close:
++ * Lumen dispatches most of its work indirectly from arguments a previous
++ * dispatch wrote, and an Apple7 intra-encoder barrier does not order that
++ * argument fetch. Closing at those barriers alone renders right
++ * (Demonologist on M1 Max: 26 closes per frame instead of 261).
++ *
 + * CIDRE_BARRIERES_CALCUL overrides the choice: "encodeur" (intra-encoder
 + * barrier), "visibilite" (intra-encoder barrier with device visibility),
-+ * "couper" (close the encoder). */
++ * "couper" (close the encoder at every barrier), "indirect" (close at the
++ * barriers before an indirect read only). */
 +enum kk_compute_barrier_mode {
 +   KK_COMPUTE_BARRIER_ENCODER,
 +   KK_COMPUTE_BARRIER_DEVICE_VISIBILITY,
 +   KK_COMPUTE_BARRIER_CLOSE,
++   KK_COMPUTE_BARRIER_CLOSE_INDIRECT,
 +};
 +
-+#define KK_COMPUTE_BARRIER_APPLE7_DEFAULT KK_COMPUTE_BARRIER_CLOSE
++#define KK_COMPUTE_BARRIER_APPLE7_DEFAULT KK_COMPUTE_BARRIER_CLOSE_INDIRECT
++
++/* Does this dependency make memory visible to an indirect argument fetch? */
++static bool
++kk_barrier_feeds_indirect(const VkDependencyInfo *dep)
++{
++#define KK_INDIRECT(b)                                                         \
++   (((b)->dstStageMask & VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT) ||            \
++    ((b)->dstAccessMask & VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT))
++   for (uint32_t i = 0; i < dep->memoryBarrierCount; i++)
++      if (KK_INDIRECT(&dep->pMemoryBarriers[i]))
++         return true;
++   for (uint32_t i = 0; i < dep->bufferMemoryBarrierCount; i++)
++      if (KK_INDIRECT(&dep->pBufferMemoryBarriers[i]))
++         return true;
++   for (uint32_t i = 0; i < dep->imageMemoryBarrierCount; i++)
++      if (KK_INDIRECT(&dep->pImageMemoryBarriers[i]))
++         return true;
++#undef KK_INDIRECT
++   return false;
++}
 +
 +static enum kk_compute_barrier_mode
 +kk_compute_barrier_mode(struct kk_cmd_buffer *cmd)
@@ -95,6 +131,7 @@ KosmicKrisp : sur Apple7 (M1, macOS 26), une barriere Vulkan enregistree dans un
 +               : !strcmp(v, "encodeur")   ? KK_COMPUTE_BARRIER_ENCODER
 +               : !strcmp(v, "visibilite") ? KK_COMPUTE_BARRIER_DEVICE_VISIBILITY
 +               : !strcmp(v, "couper")     ? KK_COMPUTE_BARRIER_CLOSE
++               : !strcmp(v, "indirect")   ? KK_COMPUTE_BARRIER_CLOSE_INDIRECT
 +                                          : -1;
 +   }
 +   if (forced >= 0)
@@ -109,7 +146,7 @@ KosmicKrisp : sur Apple7 (M1, macOS 26), une barriere Vulkan enregistree dans un
  VKAPI_ATTR void VKAPI_CALL
  kk_CmdPipelineBarrier2(VkCommandBuffer commandBuffer,
                         const VkDependencyInfo *pDependencyInfo)
-@@ -1102,12 +1143,26 @@
+@@ -1102,12 +1172,31 @@ kk_CmdPipelineBarrier2(VkCommandBuffer commandBuffer,
           mtl_barrier_after_encoder_stages(cmd->metal.render, MTL_STAGE_VERTEX,
                                            MTL_STAGE_FRAGMENT);
     } else if (cmd->metal.compute) {
@@ -119,7 +156,12 @@ KosmicKrisp : sur Apple7 (M1, macOS 26), une barriere Vulkan enregistree dans un
 -      mtl_barrier_after_encoder_stages(cmd->metal.compute,
 -                                       MTL_STAGE_DISPATCH | MTL_STAGE_BLIT,
 -                                       MTL_STAGE_DISPATCH | MTL_STAGE_BLIT);
-+      switch (kk_compute_barrier_mode(cmd)) {
++      enum kk_compute_barrier_mode mode = kk_compute_barrier_mode(cmd);
++      if (mode == KK_COMPUTE_BARRIER_CLOSE_INDIRECT)
++         mode = kk_barrier_feeds_indirect(pDependencyInfo)
++                   ? KK_COMPUTE_BARRIER_CLOSE
++                   : KK_COMPUTE_BARRIER_ENCODER;
++      switch (mode) {
 +      case KK_COMPUTE_BARRIER_CLOSE:
 +         /* The next command opens a new encoder; the close orders it after
 +          * everything recorded so far. */

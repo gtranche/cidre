@@ -425,6 +425,12 @@ les pose, une fois :
   `section`, la clé n'est cherchée que dans cette section INI, et une clé
   absente y est ajoutée (la section aussi, à la fin du fichier, si elle manque).
   Sans `section`, une clé absente n'est pas ajoutée.
+  Avec `creer = true` (et une `section`), un fichier absent dont le dossier
+  existe est créé vide puis rempli : l'`Engine.ini` d'Unreal
+  (`Saved/Config/Windows/`), où vivent les `[SystemSettings]`, que le jeu
+  n'écrit pas lui-même (Demonologist). Sa sauvegarde `.avant-cidre` est alors
+  vide. Sans le dossier (le jeu n'a jamais tourné), on réessaie au lancement
+  suivant.
 - Avant la première écriture, le fichier est copié en `<fichier>.avant-cidre`
   (jamais écrasé ensuite : c'est l'état d'origine).
 - Une fois posés (ou déjà en place), le lanceur écrit

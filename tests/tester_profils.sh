@@ -270,6 +270,26 @@ printf '[reglages_jeu]\nfichier = "AppData/Local/Jeu/Config/Absent.ini"\nvaleurs
 sortie=$(sh "$R/tests/reglages_jeu.sh" 999); rc=$?
 verif "fichier absent : code 3" "3" "$rc"
 verif "fichier absent : rien cree" "" "$(ls "$U/AppData/Local/Jeu/Config/" | grep Absent)"
+# creer = true : l Engine.ini d Unreal, que le jeu n ecrit pas, cree avec sa section
+printf '[reglages_jeu]\nfichier = "AppData/Local/Jeu/Config/Engine.ini"\nsection = "SystemSettings"\ncreer = true\nvaleurs = { "r.Lumen.ScreenProbeGather.DownsampleFactor" = "32", "r.Lumen.Reflections.Allow" = "0" }\n' >"$CIDRE_PROFILS_BASE/999.toml"
+sortie=$(sh "$R/tests/reglages_jeu.sh" 999); rc=$?
+verif "creer : code 0" "0" "$rc"
+verif "creer : journal" "cree" "$(printf '%s' "$sortie" | grep -o 'cree (absent' | cut -c1-4)"
+verif "creer : section et cles" "[SystemSettings] r.Lumen.ScreenProbeGather.DownsampleFactor=32 r.Lumen.Reflections.Allow=0" "$(tr -d '\r' <"$U/AppData/Local/Jeu/Config/Engine.ini" | grep -v '^$' | tr '\n' ' ' | sed 's/ $//')"
+verif "creer : sauvegarde vide (absent avant)" "0" "$(wc -c <"$U/AppData/Local/Jeu/Config/Engine.ini.avant-cidre" | tr -d ' ')"
+sortie=$(sh "$R/tests/reglages_jeu.sh" 999); rc=$?
+verif "creer : relance deja en place" "0 deja en place" "$rc $(printf '%s' "$sortie" | grep -o 'deja en place')"
+# fichier deja la : les autres cles et sections restent
+printf '[Core.Log]\r\nLogX=Verbose\r\n' >"$U/AppData/Local/Jeu/Config/Engine.ini"; rm -f "$U/AppData/Local/Jeu/Config/Engine.ini.avant-cidre"
+sh "$R/tests/reglages_jeu.sh" 999 >/dev/null
+verif "creer, fichier existant : autres cles gardees" "[Core.Log] LogX=Verbose [SystemSettings] r.Lumen.ScreenProbeGather.DownsampleFactor=32 r.Lumen.Reflections.Allow=0" "$(tr -d '\r' <"$U/AppData/Local/Jeu/Config/Engine.ini" | grep -v '^$' | tr '\n' ' ' | sed 's/ $//')"
+rm -f "$U/AppData/Local/Jeu/Config/Engine.ini" "$U/AppData/Local/Jeu/Config/Engine.ini.avant-cidre"
+printf '[reglages_jeu]\nfichier = "AppData/Local/Jeu/Absent/Engine.ini"\nsection = "SystemSettings"\ncreer = true\nvaleurs = { "k" = "v" }\n' >"$CIDRE_PROFILS_BASE/999.toml"
+verif "creer, dossier absent : code 3, rien cree" "3 " "$(sh "$R/tests/reglages_jeu.sh" 999 >/dev/null; echo $?) $(ls "$U/AppData/Local/Jeu" | grep Absent)"
+printf '[reglages_jeu]\nfichier = "AppData/Local/Jeu/Config/Engine.ini"\ncreer = true\nvaleurs = { "k" = "v" }\n' >"$CIDRE_PROFILS_BASE/999.toml"
+verif "creer sans section : code 1, rien cree" "1 " "$(sh "$R/tests/reglages_jeu.sh" 999 >/dev/null; echo $?) $(ls "$U/AppData/Local/Jeu/Config/" | grep Engine)"
+printf '[[machine]]\nsi = "coeurs_gpu >= 1"\n[[machine.reglages_jeu]]\nfichier = "AppData/Local/Jeu/Config/Engine.ini"\nsection = "SystemSettings"\ncreer = true\n[machine.reglages_jeu.valeurs]\n"k" = "v"\n' >"$CIDRE_PROFILS_BASE/999.toml"
+verif "creer : garde a la fusion d un bloc [[machine]]" "true" "$(sh "$R/tests/fiche_profil.sh" reglages 999 | awk -F'\t' '$2 == "creer" { print $3 }')"
 verif "jeu sans reglages : code 3" "3" "$(sh "$R/tests/reglages_jeu.sh" 998 >/dev/null; echo $?)"
 verif "chemin hors du dossier utilisateur refuse" "1" "$(printf '[reglages_jeu]\nfichier = "../../windows/x.ini"\nvaleurs = { "k" = "v" }\n' >"$CIDRE_PROFILS_BASE/999.toml"; sh "$R/tests/reglages_jeu.sh" 999 >/dev/null; echo $?)"
 

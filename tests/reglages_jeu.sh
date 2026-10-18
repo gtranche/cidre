@@ -39,6 +39,8 @@
 # dans cette section INI, et une cle absente y est ajoutee (la section aussi, a la
 # fin, si elle manque). Sans section, une cle absente n'est pas ajoutee. Avant la
 # premiere ecriture, le fichier est copie en <fichier>.avant-cidre, jamais ecrase.
+# Avec `creer = true` (et une section), un fichier absent dont le dossier existe
+# est cree vide puis rempli : l'Engine.ini d'Unreal, que le jeu n'ecrit pas.
 #
 # Le temoin ([reglages_jeu_temoin] de la fiche : fichier INI + cle). Certains
 # jeux refont leur detection du materiel quand la carte graphique vue change
@@ -446,6 +448,20 @@ entree() {
       *'*'*) FICHIERS=$(cd "$BASE" 2>/dev/null && IFS= && for f in $REL; do [ -f "$f" ] && printf '%s\n' "$f"; done) ;;
       *) FICHIERS=$REL; [ -f "$BASE/$REL" ] || FICHIERS= ;;
    esac
+   # creer = true (format ini, avec section) : un fichier que le jeu n ecrit jamais
+   # lui-meme (l Engine.ini d Unreal, ou vivent les [SystemSettings]) est cree vide
+   # si son dossier existe ; sa sauvegarde .avant-cidre est alors vide.
+   if [ -z "$FICHIERS" ] && [ "$(champ creer)" = true ]; then
+      case $FORMAT:$REL in
+         ini:*'*'*) echo "    reglages du jeu : creer = true refuse avec un * ($REL)"; return 1 ;;
+         ini:*) ;;
+         *) echo "    reglages du jeu : creer = true : format ini seulement ($REL)"; return 1 ;;
+      esac
+      [ -n "$SECTION" ] || { echo "    reglages du jeu : creer = true sans section : rien a poser dans $REL"; return 1; }
+      if [ -d "$(dirname "$BASE/$REL")" ]; then
+         : >"$BASE/$REL" && FICHIERS=$REL && echo "    reglages du jeu : $REL cree (absent, creer = true)"
+      fi
+   fi
    [ -n "$FICHIERS" ] || { echo "    reglages du jeu : $REL absent (premier lancement ?), on reessaiera"; return 3; }
 
    V=$(mktemp "${TMPDIR:-/tmp}/reglages.XXXXXX")

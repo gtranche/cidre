@@ -10,7 +10,7 @@
 #                                           "reglages_jeu":[...],"variantes":[...],"compat_reference":{},"compat_machines":[...],
 #                                           "origine":"cache|livree|provisoire","rapports":n} ; "compat" est celle de CETTE machine
 #   fiche_profil.sh reglages <appid>        [reglages_jeu] en lignes TAB, une entree (section INI visee) par numero :
-#                                           `n TAB fichier|format|section TAB val`, puis `n TAB valeur TAB cle TAB val`
+#                                           `n TAB fichier|format|section|id|creer TAB val`, puis `n TAB valeur TAB cle TAB val`
 #   fiche_profil.sh compat <appid>          la compatibilite sur cette machine (`cle TAB valeur`), puis les entrees par
 #                                           famille de Mac : `machines TAB nom TAB voie TAB etat TAB applique`
 #   fiche_profil.sh variantes <appid>       les conditions `si` des blocs [[machine]] qui s'appliquent ici, une par ligne
@@ -230,6 +230,7 @@ fiche_plat() { # <fiche>
             if (!(id in parid)) { parid[id] = ++en; ef[en] = attr[sec, "fichier"]; es[en] = attr[sec, "section"]; ei[en] = attr[sec, "id"] }
             e = parid[id]
             if (attr[sec, "format"] != "") efo[e] = attr[sec, "format"]
+            if (attr[sec, "creer"] != "") ecr[e] = attr[sec, "creer"]
             for (j = 1; j <= nc[sec]; j++) {
                c = cles[sec, j]
                if (!((e, c) in vv)) vo[e, ++vn[e]] = c
@@ -241,6 +242,7 @@ fiche_plat() { # <fiche>
             if (efo[e] != "") print "reglages_jeu." e "\tformat\ts\t" efo[e]
             if (es[e] != "") print "reglages_jeu." e "\tsection\ts\t" es[e]
             if (ei[e] != "") print "reglages_jeu." e "\tid\ts\t" ei[e]
+            if (ecr[e] != "") print "reglages_jeu." e "\tcreer\tb\t" ecr[e]
             for (k = 1; k <= vn[e]; k++) print "reglages_jeu." e ".valeurs\t" vo[e, k] "\t" vt[e, vo[e, k]] "\t" vv[e, vo[e, k]]
          }
       }' "$B"

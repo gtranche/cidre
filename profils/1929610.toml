@@ -31,8 +31,44 @@ plateformes_steam = "steam 2026-10-11"
 # Saved/SaveGames/OptionsRelease.sav (structure GraphicQuality, UpscalingMethod,
 # FSRFrameGenMode), absente d une sauvegarde neuve et d un en-tete Unreal 5.6 que
 # le format gvas ne sait pas completer : une fiche ne peut pas les poser.
-# Pistes pour la lumiere en DXMT/M1 : Lumen sans atomiques 64 bits natifs
-# (emulation), et performance du D3D12 (generateur AIR direct).
+#
+# M1 (famille_gpu <= 7) : D3D12 + SM 6.6 par defaut, avec Lumen allege. Les
+# atomiques 64 bits y sont emulees (KosmicKrisp 0153) et une barriere de calcul
+# qui precede une lecture d arguments indirects ferme l encodeur (0155). Mesure
+# au menu (scene eclairee, meme cout que le jeu), M1 Max, 1728x1084, le 2026-10-18 :
+#     D3D12 + Lumen, reglages du jeu                    19,9 fps  GPU ~50 ms
+#     + Lumen allege (Engine.ini ci-dessous)            26,9 fps  GPU  37 ms
+#     Lumen coupe (pieces noires, pour memoire)         30,8 fps  GPU  29 ms
+# Le jeu impose sa definition et son pourcentage de rendu (GameUserSettings et
+# r.ScreenPercentage sans effet) : seules les variables r.Lumen.* portent. Le
+# jeu n ecrit pas d Engine.ini : la fiche le cree (creer = true).
+# Ne pas mesurer avec le HUD Metal (hud = true) : en D3D12 il fige une partie
+# sur deux a 0,9 image/s.
+
+[[machine]]
+si = "famille_gpu <= 7"
+[machine.cidre]
+dx12 = true
+sm66 = true
+arguments = "-dx12"
+[[machine.reglages_jeu]]
+# Lumen allege : sondes de l ecran deux fois plus espacees, octaedre 6, sans AO
+# courte portee ni volume de translucidite, radiosite espacee, sans SDF de
+# maillage, sans reflexions Lumen, cache de surface rafraichi au 1/16.
+id = "lumen-m1-allege"
+fichier = "AppData/Local/Shivers/Saved/Config/Windows/Engine.ini"
+section = "SystemSettings"
+creer = true
+[machine.reglages_jeu.valeurs]
+"r.Lumen.ScreenProbeGather.DownsampleFactor" = "32"
+"r.Lumen.ScreenProbeGather.TracingOctahedronResolution" = "6"
+"r.Lumen.ScreenProbeGather.ShortRangeAO" = "0"
+"r.Lumen.TranslucencyVolume.Enable" = "0"
+"r.LumenScene.Radiosity.ProbeSpacing" = "8"
+"r.Lumen.TraceMeshSDFs" = "0"
+"r.Lumen.Reflections.Allow" = "0"
+"r.LumenScene.SurfaceCache.CardCaptureRefreshFraction" = "0.0625"
+"r.Lumen.ScreenProbeGather.RadianceCache.ProbeResolution" = "16"
 
 [compat]
 etat = "bronze"
@@ -48,14 +84,15 @@ voie = "dxmt"
 nom = "M1"
 si = "famille_gpu <= 7"
 voie = "d3d12"
-etat = "bronze"
+etat = "argent"
 source = "cidre-test"
-date = "2026-10-16"
+date = "2026-10-18"
 machine = "M1 Max 32 Go"
-cidre_version = "1.5.11 + 0150"
-fps_jeu = 30
-options = "dx12=true"
-notes = "Unreal accepte le D3D12 sur M1 (SM5, sans Nanite ni Lumen) et va en jeu a 30 fps, avec la meme obscurite qu'en DXMT : rien a gagner, rester en DXMT."
+cidre_version = "1.5.15 + 0155 v2"
+fps_menu = 27
+fps_jeu = 0
+options = "dx12=true sm66=true arguments=-dx12"
+notes = "D3D12 + SM 6.6 : Lumen s'active (atomiques 64 bits emulees, 0153 ; barrieres de calcul, 0155) et les pieces aux neons sont eclairees. Avec Lumen allege par Engine.ini (pose par la fiche) : 26,9 fps au menu (meme cout que le jeu : 19,5 au menu, 18-19,5 en partie avec les reglages d'origine), GPU 37 ms, contre 19,9 avec les reglages Lumen du jeu ; en partie, a confirmer. Image propre (drawable relu en jeu). Le HUD Metal fige le D3D12 une partie sur deux : ne pas l'activer."
 
 [[compat.machines]]
 nom = "M2 et suivants"
