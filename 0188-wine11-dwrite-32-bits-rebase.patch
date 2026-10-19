@@ -1,0 +1,35 @@
+Generated-by: LLM
+
+wine11 : DirectWrite rend des glyphes a un invite 32 bits. dwrite.so porte ses relais wow64 du cote unix (freetype.c) et y lisait les adresses de l'invite sans les rebaser sur sa fenetre (0096), comme ws2_32, secur32, crypt32 et dnsapi avant 0182 : avances de glyphes aberrantes (9956964 pour « E » en Arial), boite vide, aucun pixel. Le client Battle.net (CEF 108, i386) affichait sa page de connexion sans un seul caractere. ULongToPtr y est redefini pour ajouter __wine_wow64_host_base(). Temoin tests/h32dwrite.cpp : « AUCUN PIXEL » sur le runtime v1.5.15, environ 1 300 pixels par mot avec 0188 (Arial, Tahoma, Times New Roman), comme en 64 bits. Verifie dans le client par DevTools (--remote-debugging-port) : DOM et rendu de la page complets. Construit hors arbre (dwrite.so) et pose seulement dans un runtime clone.
+
+diff --git a/dlls/dwrite/freetype.c b/dlls/dwrite/freetype.c
+index 13d9a07..979b812 100644
+--- a/dlls/dwrite/freetype.c
++++ b/dlls/dwrite/freetype.c
+@@ -815,6 +815,26 @@ C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );
+ 
+ typedef ULONG PTR32;
+ 
++/*
++ * L'invite 32 bits voit A la ou l'hote utilise base + A (fenetre rebasee,
++ * correctif 0096). Ces relais wow64 vivent du cote unix : c'est ici qu'il faut
++ * traduire (voir 0182 pour ws2_32, secur32, crypt32, dnsapi). Sans cela,
++ * DirectWrite ne rendait aucun glyphe a un invite 32 bits : la page de
++ * connexion de Battle.net (CEF) s'affichait sans un seul caractere.
++ */
++NTSYSAPI ULONG_PTR CDECL __wine_wow64_host_base(void);
++
++static inline void *dw_ptr_32to64( ULONG addr )
++{
++    static ULONG_PTR base = (ULONG_PTR)-1;
++
++    if (base == (ULONG_PTR)-1) base = __wine_wow64_host_base();
++    return addr ? (void *)(base + addr) : NULL;
++}
++
++#undef ULongToPtr
++#define ULongToPtr(a) dw_ptr_32to64( (ULONG)(ULONG_PTR)(a) )
++
+ static NTSTATUS wow64_create_font_object(void *args)
+ {
+     struct
