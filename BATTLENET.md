@@ -221,6 +221,12 @@ Voie retenue pour avancer :
   restants attendent indefiniment. A instruire : taille des piles des fils crees par le chargeur,
   cout en pile de la remise d'exception ARM64EC sous FEX.
 - Warden et le rendu D3D12 ne sont pas encore atteints.
+- Avec `FEX_SMCCHECKS=full` (controle complet du code auto-modifie), plus aucun debordement de
+  pile : la cascade venait sans doute de code dechiffre en place que FEX executait depuis un
+  bloc perime. Le chargeur tourne alors 4 min 48 s de CPU a 100 % d'un coeur, puis se fige :
+  plusieurs fils sont en `wait_suspend` (suspendus par le chargeur, jamais repris) et le fil
+  principal les attend. Piste : la suspension de fils et la lecture de leur contexte sous FEX
+  ARM64EC (`NtSuspendThread`/`NtGetContextThread`, BTCpuSuspendLocalThread). Chantier de fond.
 
 ## 5. Suite
 
