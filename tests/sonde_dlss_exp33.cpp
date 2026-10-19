@@ -8,7 +8,8 @@
 // Les deux gels GPU du M1 sous DLSS sont venus de ce jeu : le risque existe ici aussi,
 // a ne lancer qu'avec un creneau de la coordination.
 //   x86_64-w64-mingw32-clang++ -O2 -std=c++20 -I<dxmt>/src/nvngx sonde_dlss_exp33.cpp -ld3d11 -ldxgi -luser32 -static -o sonde_dlss_exp33.exe
-//   DXMT_ENABLE_NVEXT=1 CIDRE_PRESENTATION_CACHEE=1 CIDRE_DXMT_STATS=1 wine sonde_dlss_exp33.exe [images] [ms] [taille] [charge N]
+//   DXMT_ENABLE_NVEXT=1 CIDRE_PRESENTATION_CACHEE=1 CIDRE_DXMT_STATS=1 wine sonde_dlss_exp33.exe [images] [ms] [taille|grand] [charge N]
+// « grand » : 1241x779 (texture 1244x780) tout du long, un seul scaler, comme le jeu.
 // « charge N » : 16 images d'entree precalculees puis recyclees (le CPU emule ne limite
 // plus, ~80 images/s et plus, comme le jeu) et N copies par image d'une texture
 // 3456x2234 RGBA16F, pour charger le GPU comme un jeu.
@@ -63,6 +64,7 @@ int main(int argc, char **argv) {
   int images = argc > 1 ? atoi(argv[1]) : 600;
   int ms_image = argc > 2 ? atoi(argv[2]) : 12; // ~80 images/s, comme Exp33 sous DLSS
   bool taille = argc > 3 && !strcmp(argv[3], "taille");
+  bool grand = argc > 3 && !strcmp(argv[3], "grand"); // 1241x779 tout du long, comme le jeu en passe a
   int charge = (argc > 5 && !strcmp(argv[4], "charge")) ? atoi(argv[5]) : -1;
   bool recycler = charge >= 0;
   HWND hwnd = CreateWindowExA(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, "STATIC", "sonde", WS_POPUP, 0, 0, BB_W, BB_H,
@@ -103,16 +105,27 @@ int main(int argc, char **argv) {
     lourd_b = tex(3456, 2234, DXGI_FORMAT_R16G16B16A16_FLOAT, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET);
   }
   struct Passe { unsigned tw, th, cw, ch; } passes[2] = {{1244, 780, 1241, 779}, {692, 436, 692, 434}};
-  int debut = taille ? 0 : 1;
+  int debut = (taille || grand) ? 0 : 1;
+  int fin = grand ? 1 : 2;
   LARGE_INTEGER fq, t0, t1; QueryPerformanceFrequency(&fq); QueryPerformanceCounter(&t0);
   int faites = 0;
-  for (int pi = debut; pi < 2; pi++) {
+  for (int pi = debut; pi < fin; pi++) {
     Passe P = passes[pi];
     ID3D11Texture2D *color = tex(P.tw, P.th, DXGI_FORMAT_R11G11B10_FLOAT, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET);
     ID3D11Texture2D *depth = tex(P.tw, P.th, DXGI_FORMAT_R32G8X24_TYPELESS, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_DEPTH_STENCIL);
     D3D11_DEPTH_STENCIL_VIEW_DESC dvd = {}; dvd.Format = DXGI_FORMAT_D32_FLOAT_S8X24_UINT; dvd.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
     ID3D11DepthStencilView *dsv = nullptr; dev->CreateDepthStencilView(depth, &dvd, &dsv);
     if (!color || !depth || !dsv) { printf("ECHEC : textures d'entree\n"); return 1; }
+    // masque de biais d'Unreal (DLSS.Input.Bias.Current.Color.Mask), si SONDE_MASQUE=1 :
+    // R8_UNORM a la taille d'entree, une bande verticale « reactive »
+    ID3D11Texture2D *masque = nullptr;
+    if (getenv("SONDE_MASQUE")) {
+      masque = tex(P.tw, P.th, DXGI_FORMAT_R8_UNORM, D3D11_BIND_SHADER_RESOURCE);
+      std::vector<uint8_t> m(P.tw * P.th);
+      for (unsigned y = 0; y < P.th; y++)
+        for (unsigned x = 0; x < P.tw; x++) m[y * P.tw + x] = (x / 64) % 2 ? 255 : 0;
+      ctx->UpdateSubresource(masque, 0, nullptr, m.data(), P.tw, 0);
+    }
     NVNGXParameter *p = nullptr; Alloc(&p);
     p->Set(NVNGX_Parameter_Width, P.cw); p->Set(NVNGX_Parameter_Height, P.ch);
     p->Set(NVNGX_Parameter_OutWidth, OUT_W); p->Set(NVNGX_Parameter_OutHeight, OUT_H);
@@ -154,6 +167,7 @@ int main(int argc, char **argv) {
       p->Set(NVNGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, P.cw);
       p->Set(NVNGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, P.ch);
       p->Set(NVNGX_Parameter_DLSS_Pre_Exposure, 1.0f);
+      if (masque) p->Set("DLSS.Input.Bias.Current.Color.Mask", (ID3D11Resource *)masque);
       if (Eval(ctx, h, p, nullptr) != NVNGX_RESULT_OK) { printf("ECHEC : Evaluate\n"); return 1; }
       D3D11_BOX box = {0, 0, 0, OUT_W, OUT_H, 1};
       ctx->CopySubresourceRegion(bb, 0, 0, 0, 0, out, 0, &box);
@@ -163,6 +177,7 @@ int main(int argc, char **argv) {
       if (reste > 0) Sleep(reste);
     }
     Rel(h);
+    if (masque) masque->Release();
     dsv->Release(); depth->Release(); color->Release();
   }
   QueryPerformanceCounter(&t1);
