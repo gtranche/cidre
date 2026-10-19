@@ -648,6 +648,15 @@ fi
 # pose est note dans $NVEXT_POSES et retire au lancement suivant sans dlss.
 DLSS=$(opt dlss CIDRE_DLSS)
 case $DLSS in metalfx) ;; *) DLSS= ;; esac
+# GARDE : DLSS -> MetalFX temporel a bloque le GPU du M1 dans Expedition 33, deux fois
+# (2026-10-18 avec la generation d'images, 2026-10-19 sans) : WindowServer tue par le
+# chien de garde ou panique du noyau, toute la session perdue. Tant que ce n'est pas
+# explique, dlss est refuse, d'une fiche comme de l'environnement, sans
+# CIDRE_DLSS_ESSAI=1 (essais hors jeu ou manches accordees par la coordination).
+if [ -n "$DLSS" ] && [ "${CIDRE_DLSS_ESSAI:-}" != 1 ]; then
+   echo "    dlss : metalfx refuse (blocage GPU du M1 constate les 18 et 19/10 ; CIDRE_DLSS_ESSAI=1 pour un essai) : DLSS absent" >>"$JOURNAL"
+   DLSS=
+fi
 NVEXT_POSES=$R/wine/.cidre-nvext-poses
 source_nvext() { # <fichier> : nvapi64.dll ou nvngx.dll
    case $1 in nvapi64.dll) dev=nvapi/$1 ;; *) dev=nvngx/$1 ;; esac
