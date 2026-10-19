@@ -1,0 +1,331 @@
+wine11 : sous la capture du curseur, un ClipCursor garde la position du jeu (0187)
+
+Suite de 0122 (capture du curseur en espace plein ecran). Tant que le jeu
+cache son curseur dans l'espace, winemac decouple la souris du curseur de
+macOS : le curseur reel reste fige la ou la capture l'a pris, et la position
+que le jeu connait (cidreCapturePos) suit les deltas.
+
+-[WineApplicationController startClippingCursor:] reposait pourtant, a chaque
+ClipCursor, le curseur a la position reelle de macOS -- sous la capture, ce
+point fige -- par setCursorPosition:, qui ecrit cidreCapturePos. La position
+du jeu revenait donc en silence a cet ancien emplacement. Demonologist
+(1929610, Unreal 5.6) pose un ClipCursor a chaque changement de vue :
+- le clic suivant porte cette position : le jeu voit un saut de souris
+  (camera vers le bas quand le point fige est en bas de l'ecran) ;
+- a l'ouverture d'un menu (le jeu remontre son curseur), la capture rendait
+  le curseur a cet ancien emplacement : « le pointeur reapparait ailleurs ».
+Sous la capture, un ClipCursor ne fait plus que plier la position du jeu dans
+le nouvel ecrou. Hors capture, rien ne change.
+
+Trace CIDRE_DEBUG_CURSOR=1 (sortie d'erreur, donc le journal du jeu) : ce que
+le jeu demande au curseur (cacher, montrer, SetCursorPos, ClipCursor), ce que
+winemac en fait (capture prise/rendue/refusee et pourquoi, curseur de macOS
+montre ou cache), clics, application devant ou non, et un releve toutes les
+0,5 s (curseur reel et visibilite, position du jeu, fenetre cle, compteurs).
+Sans la variable, rien n'est evalue.
+
+Essais M1, Demonologist D3D12, 2026-10-19 (trace) : avant, chaque ClipCursor
+sous capture remettait la position du jeu au point fige (817,940 puis
+671,630) ; apres, 15 ClipCursor sous capture sans remise, et au passage au
+menu le curseur rendu (770,707) concorde avec celui que le jeu repose
+(770,706). L'utilisateur : plus de pointeur mal place dans les menus.
+Reste un saut de camera au tout premier clic de la partie (une fois).
+
+--- aa/dlls/winemac.drv/cocoa_app.h	2026-10-19 10:40:33
++++ bb/dlls/winemac.drv/cocoa_app.h	2026-10-19 10:40:33
+@@ -94,6 +94,11 @@
+        decouplee du curseur de macOS) et position que le jeu lui connait. */
+     BOOL cidreCursorCaptured;
+     CGPoint cidreCapturePos;
++    WineWindow* cidreCaptureTarget;     /* la fenetre de jeu, non retenue */
++    const char* cidreCaptureWhy;
++    /* trace CIDRE_DEBUG_CURSOR : compteurs depuis le dernier releve */
++    NSTimeInterval cidreTraceLast;
++    unsigned cidreTraceMoves, cidreTraceWarps, cidreTraceHides, cidreTraceUnhides;
+ 
+     id<WineClipCursorHandler> clipCursorHandler;
+ 
+--- aa/dlls/winemac.drv/cocoa_app.m	2026-10-19 10:40:33
++++ bb/dlls/winemac.drv/cocoa_app.m	2026-10-19 10:40:33
+@@ -111,6 +111,27 @@
+     static void PerformRequest(void *info);
+ 
+ @end
++
++
++/* Cidre : CIDRE_DEBUG_CURSOR=1 trace sur la sortie d'erreur ce que le jeu
++   demande au curseur (montrer, cacher, poser, confiner) et ce que winemac en
++   fait (capture, curseur de macOS montre ou cache), avec un releve par
++   seconde. */
++static BOOL cidre_cursor_debug(void)
++{
++    static BOOL debug;
++    static dispatch_once_t once;
++    dispatch_once(&once, ^{
++        const char* v = getenv("CIDRE_DEBUG_CURSOR");
++        debug = v && *v == '1';
++    });
++    return debug;
++}
++
++#define CIDRE_CURSOR_TRACE(fmt, ...) \
++    do { if (cidre_cursor_debug()) \
++        fprintf(stderr, "cidre:curseur: %.3f " fmt "\n", \
++                [[NSProcessInfo processInfo] systemUptime], ##__VA_ARGS__); } while (0)
+ 
+ 
+ @implementation WineApplicationController
+@@ -933,6 +954,7 @@
+             {
+                 [NSCursor hide];
+                 cursorHidden = TRUE;
++                CIDRE_CURSOR_TRACE("macOS : curseur cache");
+             }
+ 
+             if (!cursorIsCurrent)
+@@ -945,6 +967,7 @@
+             {
+                 [NSCursor unhide];
+                 cursorHidden = FALSE;
++                CIDRE_CURSOR_TRACE("macOS : curseur montre (le jeu le montre)");
+             }
+         }
+         else
+@@ -958,6 +981,8 @@
+             {
+                 [NSCursor unhide];
+                 cursorHidden = FALSE;
++                CIDRE_CURSOR_TRACE("macOS : curseur montre (souris hors de toute fenetre Wine, capture %d)",
++                                   (int)cidreCursorCaptured);
+             }
+         }
+     }
+@@ -979,18 +1004,65 @@
+      * SetCursorPos, sans aucun deplacement du curseur reel. Des que le jeu
+      * remontre le curseur (menu), ou que la fenetre perd la main, le curseur
+      * reel est pose a cette position et la souris lui est rendue. */
+-    - (WineWindow*) cidreCaptureWindow
++    - (WineWindow*) cidreCaptureWindow:(const char**)why
+     {
+         WineWindow* key = (WineWindow*)[NSApp keyWindow];
+ 
+-        if (!clientWantsCursorHidden || ![NSApp isActive] || [windowsBeingDragged count])
+-            return nil;
+-        if (![key isKindOfClass:[WineWindow class]] || !key.cidreInFullScreenSpace)
+-            return nil;
++        *why = NULL;
++        if (!clientWantsCursorHidden) { *why = "le jeu montre son curseur"; return nil; }
++        if (![NSApp isActive]) { *why = "application pas devant"; return nil; }
++        if ([windowsBeingDragged count]) { *why = "fenetre deplacee"; return nil; }
++        if (![key isKindOfClass:[WineWindow class]]) { *why = "fenetre cle hors Wine"; return nil; }
++        if (!key.cidreInFullScreenSpace) { *why = "fenetre cle hors de l'espace plein ecran"; return nil; }
+         /* l'ecrou a base de CGEventTap deplace deja lui-meme le curseur */
+         if ([clipCursorHandler respondsToSelector:@selector(setCursorPosition:)])
+-            return nil;
++        { *why = "ecrou CGEventTap"; return nil; }
+         return key;
++    }
++
++    - (NSString*) cidreDescribeWindow:(NSWindow*)window
++    {
++        if (!window) return @"aucune";
++        if ([window isKindOfClass:[WineWindow class]])
++            return [NSString stringWithFormat:@"Wine %p espace=%d %@", window,
++                    (int)((WineWindow*)window).cidreInFullScreenSpace,
++                    NSStringFromRect([window frame])];
++        return [NSString stringWithFormat:@"%@ %p", [window className], window];
++    }
++
++    /* Releve d'une seconde (CIDRE_DEBUG_CURSOR=1), meme quand la souris ne
++       bouge pas : c'est a l'arret que le defaut se montre. */
++    - (void) cidreTraceTick
++    {
++        NSPoint real = [self flippedMouseLocation:[NSEvent mouseLocation]];
++#pragma clang diagnostic push
++#pragma clang diagnostic ignored "-Wdeprecated-declarations"
++        int visible = CGCursorIsVisible();
++#pragma clang diagnostic pop
++
++        CIDRE_CURSOR_TRACE("releve : reel %.0f,%.0f visible(CG)=%d | jeu %.0f,%.0f capture=%d (%s) | "
++                           "jeu-cache=%d mac-cache=%d actif=%d cle=%s cible=%s | 1 s : %u mvt %u SetCursorPos %u cacher %u montrer | ecrou=%d",
++                           real.x, real.y, visible, cidreCapturePos.x, cidreCapturePos.y,
++                           (int)cidreCursorCaptured, cidreCaptureWhy ? cidreCaptureWhy : "-",
++                           (int)clientWantsCursorHidden, (int)cursorHidden, (int)[NSApp isActive],
++                           [[self cidreDescribeWindow:[NSApp keyWindow]] UTF8String],
++                           [[self cidreDescribeWindow:lastTargetWindow] UTF8String],
++                           cidreTraceMoves, cidreTraceWarps, cidreTraceHides, cidreTraceUnhides,
++                           (int)self.clippingCursor);
++        cidreTraceMoves = cidreTraceWarps = cidreTraceHides = cidreTraceUnhides = 0;
++    }
++
++    - (void) cidreStartTrace
++    {
++        static dispatch_once_t once;
++
++        if (!cidre_cursor_debug()) return;
++        dispatch_once(&once, ^{
++            [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer* timer){
++                [self cidreTraceTick];
++            }];
++            CIDRE_CURSOR_TRACE("trace du curseur active");
++        });
+     }
+ 
+     - (void) cidreClampCapturePos:(WineWindow*)window
+@@ -1017,21 +1089,35 @@
+ 
+     - (void) cidreUpdateCursorCapture
+     {
+-        WineWindow* window = [self cidreCaptureWindow];
++        const char* why;
++        WineWindow* window = [self cidreCaptureWindow:&why];
+ 
++        [self cidreStartTrace];
++        if (why != cidreCaptureWhy && (!why || !cidreCaptureWhy || strcmp(why, cidreCaptureWhy)))
++            CIDRE_CURSOR_TRACE("capture possible : %s", why ? why : "oui");
++        cidreCaptureWhy = why;
+         if ((window != nil) == cidreCursorCaptured) return;
+ 
+         if (window)
+         {
+             cidreCapturePos = NSPointToCGPoint([self flippedMouseLocation:[NSEvent mouseLocation]]);
+             [self cidreClampCapturePos:window];
+-            if (CGAssociateMouseAndMouseCursorPosition(false) != kCGErrorSuccess) return;
++            if (CGAssociateMouseAndMouseCursorPosition(false) != kCGErrorSuccess)
++            {
++                CIDRE_CURSOR_TRACE("CAPTURE REFUSEE par macOS");
++                return;
++            }
++            CIDRE_CURSOR_TRACE("CAPTURE : curseur reel fige en %.0f,%.0f", cidreCapturePos.x, cidreCapturePos.y);
+             cidreCursorCaptured = TRUE;
+             mouseMoveDeltaX = 0;
+             mouseMoveDeltaY = 0;
+         }
+         else
+         {
++            NSPoint real = [self flippedMouseLocation:[NSEvent mouseLocation]];
++
++            CIDRE_CURSOR_TRACE("RENDU (%s) : curseur reel de %.0f,%.0f pose en %.0f,%.0f",
++                               why ? why : "?", real.x, real.y, cidreCapturePos.x, cidreCapturePos.y);
+             cidreCursorCaptured = FALSE;
+             CGSetLocalEventsSuppressionInterval(0);
+             CGWarpMouseCursorPosition(cidreCapturePos);
+@@ -1043,8 +1129,10 @@
+ 
+     - (void) hideCursor
+     {
++        cidreTraceHides++;
+         if (!clientWantsCursorHidden)
+         {
++            CIDRE_CURSOR_TRACE("le jeu cache son curseur");
+             clientWantsCursorHidden = TRUE;
+             [self updateCursor:TRUE];
+             [self cidreUpdateCursorCapture];
+@@ -1053,8 +1141,11 @@
+ 
+     - (void) unhideCursor
+     {
++        cidreTraceUnhides++;
+         if (clientWantsCursorHidden)
+         {
++            CIDRE_CURSOR_TRACE("le jeu montre son curseur (%s)",
++                               [[cursor description] UTF8String]);
+             clientWantsCursorHidden = FALSE;
+             [self updateCursor:FALSE];
+             [self cidreUpdateCursorCapture];
+@@ -1228,6 +1319,10 @@
+     {
+         BOOL ret;
+ 
++        cidreTraceWarps++;
++        CIDRE_CURSOR_TRACE("SetCursorPos %.0f,%.0f (capture %d, reel %.0f,%.0f)", pos.x, pos.y, (int)cidreCursorCaptured,
++                           [self flippedMouseLocation:[NSEvent mouseLocation]].x,
++                           [self flippedMouseLocation:[NSEvent mouseLocation]].y);
+         if ([windowsBeingDragged count])
+             ret = FALSE;
+         else if (cidreCursorCaptured)
+@@ -1314,8 +1409,20 @@
+ 
+         if (![clipCursorHandler startClippingCursor:rect])
+             return FALSE;
++        CIDRE_CURSOR_TRACE("ClipCursor %s (capture %d)", [NSStringFromRect(NSRectFromCGRect(rect)) UTF8String],
++                           (int)cidreCursorCaptured);
+ 
+-        [self setCursorPosition:NSPointToCGPoint([self flippedMouseLocation:[NSEvent mouseLocation]])];
++        /* Cidre : curseur capture, le curseur reel est fige la ou la capture
++           l'a pris ; sa position n'est pas celle du jeu. La reposer ici
++           ramenait le curseur du jeu a cet ancien emplacement a chaque
++           ClipCursor (Demonologist en pose un a chaque changement de vue) :
++           le clic suivant, qui porte cette position, faisait sauter la
++           camera, et le menu montrait le curseur a cet endroit. On ne fait
++           que plier la position du jeu dans le nouvel ecrou. */
++        if (cidreCursorCaptured)
++            [self cidreClampCapturePos:(WineWindow*)[NSApp keyWindow]];
++        else
++            [self setCursorPosition:NSPointToCGPoint([self flippedMouseLocation:[NSEvent mouseLocation]])];
+ 
+         [self updateWindowsForCursorClipping];
+ 
+@@ -1329,6 +1436,7 @@
+ 
+         if (![clipCursorHandler stopClippingCursor])
+             return FALSE;
++        CIDRE_CURSOR_TRACE("ClipCursor rendu (capture %d)", (int)cidreCursorCaptured);
+ 
+         lastSetCursorPositionTime = [[NSProcessInfo processInfo] systemUptime];
+ 
+@@ -1420,6 +1528,7 @@
+         WineWindow* targetWindow;
+         BOOL drag = [anEvent type] != NSEventTypeMouseMoved;
+ 
++        cidreTraceMoves++;
+         [self cidreUpdateCursorCapture];
+ 
+         if ([windowsBeingDragged count])
+@@ -1529,6 +1638,16 @@
+                 point = cgpoint_win_from_mac(point);
+ 
+                 event = macdrv_create_event(MOUSE_MOVED_ABSOLUTE, targetWindow);
++                if (cidre_cursor_debug() && !cidreCursorCaptured)
++                {
++                    static NSTimeInterval last;
++                    NSTimeInterval now = [[NSProcessInfo processInfo] systemUptime];
++                    if (now - last >= 0.25)
++                    {
++                        last = now;
++                        CIDRE_CURSOR_TRACE("mvt absolu %.0f,%.0f vers le jeu (mac-cache %d)", point.x, point.y, (int)cursorHidden);
++                    }
++                }
+                 event->mouse_moved.x = floor(point.x);
+                 event->mouse_moved.y = floor(point.y);
+ 
+@@ -1586,6 +1705,11 @@
+         WineWindow* windowBroughtForward = nil;
+         BOOL process = FALSE;
+ 
++        if (type == NSEventTypeLeftMouseDown || type == NSEventTypeRightMouseDown)
++            CIDRE_CURSOR_TRACE("clic (fenetre de l'evenement %s, cle %s, capture %d)",
++                               [[self cidreDescribeWindow:window] UTF8String],
++                               [[self cidreDescribeWindow:[NSApp keyWindow]] UTF8String], (int)cidreCursorCaptured);
++
+         if ([window isKindOfClass:[WineWindow class]] &&
+             type == NSEventTypeLeftMouseDown &&
+             ![theEvent wine_commandKeyDown])
+@@ -2314,6 +2438,8 @@
+     - (void)applicationDidBecomeActive:(NSNotification *)notification
+     {
+         NSNumber* displayID;
++
++        CIDRE_CURSOR_TRACE("application devant (cle %s)", [[self cidreDescribeWindow:[NSApp keyWindow]] UTF8String]);
+         NSDictionary* modesToRealize = [latentDisplayModes autorelease];
+ 
+         latentDisplayModes = [[NSMutableDictionary alloc] init];
+@@ -2353,6 +2479,8 @@
+     {
+         macdrv_event* event;
+         WineEventQueue* queue;
++
++        CIDRE_CURSOR_TRACE("application plus devant");
+ 
+         /* Cidre : l'application n'est plus devant, rendre le curseur. */
+         [self cidreUpdateCursorCapture];
