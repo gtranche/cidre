@@ -307,6 +307,38 @@ Session d2r-menu, meme environnement (runtime clone, `pfx-bnet`, FEX 0194).
   puis les suivre (FEX). Outils : `~/Dev/cidre-d2r/manche_longue.sh`, sondes `wine/virtual-sonde*.c`
   et `wine/b/dlls/ntdll/signal_arm64ec.c.sonde7`.
 
+### D2R, code auto-modifie sous mtrack : 0196 et 0197 (2026-10-19, 16:05-16:25)
+
+- Le chargeur garde deux alias RW de son code : sa section entiere projetee en RW
+  (0x115c60000) avec `.text` reprojete en RX a sa base, et D2R.exe reprojete sur une section
+  (vue RW a 0x120050000, image RWX a 0x140000000). D2R.exe est dechiffre page a page : NOACCESS,
+  faute d'execution, ecriture par l'alias, puis `NtProtect` en RX, ce qui fait invalider FEX.
+  Pas d'ecriture par `NtWriteVirtualMemory`. Ses appels systeme directs passent par les
+  enveloppes de Wine qui previennent FEX.
+- Temoin `tests/h64smc.c` (code reecrit sans changer de protection). En mtrack, la memoire RWX
+  privee etait perimee a 100 %, meme pour une page seule. Deux causes :
+  - wine11 **0196** : la branche JIT de `virtual_handle_fault` accordait l'ecriture par APRR
+    sans regarder la protection Windows, et le piege de FEX ne faisait jamais faute ;
+  - fex **0197** : avec des pages d'hote de 16 Kio, proteger une page de 4 Kio ne piege rien
+    tant qu'une voisine reste inscriptible ; piege et invalidation par 16 Kio. 0197 reprend
+    aussi le SMC complet dans les vues de section executables non inscriptibles (alias).
+
+  | h64smc (mtrack) | 0194 | + 0196 | + 0196 + 0197 |
+  |---|---|---|---|
+  | A page RWX seule | perime | OK | OK |
+  | B page RWX, voisine RW (meme page d'hote) | perime | perime | perime |
+  | C bloc RWX | perime | perime | OK |
+  | D, E vue RX/RWX ecrite par une vue RW | perime | perime | OK |
+
+  Non-regression h32smc, h64prepare, h64fibres, h64isec, h32temps et sonde_wx : OK. Manche
+  PEAK (deadlock W^X, meme branche) a faire avant toute release.
+- D2R avec 0196 + 0197, 3 manches de 4 min en mtrack : aucune fenetre ; meme effondrement en 2
+  a 4 min (assertions plus nombreuses, cascades d'exceptions, `RtlVirtualUnwind2` qui lit NULL,
+  debordements). Etendre le SMC complet aux vues RWX n'y change rien. Ces defauts ne sont donc
+  pas ceux qui bloquent D2R ; seul `FEX_SMCCHECKS=full` reste propre (mais trop lent).
+- Suite : en full, faire relever par FEX les blocs dont la verification detecte un changement
+  (adresse, type de projection, intervalle) pour trouver les ecritures que mtrack ne voit pas.
+
 ## 5. Suite
 
 1. Connexion par l'utilisateur, avec le client lance dans le prefixe d'essai (JEU DEMANDE a la
