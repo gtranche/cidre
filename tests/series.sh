@@ -61,7 +61,7 @@ serie_dxvk() {
 }
 
 serie_dxmt() {
-   ls "$R"/011[0-9]-dxmt-*.patch "$R"/012[0-9]-dxmt-*.patch "$R"/015[0-9]-dxmt-*.patch "$R"/017[0-9]-dxmt-*.patch "$R"/018[0-9]-dxmt-*.patch 2>/dev/null
+   ls "$R"/011[0-9]-dxmt-*.patch "$R"/012[0-9]-dxmt-*.patch "$R"/015[0-9]-dxmt-*.patch "$R"/017[0-9]-dxmt-*.patch "$R"/018[0-9]-dxmt-*.patch "$R"/019[0-9]-dxmt-*.patch 2>/dev/null
 }
 
 # FEX vit dans third_party/FEX, pas dans src/ : etape1 et la verification le

@@ -1,0 +1,236 @@
+Generated-by: LLM
+
+dxmt : rythme de presentation pour l'affichage direct (Cidre 0191)
+
+DXMT presente sans displaySync, par presentDrawable:afterMinimumDuration:(SyncInterval /
+frequence). En composition, WindowServer recale l'image sur sa cadence ; en affichage
+direct (winemac 0186) l'ecran ProMotion suit chaque presentation, et un drawable pret
+juste apres une vblank attend la suivante : Dead Cells passait de 120 a 91 images/s,
+intervalles a l'ecran de 8,3 / 12,5 / 16,7 ms.
+CIDRE_DXMT_RYTHME = amont (defaut, inchange) | fifo (SyncInterval >= 1 : displaySync et
+presentDrawable simple ; SyncInterval n : duree minimale n - 1/2 periodes) | duree (sans
+displaySync, duree minimale CIDRE_DXMT_RYTHME_FACTEUR, 0,9 par defaut, de la periode) |
+fifo-duree. SyncInterval 0 (CIDRE_VSYNC=0) et un d3d11.preferredMaxFrameRate plus lent
+que l'ecran gardent toujours le chemin d'origine (pas de plafond FIFO, cf. DREDGE).
+displaySyncEnabled passe par Presenter::changeDisplaySync, applique a la synchronisation
+suivante des proprietes de la couche.
+winemetal : CIDRE_DXMT_RYTHME_STATS=1 suit presentedTime de chaque drawable et ecrit
+toutes les 5 s une ligne « cidre rythme: » (images/s a l'ecran, paliers d'intervalle,
+images perdues, latence encodage -> ecran mediane et p95).
+
+diff --git a/src/d3d11/d3d11_swapchain.cpp b/src/d3d11/d3d11_swapchain.cpp
+index bb6d986..a61ae32 100644
+--- a/src/d3d11/d3d11_swapchain.cpp
++++ b/src/d3d11/d3d11_swapchain.cpp
+@@ -861,6 +861,7 @@ public:
+                      (preferred_max_frame_rate ? preferred_max_frame_rate
+                                                : init_refresh_rate_),
+                  preferred_max_frame_rate ? 1.0 / preferred_max_frame_rate : 0);
++    vsync_duration = CidreRythme(SyncInterval, vsync_duration);
+ 
+     auto &cmd_queue = device_->GetDXMTDevice().queue();
+     cmd_queue.CurrentFrameStatistics().api_call_count += device_->mutex.take_call_count();
+@@ -1070,6 +1071,51 @@ public:
+            cidre_fg_loin_, ")");
+   }
+ 
++  /* Cidre (0191) : rythme de presentation. DXMT presente sans displaySync, par
++     presentDrawable:afterMinimumDuration:(SyncInterval / frequence). En composition
++     WindowServer recale l'image sur sa propre cadence ; en affichage direct
++     (0186) l'ecran ProMotion suit chaque presentation : un drawable pret une
++     fraction de milliseconde apres la vblank attend la suivante a 12,5 ou 16,7 ms,
++     et Dead Cells passe de 120 a 91 images/s. CIDRE_DXMT_RYTHME :
++       amont  comportement d'origine ;
++       fifo   SyncInterval >= 1 : displaySync, presentDrawable simple (une image
++              par vblank ; SyncInterval n : duree minimale de n - 1/2 periodes) ;
++       duree  sans displaySync, duree minimale reduite a CIDRE_DXMT_RYTHME_FACTEUR
++              (0,9 par defaut) de la periode ;
++       fifo-duree  displaySync et duree reduite.
++     SyncInterval 0 (CIDRE_VSYNC=0, DREDGE) et un limiteur d'images plus lent que
++     l'ecran (d3d11.preferredMaxFrameRate) restent toujours au chemin d'origine :
++     pas de plafond FIFO la ou il nuisait. */
++  double CidreRythme(UINT SyncInterval, double vsync_duration) {
++    if (!cidre_rythme_lu_) {
++      cidre_rythme_lu_ = true;
++      std::string m = env::getEnvVar("CIDRE_DXMT_RYTHME");
++      if (m == "fifo") cidre_rythme_ = 1;
++      else if (m == "duree") cidre_rythme_ = 2;
++      else if (m == "fifo-duree") cidre_rythme_ = 3;
++      else cidre_rythme_ = 0;
++      std::string f = env::getEnvVar("CIDRE_DXMT_RYTHME_FACTEUR");
++      if (!f.empty()) {
++        double v = atof(f.c_str());
++        if (v > 0.1 && v <= 1.0) cidre_rythme_facteur_ = v;
++      }
++      if (cidre_rythme_)
++        WARN("Cidre : rythme de presentation ", m, " (facteur ", cidre_rythme_facteur_, ")");
++    }
++    bool limiteur = preferred_max_frame_rate && preferred_max_frame_rate < init_refresh_rate_ - 0.5;
++    bool sync = false;
++    if (cidre_rythme_ && SyncInterval >= 1 && !limiteur && init_refresh_rate_ < 1000.0) {
++      double periode = 1.0 / init_refresh_rate_;
++      sync = cidre_rythme_ & 1;
++      if (cidre_rythme_ == 1)
++        vsync_duration = SyncInterval > 1 ? (SyncInterval - 0.5) * periode : 0;
++      else
++        vsync_duration = (SyncInterval - 1 + cidre_rythme_facteur_) * periode;
++    }
++    presenter->changeDisplaySync(sync);
++    return vsync_duration;
++  }
++
+   void CidreAvantPresent() {
+     if (!cidre_init_)
+       CidreInit();
+@@ -1450,6 +1496,11 @@ private:
+   float cidre_fg_proche_ = 10.0f, cidre_fg_loin_ = 100000.0f, cidre_fg_champ_ = 60.0f;
+   Com<ID3D11Texture2D> cidre_lecture_interp_;
+ 
++  /* Cidre (0191) */
++  bool cidre_rythme_lu_ = false;
++  int cidre_rythme_ = 0;
++  double cidre_rythme_facteur_ = 0.9;
++
+   /* Cidre (0184) */
+   bool cidre_init_ = false;
+   bool cidre_stats_ = false;
+diff --git a/src/dxmt/dxmt_presenter.cpp b/src/dxmt/dxmt_presenter.cpp
+index 870c2b6..cc8319e 100644
+--- a/src/dxmt/dxmt_presenter.cpp
++++ b/src/dxmt/dxmt_presenter.cpp
+@@ -123,6 +123,14 @@ Presenter::changeGammaRamp(const DXMTGammaRamp *gamma_ramp) {
+   }
+ }
+ 
++void
++Presenter::changeDisplaySync(bool sync) {
++  if (layer_props_.display_sync_enabled == sync)
++    return;
++  layer_props_.display_sync_enabled = sync;
++  pso_valid.clear();
++}
++
+ Presenter::PresentState
+ Presenter::synchronizeLayerProperties() {
+   uint64_t display_setting_version = 0;
+diff --git a/src/dxmt/dxmt_presenter.hpp b/src/dxmt/dxmt_presenter.hpp
+index 20b3978..a29da32 100644
+--- a/src/dxmt/dxmt_presenter.hpp
++++ b/src/dxmt/dxmt_presenter.hpp
+@@ -39,6 +39,10 @@ public:
+ 
+   void changeGammaRamp(const DXMTGammaRamp *gamma_ramp);
+ 
++  /* Cidre (0191) : displaySyncEnabled de la couche, applique a la prochaine
++     synchronisation des proprietes (comme un changement de format). */
++  void changeDisplaySync(bool sync);
++
+   class PresentState {
+   public:
+     DXMTPresentMetadata metadata;
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+index 2d2d9a0..12f5e75 100644
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -1,5 +1,6 @@
+ #include <stdatomic.h>
+ #include <dlfcn.h>
++#include <os/lock.h>
+ #import <Cocoa/Cocoa.h>
+ #import <ColorSync/ColorSync.h>
+ #import <CoreFoundation/CFRunLoop.h>
+@@ -1300,9 +1301,86 @@ _MTLBuffer_didModifyRange(void *obj) {
+   return STATUS_SUCCESS;
+ }
+ 
++/* Cidre (0191) : CIDRE_DXMT_RYTHME_STATS=1 releve, par presentedTime des drawables,
++ * les intervalles a l'ecran (paliers ProMotion 8,3 / 10 / 12,5 / 16,7 ms), les
++ * images jamais montrees et la latence entre l'encodage de la presentation et
++ * l'affichage. Une ligne « cidre rythme: » sur stderr toutes les 5 s. */
++#define CIDRE_RYTHME_LAT_MAX 2048
++static int cidre_rythme_stats = -1;
++static os_unfair_lock cidre_rythme_verrou = OS_UNFAIR_LOCK_INIT;
++static struct {
++  double debut, dernier;
++  unsigned montrees, perdues, paliers[6];
++  double somme_intervalles;
++  unsigned n_lat;
++  float lat[CIDRE_RYTHME_LAT_MAX];
++} cidre_rythme;
++
++static int
++cidre_rythme_cmp(const void *a, const void *b) {
++  float x = *(const float *)a, y = *(const float *)b;
++  return (x > y) - (x < y);
++}
++
++static void
++cidre_rythme_releve(double montre, double encode, double apres) {
++  os_unfair_lock_lock(&cidre_rythme_verrou);
++  if (montre <= 0) {
++    cidre_rythme.perdues++;
++    os_unfair_lock_unlock(&cidre_rythme_verrou);
++    return;
++  }
++  if (cidre_rythme.debut == 0)
++    cidre_rythme.debut = montre;
++  if (cidre_rythme.dernier > 0 && montre > cidre_rythme.dernier) {
++    double ms = (montre - cidre_rythme.dernier) * 1000.0;
++    int k = ms < 7.5 ? 0 : ms < 9.2 ? 1 : ms < 11.2 ? 2 : ms < 14.5 ? 3 : ms < 18.5 ? 4 : 5;
++    cidre_rythme.paliers[k]++;
++    cidre_rythme.somme_intervalles += ms;
++  }
++  if (montre > cidre_rythme.dernier)
++    cidre_rythme.dernier = montre;
++  cidre_rythme.montrees++;
++  if (cidre_rythme.n_lat < CIDRE_RYTHME_LAT_MAX)
++    cidre_rythme.lat[cidre_rythme.n_lat++] = (float)((montre - encode) * 1000.0);
++  if (montre - cidre_rythme.debut >= 5.0) {
++    unsigned n = cidre_rythme.paliers[0] + cidre_rythme.paliers[1] + cidre_rythme.paliers[2] +
++                 cidre_rythme.paliers[3] + cidre_rythme.paliers[4] + cidre_rythme.paliers[5];
++    qsort(cidre_rythme.lat, cidre_rythme.n_lat, sizeof(float), cidre_rythme_cmp);
++    float med = cidre_rythme.n_lat ? cidre_rythme.lat[cidre_rythme.n_lat / 2] : 0;
++    float p95 = cidre_rythme.n_lat ? cidre_rythme.lat[cidre_rythme.n_lat * 95 / 100] : 0;
++    fprintf(stderr,
++            "cidre rythme: %.1f images/s a l'ecran, intervalle moyen %.2f ms, paliers <7,5:%u 8,3:%u 10:%u 12,5:%u "
++            "16,7:%u >18,5:%u, perdues %u, latence encodage->ecran mediane %.1f ms p95 %.1f ms, duree min %.2f ms\n",
++            cidre_rythme.montrees / (montre - cidre_rythme.debut), n ? cidre_rythme.somme_intervalles / n : 0.0,
++            cidre_rythme.paliers[0], cidre_rythme.paliers[1], cidre_rythme.paliers[2], cidre_rythme.paliers[3],
++            cidre_rythme.paliers[4], cidre_rythme.paliers[5], cidre_rythme.perdues, med, p95, apres * 1000.0);
++    double garde = cidre_rythme.dernier;
++    memset(&cidre_rythme, 0, sizeof(cidre_rythme));
++    cidre_rythme.debut = garde;
++    cidre_rythme.dernier = garde;
++  }
++  os_unfair_lock_unlock(&cidre_rythme_verrou);
++}
++
++static void
++cidre_rythme_suivre(id<MTLDrawable> drawable, double apres) {
++  if (cidre_rythme_stats < 0) {
++    const char *e = getenv("CIDRE_DXMT_RYTHME_STATS");
++    cidre_rythme_stats = e && *e && strcmp(e, "0");
++  }
++  if (!cidre_rythme_stats)
++    return;
++  double encode = CACurrentMediaTime();
++  [drawable addPresentedHandler:^(id<MTLDrawable> d) {
++    cidre_rythme_releve(d.presentedTime, encode, apres);
++  }];
++}
++
+ static NTSTATUS
+ _MTLCommandBuffer_presentDrawable(void *obj) {
+   struct unixcall_generic_obj_obj_noret *params = obj;
++  cidre_rythme_suivre((id<MTLDrawable>)params->arg, 0);
+   [(id<MTLCommandBuffer>)params->handle presentDrawable:(id<MTLDrawable>)params->arg];
+   return STATUS_SUCCESS;
+ }
+@@ -1310,6 +1388,7 @@ _MTLCommandBuffer_presentDrawable(void *obj) {
+ static NTSTATUS
+ _MTLCommandBuffer_presentDrawableAfterMinimumDuration(void *obj) {
+   struct unixcall_generic_obj_obj_double_noret *params = obj;
++  cidre_rythme_suivre((id<MTLDrawable>)params->arg0, params->arg1);
+   [(id<MTLCommandBuffer>)params->handle presentDrawable:(id<MTLDrawable>)params->arg0
+                                    afterMinimumDuration:params->arg1];
+   return STATUS_SUCCESS;
