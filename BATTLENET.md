@@ -164,7 +164,65 @@ neuf, puis DXVK et DXMT en syswow64 et system32.
 - Construire ntdll (deux drapeaux TEB), ws2_32, secur32, crypt32, dnsapi et kernelbase.
 - Temoin `h32fenetre` a ajouter a la verification de reconstruction.
 
-## 4. Suite
+## 4. Point d'etat au 2026-10-19 (11:30)
+
+Essais d'affichage avec l'utilisateur devant l'ecran. Aucune capture du bureau : il decrit ce
+qu'il voit, et la page est relue par DevTools (`--remote-debugging-port`, DOM et
+`Page.captureScreenshot` de la page seule).
+
+| Essai | Ce que l'utilisateur voit | Cause, correctif |
+|---|---|---|
+| Configuration d'origine (Qt OpenGL/ANGLE, CEF accelere, GPU dans un processus a part) | bandeau Qt, puis une zone noire a la place de la page | winemac refuse la chaine Metal a une fenetre enfant sans donnees propres (« Cross-process child window Metal swapchains are not implemented ») : DXVK rend `VK_ERROR_INCOMPATIBLE_DRIVER`, la vue CEF reste noire |
+| `--disable-gpu --disable-gpu-compositing`, puis `--in-process-gpu` | toujours noir | meme cause : la couche Metal de Qt couvre la fenetre enfant GDI de CEF |
+| Qt en logiciel (`QT_QUICK_BACKEND=software QT_OPENGL=software`) + `--in-process-gpu` | formulaire, icones et boutons, mais aucun texte | dwrite.so : relais wow64 non rebases, corrige par wine11 **0188** (sur main) ; texte verifie ensuite par DevTools |
+| meme chose, apres connexion : panneau principal | barre de navigation absente | essai fait avant 0188 : la navigation est du texte. Avec 0188 (11:53), le panneau s'affiche en entier : Accueil, Jeux, Boutique, favoris, amis, page D2R avec « Installer » |
+| « Modifier » l'emplacement d'installation | le client se ferme (code 1, sans trace) | non reproduit hors du client (la boite de dossier 32 bits marche en sonde) ; contournement : le dossier par defaut `C:\Program Files (x86)\Diablo II Resurrected` est un lien vers le SSK |
+| Configuration d'origine + `--in-process-gpu` + winemac **0189** (chaine Metal posee sur la vue Cocoa de l'enfant quand son parent est au processus) | « ne s'affichait pas comme il faut » | DXVK cree ses swapchains (plus aucune erreur au journal), mais la composition reste fausse ; a instruire |
+
+Vu au journal et confirme : la connexion fonctionne jusqu'a l'Authenticator, mot de passe accepte
+puis « Auth complete ». La session n'a pas ete gardee apres la fermeture du client.
+
+Limite de la verification : DevTools montre ce que CEF dessine, pas la composition de la fenetre
+(couches Qt et CEF superposees par winemac). Seul l'utilisateur voit cette derniere.
+
+Connexion faite le 2026-10-19 a 11:53, en Qt logiciel, « Rester connecte(e) » coche : le panneau
+principal s'affiche en entier (capture envoyee par l'utilisateur).
+
+Defauts notes pour plus tard, dans la boite de choix de dossier 32 bits (« Changer de repertoire »,
+qui s'ouvre desormais sans planter) :
+
+- les boutons OK et Annuler n'ont pas de libelle ;
+- la liste des lecteurs, a gauche, est vide.
+
+Le dossier par defaut, lie au SSK, evite d'y passer.
+
+Voie retenue pour avancer :
+
+1. Connexion une seule fois en Qt logiciel (le formulaire s'y affichait ; seul le texte manquait,
+   corrige par 0188), avec « Rester connecte(e) » coche, pour garder la session.
+2. Session gardee : diagnostic du panneau principal sans l'utilisateur. DOM et rendu de chaque vue
+   CEF par DevTools, puis 0189 et la superposition Qt/CEF, en comparant Qt logiciel et Qt OpenGL.
+3. Installation de D2R par le bouton du client, sans « Modifier », ou par `--exec`.
+
+### D2R (2026-10-19, 12:20-12:50)
+
+- Telechargement : 31,5 Go par le client, environ 35 Mo/s, sur le SSK, par le dossier par defaut
+  `C:\Program Files (x86)\Diablo II Resurrected`, qui est un lien vers le SSK.
+- Premier « Jouer » : le client se ferme. `Client.GameLaunchWindowBehavior=2` (repris de Lutris)
+  veut dire « quitter au lancement » ; il faut 0 pour garder le client ouvert.
+- Ensuite, D2R meurt en 3 s : « D2R_loader.dll failed to initialize », c0000005. Le chargeur protege
+  ecrit son code dans une section par une vue RW et l'execute par une vue RX. Wine ne previent FEX
+  que pour les images (`notify_map_view_of_section`) : FEX refuse d'executer la vue RX (faute
+  d'execution a l'adresse du saut). Corrige par wine11 **0190**, qui annonce a FEX toute vue non-image
+  executable comme un `NtProtectVirtualMemory`.
+- Avec 0190 : le chargeur s'initialise et le jeu va jusqu'a `uxtheme`. Puis plusieurs de ses fils
+  debordent leur pile, dans une passerelle ARM64EC de kernelbase, pendant la mise en place d'une
+  exception (cascade d'exceptions : int3 et assertions de la protection, c0000420). Les fils
+  restants attendent indefiniment. A instruire : taille des piles des fils crees par le chargeur,
+  cout en pile de la remise d'exception ARM64EC sous FEX.
+- Warden et le rendu D3D12 ne sont pas encore atteints.
+
+## 5. Suite
 
 1. Connexion par l'utilisateur, avec le client lance dans le prefixe d'essai (JEU DEMANDE a la
    coordination).
