@@ -24,6 +24,7 @@
 #      parle de la voie de la fiche ; options par famille ; Expedition 33 ;
 #   6b. arguments du jeu (option arguments) : decoupage, doublons, fiche, `cidre set` ;
 #       d3d9, dlss et generation_images (metalfx ou non) : valeurs, fiche, `cidre set`, lus par le lanceur ;
+#       sortie_normale (tests/sortie_normale.sh) : codes, duree minimale, fiche de Fahrenheit ;
 #   6d. version macOS 32 bits seulement : binaire installe (faux Mach-O), fiche,
 #      cache du client Steam ; list/play/dl/install la traitent en jeu Windows ;
 #   7. sh -n sur les scripts de la chaine.
@@ -918,6 +919,22 @@ verif "cidre set d3d9 : valeur inconnue refusee" "2" "$rc"
 cp "$T/perso.avant-d3d9" "$CIDRE_PROFILS"
 grep -q 'D3D9=$(opt d3d9 CIDRE_D3D9)' "$R/tests/lancer_depuis_steam.sh" && grep -q 'D3D9_OV="d3d9=n"' "$R/tests/lancer_depuis_steam.sh" \
    && ok "lanceur : option d3d9 lue" || echec "lanceur : option d3d9 non lue"
+# sortie_normale : un code que la fiche dit normal, apres assez de jeu, n'est
+# pas une erreur (Fahrenheit sort sur 1 a chaque fermeture, 2026-10-19)
+SN="$R/tests/sortie_normale.sh"
+verif "fiche 312840 : sortie_normale = 1" "1" "$(valeur 312840 sortie_normale)"
+sh "$SN" 1 600 '"1"' >/dev/null; verif "sortie_normale : code 1 apres 600 s = normal" "0" "$?"
+verif "sortie_normale : la ligne du journal" "    le jeu s'est ferme sur le code 1 apres 600 s : fin normale pour ce jeu (fiche : sortie_normale = \"1\", des 60 s de jeu)" "$(sh "$SN" 1 600 '"1"')"
+sh "$SN" 1 20 '"1"' >/dev/null; verif "sortie_normale : code 1 apres 20 s = erreur (plantage au demarrage)" "1" "$?"
+sh "$SN" 1 20 '"1"' 10 >/dev/null; verif "sortie_normale : sortie_normale_apres = 10" "0" "$?"
+sh "$SN" 3221225477 600 '"1"' >/dev/null; verif "sortie_normale : autre code = erreur" "1" "$?"
+sh "$SN" 7 600 '"1 7"' >/dev/null; verif "sortie_normale : liste de codes" "0" "$?"
+sh "$SN" 1 600 '' >/dev/null; verif "sortie_normale : sans option = erreur" "1" "$?"
+verif "sortie_normale : sans option, rien d'ecrit" "" "$(sh "$SN" 1 600 '')"
+verif "sortie_normale : jeu sans option (998)" "" "$(valeur 998 sortie_normale)"
+grep -q 'NORMALE=$(sh "$R/tests/sortie_normale.sh" "$RC" "$(( $(date +%s) - DEBUT_EPOCH ))" "$(opt sortie_normale CIDRE_SORTIE_NORMALE)" "$(profil sortie_normale_apres)"' "$R/tests/lancer_depuis_steam.sh" \
+   && ok "lanceur : option sortie_normale lue" || echec "lanceur : option sortie_normale non lue"
+grep -q 'sortie_normale.sh' "$R/tests/empaqueter_runtime.sh" && ok "runtime : sortie_normale.sh livre" || echec "runtime : sortie_normale.sh non livre"
 
 # dlss : metalfx ou non ; "non" livre par defaut ; la fiche le porte ; le lanceur
 # pose les extensions NVIDIA de DXMT et DXMT_ENABLE_NVEXT seulement avec metalfx
@@ -1036,7 +1053,7 @@ else
 fi
 
 echo "== 7. syntaxe"
-for s in cidre tests/cidre_install.sh tests/profil_cidre.sh tests/fiche_profil.sh tests/reglages_jeu.sh tests/machine.sh tests/lancer_depuis_steam.sh tests/arguments_jeu.sh tests/empaqueter_runtime.sh tests/tester_profils.sh tests/prefixe_a_jour.sh tests/fin_de_partie.sh; do
+for s in cidre tests/cidre_install.sh tests/profil_cidre.sh tests/fiche_profil.sh tests/reglages_jeu.sh tests/machine.sh tests/lancer_depuis_steam.sh tests/arguments_jeu.sh tests/empaqueter_runtime.sh tests/tester_profils.sh tests/prefixe_a_jour.sh tests/fin_de_partie.sh tests/sortie_normale.sh; do
    sh -n "$R/$s" 2>/dev/null && ok "sh -n $s" || echec "sh -n $s"
 done
 

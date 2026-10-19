@@ -1058,6 +1058,15 @@ if [ -n "$JEU" ] && [ "$D3D11" = dxmt ]; then
    REPLI=$(sh "$R/tests/repli_dxmt.sh" "$JEU" "$JOURNAL" 2>/dev/null || true)
    [ -z "$REPLI" ] || echo "$REPLI" | tee -a "$JOURNAL"
 fi
+# Un code que la fiche dit normal pour ce jeu (sortie_normale, tests/sortie_normale.sh),
+# apres assez de temps de jeu : une ligne au journal, qui reste tel quel, et une
+# sortie sur 0 -- pas d'alerte dans Verger. Fahrenheit sort sur 1 a chaque
+# fermeture par son menu, partie sauvegardee.
+if [ $RC -ne 0 ] && [ -n "$JEU" ] && [ -z "$REPLI" ] \
+   && NORMALE=$(sh "$R/tests/sortie_normale.sh" "$RC" "$(( $(date +%s) - DEBUT_EPOCH ))" "$(opt sortie_normale CIDRE_SORTIE_NORMALE)" "$(profil sortie_normale_apres)" 2>/dev/null); then
+   echo "$NORMALE" | tee -a "$JOURNAL"
+   RC=0
+fi
 if [ $RC -ne 0 ] || [ -n "$REPLI" ]; then
    [ $RC -eq 0 ] || echo "    le jeu s'est termine sur le code $RC" | tee -a "$JOURNAL"
    [ "${CIDRE_SANS_STEAM:-}" != 1 ] || export CIDRE_CLIENT_STEAM_ETAT=inconnu

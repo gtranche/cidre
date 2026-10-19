@@ -214,6 +214,13 @@
 #                    journal, et le jeu part en win10. `cidre set <id> windows_version win7`,
 #                    `cidre unset <id> windows_version` ; CIDRE_WINDOWS_VERSION=win7 pour un
 #                    essai. Cf. tests/version_windows.sh. APPLIQUE.
+#   sortie_normale   codes de sortie qui sont, pour CE jeu, sa fin normale : une chaine,
+#                    codes separes par des espaces ("1"). Apres sortie_normale_apres
+#                    secondes de jeu (60 par defaut), le lanceur le dit au journal, ne
+#                    cherche pas de cause et sort sur 0 : pas d'alerte dans Verger.
+#                    Plus tot, ou un autre code : une erreur comme les autres. Fiche
+#                    seulement ; CIDRE_SORTIE_NORMALE pour un essai. Cf.
+#                    tests/sortie_normale.sh. APPLIQUE.
 #   dll_overrides    overrides DLL propres au jeu, format Wine "a,b=n;c=b" (n natif,
 #                    b builtin, = disable). Ajoutes aux overrides par defaut. APPLIQUE.
 #   dependances      redistribuables requis, verbes facon winetricks separes par des

@@ -178,6 +178,29 @@ le jeu lancé avant lui.
 est dans `tests/version_windows.sh` ; essais : `sh
 tests/tester_version_windows.sh`.
 
+### Fin normale sur un code d'erreur (`sortie_normale`)
+
+Certains jeux se ferment toujours sur un code non nul, sans rien perdre :
+Fahrenheit Remastered (312840) sort sur `1` à chaque fermeture par son menu,
+après avoir vidé ses pools mémoire (`MEM_POOL_HEADER`…) et passé par breakpad
+(« Setting breakpad minidump AppID »), la partie sauvegardée. Sans l'option,
+le lanceur cherche une cause, n'en trouve pas (« sans signature connue ») et
+Verger affiche une alerte à chaque partie.
+
+```toml
+[cidre]
+sortie_normale = "1"          # codes de fin normale, séparés par des espaces
+sortie_normale_apres = 60     # optionnel : au moins 60 s de jeu (le défaut)
+```
+
+Un de ces codes, après au moins `sortie_normale_apres` secondes de jeu, est
+une fin normale : le lanceur écrit au journal « le jeu s'est fermé sur le
+code 1 après N s : fin normale pour ce jeu », ne cherche pas de cause et
+`cidre play` sort sur 0 — pas d'alerte. Le journal reste entier (rien n'est
+retiré). Le même code plus tôt (un plantage au démarrage), ou un autre code,
+reste une erreur expliquée comme d'habitude. `CIDRE_SORTIE_NORMALE=1` passe
+devant la fiche, pour un essai. Le code est dans `tests/sortie_normale.sh`.
+
 ## Schéma d'une fiche
 
 Sous-ensemble de TOML volontairement simple : des tables `[nom]` et
@@ -209,7 +232,7 @@ lanceur = "steam"                  # steam, epic, gog, aucun
 # langue, journal_detaille, maj_avant_lancement, tso, tso_sans, tso_msvc, sync_local, vsync, hud, overlay, async, narrow_barriers,
 # garde_index, fils_compilation, eac_untrusted, luajit, plein_ecran, mode_emule, gamemode,
 # dx12, d3d11, d3d9, metalfx, dlss, generation_images, clavier, deck, fex_cache_disque, fex_x87_reduit, fex_maxinst,
-# arguments, dll_overrides, windows_version, dependances.
+# arguments, dll_overrides, windows_version, sortie_normale, sortie_normale_apres, dependances.
 # On n'y met que ce qui diffère de [defaut].
 async = true
 fils_compilation = 6

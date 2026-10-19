@@ -32,9 +32,15 @@ dependances = "vcrun2005"
 # le mode emule (mode_emule, a garder : sans lui le jeu demande une definition
 # absurde) et demande Wine 0169 (chaine pNext de la swapchain).
 d3d9 = "dxvk"
+# Le jeu sort sur le code 1 a chaque fermeture par son menu, apres avoir vide ses
+# pools memoire et sauvegarde (« Setting breakpad minidump AppID = 312840 » juste
+# avant ; M4, 2026-10-19) : fin normale, pas d'alerte dans Verger. Un code 1 dans
+# la premiere minute reste une erreur (sortie_normale_apres, 60 s par defaut).
+sortie_normale = "1"
 
 [cidre.sources]
 dependances = "crossover 2026-10-13"
+sortie_normale = "cidre-test 2026-10-19"
 
 [compat]
 etat = "non-teste"
