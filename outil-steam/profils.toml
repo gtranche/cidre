@@ -183,6 +183,8 @@
 #                    DXMT 64 bits seulement. Par fiche, jamais par defaut : un jeu qui
 #                    croit tourner sur NVIDIA peut prendre des chemins lents ailleurs.
 #                    "non" (defaut) : carte Apple, pas de DLSS.
+#                    REFUSE sans CIDRE_DLSS_ESSAI=1 : DLSS -> MetalFX a bloque le GPU du
+#                    M1 dans Expedition 33 (18 et 19/10, WindowServer tue ou panique).
 #   generation_images "metalfx" : avec dlss = "metalfx", DXMT genere une image
 #                    intermediaire par image rendue (MTLFXFrameInterpolator, macOS 26)
 #                    a partir de la profondeur et des vecteurs de mouvement de DLSS, et

@@ -31,7 +31,8 @@
 #   dlss = "metalfx"   DLSS du jeu traduit en MetalFX temporel par DXMT (extensions
 #                      NVIDIA : le jeu voit une carte NVIDIA) ; "non" par defaut.
 #                      A ne poser que dans la fiche d'un jeu D3D11 64 bits essaye
-#                      avec : CIDRE_DLSS=metalfx pour un essai.
+#                      avec : CIDRE_DLSS=metalfx CIDRE_DLSS_ESSAI=1 pour un essai. Sans
+#                      CIDRE_DLSS_ESSAI=1 le lanceur le refuse (blocage GPU du M1, 18-19/10).
 #   generation_images = "metalfx"   avec dlss = "metalfx" : une image generee par
 #                      MetalFX entre deux images rendues (macOS 26) ; "non" par defaut.
 #                      CIDRE_GENERATION_IMAGES=metalfx pour un essai. NE PAS ACTIVER dans une

@@ -961,6 +961,8 @@ poser() { cmp -s "$1" "$2" && return 0; cp -p "$1" "$2.cidre-tmp" && mv -f "$2.c
 echo "fin ${DXMT_ENABLE_NVEXT:-0}"
 EOS
 fin=$(CIDRE_DLSS=metalfx sh "$N/jouer.sh" "$N" "$JD" 2>&1 | tail -1)
+verif "dlss : refuse sans CIDRE_DLSS_ESSAI=1 (garde du blocage GPU)" "fin 0 absent" "$fin $([ -e "$N/sys32/nvngx.dll" ] && echo pose || echo absent)"
+fin=$(CIDRE_DLSS=metalfx CIDRE_DLSS_ESSAI=1 sh "$N/jouer.sh" "$N" "$JD" 2>&1 | tail -1)
 verif "dlss : bloc du lanceur va au bout sur un chemin a espaces" "fin 1" "$fin"
 verif "dlss : leurre signe a cote de l'exe et en system32" "signe signe signe" "$(cat "$JD/nvngx.dll" "$JD/Sandfall/Binaries/Win64/nvngx.dll" "$N/sys32/nvngx.dll" 2>/dev/null | tr '\n' ' ' | sed 's/signe/signe /g; s/  */ /g; s/ $//')"
 fin=$(sh "$N/jouer.sh" "$N" "$JD" 2>&1 | tail -1)

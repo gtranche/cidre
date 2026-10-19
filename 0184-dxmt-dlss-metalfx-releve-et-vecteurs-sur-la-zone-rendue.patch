@@ -18,12 +18,29 @@ dxmt : pont DLSS -> MetalFX temporel, releve et relecture (Cidre 0184)
    dans le processus (jamais par capture d'ecran). La copie D3D11 est suivie de
    PrepareFlush : sans lui, la passe blit restait ouverte sous la presentation et la
    relecture suivante plantait (encoder_current nul).
+4. Profondeur avec stencil recopiee avant MetalFX. Expedition 33 donne a DLSS une
+   profondeur Depth32Float_Stencil8 ; les deux gels GPU du M1 sous DLSS (18 et 19/10)
+   l'avaient en entree, alors que les sondes n'utilisaient que Depth32Float. Un nuanceur
+   (cs_copy_depth_r32) en recopie le plan de profondeur dans une R32Float, format que
+   MetalFX accepte (tests/sonde_formats_metalfx.m) ; MetalFX ne voit plus de stencil.
+5. Etendue des vecteurs dilates = leur texture. Exp33 envoie des vecteurs 1383x868 pour
+   une sortie 1384x868 : prendre la sortie comme etendue lisait une colonne hors texture
+   a chaque image.
+Le lanceur refuse dlss sans CIDRE_DLSS_ESSAI=1 tant que les gels ne sont pas expliques.
 
 diff --git a/src/d3d11/d3d11_context_impl.cpp b/src/d3d11/d3d11_context_impl.cpp
-index 2b63ad4..f79f20b 100644
+index 2b63ad4..026a362 100644
 --- a/src/d3d11/d3d11_context_impl.cpp
 +++ b/src/d3d11/d3d11_context_impl.cpp
-@@ -5270,6 +5270,12 @@ public:
+@@ -5220,6 +5220,7 @@ class MTLD3D11ContextExt : public IMTLD3D11ContextExt1 {
+     uint32_t output_height;
+     Rc<TemporalScaler> scaler;
+     Rc<Texture> mv_downscaled;
++    Rc<Texture> depth_r32; /* Cidre : profondeur Depth32Float_Stencil8 recopiee en R32Float */
+   };
+ public:
+   MTLD3D11ContextExt(MTLD3D11DeviceContextImplBase<ContextInternalState> *context) : ctx_(context){};
+@@ -5270,6 +5271,12 @@ public:
      if (pDesc->ExposureTexture && !(exposure = static_cast<D3D11ResourceCommon *>(pDesc->ExposureTexture)->texture()))
        return;
  
@@ -36,7 +53,51 @@ index 2b63ad4..f79f20b 100644
      WMTPixelFormat motion_vector_format = GetCorrectMotionVectorFormat(motion_vector->pixelFormat());
      if (motion_vector_format == WMTPixelFormatInvalid) {
        ERR("TemporalUpscale: invalid motion vector format ", motion_vector->pixelFormat());
-@@ -5340,6 +5346,15 @@ public:
+@@ -5278,6 +5285,7 @@ public:
+ 
+     Rc<TemporalScaler> scaler;
+     Rc<Texture> mv_downscaled;
++    Rc<Texture> depth_r32;
+ 
+     for(CachedTemporalScaler& entry: scaler_cache_) {
+       if(pDesc->AutoExposure != entry.auto_exposure) continue;
+@@ -5293,6 +5301,7 @@ public:
+ 
+       scaler = entry.scaler;
+       mv_downscaled = entry.mv_downscaled;
++      depth_r32 = entry.depth_r32;
+       break;
+     }
+ 
+@@ -5306,6 +5315,27 @@ public:
+       info.color_format = scaler_entry.color_pixel_format;
+       info.output_format = scaler_entry.output_pixel_format;
+       info.depth_format = scaler_entry.depth_pixel_format;
++      /* Cidre : une profondeur avec stencil (Expedition 33 : Depth32Float_Stencil8) est
++         recopiee en R32Float avant MetalFX, que l'on n'expose plus qu'a des formats
++         eprouves par les sondes ; les deux gels GPU du M1 sous DLSS l'avaient en entree. */
++      if (scaler_entry.depth_pixel_format == WMTPixelFormatDepth32Float_Stencil8) {
++        info.depth_format = WMTPixelFormatR32Float;
++        WMTTextureInfo dinfo;
++        dinfo.width = depth->width();
++        dinfo.height = depth->height();
++        dinfo.depth = 1;
++        dinfo.array_length = 1;
++        dinfo.mipmap_level_count = 1;
++        dinfo.pixel_format = WMTPixelFormatR32Float;
++        dinfo.sample_count = 1;
++        dinfo.type = WMTTextureType2D;
++        dinfo.usage = WMTTextureUsageShaderRead | WMTTextureUsageShaderWrite;
++        dinfo.options = WMTResourceStorageModePrivate;
++        scaler_entry.depth_r32 = new Texture(dinfo, this->ctx_->device->GetMTLDevice());
++        Flags<TextureAllocationFlag> dflags;
++        dflags.set(TextureAllocationFlag::GpuPrivate);
++        scaler_entry.depth_r32->rename(scaler_entry.depth_r32->allocate(dflags));
++      }
+       info.motion_format = motion_vector_format;
+       scaler_entry.auto_exposure = pDesc->AutoExposure;
+       scaler_entry.input_width = input->width();
+@@ -5340,7 +5370,18 @@ public:
          flags.set(TextureAllocationFlag::GpuPrivate);
          mv_downscaled->rename(mv_downscaled->allocate(flags));
        }
@@ -48,23 +109,43 @@ index 2b63ad4..f79f20b 100644
 +           "), profondeur ", depth->width(), "x", depth->height(), (pDesc->DepthReversed ? " inversee" : ""),
 +           ", exposition ", pDesc->AutoExposure ? "auto" : (pDesc->ExposureTexture ? "texture" : "aucune"),
 +           ", formats couleur ", scaler_entry.color_pixel_format, " sortie ", scaler_entry.output_pixel_format,
-+           " profondeur ", scaler_entry.depth_pixel_format, " vecteurs ", motion_vector_format);
++           " profondeur ", scaler_entry.depth_pixel_format, scaler_entry.depth_r32 ? " (recopiee en R32Float)" : "",
++           " vecteurs ", motion_vector_format);
        scaler = scaler_entry.scaler;
++      depth_r32 = scaler_entry.depth_r32;
        scaler_cache_.push_back(std::move(scaler_entry));
        // to simplify implementation, the created scalers are never destroyed
-@@ -5383,8 +5398,11 @@ public:
+       // as they are not expected to be created frequently
+@@ -5363,8 +5404,13 @@ public:
+                           pDesc->JitterOffsetY,
+                           pDesc->PreExposure,
+                       },
+-                  motion_vector_format, mv_downscaled = std::move(mv_downscaled)
++                  motion_vector_format, mv_downscaled = std::move(mv_downscaled),
++                  depth_r32 = std::move(depth_r32)
+                 ](ArgumentEncodingContext &enc) mutable {
++      if (depth_r32) {
++        enc.mv_scale_cmd.copyDepthR32(depth, depth_r32);
++        depth = depth_r32;
++      }
+       auto mv_view = motion_vector->createView(
+           {.format = motion_vector_format,
+            .type = WMTTextureType2D,
+@@ -5383,9 +5429,12 @@ public:
        scaler_info.motion_vector_highres = mv_downscaled != nullptr;
  
        if (scaler_info.motion_vector_highres) {
 +        /* Cidre (0184) : vecteurs dilates ramenes sur la zone rendue (contenu), pas
-+           sur la texture d'entree entiere ; ils couvrent la sortie entiere */
++           sur la texture d'entree entiere */
          enc.mv_scale_cmd.dispatch(
 -            motion_vector, mv_view, mv_downscaled, 0, props.motion_vector_scale_x, props.motion_vector_scale_y
+-        );
 +            motion_vector, mv_view, mv_downscaled, 0, props.motion_vector_scale_x, props.motion_vector_scale_y,
-+            props.input_content_width, props.input_content_height, output->width(), output->height()
-         );
++            props.input_content_width, props.input_content_height
++        ); /* etendue des vecteurs : leur texture (Exp33 : 1383x868 pour une sortie 1384x868) */
          WMTFXTemporalScalerProps new_props = props;
          new_props.motion_vector_scale_x = 1.0;
+         new_props.motion_vector_scale_y = 1.0;
 diff --git a/src/d3d11/d3d11_interfaces.hpp b/src/d3d11/d3d11_interfaces.hpp
 index ff4bb2b..1c9ecc0 100644
 --- a/src/d3d11/d3d11_interfaces.hpp
@@ -296,10 +377,46 @@ index bbd5e71..ea0a043 100644
  
  HRESULT
 diff --git a/src/dxmt/dxmt_command.cpp b/src/dxmt/dxmt_command.cpp
-index 6498ae1..dd2b57a 100644
+index 6498ae1..685eeda 100644
 --- a/src/dxmt/dxmt_command.cpp
 +++ b/src/dxmt/dxmt_command.cpp
-@@ -344,12 +344,17 @@ MTLFXMVScaleContext::MTLFXMVScaleContext(
+@@ -339,17 +339,53 @@ MTLFXMVScaleContext::MTLFXMVScaleContext(
+   auto cs_ = library.newFunction("cs_downscale_dilated_mv");
+ 
+   pso_downscale_dilated_mv_ = device_.newComputePipelineState(cs_, err);
++
++  auto cs_depth = library.newFunction("cs_copy_depth_r32");
++  pso_copy_depth_r32_ = device_.newComputePipelineState(cs_depth, err);
++}
++
++void
++MTLFXMVScaleContext::copyDepthR32(const Rc<Texture> &depth, const Rc<Texture> &r32) {
++  ctx_.startComputePass(0);
++  auto tex_depth = ctx_.access(depth, depth->fullView, ResourceAccess::Read).texture;
++  auto tex_r32 = ctx_.access(r32, r32->fullView, ResourceAccess::Write).texture;
++
++  auto &setpso = ctx_.encodeComputeCommand<wmtcmd_compute_setpso>();
++  setpso.type = WMTComputeCommandSetPSO;
++  setpso.pso = pso_copy_depth_r32_;
++  setpso.threadgroup_size = {8, 8, 1};
++
++  auto &set0 = ctx_.encodeComputeCommand<wmtcmd_compute_settexture>();
++  set0.type = WMTComputeCommandSetTexture;
++  set0.texture = tex_depth;
++  set0.index = 0;
++
++  auto &set1 = ctx_.encodeComputeCommand<wmtcmd_compute_settexture>();
++  set1.type = WMTComputeCommandSetTexture;
++  set1.texture = tex_r32;
++  set1.index = 1;
++
++  auto &dispatch = ctx_.encodeComputeCommand<wmtcmd_compute_dispatch>();
++  dispatch.type = WMTComputeCommandDispatchThreads;
++  dispatch.size = {r32->width(), r32->height(), 1};
++
++  ctx_.endPass();
+ }
+ 
  struct downscale_dilated_mv_desc {
    float scale_x;
    float scale_y;
@@ -318,7 +435,7 @@ index 6498ae1..dd2b57a 100644
  ) {
    ctx_.startComputePass(0);
    auto tex_dilated = ctx_.access(dilated, view_dilated, ResourceAccess::Read).texture;
-@@ -370,7 +375,15 @@ MTLFXMVScaleContext::dispatch(
+@@ -370,7 +406,15 @@ MTLFXMVScaleContext::dispatch(
    setstencil.texture = tex_downscaled;
    setstencil.index = 1;
  
@@ -335,7 +452,7 @@ index 6498ae1..dd2b57a 100644
    auto &setdesc = ctx_.encodeComputeCommand<wmtcmd_compute_setbytes>();
    setdesc.type = WMTComputeCommandSetBytes;
    void *temp = ctx_.allocate_cpu_heap(sizeof(desc), 16);
-@@ -379,8 +392,8 @@ MTLFXMVScaleContext::dispatch(
+@@ -379,8 +423,8 @@ MTLFXMVScaleContext::dispatch(
    setdesc.length = sizeof(desc);
    setdesc.index = 0;
  
@@ -347,10 +464,10 @@ index 6498ae1..dd2b57a 100644
    dispatch.type = WMTComputeCommandDispatchThreads;
    dispatch.size = {width, height, 1};
 diff --git a/src/dxmt/dxmt_command.hpp b/src/dxmt/dxmt_command.hpp
-index c9697ae..89e72f5 100644
+index c9697ae..f18871a 100644
 --- a/src/dxmt/dxmt_command.hpp
 +++ b/src/dxmt/dxmt_command.hpp
-@@ -231,7 +231,8 @@ public:
+@@ -231,13 +231,18 @@ public:
  
    void dispatch(
        const Rc<Texture> &dilated, TextureViewKey view_dilated, const Rc<Texture> &downscaled,
@@ -359,9 +476,19 @@ index c9697ae..89e72f5 100644
 +      uint32_t content_h = 0, uint32_t source_w = 0, uint32_t source_h = 0
    );
  
++  /* Cidre : plan de profondeur d'une Depth32Float_Stencil8 vers une R32Float */
++  void copyDepthR32(const Rc<Texture> &depth, const Rc<Texture> &r32);
++
  private:
+   ArgumentEncodingContext &ctx_;
+   WMT::Device device_;
+   WMT::Reference<WMT::ComputePipelineState> pso_downscale_dilated_mv_;
++  WMT::Reference<WMT::ComputePipelineState> pso_copy_depth_r32_;
+ };
+ 
+ constexpr auto kBarrierTileSize = 16;
 diff --git a/src/dxmt/dxmt_command.metal b/src/dxmt/dxmt_command.metal
-index 516f49e..61b2ecf 100644
+index 516f49e..b257584 100644
 --- a/src/dxmt/dxmt_command.metal
 +++ b/src/dxmt/dxmt_command.metal
 @@ -633,14 +633,27 @@ struct DXMTClearUintMetadata {
@@ -395,3 +522,23 @@ index 516f49e..61b2ecf 100644
    float2 scale = viewport_size / source_size;
    float2 sample_uv = (float2(pos) + 0.5) / viewport_size;
    uint2 sample_pos = uint2(sample_uv * source_size);
+@@ -650,6 +663,19 @@ struct DXMTClearUintMetadata {
+   downscaled.write(lo_mv_pixel.xyxy, pos); 
+ }
+ 
++/* Cidre : copie du plan de profondeur d'une texture Depth32Float_Stencil8 vers
++   une R32Float, pour MetalFX (Expedition 33 donne a DLSS une profondeur avec
++   stencil ; les deux gels GPU du M1 en DLSS l'avaient en entree). */
++[[kernel]] void cs_copy_depth_r32(
++  uint2 pos [[thread_position_in_grid]],
++  depth2d<float, access::read> depth [[texture(0)]],
++  texture2d<float, access::write> r32 [[texture(1)]]
++) {
++  if (pos.x >= r32.get_width() || pos.y >= r32.get_height())
++    return;
++  r32.write(float4(depth.read(pos)), pos);
++}
++
+ [[kernel]] void tile_barrier(ushort2 pos [[thread_position_in_threadgroup]]) {
+   // empty
+ }

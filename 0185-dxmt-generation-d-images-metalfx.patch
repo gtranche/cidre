@@ -19,7 +19,7 @@ capture d'ecran de l'utilisateur, comme le 16/10 sans generation : a ne pas acti
 defaut tant que ce n'est pas tranche.
 
 diff --git a/src/d3d11/d3d11_context_impl.cpp b/src/d3d11/d3d11_context_impl.cpp
-index f79f20b..4c657cb 100644
+index 026a362..ec832ea 100644
 --- a/src/d3d11/d3d11_context_impl.cpp
 +++ b/src/d3d11/d3d11_context_impl.cpp
 @@ -645,7 +645,8 @@ public:
@@ -41,7 +41,7 @@ index f79f20b..4c657cb 100644
    class CachedTemporalScaler {
    public:
      WMTPixelFormat color_pixel_format;
-@@ -5408,8 +5409,10 @@ public:
+@@ -5439,8 +5440,10 @@ public:
          new_props.motion_vector_scale_x = 1.0;
          new_props.motion_vector_scale_y = 1.0;
          enc.upscaleTemporal(input, output, depth, mv_downscaled, mv_downscaled->fullView, exposure, scaler, new_props);
@@ -52,7 +52,7 @@ index f79f20b..4c657cb 100644
        }
      });
    }
-@@ -5441,10 +5444,66 @@ public:
+@@ -5472,10 +5475,66 @@ public:
      return E_INVALIDARG;
    };
  
