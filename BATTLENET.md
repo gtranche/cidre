@@ -402,6 +402,32 @@ vue par `prepare_exception_arm64ec`), ntdll.so SONDE10 (projections et allocatio
   d'hote le temps d'une instruction invitee (FEX sait re-executer une instruction seule, cf. SMC en ligne) et
   la decodeur ; sinon remonter la faute a l'invite. Le crochet dechiffre alors la table comme sous Windows.
 
+### D2R, pages de 4 Kio dans une page d'hote de 16 Kio : 0201 et 0203 (2026-10-19, 18:35-19:26)
+
+- **0201 (wine11, ntdll.so)** : une page d'hote d'une vue de section (ni valloc, ni JIT) dont une page de 4 Kio
+  est engagee sans aucun droit pendant qu'une autre est accessible est protegee a `PROT_NONE`. Les acces permis aux
+  voisines font faute et `segv_handler` les rejoue (decodeur ARM64 : load/store entier et SIMD, paires, LD1/ST1,
+  ordonnes, exclusifs, CAS, LSE, DC ZVA) a travers un alias `mach_vm_remap` de la page, sous `virtual_mutex`. Temoin
+  `tests/h64sous_page.c` : A et G echouaient (lecture NOACCESS sans faute, saut dans une table chiffree), A-G passent ;
+  2,4 us par acces rejoue. `CIDRE_SOUS_PAGES=0` rend l'ancien comportement, `=2` couvre aussi VirtualAlloc (jamais
+  essaye en jeu) ; `CIDRE_DIAG_SOUS_PAGES=1` compte pages fermees et acces rejoues.
+- Avec 0201, la mort a 25 s disparait : 4 096 pages d'hote fermees, jusqu'a 8 M d'acces rejoues sans erreur.
+- **Gel a 30-60 s** : `ThreadCreationMutex` de FEX garde par le fil 013c du chargeur ; un autre fil l'attend dans le
+  chemin de faute de FEX apres une faute d'execution native sur `ntdll!NtQueryPerformanceCounter$hybpatch_thunk`. Le
+  chargeur crochete les souches x64 d'appel systeme de ntdll (EXP+#NtClose, EXP+#NtQueryVirtualMemory) en
+  `PAGE_EXECUTE_READWRITE` ; macOS refuse W+X et Wine retirait l'execution a toute la page d'hote.
+  0201 contient aussi une bascule W^X a la main (`bascule_wx_page`, pages hors MAP_JIT : RX a une faute d'execution
+  permise, RW a une ecriture permise). Temoin `tests/a64rwx_voisine.c` (arm64 natif) : echoue avant, A-D apres.
+- **0203 (fex)** : `ThreadCreationMutex` n'est plus tenu de la notification « avant » a la notification « apres »
+  (Alloc, Free, Protect, Unmap traites au retour). Seul, il deplace le gel ; garde par prudence.
+- Non-regression des temoins inchangee (h64smc 4/5, le cas B echouait deja ; h64eflags, h64faute_page, h64suspend,
+  h64fibres, h64prepare, h64crypto, h64sha, h64alerte, h32smc). **[A VALIDER avant toute release : `tests/sonde_wx.c`
+  et une manche PEAK (W^X), Exp33.]**
+- D2R ensuite (134 s, 85 s) : le chargeur pose ses crochets, puis des appels systeme faux (NtCreateUserProcess avec
+  des arguments pris dans du code, NtImpersonateAnonymousToken en boucle), puis c0000005 non geree. La numerotation de
+  Wine suit celle de Windows sans les trous (egale jusqu'a ~0x5F) ; meme divergence sous Linux, ou D2R tourne. Piste :
+  code auto-modifie dans les souches crochetees (meme famille que h64smc B : page RWX a cote d'une page RW).
+
 ## 5. Suite
 
 1. Connexion par l'utilisateur, avec le client lance dans le prefixe d'essai (JEU DEMANDE a la
