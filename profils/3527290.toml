@@ -7,8 +7,8 @@
 # au changement d'espace macOS (bascule plein ecran d'Unity). Pour essayer :
 # CIDRE_DX12=1 et les arguments -force-d3d12 -force-gfx-direct.
 #
-# tso = false : avec l'emulation de l'ordre memoire x86 (TSO) de FEX, regarder au
-# loin fait tomber le jeu de ~100 a 13 images/s (mesure du 2026-10-13, M1 Max,
+# tso_sans = "UnityPlayer.dll" : avec l'emulation de l'ordre memoire x86 (TSO) de
+# FEX, regarder au loin fait tomber le jeu de ~100 a 13 images/s (mesure du 2026-10-13, M1 Max,
 # reproduit sur quatre lancements). Ce n'est ni la carte graphique (occupee a 13 %,
 # ~10 ms par image) ni le chemin par dessin de DXMT (fil d'encodage inoccupe a
 # 97 %) : a l'horizon la scene passe de 350 a 2 100 dessins et le fil de rendu
@@ -16,10 +16,17 @@
 # meme famille de fonctions de UnityPlayer.dll (+0x1522d00 a +0x15246a0, perf map
 # FEX), tres lentes sous TSO. Aucune option graphique du jeu n'y change rien
 # (ombres, qualite du monde, occlusion ambiante, echelle de rendu, toutes
-# baissees : 13-14 images/s), -force-gfx-mt non plus. Sans TSO : 72 images/s au
-# meme endroit, options du jeu d'origine, 8 min de jeu sans gel ni plantage.
-# Risque connu de tso = false : une course dans du code sans verrou ; si le jeu
-# se fige ou plante, `cidre set 3527290 tso true` le remet.
+# baissees : 13-14 images/s), -force-gfx-mt non plus. Sans TSO du tout (tso =
+# false, la fiche jusqu'au 19/10) : 72 images/s au meme endroit.
+# Depuis FEX 0179 (Cidre 1.5.16), seul UnityPlayer.dll est exempte du TSO ; Mono
+# (mono-2.0-bdwgc et son JIT), Burst et les autres DLL le gardent, et dans
+# UnityPlayer.dll meme les 16 435 acces que MSVC dit volatils aussi. Manche du
+# 2026-10-19 (M1 Max, au loin, 4 300-6 600 dessins par image) : TSO 13,6 images/s ;
+# tso_sans UnityPlayer.dll 83,3, puis 80,9 en moyenne sur 8 min (78,6-84,2 par
+# tranche de 10 s, pas de gel, pas de plantage) ; tso_msvc (metadonnee MSVC prise
+# au mot dans tous les modules) 81,0. Le journal le dit : « TSO par module :
+# UnityPlayer.dll ... (exempte) » avec FEX_SILENTLOG=0. Si le jeu se fige ou
+# plante : `cidre set 3527290 tso false` (sans TSO du tout, l'ancien reglage).
 # Les options graphiques du jeu sont des PlayerPrefs d'Unity (registre du
 # prefixe, HKCU\Software\LandCrab\PEAK : RenderScaleSetting,
 # ShadowDistanceSettings, LodQuality, AOSetting).
@@ -35,7 +42,7 @@ lanceur = "steam"
 
 [cidre]
 dx12 = false
-tso = false
+tso_sans = "UnityPlayer.dll"
 # async = true : en DXMT, un dessin dont le pipeline compile encore est saute au
 # lieu de geler l'image (d3d11.asyncPipelines, correctif 0152). Manche du
 # 2026-10-16 (M1 Max, cache de shaders vide) : sans, 2 ou 3 ralentissements au
@@ -45,12 +52,12 @@ async = true
 [compat]
 etat = "or"
 source = "cidre-test"
-date = "2026-10-13"
+date = "2026-10-19"
 machine = "M1 Max 32 Go"
-cidre_version = "1.5.9"
+cidre_version = "1.5.16"
 fps_menu = 0
-fps_jeu = 72
-notes = "En D3D11 (repli du DX12) avec DXMT et sans TSO (tso = false) : 72 fps en regardant au loin (2 100 dessins par passe), ~100 fps de pres, plein ecran, options du jeu d'origine. Avec TSO : 13 fps au loin (fils de travail d'Unity ralentis par l'emulation, GPU occupe a 13 %), quelles que soient les options graphiques du jeu. En DXVK (jusqu'a la 1.5.7) : 8-15 fps partout. Le vrai D3D12 (dx12 = true) fige en jeu (tiled resources)."
+fps_jeu = 81
+notes = "En D3D11 (repli du DX12) avec DXMT, TSO de FEX actif sauf dans UnityPlayer.dll (tso_sans) : 81 fps en regardant au loin (8 min stables), ~100 fps de pres, plein ecran, options du jeu d'origine. Sans TSO du tout (tso = false) : 72 fps au loin. Avec le TSO partout : 13 fps au loin (fils de travail d'Unity ralentis par l'emulation, GPU occupe a 13 %), quelles que soient les options graphiques du jeu. En DXVK (jusqu'a la 1.5.7) : 8-15 fps partout. Le vrai D3D12 (dx12 = true) fige en jeu (tiled resources)."
 
 [compat.steam_cloud]
 methode = "auto"
