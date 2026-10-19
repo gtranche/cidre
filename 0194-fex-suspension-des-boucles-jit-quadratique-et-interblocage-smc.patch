@@ -1,0 +1,170 @@
+fex : trois defauts qui figeaient le chargeur de Diablo II Resurrected (suspension dans une boucle, JIT quadratique, interblocage d'invalidation)
+
+Le chargeur protege de D2R (D2R_loader.dll) tournait des minutes a 100 % d'un
+coeur puis se figeait, des fils crees suspendus jamais repris. Trois defauts de
+FEX ARM64EC, tous presents tels quels en amont (72b2ff88aec8) :
+
+1. Suspension cooperative (JIT/BranchOps.cpp). Sous ARM64EC, NtSuspendThread
+   d'un fil en code emule pose une sonnette ; le fil s'arrete au prochain
+   controle (brk #0xCAFE) et rend un contexte coherent. Le controle n'etait
+   emis qu'a l'entree d'un bloc et avant un Jump arriere : le retour d'une
+   boucle par saut conditionnel (jnz, IR CondJump) n'en avait pas. Un fil qui
+   boucle ne se suspendait jamais et le NtGetContextThread de celui qui le
+   suspend attendait sans fin. Le controle est emis avant tout CondJump dont
+   la cible vrai est en arriere. Le jcc a son entree RIP (FLAGS_SETS_RIP) : la
+   reconstruction rend son adresse, NZCV n'est pas touche.
+
+2. Construction de l'IR (IR/IREmitter). CreateNewCodeBlockAtEnd cherchait la
+   fin de la liste des blocs depuis le bloc courant, a chaque bloc ajoute :
+   quadratique. Sous FEX_SMCCHECKS=full chaque instruction ajoute un bloc ;
+   les grosses fonctions du chargeur prenaient des minutes de JIT (profil :
+   le fil principal dans CreateNewCodeBlockAfter). On repart du dernier bloc
+   ajoute (LastCodeBlockHint, remis a zero avec la liste ; les blocs ne sont
+   jamais retires pendant la construction).
+
+3. Interblocage d'invalidation (Dispatcher/Dispatcher.cpp). Sous SMC complet,
+   un bloc qui voit son code change appelle ThreadRemoveCodeEntryFromJit ->
+   InvalidateGuestCodeRange -> InvalidateIntervalInternal, qui tient
+   CodeInvalidationMutex et fait VirtualDontNeed de la pile d'appels. L'appel
+   partait du JIT sans InSyscallCallback : ntdll renvoyait le VirtualFree a
+   FEX (NotifyMemoryFree -> InvalidateAlignedInterval), qui reprenait le meme
+   verrou. Pris par lldb : pile d'emulation du fil principal,
+   NotifyMemoryFree -> InvalidateAlignedInterval -> InvalidateIntervalInternal
+   -> WaitOnAddress, au-dessus de InvalidateIntervalInternal ->
+   InvalidateThreadCachedCodeRange -> VirtualFree. L'appel est enveloppe dans
+   EmitSignalGuardedRegion, comme celui de la compilation.
+
+Temoin tests/h64suspend.c (invite x86-64, 9 cas : fil cree suspendu et
+contexte reecrit, fil en calcul suspendu/lu/reecrit/repris 200 fois, fil en
+attente, auto-suspension, compte de suspension, registres de debogage,
+rafale de 64 fils suspendus) : sans 0194 le cas D se fige (NtGetContextThread
+en attente, le fil vise a 100 % dans le code emis), avec 0194 0 echec.
+
+D2R (M1 Max, FEX_SMCCHECKS=full) : sans 0194 fige apres 4 min 44 s de CPU ;
+avec 1 et 2 fige apres 28 s ; avec 1, 2 et 3 le chargeur passe ce point (il
+tourne encore 3 min, surtout dans les fautes W^X des invalidations, sans
+fenetre). Sans SMCCHECKS=full, avec 0194, il charge winemac.drv et uxtheme en
+9 s de CPU, puis meurt de facon non deterministe (debordements de pile,
+pointeur de section critique corrompu) : chantier suivant, hors de ce correctif.
+SMCCHECKS=full n'etait donc pas ce qui evitait le debordement : il ralentissait
+assez le chargeur pour qu'il n'atteigne jamais ce point.
+
+h64alerte (x86-64, 20 manches) : 0 injoignable sur 2689 avec 0194.
+
+Ce correctif reste ici : le projet FEX refuse les contributions ecrites par
+une IA (un humain peut signaler les defauts).
+
+S'applique avec patch -p1 sur third_party/FEX apres 0179.
+
+diff --git a/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp b/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
+@@ -249,6 +249,16 @@
+   auto Op = IROp->C<IR::IROp_CondJump>();
+ 
+   auto TrueTargetLabel = JumpTarget(Op->TrueBlock);
++
++  // Un retour en arriere conditionnel (jnz d'une boucle) est une arete
++  // arriere comme un Jump : sans ce controle, un fil qui boucle dans un
++  // multibloc ne repondait jamais a la sonnette de suspension et
++  // NtGetContextThread de celui qui le suspendait attendait sans fin (D2R).
++  // Le jcc a son entree RIP (FLAGS_SETS_RIP) : la reconstruction rend son
++  // adresse, NZCV n'est pas touche par le controle.
++  if (TrueTargetLabel->Backward.Location) {
++    EmitSuspendInterruptCheck();
++  }
+ 
+   if (Op->FromNZCV) {
+     b_OrRestart(MapCC(Op->Cond), TrueTargetLabel);
+diff --git a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+--- a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+@@ -571,12 +571,25 @@
+     ThreadDispatchRemoveCodeEntry = GetCursorAddress<uint64_t>();
+ 
+     // Arguments are already in x0, x1. Just jump to the handler.
+-    ldr(ARMEmitter::XReg::x2, STATE, offsetof(FEXCore::Core::CpuStateFrame, Pointers.ThreadRemoveCodeEntryFromJIT));
+-    if (!CTX->Config.DisableVixlIndirectCalls) [[unlikely]] {
+-      GenerateIndirectRuntimeCall<void, void*, void*>(ARMEmitter::Reg::r2);
+-    } else {
+-      blr(ARMEmitter::Reg::r2);
+-    }
++    auto CallHandler = [&]() {
++      ldr(ARMEmitter::XReg::x2, STATE, offsetof(FEXCore::Core::CpuStateFrame, Pointers.ThreadRemoveCodeEntryFromJIT));
++      if (!CTX->Config.DisableVixlIndirectCalls) [[unlikely]] {
++        GenerateIndirectRuntimeCall<void, void*, void*>(ARMEmitter::Reg::r2);
++      } else {
++        blr(ARMEmitter::Reg::r2);
++      }
++    };
++#ifdef ARCHITECTURE_arm64ec
++    // Comme pour la compilation : InSyscallCallback leve pendant l'appel.
++    // Sinon l'invalidation (code modifie vu par SMCCHECKS=full) qui libere
++    // de la memoire (VirtualDontNeed de la pile d'appels) etait renvoyee a
++    // FEX par ntdll (NotifyMemoryFree), qui reprenait CodeInvalidationMutex
++    // deja tenu : interblocage du fil (chargeur de D2R). TMP1/TMP2 (x10/x11)
++    // sont libres ici, x0/x1 portent les arguments.
++    EmitSignalGuardedRegion(CallHandler);
++#else
++    CallHandler();
++#endif
+ 
+     FillStaticRegs({
+       .OptionalReg = ARMEmitter::Reg::r1,
+diff --git a/FEXCore/Source/Interface/IR/IREmitter.cpp b/FEXCore/Source/Interface/IR/IREmitter.cpp
+--- a/FEXCore/Source/Interface/IR/IREmitter.cpp
++++ b/FEXCore/Source/Interface/IR/IREmitter.cpp
+@@ -94,6 +94,7 @@
+   InvalidNode = reinterpret_cast<Ref>(DualListData.ListAllocate(sizeof(OrderedNode)));
+   memset(InvalidNode, 0, sizeof(OrderedNode));
+   CurrentCodeBlock = nullptr;
++  LastCodeBlockHint = nullptr;
+ }
+ 
+ void IREmitter::ReplaceAllUsesWithRange(Ref Node, Ref NewNode, AllNodesIterator Begin, AllNodesIterator End) {
+@@ -166,8 +167,12 @@
+   } else {
+     LOGMAN_THROW_A_FMT(CurrentCodeBlock != nullptr, "CurrentCodeBlock must not be null here");
+ 
+-    // Find last block
+-    auto LastBlock = CurrentCodeBlock;
++    // Find last block. Partir du dernier bloc ajoute en fin plutot que du bloc
++    // courant : les blocs ne sont jamais retires pendant la construction, il
++    // est toujours dans la liste et la fin est a sa suite. Le parcours depuis
++    // le bloc courant rendait la construction quadratique (un bloc par
++    // instruction sous FEX_SMCCHECKS=full : minutes de JIT pour D2R_loader).
++    auto LastBlock = LastCodeBlockHint ? LastCodeBlockHint : CurrentCodeBlock;
+ 
+     while (LastBlock->Header.Next.GetNode(DualListData.ListBegin()) != InvalidNode) {
+       LastBlock = LastBlock->Header.Next.GetNode(DualListData.ListBegin());
+@@ -175,6 +180,7 @@
+ 
+     // Append it after the last block
+     LinkCodeBlocks(LastBlock, CodeNode);
++    LastCodeBlockHint = CodeNode;
+   }
+ 
+   SetWriteCursor(OldCursor);
+diff --git a/FEXCore/Source/Interface/IR/IREmitter.h b/FEXCore/Source/Interface/IR/IREmitter.h
+--- a/FEXCore/Source/Interface/IR/IREmitter.h
++++ b/FEXCore/Source/Interface/IR/IREmitter.h
+@@ -512,6 +512,8 @@
+ 
+   Ref InvalidNode {};
+   Ref CurrentCodeBlock {};
++  // Dernier bloc ajoute par CreateNewCodeBlockAtEnd (point de depart de la recherche de la fin).
++  Ref LastCodeBlockHint {};
+   fextl::vector<Ref> CodeBlocks;
+   uint64_t Entry {};
+   bool SupportsTSOImm9 {};
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+@@ -4684,6 +4684,7 @@
+   DecodeFailure = false;
+   ShouldDump = false;
+   CurrentCodeBlock = nullptr;
++  LastCodeBlockHint = nullptr;
+   RegCache.Written = 0;
+   RegCache.Cached = 0;
+ }

@@ -228,6 +228,47 @@ Voie retenue pour avancer :
   principal les attend. Piste : la suspension de fils et la lecture de leur contexte sous FEX
   ARM64EC (`NtSuspendThread`/`NtGetContextThread`, BTCpuSuspendLocalThread). Chantier de fond.
 
+### D2R, fils suspendus et SMC (2026-10-19, 13:00-15:25)
+
+Session d2r (worktree `~/Dev/cidre-d2r/depot`, branche `d2r-fils`), runtime clone
+`~/Dev/cidre-d2r/wine11-arm64`, FEX pose aussi dans `system32` de `pfx-bnet` (c'est
+cette copie que Wine charge).
+
+- Le gel « fils en `wait_suspend` » venait de trois defauts de FEX ARM64EC, tous
+  corriges par fex **0194** :
+  1. le retour arriere d'une boucle par saut conditionnel ne controlait pas la sonnette
+     de suspension : un fil qui boucle ne se suspendait jamais, et le `NtGetContextThread`
+     de celui qui le suspendait attendait sans fin (temoin `tests/h64suspend.c`, cas D) ;
+  2. la construction de l'IR etait quadratique (`CreateNewCodeBlockAfter`) : sous
+     `FEX_SMCCHECKS=full`, un bloc par instruction, d'ou les 5 min a 100 % ;
+  3. sous SMC complet, l'invalidation lancee depuis le JIT libere de la memoire sans
+     `InSyscallCallback` : ntdll la renvoyait a FEX, qui reprenait `CodeInvalidationMutex`
+     deja tenu (pile du fil principal relevee par lldb).
+- Trace serveur : le chargeur cree 6 fils suspendus, remappe D2R.exe et lui-meme par des
+  sections (vues `SEC_NO_CHANGE`, une RW et une RX de la meme section au debut), liste les
+  processus, suspend tous ses fils, lit leurs contextes et les reprend.
+- `FEX_SMCCHECKS=full` n'est pas ce qui evitait le debordement de pile : il ralentissait le
+  chargeur au point qu'il n'atteignait pas l'endroit fautif. Avec 0194 et sans `full`, le
+  chargeur charge winemac.drv et uxtheme en 9 s de CPU, puis meurt de facon non
+  deterministe :
+  - soit trois fils en « stack overflow » a la meme adresse (thunk d'entree x64 de
+    kernelbase), avec StackLimit = DeallocationStack + 0x2000 (valeur ecrite par
+    l'invite, a la mode Windows) et RSP = StackLimit + 0x2000. Sous Wine/macOS, les 32
+    premiers Kio d'une pile sont sans acces ou garde (pages de 16 Kio) contre 8 Kio sous
+    Windows. Correctif prepare, non valide : `~/Dev/cidre-d2r/wine/virtual-pile.c`
+    (DeallocationStack annonce decale de 2 pages d'hote moins 2 pages Windows) ;
+  - soit un fil sur un pointeur de section critique corrompu
+    (`RtlIsCriticalSectionLockedByThread`), apres quoi un autre fil charge shell32/ole32.
+- Avec `full` et 0194, le chargeur passe le point de gel mais tourne encore 3 min, surtout
+  dans les fautes W^X des invalidations (`VirtualDontNeed` de 4 Mio de pile d'appels a
+  chaque invalidation), sans fenetre.
+- Essai ecarte : SMC complet seulement dans les vues de section executables
+  (`~/Dev/cidre-d2r/fex/hybride-smc-vues-section.diff`) : meme debordement, plus lent.
+- Outils : `~/Dev/cidre-d2r/manche_sonde.sh` (D2R 90 s, arret seul), `sonde_pile.c`
+  (contexte x64 et pile de chaque fil, depuis un autre processus ; ne marche pas sur un fil
+  bloque en mode cooperatif), `lldb_faute.py`, ntdll.so de sonde (ERR + pile invitee au
+  debordement).
+
 ## 5. Suite
 
 1. Connexion par l'utilisateur, avec le client lance dans le prefixe d'essai (JEU DEMANDE a la
