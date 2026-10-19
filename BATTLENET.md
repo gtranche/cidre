@@ -372,6 +372,36 @@ invalidations et leur cout, fiche de chaque page perimee) ; sonde ntdll SONDE8/9
   `NtCreateThreadEx` : RIP avant et apres la conversion x64/ARM64EC) pour trouver ou l'octet 3 change ; puis la
   pile de 013c pendant l'interblocage (`sample` du processus Wine : `~/Dev/cidre-d2r/manche_sample.sh`).
 
+### D2R, nanomites, EFLAGS (0199), faute a cheval (0200) et pages de 16 Kio (2026-10-19, 18:05-18:40)
+
+Sondes : ntdll PE SONDE11/12 (contexte de depart des fils, NtContinue/NtSetContextThread, chaque exception
+vue par `prepare_exception_arm64ec`), ntdll.so SONDE10 (projections et allocations >= 1 Mio), FEX anneau des
+4 096 dernieres entrees de `CompileBlock` vide au saut vers une adresse non projetee, avec les octets du code.
+
+- Le chargeur execute par **nanomites** : plus de 150 000 `int3` en 4 min sur le fil principal, traites par son
+  crochet `Wow64PrepareForException`, qui choisit la suite d'apres les EFLAGS du contexte puis `NtContinue`.
+- **PF, AF et DF etaient perdus a chaque exception**, a l'aller et au retour (wine11 `unwind.h` et FEX
+  `StoreStateToPackedECContext` ne portaient que NZCV+TF ; le crochet ne voyait jamais PF ni AF). Temoin
+  `tests/h64eflags.c` : 17 echecs sur 21. **0199** (wine11 + fex) : PF, AF, DF en bits 26, 27, 25 de Cpsr ; DF
+  et AF effaces pendant le gestionnaire comme sous Windows x64. Temoin : 0 echec.
+- **Faute d'execution d'une instruction a cheval** : FEX signalait Rip, x86 signale le debut de la page suivante ;
+  le crochet dechiffrait sans fin la page deja dechiffree (150 000 fautes a 0x14002CFFC). **0200** (fex). Temoin
+  `tests/h64faute_page.c` : echoue avant, passe apres.
+- Hypothese ecartee (SONDE10) : pas de copie du chargeur projetee ailleurs.
+- Avec 0199 + 0200, D2R devient **deterministe** : 3 manches sur 3 meurent a 25 s, `jmp rdx` vers 0x1C55F07BA.
+  Le bloc fautif est un `switch` MSVC de D2R.exe (0x140bb86d0, constructeurs statiques) : `rdx = base +
+  table[0x140bb9380 + 4*idx]`. 0x855F07BA est une entree **encore chiffree** : la page 0x140bb9000 est
+  `PAGE_NOACCESS` (protection Windows relevee au saut), mais ses voisines 0x140bb8000 et 0x140bba000 sont deja
+  dechiffrees en `PAGE_EXECUTE_READ`, et les quatre partagent **une page d'hote de 16 Kio**, donc lisible. Sous
+  Windows (4 Kio), la lecture ferait faute et le crochet dechiffrerait la table ; ici elle rend l'octet chiffre.
+- **Cause racine** : une protection de 4 Kio plus stricte que ses voisines ne peut pas etre appliquee sur une page
+  d'hote de 16 Kio (Apple Silicon). Les pointeurs « faux d'un octet » des manches precedentes en relevent sans
+  doute aussi. CrossOver passe par Rosetta, dont les processus ont des pages de 4 Kio.
+- Suite (chantier) : faire respecter le NOACCESS de 4 Kio dans une page d'hote mixte. Piste : page d'hote
+  protegee a l'intersection des droits ; a la faute, si la page de 4 Kio visee est permise, ouvrir la page
+  d'hote le temps d'une instruction invitee (FEX sait re-executer une instruction seule, cf. SMC en ligne) et
+  la decodeur ; sinon remonter la faute a l'invite. Le crochet dechiffre alors la table comme sous Windows.
+
 ## 5. Suite
 
 1. Connexion par l'utilisateur, avec le client lance dans le prefixe d'essai (JEU DEMANDE a la

@@ -49,6 +49,7 @@ serie_wine11() {
    ls "$R"/0190-wine11-*.patch 2>/dev/null
    ls "$R"/0195-wine11-*.patch 2>/dev/null
    ls "$R"/0196-wine11-*.patch 2>/dev/null
+   ls "$R"/0199-wine11-*.patch 2>/dev/null
 }
 
 serie_vkd3d_proton() {
@@ -69,5 +70,5 @@ serie_dxmt() {
 # FEX vit dans third_party/FEX, pas dans src/ : etape1 et la verification le
 # traitent a part.
 serie_fex() {
-   ls "$R"/0070-fex-*.patch "$R"/0118-fex-*.patch "$R"/0161-fex-*.patch "$R"/0179-fex-*.patch "$R"/0194-fex-*.patch "$R"/0197-fex-*.patch "$R"/0198-fex-*.patch 2>/dev/null
+   ls "$R"/0070-fex-*.patch "$R"/0118-fex-*.patch "$R"/0161-fex-*.patch "$R"/0179-fex-*.patch "$R"/0194-fex-*.patch "$R"/0197-fex-*.patch "$R"/0198-fex-*.patch "$R"/0199-fex-*.patch "$R"/0200-fex-*.patch 2>/dev/null
 }

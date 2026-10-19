@@ -1,0 +1,37 @@
+Generated-by: LLM
+
+fex : la faute d'execution d'une instruction a cheval sur une page non executable est signalee au debut de cette page, comme sur x86, et non a Rip
+
+Le JIT leve une faute d'execution (X86_TRAPNO_PF) pour une instruction qu'il n'a pas pu decoder en entier ; HandleGuestException mettait toujours ExceptionInformation[1] = Rip. Quand l'instruction commence sur une page executable et deborde sur la suivante, x86 signale le premier octet inaccessible : le debut de la page suivante. Le chargeur protege de D2R dechiffre une page de D2R.exe a la demande, sur faute, et la rend executable : avec Rip, il dechiffrait sans fin la page deja dechiffree (150 000 fautes a 0x14002CFFC, fil principal fige). Si la page de Rip est executable, la faute est donc reportee au debut de la page suivante.
+Temoin tests/h64faute_page.c (mov eax, imm32 a cheval entre une page RX et une page NOACCESS) : avant, faute signalee a Rip, le gestionnaire boucle ; apres, une faute, a la bonne adresse, valeur juste.
+
+--- a/Source/Windows/Common/Exception.h
++++ b/Source/Windows/Common/Exception.h
+@@ -7,6 +7,7 @@
+ 
+ #include <FEXCore/Utils/LogManager.h>
+ #include <FEXCore/Debug/InternalThreadState.h>
++#include "Guest32.h"
+ 
+ namespace FEX::Windows {
+ template<typename TReg>
+@@ -79,6 +80,19 @@
+       Dst.NumberParameters = 2;
+       Dst.ExceptionInformation[0] = EXCEPTION_EXECUTE_FAULT;
+       Dst.ExceptionInformation[1] = Rip;
++      {
++        // Une instruction qui commence sur une page executable et deborde sur
++        // une page qui ne l'est pas (decodage partiel) faute, sur x86, au premier
++        // octet inaccessible : le debut de la page suivante. Signaler Rip faisait
++        // boucler un gestionnaire qui rend la page fautive executable (chargeur
++        // protege de D2R : il dechiffrait sans fin la page deja dechiffree).
++        MEMORY_BASIC_INFORMATION Info;
++        if (!NtQueryVirtualMemory(NtCurrentProcess(), HostPtr32(Rip), MemoryBasicInformation, &Info, sizeof(Info), nullptr) &&
++            Info.State == MEM_COMMIT && !(Info.Protect & PAGE_GUARD) &&
++            (Info.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) {
++          Dst.ExceptionInformation[1] = (static_cast<uint64_t>(Rip) | 0xfff) + 1;
++        }
++      }
+       return Dst;
+     default: LogMan::Msg::EFmt("Unknown SIGSEGV trap: {}", Fault.TrapNo); break;
+     }
