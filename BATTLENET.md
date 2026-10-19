@@ -339,6 +339,39 @@ Session d2r-menu, meme environnement (runtime clone, `pfx-bnet`, FEX 0194).
 - Suite : en full, faire relever par FEX les blocs dont la verification detecte un changement
   (adresse, type de projection, intervalle) pour trouver les ecritures que mtrack ne voit pas.
 
+### D2R, SMC complet : livelock (0198) et pointeur faux (2026-10-19, 17:00-18:05)
+
+Session d2r-smc, meme environnement. Sonde FEX hors serie (`~/Dev/cidre-d2r/fex/FEX/Source/Windows/Common/SondeSMC.h`,
+fil rapporteur natif toutes les 2 s : compilations, blocs perimes trouves par la verification complete,
+invalidations et leur cout, fiche de chaque page perimee) ; sonde ntdll SONDE8/9 dans `call_seh_handlers`
+(exception d'origine, cadres, registres au saut fautif).
+
+- Le « full propre mais trop lent » etait un livelock. Jusqu'a t=24 s, environ 750 compilations/s et aucun
+  bloc perime. A t=24 s, le chargeur rechiffre D2R.exe (5 600 `NtProtect` en NOACCESS) pendant qu'un fil y
+  execute encore : FEX compile alors 51 000 blocs/s a la meme adresse (0x14155f8e4), chacun declare perime,
+  invalide, recompile, jusqu'a la fin (850 ms d'invalidation par 2 s). Le bloc d'entree sur page non
+  executable donne une instruction NOEXEC de taille 0, que le controle complet validait quand meme :
+  `ValidateCode` sur 0 octet compare un registre jamais ecrit, donc « code change » a chaque passage, et la
+  faute d'execution que le crochet de la protection attend n'est jamais levee. Corrige par fex **0198**.
+- Avec 0198, full ne trouve **aucun bloc perime en 170 s**, puis s'effondre comme mtrack. Le code perime n'est
+  donc pas ce qui bloque D2R (0196/0197 restent justes pour h64smc).
+- Les effondrements viennent d'un pointeur faux d'un octet : un fil saute vers 0x6fffa99c4e60, 0x6fffa95af46c,
+  0x6fffa99eaf94 ou 0x6fff979c34bc, c'est-a-dire du code du chargeur (0x6ffff7xxxxxx) dont l'octet des bits
+  24-31 vaut 0xa9 (4 fois) ou 0x97 au lieu de 0xf7. Au saut, la pile du fil est presque vide (0x440 octets
+  sous son sommet, [rsp]=0) : il s'agit du depart d'un fil ou d'un contexte pose, pas d'un `call`. Le
+  deroulement de ce saut lit [Rsp=0] dans `RtlVirtualUnwind2`, d'ou la cascade et le debordement.
+- Autre issue, une manche sur deux environ : interblocage sur `ThreadCreationMutex` de FEX
+  (xtajit64+0x3b25a8), tenu par le fil 013c ; les fils 0024 et 0128 l'attendent. Essai 0199 (verrou non tenu
+  entre les notifications avant et apres de `NtProtect`, `NtAllocate`, `NtFree` et `NtUnmap`) : sans effet,
+  non garde (`~/Dev/cidre-d2r/fex/essai-0199-verrou-hors-appel.diff`).
+- Ecartes par mesure : crypto (temoins `tests/h64crypto.c` et `tests/h64sha.c` : AES-NI, PCLMULQDQ, CRC32,
+  SHA-1/256 justes sous FEX), AVX (`FEX_HOSTFEATURES=enablecrypto,disableavx` : meme interblocage), TSO strict
+  (`FEX_VECTORTSOENABLED`, `FEX_MEMCPYSETTSOENABLED`, `FEX_STRICTINPROCESSSPLITLOCKS` : meme pointeur faux).
+  `disablecrypto` change le chemin du chargeur (plus de compilation apres 20 s), sans progres.
+- Suite : relever les contextes que le chargeur pose sur ses fils (`NtSetContextThread`, `NtContinue`,
+  `NtCreateThreadEx` : RIP avant et apres la conversion x64/ARM64EC) pour trouver ou l'octet 3 change ; puis la
+  pile de 013c pendant l'interblocage (`sample` du processus Wine : `~/Dev/cidre-d2r/manche_sample.sh`).
+
 ## 5. Suite
 
 1. Connexion par l'utilisateur, avec le client lance dans le prefixe d'essai (JEU DEMANDE a la
