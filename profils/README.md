@@ -182,8 +182,9 @@ tests/tester_version_windows.sh`.
 
 Certains jeux se ferment toujours sur un code non nul, sans rien perdre :
 Fahrenheit Remastered (312840) sort sur `1` à chaque fermeture par son menu,
-après avoir vidé ses pools mémoire (`MEM_POOL_HEADER`…) et passé par breakpad
-(« Setting breakpad minidump AppID »), la partie sauvegardée. Sans l'option,
+la partie sauvegardée : tous ses `PostQuitMessage` passent 1, que MFC rend à
+`exit()`. Les lignes `MEM_POOL_HEADER` et « Setting breakpad minidump AppID »
+de la fin ne sont que sa sortie standard, vidée à la fermeture. Sans l'option,
 le lanceur cherche une cause, n'en trouve pas (« sans signature connue ») et
 Verger affiche une alerte à chaque partie.
 
