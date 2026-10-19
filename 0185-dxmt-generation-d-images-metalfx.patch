@@ -19,7 +19,7 @@ capture d'ecran de l'utilisateur, comme le 16/10 sans generation : a ne pas acti
 defaut tant que ce n'est pas tranche.
 
 diff --git a/src/d3d11/d3d11_context_impl.cpp b/src/d3d11/d3d11_context_impl.cpp
-index 026a362..ec832ea 100644
+index fb6bee5..cc1eb25 100644
 --- a/src/d3d11/d3d11_context_impl.cpp
 +++ b/src/d3d11/d3d11_context_impl.cpp
 @@ -645,7 +645,8 @@ public:
@@ -41,18 +41,18 @@ index 026a362..ec832ea 100644
    class CachedTemporalScaler {
    public:
      WMTPixelFormat color_pixel_format;
-@@ -5439,8 +5440,10 @@ public:
+@@ -5448,8 +5449,10 @@ public:
          new_props.motion_vector_scale_x = 1.0;
          new_props.motion_vector_scale_y = 1.0;
-         enc.upscaleTemporal(input, output, depth, mv_downscaled, mv_downscaled->fullView, exposure, scaler, new_props);
+         enc.upscaleTemporal(input, output, depth, mv_downscaled, mv_downscaled->fullView, exposure, scaler, new_props, reactive);
 +        enc.cidre_fg.motion_format = mv_downscaled->pixelFormat(); /* Cidre (0185) */
        } else {
-         enc.upscaleTemporal(input, output, depth, motion_vector, mv_view, exposure, scaler, props);
+         enc.upscaleTemporal(input, output, depth, motion_vector, mv_view, exposure, scaler, props, reactive);
 +        enc.cidre_fg.motion_format = motion_vector_format; /* Cidre (0185) */
        }
      });
    }
-@@ -5472,10 +5475,66 @@ public:
+@@ -5481,10 +5484,66 @@ public:
      return E_INVALIDARG;
    };
  
@@ -120,10 +120,10 @@ index 026a362..ec832ea 100644
  
  struct used_dynamic_buffer {
 diff --git a/src/d3d11/d3d11_interfaces.hpp b/src/d3d11/d3d11_interfaces.hpp
-index 1c9ecc0..1a6e967 100644
+index 866b26f..ea95f76 100644
 --- a/src/d3d11/d3d11_interfaces.hpp
 +++ b/src/d3d11/d3d11_interfaces.hpp
-@@ -55,3 +55,31 @@ DEFINE_COM_INTERFACE("efc77ae6-2179-4c0a-b844-7661ca0dcde7", IMTLD3D11DeviceExt)
+@@ -56,3 +56,31 @@ DEFINE_COM_INTERFACE("efc77ae6-2179-4c0a-b844-7661ca0dcde7", IMTLD3D11DeviceExt)
      : public IUnknown {
    virtual void STDMETHODCALLTYPE SetShaderExtensionSlot(UINT Slot) = 0;
  };
@@ -421,11 +421,11 @@ index ea0a043..bb6d986 100644
    bool cidre_init_ = false;
    bool cidre_stats_ = false;
 diff --git a/src/dxmt/dxmt_context.cpp b/src/dxmt/dxmt_context.cpp
-index c5b0feb..8af98ce 100644
+index a29e34f..e5a955e 100644
 --- a/src/dxmt/dxmt_context.cpp
 +++ b/src/dxmt/dxmt_context.cpp
-@@ -995,6 +995,63 @@ ArgumentEncodingContext::upscaleTemporal(
-     encoder_info->exposure = access(exposure, exposure->fullView, ResourceAccess::Read).texture;
+@@ -998,6 +998,63 @@ ArgumentEncodingContext::upscaleTemporal(
+     encoder_info->reactive = access(reactive, reactive->fullView, ResourceAccess::Read).texture;
    }
    endPass();
 +
@@ -488,7 +488,7 @@ index c5b0feb..8af98ce 100644
  }
  
  void
-@@ -1618,6 +1675,28 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
+@@ -1621,6 +1678,28 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
        data->~WaitForEventData();
        break;
      }
@@ -518,7 +518,7 @@ index c5b0feb..8af98ce 100644
        auto data = static_cast<TemporalUpscaleData *>(current);
  
 diff --git a/src/dxmt/dxmt_context.hpp b/src/dxmt/dxmt_context.hpp
-index dc76c65..074d01c 100644
+index 7236e2f..601253f 100644
 --- a/src/dxmt/dxmt_context.hpp
 +++ b/src/dxmt/dxmt_context.hpp
 @@ -120,6 +120,7 @@ enum class EncoderType {
@@ -529,7 +529,7 @@ index dc76c65..074d01c 100644
  };
  
  struct EncoderData {
-@@ -289,6 +290,37 @@ struct TemporalUpscaleData : EncoderData {
+@@ -290,6 +291,37 @@ struct TemporalUpscaleData : EncoderData {
    WMTFXTemporalScalerProps props;
  };
  
@@ -567,8 +567,8 @@ index dc76c65..074d01c 100644
  template <PipelineKind kind>
  constexpr DXMT_RESOURCE_RESIDENCY
  GetResidencyMask(PipelineStage type, bool read, bool write) {
-@@ -680,6 +712,14 @@ public:
-       Rc<Texture> &exposure, Rc<TemporalScaler> &scaler, const WMTFXTemporalScalerProps &props
+@@ -682,6 +714,14 @@ public:
+       Rc<Texture> reactive = {}
    );
  
 +  /* Cidre (0185) */
@@ -646,7 +646,7 @@ index 6bc68d1..e801c96 100644
  } // namespace dxmt
 \ No newline at end of file
 diff --git a/src/winemetal/Metal.hpp b/src/winemetal/Metal.hpp
-index 75288cd..8f8386f 100644
+index 4662fa8..07911b9 100644
 --- a/src/winemetal/Metal.hpp
 +++ b/src/winemetal/Metal.hpp
 @@ -602,6 +602,10 @@ class FXSpatialScaler : public Object {
@@ -662,7 +662,7 @@ index 75288cd..8f8386f 100644
    std::vector<Object>
 @@ -726,6 +730,16 @@ public:
    ) {
-     MTLCommandBuffer_encodeTemporalScale(handle, scaler, color, output, depth, motion, exposure, fence, &props);
+     MTLCommandBuffer_encodeTemporalScale(handle, scaler, color, output, depth, motion, exposure, fence, &props, reactive);
    }
 +
 +  void
@@ -695,10 +695,10 @@ index 75288cd..8f8386f 100644
    setShouldMaximizeConcurrentCompilation(bool value) {
      MTLDevice_setShouldMaximizeConcurrentCompilation(handle, value);
 diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
-index 0e01b11..61f449c 100644
+index 3f0e9fe..2d2d9a0 100644
 --- a/src/winemetal/unix/winemetal_unix.c
 +++ b/src/winemetal/unix/winemetal_unix.c
-@@ -3267,6 +3267,79 @@ _MetalLayer_isPresentable(void *obj) {
+@@ -3278,6 +3278,79 @@ _MetalLayer_isPresentable(void *obj) {
    return STATUS_SUCCESS;
  }
  
@@ -778,7 +778,7 @@ index 0e01b11..61f449c 100644
  const void *__wine_unix_call_funcs[] = {
      &_NSObject_retain,
      &_NSObject_release,
-@@ -3415,6 +3488,9 @@ const void *__wine_unix_call_funcs[] = {
+@@ -3426,6 +3499,9 @@ const void *__wine_unix_call_funcs[] = {
      &_MTLDevice_newLibraryWithSource,
      &_MTLTexture_getBytes,
      &_MetalLayer_isPresentable,
@@ -788,7 +788,7 @@ index 0e01b11..61f449c 100644
  };
  
  #ifndef DXMT_NATIVE
-@@ -3566,5 +3642,8 @@ const void *__wine_unix_call_wow64_funcs[] = {
+@@ -3577,5 +3653,8 @@ const void *__wine_unix_call_wow64_funcs[] = {
      &_MTLDevice_newLibraryWithSource,
      &_MTLTexture_getBytes,
      &_MetalLayer_isPresentable,
@@ -798,10 +798,10 @@ index 0e01b11..61f449c 100644
  };
  #endif
 diff --git a/src/winemetal/winemetal.h b/src/winemetal/winemetal.h
-index 333bc4a..f85aa49 100644
+index e3728e0..e155d3e 100644
 --- a/src/winemetal/winemetal.h
 +++ b/src/winemetal/winemetal.h
-@@ -1866,6 +1866,46 @@ WINEMETAL_API void MetalLayer_getEDRValue(obj_handle_t layer, struct WMTEDRValue
+@@ -1868,6 +1868,46 @@ WINEMETAL_API void MetalLayer_getEDRValue(obj_handle_t layer, struct WMTEDRValue
     active (on quitte l'espace). Voir MetalLayer_isPresentable dans winemetal_unix.c. */
  WINEMETAL_API bool MetalLayer_isPresentable(obj_handle_t layer);
  
@@ -849,10 +849,10 @@ index 333bc4a..f85aa49 100644
    WMTDataTypeNone = 0,
  
 diff --git a/src/winemetal/winemetal_thunks.c b/src/winemetal/winemetal_thunks.c
-index 9823fb8..8dfbff8 100644
+index 9b15f85..0c1e94e 100644
 --- a/src/winemetal/winemetal_thunks.c
 +++ b/src/winemetal/winemetal_thunks.c
-@@ -1353,3 +1353,43 @@ MetalLayer_isPresentable(obj_handle_t layer) {
+@@ -1355,3 +1355,43 @@ MetalLayer_isPresentable(obj_handle_t layer) {
    UNIX_CALL(146, &params);
    return params.ret != 0;
  }
@@ -897,11 +897,11 @@ index 9823fb8..8dfbff8 100644
 +  return params.ret;
 +}
 diff --git a/src/winemetal/winemetal_thunks.h b/src/winemetal/winemetal_thunks.h
-index 37645c9..2febeb6 100644
+index 82d310b..23fb856 100644
 --- a/src/winemetal/winemetal_thunks.h
 +++ b/src/winemetal/winemetal_thunks.h
-@@ -216,6 +216,25 @@ struct unixcall_mtlcommandbuffer_temporal_scale {
-   struct WMTConstMemoryPointer props;
+@@ -217,6 +217,25 @@ struct unixcall_mtlcommandbuffer_temporal_scale {
+   obj_handle_t reactive; /* Cidre : masque de reactivite */
  };
  
 +struct unixcall_mtldevice_newfxframeinterpolator {

@@ -26,34 +26,50 @@ dxmt : pont DLSS -> MetalFX temporel, releve et relecture (Cidre 0184)
 5. Etendue des vecteurs dilates = leur texture. Exp33 envoie des vecteurs 1383x868 pour
    une sortie 1384x868 : prendre la sortie comme etendue lisait une colonne hors texture
    a chaque image.
-Le lanceur refuse dlss sans CIDRE_DLSS_ESSAI=1 tant que les gels ne sont pas expliques.
+6. nvngx journalise ce que le jeu passe a DLSS aux images 1, 120 et 600 de chaque feature
+   (« cidre-dlss-entrees » : origines de sous-rectangle, masque de biais, exposition, pre-
+   exposition, jitter, echelle des vecteurs, reset). Exp33 : origines 0,0, pas de masque,
+   exposition auto avec une pre-exposition qui varie.
+7. Options d'essai, coupees par defaut : CIDRE_DXMT_DLSS_EXPOSITION=non|auto (force
+   l'exposition automatique de MetalFX) ; CIDRE_DXMT_DLSS_MASQUE=1 passe le masque de biais
+   de DLSS (DLSS.Input.Bias.Current.Color.Mask) a MetalFX comme masque de reactivite
+   (winemetal : reactive_format dans le descripteur, texture a l'encodage ; macOS 14.4).
+Le lanceur refuse dlss sans CIDRE_DLSS_ESSAI=1 tant que les gels ne sont pas expliques : trois
+gels GPU du M1 sous DLSS dans Exp33 (18 et 19/10), non reproduits hors jeu (sonde_dlss_exp33,
+15 000 images d'un seul tenant, memoire plate).
 
 diff --git a/src/d3d11/d3d11_context_impl.cpp b/src/d3d11/d3d11_context_impl.cpp
-index 2b63ad4..026a362 100644
+index 2b63ad4..fb6bee5 100644
 --- a/src/d3d11/d3d11_context_impl.cpp
 +++ b/src/d3d11/d3d11_context_impl.cpp
-@@ -5220,6 +5220,7 @@ class MTLD3D11ContextExt : public IMTLD3D11ContextExt1 {
+@@ -5220,6 +5220,8 @@ class MTLD3D11ContextExt : public IMTLD3D11ContextExt1 {
      uint32_t output_height;
      Rc<TemporalScaler> scaler;
      Rc<Texture> mv_downscaled;
 +    Rc<Texture> depth_r32; /* Cidre : profondeur Depth32Float_Stencil8 recopiee en R32Float */
++    WMTPixelFormat reactive_format = WMTPixelFormatInvalid; /* Cidre */
    };
  public:
    MTLD3D11ContextExt(MTLD3D11DeviceContextImplBase<ContextInternalState> *context) : ctx_(context){};
-@@ -5270,6 +5271,12 @@ public:
+@@ -5269,6 +5271,17 @@ public:
+       return;
      if (pDesc->ExposureTexture && !(exposure = static_cast<D3D11ResourceCommon *>(pDesc->ExposureTexture)->texture()))
        return;
- 
++    /* Cidre : masque de reactivite (nvngx le passe sous CIDRE_DXMT_DLSS_MASQUE=1) */
++    Rc<Texture> reactive;
++    if (pDesc->ReactiveMask)
++      reactive = static_cast<D3D11ResourceCommon *>(pDesc->ReactiveMask)->texture();
++    WMTPixelFormat reactive_format = reactive ? reactive->pixelFormat() : WMTPixelFormatInvalid;
++
 +    g_cidre_dlss.evaluations.fetch_add(1, std::memory_order_relaxed);
 +    g_cidre_dlss.in_w.store(pDesc->InputContentWidth ? pDesc->InputContentWidth : input->width(), std::memory_order_relaxed);
 +    g_cidre_dlss.in_h.store(pDesc->InputContentHeight ? pDesc->InputContentHeight : input->height(), std::memory_order_relaxed);
 +    g_cidre_dlss.out_w.store(output->width(), std::memory_order_relaxed);
 +    g_cidre_dlss.out_h.store(output->height(), std::memory_order_relaxed);
-+
+ 
      WMTPixelFormat motion_vector_format = GetCorrectMotionVectorFormat(motion_vector->pixelFormat());
      if (motion_vector_format == WMTPixelFormatInvalid) {
-       ERR("TemporalUpscale: invalid motion vector format ", motion_vector->pixelFormat());
-@@ -5278,6 +5285,7 @@ public:
+@@ -5278,6 +5291,7 @@ public:
  
      Rc<TemporalScaler> scaler;
      Rc<Texture> mv_downscaled;
@@ -61,7 +77,11 @@ index 2b63ad4..026a362 100644
  
      for(CachedTemporalScaler& entry: scaler_cache_) {
        if(pDesc->AutoExposure != entry.auto_exposure) continue;
-@@ -5293,6 +5301,7 @@ public:
+@@ -5290,9 +5304,11 @@ public:
+       if(depth->pixelFormat() != entry.depth_pixel_format) continue;
+       if(motion_vector_format != entry.motion_vector_pixel_format) continue;
+       if(pDesc->MotionVectorInDisplayRes != (entry.mv_downscaled != nullptr)) continue;
++      if(reactive_format != entry.reactive_format) continue;
  
        scaler = entry.scaler;
        mv_downscaled = entry.mv_downscaled;
@@ -69,8 +89,12 @@ index 2b63ad4..026a362 100644
        break;
      }
  
-@@ -5306,6 +5315,27 @@ public:
+@@ -5304,8 +5320,31 @@ public:
+       scaler_entry.motion_vector_pixel_format = motion_vector_format;
+       WMTFXTemporalScalerInfo info;
        info.color_format = scaler_entry.color_pixel_format;
++      info.reactive_format = reactive_format;
++      scaler_entry.reactive_format = reactive_format;
        info.output_format = scaler_entry.output_pixel_format;
        info.depth_format = scaler_entry.depth_pixel_format;
 +      /* Cidre : une profondeur avec stencil (Expedition 33 : Depth32Float_Stencil8) est
@@ -97,7 +121,7 @@ index 2b63ad4..026a362 100644
        info.motion_format = motion_vector_format;
        scaler_entry.auto_exposure = pDesc->AutoExposure;
        scaler_entry.input_width = input->width();
-@@ -5340,7 +5370,18 @@ public:
+@@ -5340,7 +5379,18 @@ public:
          flags.set(TextureAllocationFlag::GpuPrivate);
          mv_downscaled->rename(mv_downscaled->allocate(flags));
        }
@@ -110,19 +134,19 @@ index 2b63ad4..026a362 100644
 +           ", exposition ", pDesc->AutoExposure ? "auto" : (pDesc->ExposureTexture ? "texture" : "aucune"),
 +           ", formats couleur ", scaler_entry.color_pixel_format, " sortie ", scaler_entry.output_pixel_format,
 +           " profondeur ", scaler_entry.depth_pixel_format, scaler_entry.depth_r32 ? " (recopiee en R32Float)" : "",
-+           " vecteurs ", motion_vector_format);
++           " vecteurs ", motion_vector_format, ", masque de reactivite ", reactive_format);
        scaler = scaler_entry.scaler;
 +      depth_r32 = scaler_entry.depth_r32;
        scaler_cache_.push_back(std::move(scaler_entry));
        // to simplify implementation, the created scalers are never destroyed
        // as they are not expected to be created frequently
-@@ -5363,8 +5404,13 @@ public:
+@@ -5363,8 +5413,13 @@ public:
                            pDesc->JitterOffsetY,
                            pDesc->PreExposure,
                        },
 -                  motion_vector_format, mv_downscaled = std::move(mv_downscaled)
 +                  motion_vector_format, mv_downscaled = std::move(mv_downscaled),
-+                  depth_r32 = std::move(depth_r32)
++                  depth_r32 = std::move(depth_r32), reactive = std::move(reactive)
                  ](ArgumentEncodingContext &enc) mutable {
 +      if (depth_r32) {
 +        enc.mv_scale_cmd.copyDepthR32(depth, depth_r32);
@@ -131,7 +155,7 @@ index 2b63ad4..026a362 100644
        auto mv_view = motion_vector->createView(
            {.format = motion_vector_format,
             .type = WMTTextureType2D,
-@@ -5383,9 +5429,12 @@ public:
+@@ -5383,15 +5438,18 @@ public:
        scaler_info.motion_vector_highres = mv_downscaled != nullptr;
  
        if (scaler_info.motion_vector_highres) {
@@ -146,11 +170,27 @@ index 2b63ad4..026a362 100644
          WMTFXTemporalScalerProps new_props = props;
          new_props.motion_vector_scale_x = 1.0;
          new_props.motion_vector_scale_y = 1.0;
+-        enc.upscaleTemporal(input, output, depth, mv_downscaled, mv_downscaled->fullView, exposure, scaler, new_props);
++        enc.upscaleTemporal(input, output, depth, mv_downscaled, mv_downscaled->fullView, exposure, scaler, new_props, reactive);
+       } else {
+-        enc.upscaleTemporal(input, output, depth, motion_vector, mv_view, exposure, scaler, props);
++        enc.upscaleTemporal(input, output, depth, motion_vector, mv_view, exposure, scaler, props, reactive);
+       }
+     });
+   }
 diff --git a/src/d3d11/d3d11_interfaces.hpp b/src/d3d11/d3d11_interfaces.hpp
-index ff4bb2b..1c9ecc0 100644
+index ff4bb2b..866b26f 100644
 --- a/src/d3d11/d3d11_interfaces.hpp
 +++ b/src/d3d11/d3d11_interfaces.hpp
-@@ -33,6 +33,18 @@ typedef enum MTL_FEATURE {
+@@ -19,6 +19,7 @@ struct MTL_TEMPORAL_UPSCALE_D3D11_DESC {
+   ID3D11Resource *ExposureTexture;
+   FLOAT JitterOffsetX;
+   FLOAT JitterOffsetY;
++  ID3D11Resource *ReactiveMask; /* Cidre : masque de reactivite MetalFX (nul : aucun) */
+ };
+ 
+ DEFINE_COM_INTERFACE("43ace3ce-1956-448b-a4eb-aee68bdeb283",
+@@ -33,6 +34,18 @@ typedef enum MTL_FEATURE {
    MTL_FEATURE_METALFX_TEMPORAL_SCALER = 0,
  } MTL_FEATURE;
  
@@ -542,3 +582,225 @@ index 516f49e..b257584 100644
  [[kernel]] void tile_barrier(ushort2 pos [[thread_position_in_threadgroup]]) {
    // empty
  }
+diff --git a/src/dxmt/dxmt_context.cpp b/src/dxmt/dxmt_context.cpp
+index c5b0feb..a29e34f 100644
+--- a/src/dxmt/dxmt_context.cpp
++++ b/src/dxmt/dxmt_context.cpp
+@@ -975,7 +975,7 @@ ArgumentEncodingContext::upscale(Rc<Texture> &texture, Rc<Texture> &upscaled, Rc
+ void
+ ArgumentEncodingContext::upscaleTemporal(
+     Rc<Texture> &input, Rc<Texture> &output, Rc<Texture> &depth, Rc<Texture> &motion_vector, TextureViewKey mvViewId,
+-    Rc<Texture> &exposure, Rc<TemporalScaler> &scaler, const WMTFXTemporalScalerProps &props
++    Rc<Texture> &exposure, Rc<TemporalScaler> &scaler, const WMTFXTemporalScalerProps &props, Rc<Texture> reactive
+ ) {
+   assert(!encoder_current);
+   auto encoder_info = allocate<TemporalUpscaleData>();
+@@ -994,6 +994,9 @@ ArgumentEncodingContext::upscaleTemporal(
+   if (exposure) {
+     encoder_info->exposure = access(exposure, exposure->fullView, ResourceAccess::Read).texture;
+   }
++  if (reactive) {
++    encoder_info->reactive = access(reactive, reactive->fullView, ResourceAccess::Read).texture;
++  }
+   endPass();
+ }
+ 
+@@ -1629,7 +1632,7 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
+ 
+       cmdbuf.encodeTemporalScale(
+           data->scaler->scaler(), data->input, data->output, data->depth, data->motion_vector, data->exposure,
+-          data->scaler->fence(), data->props
++          data->scaler->fence(), data->props, data->reactive
+       );
+ 
+       auto end_scaler = cmdbuf.blitCommandEncoder();
+diff --git a/src/dxmt/dxmt_context.hpp b/src/dxmt/dxmt_context.hpp
+index dc76c65..7236e2f 100644
+--- a/src/dxmt/dxmt_context.hpp
++++ b/src/dxmt/dxmt_context.hpp
+@@ -285,6 +285,7 @@ struct TemporalUpscaleData : EncoderData {
+   WMT::Reference<WMT::Texture> depth;
+   WMT::Reference<WMT::Texture> motion_vector;
+   WMT::Reference<WMT::Texture> exposure;
++  WMT::Reference<WMT::Texture> reactive; /* Cidre : masque de reactivite */
+   Rc<TemporalScaler> scaler;
+   WMTFXTemporalScalerProps props;
+ };
+@@ -677,7 +678,8 @@ public:
+ 
+   void upscaleTemporal(
+       Rc<Texture> &input, Rc<Texture> &output, Rc<Texture> &depth, Rc<Texture> &motion_vector, TextureViewKey mvViewId,
+-      Rc<Texture> &exposure, Rc<TemporalScaler> &scaler, const WMTFXTemporalScalerProps &props
++      Rc<Texture> &exposure, Rc<TemporalScaler> &scaler, const WMTFXTemporalScalerProps &props,
++      Rc<Texture> reactive = {}
+   );
+ 
+   void signalEvent(uint64_t value);
+diff --git a/src/nvngx/nvngx.cpp b/src/nvngx/nvngx.cpp
+index 1b353e8..21f9984 100644
+--- a/src/nvngx/nvngx.cpp
++++ b/src/nvngx/nvngx.cpp
+@@ -7,6 +7,7 @@
+ #include "../d3d11/d3d11_interfaces.hpp"
+ #include "../dxgi/dxgi_interfaces.h"
+ #include <cmath>
++#include "util_env.hpp"
+ 
+ namespace dxmt {
+ Logger Logger::s_instance("nvngx.log");
+@@ -141,6 +142,46 @@ NVSDK_NGX_D3D11_EvaluateFeature(
+     if (NVNGX_FAILED(parameters->Get(NVNGX_Parameter_DLSS_Pre_Exposure, &desc.PreExposure)))
+       desc.PreExposure = 1.0;
+ 
++    /* Cidre : masque de biais de DLSS (Unreal : DLSS.Input.Bias.Current.Color.Mask), passe
++       a MetalFX comme masque de reactivite si CIDRE_DXMT_DLSS_MASQUE=1. */
++    ID3D11Resource *biais = nullptr;
++    parameters->Get("DLSS.Input.Bias.Current.Color.Mask", &biais);
++    static const bool masque = env::getEnvVar("CIDRE_DXMT_DLSS_MASQUE") == "1";
++    if (masque)
++      desc.ReactiveMask = biais;
++    /* Cidre : CIDRE_DXMT_DLSS_EXPOSITION=non coupe l'exposition automatique de MetalFX que
++       le jeu demande (soupconnee des clignotements d'Expedition 33, couleur HDR RG11B10). */
++    static const std::string expo = env::getEnvVar("CIDRE_DXMT_DLSS_EXPOSITION");
++    if (expo == "non")
++      desc.AutoExposure = false;
++    else if (expo == "auto")
++      desc.AutoExposure = true;
++
++    /* Cidre : ce que le jeu passe, journalise aux images 1, 120 et 600 de chaque feature
++       (origines de sous-rectangle, masque, exposition, jitter) */
++    dlss->cidre_evaluations++;
++    if (dlss->cidre_evaluations == 1 || dlss->cidre_evaluations == 120 || dlss->cidre_evaluations == 600) {
++      auto base = [&](const char *nom) {
++        unsigned x = 0, y = 0;
++        std::string k = std::string("DLSS.Input.") + nom + ".Subrect.Base.";
++        parameters->Get((k + "X").c_str(), &x);
++        parameters->Get((k + "Y").c_str(), &y);
++        return std::to_string(x) + "," + std::to_string(y);
++      };
++      float echelle_expo = 0;
++      parameters->Get("DLSS.Exposure.Scale", &echelle_expo);
++      D3D11_TEXTURE2D_DESC bd = {};
++      if (biais)
++        static_cast<ID3D11Texture2D *>(biais)->GetDesc(&bd);
++      WARN("cidre-dlss-entrees: image ", dlss->cidre_evaluations, " origines couleur ", base("Color"), " profondeur ",
++           base("Depth"), " vecteurs ", base("MV"), " biais ", base("Bias.Current.Color"), " ; masque de biais ",
++           biais ? std::to_string(bd.Width) + "x" + std::to_string(bd.Height) + " format DXGI " + std::to_string(bd.Format) : "absent",
++           masque ? " (passe a MetalFX)" : "", " ; exposition ", desc.AutoExposure ? "auto" : "jeu",
++           exposure ? " texture" : "", " pre ", desc.PreExposure, " echelle ", echelle_expo, " ; jitter ",
++           desc.JitterOffsetX, " ", desc.JitterOffsetY, " ; vecteurs echelle ", desc.MotionVectorScaleX, " ",
++           desc.MotionVectorScaleY, " ; reset ", reset, " ; contenu ", width, "x", height);
++    }
++
+     pCtxExt->TemporalUpscale(&desc);
+ 
+     pCtxExt->Release();
+diff --git a/src/nvngx/nvngx_feature.hpp b/src/nvngx/nvngx_feature.hpp
+index 05f1fd0..ee4fbc9 100644
+--- a/src/nvngx/nvngx_feature.hpp
++++ b/src/nvngx/nvngx_feature.hpp
+@@ -17,6 +17,7 @@ struct DLSSFeature : CommonFeature {
+   int quality;
+   int flag;
+   int enable_output_subrects;
++  uint32_t cidre_evaluations = 0; /* Cidre : pour journaliser les entrees du jeu */
+ };
+ 
+ }
+\ No newline at end of file
+diff --git a/src/winemetal/Metal.hpp b/src/winemetal/Metal.hpp
+index 75288cd..4662fa8 100644
+--- a/src/winemetal/Metal.hpp
++++ b/src/winemetal/Metal.hpp
+@@ -722,9 +722,9 @@ public:
+   void
+   encodeTemporalScale(
+       FXTemporalScaler scaler, Texture color, Texture output, Texture depth, Texture motion, Texture exposure,
+-      Fence fence, const WMTFXTemporalScalerProps &props
++      Fence fence, const WMTFXTemporalScalerProps &props, Texture reactive = {}
+   ) {
+-    MTLCommandBuffer_encodeTemporalScale(handle, scaler, color, output, depth, motion, exposure, fence, &props);
++    MTLCommandBuffer_encodeTemporalScale(handle, scaler, color, output, depth, motion, exposure, fence, &props, reactive);
+   }
+ };
+ 
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+index 0e01b11..3f0e9fe 100644
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -1439,6 +1439,13 @@ _MTLDevice_newTemporalScaler(void *obj) {
+   }
+   #endif
+   desc.autoExposureEnabled = info->auto_exposure;
++  /* Cidre : masque de reactivite (macOS 14.4) */
++  if (info->reactive_format != WMTPixelFormatInvalid) {
++    if (@available(macOS 14.4, *)) {
++      desc.reactiveMaskTextureEnabled = YES;
++      desc.reactiveMaskTextureFormat = to_metal_pixel_format(info->reactive_format);
++    }
++  }
+ 
+   struct sigaction old_action[sizeof(SIGNALS) / sizeof(int)], new_action;
+   if (@available(macOS 16, *)) {} else {
+@@ -1497,6 +1504,10 @@ _MTLCommandBuffer_encodeTemporalScale(void *obj) {
+   scaler.jitterOffsetX = props->jitter_offset_x;
+   scaler.jitterOffsetY = props->jitter_offset_y;
+   scaler.preExposure = props->pre_exposure;
++  if (@available(macOS 14.4, *)) {
++    if (scaler.reactiveMaskTextureFormat != MTLPixelFormatInvalid)
++      scaler.reactiveMaskTexture = (id<MTLTexture>)params->reactive;
++  }
+   [scaler encodeToCommandBuffer:cmdbuf];
+   return STATUS_SUCCESS;
+ }
+diff --git a/src/winemetal/winemetal.h b/src/winemetal/winemetal.h
+index 333bc4a..e3728e0 100644
+--- a/src/winemetal/winemetal.h
++++ b/src/winemetal/winemetal.h
+@@ -1734,6 +1734,7 @@ struct WMTFXTemporalScalerInfo {
+   bool auto_exposure;
+   bool input_content_properties_enabled;
+   bool requires_synchronous_initialization;
++  enum WMTPixelFormat reactive_format; /* Cidre : masque de reactivite (Invalid : aucun) */
+ };
+ 
+ struct WMTFXSpatialScalerInfo {
+@@ -1763,7 +1764,8 @@ struct WMTFXTemporalScalerProps {
+ 
+ WINEMETAL_API void MTLCommandBuffer_encodeTemporalScale(
+     obj_handle_t cmdbuf, obj_handle_t scaler, obj_handle_t color, obj_handle_t output, obj_handle_t depth,
+-    obj_handle_t motion, obj_handle_t exposure, obj_handle_t fence, const struct WMTFXTemporalScalerProps *props
++    obj_handle_t motion, obj_handle_t exposure, obj_handle_t fence, const struct WMTFXTemporalScalerProps *props,
++    obj_handle_t reactive
+ );
+ 
+ WINEMETAL_API void MTLCommandBuffer_encodeSpatialScale(
+diff --git a/src/winemetal/winemetal_thunks.c b/src/winemetal/winemetal_thunks.c
+index 9823fb8..9b15f85 100644
+--- a/src/winemetal/winemetal_thunks.c
++++ b/src/winemetal/winemetal_thunks.c
+@@ -588,9 +588,11 @@ MTLDevice_newSpatialScaler(obj_handle_t device, const struct WMTFXSpatialScalerI
+ WINEMETAL_API void
+ MTLCommandBuffer_encodeTemporalScale(
+     obj_handle_t cmdbuf, obj_handle_t scaler, obj_handle_t color, obj_handle_t output, obj_handle_t depth,
+-    obj_handle_t motion, obj_handle_t exposure, obj_handle_t fence, const struct WMTFXTemporalScalerProps *props
++    obj_handle_t motion, obj_handle_t exposure, obj_handle_t fence, const struct WMTFXTemporalScalerProps *props,
++    obj_handle_t reactive
+ ) {
+   struct unixcall_mtlcommandbuffer_temporal_scale params;
++  params.reactive = reactive;
+   params.cmdbuf = cmdbuf;
+   params.scaler = scaler;
+   params.color = color;
+diff --git a/src/winemetal/winemetal_thunks.h b/src/winemetal/winemetal_thunks.h
+index 37645c9..82d310b 100644
+--- a/src/winemetal/winemetal_thunks.h
++++ b/src/winemetal/winemetal_thunks.h
+@@ -214,6 +214,7 @@ struct unixcall_mtlcommandbuffer_temporal_scale {
+   obj_handle_t exposure;
+   obj_handle_t fence;
+   struct WMTConstMemoryPointer props;
++  obj_handle_t reactive; /* Cidre : masque de reactivite */
+ };
+ 
+ struct unixcall_mtlcommandbuffer_spatial_scale {
