@@ -1,0 +1,59 @@
+Generated-by: LLM
+
+dxmt : couche BGR10A2 au lieu de RGB10A2 sur option, hors overlay (Cidre 0192)
+
+Une CAMetalLayer RGB10A2 (back buffer R10G10B10A2, defaut d'Unreal en D3D11) n'est
+jamais envoyee directement a l'ecran (code de detachement 0x120017), quoi qu'il y ait
+autour. La passe de presentation recopie le back buffer par un nuanceur : la couche peut
+etre en BGR10A2 (memes 10 bits), comme 0174 le fait deja sous l'overlay Steam.
+CIDRE_DXMT_BGR10A2=1 fait la substitution sans overlay. Inerte par defaut : sans la
+variable, seul l'overlay (CIDRE_OVERLAY_STEAM=1) change le format, comme avant.
+
+diff --git a/src/dxmt/dxmt_presenter.cpp b/src/dxmt/dxmt_presenter.cpp
+index cc8319e..f61fd48 100644
+--- a/src/dxmt/dxmt_presenter.cpp
++++ b/src/dxmt/dxmt_presenter.cpp
+@@ -36,16 +36,20 @@ Presenter::Presenter(WMT::Device device, WMT::MetalLayer layer, InternalCommandL
+   gamma_lut_texture_ = device.newTexture(texture_info);
+ }
+ 
+-/* Cidre (0174) : l'overlay Steam (gameoverlayrenderer.dylib, injecte par le lanceur qui
+-   pose alors CIDRE_OVERLAY_STEAM=1) dessine dans le drawable avec des pipelines BGRA8,
+-   BGR10A2 ou RGBA16Float, aucun en RGB10A2 : sur une couche RGB10A2 (back buffer
+-   R10G10B10A2, defaut d'Unreal) il ecrivait du BGRA8 et l'image entiere virait au bleu et
+-   au violet. La passe de presentation recopie le back buffer par un nuanceur, la couche
+-   peut donc etre en BGR10A2 : memes 10 bits, ordre que l'overlay sait dessiner. */
++/* Cidre (0174) : l'overlay Steam (gameoverlayrenderer.dylib) dessine dans le drawable
++   avec des pipelines BGRA8, BGR10A2 ou RGBA16Float, aucun en RGB10A2 : sur une couche
++   RGB10A2 (back buffer R10G10B10A2, defaut d'Unreal) il ecrivait du BGRA8 et l'image
++   entiere virait au bleu et au violet. La passe de presentation recopie le back buffer
++   par un nuanceur, la couche peut donc etre en BGR10A2 : memes 10 bits, ordre que
++   l'overlay sait dessiner.
++   Cidre (0192) : CIDRE_DXMT_BGR10A2=1 fait la meme substitution sans overlay. Une
++   CAMetalLayer RGB10A2 n'est jamais envoyee directement a l'ecran (code de detachement
++   0x120017), quel que soit le reste ; en BGR10A2 elle peut l'etre. */
+ static bool
+-OverlaySteam() {
+-  static const bool overlay = env::getEnvVar("CIDRE_OVERLAY_STEAM") == "1";
+-  return overlay;
++CoucheBGR10A2() {
++  static const bool bgr = env::getEnvVar("CIDRE_OVERLAY_STEAM") == "1" ||
++                          env::getEnvVar("CIDRE_DXMT_BGR10A2") == "1";
++  return bgr;
+ }
+ 
+ bool
+@@ -58,11 +62,11 @@ Presenter::changeLayerProperties(
+   should_invalidated |= sample_count_ != sample_count;
+   sample_count_ = sample_count;
+   layer_props_.pixel_format = Forget_sRGB(format);
+-  if (layer_props_.pixel_format == WMTPixelFormatRGB10A2Unorm && OverlaySteam()) {
++  if (layer_props_.pixel_format == WMTPixelFormatRGB10A2Unorm && CoucheBGR10A2()) {
+     static bool dit = false;
+     if (!dit) {
+       dit = true;
+-      WARN("Cidre : overlay Steam, couche en BGR10A2 au lieu de RGB10A2");
++      WARN("Cidre : couche en BGR10A2 au lieu de RGB10A2 (overlay Steam, affichage direct)");
+     }
+     layer_props_.pixel_format = WMTPixelFormatBGR10A2Unorm;
+   }
