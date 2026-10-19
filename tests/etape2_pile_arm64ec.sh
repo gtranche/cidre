@@ -95,6 +95,8 @@ fi
 # Metal 3 ordonne apres l'image du jeu (correctif 0080, NOTES §312).
 # La meme variable retire A2B10G10R10 en SDR (correctif 0173) : l'overlay
 # n'a pas de pipeline RGB10A2 : un drawable RGB10A2 (UE4/UE5) virait au bleu.
+# Et la couche devient opaque (correctif 0193) : une CAMetalLayer non opaque est
+# toujours composee par WindowServer, opaque elle peut aller directement a l'ecran.
 if [ -n "${CIDRE_OVERLAY_DYLIB:-}" ] && [ -f "$CIDRE_OVERLAY_DYLIB" ]; then
    export DYLD_INSERT_LIBRARIES="$CIDRE_OVERLAY_DYLIB"
    export MESA_WSI_METAL_PRESENT_WITH_COMMAND_BUFFER=1

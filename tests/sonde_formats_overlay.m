@@ -7,6 +7,8 @@
  * UE4/UE5) est relu en BGRA8 et l'image entiere vire au bleu/violet. En mode
  * overlay, la WSI ne doit plus annoncer A2B10G10R10 en sRGB (HDR10 garde,
  * A2R10G10B10 = BGR10A2 garde), et vkd3d-proton/DXVK retombent sur BGRA8.
+ * Depuis 0193, A2B10G10R10 n'est plus annonce en sRGB hors overlay non plus
+ * (RGB10A2 n'est jamais envoye en direct a l'ecran), sauf MESA_WSI_METAL_RGB10A2=1.
  *
  * Construction :
  *   clang -arch arm64 -fobjc-arc -I src/Vulkan-Headers/include tests/sonde_formats_overlay.m \
@@ -134,8 +136,12 @@ int main(int argc, char **argv)
                 voie ? "Formats2" : "Formats ", c, rgb10_srgb, bgr10_srgb, dix_hdr10);
 
          if (!bgra8_srgb) { printf("  ECHEC : BGRA8 sRGB absent\n"); erreurs++; }
-         if (overlay && rgb10_srgb) { printf("  ECHEC : A2B10G10R10 (RGB10A2) annonce en sRGB malgre l'overlay\n"); erreurs++; }
-         if (!overlay && !rgb10_srgb) { printf("  ECHEC : A2B10G10R10 sRGB attendu hors overlay\n"); erreurs++; }
+         /* 0193 : RGB10A2 n'est jamais envoye en direct a l'ecran, masque en SDR
+          * aussi hors overlay, sauf MESA_WSI_METAL_RGB10A2=1. */
+         const char *rgb10 = getenv("MESA_WSI_METAL_RGB10A2");
+         int rgb10_voulu = !overlay && rgb10 && (!strcmp(rgb10, "1") || !strcasecmp(rgb10, "true"));
+         if (!rgb10_voulu && rgb10_srgb) { printf("  ECHEC : A2B10G10R10 (RGB10A2) annonce en sRGB\n"); erreurs++; }
+         if (rgb10_voulu && !rgb10_srgb) { printf("  ECHEC : A2B10G10R10 sRGB attendu avec MESA_WSI_METAL_RGB10A2=1\n"); erreurs++; }
          if (!bgr10_srgb) { printf("  ECHEC : A2R10G10B10 (BGR10A2) sRGB perdu\n"); erreurs++; }
          if (dix_hdr10 != 2) { printf("  ECHEC : HDR10 10 bits perdu\n"); erreurs++; }
       }
