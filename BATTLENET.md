@@ -269,6 +269,44 @@ cette copie que Wine charge).
   bloque en mode cooperatif), `lldb_faute.py`, ntdll.so de sonde (ERR + pile invitee au
   debordement).
 
+### D2R, cascade d'exceptions et code perime (2026-10-19, 15:30-16:05)
+
+Session d2r-menu, meme environnement (runtime clone, `pfx-bnet`, FEX 0194).
+
+- `virtual-pile.c` (garde de 32 Kio) est hors sujet. La limite de pile Dealloc+0x2000 vient de
+  `RtlCreateUserStack` cote PE : les fils fautifs tournent sur des fibres (`CreateFiberEx`).
+  Une sonde de pile au debordement montre la pile de 4 Mio remplie par 632 cycles de 6,6 Kio :
+  une cascade d'exceptions imbriquees, pas un probleme de garde.
+- La protection pose son crochet dans `ntdll!Wow64PrepareForException` (pointeur lu dans le
+  `KiUserExceptionDispatcher` x64, crochet = D2R_loader+0x1b22420). Elle s'en sert pour dechiffrer
+  D2R.exe page a page sur faute d'execution, ce qui marche. Les `int3` et `int 2c` (0xc0000420)
+  du fil 0138, a chaque manche, sont des sondes anti-debogueur rattrapees.
+- wine11 **0195** : `RtlIsEcCode` lisait EcCodeBitMap sans borne. Sur une adresse de retour
+  aberrante (0x20074e904cb80), il fautait pendant `virtual_unwind`, et la repartition reprenait
+  la meme faute jusqu'au debordement. Temoin `tests/h64isec.c`.
+- Temoins sans defaut : fibres + `int3`/`int 2c` (`tests/h64fibres.c`) ; crochet
+  `Wow64PrepareForException` + `call` vers une adresse non projetee + `NtContinue`, avec une faute
+  imbriquee (`tests/h64prepare.c`).
+- Avec 0195, en mtrack, le chargeur meurt encore, de facon non deterministe : saut vers une
+  adresse non projetee de la zone 0x6fff... que son crochet ne redirige pas ; pointeur de section
+  critique aberrant ; section critique de FEX jamais rendue ; `NtCreateUserProcess` en boucle
+  avec une liste d'attributs aberrante, puis sortie code 5. Toujours des valeurs fausses.
+- Trois manches de 4 min, avec 0195 :
+
+  | FEX | Issue |
+  |---|---|
+  | mtrack | mort en 10 s |
+  | `FEX_SMCCHECKS=full` | 4 min sans aucune erreur ni assertion, encore dans le chargeur |
+  | 0194 + SMC complet sur les vues de section (`hybride-smc-vues-section.diff`) | passe winemac et uxtheme, puis 11 assertions et debordement |
+
+- Diagnostic : en mtrack, FEX execute du code perime. Il ne piege en ecriture que les pages RWX ;
+  une vue RX ecrite par une autre vue (section) ou modifiee autrement lui echappe. Le SMC complet
+  sur les seules vues de section ne suffit pas : d'autres ecritures echappent encore.
+- Suite : en `full`, faire relever par FEX chaque bloc invalide par la verification (adresse,
+  type de projection, intervalle RWX ou non) pour savoir quelles ecritures mtrack ne voit pas,
+  puis les suivre (FEX). Outils : `~/Dev/cidre-d2r/manche_longue.sh`, sondes `wine/virtual-sonde*.c`
+  et `wine/b/dlls/ntdll/signal_arm64ec.c.sonde7`.
+
 ## 5. Suite
 
 1. Connexion par l'utilisateur, avec le client lance dans le prefixe d'essai (JEU DEMANDE a la
