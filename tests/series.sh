@@ -53,6 +53,7 @@ serie_wine11() {
    ls "$R"/0201-wine11-*.patch 2>/dev/null
    ls "$R"/0206-wine11-*.patch 2>/dev/null
    ls "$R"/0205-wine11-*.patch 2>/dev/null
+   ls "$R"/0210-wine11-*.patch 2>/dev/null
 }
 
 serie_vkd3d_proton() {

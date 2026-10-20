@@ -1,0 +1,60 @@
+wine11 : synchro en process, un reveil par unite rendue a un semaphore (0210)
+
+Detroit: Become Human (1222140, iMac M4, v1.5.17) affichait en partie une image
+toutes les deux secondes avec la synchro en process (0103, sync_local, actif par
+defaut depuis la v1.5.16) : 0,5 image/s, GPU a 4 %, ses 17 fils ouvriers chacun
+dans NtWaitForSingleObject -> shm_wait (os_sync_wait_on_address_with_timeout),
+le fil principal en Sleep(0). Sans sync_local, 50 a 57 images/s.
+
+Cause : linux_release_semaphore_obj ne reveillait un dormeur que si le compte
+etait a 0 avant la liberation (`if (count && !cur) shm_wake(...)`). Un pool de
+fils endormis sur un semaphore que le jeu rend par N ReleaseSemaphore(s, 1)
+rapproches : le premier reveille un fil, les suivants trouvent le compte a 1 ou
+plus (le fil reveille n'a pas encore pris son du) et ne reveillent personne ;
+les autres dorment sur la valeur 0 sans relire l'etat, jusqu'au garde-fou de
+2 s de 0103 -- d'ou la cadence. Le compteur « reveils manques » le voyait, et
+son ERR (« case 1780 type 4 manuel 1000 etat 5 waiters 5 », un semaphore)
+etait cache par WINEDEBUG=-all.
+
+Correctif : chaque ReleaseSemaphore dont le compte est non nul reveille un
+dormeur (tous si count > 1). Le cout reste celui de shm_wake : une generation
+incrementee et un appel systeme seulement s'il y a des dormeurs.
+
+Temoins (M1 Max, runtime et prefixe clones, CIDRE_SYNC_LOCAL=1) :
+- tests/temoin_sync_reveils.c (8 ouvriers, 6 cas) : semaphore, sans 0210 :
+  dernier ouvrier repart a ~1,9 s (garde-fou), attente bornee a 1 s en faux
+  WAIT_TIMEOUT ; avec 0210 : 0,1 a 0,4 ms, 0 reveil manque. sync_local=0 :
+  inchange (wineserver).
+- tests/temoin_surliberation.c : verrou par evenement auto (~11 M tours, 0 double
+  entree), fil tue pendant l'attente simple ou multiple (0/50), sans 0210 et
+  avec : inchange.
+- test_sync_xproc 34/34, banc_sync, h64suspend, h64alerte 30 4 : inchanges.
+En jeu, entrelace avec la v1.5.17 (tests de manche hors depot) : Dead Cells,
+PEAK, Expedition 33 au menu sans regression (Exp33 : 252 a 259 s couverts par
+les releves DXMT sur 4 passes, 1 trou de 8 s dans chaque variante).
+
+Reste, connu et non corrige ici : un SetEvent sur un evenement auto deja
+signale pendant qu'un fil reveille n'a pas encore pris son du est perdu (le
+second fil dort jusqu'au SetEvent suivant), comme avec esync et fsync. Une
+premiere version comptait les liberations en attente par le nombre de dormeurs
+inscrits : temoin_surliberation montrait qu'un fil tue en attente restait
+compte (50/50, puis 6 a 18/50 apres retrait dans abort_thread : le serveur
+annonce la mort avant que le fil ait retire son inscription), et Expedition 33
+gelait jusqu'a 95 s apres la video du menu. Piste pour plus tard : ne compter
+que les fils effectivement reveilles dans le noyau (retour de
+os_sync_wake_by_address_any).
+
+--- a/dlls/ntdll/unix/sync.c
++++ b/dlls/ntdll/unix/sync.c
+@@ -642,7 +642,10 @@
+         if (count > max - cur) return STATUS_SEMAPHORE_LIMIT_EXCEEDED;
+     } while (!__atomic_compare_exchange_n( &slot->state, &cur, cur + count, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST ));
+     if (prev_count) *prev_count = cur;
+-    if (count && !cur) shm_wake( slot, count > 1 );
++    /* chaque unite rendue libere un dormeur, meme si le compte n'etait pas nul : le fil reveille par une liberation
++     * precedente n'a peut-etre pas encore pris la sienne, et les autres dorment sur la valeur 0 sans relire l'etat
++     * (sinon : rattrapes par le garde-fou de 2 s seulement ; Detroit: Become Human a 0,5 image/s) */
++    if (count) shm_wake( slot, count > 1 );
+     return STATUS_SUCCESS;
+ }
+ 
