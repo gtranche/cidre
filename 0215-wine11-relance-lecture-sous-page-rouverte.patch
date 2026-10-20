@@ -1,0 +1,43 @@
+Generated-by: LLM
+
+wine11 : sur Apple Silicon (pages d hote de 16 Kio), une lecture qui faute sur une page de 4 Kio ouverte au moment du traitement est relancee au lieu de devenir une violation d acces de l invite. Course : un autre fil fait passer la page elle-meme, ou une voisine de la meme page d hote, par NOACCESS (0201 met alors la page d hote a PROT_NONE) ; le rejeu de 0201 refuse a juste titre (sous-page encore fermee), puis le fil proprietaire rouvre la page avant que virtual_handle_fault ne decide. L astuce Rosetta (lecture vue comme ecriture) est reservee a x86_64 : sur arm64 le syndrome dit vraiment lecture. Une page d hote encore mixte refaute et passe par l alias de 0201. Au-dela de 16 relances de suite a la meme adresse, la faute part a l invite. D2R : les fils de travail lisent le code que le fil principal dechiffre a cote (NOACCESS, puis WRITECOPY, puis RX) et en mouraient (C0000005 en lecture sur 0x1407B7xxx, puis /GS et rapporteur a 35 s) ; avec ce correctif, 2 manches sur 2 vivantes a 120 s, d3d12 a 53-54 s. S applique apres 0212.
+
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -5850,13 +5850,34 @@ NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec, void *stack )
+     mutex_lock( &virtual_mutex );  /* no need for signal masking inside signal handler */
+     vprot = get_host_page_vprot( page );
+ 
+-#ifdef __APPLE__
++#if defined(__APPLE__) && defined(__x86_64__)
+     /* Rosetta on Apple Silicon misreports certain write faults as read faults. */
+     if (err == EXCEPTION_READ_FAULT && (get_unix_prot( vprot ) & PROT_READ) && !page_hote_mixte( page ))
+     {
+         WARN( "treating read fault in a readable page as a write fault, addr %p\n", addr );
+         err = EXCEPTION_WRITE_FAULT;
+     }
++#elif defined(__APPLE__)
++    /* On arm64 the fault syndrome says whether it was a read. A read fault on a 4k page that is open now was taken
++     * while another thread changed protections in the same 16k host page: the page itself, or a neighbour, went
++     * through NOACCESS and the host page was at PROT_NONE for a moment (pages d'hote mixtes, 0201). By now the
++     * access is allowed: retry it (a still mixed host page faults again and is replayed through its alias) instead of
++     * raising an access violation. D2R's worker threads read code that its main thread was decrypting next to it,
++     * and died of it. A read that keeps faulting at the same address is let through after a few retries. */
++    if (err == EXCEPTION_READ_FAULT && !(vprot & VPROT_GUARD) && sous_page_ouverte( get_page_vprot( addr ) ) &&
++        (page_hote_mixte( page ) || (get_host_page_unix_prot( page, 0, 0 ) & PROT_READ)))
++    {
++        static __thread void *derniere_relance;
++        static __thread unsigned int relances;
++
++        if (addr != derniere_relance) { derniere_relance = addr; relances = 0; }
++        if (++relances <= 16)
++        {
++            mutex_unlock( &virtual_mutex );
++            rec->ExceptionCode = STATUS_SUCCESS;
++            return STATUS_SUCCESS;
++        }
++    }
+ #endif
+ 
+     if (!is_inside_signal_stack( data, stack ) && (vprot & VPROT_GUARD))
