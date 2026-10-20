@@ -20,6 +20,7 @@
  *   F  une lecture a cheval entre les pages 2 et 3 (non alignee)
  *   G  un switch dont la table de sauts est sur la page 1 (le cas de D2R)
  *   H  cout : lectures de la page 2 pendant que 1 est NOACCESS (ns par lecture)
+ *   J  formes SIMD a un element (movhps, pinsrd, movddup, insertps, pextrd) et cmpxchg16b
  *   I  meme disposition par VirtualAlloc (informatif)
  * x86_64-w64-mingw32-clang -O1 h64sous_page.c -o h64sous_page.exe */
 #include <windows.h>
@@ -175,6 +176,71 @@ static void essais(uint8_t *b, const char *nom, HANDLE section)
         mode_g = 0;
         snprintf(quoi, sizeof(quoi), "G switch, table sur la page NOACCESS : faute %d rend %x", fautes, r);
         verifier(fautes == 1 && r == 0x12345678, quoi);
+    }
+
+    /* J : formes SIMD a un element et cmpxchg16b sur la page 2 pendant que 1 est
+     *     NOACCESS (movhps, pinsrd, movddup, insertps, movhps en ecriture, pextrw) */
+    {
+        uint64_t lo, hi;
+        uint32_t ext;
+        VirtualProtect(b + 0x1000, 0x1000, PAGE_NOACCESS, &ancien);
+        *(volatile uint64_t *)(b + 0x2100) = 0x1122334455667788ull;
+        *(volatile uint32_t *)(b + 0x2108) = 0xcafef00du;
+        *(volatile uint64_t *)(b + 0x2110) = 0x0102030405060708ull;
+        fautes = 0;
+        __asm__ volatile("pcmpeqd %%xmm0, %%xmm0\n\t"
+                         "movhps (%2), %%xmm0\n\t"
+                         "movq %%xmm0, %0\n\t"
+                         "pextrq $1, %%xmm0, %1\n\t"
+                         : "=r"(lo), "=r"(hi) : "r"(b + 0x2100) : "xmm0", "memory");
+        snprintf(quoi, sizeof(quoi), "J1 movhps : %llx %llx fautes %d", (unsigned long long)hi, (unsigned long long)lo, fautes);
+        verifier(fautes == 0 && hi == 0x1122334455667788ull && lo == ~0ull, quoi);
+        __asm__ volatile("pxor %%xmm0, %%xmm0\n\t"
+                         "pinsrd $2, (%2), %%xmm0\n\t"
+                         "movq %%xmm0, %0\n\t"
+                         "pextrq $1, %%xmm0, %1\n\t"
+                         : "=r"(lo), "=r"(hi) : "r"(b + 0x2108) : "xmm0", "memory");
+        snprintf(quoi, sizeof(quoi), "J2 pinsrd : %llx %llx fautes %d", (unsigned long long)hi, (unsigned long long)lo, fautes);
+        verifier(fautes == 0 && hi == 0xcafef00dull && lo == 0, quoi);
+        __asm__ volatile("movddup (%2), %%xmm0\n\t"
+                         "movq %%xmm0, %0\n\t"
+                         "pextrq $1, %%xmm0, %1\n\t"
+                         : "=r"(lo), "=r"(hi) : "r"(b + 0x2110) : "xmm0", "memory");
+        snprintf(quoi, sizeof(quoi), "J3 movddup : %llx %llx fautes %d", (unsigned long long)hi, (unsigned long long)lo, fautes);
+        verifier(fautes == 0 && hi == 0x0102030405060708ull && lo == hi, quoi);
+        __asm__ volatile("pxor %%xmm0, %%xmm0\n\t"
+                         "insertps $0x20, (%2), %%xmm0\n\t"
+                         "pextrq $1, %%xmm0, %1\n\t"
+                         "movq %%xmm0, %0\n\t"
+                         : "=r"(lo), "=r"(hi) : "r"(b + 0x2108) : "xmm0", "memory");
+        snprintf(quoi, sizeof(quoi), "J4 insertps : %llx %llx fautes %d", (unsigned long long)hi, (unsigned long long)lo, fautes);
+        verifier(fautes == 0 && hi == 0xcafef00dull && lo == 0, quoi);
+        __asm__ volatile("movq %1, %%xmm0\n\t"
+                         "pinsrq $1, %1, %%xmm0\n\t"
+                         "movhps %%xmm0, (%0)\n\t"
+                         : : "r"(b + 0x2118), "r"(0x5555aaaa5555aaaaull) : "xmm0", "memory");
+        snprintf(quoi, sizeof(quoi), "J5 movhps en ecriture : %llx fautes %d", (unsigned long long)*(volatile uint64_t *)(b + 0x2118), fautes);
+        verifier(fautes == 0 && *(volatile uint64_t *)(b + 0x2118) == 0x5555aaaa5555aaaaull, quoi);
+        __asm__ volatile("movdqu (%1), %%xmm0\n\t"
+                         "pextrw $3, %%xmm0, %%eax\n\t"
+                         "pextrd $2, %%xmm0, (%1)\n\t"
+                         "movl %%eax, %0\n\t"
+                         : "=r"(ext) : "r"(b + 0x2100) : "xmm0", "rax", "memory");
+        snprintf(quoi, sizeof(quoi), "J6 pextrd en ecriture : %x %llx fautes %d", ext, (unsigned long long)*(volatile uint64_t *)(b + 0x2100), fautes);
+        verifier(fautes == 0 && ext == 0x1122 && *(volatile uint32_t *)(b + 0x2100) == 0xcafef00du, quoi);
+        {
+            /* cmpxchg16b : reussite puis echec */
+            volatile uint64_t *m = (volatile uint64_t *)(b + 0x2200);
+            uint8_t ok1, ok2;
+            uint64_t a = 1, d = 2;
+            m[0] = 1; m[1] = 2;
+            __asm__ volatile("lock cmpxchg16b (%3)\n\tsetz %0" : "=q"(ok1), "+a"(a), "+d"(d) : "r"(m), "b"(3ull), "c"(4ull) : "memory", "cc");
+            a = 1; d = 2;
+            __asm__ volatile("lock cmpxchg16b (%3)\n\tsetz %0" : "=q"(ok2), "+a"(a), "+d"(d) : "r"(m), "b"(5ull), "c"(6ull) : "memory", "cc");
+            snprintf(quoi, sizeof(quoi), "J7 cmpxchg16b : %d %d memoire %llx %llx lu %llx %llx fautes %d", ok1, ok2,
+                     (unsigned long long)m[0], (unsigned long long)m[1], (unsigned long long)a, (unsigned long long)d, fautes);
+            verifier(fautes == 0 && ok1 == 1 && ok2 == 0 && m[0] == 3 && m[1] == 4 && a == 3 && d == 4, quoi);
+        }
     }
 
     /* H */

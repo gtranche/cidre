@@ -428,6 +428,27 @@ vue par `prepare_exception_arm64ec`), ntdll.so SONDE10 (projections et allocatio
   Wine suit celle de Windows sans les trous (egale jusqu'a ~0x5F) ; meme divergence sous Linux, ou D2R tourne. Piste :
   code auto-modifie dans les souches crochetees (meme famille que h64smc B : page RWX a cote d'une page RW).
 
+### D2R, mort déterministe après un nanomite ; 0206 (2026-10-20, nuit)
+
+- **0206 (wine11, signal_arm64.c)** : l'émulateur des pages d'hôte mixtes (0201) rejoue aussi LD1/ST1 à un élément,
+  LD1R et CASP. FEX émet ces formes pour movhps, pinsr*, insertps, pextr* en mémoire, movddup, vbroadcast* et
+  cmpxchg16b. Avant, l'invité recevait une violation d'accès à tort sur une page de 4 Kio permise. Témoin
+  `tests/h64sous_page.c`, cas J : figé à J1 avec 0201, J1-J7 passent avec 0206. En jeu, aucun accès de ce genre n'a
+  été vu en 240 s : ce n'est pas la cause de D2R.
+- **La mort de D2R est déterministe.** Elle suit toujours le même nanomite du chargeur (int3 à 0x6ffff679f79e, repris
+  à 0x6ffff7025285), quel que soit le fil, avec les mêmes registres au bit près ; les morts dans memcpy, RtlRunOnce et
+  arm64x_check_call relevées avant sont la même. Écartés :
+  - mauvaise compilation par blocs (FEX_MAXINST=1, FEX_MULTIBLOCK=0) ;
+  - drapeaux (159 séquences de la trace identiques sous FEX et Rosetta) ;
+  - registres à travers les nanomites (h64nanomites) ;
+  - SetThreadContext (aucun) ;
+  - course simple.
+  Une pause de 1,5 s à ce point change l'adresse fausse, et le pas à pas TF l'évite : le pointeur dépend du temps
+  (contrôle de durée ou clé). Suite : pas à pas plus long jusqu'à la lecture fautive, sources de temps (RDTSC de FEX,
+  KUSER, QueryPerformanceCounter).
+- Défaut réel hors D2R : SetThreadContext(CONTEXT_FULL) sur un fil suspendu pendant un appel ARM64EC le fait repartir
+  en natif sur l'adresse de retour x64 (témoin h64appel_ec.c, mode 2). Correctif 0207 à faire.
+
 ## 5. Suite
 
 1. Connexion par l'utilisateur, avec le client lance dans le prefixe d'essai (JEU DEMANDE a la
