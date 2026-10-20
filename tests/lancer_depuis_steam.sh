@@ -89,18 +89,13 @@ if [ -n "$JEU" ] && [ "$(opt cache_pipelines CIDRE_PIPELINE_CACHE)" != false ]; 
    fi
    # Reserve d'AIR de ce jeu, faite ici (0171) : chaque bibliotheque compilee y
    # est ecrite et relue aux lancements suivants, meme quand le cache de Metal
-   # du processus wine l'a oubliee. Un dossier par version du MSL de
-   # KosmicKrisp : celles d'un autre KosmicKrisp ne serviraient plus a rien.
+   # du processus wine l'a oubliee. Un dossier par cle de code de KosmicKrisp
+   # (0208 : elle ne change que si le MSL produit change, pas a chaque mise a
+   # jour du pilote) ; celles d'une autre cle ne serviraient plus a rien.
    # CIDRE_AIR_LOCAL=0 : pas de reserve.
    if [ -z "${MESA_KK_AIR_LOCAL:-}" ] && [ "${CIDRE_AIR_LOCAL:-1}" != 0 ]; then
-      AIR_LOCAL="$HOME/Library/Application Support/Cidre/air-local/$JEU"
-      KK_MSL=$(sh "$R/tests/precompil_kk.sh" kk 2>/dev/null || true)
-      if [ -n "$KK_MSL" ] && [ "$KK_MSL" != inconnu ]; then
-         for d in "$AIR_LOCAL"/*; do
-            [ -d "$d" ] && [ "$(basename "$d")" != "$KK_MSL" ] && rm -rf "${d:?}"
-         done
-         export MESA_KK_AIR_LOCAL="$AIR_LOCAL/$KK_MSL"
-      fi
+      AIR_LOCAL=$(CIDRE_DIR="$HOME/Library/Application Support/Cidre" sh "$R/tests/precompil_kk.sh" air_local "$JEU" 2>/dev/null || true)
+      [ -z "$AIR_LOCAL" ] || export MESA_KK_AIR_LOCAL="$AIR_LOCAL"
    fi
 fi
 

@@ -168,8 +168,9 @@ cc -arch arm64 -mmacosx-version-min=13.0 -O1 -Wall -Wextra -o "$STAGE/build/sond
 rm "$STAGE/tests/sonde_wx.c"
 # Pipelines precompiles de KosmicKrisp (tests/precompil_kk.sh) : l'architecture
 # GPU de la machine (build/puce-gpu), et la version du generateur de MSL de ce
-# runtime (kk-msl.txt, empreinte de la serie de correctifs mesa) qui choisit les
-# paquets compatibles.
+# runtime (kk-msl.txt : la cle de code KK_CODEGEN= de la dylib depuis 0208,
+# lue d'abord dans la dylib posee ; repli pour un pilote d'avant 0208) qui
+# choisit les paquets compatibles et le dossier de la reserve d'AIR.
 cc -arch arm64 -mmacosx-version-min=13.0 -O1 -Wall -Wextra -fobjc-arc -framework Foundation -framework Metal \
    -o "$STAGE/build/puce-gpu" "$R/tests/puce_gpu.m"
 sh "$R/tests/precompil_kk.sh" kk >"$STAGE/kk-msl.txt"
