@@ -1,6 +1,6 @@
 Generated-by: LLM
 
-fex : acces du code JIT aux pages d hote mixtes (wine11 0201) sans signal. Une page de 4 Kio NOACCESS a cote de pages accessibles ferme toute la page d hote de 16 Kio ; chaque acces permis a une voisine faisait faute et Wine le rejouait (~2,4 us). Wine (0212) propose l instruction fautive apres le rejeu (exception 0xE0C10201) ; ResetToConsistentState la reecrit en `b talon` : talon de 64 octets dans le tampon de code courant (Context::AllocateCodeStub), qui appelle SousPagesCommun (Module.S, sauve tout l etat) puis SousPagesAide (SousPages.cpp) : adresse effective decodee (LDR/STR toutes formes, paires, LDAR/STLR/LDAPR/LDAPUR/STLUR, LSE, CAS/CASP, LD1/ST1, DC ZVA ; exclusifs et sp refuses), cache sans verrou des pages d hote valide par la generation de Wine, droits de chaque page de 4 Kio ; si l acces est permis, le registre de base est rebase sur l alias permanent de la page et l instruction d origine s execute dans le talon (vrais atomiques), sinon elle s execute telle quelle : une page fermee fait faute dans le talon et FixupStubFault ramene Pc, Sp et le registre de base a l instruction d origine (violation d acces exacte ; autre faute : instruction remise). Apres 256 acces consecutifs hors page mixte, l instruction d origine est remise ; reproposee, elle reprend son talon. Instructions non reecrivables signalees a Wine (refus). Annonce par NtQueryVirtualMemory (classe 0xc1d0) : sans Wine 0212, rien n est actif. CIDRE_SOUS_PAGES_FEX=0 coupe ; CIDRE_DIAG_SOUS_PAGES=1 compte. Banc tests/h64sous_page_banc.c : 2 323 -> 23,6 ns par lecture d octet (x98), N1 (site reecrit puis page normale) 0,6 ns, alternance 1 193 -> 15,5 ns. Diablo II Resurrected : d3d12 charge a 57 s (avant : plus de 600 s sans d3d12), 426 M acces par l alias, ~1 M rejoues ; une autre manche (l1) meurt a ~30 s dans le second processus de D2R (rapporteur de Blizzard, cause non etablie, aucune faute dans un talon) : issue intermittente comme avant. En jeu sur runtime clone, A/B : PEAK ~142 contre ~143 images/s sur la meme scene, Exp33 sans regression, Dead Cells 118,5 (plafond 120). Temoins h64sous_page A-G et J, h64sous_page_talon K1-K8 OK, croisements avec Wine/FEX anciens OK. Un talon reutilise apres changement de tampon de code n'est relu et vise que s'il est encore dans un tampon projete du fil (sinon faute dans SiteDuTalon pendant le traitement de l'exception : D2R tue, manche V1). Correctif local (le CLAUDE.md de FEX refuse le code genere par IA en amont).
+fex : acces du code JIT aux pages d hote mixtes (wine11 0201) sans signal. Une page de 4 Kio NOACCESS a cote de pages accessibles ferme toute la page d hote de 16 Kio ; chaque acces permis a une voisine faisait faute et Wine le rejouait (~2,4 us). Wine (0212) propose l instruction fautive apres le rejeu (exception 0xE0C10201) ; ResetToConsistentState la reecrit en `b talon` : talon de 64 octets dans le tampon de code courant (Context::AllocateCodeStub), qui appelle SousPagesCommun (Module.S, sauve tout l etat) puis SousPagesAide (SousPages.cpp) : adresse effective decodee (LDR/STR toutes formes, paires, LDAR/STLR/LDAPR/LDAPUR/STLUR, LSE, CAS/CASP, LD1/ST1, DC ZVA ; exclusifs et sp refuses), cache sans verrou des pages d hote valide par la generation de Wine, droits de chaque page de 4 Kio ; si l acces est permis, le registre de base est rebase sur l alias permanent de la page et l instruction d origine s execute dans le talon (vrais atomiques), sinon elle s execute telle quelle : une page fermee fait faute dans le talon et FixupStubFault ramene Pc, Sp et le registre de base a l instruction d origine (violation d acces exacte ; autre faute : instruction remise). Apres 256 acces consecutifs hors page mixte, l instruction d origine est remise ; reproposee, elle reprend son talon. Instructions non reecrivables signalees a Wine (refus). Annonce par NtQueryVirtualMemory (classe 0xc1d0) : sans Wine 0212, rien n est actif. CIDRE_SOUS_PAGES_FEX=0 coupe ; CIDRE_DIAG_SOUS_PAGES=1 compte. Banc tests/h64sous_page_banc.c : 2 323 -> 23,6 ns par lecture d octet (x98), N1 (site reecrit puis page normale) 0,6 ns, alternance 1 193 -> 15,5 ns. Diablo II Resurrected : d3d12 charge a 57 s (avant : plus de 600 s sans d3d12), 426 M acces par l alias, ~1 M rejoues ; une autre manche (l1) meurt a ~30 s dans le second processus de D2R (rapporteur de Blizzard, cause non etablie, aucune faute dans un talon) : issue intermittente comme avant. En jeu sur runtime clone, A/B : PEAK ~142 contre ~143 images/s sur la meme scene, Exp33 sans regression, Dead Cells 118,5 (plafond 120). Temoins h64sous_page A-G et J, h64sous_page_talon K1-K8 OK, croisements avec Wine/FEX anciens OK. Un talon reutilise apres changement de tampon de code n'est relu et vise que s'il est encore dans un tampon projete du fil (sinon faute dans SiteDuTalon pendant le traitement de l'exception : D2R tue, manche V1). FPSR n'est plus sauve par SousPagesCommun (msr fpsr serialise le coeur : premier point chaud d'un sample de D2R, 297 echantillons sur 3 s) et le talon ne tient plus de compteurs par acces (boucles LDXR/STXR partagees entre fils, meme en diagnostic). Correctif local (le CLAUDE.md de FEX refuse le code genere par IA en amont).
 
 diff --git a/FEXCore/include/FEXCore/Core/Context.h b/FEXCore/include/FEXCore/Core/Context.h
 index 3779e35..5eed535 100644
@@ -107,7 +107,7 @@ index 0c9a57a..f66fb5c 100644
    $<TARGET_OBJECTS:FEXCore_object>)
  
 diff --git a/Source/Windows/ARM64EC/Module.S b/Source/Windows/ARM64EC/Module.S
-index b6d4cde..93a4e3a 100644
+index b6d4cde..7a1872d 100644
 --- a/Source/Windows/ARM64EC/Module.S
 +++ b/Source/Windows/ARM64EC/Module.S
 @@ -178,3 +178,98 @@ end:
@@ -120,8 +120,10 @@ index b6d4cde..93a4e3a 100644
 +// l'invite, appelle SousPagesAide(Site, trame), qui peut rebaser un registre
 +// dans la trame, et restaure tout. Au retour : [sp] = decalage, [sp+8] = x30 a
 +// restaurer par le talon ; x16 et les autres registres valent ceux de la trame.
-+// Trame (0x320 octets) : x0-x30 a 8*n, sp a 0xf8, nzcv/fpsr a 0x100, retour a
-+// 0x110, q0-q31 a 0x120.
++// Trame (0x320 octets) : x0-x30 a 8*n, sp a 0xf8, nzcv a 0x100, retour a
++// 0x110, q0-q31 a 0x120. FPSR n'est pas sauve : son ecriture serialise le coeur
++// (premier point chaud d'un sample de D2R) et SousPagesAide ne calcule pas en
++// flottant.
 +.globl SousPagesCommun
 +SousPagesCommun:
 +  sub sp, sp, #0x320
@@ -148,8 +150,7 @@ index b6d4cde..93a4e3a 100644
 +  add x0, sp, #0x330
 +  str x0, [sp, #0xf8]
 +  mrs x0, nzcv
-+  mrs x1, fpsr
-+  stp x0, x1, [sp, #0x100]
++  str x0, [sp, #0x100]
 +  stp q0, q1, [sp, #0x120]
 +  stp q2, q3, [sp, #0x140]
 +  stp q4, q5, [sp, #0x160]
@@ -188,9 +189,8 @@ index b6d4cde..93a4e3a 100644
 +  ldp q26, q27, [sp, #0x2c0]
 +  ldp q28, q29, [sp, #0x2e0]
 +  ldp q30, q31, [sp, #0x300]
-+  ldp x0, x1, [sp, #0x100]
++  ldr x0, [sp, #0x100]
 +  msr nzcv, x0
-+  msr fpsr, x1
 +  ldp x0, x1, [sp, #0x00]
 +  ldp x2, x3, [sp, #0x10]
 +  ldp x4, x5, [sp, #0x20]
@@ -319,10 +319,10 @@ index 0000000..f2b7def
 +} // namespace FEX::Windows::SousPages
 diff --git a/FEX/Source/Windows/ARM64EC/SousPages.cpp b/Source/Windows/ARM64EC/SousPages.cpp
 new file mode 100644
-index 0000000..c87bb9b
+index 0000000..4bf3734
 --- /dev/null
 +++ b/Source/Windows/ARM64EC/SousPages.cpp
-@@ -0,0 +1,696 @@
+@@ -0,0 +1,690 @@
 +// SPDX-License-Identifier: MIT
 +// Cidre : acces du code JIT aux pages d'hote mixtes, sans signal. Voir SousPages.h.
 +#include "SousPages.h"
@@ -951,9 +951,6 @@ index 0000000..c87bb9b
 +  const uint64_t Base = Trame[S->Rn];
 +  uint64_t Ea = Base;
 +
-+  if (Diag) {
-+    Compter(NbAppels, "acces par le talon");
-+  }
 +  switch (S->Mode) {
 +  case MODE_IMM: Ea = Base + S->Imm; break;
 +  case MODE_REG: {
@@ -1014,8 +1011,5 @@ index 0000000..c87bb9b
 +  }
 +  const uint64_t Delta = E.Alias - Hote;
 +  Trame[S->Rn] = Base + Delta;
-+  if (Diag) {
-+    Compter(NbAlias, "acces par l'alias");
-+  }
 +  return Delta;
 +}
