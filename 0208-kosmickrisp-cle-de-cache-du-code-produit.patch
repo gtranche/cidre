@@ -1,0 +1,281 @@
+Generated-by: LLM
+
+KosmicKrisp : cle des caches de nuanceurs tiree du code produit, plus du build -- pipelineCacheUUID et shaderBinaryUUID (cache de pipelines Vulkan, caches de vkd3d-proton) suivaient l'identifiant de build de la dylib : toute reconstruction ecartait tous les caches. Apres la v1.5.17 (0193/0202, presentation seulement), Detroit (1222140) a tout recompile sur le M4, ~20 min a 600 % de processeur. La cle est maintenant blake3 de : KK_CODEGEN_VERSION (manuelle, kk_physical_device.c) ; KK_CODEGEN_SOURCES, empreinte calculee a chaque build par kk_codegen_sources_gen.py (588 fichiers : src/compiler, nir, spirv, kosmickrisp/compiler, libkk, clc, poly, vulkan/runtime et util, blob, compress, mtl_types.h, et tout kosmickrisp/vulkan sauf une liste NEUTRES -- presentation, file, synchronisation, memoire, requetes, statistiques ; un fichier nouveau entre par defaut) ; la taille de kk_shader_info ; la famille Apple du GPU et macOS >= 27 (lus par kk_shader.c) ; FORCE_ROBUSTNESS ; et, comme avant, le mode des atomiques 64 bits, les contournements coupes, les options CIDRE_* du code et CIDRE_VK_IDENTITE. Le marqueur « KK_CODEGEN=<version>-<16 hex> » est lu dans la dylib par tests/precompil_kk.sh kk : c'est le nom du dossier de la reserve d'AIR (0171) et la version des paquets precompiles (0165). L'archive MTL4 et l'AIR restent adresses par leur contenu (descripteur de pipeline ; MSL et options de compilation, kk_library_key).
+REGLE : augmenter KK_CODEGEN_VERSION dans tout correctif qui change le MSL produit, ce que le nuanceur attend de la memoire ou le format serialise par un fichier de NEUTRES ou par une dependance externe ; toute nouvelle option (variable, drapeau, propriete du GPU ou de macOS) qui change le MSL entre dans kk_physical_device_init_pipeline_cache ; toute option de compilation MSL -> AIR entre dans kk_library_key. Secours : CIDRE_CLE_CACHE=build redonne l'ancienne cle (une par build), toute autre valeur est un sel (caches de pipelines repartis de zero) ; CIDRE_CLE_CACHE_DIAG=1 imprime la cle ; CIDRE_PIPELINE_CACHE=0 et CIDRE_AIR_LOCAL=0 coupent l'archive et la reserve.
+Temoin hors jeu (tests/temoin_cle_cache_kk.sh, M1 Max) : constructions A (0208), B (A + changement dans kk_wsi.c), C (A + une ligne de plus en tete du MSL, nir_to_msl.c), D (KK_CODEGEN_VERSION 2), A2 (arbre remis, identique a A a l'octet) ; marqueurs A 1-c56f630a3db7de6f, B 1-c56f630a3db7de6f, C 1-b255afcbe8aabc0e, D 2-c56f630a3db7de6f. Sonde sonde_cle_cache_kk (4 pipelines de calcul + 1 graphique, VkPipelineCache ecrit par A, reserve d'AIR et archive MTL4 de A) : 30 ok, 0 KO. A et B : meme pipelineCacheUUID 3c7f1e73..., le cache Vulkan de A accepte par B, 5/5 pipelines servis (feedback CACHE_HIT) ; B sans cache Vulkan : 0 bibliotheque compilee, 26/26 depuis la reserve d'AIR de A, 24/24 pipelines Metal depuis l'archive de A ; sous l'ancienne cle (CIDRE_CLE_CACHE=build), A et B different. C (ac9a3894...) et D (d6b2f96b...) : cle changee, cache Vulkan de A ecarte (0/5), C recompile ses 26 bibliotheques (MSL different). Sel CIDRE_CLE_CACHE et CIDRE_LECTURES_CACHEES : cle changee ; A2 : cle de A. precompil_kk.sh air_local : un dossier d'avant 0208 est repris sous la cle avec son AIR, B garde le dossier, C le remplace.
+
+--- /dev/null
++++ b/src/kosmickrisp/vulkan/kk_codegen_sources_gen.py
+@@ -0,0 +1,144 @@
++#!/usr/bin/env python3
++# Copyright 2026 Cidre
++# SPDX-License-Identifier: MIT
++#
++# Empreinte des sources qui font le code de KosmicKrisp (Cidre, 0208).
++#
++# La cle des caches de nuanceurs (pipelineCacheUUID, shaderBinaryUUID, dossier
++# de la reserve d'AIR) ne suit plus l'identifiant de build de la dylib : elle
++# suit cette empreinte, la version manuelle KK_CODEGEN_VERSION
++# (kk_physical_device.c) et les options d'execution qui changent le MSL.
++#
++# Entrent dans l'empreinte (contenu et chemin relatif, sans date) :
++#   - tout ce qui va de SPIR-V au MSL : src/compiler (fichiers de premier
++#     niveau, nir/, spirv/), src/kosmickrisp/compiler, src/kosmickrisp/libkk et
++#     src/kosmickrisp/clc (fonctions liees aux nuanceurs du jeu), src/poly ;
++#   - le format serialise : src/vulkan/runtime, src/vulkan/util, src/util/blob
++#     et src/util/compress, bridge/mtl_types.h (types de kk_shader_info) ;
++#   - tout src/kosmickrisp/vulkan SAUF les fichiers de NEUTRES ci-dessous :
++#     un fichier nouveau ou inconnu entre donc dans l'empreinte (au pire, une
++#     recompilation de trop ; jamais un cache faux).
++#
++# NEUTRES = fichiers qui ne touchent ni au MSL produit, ni a ce que le
++# nuanceur attend de la memoire (tables de descripteurs, tampon racine,
++# sommets), ni au format serialise : presentation (WSI, MetalFX), file,
++# synchronisation, memoire, requetes, statistiques. Le reste du pont Metal
++# (src/kosmickrisp/bridge) est neutre aussi : les options de compilation
++# MSL -> AIR entrent dans la cle de chaque bibliotheque (kk_library_key,
++# mtl_compiler.m), pas ici. Si un changement dans un fichier neutre change
++# quand meme le code, augmenter KK_CODEGEN_VERSION dans le meme correctif.
++
++import argparse
++import hashlib
++import os
++
++NEUTRES = {
++    'kk_bo.c', 'kk_bo.h',
++    'kk_buffer.c', 'kk_buffer.h',
++    'kk_buffer_view.c', 'kk_buffer_view.h',
++    'kk_cmd_buffer.c',
++    'kk_cmd_clear.c', 'kk_cmd_copy.c', 'kk_cmd_meta.c',
++    'kk_cmd_pool.c', 'kk_cmd_pool.h',
++    'kk_debug.c', 'kk_debug.h',
++    'kk_device.c', 'kk_device.h', 'kk_device_lib.c',
++    'kk_device_memory.c', 'kk_device_memory.h',
++    'kk_event.c', 'kk_event.h',
++    'kk_image.c', 'kk_image.h',
++    'kk_image_view.c', 'kk_image_view.h',
++    'kk_indirect_commands.c', 'kk_indirect_commands.h',
++    'kk_instance.c', 'kk_instance.h',
++    'kk_physical_device.c', 'kk_physical_device.h',
++    'kk_query_pool.c', 'kk_query_pool.h',
++    'kk_query_table.c', 'kk_query_table.h',
++    'kk_queue.c', 'kk_queue.h',
++    'kk_sync.c', 'kk_sync.h',
++    'kk_wsi.c', 'kk_wsi.h',
++    'meson.build',
++    'kk_codegen_sources_gen.py',
++}
++
++# (dossier, recursif)
++ARBRES = [
++    ('src/compiler', False),
++    ('src/compiler/nir', True),
++    ('src/compiler/spirv', True),
++    ('src/kosmickrisp/compiler', True),
++    ('src/kosmickrisp/libkk', True),
++    ('src/kosmickrisp/clc', True),
++    ('src/poly', True),
++    ('src/vulkan/runtime', True),
++    ('src/vulkan/util', True),
++]
++
++FICHIERS = [
++    'src/util/blob.c', 'src/util/blob.h',
++    'src/util/compress.c', 'src/util/compress.h',
++    'src/kosmickrisp/bridge/mtl_types.h',
++]
++
++# restes de patch, d'editeur ou de Python : jamais du code
++IGNORES = ('.orig', '.rej', '~', '.pyc', '.swp')
++
++
++def garde(nom):
++    return not nom.startswith('.') and not nom.endswith(IGNORES)
++
++
++def lister(racine):
++    liste = []
++    for dossier, recursif in ARBRES:
++        base = os.path.join(racine, dossier)
++        if recursif:
++            for d, sous, noms in os.walk(base):
++                sous[:] = [s for s in sous if garde(s) and s != '__pycache__']
++                liste += [os.path.join(d, n) for n in noms if garde(n)]
++        else:
++            liste += [os.path.join(base, n) for n in os.listdir(base)
++                      if garde(n) and os.path.isfile(os.path.join(base, n))]
++    vk = os.path.join(racine, 'src/kosmickrisp/vulkan')
++    liste += [os.path.join(vk, n) for n in os.listdir(vk)
++              if garde(n) and n not in NEUTRES and
++              os.path.isfile(os.path.join(vk, n))]
++    liste += [os.path.join(racine, f) for f in FICHIERS]
++    return sorted(set(os.path.relpath(f, racine) for f in liste))
++
++
++def main():
++    p = argparse.ArgumentParser()
++    p.add_argument('--racine', required=True)
++    p.add_argument('--sortie', required=True)
++    p.add_argument('--liste', action='store_true',
++                   help='ecrire aussi la liste des fichiers hache')
++    a = p.parse_args()
++
++    h = hashlib.sha256()
++    fichiers = lister(a.racine)
++    for rel in fichiers:
++        with open(os.path.join(a.racine, rel), 'rb') as f:
++            contenu = f.read()
++        h.update(rel.encode() + b'\0')
++        h.update(len(contenu).to_bytes(8, 'little'))
++        h.update(contenu)
++    empreinte = h.hexdigest()
++
++    texte = ('/* Genere par kk_codegen_sources_gen.py : empreinte de %d fichiers. */\n'
++             '#define KK_CODEGEN_SOURCES "%s"\n'
++             '#define KK_CODEGEN_SOURCES_COURT "%s"\n'
++             % (len(fichiers), empreinte, empreinte[:16]))
++    # n'ecrire que si ca change : pas de recompilation a chaque ninja
++    try:
++        with open(a.sortie) as f:
++            if f.read() == texte:
++                texte = None
++    except OSError:
++        pass
++    if texte is not None:
++        with open(a.sortie, 'w') as f:
++            f.write(texte)
++    if a.liste:
++        with open(a.sortie + '.liste', 'w') as f:
++            f.write('\n'.join(fichiers) + '\n')
++
++
++if __name__ == '__main__':
++    main()
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -26,6 +26,7 @@
+ #include "util/disk_cache.h"
+ #include "util/mesa-blake3.h"
+ #include "git_sha1.h"
++#include "kk_codegen_sources.h"
+ 
+ #include "vulkan/wsi/wsi_common.h"
+ #include "vk_common_entrypoints.h"
+@@ -1094,6 +1095,40 @@
+             "Mesa " PACKAGE_VERSION MESA_GIT_SHA1);
+ }
+ 
++/* Cle des caches de nuanceurs (Cidre, 0208). Elle designe le code produit, pas
++ * le build : pipelineCacheUUID et shaderBinaryUUID (cache de pipelines Vulkan,
++ * caches de vkd3d-proton) et le dossier de la reserve d'AIR (0171, lu par le
++ * lanceur dans la dylib : marqueur kk_codegen_marqueur) n'en changent qu'avec
++ *   - KK_CODEGEN_VERSION, a augmenter dans tout correctif qui change le MSL ou
++ *     le format serialise par un chemin que l'empreinte ne voit pas (un
++ *     fichier de NEUTRES dans kk_codegen_sources_gen.py, le comportement d'une
++ *     dependance externe) ;
++ *   - KK_CODEGEN_SOURCES, empreinte calculee au build des sources qui font le
++ *     code (SPIR-V -> NIR -> MSL, abaissements de KosmicKrisp, format
++ *     serialise) : un changement de la presentation, de MetalFX, de la file ou
++ *     des statistiques ne la touche pas ;
++ *   - les options d'execution qui changent le MSL (plus bas) ;
++ *   - la taille de kk_shader_info, copiee telle quelle dans le cache.
++ * Toute nouvelle option (variable d'environnement, drapeau, propriete du GPU
++ * ou version de macOS) qui change le MSL entre ici, dans le meme correctif.
++ *
++ * CIDRE_CLE_CACHE (secours) : « build » remet l'ancienne cle (identifiant de
++ * build de la dylib : tout cache ecarte a chaque build) ; toute autre valeur
++ * est melee a la cle (un nouveau sel = caches de pipelines repartis de zero).
++ * L'archive MTL4 (MESA_KK_PIPELINE_CACHE) et la reserve d'AIR sont adressees
++ * par leur contenu (descripteur de pipeline, MSL et options de compilation) :
++ * Metal et kk_library_key les ecartent seuls ; pour les couper,
++ * CIDRE_PIPELINE_CACHE=0 et CIDRE_AIR_LOCAL=0.
++ */
++#define KK_CODEGEN_VERSION 1
++
++#define KK_CODEGEN_STR2(x) #x
++#define KK_CODEGEN_STR(x)  KK_CODEGEN_STR2(x)
++/* « KK_CODEGEN=<version>-<16 hex> » : nom du dossier de la reserve d'AIR,
++ * lu par tests/precompil_kk.sh kk dans la dylib */
++static const char kk_codegen_marqueur[] =
++   "KK_CODEGEN=" KK_CODEGEN_STR(KK_CODEGEN_VERSION) "-" KK_CODEGEN_SOURCES_COURT;
++
+ static void
+ kk_physical_device_init_pipeline_cache(struct kk_physical_device *pdev)
+ {
+@@ -1102,9 +1137,30 @@
+    blake3_hasher blake3_ctx;
+    _mesa_blake3_init(&blake3_ctx);
+ 
+-   _mesa_blake3_update(&blake3_ctx, instance->driver_build_sha,
+-                       sizeof(instance->driver_build_sha));
++   _mesa_blake3_update(&blake3_ctx, kk_codegen_marqueur,
++                       sizeof(kk_codegen_marqueur));
++   _mesa_blake3_update(&blake3_ctx, KK_CODEGEN_SOURCES,
++                       strlen(KK_CODEGEN_SOURCES));
++   const uint32_t taille_info = sizeof(struct kk_shader_info);
++   _mesa_blake3_update(&blake3_ctx, &taille_info, sizeof(taille_info));
+ 
++   const char *secours = getenv("CIDRE_CLE_CACHE");
++   if (secours != NULL && strcmp(secours, "build") == 0)
++      _mesa_blake3_update(&blake3_ctx, instance->driver_build_sha,
++                          sizeof(instance->driver_build_sha));
++   else if (secours != NULL)
++      _mesa_blake3_update(&blake3_ctx, secours, strlen(secours));
++
++   /* Proprietes du GPU et du systeme lues par la generation du code : famille
++    * Apple (atomiques 64 bits, contournement multi-echantillon de M1/M2) et
++    * macOS 27 (meme contournement, kk_shader.c). */
++   const uint32_t famille = pdev->info.gpu_apple_family;
++   _mesa_blake3_update(&blake3_ctx, &famille, sizeof(famille));
++   const uint8_t macos27 = ns_is_os_version_at_least(27, 0, 0);
++   _mesa_blake3_update(&blake3_ctx, &macos27, sizeof(macos27));
++   const uint8_t robustesse = KK_DEBUG(FORCE_ROBUSTNESS) ? 1 : 0;
++   _mesa_blake3_update(&blake3_ctx, &robustesse, sizeof(robustesse));
++
+    /* The MSL of a shader with 64-bit atomics depends on the path taken
+     * (CIDRE_ATOMIQUES_64, CIDRE_ATOMIQUES_64_EMULEES): a cache filled with
+     * one must not serve the other. */
+@@ -1146,6 +1202,14 @@
+    STATIC_ASSERT(BLAKE3_KEY_LEN >= VK_UUID_SIZE);
+    memcpy(pdev->vk.properties.pipelineCacheUUID, blake3, VK_UUID_SIZE);
+    memcpy(pdev->vk.properties.shaderBinaryUUID, blake3, VK_UUID_SIZE);
++
++   if (getenv("CIDRE_CLE_CACHE_DIAG")) {
++      char hex[2 * VK_UUID_SIZE + 1];
++      for (unsigned i = 0; i < VK_UUID_SIZE; i++)
++         snprintf(hex + 2 * i, 3, "%02x", blake3[i]);
++      fprintf(stderr, "KK: cle des caches %s (%s, sources %s)\n", hex,
++              kk_codegen_marqueur, KK_CODEGEN_SOURCES);
++   }
+ }
+ 
+ static void
+--- a/src/kosmickrisp/vulkan/meson.build
++++ b/src/kosmickrisp/vulkan/meson.build
+@@ -132,6 +132,18 @@
+ 
+ relative_dir = fs.relative_to(meson.global_source_root(), meson.global_build_root())
+ 
++# Cidre (0208) : empreinte des sources qui font le code (cle des caches de
++# nuanceurs). Recalculee a chaque build, reecrite seulement si elle change.
++kk_codegen_sources_h = custom_target(
++  'kk_codegen_sources.h',
++  input : 'kk_codegen_sources_gen.py',
++  output : 'kk_codegen_sources.h',
++  command : [prog_python, '@INPUT@', '--racine', meson.project_source_root(),
++             '--sortie', '@OUTPUT@', '--liste'],
++  build_by_default : true,
++  build_always_stale : true,
++)
++
+ kk_deps = [
+   idep_nir,
+   idep_mesautil,
+@@ -153,6 +165,7 @@
+     kk_files,
+     kk_entrypoints,
+     sha1_h,
++    kk_codegen_sources_h,
+   ],
+   include_directories : [
+     inc_include,

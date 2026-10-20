@@ -27,6 +27,7 @@
 #   tso_sans = "UnityPlayer.dll"                  module exempte du TSO de FEX (0179)
 #   tso_sans = "UnityPlayer.dll GameAssembly.dll"  plusieurs
 #   tso_sans = "UnityPlayer.dll;1522d00-15246a0"   une plage seulement (syntaxe de FEX)
+#   sortie_normale = "1"                          codes de fin normale du jeu (tests/sortie_normale.sh)
 # Une option a choix s'ecrit en chaine, ex. :
 #   dlss = "metalfx"   DLSS du jeu traduit en MetalFX temporel par DXMT (extensions
 #                      NVIDIA : le jeu voit une carte NVIDIA) ; "non" par defaut.

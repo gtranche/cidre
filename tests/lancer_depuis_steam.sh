@@ -89,18 +89,13 @@ if [ -n "$JEU" ] && [ "$(opt cache_pipelines CIDRE_PIPELINE_CACHE)" != false ]; 
    fi
    # Reserve d'AIR de ce jeu, faite ici (0171) : chaque bibliotheque compilee y
    # est ecrite et relue aux lancements suivants, meme quand le cache de Metal
-   # du processus wine l'a oubliee. Un dossier par version du MSL de
-   # KosmicKrisp : celles d'un autre KosmicKrisp ne serviraient plus a rien.
+   # du processus wine l'a oubliee. Un dossier par cle de code de KosmicKrisp
+   # (0208 : elle ne change que si le MSL produit change, pas a chaque mise a
+   # jour du pilote) ; celles d'une autre cle ne serviraient plus a rien.
    # CIDRE_AIR_LOCAL=0 : pas de reserve.
    if [ -z "${MESA_KK_AIR_LOCAL:-}" ] && [ "${CIDRE_AIR_LOCAL:-1}" != 0 ]; then
-      AIR_LOCAL="$HOME/Library/Application Support/Cidre/air-local/$JEU"
-      KK_MSL=$(sh "$R/tests/precompil_kk.sh" kk 2>/dev/null || true)
-      if [ -n "$KK_MSL" ] && [ "$KK_MSL" != inconnu ]; then
-         for d in "$AIR_LOCAL"/*; do
-            [ -d "$d" ] && [ "$(basename "$d")" != "$KK_MSL" ] && rm -rf "${d:?}"
-         done
-         export MESA_KK_AIR_LOCAL="$AIR_LOCAL/$KK_MSL"
-      fi
+      AIR_LOCAL=$(CIDRE_DIR="$HOME/Library/Application Support/Cidre" sh "$R/tests/precompil_kk.sh" air_local "$JEU" 2>/dev/null || true)
+      [ -z "$AIR_LOCAL" ] || export MESA_KK_AIR_LOCAL="$AIR_LOCAL"
    fi
 fi
 
@@ -450,6 +445,9 @@ sh "$R/tests/version_windows.sh" poser "$WINVER" 2>&1 | tee -a "$JOURNAL" || tru
 # CIDRE_DXMT_DIR=<dossier> (essais) : un DXMT a la forme de $R/dxmt (cinq
 # fichiers, plus i386/), pris avant le runtime livre pour ce lancement.
 D3D11=$(opt d3d11 CIDRE_D3D11)
+# metalfx : true ou un facteur de definition (voir plus bas), vide sinon
+METALFX=$(opt metalfx CIDRE_METALFX)
+case $METALFX in true|0.75|0.67|0.5) ;; *) METALFX= ;; esac
 case $D3D11 in dxmt) ;; *) D3D11=dxvk ;; esac
 # En vrai D3D12 (dx12), le DXGI est celui de DXVK, compagnon de vkd3d-proton
 # (comme sous Proton) : celui de DXMT annonce 0 octet de memoire partagee, et
@@ -610,7 +608,7 @@ if [ "$D3D11" = dxmt ]; then
    # metalfx = true : MetalFX spatial x2 sur la sortie (drawable aux pixels physiques
    # au lieu de l'agrandissement CoreAnimation). Sans bordure seulement : le plein
    # ecran exclusif change le mode d'affichage et donne un ecran noir.
-   if [ "$(opt metalfx CIDRE_METALFX)" = true ]; then
+   if [ -n "$METALFX" ]; then
       export DXMT_METALFX_SPATIAL_SWAPCHAIN=1
       echo "    d3d11 : dxmt -> MetalFX spatial x2 sur la sortie" >>"$JOURNAL"
    fi
@@ -711,6 +709,12 @@ if [ -n "$DLSS" ]; then
       echo "    dlss : pas de nvngx_dlss.dll dans le jeu, nvngx.dll de DXMT en system32 (sans leurre signe)" >>"$JOURNAL"
    fi
    export DXMT_ENABLE_NVEXT=1
+   # DLSS agrandit deja par MetalFX temporel : pas de second agrandissement
+   # MetalFX (spatial x2 de DXMT) empile derriere lui
+   if [ -n "${DXMT_METALFX_SPATIAL_SWAPCHAIN:-}" ]; then
+      unset DXMT_METALFX_SPATIAL_SWAPCHAIN
+      echo "    dlss : metalfx (spatial x2 de DXMT) ecarte, DLSS agrandit deja" >>"$JOURNAL"
+   fi
    NVEXT_OV="nvapi64,nvngx=b"
    case ";${CIDRE_DLL_OVERRIDES:-};" in
       *";$NVEXT_OV;"*) : ;;
@@ -736,6 +740,29 @@ else
    if [ "$(opt generation_images CIDRE_GENERATION_IMAGES)" = metalfx ]; then
       echo "    generation_images = metalfx sans DLSS actif : sans effet (il faut dlss = \"metalfx\")" >>"$JOURNAL"
    fi
+fi
+
+# metalfx en D3D12, Vulkan et DXVK (KosmicKrisp, 0202) : l'image du jeu est
+# agrandie par MTLFXSpatialScaler jusqu'aux pixels physiques de la fenetre, a la
+# place de l'etirement de CoreAnimation (x2 de la Retina, et mode emule quand le
+# jeu rend sous la taille de l'espace). La definition du jeu reste la sienne :
+# c'est elle qui fixe le gain. Un facteur (0.75, 0.67, 0.5) donne la definition
+# visee, l'espace x facteur, a choisir dans le jeu ou a poser par sa fiche
+# ([[reglages_jeu]]) ; elle est exportee dans CIDRE_METALFX_DEFINITION.
+# KosmicKrisp ecrit « [CIDRE_METALFX] spatial AxB -> CxD » sur stderr a la
+# creation de chaque swapchain.
+if [ -n "$METALFX" ]; then
+   export MESA_WSI_METAL_METALFX=1
+   case $METALFX in
+      0.75|0.67|0.5)
+         set -- $(sh "$R/tests/machine.sh" ecran_largeur ecran_hauteur 2>/dev/null | sed 's/^[a-z_]*=//')
+         if [ "${1:-0}" -gt 0 ] && [ "${2:-0}" -gt 0 ]; then
+            export CIDRE_METALFX_DEFINITION="$(awk -v l="$1" -v h="$2" -v f="$METALFX" \
+               'BEGIN { printf "%dx%d", int(l * f / 2 + 0.5) * 2, int(h * f / 2 + 0.5) * 2 }')"
+         fi
+         echo "    metalfx : spatial a la presentation (KosmicKrisp), facteur $METALFX : definition visee ${CIDRE_METALFX_DEFINITION:-inconnue} (espace ${1:-?}x${2:-?})" >>"$JOURNAL" ;;
+      *) echo "    metalfx : spatial a la presentation (KosmicKrisp), definition du jeu" >>"$JOURNAL" ;;
+   esac
 fi
 
 # Rendu Direct3D 9 : d3d9 = "dxvk" (DXVK -> Vulkan -> KosmicKrisp -> Metal) ou
@@ -805,8 +832,11 @@ fi
 # jeu est lance quand meme, la trace dit pourquoi il tombera.
 # CIDRE_SANS_STEAM=1 : on ne touche pas au client. Cf.
 # tests/client_steam_natif.sh.
+# Sans CIDRE_SEANCE, c'est le bouton de Steam qui nous lance : le client est en
+# plein lancement, sa mesure d'avant ne vaut rien (celle de la partie suit).
 if [ -n "${SteamAppId:-}" ] && [ "${CIDRE_SANS_STEAM:-}" != 1 ]; then
-   sh "$R/tests/client_steam_natif.sh" assurer 2>&1 | tee -a "$JOURNAL" || true
+   PAR_LE_CLIENT=; [ "${CIDRE_SEANCE:-}" = 1 ] || PAR_LE_CLIENT=1
+   CIDRE_STEAM_PAR_LE_CLIENT=$PAR_LE_CLIENT sh "$R/tests/client_steam_natif.sh" assurer 2>&1 | tee -a "$JOURNAL" || true
 elif [ "${CIDRE_SANS_STEAM:-}" != 1 ]; then
    # Jeu hors Steam : le client ne lui sert a rien, mais s'il tourne et mange
    # le processeur, il le prend au jeu aussi.
@@ -1034,7 +1064,18 @@ fi
 # `&& ... ||` : ce script est en `set -e`, et un jeu qui sort sur un code d'erreur
 # (un plantage, un arret force) l'arretait ici meme, AVANT la sauvegarde ci-dessous.
 [ -z "$JEU" ] || echo "    shaders : $(sh "$R/tests/etat_shaders.sh" etat "$JEU" "$VOIE_TEMOIN" 2>/dev/null | sed -n 's/^etat=//p')" >>"$JOURNAL"
+# Le client Steam en arriere-plan pendant la partie, rendu a la sortie : 99 %
+# d'un coeur releve sur le M1 le 2026-10-17, autant de moins pour le jeu sur un
+# Mac a peu de coeurs de performance. Ce qu'il a pris pendant la partie va au
+# journal. Si ce lanceur est tue, la veille s'en apercoit et rend la priorite.
+# CIDRE_STEAM_ARRIERE_PLAN=0 : ne pas y toucher. cf. tests/client_steam_natif.sh.
+ETAT_STEAM=
+if [ "${CIDRE_SANS_STEAM:-}" != 1 ]; then
+   ETAT_STEAM=${TMPDIR:-/tmp}/cidre-steam-discret.$$
+   sh "$R/tests/client_steam_natif.sh" discret "$ETAT_STEAM" $$ >>"$JOURNAL" 2>&1 || true
+fi
 CIDRE_OVERLAY_DYLIB=$OVERLAY sh "$R/tests/etape2_pile_arm64ec.sh" "$PROG" "$@" >>"$JOURNAL" 2>&1 && RC=0 || RC=$?
+[ -z "$ETAT_STEAM" ] || sh "$R/tests/client_steam_natif.sh" rendre "$ETAT_STEAM" >>"$JOURNAL" 2>&1 || true
 # Le jeu est sorti : le client de service n'a plus de raison d'etre. Une fois
 # constate que plus rien du jeu ne tourne dans le prefixe, on l'arrete, et le
 # wineserver s'en va avec ses services. Jamais un processus du jeu. Avant les
@@ -1057,6 +1098,15 @@ REPLI=
 if [ -n "$JEU" ] && [ "$D3D11" = dxmt ]; then
    REPLI=$(sh "$R/tests/repli_dxmt.sh" "$JEU" "$JOURNAL" 2>/dev/null || true)
    [ -z "$REPLI" ] || echo "$REPLI" | tee -a "$JOURNAL"
+fi
+# Un code que la fiche dit normal pour ce jeu (sortie_normale, tests/sortie_normale.sh),
+# apres assez de temps de jeu : une ligne au journal, qui reste tel quel, et une
+# sortie sur 0 -- pas d'alerte dans Verger. Fahrenheit sort sur 1 a chaque
+# fermeture par son menu, partie sauvegardee.
+if [ $RC -ne 0 ] && [ -n "$JEU" ] && [ -z "$REPLI" ] \
+   && NORMALE=$(sh "$R/tests/sortie_normale.sh" "$RC" "$(( $(date +%s) - DEBUT_EPOCH ))" "$(opt sortie_normale CIDRE_SORTIE_NORMALE)" "$(profil sortie_normale_apres)" 2>/dev/null); then
+   echo "$NORMALE" | tee -a "$JOURNAL"
+   RC=0
 fi
 if [ $RC -ne 0 ] || [ -n "$REPLI" ]; then
    [ $RC -eq 0 ] || echo "    le jeu s'est termine sur le code $RC" | tee -a "$JOURNAL"

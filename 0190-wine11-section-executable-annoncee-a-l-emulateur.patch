@@ -1,0 +1,33 @@
+Generated-by: LLM
+
+wine11 : une section qui n'est pas une image, projetee executable, est annoncee a l'emulateur ARM64EC. notify_map_view_of_section ne previent FEX (NotifyMapViewOfSection) que pour une image chargee par le chargeur (ArbitraryUserPointer, SectionImageInformation). Un chargeur protege qui ecrit son code dans une section par une vue RW et l'execute par une vue RX -- D2R_loader.dll de Diablo II Resurrected -- sautait dans une zone que FEX ne savait pas executable : le JIT y posait un arret explicite, faute d'execution c0000005 info[0]=8 a l'adresse du saut, « D2R_loader.dll failed to initialize ». Pour une vue non-image dont la protection est executable, on appelle pNotifyMemoryProtect (avant puis apres), comme pour NtProtectVirtualMemory : FEX l'inscrit a son suivi d'invalidation. Rien ne change pour les images. Mesure : D2R_loader.dll s'initialise, le jeu va jusqu'a uxtheme (il s'arrete plus loin, cascade d'exceptions dans ses propres fils, a instruire). Temoins h32temps, banc_x64, h64tls, h32fenetre : 0. ntdll.dll ARM64X construit hors arbre contre v1513/build2 avec -DWINE_TEB_SANS_X18 (3 usages de x18, comme l'original), pose seulement dans un runtime clone.
+
+diff --git a/dlls/ntdll/signal_arm64ec.c b/dlls/ntdll/signal_arm64ec.c
+index eb6de4f..a1de594 100644
+--- a/dlls/ntdll/signal_arm64ec.c
++++ b/dlls/ntdll/signal_arm64ec.c
+@@ -763,9 +763,23 @@ static void notify_map_view_of_section( HANDLE handle, void *addr, SIZE_T size,
+     SECTION_IMAGE_INFORMATION info;
+     NTSTATUS status;
+ 
++    if (NtQuerySection( handle, SectionImageInformation, &info, sizeof(info), NULL ))
++    {
++        /* Pas une image : une section projetee executable (un chargeur
++         * protege y ecrit son code par une vue RW et l'execute par une vue
++         * RX -- D2R_loader.dll de Diablo II Resurrected). L'emulateur n'en
++         * savait rien et refusait d'y executer (faute d'execution a l'adresse
++         * du saut). On la lui annonce comme un changement de protection. */
++        if (pNotifyMemoryProtect && (protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ |
++                                                PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)))
++        {
++            pNotifyMemoryProtect( addr, size, protect, FALSE, 0 );
++            pNotifyMemoryProtect( addr, size, protect, TRUE, STATUS_SUCCESS );
++        }
++        return;
++    }
+     if (!pNotifyMapViewOfSection) return;
+     if (!NtCurrentTeb()->Tib.ArbitraryUserPointer) return;
+-    if (NtQuerySection( handle, SectionImageInformation, &info, sizeof(info), NULL )) return;
+     status = pNotifyMapViewOfSection( NULL, addr, NULL, size, alloc, protect );
+     if (NT_SUCCESS(status)) return;
+     NtUnmapViewOfSection( GetCurrentProcess(), addr );

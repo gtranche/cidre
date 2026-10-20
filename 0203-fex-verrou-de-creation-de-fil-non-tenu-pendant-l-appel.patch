@@ -1,0 +1,107 @@
+Generated-by: LLM
+
+fex : ThreadCreationMutex n est plus tenu de la notification « avant » a la notification « apres » de NtAllocateVirtualMemory, NtFreeVirtualMemory, NtProtectVirtualMemory et NtUnmapViewOfSection. Entre les deux, le fil peut quitter l appel sans repasser par « apres » (exception et NtContinue ailleurs, chargeur protege de Diablo II Resurrected) et gardait le verrou : tout fil qui compilait, allouait ou protegeait de la memoire l attendait (gel de D2R a 30-60 s, sonde : verrou pris au site NotifyMemoryProtect par le fil 013c). Traite au retour seulement, comme NtReadFile ; la section a deprojeter est mesuree avant l appel et invalidee de nouveau apres. Non-regression : h64smc 4/5 inchange, h32smc, h64sous_page, h64suspend, h64prepare, h64faute_page OK. Seul, il deplace le gel (la cause est une faute d execution dans ntdll, voir 0201) ; garde par prudence, a valider par une manche PEAK.
+
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+index 0b219d9..03a5657 100644
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -137,6 +137,9 @@ struct ThreadCPUArea {
+ 
+ struct FrontendThreadData {
+   bool InLockedRWXRead {};
++  // Section invalidee avant un NtUnmapViewOfSection, invalidee de nouveau apres.
++  uint64_t UnmapStart {};
++  uint64_t UnmapSize {};
+ };
+ 
+ namespace {
+@@ -831,14 +834,22 @@ void NotifyMemoryAlloc(void* Address, SIZE_T Size, ULONG Type, ULONG Prot, BOOL
+     return;
+   }
+ 
+-  if (!After) {
+-    ThreadCreationMutex.lock();
+-  } else {
++  // Le verrou n'est plus tenu de la notification « avant » a la notification
++  // « apres ». Entre les deux, le fil peut etre suspendu, ou quitter l'appel par
++  // une exception et un NtContinue ailleurs (chargeur protege de Diablo II
++  // Resurrected : nanomites et crochet d'exception) : il gardait alors le verrou
++  // pour toujours, et tout autre fil qui compilait, allouait ou protegeait de la
++  // memoire l'attendait (gel a ~60 s, fil principal bloque sur ThreadCreationMutex
++  // pris au site NotifyMemoryProtect). Comme pour NtReadFile plus bas, on ne
++  // traite qu'au retour de l'appel ; la course qui en resulte (une traduction faite
++  // pendant l'appel) est celle d'un vrai x86, ou la protection change sous un fil
++  // qui execute.
++  if (After) {
++    std::scoped_lock Lock(ThreadCreationMutex);
+     // MEM_RESET(_UNDO) ignores the passed permissions
+     if (!Status && !(Type & (MEM_RESET | MEM_RESET_UNDO))) {
+       InvalidationTracker->HandleMemoryProtectionNotification(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), Prot);
+     }
+-    ThreadCreationMutex.unlock();
+   }
+ }
+ 
+@@ -847,13 +858,10 @@ void NotifyMemoryFree(void* Address, SIZE_T Size, ULONG FreeType, BOOL After, NT
+     return;
+   }
+ 
+-  if (!After) {
+-    ThreadCreationMutex.lock();
+-  } else {
+-    if (!Status) {
+-      InvalidationTracker->InvalidateAlignedInterval(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), true);
+-    }
+-    ThreadCreationMutex.unlock();
++  // Voir NotifyMemoryAlloc : traite au retour seulement, verrou non tenu pendant l'appel.
++  if (After && !Status) {
++    std::scoped_lock Lock(ThreadCreationMutex);
++    InvalidationTracker->InvalidateAlignedInterval(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), true);
+   }
+ }
+ 
+@@ -862,13 +870,10 @@ void NotifyMemoryProtect(void* Address, SIZE_T Size, ULONG NewProt, BOOL After,
+     return;
+   }
+ 
+-  if (!After) {
+-    ThreadCreationMutex.lock();
+-  } else {
+-    if (!Status) {
+-      InvalidationTracker->HandleMemoryProtectionNotification(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), NewProt);
+-    }
+-    ThreadCreationMutex.unlock();
++  // Voir NotifyMemoryAlloc : traite au retour seulement, verrou non tenu pendant l'appel.
++  if (After && !Status) {
++    std::scoped_lock Lock(ThreadCreationMutex);
++    InvalidationTracker->HandleMemoryProtectionNotification(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), NewProt);
+   }
+ }
+ 
+@@ -891,14 +896,23 @@ void NotifyUnmapViewOfSection(void* Address, BOOL After, NTSTATUS Status) {
+     return;
+   }
+ 
++  // La section se mesure avant l'appel (elle est encore projetee) ; le verrou
++  // n'est pas tenu pendant l'appel (voir NotifyMemoryAlloc). Une traduction faite
++  // entre les deux est effacee au retour.
++  auto* Data = GetFrontendThreadData(GetCPUArea().ThreadState());
++  std::scoped_lock Lock(ThreadCreationMutex);
+   if (!After) {
+-    ThreadCreationMutex.lock();
+     auto [Start, Size] = InvalidationTracker->InvalidateContainingSection(reinterpret_cast<uint64_t>(Address), true);
+     if (Size) {
+       HandleImageUnmap(Start, Size);
+     }
++    Data->UnmapStart = Start;
++    Data->UnmapSize = Size;
+   } else {
+-    ThreadCreationMutex.unlock();
++    if (!Status && Data->UnmapSize) {
++      InvalidationTracker->InvalidateAlignedInterval(Data->UnmapStart, Data->UnmapSize, true);
++    }
++    Data->UnmapSize = 0;
+   }
+ }
+ 

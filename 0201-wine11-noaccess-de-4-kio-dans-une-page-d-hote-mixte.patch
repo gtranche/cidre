@@ -1,0 +1,814 @@
+Generated-by: LLM
+
+wine11 : une page de 4 Kio PAGE_NOACCESS a cote de pages accessibles dans une meme page d hote de 16 Kio fait faute comme sous Windows. Wine protegeait la page d hote avec l union des droits de ses quatre pages de 4 Kio : la page fermee se lisait sans faute. Le chargeur protege de Diablo II Resurrected projette D2R.exe sur une section, laisse chaque page chiffree en NOACCESS et la dechiffre a la premiere faute ; une table de sauts encore chiffree se lisait sans faute (saut vers 0x1C55F07BA a 25 s, 3 manches sur 3). Une page d hote d une vue de section (pas valloc, pas JIT) dont une page de 4 Kio est engagee sans droit et une autre accessible est desormais protegee a PROT_NONE (mprotect_range, get_host_page_unix_prot). Les acces permis aux voisines font faute et sont rejoues par segv_handler (signal_arm64.c, emuler_acces_sous_page : load/store entier et SIMD, paires, LD1/ST1, ordonnes, exclusifs, CAS, LSE, DC ZVA) a travers un alias mach_vm_remap de la page, sous virtual_mutex (virtual_acces_sous_page) ; alias en cache, perimes a toute (de)projection. Le detournement Rosetta lecture->ecriture et les lectures/ecritures ininterrompues de Wine respectent la page fermee. CIDRE_SOUS_PAGES=0 rend l ancien comportement ; CIDRE_DIAG_SOUS_PAGES=1 compte pages mixtes et acces rejoues. Temoin tests/h64sous_page.c : A et G echouaient (lecture NOACCESS sans faute, saut dans la table chiffree), A-G passent ; 2,4 us par acces rejoue. Non-regression : h64smc 4/5 inchange, h64eflags, h64faute_page, h64suspend, h64fibres, h64prepare, h64crypto, h64sha, h64alerte, h32smc OK. Les allocations VirtualAlloc ne sont pas couvertes (temoin, cas informatif).
+Bascule W^X pour les pages hors MAP_JIT que Windows dit inscriptibles et executables (bascule_wx_page dans virtual_handle_fault) : a une faute d execution permise par la page de 4 Kio, la page d hote passe en RX ; a une ecriture permise, en RW. Le chargeur de D2R crochete les souches x64 d appel systeme de ntdll (page en PAGE_EXECUTE_READWRITE) ; le code ARM64EC voisin (NtQueryPerformanceCounter$hybpatch_thunk) fautait et le fil s interbloquait dans le chemin d exception de FEX. Temoin tests/a64rwx_voisine.c (arm64 natif) : echoue avant, A-D apres. A faire avant release : sonde_wx.c et manche PEAK (W^X).
+
+diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
+index cd64950..e17ebaf 100644
+--- a/dlls/ntdll/unix/signal_arm64.c
++++ b/dlls/ntdll/unix/signal_arm64.c
+@@ -1430,6 +1430,377 @@ static BOOL emuler_acces_fenetre_basse( ucontext_t *ctx, ULONG_PTR guest_addr )
+         return FALSE;
+     return emuler_acces_vers( ctx, host );
+ }
++
++/*
++ * Acces a une page d'hote mixte (virtual.c, « Pages d'hote mixtes »).
++ *
++ * Une page d'hote de 16 Kio dont une page de 4 Kio est fermee (PAGE_NOACCESS)
++ * pendant qu'une autre est accessible est protegee a PROT_NONE ; tout acces y
++ * fait faute. Si les pages de 4 Kio que l'acces touche le permettent, on le
++ * rejoue ici : on decode l'instruction, on calcule son adresse effective, et
++ * virtual_acces_sous_page fait la lecture ou l'ecriture a travers un alias de la
++ * page. Sinon la faute suit son chemin et l'invite recoit sa violation d'acces,
++ * comme sous Windows. Les fautes viennent du code emis par l'emulateur (acces de
++ * donnees de l'invite), de son decodeur (lecture du code invite) et de Wine.
++ *
++ * Formes rejouees : entier et SIMD, offset immediat (signe ou non, echelonne ou
++ * non, pre/post-indexe), offset registre etendu, paires (LDP/STP/LDNP/STNP/
++ * LDPSW), LD1/ST1 a 1-4 registres, chargements et stockages ordonnes (LDAR,
++ * STLR, LDAPR, LDAPUR, STLUR), exclusifs (LDXR/STXR et paires, rejoues sous le
++ * verrou de virtual.c, le stockage reussit toujours), CAS, atomiques LSE
++ * (LDADD..LDUMIN, SWP) et DC ZVA. Le reste n'est pas rejoue.
++ */
++static inline BOOL faute_dans( ULONG_PTR faute, ULONG_PTR ea, size_t n )
++{
++    return faute >= (ea & ~(ULONG_PTR)0xfff) && faute < ea + n;
++}
++
++static BOOL emuler_acces_sous_page( ucontext_t *ctx, ULONG_PTR faute )
++{
++    const UINT insn = *(const UINT *)PC_sig( ctx );
++    const UINT Rn = (insn >> 5) & 31, Rt = insn & 31;
++    BYTE buf[64];
++    UINT64 base, ea, wb = 0;
++    BOOL ecrire_base = FALSE;
++
++    #define XN(n)       ((n) == 31 ? SP_sig(ctx) : REGn_sig((n), ctx))
++    #define SET_XN(n,v) do { if ((n) == 31) SP_sig(ctx) = (v); else REGn_sig((n), ctx) = (v); } while (0)
++    #define XT(n)       ((n) == 31 ? 0ull : REGn_sig((n), ctx))
++    #define SET_XT(n,v) do { if ((n) != 31) REGn_sig((n), ctx) = (v); } while (0)
++    #define VREG(n)     ((BYTE *)&ctx->uc_mcontext->__ns.__v[(n) & 31])
++    #define LIRE(a,n)   virtual_acces_sous_page( (void *)(a), buf, (n), FALSE )
++    #define ECRIRE(a,n) virtual_acces_sous_page( (void *)(a), buf, (n), TRUE )
++
++    base = XN( Rn );
++
++    /* --- Paires : LDP/STP/LDNP/STNP/LDPSW, entier et SIMD --- */
++    if ((insn & 0x3a000000u) == 0x28000000u)
++    {
++        UINT opc = insn >> 30, V = (insn >> 26) & 1, idx = (insn >> 23) & 3, L = (insn >> 22) & 1;
++        INT imm7 = (INT)((insn >> 15) & 0x7f);
++        UINT Rt2 = (insn >> 10) & 31, esz;
++        if (imm7 & 0x40) imm7 -= 0x80;
++        if (V) { if (opc == 3) return FALSE; esz = 4u << opc; }
++        else
++        {
++            if (opc == 3 || (opc == 1 && !L)) return FALSE;   /* STGP et non alloue */
++            esz = (opc & 2) ? 8 : 4;
++        }
++        ea = base + (idx == 1 ? 0 : (INT64)imm7 * esz);
++        if (idx == 1 || idx == 3) { ecrire_base = TRUE; wb = base + (INT64)imm7 * esz; }
++        if (!faute_dans( faute, ea, 2 * esz )) return FALSE;
++        if (L)
++        {
++            if (!LIRE( ea, 2 * esz )) return FALSE;
++            if (V)
++            {
++                memset( VREG(Rt), 0, 16 ); memcpy( VREG(Rt), buf, esz );
++                memset( VREG(Rt2), 0, 16 ); memcpy( VREG(Rt2), buf + esz, esz );
++            }
++            else
++            {
++                UINT64 v1 = 0, v2 = 0;
++                memcpy( &v1, buf, esz ); memcpy( &v2, buf + esz, esz );
++                if (opc == 1) { v1 = (UINT64)(INT64)(INT)v1; v2 = (UINT64)(INT64)(INT)v2; }
++                SET_XT( Rt, v1 ); SET_XT( Rt2, v2 );
++            }
++        }
++        else
++        {
++            if (V) { memcpy( buf, VREG(Rt), esz ); memcpy( buf + esz, VREG(Rt2), esz ); }
++            else { UINT64 v1 = XT(Rt), v2 = XT(Rt2); memcpy( buf, &v1, esz ); memcpy( buf + esz, &v2, esz ); }
++            if (!ECRIRE( ea, 2 * esz )) return FALSE;
++        }
++        goto fini;
++    }
++
++    /* --- Registre : offset immediat non signe, ou imm9 (non echelonne, pre,
++     *     post, non privilegie), ou offset registre --- */
++    if ((insn & 0x3b000000u) == 0x39000000u ||
++        (insn & 0x3b200000u) == 0x38000000u ||
++        (insn & 0x3b200c00u) == 0x38200800u)
++    {
++        UINT size = insn >> 30, V = (insn >> 26) & 1, opc = (insn >> 22) & 3;
++        UINT nb, echelle;
++        BOOL charge, signe64 = FALSE, signe32 = FALSE;
++
++        if (V)
++        {
++            if (opc & 2) { if (size) return FALSE; echelle = 4; }
++            else echelle = size;
++            charge = opc & 1;
++        }
++        else
++        {
++            echelle = size;
++            if (size == 3 && opc == 2) { PC_sig(ctx) += 4; return TRUE; }   /* PRFM : rien a faire */
++            if (opc == 3 && size >= 2) return FALSE;
++            if (opc == 2 && size == 3) return FALSE;
++            charge = opc != 0;
++            signe64 = opc == 2;
++            signe32 = opc == 3;
++        }
++        nb = 1u << echelle;
++
++        if ((insn & 0x3b000000u) == 0x39000000u)
++            ea = base + ((UINT64)((insn >> 10) & 0xfff) << echelle);
++        else if ((insn & 0x3b200c00u) == 0x38200800u)
++        {
++            UINT Rm = (insn >> 16) & 31, option = (insn >> 13) & 7, S = (insn >> 12) & 1;
++            UINT64 m = XT( Rm );
++            switch (option)
++            {
++            case 2: m = (UINT)m; break;
++            case 3: break;
++            case 6: m = (UINT64)(INT64)(INT)m; break;
++            case 7: break;
++            default: return FALSE;
++            }
++            ea = base + (m << (S ? echelle : 0));
++        }
++        else
++        {
++            UINT sub = (insn >> 10) & 3;
++            INT imm9 = (INT)((insn >> 12) & 0x1ff);
++            if (imm9 & 0x100) imm9 -= 0x200;
++            ea = base + (sub == 1 ? 0 : (INT64)imm9);
++            if (sub == 1 || sub == 3) { ecrire_base = TRUE; wb = base + (INT64)imm9; }
++        }
++        if (!faute_dans( faute, ea, nb )) return FALSE;
++        if (charge)
++        {
++            if (!LIRE( ea, nb )) return FALSE;
++            if (V) { memset( VREG(Rt), 0, 16 ); memcpy( VREG(Rt), buf, nb ); }
++            else
++            {
++                UINT64 v = 0;
++                memcpy( &v, buf, nb );
++                if (signe64 || signe32)
++                {
++                    UINT b = nb * 8;
++                    v = (UINT64)(((INT64)(v << (64 - b))) >> (64 - b));
++                    if (signe32) v &= 0xffffffffull;
++                }
++                SET_XT( Rt, v );
++            }
++        }
++        else
++        {
++            if (V) memcpy( buf, VREG(Rt), nb );
++            else { UINT64 v = XT(Rt); memcpy( buf, &v, nb ); }
++            if (!ECRIRE( ea, nb )) return FALSE;
++        }
++        goto fini;
++    }
++
++    /* --- Atomiques LSE : LDADD, LDCLR, LDEOR, LDSET, LD{S,U}{MAX,MIN}, SWP ;
++     *     et LDAPR (o3=1 opc=100) --- */
++    if ((insn & 0x3f200c00u) == 0x38200000u)
++    {
++        UINT size = insn >> 30, Rs = (insn >> 16) & 31, o3 = (insn >> 15) & 1, opc = (insn >> 12) & 7;
++        UINT nb = 1u << size, b = nb * 8;
++        UINT64 masque = b == 64 ? ~0ull : ((1ull << b) - 1), ancien = 0, s, n;
++        ea = base;
++        if (!faute_dans( faute, ea, nb )) return FALSE;
++        if (o3 && opc == 4)   /* LDAPR */
++        {
++            if (!LIRE( ea, nb )) return FALSE;
++            memcpy( &ancien, buf, nb );
++            SET_XT( Rt, ancien );
++            goto fini;
++        }
++        if (o3 && opc) return FALSE;
++        s = XT( Rs ) & masque;
++        virtual_sous_page_verrouiller( TRUE );
++        if (!LIRE( ea, nb )) { virtual_sous_page_verrouiller( FALSE ); return FALSE; }
++        memcpy( &ancien, buf, nb );
++        if (o3) n = s;   /* SWP */
++        else
++        {
++            INT64 sa = (INT64)(ancien << (64 - b)) >> (64 - b), ss = (INT64)(s << (64 - b)) >> (64 - b);
++            switch (opc)
++            {
++            case 0: n = ancien + s; break;
++            case 1: n = ancien & ~s; break;
++            case 2: n = ancien ^ s; break;
++            case 3: n = ancien | s; break;
++            case 4: n = sa > ss ? ancien : s; break;
++            case 5: n = sa < ss ? ancien : s; break;
++            case 6: n = ancien > s ? ancien : s; break;
++            default: n = ancien < s ? ancien : s; break;
++            }
++        }
++        n &= masque;
++        memcpy( buf, &n, nb );
++        if (!ECRIRE( ea, nb )) { virtual_sous_page_verrouiller( FALSE ); return FALSE; }
++        virtual_sous_page_verrouiller( FALSE );
++        SET_XT( Rt, ancien );
++        goto fini;
++    }
++
++    /* --- Exclusifs, ordonnes et CAS : (size 001000 o2 L o1 Rs o0 Rt2 Rn Rt) --- */
++    if ((insn & 0x3f000000u) == 0x08000000u)
++    {
++        UINT size = insn >> 30, o2 = (insn >> 23) & 1, L = (insn >> 22) & 1, o1 = (insn >> 21) & 1;
++        UINT Rs = (insn >> 16) & 31, Rt2 = (insn >> 10) & 31;
++        UINT nb = 1u << size;
++        ea = base;
++        if (o1 && !o2)   /* LDXP/STXP (CASP non rejoue) */
++        {
++            if (!(size & 2)) return FALSE;
++            nb = (size & 1) ? 8 : 4;
++            if (!faute_dans( faute, ea, 2 * nb )) return FALSE;
++            if (L)
++            {
++                UINT64 v1 = 0, v2 = 0;
++                if (!LIRE( ea, 2 * nb )) return FALSE;
++                memcpy( &v1, buf, nb ); memcpy( &v2, buf + nb, nb );
++                SET_XT( Rt, v1 ); SET_XT( Rt2, v2 );
++            }
++            else
++            {
++                UINT64 v1 = XT(Rt), v2 = XT(Rt2);
++                memcpy( buf, &v1, nb ); memcpy( buf + nb, &v2, nb );
++                if (!ECRIRE( ea, 2 * nb )) return FALSE;
++                SET_XT( Rs, 0 );
++            }
++            goto fini;
++        }
++        if (!faute_dans( faute, ea, nb )) return FALSE;
++        if (o1 && o2)   /* CAS, CASA, CASL, CASAL */
++        {
++            UINT64 masque = nb == 8 ? ~0ull : ((1ull << (nb * 8)) - 1), ancien = 0, n = XT(Rt) & masque;
++            if (Rt2 != 31) return FALSE;
++            virtual_sous_page_verrouiller( TRUE );
++            if (!LIRE( ea, nb )) { virtual_sous_page_verrouiller( FALSE ); return FALSE; }
++            memcpy( &ancien, buf, nb );
++            if (ancien == (XT(Rs) & masque))
++            {
++                memcpy( buf, &n, nb );
++                if (!ECRIRE( ea, nb )) { virtual_sous_page_verrouiller( FALSE ); return FALSE; }
++            }
++            virtual_sous_page_verrouiller( FALSE );
++            SET_XT( Rs, ancien );
++            goto fini;
++        }
++        if (L)   /* LDXR, LDAXR, LDAR, LDLAR */
++        {
++            UINT64 v = 0;
++            if (!LIRE( ea, nb )) return FALSE;
++            memcpy( &v, buf, nb );
++            SET_XT( Rt, v );
++        }
++        else     /* STXR, STLXR, STLR, STLLR */
++        {
++            UINT64 v = XT(Rt);
++            memcpy( buf, &v, nb );
++            if (!ECRIRE( ea, nb )) return FALSE;
++            if (!o2) SET_XT( Rs, 0 );   /* l'exclusif reussit */
++        }
++        goto fini;
++    }
++
++    /* --- LDAPUR / STLUR (size 011001 opc 0 imm9 00 Rn Rt) --- */
++    if ((insn & 0x3f200c00u) == 0x19000000u)
++    {
++        UINT size = insn >> 30, opc = (insn >> 22) & 3, nb = 1u << size;
++        INT imm9 = (INT)((insn >> 12) & 0x1ff);
++        if (imm9 & 0x100) imm9 -= 0x200;
++        ea = base + (INT64)imm9;
++        if (!faute_dans( faute, ea, nb )) return FALSE;
++        if (opc == 0)
++        {
++            UINT64 v = XT(Rt);
++            memcpy( buf, &v, nb );
++            if (!ECRIRE( ea, nb )) return FALSE;
++        }
++        else
++        {
++            UINT64 v = 0;
++            if (!LIRE( ea, nb )) return FALSE;
++            memcpy( &v, buf, nb );
++            if (opc >= 2)
++            {
++                UINT b = nb * 8;
++                v = (UINT64)(((INT64)(v << (64 - b))) >> (64 - b));
++                if (opc == 3) v &= 0xffffffffull;
++            }
++            SET_XT( Rt, v );
++        }
++        goto fini;
++    }
++
++    /* --- LD1/ST1 a plusieurs registres (sans entrelacement), sans offset ou
++     *     post-indexe --- */
++    if ((insn & 0xbfbf0000u) == 0x0c000000u || (insn & 0xbfa00000u) == 0x0c800000u)
++    {
++        UINT Q = (insn >> 30) & 1, L = (insn >> 22) & 1, opcode = (insn >> 12) & 15;
++        UINT nreg, taille, i;
++        switch (opcode)
++        {
++        case 7: nreg = 1; break;
++        case 10: nreg = 2; break;
++        case 6: nreg = 3; break;
++        case 2: nreg = 4; break;
++        default: return FALSE;
++        }
++        taille = Q ? 16 : 8;
++        ea = base;
++        if (!faute_dans( faute, ea, nreg * taille )) return FALSE;
++        if (insn & 0x00800000u)
++        {
++            UINT Rm = (insn >> 16) & 31;
++            ecrire_base = TRUE;
++            wb = base + (Rm == 31 ? nreg * taille : XT(Rm));
++        }
++        if (L)
++        {
++            if (!LIRE( ea, nreg * taille )) return FALSE;
++            for (i = 0; i < nreg; i++)
++            {
++                memset( VREG(Rt + i), 0, 16 );
++                memcpy( VREG(Rt + i), buf + i * taille, taille );
++            }
++        }
++        else
++        {
++            for (i = 0; i < nreg; i++) memcpy( buf + i * taille, VREG(Rt + i), taille );
++            if (!ECRIRE( ea, nreg * taille )) return FALSE;
++        }
++        goto fini;
++    }
++
++    /* --- DC ZVA, Xt --- */
++    if ((insn & 0xffffffe0u) == 0xd50b7420u)
++    {
++        UINT64 dczid;
++        UINT taille;
++        __asm__ volatile( "mrs %0, dczid_el0" : "=r"(dczid) );
++        taille = 4u << (dczid & 15);
++        if (taille > sizeof(buf)) return FALSE;
++        ea = XT( Rt ) & ~(UINT64)(taille - 1);
++        if (!faute_dans( faute, ea, taille )) return FALSE;
++        memset( buf, 0, taille );
++        if (!ECRIRE( ea, taille )) return FALSE;
++        PC_sig(ctx) += 4;
++        return TRUE;
++    }
++
++    return FALSE;
++
++fini:
++    if (ecrire_base) SET_XN( Rn, wb );
++    PC_sig(ctx) += 4;
++    return TRUE;
++
++    #undef XN
++    #undef SET_XN
++    #undef XT
++    #undef SET_XT
++    #undef VREG
++    #undef LIRE
++    #undef ECRIRE
++}
+ #endif /* __APPLE__ */
+ 
+ #ifdef __APPLE__
+@@ -1547,6 +1918,14 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
+             emuler_acces_vers( sigcontext, (ULONG_PTR)user_shared_data + (a - 0x7ffe0000) ))
+             return;
+     }
++    /* Page d'hote mixte : acces permis par sa page de 4 Kio, rejoue. */
++    if (sous_pages_actives)
++    {
++        UINT ec = ESR_ELx_EC( esr );
++        if ((ec == ESR_ELx_EC_DABT_LOW || ec == ESR_ELx_EC_DABT_CUR) &&
++            emuler_acces_sous_page( sigcontext, (ULONG_PTR)siginfo->si_addr ))
++            return;
++    }
+ #endif
+ #ifdef SONDE_HAUTE
+     ULONG_PTR sonde_addr = 0;
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index a139108..6a75998 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -78,6 +78,11 @@ extern ULONG_PTR user_space_wow_limit;
+ extern ULONG_PTR user_space_wow_base;
+ extern ULONG_PTR luajit_low_base;
+ extern BOOL luajit_miroir_engage( const void *host, BOOL ecriture );
++#ifdef __APPLE__
++extern BOOL sous_pages_actives;
++extern BOOL virtual_acces_sous_page( void *addr, void *buf, size_t size, BOOL ecriture );
++extern void virtual_sous_page_verrouiller( BOOL verrou );
++#endif
+ extern void *main_module;
+ extern SECTION_IMAGE_INFORMATION main_image_info;
+ 
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 0e9c186..a4c7a31 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -171,6 +171,9 @@ static const BYTE VIRTUAL_Win32Flags[16] =
+ 
+ static struct wine_rb_tree views_tree;
+ static pthread_mutex_t virtual_mutex;
++/* generation des alias de pages d'hote mixtes : toute (de)projection les perime */
++static unsigned int alias_gen = 1;
++#define alias_perimer() (alias_gen++)
+ pthread_key_t thread_data_key = 0;
+ 
+ static const UINT page_shift = 12;
+@@ -358,6 +361,7 @@ void *anon_mmap_fixed( void *start, size_t size, int prot, int flags )
+     assert( !((UINT_PTR)start & host_page_mask) );
+     assert( !(size & host_page_mask) );
+ 
++    alias_perimer();
+     return mmap( start, size, prot, MAP_PRIVATE | MAP_ANON | MAP_FIXED | flags, -1, 0 );
+ }
+ 
+@@ -2042,6 +2046,7 @@ static void unmap_area( void *start, size_t size )
+     assert( !((UINT_PTR)start & host_page_mask) );
+     size = ROUND_SIZE( 0, size, host_page_mask );
+ 
++    alias_perimer();
+     if (!(size = unmap_area_above_user_limit( start, size ))) return;
+ 
+     end = (char *)start + size;
+@@ -2126,6 +2131,7 @@ static void unregister_view( struct file_view *view )
+  */
+ static void delete_view( struct file_view *view ) /* [in] View */
+ {
++    alias_perimer();
+     if (!(view->protect & VPROT_SYSTEM)) unmap_area( view->base, view->size );
+     set_page_vprot( view->base, view->size, 0 );
+     if (view->protect & VPROT_ARM64EC) clear_arm64ec_range( view->base, view->size );
+@@ -2311,6 +2317,221 @@ static BOOL page_deja_ecrite( const void *addr )
+ }
+ #endif
+ 
++#ifdef __APPLE__
++/***********************************************************************
++ *           Pages d'hote mixtes
++ *
++ * La page de l'hote fait 16 Kio sur Apple Silicon, celle de Windows 4 Kio. Wine
++ * protege la page d'hote avec l'union des droits de ses quatre pages : une page
++ * de 4 Kio PAGE_NOACCESS a cote d'une page lisible se lit donc sans faute. Le
++ * chargeur protege de Diablo II Resurrected en depend : il projette D2R.exe sur
++ * une section, laisse chaque page de 4 Kio chiffree en PAGE_NOACCESS et la
++ * dechiffre dans son gestionnaire d'exception a la premiere faute. Une table de
++ * sauts encore chiffree, lue sans faute parce qu'une voisine etait deja
++ * dechiffree, envoyait le jeu dans des octets chiffres (tests/h64sous_page.c).
++ *
++ * Une page d'hote est dite mixte quand l'une de ses pages de 4 Kio est engagee
++ * sans aucun droit pendant qu'une autre est accessible. On la protege alors a
++ * l'intersection : PROT_NONE. Un acces a la page fermee fait faute comme sous
++ * Windows ; un acces permis a une voisine fait faute aussi, et le gestionnaire
++ * de signal (signal_arm64.c) le rejoue par virtual_acces_sous_page, a travers un
++ * alias de la page d'hote. Seules les vues de section sont concernees (le cas du
++ * chargeur) : les allocations de Wine, de l'emulateur et du tas restent a
++ * l'union, comme avant. CIDRE_SOUS_PAGES=0 rend le comportement d'avant.
++ */
++static int sous_pages_mode = -1;      /* -1 : pas encore lu */
++BOOL sous_pages_actives;              /* une page mixte a existe : signal_arm64.c regarde */
++static LONG sous_pages_emulees, sous_pages_mixtes;
++static BOOL sous_pages_diag;
++
++static inline BOOL sous_page_ouverte( BYTE v )
++{
++    return (v & VPROT_COMMITTED) && !(v & VPROT_GUARD) &&
++           (v & (VPROT_READ | VPROT_WRITE | VPROT_WRITECOPY | VPROT_EXEC));
++}
++
++static inline BOOL sous_page_fermee( BYTE v )
++{
++    return (v & VPROT_COMMITTED) &&
++           !(v & (VPROT_GUARD | VPROT_READ | VPROT_WRITE | VPROT_WRITECOPY | VPROT_EXEC));
++}
++
++/* virtual_mutex tenu */
++static BOOL page_hote_mixte( const char *host )
++{
++    BOOL fermee = FALSE, ouverte = FALSE;
++    struct file_view *view;
++    size_t i;
++
++    if (host_page_size == page_size) return FALSE;
++    if (sous_pages_mode < 0)
++    {
++        const char *e = getenv( "CIDRE_SOUS_PAGES" );
++        sous_pages_mode = e ? atoi( e ) : 1;
++        sous_pages_diag = getenv( "CIDRE_DIAG_SOUS_PAGES" ) != NULL;
++    }
++    if (!sous_pages_mode) return FALSE;
++    for (i = 0; i < host_page_size; i += page_size)
++    {
++        BYTE v = get_page_vprot( host + i );
++        if (sous_page_fermee( v )) fermee = TRUE;
++        else if (sous_page_ouverte( v )) ouverte = TRUE;
++    }
++    if (!fermee || !ouverte) return FALSE;
++    if (!(view = find_view( host, host_page_size ))) return FALSE;
++    if ((view->protect & (VPROT_JIT | VPROT_SYSTEM)) || (is_view_valloc( view ) && sous_pages_mode < 2))
++    {
++        if (sous_pages_diag)
++        {
++            static const char *vues[32];
++            static int nb_vues;
++            int i;
++            for (i = 0; i < nb_vues; i++) if (vues[i] == view->base) break;
++            if (i == nb_vues && nb_vues < 32)
++            {
++                vues[nb_vues++] = view->base;
++                ERR( "page d'hote mixte %p laissee a l'union : vue %p+%#zx protect %#x\n",
++                     host, view->base, view->size, view->protect );
++            }
++        }
++        return FALSE;
++    }
++    return TRUE;
++}
++
++/* Droits unix d'une page d'hote : l'union, ou rien pour une page mixte. */
++static int get_host_page_unix_prot( char *host, BYTE set, BYTE clear )
++{
++    if (page_hote_mixte( host ))
++    {
++        if (!sous_pages_actives || sous_pages_diag)
++        {
++            LONG n = InterlockedIncrement( &sous_pages_mixtes );
++            if (sous_pages_diag && (n <= 16 || !(n & (n - 1))))
++                ERR( "page d'hote mixte %p fermee (%ld)\n", host, (long)n );
++        }
++        sous_pages_actives = TRUE;
++        return PROT_NONE;
++    }
++    return get_unix_prot( (get_host_page_vprot( host ) & ~clear) | set );
++}
++
++/*
++ * Alias des pages d'hote mixtes : une seconde projection des memes pages
++ * physiques (mach_vm_remap sans copie), lisible et, si la projection le permet,
++ * inscriptible. Gardees en cache ; toute projection ou deprojection les perime.
++ */
++#define ALIAS_NB 64
++static struct alias_hote { char *hote; char *alias; unsigned int gen; BOOL inscriptible; } alias_cache[ALIAS_NB];
++
++/* virtual_mutex tenu */
++static char *alias_de( char *host, BOOL ecriture )
++{
++    struct alias_hote *e = &alias_cache[((UINT_PTR)host / host_page_size) % ALIAS_NB];
++    mach_vm_address_t cible = 0;
++    vm_prot_t cur, max;
++    kern_return_t kr;
++
++    if (e->alias && e->hote == host && e->gen == alias_gen && (!ecriture || e->inscriptible))
++        return e->alias;
++    if (e->alias) mach_vm_deallocate( mach_task_self(), (mach_vm_address_t)(UINT_PTR)e->alias, host_page_size );
++    e->alias = NULL;
++    kr = mach_vm_remap( mach_task_self(), &cible, host_page_size, 0, VM_FLAGS_ANYWHERE,
++                        mach_task_self(), (mach_vm_address_t)(UINT_PTR)host, FALSE, &cur, &max, VM_INHERIT_NONE );
++    if (kr != KERN_SUCCESS)
++    {
++        ERR( "mach_vm_remap %p : %d\n", host, kr );
++        return NULL;
++    }
++    kr = mach_vm_protect( mach_task_self(), cible, host_page_size, FALSE, VM_PROT_READ | (max & VM_PROT_WRITE) );
++    if (kr != KERN_SUCCESS)
++    {
++        ERR( "mach_vm_protect alias %p : %d\n", host, kr );
++        mach_vm_deallocate( mach_task_self(), cible, host_page_size );
++        return NULL;
++    }
++    e->hote = host;
++    e->alias = (char *)(UINT_PTR)cible;
++    e->gen = alias_gen;
++    e->inscriptible = (max & VM_PROT_WRITE) != 0;
++    if (ecriture && !e->inscriptible) return NULL;
++    return e->alias;
++}
++
++void virtual_sous_page_verrouiller( BOOL verrou )
++{
++    if (verrou) mutex_lock( &virtual_mutex );
++    else mutex_unlock( &virtual_mutex );
++}
++
++/***********************************************************************
++ *           virtual_acces_sous_page
++ *
++ * Rejoue un acces de size octets a addr (lecture vers buf, ou ecriture depuis
++ * buf) quand il a fait faute sur une page d'hote mixte et que les pages de
++ * 4 Kio touchees le permettent. Rend FALSE sans rien toucher sinon : la faute
++ * suit alors son chemin (violation d'acces de l'invite). Sur pile de signal.
++ */
++BOOL virtual_acces_sous_page( void *addr, void *buf, size_t size, BOOL ecriture )
++{
++    char *a = addr, *fin = a + size;
++    BOOL mixte = FALSE, ok = TRUE;
++    char *p;
++
++    if (!size || fin < a) return FALSE;
++    mutex_lock( &virtual_mutex );
++    /* premiere passe : droits et mixite, sans rien copier */
++    for (p = a; p < fin && ok; p = ROUND_ADDR( p, host_page_mask ) + host_page_size)
++    {
++        char *host = ROUND_ADDR( p, host_page_mask ), *sous;
++        char *bout = min( fin, host + host_page_size );
++
++        if (page_hote_mixte( host )) mixte = TRUE;
++        else if (!(get_host_page_unix_prot( host, 0, 0 ) & (ecriture ? PROT_WRITE : PROT_READ))) ok = FALSE;
++        for (sous = ROUND_ADDR( p, page_mask ); ok && sous < bout; sous += page_size)
++        {
++            BYTE v = get_page_vprot( sous );
++            if (!sous_page_ouverte( v )) ok = FALSE;
++            else if (ecriture && (!(v & (VPROT_WRITE | VPROT_WRITECOPY)) || (v & VPROT_WRITEWATCH))) ok = FALSE;
++        }
++    }
++    if (!ok || !mixte) goto refus;
++    for (p = a; p < fin; )
++    {
++        char *host = ROUND_ADDR( p, host_page_mask );
++        char *bout = min( fin, host + host_page_size );
++        char *cible = p;
++
++        if (page_hote_mixte( host ))
++        {
++            char *alias = alias_de( host, ecriture );
++            if (!alias) goto refus;   /* rien n'a encore ete ecrit si c'est la premiere page */
++            cible = alias + (p - host);
++        }
++        if (ecriture) memcpy( cible, (char *)buf + (p - a), bout - p );
++        else memcpy( (char *)buf + (p - a), cible, bout - p );
++        p = bout;
++    }
++    mutex_unlock( &virtual_mutex );
++    if (sous_pages_diag)
++    {
++        LONG n = InterlockedIncrement( &sous_pages_emulees );
++        if (n <= 16 || !(n & (n - 1)))
++            ERR( "acces %s emule %p+%u (%ld)\n", ecriture ? "en ecriture" : "en lecture", addr, (UINT)size, (long)n );
++    }
++    return TRUE;
++refus:
++    mutex_unlock( &virtual_mutex );
++    return FALSE;
++}
++#else
++static inline BOOL page_hote_mixte( const char *host ) { return FALSE; }
++static int get_host_page_unix_prot( char *host, BYTE set, BYTE clear )
++{
++    return get_unix_prot( (get_host_page_vprot( host ) & ~clear) | set );
++}
++#endif
++
+ /***********************************************************************
+  *           mprotect_range
+  *
+@@ -2321,18 +2542,15 @@ static int mprotect_range( void *base, size_t size, BYTE set, BYTE clear )
+     size_t i, count;
+     char *addr = ROUND_ADDR( base, host_page_mask );
+     int prot, next;
+-    BYTE vprot;
+ 
+     size = ROUND_SIZE( base, size, host_page_mask );
+ 
+     if (get_host_page_vprot( addr ) & VPROT_JIT) return 0;
+ 
+-    vprot = get_host_page_vprot( addr );
+-    prot = get_unix_prot( (vprot & ~clear) | set );
++    prot = get_host_page_unix_prot( addr, set, clear );
+     for (count = i = 1; i < size / host_page_size; i++, count++)
+     {
+-        vprot = get_host_page_vprot( addr + count * host_page_size );
+-        next = get_unix_prot( (vprot & ~clear) | set );
++        next = get_host_page_unix_prot( addr + count * host_page_size, set, clear );
+         if (next == prot) continue;
+         if (mprotect_exec( addr, count * host_page_size, prot )) return -1;
+         addr += count * host_page_size;
+@@ -2811,6 +3029,7 @@ static NTSTATUS map_file_into_view( struct file_view *view, int fd, size_t start
+     assert( start < view->size );
+     assert( start + size <= view->size );
+ 
++    alias_perimer();
+     if (vprot & VPROT_WRITE) flags |= MAP_SHARED;
+     else if (vprot & VPROT_WRITECOPY) flags |= MAP_PRIVATE;
+     else
+@@ -5357,6 +5576,51 @@ static NTSTATUS grow_thread_stack( struct thread_data *data, char *page, struct
+ }
+ 
+ 
++#ifdef __APPLE__
++/***********************************************************************
++ *           bascule_wx_page
++ *
++ * W^X a la main pour une page d'hote hors MAP_JIT que Windows dit a la fois
++ * inscriptible et executable (union des droits de ses pages de 4 Kio). macOS
++ * refuse les deux ensemble et mprotect_exec retire l'execution : le code natif
++ * de la page faute alors a l'execution. Cas mesure : le chargeur protege de
++ * Diablo II Resurrected pose un crochet dans ntdll (page passee en
++ * PAGE_EXECUTE_READWRITE) ; le code ARM64EC de ntdll qui partage cette page
++ * d'hote de 16 Kio (NtQueryPerformanceCounter$hybpatch_thunk) fautait, et le
++ * fil partait dans le chemin d'exception de l'emulateur, qui s'interbloquait.
++ * A une faute d'execution permise par la page de 4 Kio, on passe la page d'hote
++ * en lecture-execution ; a une ecriture permise, on la remet en
++ * lecture-ecriture. virtual_mutex tenu.
++ */
++static BOOL bascule_wx_page( char *page, const void *addr, BOOL executer )
++{
++    BYTE v = get_page_vprot( addr );
++    int prot;
++
++    if (!sous_page_ouverte( v ) || page_hote_mixte( page )) return FALSE;
++    prot = get_host_page_unix_prot( page, 0, 0 );
++    if (!(prot & PROT_WRITE) || !(prot & PROT_EXEC)) return FALSE;
++    if (executer)
++    {
++        if (!(v & VPROT_EXEC)) return FALSE;
++        if (mprotect( page, host_page_size, PROT_READ | PROT_EXEC )) return FALSE;
++    }
++    else
++    {
++        if (!(v & (VPROT_WRITE | VPROT_WRITECOPY)) || (v & VPROT_WRITEWATCH)) return FALSE;
++        if (mprotect( page, host_page_size, PROT_READ | PROT_WRITE )) return FALSE;
++    }
++    if (sous_pages_diag)
++    {
++        static LONG n;
++        LONG k = InterlockedIncrement( &n );
++        if (k <= 16 || !(k & (k - 1)))
++            ERR( "page d'hote %p basculee en %s (faute a %p, %ld)\n", page, executer ? "RX" : "RW", addr, (long)k );
++    }
++    return TRUE;
++}
++#endif
++
+ /***********************************************************************
+  *           virtual_handle_fault
+  */
+@@ -5373,7 +5637,7 @@ NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec,
+ 
+ #ifdef __APPLE__
+     /* Rosetta on Apple Silicon misreports certain write faults as read faults. */
+-    if (err == EXCEPTION_READ_FAULT && (get_unix_prot( vprot ) & PROT_READ))
++    if (err == EXCEPTION_READ_FAULT && (get_unix_prot( vprot ) & PROT_READ) && !page_hote_mixte( page ))
+     {
+         WARN( "treating read fault in a readable page as a write fault, addr %p\n", addr );
+         err = EXCEPTION_WRITE_FAULT;
+@@ -5422,6 +5686,10 @@ NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec,
+          * sys_icache_invalidate. */
+         ret = STATUS_SUCCESS;
+     }
++#ifdef __APPLE__
++    else if (err == EXCEPTION_EXECUTE_FAULT && !(vprot & VPROT_JIT) && bascule_wx_page( page, addr, TRUE ))
++        ret = STATUS_SUCCESS;
++#endif
+     else if (err == EXCEPTION_WRITE_FAULT)
+     {
+         if (vprot & VPROT_WRITEWATCH)
+@@ -5439,11 +5707,15 @@ NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec,
+             }
+         }
+         /* ignore fault if page is writable now */
+-        if (get_unix_prot( get_host_page_vprot( page )) & PROT_WRITE)
++        if (get_host_page_unix_prot( page, 0, 0 ) & PROT_WRITE)
+         {
+             if ((vprot & VPROT_WRITEWATCH) || is_write_watch_range( page, 1 ))
+                 ret = STATUS_SUCCESS;
+         }
++#ifdef __APPLE__
++        if (ret != STATUS_SUCCESS && !(vprot & (VPROT_JIT | VPROT_WRITEWATCH)) && bascule_wx_page( page, addr, FALSE ))
++            ret = STATUS_SUCCESS;
++#endif
+     }
+     mutex_unlock( &virtual_mutex );
+     rec->ExceptionCode = ret;
+@@ -5517,7 +5789,7 @@ static NTSTATUS check_write_access( void *base, size_t size, BOOL *has_write_wat
+     {
+         BYTE vprot = get_host_page_vprot( addr + i );
+         if (vprot & VPROT_WRITEWATCH) *has_write_watch = TRUE;
+-        if (!(get_unix_prot( vprot & ~VPROT_WRITEWATCH ) & PROT_WRITE))
++        if (!(get_host_page_unix_prot( addr + i, 0, VPROT_WRITEWATCH ) & PROT_WRITE))
+             return STATUS_INVALID_USER_BUFFER;
+     }
+     if (*has_write_watch)
+@@ -5737,7 +6009,7 @@ SIZE_T virtual_uninterrupted_read_memory( const void *addr, void *buffer, SIZE_T
+     {
+         if (!(view->protect & VPROT_SYSTEM))
+         {
+-            while (bytes_read < size && (get_unix_prot( get_host_page_vprot( addr )) & PROT_READ))
++            while (bytes_read < size && (get_host_page_unix_prot( (char *)ROUND_ADDR( addr, host_page_mask ), 0, 0 ) & PROT_READ))
+             {
+                 SIZE_T block_size = min( size - bytes_read, host_page_size - ((UINT_PTR)addr & host_page_mask) );
+                 memcpy( buffer, addr, block_size );

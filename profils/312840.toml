@@ -32,9 +32,20 @@ dependances = "vcrun2005"
 # le mode emule (mode_emule, a garder : sans lui le jeu demande une definition
 # absurde) et demande Wine 0169 (chaine pNext de la swapchain).
 d3d9 = "dxvk"
+# Le jeu sort sur le code 1 a chaque fermeture par son menu : c'est son propre
+# code de fin, pas un plantage. Ses quatre PostQuitMessage passent tous 1, et
+# AfxWinMain (MFC80) le rend a exit(). Trace +seh,+loaddll du M4 (2026-10-19) :
+# aucune exception non geree, sortie par le CRT (winevulkan decharge,
+# __clean_type_info_names_internal). Les lignes MEM_POOL_HEADER et « Setting
+# breakpad minidump AppID » de la fin sont la sortie standard du jeu, videe a la
+# fermeture (breakpad est arme au demarrage par steam_api, pas declenche). Fin
+# normale, pas d'alerte dans Verger. Un code 1 dans la premiere minute reste une
+# erreur (sortie_normale_apres, 60 s par defaut).
+sortie_normale = "1"
 
 [cidre.sources]
 dependances = "crossover 2026-10-13"
+sortie_normale = "cidre-test 2026-10-19"
 
 [compat]
 etat = "non-teste"

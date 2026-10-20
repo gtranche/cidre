@@ -164,7 +164,292 @@ neuf, puis DXVK et DXMT en syswow64 et system32.
 - Construire ntdll (deux drapeaux TEB), ws2_32, secur32, crypt32, dnsapi et kernelbase.
 - Temoin `h32fenetre` a ajouter a la verification de reconstruction.
 
-## 4. Suite
+## 4. Point d'etat au 2026-10-19 (11:30)
+
+Essais d'affichage avec l'utilisateur devant l'ecran. Aucune capture du bureau : il decrit ce
+qu'il voit, et la page est relue par DevTools (`--remote-debugging-port`, DOM et
+`Page.captureScreenshot` de la page seule).
+
+| Essai | Ce que l'utilisateur voit | Cause, correctif |
+|---|---|---|
+| Configuration d'origine (Qt OpenGL/ANGLE, CEF accelere, GPU dans un processus a part) | bandeau Qt, puis une zone noire a la place de la page | winemac refuse la chaine Metal a une fenetre enfant sans donnees propres (« Cross-process child window Metal swapchains are not implemented ») : DXVK rend `VK_ERROR_INCOMPATIBLE_DRIVER`, la vue CEF reste noire |
+| `--disable-gpu --disable-gpu-compositing`, puis `--in-process-gpu` | toujours noir | meme cause : la couche Metal de Qt couvre la fenetre enfant GDI de CEF |
+| Qt en logiciel (`QT_QUICK_BACKEND=software QT_OPENGL=software`) + `--in-process-gpu` | formulaire, icones et boutons, mais aucun texte | dwrite.so : relais wow64 non rebases, corrige par wine11 **0188** (sur main) ; texte verifie ensuite par DevTools |
+| meme chose, apres connexion : panneau principal | barre de navigation absente | essai fait avant 0188 : la navigation est du texte. Avec 0188 (11:53), le panneau s'affiche en entier : Accueil, Jeux, Boutique, favoris, amis, page D2R avec « Installer » |
+| « Modifier » l'emplacement d'installation | le client se ferme (code 1, sans trace) | non reproduit hors du client (la boite de dossier 32 bits marche en sonde) ; contournement : le dossier par defaut `C:\Program Files (x86)\Diablo II Resurrected` est un lien vers le SSK |
+| Configuration d'origine + `--in-process-gpu` + winemac **0189** (chaine Metal posee sur la vue Cocoa de l'enfant quand son parent est au processus) | « ne s'affichait pas comme il faut » | DXVK cree ses swapchains (plus aucune erreur au journal), mais la composition reste fausse ; a instruire |
+
+Vu au journal et confirme : la connexion fonctionne jusqu'a l'Authenticator, mot de passe accepte
+puis « Auth complete ». La session n'a pas ete gardee apres la fermeture du client.
+
+Limite de la verification : DevTools montre ce que CEF dessine, pas la composition de la fenetre
+(couches Qt et CEF superposees par winemac). Seul l'utilisateur voit cette derniere.
+
+Connexion faite le 2026-10-19 a 11:53, en Qt logiciel, « Rester connecte(e) » coche : le panneau
+principal s'affiche en entier (capture envoyee par l'utilisateur).
+
+Defauts notes pour plus tard, dans la boite de choix de dossier 32 bits (« Changer de repertoire »,
+qui s'ouvre desormais sans planter) :
+
+- les boutons OK et Annuler n'ont pas de libelle ;
+- la liste des lecteurs, a gauche, est vide.
+
+Le dossier par defaut, lie au SSK, evite d'y passer.
+
+Voie retenue pour avancer :
+
+1. Connexion une seule fois en Qt logiciel (le formulaire s'y affichait ; seul le texte manquait,
+   corrige par 0188), avec « Rester connecte(e) » coche, pour garder la session.
+2. Session gardee : diagnostic du panneau principal sans l'utilisateur. DOM et rendu de chaque vue
+   CEF par DevTools, puis 0189 et la superposition Qt/CEF, en comparant Qt logiciel et Qt OpenGL.
+3. Installation de D2R par le bouton du client, sans « Modifier », ou par `--exec`.
+
+### D2R (2026-10-19, 12:20-12:50)
+
+- Telechargement : 31,5 Go par le client, environ 35 Mo/s, sur le SSK, par le dossier par defaut
+  `C:\Program Files (x86)\Diablo II Resurrected`, qui est un lien vers le SSK.
+- Premier « Jouer » : le client se ferme. `Client.GameLaunchWindowBehavior=2` (repris de Lutris)
+  veut dire « quitter au lancement » ; il faut 0 pour garder le client ouvert.
+- Ensuite, D2R meurt en 3 s : « D2R_loader.dll failed to initialize », c0000005. Le chargeur protege
+  ecrit son code dans une section par une vue RW et l'execute par une vue RX. Wine ne previent FEX
+  que pour les images (`notify_map_view_of_section`) : FEX refuse d'executer la vue RX (faute
+  d'execution a l'adresse du saut). Corrige par wine11 **0190**, qui annonce a FEX toute vue non-image
+  executable comme un `NtProtectVirtualMemory`.
+- Avec 0190 : le chargeur s'initialise et le jeu va jusqu'a `uxtheme`. Puis plusieurs de ses fils
+  debordent leur pile, dans une passerelle ARM64EC de kernelbase, pendant la mise en place d'une
+  exception (cascade d'exceptions : int3 et assertions de la protection, c0000420). Les fils
+  restants attendent indefiniment. A instruire : taille des piles des fils crees par le chargeur,
+  cout en pile de la remise d'exception ARM64EC sous FEX.
+- Warden et le rendu D3D12 ne sont pas encore atteints.
+- Avec `FEX_SMCCHECKS=full` (controle complet du code auto-modifie), plus aucun debordement de
+  pile : la cascade venait sans doute de code dechiffre en place que FEX executait depuis un
+  bloc perime. Le chargeur tourne alors 4 min 48 s de CPU a 100 % d'un coeur, puis se fige :
+  plusieurs fils sont en `wait_suspend` (suspendus par le chargeur, jamais repris) et le fil
+  principal les attend. Piste : la suspension de fils et la lecture de leur contexte sous FEX
+  ARM64EC (`NtSuspendThread`/`NtGetContextThread`, BTCpuSuspendLocalThread). Chantier de fond.
+
+### D2R, fils suspendus et SMC (2026-10-19, 13:00-15:25)
+
+Session d2r (worktree `~/Dev/cidre-d2r/depot`, branche `d2r-fils`), runtime clone
+`~/Dev/cidre-d2r/wine11-arm64`, FEX pose aussi dans `system32` de `pfx-bnet` (c'est
+cette copie que Wine charge).
+
+- Le gel « fils en `wait_suspend` » venait de trois defauts de FEX ARM64EC, tous
+  corriges par fex **0194** :
+  1. le retour arriere d'une boucle par saut conditionnel ne controlait pas la sonnette
+     de suspension : un fil qui boucle ne se suspendait jamais, et le `NtGetContextThread`
+     de celui qui le suspendait attendait sans fin (temoin `tests/h64suspend.c`, cas D) ;
+  2. la construction de l'IR etait quadratique (`CreateNewCodeBlockAfter`) : sous
+     `FEX_SMCCHECKS=full`, un bloc par instruction, d'ou les 5 min a 100 % ;
+  3. sous SMC complet, l'invalidation lancee depuis le JIT libere de la memoire sans
+     `InSyscallCallback` : ntdll la renvoyait a FEX, qui reprenait `CodeInvalidationMutex`
+     deja tenu (pile du fil principal relevee par lldb).
+- Trace serveur : le chargeur cree 6 fils suspendus, remappe D2R.exe et lui-meme par des
+  sections (vues `SEC_NO_CHANGE`, une RW et une RX de la meme section au debut), liste les
+  processus, suspend tous ses fils, lit leurs contextes et les reprend.
+- `FEX_SMCCHECKS=full` n'est pas ce qui evitait le debordement de pile : il ralentissait le
+  chargeur au point qu'il n'atteignait pas l'endroit fautif. Avec 0194 et sans `full`, le
+  chargeur charge winemac.drv et uxtheme en 9 s de CPU, puis meurt de facon non
+  deterministe :
+  - soit trois fils en « stack overflow » a la meme adresse (thunk d'entree x64 de
+    kernelbase), avec StackLimit = DeallocationStack + 0x2000 (valeur ecrite par
+    l'invite, a la mode Windows) et RSP = StackLimit + 0x2000. Sous Wine/macOS, les 32
+    premiers Kio d'une pile sont sans acces ou garde (pages de 16 Kio) contre 8 Kio sous
+    Windows. Correctif prepare, non valide : `~/Dev/cidre-d2r/wine/virtual-pile.c`
+    (DeallocationStack annonce decale de 2 pages d'hote moins 2 pages Windows) ;
+  - soit un fil sur un pointeur de section critique corrompu
+    (`RtlIsCriticalSectionLockedByThread`), apres quoi un autre fil charge shell32/ole32.
+- Avec `full` et 0194, le chargeur passe le point de gel mais tourne encore 3 min, surtout
+  dans les fautes W^X des invalidations (`VirtualDontNeed` de 4 Mio de pile d'appels a
+  chaque invalidation), sans fenetre.
+- Essai ecarte : SMC complet seulement dans les vues de section executables
+  (`~/Dev/cidre-d2r/fex/hybride-smc-vues-section.diff`) : meme debordement, plus lent.
+- Outils : `~/Dev/cidre-d2r/manche_sonde.sh` (D2R 90 s, arret seul), `sonde_pile.c`
+  (contexte x64 et pile de chaque fil, depuis un autre processus ; ne marche pas sur un fil
+  bloque en mode cooperatif), `lldb_faute.py`, ntdll.so de sonde (ERR + pile invitee au
+  debordement).
+
+### D2R, cascade d'exceptions et code perime (2026-10-19, 15:30-16:05)
+
+Session d2r-menu, meme environnement (runtime clone, `pfx-bnet`, FEX 0194).
+
+- `virtual-pile.c` (garde de 32 Kio) est hors sujet. La limite de pile Dealloc+0x2000 vient de
+  `RtlCreateUserStack` cote PE : les fils fautifs tournent sur des fibres (`CreateFiberEx`).
+  Une sonde de pile au debordement montre la pile de 4 Mio remplie par 632 cycles de 6,6 Kio :
+  une cascade d'exceptions imbriquees, pas un probleme de garde.
+- La protection pose son crochet dans `ntdll!Wow64PrepareForException` (pointeur lu dans le
+  `KiUserExceptionDispatcher` x64, crochet = D2R_loader+0x1b22420). Elle s'en sert pour dechiffrer
+  D2R.exe page a page sur faute d'execution, ce qui marche. Les `int3` et `int 2c` (0xc0000420)
+  du fil 0138, a chaque manche, sont des sondes anti-debogueur rattrapees.
+- wine11 **0195** : `RtlIsEcCode` lisait EcCodeBitMap sans borne. Sur une adresse de retour
+  aberrante (0x20074e904cb80), il fautait pendant `virtual_unwind`, et la repartition reprenait
+  la meme faute jusqu'au debordement. Temoin `tests/h64isec.c`.
+- Temoins sans defaut : fibres + `int3`/`int 2c` (`tests/h64fibres.c`) ; crochet
+  `Wow64PrepareForException` + `call` vers une adresse non projetee + `NtContinue`, avec une faute
+  imbriquee (`tests/h64prepare.c`).
+- Avec 0195, en mtrack, le chargeur meurt encore, de facon non deterministe : saut vers une
+  adresse non projetee de la zone 0x6fff... que son crochet ne redirige pas ; pointeur de section
+  critique aberrant ; section critique de FEX jamais rendue ; `NtCreateUserProcess` en boucle
+  avec une liste d'attributs aberrante, puis sortie code 5. Toujours des valeurs fausses.
+- Trois manches de 4 min, avec 0195 :
+
+  | FEX | Issue |
+  |---|---|
+  | mtrack | mort en 10 s |
+  | `FEX_SMCCHECKS=full` | 4 min sans aucune erreur ni assertion, encore dans le chargeur |
+  | 0194 + SMC complet sur les vues de section (`hybride-smc-vues-section.diff`) | passe winemac et uxtheme, puis 11 assertions et debordement |
+
+- Diagnostic : en mtrack, FEX execute du code perime. Il ne piege en ecriture que les pages RWX ;
+  une vue RX ecrite par une autre vue (section) ou modifiee autrement lui echappe. Le SMC complet
+  sur les seules vues de section ne suffit pas : d'autres ecritures echappent encore.
+- Suite : en `full`, faire relever par FEX chaque bloc invalide par la verification (adresse,
+  type de projection, intervalle RWX ou non) pour savoir quelles ecritures mtrack ne voit pas,
+  puis les suivre (FEX). Outils : `~/Dev/cidre-d2r/manche_longue.sh`, sondes `wine/virtual-sonde*.c`
+  et `wine/b/dlls/ntdll/signal_arm64ec.c.sonde7`.
+
+### D2R, code auto-modifie sous mtrack : 0196 et 0197 (2026-10-19, 16:05-16:25)
+
+- Le chargeur garde deux alias RW de son code : sa section entiere projetee en RW
+  (0x115c60000) avec `.text` reprojete en RX a sa base, et D2R.exe reprojete sur une section
+  (vue RW a 0x120050000, image RWX a 0x140000000). D2R.exe est dechiffre page a page : NOACCESS,
+  faute d'execution, ecriture par l'alias, puis `NtProtect` en RX, ce qui fait invalider FEX.
+  Pas d'ecriture par `NtWriteVirtualMemory`. Ses appels systeme directs passent par les
+  enveloppes de Wine qui previennent FEX.
+- Temoin `tests/h64smc.c` (code reecrit sans changer de protection). En mtrack, la memoire RWX
+  privee etait perimee a 100 %, meme pour une page seule. Deux causes :
+  - wine11 **0196** : la branche JIT de `virtual_handle_fault` accordait l'ecriture par APRR
+    sans regarder la protection Windows, et le piege de FEX ne faisait jamais faute ;
+  - fex **0197** : avec des pages d'hote de 16 Kio, proteger une page de 4 Kio ne piege rien
+    tant qu'une voisine reste inscriptible ; piege et invalidation par 16 Kio. 0197 reprend
+    aussi le SMC complet dans les vues de section executables non inscriptibles (alias).
+
+  | h64smc (mtrack) | 0194 | + 0196 | + 0196 + 0197 |
+  |---|---|---|---|
+  | A page RWX seule | perime | OK | OK |
+  | B page RWX, voisine RW (meme page d'hote) | perime | perime | perime |
+  | C bloc RWX | perime | perime | OK |
+  | D, E vue RX/RWX ecrite par une vue RW | perime | perime | OK |
+
+  Non-regression h32smc, h64prepare, h64fibres, h64isec, h32temps et sonde_wx : OK. Manche
+  PEAK (deadlock W^X, meme branche) a faire avant toute release.
+- D2R avec 0196 + 0197, 3 manches de 4 min en mtrack : aucune fenetre ; meme effondrement en 2
+  a 4 min (assertions plus nombreuses, cascades d'exceptions, `RtlVirtualUnwind2` qui lit NULL,
+  debordements). Etendre le SMC complet aux vues RWX n'y change rien. Ces defauts ne sont donc
+  pas ceux qui bloquent D2R ; seul `FEX_SMCCHECKS=full` reste propre (mais trop lent).
+- Suite : en full, faire relever par FEX les blocs dont la verification detecte un changement
+  (adresse, type de projection, intervalle) pour trouver les ecritures que mtrack ne voit pas.
+
+### D2R, SMC complet : livelock (0198) et pointeur faux (2026-10-19, 17:00-18:05)
+
+Session d2r-smc, meme environnement. Sonde FEX hors serie (`~/Dev/cidre-d2r/fex/FEX/Source/Windows/Common/SondeSMC.h`,
+fil rapporteur natif toutes les 2 s : compilations, blocs perimes trouves par la verification complete,
+invalidations et leur cout, fiche de chaque page perimee) ; sonde ntdll SONDE8/9 dans `call_seh_handlers`
+(exception d'origine, cadres, registres au saut fautif).
+
+- Le « full propre mais trop lent » etait un livelock. Jusqu'a t=24 s, environ 750 compilations/s et aucun
+  bloc perime. A t=24 s, le chargeur rechiffre D2R.exe (5 600 `NtProtect` en NOACCESS) pendant qu'un fil y
+  execute encore : FEX compile alors 51 000 blocs/s a la meme adresse (0x14155f8e4), chacun declare perime,
+  invalide, recompile, jusqu'a la fin (850 ms d'invalidation par 2 s). Le bloc d'entree sur page non
+  executable donne une instruction NOEXEC de taille 0, que le controle complet validait quand meme :
+  `ValidateCode` sur 0 octet compare un registre jamais ecrit, donc « code change » a chaque passage, et la
+  faute d'execution que le crochet de la protection attend n'est jamais levee. Corrige par fex **0198**.
+- Avec 0198, full ne trouve **aucun bloc perime en 170 s**, puis s'effondre comme mtrack. Le code perime n'est
+  donc pas ce qui bloque D2R (0196/0197 restent justes pour h64smc).
+- Les effondrements viennent d'un pointeur faux d'un octet : un fil saute vers 0x6fffa99c4e60, 0x6fffa95af46c,
+  0x6fffa99eaf94 ou 0x6fff979c34bc, c'est-a-dire du code du chargeur (0x6ffff7xxxxxx) dont l'octet des bits
+  24-31 vaut 0xa9 (4 fois) ou 0x97 au lieu de 0xf7. Au saut, la pile du fil est presque vide (0x440 octets
+  sous son sommet, [rsp]=0) : il s'agit du depart d'un fil ou d'un contexte pose, pas d'un `call`. Le
+  deroulement de ce saut lit [Rsp=0] dans `RtlVirtualUnwind2`, d'ou la cascade et le debordement.
+- Autre issue, une manche sur deux environ : interblocage sur `ThreadCreationMutex` de FEX
+  (xtajit64+0x3b25a8), tenu par le fil 013c ; les fils 0024 et 0128 l'attendent. Essai 0199 (verrou non tenu
+  entre les notifications avant et apres de `NtProtect`, `NtAllocate`, `NtFree` et `NtUnmap`) : sans effet,
+  non garde (`~/Dev/cidre-d2r/fex/essai-0199-verrou-hors-appel.diff`).
+- Ecartes par mesure : crypto (temoins `tests/h64crypto.c` et `tests/h64sha.c` : AES-NI, PCLMULQDQ, CRC32,
+  SHA-1/256 justes sous FEX), AVX (`FEX_HOSTFEATURES=enablecrypto,disableavx` : meme interblocage), TSO strict
+  (`FEX_VECTORTSOENABLED`, `FEX_MEMCPYSETTSOENABLED`, `FEX_STRICTINPROCESSSPLITLOCKS` : meme pointeur faux).
+  `disablecrypto` change le chemin du chargeur (plus de compilation apres 20 s), sans progres.
+- Suite : relever les contextes que le chargeur pose sur ses fils (`NtSetContextThread`, `NtContinue`,
+  `NtCreateThreadEx` : RIP avant et apres la conversion x64/ARM64EC) pour trouver ou l'octet 3 change ; puis la
+  pile de 013c pendant l'interblocage (`sample` du processus Wine : `~/Dev/cidre-d2r/manche_sample.sh`).
+
+### D2R, nanomites, EFLAGS (0199), faute a cheval (0200) et pages de 16 Kio (2026-10-19, 18:05-18:40)
+
+Sondes : ntdll PE SONDE11/12 (contexte de depart des fils, NtContinue/NtSetContextThread, chaque exception
+vue par `prepare_exception_arm64ec`), ntdll.so SONDE10 (projections et allocations >= 1 Mio), FEX anneau des
+4 096 dernieres entrees de `CompileBlock` vide au saut vers une adresse non projetee, avec les octets du code.
+
+- Le chargeur execute par **nanomites** : plus de 150 000 `int3` en 4 min sur le fil principal, traites par son
+  crochet `Wow64PrepareForException`, qui choisit la suite d'apres les EFLAGS du contexte puis `NtContinue`.
+- **PF, AF et DF etaient perdus a chaque exception**, a l'aller et au retour (wine11 `unwind.h` et FEX
+  `StoreStateToPackedECContext` ne portaient que NZCV+TF ; le crochet ne voyait jamais PF ni AF). Temoin
+  `tests/h64eflags.c` : 17 echecs sur 21. **0199** (wine11 + fex) : PF, AF, DF en bits 26, 27, 25 de Cpsr ; DF
+  et AF effaces pendant le gestionnaire comme sous Windows x64. Temoin : 0 echec.
+- **Faute d'execution d'une instruction a cheval** : FEX signalait Rip, x86 signale le debut de la page suivante ;
+  le crochet dechiffrait sans fin la page deja dechiffree (150 000 fautes a 0x14002CFFC). **0200** (fex). Temoin
+  `tests/h64faute_page.c` : echoue avant, passe apres.
+- Hypothese ecartee (SONDE10) : pas de copie du chargeur projetee ailleurs.
+- Avec 0199 + 0200, D2R devient **deterministe** : 3 manches sur 3 meurent a 25 s, `jmp rdx` vers 0x1C55F07BA.
+  Le bloc fautif est un `switch` MSVC de D2R.exe (0x140bb86d0, constructeurs statiques) : `rdx = base +
+  table[0x140bb9380 + 4*idx]`. 0x855F07BA est une entree **encore chiffree** : la page 0x140bb9000 est
+  `PAGE_NOACCESS` (protection Windows relevee au saut), mais ses voisines 0x140bb8000 et 0x140bba000 sont deja
+  dechiffrees en `PAGE_EXECUTE_READ`, et les quatre partagent **une page d'hote de 16 Kio**, donc lisible. Sous
+  Windows (4 Kio), la lecture ferait faute et le crochet dechiffrerait la table ; ici elle rend l'octet chiffre.
+- **Cause racine** : une protection de 4 Kio plus stricte que ses voisines ne peut pas etre appliquee sur une page
+  d'hote de 16 Kio (Apple Silicon). Les pointeurs « faux d'un octet » des manches precedentes en relevent sans
+  doute aussi. CrossOver passe par Rosetta, dont les processus ont des pages de 4 Kio.
+- Suite (chantier) : faire respecter le NOACCESS de 4 Kio dans une page d'hote mixte. Piste : page d'hote
+  protegee a l'intersection des droits ; a la faute, si la page de 4 Kio visee est permise, ouvrir la page
+  d'hote le temps d'une instruction invitee (FEX sait re-executer une instruction seule, cf. SMC en ligne) et
+  la decodeur ; sinon remonter la faute a l'invite. Le crochet dechiffre alors la table comme sous Windows.
+
+### D2R, pages de 4 Kio dans une page d'hote de 16 Kio : 0201 et 0203 (2026-10-19, 18:35-19:26)
+
+- **0201 (wine11, ntdll.so)** : une page d'hote d'une vue de section (ni valloc, ni JIT) dont une page de 4 Kio
+  est engagee sans aucun droit pendant qu'une autre est accessible est protegee a `PROT_NONE`. Les acces permis aux
+  voisines font faute et `segv_handler` les rejoue (decodeur ARM64 : load/store entier et SIMD, paires, LD1/ST1,
+  ordonnes, exclusifs, CAS, LSE, DC ZVA) a travers un alias `mach_vm_remap` de la page, sous `virtual_mutex`. Temoin
+  `tests/h64sous_page.c` : A et G echouaient (lecture NOACCESS sans faute, saut dans une table chiffree), A-G passent ;
+  2,4 us par acces rejoue. `CIDRE_SOUS_PAGES=0` rend l'ancien comportement, `=2` couvre aussi VirtualAlloc (jamais
+  essaye en jeu) ; `CIDRE_DIAG_SOUS_PAGES=1` compte pages fermees et acces rejoues.
+- Avec 0201, la mort a 25 s disparait : 4 096 pages d'hote fermees, jusqu'a 8 M d'acces rejoues sans erreur.
+- **Gel a 30-60 s** : `ThreadCreationMutex` de FEX garde par le fil 013c du chargeur ; un autre fil l'attend dans le
+  chemin de faute de FEX apres une faute d'execution native sur `ntdll!NtQueryPerformanceCounter$hybpatch_thunk`. Le
+  chargeur crochete les souches x64 d'appel systeme de ntdll (EXP+#NtClose, EXP+#NtQueryVirtualMemory) en
+  `PAGE_EXECUTE_READWRITE` ; macOS refuse W+X et Wine retirait l'execution a toute la page d'hote.
+  0201 contient aussi une bascule W^X a la main (`bascule_wx_page`, pages hors MAP_JIT : RX a une faute d'execution
+  permise, RW a une ecriture permise). Temoin `tests/a64rwx_voisine.c` (arm64 natif) : echoue avant, A-D apres.
+- **0203 (fex)** : `ThreadCreationMutex` n'est plus tenu de la notification « avant » a la notification « apres »
+  (Alloc, Free, Protect, Unmap traites au retour). Seul, il deplace le gel ; garde par prudence.
+- Non-regression des temoins inchangee (h64smc 4/5, le cas B echouait deja ; h64eflags, h64faute_page, h64suspend,
+  h64fibres, h64prepare, h64crypto, h64sha, h64alerte, h32smc). **[A VALIDER avant toute release : `tests/sonde_wx.c`
+  et une manche PEAK (W^X), Exp33.]**
+- D2R ensuite (134 s, 85 s) : le chargeur pose ses crochets, puis des appels systeme faux (NtCreateUserProcess avec
+  des arguments pris dans du code, NtImpersonateAnonymousToken en boucle), puis c0000005 non geree. La numerotation de
+  Wine suit celle de Windows sans les trous (egale jusqu'a ~0x5F) ; meme divergence sous Linux, ou D2R tourne. Piste :
+  code auto-modifie dans les souches crochetees (meme famille que h64smc B : page RWX a cote d'une page RW).
+
+### D2R, mort déterministe après un nanomite ; 0206 (2026-10-20, nuit)
+
+- **0206 (wine11, signal_arm64.c)** : l'émulateur des pages d'hôte mixtes (0201) rejoue aussi LD1/ST1 à un élément,
+  LD1R et CASP. FEX émet ces formes pour movhps, pinsr*, insertps, pextr* en mémoire, movddup, vbroadcast* et
+  cmpxchg16b. Avant, l'invité recevait une violation d'accès à tort sur une page de 4 Kio permise. Témoin
+  `tests/h64sous_page.c`, cas J : figé à J1 avec 0201, J1-J7 passent avec 0206. En jeu, aucun accès de ce genre n'a
+  été vu en 240 s : ce n'est pas la cause de D2R.
+- **La mort de D2R est déterministe.** Elle suit toujours le même nanomite du chargeur (int3 à 0x6ffff679f79e, repris
+  à 0x6ffff7025285), quel que soit le fil, avec les mêmes registres au bit près ; les morts dans memcpy, RtlRunOnce et
+  arm64x_check_call relevées avant sont la même. Écartés :
+  - mauvaise compilation par blocs (FEX_MAXINST=1, FEX_MULTIBLOCK=0) ;
+  - drapeaux (159 séquences de la trace identiques sous FEX et Rosetta) ;
+  - registres à travers les nanomites (h64nanomites) ;
+  - SetThreadContext (aucun) ;
+  - course simple.
+  Une pause de 1,5 s à ce point change l'adresse fausse, et le pas à pas TF l'évite : le pointeur dépend du temps
+  (contrôle de durée ou clé). Suite : pas à pas plus long jusqu'à la lecture fautive, sources de temps (RDTSC de FEX,
+  KUSER, QueryPerformanceCounter).
+- Défaut réel hors D2R : SetThreadContext(CONTEXT_FULL) sur un fil suspendu pendant un appel ARM64EC le fait repartir
+  en natif sur l'adresse de retour x64 (témoin h64appel_ec.c, mode 2). Correctif 0207 à faire.
+
+## 5. Suite
 
 1. Connexion par l'utilisateur, avec le client lance dans le prefixe d'essai (JEU DEMANDE a la
    coordination).

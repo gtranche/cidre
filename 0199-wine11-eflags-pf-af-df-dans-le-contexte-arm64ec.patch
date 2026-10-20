@@ -1,0 +1,33 @@
+Generated-by: LLM
+
+wine11 : PF, AF et DF traversent la conversion de contexte x64 <-> ARM64EC (bits reserves de Cpsr) -- un gestionnaire d'exception les voyait toujours nuls et ne pouvait pas les rendre
+
+eflags_to_cpsr / cpsr_to_eflags (dlls/ntdll/unwind.h) ne portaient que CF, ZF, SF, OF et TF. A chaque exception d'un invite x64 sous ARM64EC, le gestionnaire recevait donc PF=AF=DF=0, et au NtContinue ces trois drapeaux etaient perdus (le code repris trouvait les valeurs residuelles de l'emulateur). Le chargeur protege de D2R execute par nanomites (plus de 150 000 int3 en 4 min, branchements emules par son crochet Wow64PrepareForException d'apres les EFLAGS du contexte) : un jp/jnp emule prenait la mauvaise branche, d'ou des pointeurs faux d'un octet.
+PF va en bit 26 de Cpsr, AF en bit 27, DF en bit 25 (bits sans role dans le contexte d'un invite ARM64EC) ; l'emulateur doit les remplir et les relire (fex 0199).
+Temoin tests/h64eflags.c (int3 + gestionnaire vectorise : drapeaux vus, drapeaux rendus, DF pendant le gestionnaire) : 17 echecs sur 21 avant, 0 apres (avec fex 0199).
+
+--- a/dlls/ntdll/unwind.h
++++ b/dlls/ntdll/unwind.h
+@@ -62,6 +62,12 @@
+     if (eflags & 0x0080) ret |= 0x80000000;  /* negative */
+     if (eflags & 0x0100) ret |= 0x00200000;  /* trap */
+     if (eflags & 0x0800) ret |= 0x10000000;  /* overflow */
++    /* PF, AF et DF n'ont pas d'equivalent dans NZCV : on les porte dans des bits
++     * reserves de Cpsr, que l'emulateur relit, plutot que de les perdre a chaque
++     * exception (un gestionnaire qui emule jp/jnp d'apres le contexte se trompait). */
++    if (eflags & 0x0004) ret |= 0x04000000;  /* parity */
++    if (eflags & 0x0010) ret |= 0x08000000;  /* auxiliary carry */
++    if (eflags & 0x0400) ret |= 0x02000000;  /* direction */
+     return ret;
+ }
+ 
+@@ -74,6 +80,9 @@
+     if (cpsr & 0x20000000) ret |= 0x0001;  /* carry */
+     if (cpsr & 0x40000000) ret |= 0x0040;  /* zero */
+     if (cpsr & 0x80000000) ret |= 0x0080;  /* negative */
++    if (cpsr & 0x04000000) ret |= 0x0004;  /* parity */
++    if (cpsr & 0x08000000) ret |= 0x0010;  /* auxiliary carry */
++    if (cpsr & 0x02000000) ret |= 0x0400;  /* direction */
+     return ret;
+ }
+ 

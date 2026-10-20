@@ -1,0 +1,227 @@
+Generated-by: LLM
+
+diff --git a/src/vulkan/wsi/wsi_common_metal.c b/src/vulkan/wsi/wsi_common_metal.c
+index a9ac1a1..58bb2b7 100644
+--- a/src/vulkan/wsi/wsi_common_metal.c
++++ b/src/vulkan/wsi/wsi_common_metal.c
+@@ -238,11 +238,15 @@ wsi_metal_overlay_present(void)
+    return debug_get_bool_option("MESA_WSI_METAL_PRESENT_WITH_COMMAND_BUFFER", false);
+ }
+ 
++/* An RGB10A2 layer is never sent to the display directly (detach code
++ * 0x120017, macOS 26, even in a full screen space with an opaque layer),
++ * BGRA8 and BGR10A2 are. So A2B10G10R10 is hidden in SDR without the overlay
++ * too; MESA_WSI_METAL_RGB10A2=1 advertises it again (never with the overlay). */
+ static bool
+ wsi_metal_surface_format_hidden(bool overlay, VkFormat format,
+                                 VkColorSpaceKHR color_space)
+ {
+-   if (!overlay)
++   if (!overlay && debug_get_bool_option("MESA_WSI_METAL_RGB10A2", false))
+       return false;
+ 
+    return format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 &&
+@@ -250,6 +254,38 @@ wsi_metal_surface_format_hidden(bool overlay, VkFormat format,
+           color_space != VK_COLOR_SPACE_HDR10_HLG_EXT;
+ }
+ 
++/* Layer opacity, MESA_WSI_METAL_OPAQUE:
++ *  - auto (default): opaque when the swap chain asks for
++ *    VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR and frames are presented through a
++ *    Metal 3 command buffer (0080). Upstream keeps the layer non opaque on
++ *    hardware to dodge a Metal bug when presenting through Metal 4, but a non
++ *    opaque layer is always composited by WindowServer (detach code
++ *    0xffff0002): it never goes straight to the display.
++ *  - 0: upstream behaviour, never opaque on hardware.
++ *  - metal3: present through a Metal 3 command buffer even without the
++ *    overlay, so the layer can be opaque.
++ *  - metal4: opaque while presenting through Metal 4 (to look at the bug).
++ */
++enum wsi_metal_opaque_mode {
++   WSI_METAL_OPAQUE_AUTO,
++   WSI_METAL_OPAQUE_NEVER,
++   WSI_METAL_OPAQUE_METAL3,
++   WSI_METAL_OPAQUE_METAL4,
++};
++
++static enum wsi_metal_opaque_mode
++wsi_metal_opaque_mode(void)
++{
++   const char *mode = debug_get_option("MESA_WSI_METAL_OPAQUE", "auto");
++   if (!strcmp(mode, "0") || !strcmp(mode, "false"))
++      return WSI_METAL_OPAQUE_NEVER;
++   if (!strcmp(mode, "metal3"))
++      return WSI_METAL_OPAQUE_METAL3;
++   if (!strcmp(mode, "metal4"))
++      return WSI_METAL_OPAQUE_METAL4;
++   return WSI_METAL_OPAQUE_AUTO;
++}
++
+ static void
+ get_sorted_vk_formats(bool force_bgra8_unorm_first, VkFormat *sorted_formats)
+ {
+@@ -407,6 +443,10 @@ struct wsi_metal_swapchain {
+    /* VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR */
+    bool opaque_composition;
+ 
++   /* CIDRE_WSI_STATS: frames and direct-to-display samples per 5 s window */
++   struct timespec stats_start, stats_sample;
++   uint32_t stats_frames, stats_samples, stats_direct, stats_last_code;
++
+    struct wsi_metal_image images[0];
+ };
+ VK_DEFINE_NONDISP_HANDLE_CASTS(wsi_metal_swapchain, base.base, VkSwapchainKHR,
+@@ -759,6 +799,39 @@ wsi_metal_present_complete(void *present_info_ptr, uint64_t present_id)
+    wsi_metal_release_present_info(present_info);
+ }
+ 
++/* Every 5 s: frames per second and how often the layer went straight to the
++ * display. The detach code (low 32 bits of the layer's compositing status,
++ * what the Metal HUD shows as Direct/Composited) is sampled every 0.5 s:
++ * 0 = direct, 0xffff0002 = non opaque layer, 0x120017 = RGB10A2,
++ * 0x70017 = cursor or menu bar above. */
++static void
++wsi_metal_swapchain_stats(struct wsi_metal_swapchain *chain)
++{
++   if (chain->stats_start.tv_sec == 0) {
++      clock_gettime(CLOCK_MONOTONIC, &chain->stats_start);
++      chain->stats_sample = chain->stats_start;
++      return;
++   }
++   chain->stats_frames++;
++   if (wsi_metal_ms_since(&chain->stats_sample) >= 500.0) {
++      clock_gettime(CLOCK_MONOTONIC, &chain->stats_sample);
++      chain->stats_last_code = wsi_metal_layer_detach_code(chain->surface->pLayer);
++      chain->stats_samples++;
++      if (chain->stats_last_code == 0)
++         chain->stats_direct++;
++   }
++   const double ms = wsi_metal_ms_since(&chain->stats_start);
++   if (ms < 5000.0)
++      return;
++   fprintf(stderr, "[CIDRE_WSI] %.1f images/s, chaine %ux%u, format %d, couche opaque=%d, "
++           "direct %u/%u, detachement=0x%x\n",
++           chain->stats_frames * 1000.0 / ms, chain->extent.width, chain->extent.height,
++           chain->vk_format, wsi_metal_layer_is_opaque(chain->surface->pLayer),
++           chain->stats_direct, chain->stats_samples, chain->stats_last_code);
++   clock_gettime(CLOCK_MONOTONIC, &chain->stats_start);
++   chain->stats_frames = chain->stats_samples = chain->stats_direct = 0;
++}
++
+ static VkResult
+ wsi_metal_swapchain_queue_present(struct wsi_swapchain *wsi_chain,
+                                      uint32_t image_index,
+@@ -798,6 +871,9 @@ wsi_metal_swapchain_queue_present(struct wsi_swapchain *wsi_chain,
+       wsi_metal_layer_present(&image->drawable);
+    }
+ 
++   if (wsi_metal_stats_enabled())
++      wsi_metal_swapchain_stats(chain);
++
+    uint32_t width = 0u, height = 0u;
+    wsi_metal_layer_size(chain->surface->pLayer, &width, &height);
+    bool is_optimal = (width == chain->extent.width && height == chain->extent.height);
+@@ -986,8 +1062,17 @@ wsi_metal_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+     * setting the layer's opaque value to false. And since we will
+     * be blitting to the drawable, which means rendering, we can
+     * set the framebuffer only usage.
++    *
++    * Presenting through a Metal 3 command buffer (0080) the layer can be
++    * opaque again, see wsi_metal_opaque_mode.
+     */
+-   const bool layer_opaque = opaque_composition && wsi_device->sw;
++   const enum wsi_metal_opaque_mode opaque_mode = wsi_metal_opaque_mode();
++   const bool present_metal3 = !wsi_device->sw &&
++      (wsi_metal_overlay_present() || opaque_mode == WSI_METAL_OPAQUE_METAL3);
++   bool layer_opaque = opaque_composition &&
++      (wsi_device->sw ||
++       (present_metal3 && opaque_mode != WSI_METAL_OPAQUE_NEVER) ||
++       opaque_mode == WSI_METAL_OPAQUE_METAL4);
+    const bool framebuffer_only = !wsi_device->sw;
+ 
+    VkResult result = wsi_metal_layer_configure(metal_surface->pLayer,
+@@ -1068,12 +1153,23 @@ wsi_metal_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+    /* Opt-in: an overlay injected in the process (Steam's) only sees frames
+     * presented through a Metal 3 command buffer. A NULL context falls back to
+     * presenting the drawable directly. */
+-   if (!is_sw_driver &&
+-       wsi_metal_overlay_present()) {
++   if (present_metal3) {
+       chain->present_context =
+          wsi_create_metal_layer_present_context(metal_surface->pLayer);
++      /* Back to Metal 4: the layer must not stay opaque. */
++      if (chain->present_context == NULL && layer_opaque &&
++          opaque_mode != WSI_METAL_OPAQUE_METAL4) {
++         layer_opaque = false;
++         wsi_metal_layer_set_opaque(metal_surface->pLayer, false);
++      }
+    }
+ 
++   fprintf(stderr, "[CIDRE_WSI] couche opaque=%d (presentation Metal %d, "
++           "MESA_WSI_METAL_OPAQUE=%s), format %d\n", layer_opaque,
++           chain->present_context ? 3 : 4,
++           debug_get_option("MESA_WSI_METAL_OPAQUE", "auto"),
++           pCreateInfo->imageFormat);
++
+    *swapchain_out = &chain->base;
+ 
+    return VK_SUCCESS;
+diff --git a/src/vulkan/wsi/wsi_common_metal_layer.h b/src/vulkan/wsi/wsi_common_metal_layer.h
+index 051f59c..2d8d89d 100644
+--- a/src/vulkan/wsi/wsi_common_metal_layer.h
++++ b/src/vulkan/wsi/wsi_common_metal_layer.h
+@@ -23,6 +23,17 @@ void
+ wsi_metal_layer_set_immediate(const CAMetalLayer *metal_layer,
+                               bool enable_immediate);
+ 
++/* Private CAMetalLayer status, low 32 bits: 0 when the layer goes straight
++ * to the display, 0xffffffff when unavailable. Diagnostics only. */
++uint32_t
++wsi_metal_layer_detach_code(const CAMetalLayer *metal_layer);
++
++bool
++wsi_metal_layer_is_opaque(const CAMetalLayer *metal_layer);
++
++void
++wsi_metal_layer_set_opaque(const CAMetalLayer *metal_layer, bool enable_opaque);
++
+ VkResult
+ wsi_metal_layer_configure(const CAMetalLayer *metal_layer,
+    uint32_t width, uint32_t height, uint32_t image_count,
+diff --git a/src/vulkan/wsi/wsi_common_metal_layer.m b/src/vulkan/wsi/wsi_common_metal_layer.m
+index 616cff2..ac777d4 100644
+--- a/src/vulkan/wsi/wsi_common_metal_layer.m
++++ b/src/vulkan/wsi/wsi_common_metal_layer.m
+@@ -142,6 +142,32 @@
+    metal_layer.displaySyncEnabled = !enable_immediate;
+ }
+ 
++@interface CAMetalLayer (CidreCompositingStatus)
++- (uint64_t)displayCompositingInternalStatus;
++@end
++
++uint32_t
++wsi_metal_layer_detach_code(const CAMetalLayer *metal_layer)
++{
++   @autoreleasepool {
++      if (![metal_layer respondsToSelector:@selector(displayCompositingInternalStatus)])
++         return 0xffffffffu;
++      return (uint32_t)[(CAMetalLayer *)metal_layer displayCompositingInternalStatus];
++   }
++}
++
++bool
++wsi_metal_layer_is_opaque(const CAMetalLayer *metal_layer)
++{
++   return metal_layer.opaque;
++}
++
++void
++wsi_metal_layer_set_opaque(const CAMetalLayer *metal_layer, bool enable_opaque)
++{
++   metal_layer.opaque = enable_opaque;
++}
++
+ VkResult
+ wsi_metal_layer_configure(const CAMetalLayer *metal_layer,
+    uint32_t width, uint32_t height, uint32_t image_count,

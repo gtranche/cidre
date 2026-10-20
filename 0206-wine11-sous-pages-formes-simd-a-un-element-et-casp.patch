@@ -1,0 +1,101 @@
+Generated-by: LLM
+
+wine11 : pages d hote mixtes (0201), formes d acces que le decodeur ne rejouait pas : LD1/ST1 a un element (voie) et LD1R, que FEX emet pour movhps, movlps, pinsr*, insertps, pextr* en memoire, movddup et vbroadcast*, et CASP (cmpxchg16b). Une telle instruction sur une page de 4 Kio permise d une page d hote fermee rendait a l invite une violation d acces a tort (le chargeur de D2R aurait dechiffre une page deja en clair). Temoin tests/h64sous_page.c, cas J (J1-J7 : movhps, pinsrd, movddup, insertps, movhps et pextrd en ecriture, cmpxchg16b) : avec 0201 seul le temoin se fige a J1 ; avec 0206 A-G et J1-J7 passent. En jeu (D2R, 240 s, sonde) aucun acces de ce genre n a ete vu : ce n est pas la cause des morts de D2R.
+
+diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
+--- a/dlls/ntdll/unix/signal_arm64.c	2026-10-19 18:44:35
++++ b/dlls/ntdll/unix/signal_arm64.c	2026-10-20 02:39:09
+@@ -1448,7 +1448,9 @@
+  * LDPSW), LD1/ST1 a 1-4 registres, chargements et stockages ordonnes (LDAR,
+  * STLR, LDAPR, LDAPUR, STLUR), exclusifs (LDXR/STXR et paires, rejoues sous le
+  * verrou de virtual.c, le stockage reussit toujours), CAS, atomiques LSE
+- * (LDADD..LDUMIN, SWP) et DC ZVA. Le reste n'est pas rejoue.
++ * (LDADD..LDUMIN, SWP), CASP, LD1/ST1 a un element et LD1R (movhps, pinsr*,
++ * insertps, pextr*, movddup, vbroadcast* de l'emulateur) et DC ZVA. Le reste
++ * n'est pas rejoue.
+  */
+ static inline BOOL faute_dans( ULONG_PTR faute, ULONG_PTR ea, size_t n )
+ {
+@@ -1635,6 +1637,28 @@
+         if (!ECRIRE( ea, nb )) { virtual_sous_page_verrouiller( FALSE ); return FALSE; }
+         virtual_sous_page_verrouiller( FALSE );
+         SET_XT( Rt, ancien );
++        goto fini;
++    }
++
++    /* --- CASP, CASPA, CASPL, CASPAL (0 sz 001000 0 L 1 Rs o0 11111 Rn Rt) : cmpxchg16b --- */
++    if ((insn & 0xbfa07c00u) == 0x08207c00u)
++    {
++        UINT Rs = (insn >> 16) & 31, nb = (insn & 0x40000000u) ? 8 : 4;
++        UINT64 masque = nb == 8 ? ~0ull : 0xffffffffull, a1 = 0, a2 = 0;
++        if ((Rs & 1) || (Rt & 1)) return FALSE;
++        ea = base;
++        if (!faute_dans( faute, ea, 2 * nb )) return FALSE;
++        virtual_sous_page_verrouiller( TRUE );
++        if (!LIRE( ea, 2 * nb )) { virtual_sous_page_verrouiller( FALSE ); return FALSE; }
++        memcpy( &a1, buf, nb ); memcpy( &a2, buf + nb, nb );
++        if (a1 == (XT(Rs) & masque) && a2 == (XT(Rs + 1) & masque))
++        {
++            UINT64 n1 = XT(Rt) & masque, n2 = XT(Rt + 1) & masque;
++            memcpy( buf, &n1, nb ); memcpy( buf + nb, &n2, nb );
++            if (!ECRIRE( ea, 2 * nb )) { virtual_sous_page_verrouiller( FALSE ); return FALSE; }
++        }
++        virtual_sous_page_verrouiller( FALSE );
++        SET_XT( Rs, a1 ); SET_XT( Rs + 1, a2 );
+         goto fini;
+     }
+ 
+@@ -1770,6 +1794,53 @@
+         goto fini;
+     }
+ 
++    /* --- LD1/ST1 a un element (voie) et LD1R, sans offset ou post-indexe :
++     *     0 Q 001101 1? L R Rm opcode S size Rn Rt (movhps, pinsr*, insertps,
++     *     movddup, vbroadcast* de l'emulateur) --- */
++    if ((insn & 0xbf9f0000u) == 0x0d000000u || (insn & 0xbf800000u) == 0x0d800000u)
++    {
++        UINT Q = (insn >> 30) & 1, L = (insn >> 22) & 1, R = (insn >> 21) & 1, opcode = (insn >> 13) & 7;
++        UINT S = (insn >> 12) & 1, size = (insn >> 10) & 3, esz, index = 0, i;
++        BOOL repl = FALSE;
++        if (R) return FALSE;
++        switch (opcode)
++        {
++        case 0: esz = 1; index = (Q << 3) | (S << 2) | size; break;
++        case 2: if (size & 1) return FALSE; esz = 2; index = (Q << 2) | (S << 1) | (size >> 1); break;
++        case 4:
++            if (size == 0) { esz = 4; index = (Q << 1) | S; }
++            else if (size == 1 && !S) { esz = 8; index = Q; }
++            else return FALSE;
++            break;
++        case 6: if (!L || S) return FALSE; esz = 1u << size; repl = TRUE; break;
++        default: return FALSE;
++        }
++        ea = base;
++        if (!faute_dans( faute, ea, esz )) return FALSE;
++        if (insn & 0x00800000u)
++        {
++            UINT Rm = (insn >> 16) & 31;
++            ecrire_base = TRUE;
++            wb = base + (Rm == 31 ? esz : XT(Rm));
++        }
++        if (L)
++        {
++            if (!LIRE( ea, esz )) return FALSE;
++            if (repl)
++            {
++                memset( VREG(Rt), 0, 16 );
++                for (i = 0; i < (Q ? 16u : 8u); i += esz) memcpy( VREG(Rt) + i, buf, esz );
++            }
++            else memcpy( VREG(Rt) + index * esz, buf, esz );
++        }
++        else
++        {
++            memcpy( buf, VREG(Rt) + index * esz, esz );
++            if (!ECRIRE( ea, esz )) return FALSE;
++        }
++        goto fini;
++    }
++
+     /* --- DC ZVA, Xt --- */
+     if ((insn & 0xffffffe0u) == 0xd50b7420u)
+     {

@@ -1,0 +1,439 @@
+wine11 : mode emule d'un aspect presque egal a l'espace sans bande ni composition, et clics sans position sous la capture du curseur (0205)
+
+1. Barre blanche en haut en mode emule (Little Nightmares, M1 Max, 2026-10-19)
+
+Sous CIDRE_EMULATE_MODESET, win32u etend la fenetre plein ecran a tout
+l'espace et y centre le rectangle client a l'aspect du mode. Little
+Nightmares demande 1152x723, Wine prend le mode 1168x730 (aspect 1,600) :
+couche de 1728x1080 dans un espace de 1728x1084 (1,594). La bande a nu en
+haut montrait le fond blanc de la surface GDI et faisait composer chaque
+image (detachement 0x70017, plus d'affichage direct), avec ou sans MetalFX.
+
+- Quand le rectangle client couvre la fenetre a 1 % pres sur chaque dimension,
+  la vue du jeu (vue Metal, ou couche hors ecran du chemin CAContext) est
+  etiree a toute la fenetre, et le masque noir n'est plus pose : 0186 retire
+  alors l'image GDI, l'affichage direct redevient possible. L'image est
+  deformee de moins de 1 % ; les coordonnees de la souris restent celles de
+  win32u (le pointeur est a moins de 1 % de sa place au bord).
+  CIDRE_EMULE_ETIREMENT=<pour cent> regle la tolerance, 0 n'etire jamais.
+  Un mode d'un autre format (4:3, 16:9 sur 16:10) garde ses bandes noires et
+  le centrage de 0172. Rien ne change sans CIDRE_EMULATE_MODESET.
+- Le masque noir (setMask) recevait le rectangle de la fenetre en coordonnees
+  d'ecran, alors qu'il est dessine dans la vue de contenu, dont l'origine est
+  celle du rectangle visible. Sous l'encoche (0122) l'espace commence en
+  y = 33 : le masque etait decale d'autant. Il recoit maintenant le
+  rectangle relatif au rectangle visible. Cause probable de la bande blanche,
+  deduite du code, pas mesuree. Sans encoche (M4, ecran externe) l'origine
+  est nulle et rien ne change.
+
+2. Saut de camera au premier clic sous la capture du curseur (Demonologist,
+   D3D12, 2026-10-19, reste de 0187)
+
+Sous la capture de 0122, les clics et la molette portaient cidreCapturePos en
+absolu (MOUSEEVENTF_ABSOLUTE | MOVE), comme le premier mouvement de la
+capture et celui qui suit un clic. cidreCapturePos part de la position reelle
+de macOS au moment de la capture ; si aucun mouvement n'avait atteint Wine
+avant (menu d'avant partie, releves « 0 mvt, cible=aucune »), la position du
+serveur Wine (partagee avec le lanceur, autre processus) en differe, et ce
+premier evenement absolu deplacait d'un coup le curseur de Wine : la camera
+sautait.
+
+- Sous capture, clics et molette partent sans position (sans ABSOLUTE ni
+  MOVE) : Wine garde la sienne, faite des seuls mouvements relatifs. Tous les
+  mouvements sous capture sont relatifs, y compris le premier.
+- cidreCapturePos devient un miroir de la position du serveur : a chaque
+  GetCursorPos rendu par le pilote (win32u ne l'appelle qu'apres 100 ms sans
+  mouvement), le pilote rend la position du serveur telle quelle et y recale
+  le miroir (borne a la fenetre). C'est lui qui sert a reposer le curseur
+  reel quand la capture est rendue.
+- CIDRE_DEBUG_CURSOR=1 trace « clic sous capture sans position » et
+  « miroir recale sur Wine ».
+
+Sonde hors jeu (M1 Max, 2026-10-20, tests/sonde_centrage_plein_ecran.c i386
+par DXVK d3d9, runtime et prefixe clones, CIDRE_DIRECT_DIAG=1, aucune
+capture) :
+- 1168x730 : fenetre de jeu (0,35)-(1728,1115) dans le visible
+  (0,33)-(1728,1117). Avant : vue client (0,2 1728x1080) et un masque ;
+  0205 : vue (0,0 1728x1084), pas de masque, trace « (0,2)-(1728,1082)
+  etire a 1728x1084 ».
+- 1024x768 : vue client (141,0 1445x1084) avant comme apres (pas
+  d'etirement) ; masque 0205 : flip=1, bandes (0,0 141x1084) et
+  (1587,0 141x1084). Avant, le rectangle (141,33) aurait ajoute une bande
+  noire de 33 points en haut, sur l'image (deduit des rectangles traces).
+- La sonde a demande deux retouches : pas de test toplevel == hwnd (un
+  invite 32 bits a un handle long, 0x400010058 pour 0x10058) et pas de
+  test fenetre != visible (la fenetre qui porte la surface a des
+  rectangles pleins, le client vient du toplevel).
+- CIDRE_DIRECT_DIAG affiche aussi les bandes d'un CAShapeLayer.
+
+3. Niveau de la fenetre dans l'espace (LN, 2026-10-20)
+
+Avec 1 et 2, LN en 1168x730 avait une couche opaque couvrant toute la vue,
+sans image GDI ni masque, MetalFX a l'aspect exact (3456x2168), et restait
+compose (0x70017). Le journal montrait la fenetre au niveau 21 : `fullscreen`
+vaut 0 des qu'il est recalcule dans l'espace (style
+NSWindowStyleMaskFullScreen), et le changement de mode emule le recalcule ;
+la fenetre topmost de LN tombait alors au niveau du Dock + 1. Sonde native
+(tests/sonde_affichage_direct.m, M1 Max, macOS 26, variante J = niveau 21) :
+WTLMHEC (niveau 26) detachement 0 sur 962 images, WTLMHECD (drawable
+1280x800 sur 1728x1084) 0 aussi, WTJMHEC et WTJMHECD (niveau 21) 0x70017.
+L'aspect du drawable ne compte pas ; le niveau, si. Dans l'espace, une
+fenetre active garde le niveau d'une fenetre plein ecran (NSStatusWindowLevel
++ 1, + 1 si topmost), recalcule a l'entree et a la sortie de l'espace.
+
+A verifier en jeu : LN en f067 (1168x730) sans bande et detachement 0 ;
+Demonologist, premier clic en partie sans saut ; un jeu a menus au pointeur
+(clic au bon endroit apres retour de capture).
+--- aa/dlls/winemac.drv/cocoa_app.h	2026-10-19 23:23:27
++++ bb/dlls/winemac.drv/cocoa_app.h	2026-10-20 01:58:07
+@@ -130,6 +130,7 @@
+     - (void) windowGotFocus:(WineWindow*)window;
+     - (void) cidreUpdateCursorCapture;
+     - (BOOL) cidreGetCapturePos:(NSPoint*)pos;
++    - (BOOL) cidreSyncCapturePos:(CGPoint)server;
+     - (BOOL) cidreCursorHidden;
+ 
+     - (BOOL) waitUntilQueryDone:(bool*)done timeout:(NSDate*)timeout processEvents:(BOOL)processEvents;
+--- aa/dlls/winemac.drv/cocoa_app.m	2026-10-19 23:23:27
++++ bb/dlls/winemac.drv/cocoa_app.m	2026-10-20 01:58:07
+@@ -1094,6 +1094,21 @@
+         return TRUE;
+     }
+ 
++    /* Cidre (0205) : la position que tient le serveur Wine (GetCursorPos)
++       fait foi sous capture ; cidreCapturePos n'en est que le miroir, recale
++       ici. Au debut de la capture il part de la position reelle de macOS, qui
++       peut differer de celle de Wine si aucun mouvement ne l'avait atteint. */
++    - (BOOL) cidreSyncCapturePos:(CGPoint)server
++    {
++        if (!cidreCursorCaptured) return FALSE;
++        if (fabs(server.x - cidreCapturePos.x) >= 1 || fabs(server.y - cidreCapturePos.y) >= 1)
++            CIDRE_CURSOR_TRACE("miroir recale sur Wine : %.0f,%.0f -> %.0f,%.0f",
++                               cidreCapturePos.x, cidreCapturePos.y, server.x, server.y);
++        cidreCapturePos = server;
++        [self cidreClampCapturePos:(WineWindow*)[NSApp keyWindow]];
++        return TRUE;
++    }
++
+     - (void) cidreUpdateCursorCapture
+     {
+         const char* why;
+@@ -1581,15 +1596,20 @@
+                 forceNextMouseMoveAbsolute = TRUE;
+             }
+ 
+-            if (forceNextMouseMoveAbsolute || targetWindow != lastTargetWindow)
++            if (cidreCursorCaptured)
+             {
+-                absolute = TRUE;
++                /* Cidre : le curseur reel ne bouge pas, seuls les deltas parlent.
++                   Meme le premier mouvement de la capture, ou celui qui suit un
++                   clic, reste relatif (0205) : une position absolue imposerait a
++                   Wine cidreCapturePos, qui peut differer de la position que
++                   Wine connait (saut de camera). */
++                absolute = FALSE;
+                 forceNextMouseMoveAbsolute = FALSE;
+             }
+-            else if (cidreCursorCaptured)
++            else if (forceNextMouseMoveAbsolute || targetWindow != lastTargetWindow)
+             {
+-                /* Cidre : le curseur reel ne bouge pas, seuls les deltas parlent. */
+-                absolute = FALSE;
++                absolute = TRUE;
++                forceNextMouseMoveAbsolute = FALSE;
+             }
+             else
+             {
+@@ -1823,6 +1843,12 @@
+                 event->mouse_button.x = floor(pt.x);
+                 event->mouse_button.y = floor(pt.y);
+                 event->mouse_button.time_ms = [self ticksForEventTime:[theEvent timestamp]];
++                /* Cidre (0205) : sous capture, le clic part a la position que Wine
++                   connait deja ; cidreCapturePos n'est qu'un miroir de celle-ci. */
++                event->mouse_button.cidre_sans_position = cidreCursorCaptured;
++                if (cidreCursorCaptured && pressed)
++                    CIDRE_CURSOR_TRACE("clic sous capture sans position (miroir %.0f,%.0f)",
++                                       cidreCapturePos.x, cidreCapturePos.y);
+ 
+                 [window.queue postEvent:event];
+ 
+@@ -1906,6 +1932,7 @@
+                 event->mouse_scroll.x = floor(pt.x);
+                 event->mouse_scroll.y = floor(pt.y);
+                 event->mouse_scroll.time_ms = [self ticksForEventTime:[theEvent timestamp]];
++                event->mouse_scroll.cidre_sans_position = cidreCursorCaptured;
+ 
+                 if (CGEventGetIntegerValueField(cgevent, kCGScrollWheelEventIsContinuous))
+                 {
+@@ -2800,6 +2827,25 @@
+     });
+ 
+     return TRUE;
++}
++
++/***********************************************************************
++ *              macdrv_cidre_sync_capture_position
++ *
++ * Cidre (0205) : sous la capture du curseur, recale la position tenue par
++ * winemac sur celle du serveur Wine (coordonnees Windows). Rend zero hors
++ * capture.
++ */
++int macdrv_cidre_sync_capture_position(CGPoint server)
++{
++    __block int ret;
++
++    OnMainThread(^{
++        ret = [[WineApplicationController sharedController]
++               cidreSyncCapturePos:cgpoint_mac_from_win(server)];
++    });
++
++    return ret;
+ }
+ 
+ /***********************************************************************
+--- aa/dlls/winemac.drv/cocoa_window.m	2026-10-20 01:58:07
++++ bb/dlls/winemac.drv/cocoa_window.m	2026-10-20 02:22:48
+@@ -136,6 +136,27 @@
+                  ml.drawableSize.width, ml.drawableSize.height, (unsigned long)ml.pixelFormat,
+                  status & 0xffffffffULL, (status & 0xffffffffULL) ? " (compose)" : " (DIRECT)");
+     }
++    else if ([layer isKindOfClass:[CAShapeLayer class]] && ((CAShapeLayer*)layer).path)
++    {
++        /* Cidre (0205) : rectangles du masque noir (bandes du mode emule). */
++        __block CGRect sub = CGRectNull;
++        __block size_t len = 0;
++        char* out = extra;
++        const size_t size = sizeof(extra);
++        void (^flush)(void) = ^{
++            if (!CGRectIsNull(sub) && len < size - 32)
++                len += snprintf(out + len, size - len, " bande=(%.0f,%.0f %.0fx%.0f)",
++                                sub.origin.x, sub.origin.y, sub.size.width, sub.size.height);
++            sub = CGRectNull;
++        };
++        len += snprintf(extra, sizeof(extra), " flip=%d", layer.geometryFlipped);
++        CGPathApplyWithBlock(((CAShapeLayer*)layer).path, ^(const CGPathElement* e){
++            if (e->type == kCGPathElementMoveToPoint) flush();
++            if (e->type == kCGPathElementMoveToPoint || e->type == kCGPathElementAddLineToPoint)
++                sub = CGRectUnion(sub, CGRectMake(e->points[0].x, e->points[0].y, 0, 0));
++        });
++        flush();
++    }
+     fprintf(stderr, "cidre direct: %*s%s frame=(%.0f,%.0f %.0fx%.0f) opaque=%d hidden=%d contents=%d bg=%d mask=%d%s\n",
+             depth * 2, "", [NSStringFromClass([layer class]) UTF8String],
+             layer.frame.origin.x, layer.frame.origin.y, layer.frame.size.width, layer.frame.size.height,
+@@ -1297,7 +1318,15 @@
+ 
+             captured = (fullscreen || [self screen]) && [[WineApplicationController sharedController] areDisplaysCaptured];
+ 
+-            if (captured || fullscreen)
++            /* Cidre (0205) : dans l'espace plein ecran, `fullscreen` vaut 0 des
++               qu'il est recalcule (style NSWindowStyleMaskFullScreen) ; apres le
++               changement de mode emule de Little Nightmares, sa fenetre topmost
++               tombait au niveau du Dock + 1 (21) au lieu de 27. Or macOS ne
++               passe en affichage direct qu'au-dessus de la barre d'etat :
++               sonde native (M1 Max, 2026-10-20), niveau 26 -> detachement 0,
++               niveau 21 -> 0x70017. On garde le niveau d'une fenetre plein
++               ecran tant qu'elle est dans l'espace. */
++            if (captured || fullscreen || [self cidreInFullScreenSpace])
+             {
+                 if (captured)
+                     level = CGShieldingWindowLevel() + 1; /* Need +1 or we don't get mouse moves */
+@@ -3049,6 +3078,9 @@
+         enteredFullScreenTime = [[NSProcessInfo processInfo] systemUptime];
+         if ([self cidreOwnsFullScreenSpace])
+             [self cidreHideFullScreenTitlebar:YES];
++        /* Cidre (0205) : niveau d'une fenetre plein ecran dans l'espace. */
++        if ([self cidreOwnsFullScreenSpace])
++            [[WineApplicationController sharedController] adjustWindowLevels];
+         [self cidreUpdateDirect];
+         [[WineApplicationController sharedController] cidreUpdateCursorCapture];
+         if (pendingOrderOut)
+@@ -3060,6 +3092,8 @@
+         exitingFullScreen = FALSE;
+         [self setFrameAndWineFrame:nonFullscreenFrame];
+         [self windowDidResize:nil];
++        if ([self cidreOwnsFullScreenSpace])
++            [[WineApplicationController sharedController] adjustWindowLevels];
+         if (pendingOrderOut)
+             [self doOrderOut];
+     }
+--- aa/dlls/winemac.drv/macdrv_cocoa.h	2026-10-19 23:23:27
++++ bb/dlls/winemac.drv/macdrv_cocoa.h	2026-10-20 01:58:07
+@@ -222,6 +222,7 @@
+ extern void macdrv_set_cursor(CFStringRef name, CFArrayRef frames);
+ extern int macdrv_get_cursor_position(CGPoint *pos);
+ extern int macdrv_set_cursor_position(CGPoint pos);
++extern int macdrv_cidre_sync_capture_position(CGPoint server);
+ extern int macdrv_clip_cursor(CGRect rect);
+ 
+ 
+@@ -370,6 +371,7 @@
+             int             x;
+             int             y;
+             unsigned long   time_ms;
++            bool            cidre_sans_position;    /* Cidre (0205) : curseur capture, Wine garde sa position */
+         }                                           mouse_button;
+         struct {
+             int             x;
+@@ -383,6 +385,7 @@
+             int             x;
+             int             y;
+             unsigned long   time_ms;
++            bool            cidre_sans_position;    /* Cidre (0205) : curseur capture, Wine garde sa position */
+         }                                           mouse_scroll;
+         struct {
+             struct macdrv_query *query;
+--- aa/dlls/winemac.drv/mouse.c	2026-10-19 23:23:27
++++ bb/dlls/winemac.drv/mouse.c	2026-10-20 01:58:07
+@@ -669,6 +669,14 @@
+     CGPoint pt;
+     BOOL ret;
+ 
++    /* Cidre (0205) : sous la capture du curseur (0122), la position du serveur
++     * (deja dans pos) fait foi : la rendre telle quelle et y recaler winemac. */
++    if (macdrv_cidre_sync_capture_position(CGPointMake(pos->x, pos->y)))
++    {
++        TRACE("capture : server pos %d,%d\n", pos->x, pos->y);
++        return TRUE;
++    }
++
+     ret = macdrv_get_cursor_position(&pt);
+     if (ret)
+     {
+@@ -868,7 +876,13 @@
+         }
+     }
+ 
+-    send_mouse_input(hwnd, event->window, flags | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE,
++    /* Cidre (0205) : sous la capture du curseur (0122), le clic ne porte pas de
++     * position. Wine garde la sienne, faite des mouvements relatifs ; une
++     * position absolue l'aurait remplacee par celle que winemac croit connaitre,
++     * fausse tant qu'aucun mouvement n'avait atteint Wine avant la capture :
++     * saut de camera au premier clic (Demonologist, D3D12, 2026-10-19). */
++    if (!event->mouse_button.cidre_sans_position) flags |= MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE;
++    send_mouse_input(hwnd, event->window, flags,
+                      event->mouse_button.x, event->mouse_button.y,
+                      data, FALSE, event->mouse_button.time_ms);
+ }
+@@ -903,17 +917,22 @@
+  */
+ void macdrv_mouse_scroll(HWND hwnd, const macdrv_event *event)
+ {
++    UINT position;
++
+     TRACE("win %p/%p scroll (%d,%d) at (%d,%d) time %lu (%lu ticks ago)\n", hwnd,
+           event->window, event->mouse_scroll.x_scroll, event->mouse_scroll.y_scroll,
+           event->mouse_scroll.x, event->mouse_scroll.y,
+           event->mouse_scroll.time_ms, (NtGetTickCount() - event->mouse_scroll.time_ms));
+ 
++    /* Cidre (0205) : sous capture, la molette ne deplace pas le curseur de Wine. */
++    position = event->mouse_scroll.cidre_sans_position ? 0 : MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE;
++
+     if (event->mouse_scroll.y_scroll)
+-        send_mouse_input(hwnd, event->window, MOUSEEVENTF_WHEEL | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE,
++        send_mouse_input(hwnd, event->window, MOUSEEVENTF_WHEEL | position,
+                          event->mouse_scroll.x, event->mouse_scroll.y,
+                          event->mouse_scroll.y_scroll, FALSE, event->mouse_scroll.time_ms);
+     if (event->mouse_scroll.x_scroll)
+-        send_mouse_input(hwnd, event->window, MOUSEEVENTF_HWHEEL | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE,
++        send_mouse_input(hwnd, event->window, MOUSEEVENTF_HWHEEL | position,
+                          event->mouse_scroll.x, event->mouse_scroll.y,
+                          event->mouse_scroll.x_scroll, FALSE, event->mouse_scroll.time_ms);
+ }
+--- aa/dlls/winemac.drv/window.c	2026-10-19 23:23:27
++++ bb/dlls/winemac.drv/window.c	2026-10-20 01:58:07
+@@ -1070,6 +1070,39 @@
+     NtUserPostMessage(hwnd, WM_SYSCOMMAND, command, 0);
+ }
+ 
++/* Cidre (0205) : sous un mode d'ecran emule (CIDRE_EMULATE_MODESET), win32u
++ * etend la fenetre plein ecran a tout l'ecran et y centre le rectangle client
++ * a l'aspect du mode. Un mode d'un aspect presque egal a celui de l'espace
++ * laisse une bande de quelques points : Little Nightmares en 1168x730 (1,600)
++ * dans un espace de 1728x1084 (1,594) a une couche de 1728x1080 et 2 points
++ * a nu en haut et en bas. Cette bande suffit a faire composer chaque image
++ * (plus d'affichage direct, detachement 0x70017) et montrait la surface GDI
++ * blanche. Quand l'ecart est d'au plus 1 % sur chaque dimension (reglable par
++ * CIDRE_EMULE_ETIREMENT, en pour cent, 0 pour ne jamais etirer), la vue du jeu
++ * couvre toute la fenetre : l'image est etiree de moins de 1 %, invisible, et
++ * le pointeur reste a moins de 1 % de sa place. Un mode d'un autre format
++ * (4:3 sur 16:10) garde ses bandes noires et son centrage (0172).
++ * rect est relatif au rectangle visible de la fenetre, comme monitor_rect. */
++static BOOL cidre_etirer_a_la_fenetre(const struct macdrv_win_data *data, const RECT *rect)
++{
++    static int tolerance = -1;
++    int vw = data->rects.visible.right - data->rects.visible.left;
++    int vh = data->rects.visible.bottom - data->rects.visible.top;
++    int w = rect->right - rect->left, h = rect->bottom - rect->top;
++
++    if (tolerance < 0)
++    {
++        const char *emule = getenv("CIDRE_EMULATE_MODESET"), *env = getenv("CIDRE_EMULE_ETIREMENT");
++        if (!emule || !*emule || !strchr("1yYtT", *emule)) tolerance = 0;
++        else tolerance = (env && *env) ? atoi(env) : 1;
++        if (tolerance < 0) tolerance = 0;
++    }
++    if (!tolerance || vw <= 0 || vh <= 0 || w <= 0 || h <= 0) return FALSE;
++    if (w == vw && h == vh) return FALSE;
++    if (rect->left < 0 || rect->top < 0 || rect->right > vw || rect->bottom > vh) return FALSE;
++    return (vw - w) * 100 <= vw * tolerance && (vh - h) * 100 <= vh * tolerance;
++}
++
+ static void macdrv_client_surface_destroy(struct client_surface *client)
+ {
+     struct macdrv_client_surface *surface = impl_from_client_surface(client);
+@@ -1105,17 +1138,29 @@
+     struct macdrv_client_surface *surface = impl_from_client_surface(client);
+     HWND hwnd = client->hwnd, toplevel = client->toplevel;
+     struct macdrv_win_data *data;
++    RECT rect = client->monitor_rect;
+ 
+     TRACE("%s\n", debugstr_client_surface(client));
+ 
+     if (!(data = get_win_data(toplevel))) return;
+-    macdrv_set_view_frame(surface->cocoa_view, cgrect_from_rect(client->monitor_rect));
++    /* Cidre (0205) : mode emule d'un aspect presque egal, la vue couvre la
++     * fenetre. Pas de test toplevel == hwnd : un invite 32 bits a ici un
++     * handle long (0x400010058 pour 0x10058), et le test du rectangle suffit. */
++    if (cidre_etirer_a_la_fenetre(data, &rect))
++    {
++        TRACE("cidre : %s etire a %dx%d\n", wine_dbgstr_rect(&rect),
++              data->rects.visible.right - data->rects.visible.left,
++              data->rects.visible.bottom - data->rects.visible.top);
++        SetRect(&rect, 0, 0, data->rects.visible.right - data->rects.visible.left,
++                data->rects.visible.bottom - data->rects.visible.top);
++    }
++    macdrv_set_view_frame(surface->cocoa_view, cgrect_from_rect(rect));
+     macdrv_set_view_superview(surface->cocoa_view, toplevel == hwnd ? NULL : data->client_view, data->cocoa_window, NULL, NULL);
+     /* La couche Metal offscreen (chemin CAContext) ne suit pas la fenetre : la
+      * reaccorder ici au cadre courant, sinon sa surface Vulkan publie un
+      * currentExtent perime apres un redimensionnement (§291 quinquies). */
+     if (surface->metal_swapchain)
+-        macdrv_swapchain_resize(surface->metal_swapchain, cgrect_from_rect(client->monitor_rect));
++        macdrv_swapchain_resize(surface->metal_swapchain, cgrect_from_rect(rect));
+     release_win_data(data);
+ }
+ 
+@@ -1700,6 +1745,22 @@
+     if (fullscreen || fullscreen != data->fullscreen)
+     {
+         CGRect rect = (fullscreen && !EqualRect(&data->rects.window, &data->rects.visible)) ? cgrect_from_rect(data->rects.window) : CGRectZero;
++        /* Cidre (0205) : le masque est dessine dans la vue de contenu, dont
++         * l'origine est celle du rectangle visible, pas celle de l'ecran. Sous
++         * l'encoche (0122), l'espace et donc la fenetre commencent en y = 33 :
++         * le masque etait decale d'autant (cause probable de la bande blanche
++         * du haut, surface GDI a nu, vue sur Little Nightmares ; deduit du
++         * code, pas mesure). Sans encoche l'origine est nulle : rien ne change.
++         * Et quand la vue du jeu est etiree a toute la fenetre, plus de masque
++         * du tout (il ferait composer). */
++        if (!CGRectIsEmpty(rect))
++        {
++            RECT client = data->rects.client;
++
++            OffsetRect(&client, -data->rects.visible.left, -data->rects.visible.top);
++            if (cidre_etirer_a_la_fenetre(data, &client)) rect = CGRectZero;
++            else rect = CGRectOffset(rect, -data->rects.visible.left, -data->rects.visible.top);
++        }
+         macdrv_set_window_mask(data->cocoa_window, rect);
+         data->fullscreen = fullscreen;
+     }

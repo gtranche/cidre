@@ -1,0 +1,44 @@
+Generated-by: LLM
+
+wine11 : RtlIsEcCode (ARM64EC) borne a l'espace utilisateur. La fonction lisait EcCodeBitMap a l'index de n'importe quelle adresse ; pour une adresse hors de l'espace utilisateur (0x20074e904cb80, adresse de retour aberrante d'un cadre du chargeur protege de Diablo II Resurrected), la lecture fautait. Comme virtual_unwind et call_seh_handlers l'appellent pendant la repartition, la faute relancait la repartition, qui refaisait la meme faute : 870 exceptions imbriquees, puis debordement de pile du fil. Windows rend FALSE hors de l'espace utilisateur ; on borne par HighestUserAddress (SystemBasicInformation, lu a l'initialisation ARM64EC ; 0x7ffffffeffff avant). Temoin tests/h64isec.c : avant, faute a la meme adresse que dans D2R ; apres, FALSE pour 0x20074e904cb80, 0xffff800000000000 et 0x800000000000. D2R : cette cascade disparait ; restent des sauts du chargeur vers des adresses non projetees (voir BATTLENET.md). ntdll.dll ARM64X construit hors arbre contre v1513/build2 avec -DWINE_TEB_SANS_X18, pose seulement dans un runtime clone.
+
+diff --git a/dlls/ntdll/signal_arm64ec.c b/dlls/ntdll/signal_arm64ec.c
+index a1de594..3017b4a 100644
+--- a/dlls/ntdll/signal_arm64ec.c
++++ b/dlls/ntdll/signal_arm64ec.c
+@@ -59,6 +59,8 @@ static void     (WINAPI *pUpdateProcessorInformation)(SYSTEM_CPU_INFORMATION*);
+ 
+ static BOOLEAN emulated_processor_features[PROCESSOR_FEATURE_MAX];
+ static BYTE KiUserExceptionDispatcher_orig[16]; /* to detect patching */
++/* Plus haute adresse couverte par EcCodeBitMap ; fixee a l'initialisation. */
++static ULONG_PTR ec_code_limit = 0x7ffffffeffff;
+ extern void KiUserExceptionDispatcher_thunk(void) asm("EXP+#KiUserExceptionDispatcher");
+ 
+ static inline CHPE_V2_CPU_AREA_INFO *get_arm64ec_cpu_area(void)
+@@ -245,6 +247,11 @@ NTSTATUS arm64ec_process_init( HMODULE module )
+     info->NativeMachineType = IMAGE_FILE_MACHINE_ARM64;
+     info->EmulatedMachineType = IMAGE_FILE_MACHINE_AMD64;
+     memcpy( KiUserExceptionDispatcher_orig, KiUserExceptionDispatcher_thunk, sizeof(KiUserExceptionDispatcher_orig) );
++    {
++        SYSTEM_BASIC_INFORMATION sbi;
++        if (!NtQuerySystemInformation( SystemBasicInformation, &sbi, sizeof(sbi), NULL ))
++            ec_code_limit = (ULONG_PTR)sbi.HighestUserAddress;
++    }
+ 
+     enter_syscall_callback();
+     if (pProcessInit) status = pProcessInit();
+@@ -1460,6 +1467,14 @@ BOOLEAN WINAPI RtlIsEcCode( ULONG_PTR ptr )
+ {
+     const UINT64 *map = (const UINT64 *)NtCurrentTeb()->Peb->EcCodeBitMap;
+     ULONG_PTR page = ptr / page_size;
++
++    /* Comme sous Windows, une adresse hors de l'espace utilisateur n'est pas
++     * du code EC. Sans cette borne, la table etait lue n'importe ou : le
++     * deroulement d'une pile dont un cadre porte une adresse de retour
++     * aberrante (chargeur protege de Diablo II Resurrected) fautait dans le
++     * repartiteur d'exceptions, qui reprenait la meme faute jusqu'au
++     * debordement de pile. */
++    if (ptr > ec_code_limit) return FALSE;
+     return (map[page / 64] >> (page & 63)) & 1;
+ }
+ 

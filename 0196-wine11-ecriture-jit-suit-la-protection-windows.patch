@@ -1,0 +1,38 @@
+Generated-by: LLM
+
+wine11 : sur une page MAP_JIT, une ecriture dans une sous-page que Windows ne dit pas inscriptible remonte en violation d'acces au lieu d'etre accordee par APRR. La branche JIT de virtual_handle_fault donnait au fil le droit d'ecrire sur toute faute d'ecriture, sans regarder la protection Windows. Quand FEX passe une page de code RWX en lecture-execution pour surveiller le code auto-modifie (SMC mtrack), la faute qu'il attend n'arrivait donc jamais, et il executait du code perime (tests/h64smc.c, cas A : 50 tours perimes sur 50). On n'accorde plus l'ecriture que si la sous-page de 4 Kio de l'adresse fautive est inscriptible (VPROT_WRITE ou VPROT_WRITECOPY), sinon c0000005 comme sous Windows, et FEX y reconnait son piege. get_unix_prot ne donne plus PROT_WRITE a une page JIT non inscriptible ; mprotect_range sautant les pages JIT, cela ne joue qu'a la projection, l'effet mesure vient de la branche de faute. Mesure : h64smc cas A 50/50 perimes -> 0/50 ; non-regression h32smc (1,6 M tours sous reecriture), h64prepare, h64fibres, h64isec, h32temps et sonde_wx : OK. A faire avant une release : manche PEAK (deadlock W^X, meme branche). D2R : ne change pas l'issue (voir BATTLENET.md). ntdll.so construit hors arbre contre v1513/build2, pose seulement dans un runtime clone.
+
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -1523,7 +1523,16 @@
+          * Une page MAP_JIT porte les trois droits dans la table ; c'est APRR,
+          * par fil, qui decide lequel s'applique. Voir virtual_handle_fault.
+          */
+-        if (vprot & VPROT_JIT) prot = PROT_READ | PROT_WRITE | PROT_EXEC;
++        /*
++         * Le droit d'ecrire suit pourtant la protection Windows : sans lui,
++         * une page de code que l'emulateur protege en lecture-execution pour
++         * surveiller le code auto-modifie (FEX, mtrack) restait inscriptible
++         * et la faute qu'il attend n'arrivait jamais -- il executait du code
++         * perime (chargeur protege de Diablo II Resurrected, tests/h64smc.c).
++         */
++        if (vprot & VPROT_JIT)
++            prot = PROT_READ | PROT_EXEC |
++                   ((vprot & (VPROT_WRITE | VPROT_WRITECOPY)) && !(vprot & VPROT_WRITEWATCH) ? PROT_WRITE : 0);
+     }
+     if (!prot) prot = PROT_NONE;
+     return prot;
+@@ -5383,8 +5392,12 @@
+         else ret = grow_thread_stack( data, page, &stack_info );
+     }
+     else if ((vprot & VPROT_JIT) &&
+-             (err == EXCEPTION_WRITE_FAULT || err == EXCEPTION_EXECUTE_FAULT))
++             (err == EXCEPTION_EXECUTE_FAULT ||
++              (err == EXCEPTION_WRITE_FAULT && (get_page_vprot( addr ) & (VPROT_WRITE | VPROT_WRITECOPY)))))
+     {
++        /* Une ecriture dans une sous-page que Windows ne dit pas inscriptible
++         * n'est pas une affaire d'APRR : elle remonte en violation d'acces,
++         * comme sous Windows (l'emulateur y reconnait son piege). */
+         /*
+          * Page MAP_JIT : la table lui donne les trois droits, APRR n'en laisse
+          * qu'un par fil. On donne au *fil* celui qu'il vient de reclamer. Rien

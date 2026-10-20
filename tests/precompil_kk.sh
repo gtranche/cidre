@@ -27,6 +27,7 @@
 #   precompil_kk.sh arch                   l'architecture GPU de ce Mac (ou inconnu)
 #   precompil_kk.sh famille                apple7 | apple8 | inconnu
 #   precompil_kk.sh kk                     la version du generateur de MSL de ce runtime
+#   precompil_kk.sh air_local <id>         le dossier a donner a MESA_KK_AIR_LOCAL (rien si inconnu)
 #   precompil_kk.sh dossier <id>           le dossier a donner a MESA_KK_PRECOMPIL (rien si aucun)
 #   precompil_kk.sh etat <id> [--json]     installe | disponible | absent | sans_reseau, et les tailles
 #   precompil_kk.sh telecharger <id> [--json]
@@ -61,12 +62,42 @@ famille() {
    n=$(sh "$R/tests/machine.sh" famille_gpu 2>/dev/null | sed -n 's/^famille_gpu=//p')
    case $n in 7) echo apple7 ;; ''|*[!0-9]*) echo inconnu ;; *) [ "$n" -ge 8 ] && echo apple8 || echo inconnu ;; esac
 }
-# La version du generateur de MSL : livree dans le runtime, sinon (arbre de
-# developpement) l'empreinte des correctifs mesa de la serie.
+# La version du generateur de MSL : la cle de code de KosmicKrisp (0208,
+# « KK_CODEGEN=<version>-<empreinte> » dans la dylib posee), qui ne change que
+# si le MSL produit ou le format du cache changent ; a defaut (pilote d'avant
+# 0208), celle livree dans le runtime, sinon (arbre de developpement)
+# l'empreinte des correctifs mesa de la serie. CIDRE_KK_DYLIB : une autre dylib.
 kk() {
+   dylib=${CIDRE_KK_DYLIB:-$R/prefix/lib/libvulkan_kosmickrisp.dylib}
+   if [ -f "$dylib" ]; then
+      c=$(LC_ALL=C grep -ao 'KK_CODEGEN=[0-9][0-9]*-[0-9a-f]\{16\}' "$dylib" 2>/dev/null | head -1)
+      [ -z "$c" ] || { echo "${c#KK_CODEGEN=}"; return; }
+   fi
    if [ -s "$R/kk-msl.txt" ]; then head -1 "$R/kk-msl.txt"; return; fi
    [ -f "$R/tests/series.sh" ] || { echo inconnu; return; }
    ( . "$R/tests/series.sh"; serie_mesa | while read -r f; do cat "$f"; done ) | shasum -a 256 | cut -c1-12
+}
+# Le dossier de la reserve d'AIR d'un jeu pour ce KosmicKrisp (0171) :
+# air-local/<id>/<kk>. Les dossiers d'une autre cle de code sont retires (leurs
+# bibliotheques ne serviraient plus) ; un dossier d'avant 0208 (12 chiffres
+# hexadecimaux, empreinte de toute la serie mesa) est repris tel quel s'il n'y
+# a pas encore de dossier pour la cle : l'AIR y est range par empreinte de son
+# MSL et de ses options, une bibliotheque qui ne sert plus n'est jamais relue
+# par erreur, et un pilote mis a jour sans changement du code y retrouve tout.
+air_local() {
+   K=$(kk)
+   [ -n "$K" ] && [ "$K" != inconnu ] || return 1
+   A="$CIDRE_DIR/air-local/$1"
+   if [ ! -d "$A/$K" ]; then
+      ancien=$(ls -t "$A" 2>/dev/null | grep -E '^[0-9a-f]{12}$' | head -1)
+      if [ -n "$ancien" ] && printf '%s' "$K" | grep -qE '^[0-9]+-[0-9a-f]{16}$'; then
+         mv "$A/$ancien" "$A/$K" 2>/dev/null || true
+      fi
+   fi
+   for d in "$A"/*; do
+      [ -d "$d" ] && [ "$(basename "$d")" != "$K" ] && rm -rf "${d:?}"
+   done
+   echo "$A/$K"
 }
 dossier_jeu() { echo "$CIDRE_DIR/precompil/$1"; }
 # l'element d'archive de ce Mac : <arch>-macos<version majeure>
@@ -113,6 +144,9 @@ case $ACTION in
    arch) arch ;;
    famille) famille ;;
    kk) kk ;;
+   air_local)
+      [ -n "$ID" ] || exit 2
+      air_local "$ID" ;;
    dossier)
       [ -n "$ID" ] || exit 2
       installe "$ID" ;;

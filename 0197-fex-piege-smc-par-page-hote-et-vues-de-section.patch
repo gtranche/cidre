@@ -1,0 +1,212 @@
+Generated-by: LLM
+
+fex : piege du code auto-modifie a la granularite de la page de l'hote (16 Kio), et controle complet du code dans les vues de section executables non inscriptibles
+
+1. Sous Wine sur macOS arm64, la page de l'hote fait 16 Kio et porte l'union des droits de ses quatre pages de 4 Kio. ProtectRWXIntervalsInternal ne passait en lecture-execution que les pages de 4 Kio ou du code avait ete traduit ; tant qu'une voisine RWX restait inscriptible, la page de l'hote l'etait aussi, et les ecritures ne fautaient pas (tests/h64smc.c, cas C, bloc RWX : 50 tours perimes sur 50). On piege, invalide et libere desormais par granule de 16 Kio (TRAP_GRANULE), en ne touchant que les pages des intervalles RWX ; HandleRWXAccessViolation libere toutes les pages RWX du granule. Sur un hote a 4 Kio, on invalide seulement un peu plus large.
+2. Une vue de section executable mais non inscriptible peut etre ecrite par une autre vue de la meme section (le chargeur protege de D2R projette sa section entiere en RW et son .text en RX) : mtrack ne le voit pas. Ces vues (MEM_MAPPED) entrent dans AliasXIntervals et leurs blocs sont traduits avec ForceFullSMCDetection (cas D et E de h64smc).
+Mesure, avec wine11 0196 : h64smc 4 cas sur 5 OK (A, C, D, E ; reste B, page RWX dont une voisine RW partage la page de l'hote). Non-regression h32smc, h64prepare, h64fibres, h64isec, h32temps : OK. D2R : n'en change pas l'issue. A faire avant une release : manche PEAK. Construit par tests/construire_fex.sh (CMAKE_ASM_FLAGS -DFEX_TEB_SANS_X18), pose seulement dans des prefixes d'essai.
+
+--- a/FEXCore/include/FEXCore/HLE/SyscallHandler.h
++++ b/FEXCore/include/FEXCore/HLE/SyscallHandler.h
+@@ -21,6 +21,10 @@
+   uint64_t Base;
+   uint64_t Size;
+   bool Writable;
++  // Controle complet du code modifie pour les blocs de cette plage : le suivi
++  // par protection (mtrack) n'y voit pas toutes les ecritures (vue de section
++  // executable, ecrite par une autre vue de la meme section).
++  bool FullSMC {};
+ };
+ 
+ class SyscallHandler;
+--- a/FEXCore/Source/Interface/Core/Frontend.h
++++ b/FEXCore/Source/Interface/Core/Frontend.h
+@@ -151,6 +151,7 @@
+   uint64_t ExecutableRangeBase {};
+   uint64_t ExecutableRangeEnd {};
+   bool ExecutableRangeWritable {};
++  bool ExecutableRangeFullSMC {};
+   bool HitNonExecutableRange {};
+   bool HitBadRelocation {};
+ 
+--- a/FEXCore/Source/Interface/Core/Frontend.cpp
++++ b/FEXCore/Source/Interface/Core/Frontend.cpp
+@@ -105,6 +105,7 @@
+     ExecutableRangeBase = RangeInfo.Base;
+     ExecutableRangeEnd = RangeInfo.Base + RangeInfo.Size;
+     ExecutableRangeWritable = RangeInfo.Writable;
++    ExecutableRangeFullSMC = RangeInfo.FullSMC;
+ 
+     if (RangeInfo.Size == 0) {
+       return false;
+@@ -1635,6 +1636,9 @@
+       ++DecodedSize;
+       ++BlockIt->NumInstructions;
+       BlockIt->Size += DecodeInst->InstSize;
++      if (ExecutableRangeFullSMC) {
++        BlockIt->ForceFullSMCDetection = true;
++      }
+ 
+       // if we weren't provided relocations (guest JIT), try to detect what we can
+       if (WantsDataMasks && BlockIt->BlockStatus == DecodedBlockStatus::SUCCESS && BlockInfo.Is64BitMode && !Relocations) {
+--- a/Source/Windows/Common/InvalidationTracker.h
++++ b/Source/Windows/Common/InvalidationTracker.h
+@@ -60,6 +60,10 @@
+ 
+   FEXCore::IntervalList<uint64_t> XIntervals;
+   FEXCore::IntervalList<uint64_t> RWXIntervals;
++  // Vues de section (MEM_MAPPED) executables et non inscriptibles : une autre
++  // vue de la meme section peut y ecrire sans faute ici, le JIT y valide donc
++  // chaque instruction (ForceFullSMCDetection). Protected by IntervalsLock.
++  FEXCore::IntervalList<uint64_t> AliasXIntervals;
+   std::shared_mutex IntervalsLock;
+   FEXCore::Context::Context& CTX;
+   const std::unordered_map<DWORD, FEXCore::Core::InternalThreadState*>& Threads;
+--- a/Source/Windows/Common/InvalidationTracker.cpp
++++ b/Source/Windows/Common/InvalidationTracker.cpp
+@@ -49,10 +49,31 @@
+   return (Prot & (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+ }
+ 
++namespace {
++// Le piege d'ecriture du code auto-modifie est une protection de page ; sous
++// Wine sur macOS arm64, la page de l'hote fait 16 Kio et porte l'union des
++// droits de ses quatre pages de 4 Kio. Proteger une seule page de 4 Kio en
++// lecture-execution ne piege rien tant qu'une voisine reste inscriptible : on
++// piege, invalide et libere donc par page d'hote entiere (sans effet notable
++// sur un hote a 4 Kio, ou l'on ne fait qu'invalider un peu plus large).
++constexpr uint64_t TRAP_GRANULE = 0x4000;
++constexpr uint64_t TRAP_GRANULE_MASK = ~(TRAP_GRANULE - 1);
++} // namespace
++
+ void InvalidationTracker::HandleMemoryProtectionNotification(uint64_t Address, uint64_t Size, ULONG Prot) {
+   const auto AlignedBase = Address & FEXCore::Utils::FEX_PAGE_MASK;
+   const auto AlignedSize = (Address - AlignedBase + Size + FEXCore::Utils::FEX_PAGE_SIZE - 1) & FEXCore::Utils::FEX_PAGE_MASK;
+ 
++  // Une vue de section executable sans ecriture ne change que par une autre
++  // vue (un chargeur protege ecrit par une vue RW et execute par une vue RX,
++  // D2R_loader.dll) : mtrack ne le voit pas. Interroge hors du verrou.
++  bool IsAliasableView = false;
++  if (ProtHasExec(Prot) && !ProtIsWritable(Prot)) {
++    MEMORY_BASIC_INFORMATION Info;
++    IsAliasableView = !NtQueryVirtualMemory(NtCurrentProcess(), HostPtr32(AlignedBase), MemoryBasicInformation, &Info, sizeof(Info), nullptr) &&
++                      Info.Type == MEM_MAPPED;
++  }
++
+   const bool NeedsInvalidate = [&]() {
+     std::unique_lock Lock(IntervalsLock);
+ 
+@@ -64,6 +85,12 @@
+ 
+     if (EffectiveExec) {
+       XIntervals.Insert(ProtInterval);
++      if (IsAliasableView) {
++        LogMan::Msg::DFmt("Add full SMC interval: {:X} - {:X}", AlignedBase, AlignedBase + AlignedSize);
++        AliasXIntervals.Insert(ProtInterval);
++      } else {
++        AliasXIntervals.Remove(ProtInterval);
++      }
+       if (EffectiveRWX) {
+         LogMan::Msg::DFmt("Add SMC interval: {:X} - {:X}", AlignedBase, AlignedBase + AlignedSize);
+         RWXIntervals.Insert(ProtInterval);
+@@ -75,6 +102,7 @@
+     } else if (XIntervals.Intersect(ProtInterval)) {
+       XIntervals.Remove(ProtInterval);
+       RWXIntervals.Remove(ProtInterval);
++      AliasXIntervals.Remove(ProtInterval);
+       if (DEPDisabled) {
+         DEPPromotedIntervals.Remove(ProtInterval);
+       }
+@@ -200,6 +228,7 @@
+     std::unique_lock Lock(IntervalsLock);
+     XIntervals.Remove({SectionBase, SectionBase + SectionSize});
+     RWXIntervals.Remove({SectionBase, SectionBase + SectionSize});
++    AliasXIntervals.Remove({SectionBase, SectionBase + SectionSize});
+   }
+ 
+   return {SectionBase, SectionSize};
+@@ -225,6 +254,7 @@
+     std::unique_lock Lock(IntervalsLock);
+     XIntervals.Remove({AlignedBase, AlignedBase + AlignedSize});
+     RWXIntervals.Remove({AlignedBase, AlignedBase + AlignedSize});
++    AliasXIntervals.Remove({AlignedBase, AlignedBase + AlignedSize});
+   }
+ }
+ 
+@@ -253,13 +283,22 @@
+     {
+       std::scoped_lock Lock(CTX.GetCodeInvalidationMutex());
+ 
+-      InvalidateIntervalInternalLocked(FaultAddress & FEXCore::Utils::FEX_PAGE_MASK, FEXCore::Utils::FEX_PAGE_SIZE);
++      const uint64_t Granule = FaultAddress & TRAP_GRANULE_MASK;
++      InvalidateIntervalInternalLocked(Granule, TRAP_GRANULE);
+ 
+-      // Invalidate, then unprotect the faulting page with the compilation lock held to ensure that any racing invalidations are not dropped.
+-      ULONG TmpProt;
+-      void* TmpAddress = HostPtr32(FaultAddress);
+-      SIZE_T TmpSize = 1;
+-      NtProtectVirtualMemory(NtCurrentProcess(), &TmpAddress, &TmpSize, UntrapProt, &TmpProt);
++      // Invalidate, then unprotect the faulting host page with the compilation lock held to ensure that any racing invalidations are not dropped.
++      // Toutes les pages RWX de la page d'hote : liberer la seule page fautive
++      // laisserait les autres piegees, donc la page d'hote non inscriptible.
++      std::shared_lock IntervalsReadLock(IntervalsLock);
++      for (uint64_t Page = Granule; Page < Granule + TRAP_GRANULE; Page += FEXCore::Utils::FEX_PAGE_SIZE) {
++        if (!RWXIntervals.Query(Page).Enclosed) {
++          continue;
++        }
++        ULONG TmpProt;
++        void* TmpAddress = HostPtr32(Page);
++        SIZE_T TmpSize = FEXCore::Utils::FEX_PAGE_SIZE;
++        NtProtectVirtualMemory(NtCurrentProcess(), &TmpAddress, &TmpSize, Page == (FaultAddress & FEXCore::Utils::FEX_PAGE_MASK) ? UntrapProt : GetUntrapProt(Page), &TmpProt);
++      }
+     }
+     DetectMonoBackpatcherBlock(Thread, HostPc);
+     return true;
+@@ -278,12 +317,33 @@
+     return {};
+   }
+   const auto RWXResult = RWXIntervals.Query(Address);
++  FEXCore::HLE::ExecutableRangeInfo Range;
+   if (RWXResult.Enclosed) {
+-    return {RWXResult.Interval.Offset, RWXResult.Interval.End - RWXResult.Interval.Offset, true};
++    Range = {RWXResult.Interval.Offset, RWXResult.Interval.End - RWXResult.Interval.Offset, true};
+   } else if (RWXResult.Size && RWXResult.Size < XResult.Size) {
+-    return {XResult.Interval.Offset, RWXResult.Interval.Offset - XResult.Interval.Offset, false};
++    Range = {XResult.Interval.Offset, RWXResult.Interval.Offset - XResult.Interval.Offset, false};
++  } else {
++    Range = {XResult.Interval.Offset, XResult.Interval.End - XResult.Interval.Offset, false};
+   }
+-  return {XResult.Interval.Offset, XResult.Interval.End - XResult.Interval.Offset, false};
++
++  // Borner la plage a une seule nature vis-a-vis de AliasXIntervals : le
++  // decodeur garde la plage en cache pour les adresses voisines.
++  const auto AliasResult = AliasXIntervals.Query(Address);
++  uint64_t Begin = Range.Base;
++  uint64_t End = Range.Base + Range.Size;
++  if (AliasResult.Enclosed) {
++    Range.FullSMC = true;
++    Begin = std::max(Begin, AliasResult.Interval.Offset);
++    End = std::min(End, AliasResult.Interval.End);
++  } else if (!AliasXIntervals.Empty()) {
++    Begin = std::max(Begin, Address);
++    if (AliasResult.Size) {
++      End = std::min(End, Address + AliasResult.Size);
++    }
++  }
++  Range.Base = Begin;
++  Range.Size = End - Begin;
++  return Range;
+ }
+ 
+ void InvalidationTracker::DetectMonoBackpatcherBlock(FEXCore::Core::InternalThreadState* Thread, uint64_t HostPc) {
+@@ -362,7 +422,9 @@
+ }
+ 
+ bool InvalidationTracker::ProtectRWXIntervalsInternal(uint64_t Address, uint64_t Size, bool ForWriteLocked) {
+-  const auto End = Address + Size;
++  const auto End = (Address + Size + TRAP_GRANULE - 1) & TRAP_GRANULE_MASK;
++  Address &= TRAP_GRANULE_MASK;
++  Size = End - Address;
+   std::shared_lock Lock(IntervalsLock);
+ 
+   if (SMCDetectionDisabled) {

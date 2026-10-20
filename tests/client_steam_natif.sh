@@ -23,6 +23,13 @@
 #                                      en % (1re ligne) ; au-dela du seuil,
 #                                      l'avertissement en 2e ligne, code 0 ;
 #                                      code 1 en dessous, 2 s'il ne tourne pas
+#   client_steam_natif.sh discret <etat> <pid>
+#                                      le client en arriere-plan tant que <pid>
+#                                      (le lanceur) vit ; cf. « Pendant la
+#                                      partie » plus bas
+#   client_steam_natif.sh rendre <etat>
+#                                      sa priorite rendue, et ce qu'il a pris
+#                                      du processeur pendant la partie
 #
 # assurer ecrit ce qu'il a fait (rien s'il n'y avait rien a faire) et rend
 # 0 = connecte (ou ouvert en mode hors ligne, choisi dans Steam : rien a
@@ -98,15 +105,25 @@ masquer() {
          return l.some(function (w) { var b = w.kCGWindowBounds;
             return pids[w.kCGWindowOwnerPID] && w.kCGWindowLayer == 0 && b.Width > 100 && b.Height > 100; });
       }
+      // hide rend NON meme quand la demande aboutit, et « hidden » reste en
+      // cache sans boucle d evenements : on relit les fenetres a l ecran.
+      // Deja masque (un Cmd-H, ou nous au lancement precedent), hide ne fait
+      // rien -- or Steam rouvre la bibliotheque a la sortie d un jeu sans
+      // quitter cet etat : ses fenetres sont la, l appli « masquee » (M1, le
+      // 2026-10-17 : 15 echecs sur 15 lancements). On la rend, puis on la
+      // masque. Masquer « Steam Helper » lui-meme ne sert a rien : appli sans
+      // icone (accessory), hide n y fait rien.
+      function masquer(rendre) {
+         applis().forEach(function (a) { if (rendre) { a.unhide; delay(0.3); } a.hide; });
+         for (var i = 0; i < 40 && visible(); i++) delay(0.05);
+         return !visible();
+      }
       var r;
       if (!applis().length) r = "absent";
       else if (!visible()) r = "sans_fenetre";
       else {
-         // hide rend NON meme quand la demande aboutit, et « hidden » reste en
-         // cache sans boucle d evenements : on relit les fenetres a l ecran
-         applis().forEach(function (a) { a.hide; });
-         for (var i = 0; i < 40 && visible(); i++) delay(0.05);
-         r = visible() ? "echec" : "masque";
+         var deja = applis().some(function (a) { return a.hidden; });
+         r = masquer(deja) || masquer(true) ? "masque" : "echec";
       }
       r' 2>/dev/null || echo echec
 }
@@ -146,10 +163,104 @@ message_cpu() { # <%>
    echo "client Steam : steam_osx prend $1 % du processeur en continu (mesure sur $FENETRE s avant le lancement, sans jeu) -- autant de moins pour le jeu ; le quitter et le rouvrir quand aucun jeu ne tourne (Cidre ne le ferme pas : un jeu protege par Steam se fermerait avec lui)"
 }
 # assurer : l'avertissement, s'il y a lieu, a la sortie du lanceur
+# Lance par le bouton « Jouer » de Steam (le lanceur passe
+# CIDRE_STEAM_PAR_LE_CLIENT=1), le client est en train de lancer le jeu quand on
+# le mesure : il peut prendre tout un coeur par nature (M1, le 2026-10-17 :
+# 99 % a 11:19:13, LN lance par le bouton ; rien aux deux lancements suivants,
+# 0,4 % au repos). Cette mesure ne dit rien de son regime continu : celle de la
+# partie (rendre) le dit a la sortie.
 diagnostic_cpu() {
+   [ "${CIDRE_STEAM_PAR_LE_CLIENT:-}" = 1 ] && return 0
    p=$(cpu_continu) || return 0
    [ "$p" -ge "$SEUIL" ] && echo "    $(message_cpu "$p")"
    return 0
+}
+
+# Pendant la partie : le client en arriere-plan (taskpolicy -b, comme un
+# processus de fond de macOS : coeurs d'efficacite, entrees-sorties freinees),
+# rendu a la sortie (-B). Le meme utilisateur, sans sudo ; on ne le tue pas, on
+# ne le ralentit que pendant le jeu. Bride : steam_osx et ses « Steam Helper »
+# (CEF : bibliotheque, magasin). Laisses a pleine vitesse : ipcserver (il
+# n'est pas l'enfant de steam_osx, rien n'en herite) et gameoverlayui, l'overlay
+# du jeu -- steam_osx le lance au demarrage du jeu, il naitrait bride (un enfant
+# herite du bridage de son parent ; pas ceux deja lances, le jeu lance par le
+# bouton de Steam n'est donc pas touche) : la veille le rend toutes les
+# PERIODE secondes. CIDRE_STEAM_ARRIERE_PLAN=0 : ne pas brider.
+#   discret <etat> <pid>  veille tant que <pid> (le lanceur) vit ; note dans
+#                         <etat> le temps processeur du client au depart
+#   rendre <etat>         arrete la veille, rend la priorite, et ecrit ce que
+#                         le client a pris du processeur pendant la partie
+PERIODE=${CIDRE_STEAM_PERIODE:-5}
+# les processus du client de CE dossier : « <pid> <role> », role = client,
+# aide, overlay
+processus() {
+   ps -axo pid=,comm= 2>/dev/null | awk -v d="$STEAM/" '
+      !index($0, d) { next }
+      /\/steam_osx$/ { print $1, "client"; next }
+      /\/gameoverlayui$/ { print $1, "overlay"; next }
+      /\/Steam Helper[^\/]*$/ { print $1, "aide" }'
+}
+temps_cpu() { # <pids...> : somme des temps processeur, en centiemes
+   s=0
+   for p in "$@"; do
+      t=$(ps -o time= -p "$p" 2>/dev/null | tr -d ' ')
+      [ -n "$t" ] && s=$((s + $(centiemes "$t")))
+   done
+   echo "$s"
+}
+brider() { taskpolicy -b -p "$1" >/dev/null 2>&1; }
+debrider() { taskpolicy -B -p "$1" >/dev/null 2>&1; }
+veille() { # <etat> <pid du lanceur>
+   brides= vus=
+   rendre_tout() { for p in $brides; do debrider "$p"; done; exit 0; }
+   trap rendre_tout TERM INT HUP
+   while kill -0 "$2" 2>/dev/null; do
+      processus >"$1.liste"
+      while read -r p role; do
+         case $role in
+            overlay) case " $vus " in *" $p "*) ;; *) debrider "$p"; vus="$vus $p" ;; esac ;;
+            *) case " $brides " in *" $p "*) ;; *) brider "$p" && brides="$brides $p" ;; esac ;;
+         esac
+      done <"$1.liste"
+      # une boucle interruptible : TERM n'attend pas la fin d'un sleep
+      sleep "$PERIODE" & wait $! 2>/dev/null
+   done
+   rendre_tout
+}
+discret() { # <etat> <pid du lanceur>
+   [ "${CIDRE_STEAM_ARRIERE_PLAN:-1}" = 0 ] && return 0
+   command -v taskpolicy >/dev/null 2>&1 || return 0
+   l=$(processus)
+   c=$(printf '%s\n' "$l" | awk '$2 == "client" { print $1; exit }')
+   [ -n "$c" ] || return 0
+   n=$(printf '%s\n' "$l" | awk '$2 == "aide"' | wc -l | tr -d ' ')
+   # depart : date, pid du client, son temps processeur, celui de ses aides
+   echo "$(date +%s) $c $(temps_cpu "$c") $(temps_cpu $(printf '%s\n' "$l" | awk '$2 == "aide" { print $1 }'))" >"$1"
+   veille "$1" "$2" >/dev/null 2>&1 </dev/null &
+   echo $! >"$1.veille"
+   echo "    client Steam : en arriere-plan pendant la partie (steam_osx et $n Steam Helper, priorite basse ; l'overlay et ipcserver gardent la leur), rendu a la sortie"
+}
+rendre() { # <etat>
+   [ -f "$1" ] || return 0
+   v=$(cat "$1.veille" 2>/dev/null)
+   if [ -n "$v" ] && kill -0 "$v" 2>/dev/null; then
+      kill "$v" 2>/dev/null
+      i=0; while kill -0 "$v" 2>/dev/null && [ $i -lt 20 ]; do sleep 0.1; i=$((i + 1)); done
+   fi
+   # et sans compter sur la veille (tuee net, elle n'a rien rendu)
+   processus | while read -r p role; do [ "$role" = overlay ] || debrider "$p"; done
+   read -r t0 c c0 a0 <"$1"
+   d=$(( $(date +%s) - t0 ))
+   if [ "$d" -ge "${CIDRE_STEAM_DUREE_MIN:-10}" ] && [ "$d" -gt 0 ] && kill -0 "$c" 2>/dev/null; then
+      c1=$(temps_cpu "$c")
+      a1=$(temps_cpu $(processus | awk '$2 == "aide" { print $1 }'))
+      pc=$(( (c1 - c0) / d )); pa=$(( (a1 - a0) / d ))
+      [ "$pa" -ge 0 ] || pa=0   # une aide sortie pendant la partie emporte son temps
+      echo "    client Steam : pendant la partie ($d s), steam_osx a pris $pc % d'un coeur en moyenne, ses Steam Helper $pa % ; priorite rendue"
+   else
+      echo "    client Steam : priorite rendue"
+   fi
+   rm -f "$1" "$1.veille" "$1.liste"
 }
 
 lignes() { n=$(wc -l 2>/dev/null <"$JC") || n=0; echo $((${n:-0})); }
@@ -221,5 +332,12 @@ case ${1:-etat} in
       done
       echo "    client Steam : $quoi, mais pas connecte apres $ATTENTE s -- un jeu protege par Steam se fermera aussitot (se connecter dans Steam, puis relancer)"
       exit 1 ;;
-   *) echo "usage : client_steam_natif.sh [assurer [secondes] | cpu]" >&2; exit 64 ;;
+   discret)
+      [ $# -ge 3 ] || { echo "usage : client_steam_natif.sh discret <etat> <pid>" >&2; exit 64; }
+      case $PERIODE in ''|*[!0-9]*|0) PERIODE=5 ;; esac
+      discret "$2" "$3" ;;
+   rendre)
+      [ $# -ge 2 ] || { echo "usage : client_steam_natif.sh rendre <etat>" >&2; exit 64; }
+      rendre "$2" ;;
+   *) echo "usage : client_steam_natif.sh [assurer [secondes] | cpu | discret <etat> <pid> | rendre <etat>]" >&2; exit 64 ;;
 esac

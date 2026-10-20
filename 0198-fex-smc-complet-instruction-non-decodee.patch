@@ -1,0 +1,38 @@
+Generated-by: LLM
+
+fex : sous controle complet du code modifie, une instruction non decodee (page non executable) n'est plus validee -- le bloc invalidait et recompilait sans fin au lieu de lever la faute d'execution
+
+Quand le bloc d'entree commence sur une page non executable, le decodeur rend une instruction NOEXEC_INST de taille nulle. Sous FEX_SMCCHECKS=full (ou ForceFullSMCDetection, 0197), FEX emettait quand meme ValidateCode avant elle : sur 0 octet, l'emetteur ne calcule aucun CRC et compare TMP1, jamais ecrit, a la constante -- d'ou « code change » a chaque passage, ThreadRemoveCodeEntry, recompilation a la meme adresse, et ainsi de suite, sans jamais lever la faute d'execution. Le chargeur protege de D2R rechiffre D2R.exe en NOACCESS (5 600 NtProtect a t=24 s) pendant qu'un fil y execute encore et attend cette faute pour que son crochet dechiffre la page : sonde FEX, 51 000 blocs/s compiles, declares perimes et invalides a 0x14155f8e4 jusqu'a la fin de la manche (le « full sans erreur mais trop lent » des manches precedentes). Correctif : pas de verification pour une instruction de taille nulle ; ValidateCode de longueur nulle rend « inchange ».
+Mesure (M1, sonde SSMC) : avec 0198, full passe t=24 s et ne trouve aucun bloc perime en 170 s ; D2R s'effondre ensuite comme en mtrack (cause distincte, BATTLENET.md). h64smc inchange (mtrack 4/5, full 5/5).
+
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -649,7 +649,11 @@
+           Thread->OpDispatcher->_GuestOpcode(InstAddress - GuestRIP);
+         }
+ 
+-        if (Config.SMCChecks == FEXCore::Config::CONFIG_SMC_FULL || Block.ForceFullSMCDetection) {
++        // Une instruction non decodee (page non executable, NOEXEC_INST) a une
++        // taille nulle : rien a valider. La verifier faisait conclure a un code
++        // change a chaque passage (ValidateCode sur 0 octet), d'ou invalidation et
++        // recompilation sans fin, sans jamais lever la faute d'execution.
++        if ((Config.SMCChecks == FEXCore::Config::CONFIG_SMC_FULL || Block.ForceFullSMCDetection) && DecodedInfo->InstSize) {
+           auto ExistingCodePtr = const_cast<uint8_t*>(GuestCodePtr(Block.Entry + BlockInstructionsLength));
+           auto InstAddressReg = Thread->OpDispatcher->_EntrypointOffset(GPRSize, InstAddress - GuestRIP);
+ 
+--- a/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
+@@ -338,6 +338,13 @@
+   const auto Dst = GetReg(Node);
+   const auto CRC32Reg = GetReg(Op->crc);
+ 
++  if (len == 0) {
++    // Rien a lire : TMP1 ne serait jamais ecrit, la comparaison porterait sur
++    // une valeur indeterminee.
++    mov(ARMEmitter::Size::i32Bit, Dst, ARMEmitter::Reg::zr);
++    return;
++  }
++
+   // Changes to TMP1
+   auto WorkingReg = ARMEmitter::XReg::zr;
+   auto BaseReg = TMP2;
