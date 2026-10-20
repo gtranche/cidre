@@ -1,0 +1,1016 @@
+Generated-by: LLM
+
+fex : acces du code JIT aux pages d hote mixtes (wine11 0201) sans signal. Une page de 4 Kio NOACCESS a cote de pages accessibles ferme toute la page d hote de 16 Kio ; chaque acces permis a une voisine faisait faute et Wine le rejouait (~2,4 us). Wine (0212) propose l instruction fautive apres le rejeu (exception 0xE0C10201) ; ResetToConsistentState la reecrit en `b talon` : talon de 64 octets dans le tampon de code courant (Context::AllocateCodeStub), qui appelle SousPagesCommun (Module.S, sauve tout l etat) puis SousPagesAide (SousPages.cpp) : adresse effective decodee (LDR/STR toutes formes, paires, LDAR/STLR/LDAPR/LDAPUR/STLUR, LSE, CAS/CASP, LD1/ST1, DC ZVA ; exclusifs et sp refuses), cache sans verrou des pages d hote valide par la generation de Wine, droits de chaque page de 4 Kio ; si l acces est permis, le registre de base est rebase sur l alias permanent de la page et l instruction d origine s execute dans le talon (vrais atomiques), sinon elle s execute telle quelle : une page fermee fait faute dans le talon et FixupStubFault ramene Pc, Sp et le registre de base a l instruction d origine (violation d acces exacte ; autre faute : instruction remise). Apres 256 acces consecutifs hors page mixte, l instruction d origine est remise ; reproposee, elle reprend son talon. Instructions non reecrivables signalees a Wine (refus). Annonce par NtQueryVirtualMemory (classe 0xc1d0) : sans Wine 0212, rien n est actif. CIDRE_SOUS_PAGES_FEX=0 coupe ; CIDRE_DIAG_SOUS_PAGES=1 compte. Banc tests/h64sous_page_banc.c : 2 323 -> 23,6 ns par lecture d octet (x98), N1 (site reecrit puis page normale) 0,6 ns, alternance 1 193 -> 15,5 ns. Diablo II Resurrected : d3d12 charge a 57 s (avant : plus de 600 s sans d3d12), 426 M acces par l alias, ~1 M rejoues ; une autre manche (l1) meurt a ~30 s dans le second processus de D2R (rapporteur de Blizzard, cause non etablie, aucune faute dans un talon) : issue intermittente comme avant. En jeu sur runtime clone, A/B : PEAK ~142 contre ~143 images/s sur la meme scene, Exp33 sans regression, Dead Cells 118,5 (plafond 120). Temoins h64sous_page A-G et J, h64sous_page_talon K1-K8 OK, croisements avec Wine/FEX anciens OK. Correctif local (le CLAUDE.md de FEX refuse le code genere par IA en amont).
+
+diff --git a/FEXCore/include/FEXCore/Core/Context.h b/FEXCore/include/FEXCore/Core/Context.h
+index 3779e35..5eed535 100644
+--- a/FEXCore/include/FEXCore/Core/Context.h
++++ b/FEXCore/include/FEXCore/Core/Context.h
+@@ -158,6 +158,15 @@ public:
+    */
+   FEX_DEFAULT_VISIBILITY virtual bool IsAddressInCodeBuffer(FEXCore::Core::InternalThreadState* Thread, uintptr_t Address) const = 0;
+ 
++  /**
++   * @brief Reserve Size bytes of executable memory in the thread's current code buffer, within direct branch range
++   * (+-128 MiB) of Near, which must itself lie in that buffer. Used to place out-of-line stubs for code that is
++   * patched after compilation (Cidre: accesses to mixed host pages, Source/Windows/ARM64EC/SousPages.cpp).
++   *
++   * @return The reserved memory, or nullptr if Near is not in the current code buffer or there is no room.
++   */
++  FEX_DEFAULT_VISIBILITY virtual uint8_t* AllocateCodeStub(FEXCore::Core::InternalThreadState* Thread, uintptr_t Near, size_t Size) = 0;
++
+   /**
+    * @brief Informs the context if hardware TSO is supported.
+    * Once hardware TSO is enabled, then TSO emulation through atomics is disabled and relies on the hardware.
+diff --git a/FEXCore/Source/Interface/Context/Context.h b/FEXCore/Source/Interface/Context/Context.h
+index 96b3546..e5f5eb2 100644
+--- a/FEXCore/Source/Interface/Context/Context.h
++++ b/FEXCore/Source/Interface/Context/Context.h
+@@ -233,6 +233,7 @@ public:
+   void ConfigureAOTGen(FEXCore::Core::InternalThreadState* Thread, fextl::set<uint64_t>* ExternalBranches, uint64_t SectionMaxAddress) override;
+ 
+   bool IsAddressInCodeBuffer(FEXCore::Core::InternalThreadState* Thread, uintptr_t Address) const override;
++  uint8_t* AllocateCodeStub(FEXCore::Core::InternalThreadState* Thread, uintptr_t Near, size_t Size) override;
+ 
+   // returns false if a handler was already registered
+   std::optional<CustomIRResult>
+diff --git a/FEXCore/Source/Interface/Context/Context.cpp b/FEXCore/Source/Interface/Context/Context.cpp
+index 7e0aafa..1b4bcd8 100644
+--- a/FEXCore/Source/Interface/Context/Context.cpp
++++ b/FEXCore/Source/Interface/Context/Context.cpp
+@@ -56,6 +56,10 @@ bool FEXCore::Context::ContextImpl::IsAddressInCodeBuffer(FEXCore::Core::Interna
+   return Thread->CPUBackend->IsAddressInCodeBuffer(Address) || CodeCache.IsAddressInMappedCodeBuffer(Address);
+ }
+ 
++uint8_t* FEXCore::Context::ContextImpl::AllocateCodeStub(FEXCore::Core::InternalThreadState* Thread, uintptr_t Near, size_t Size) {
++  return Thread->CPUBackend->AllocateCodeStub(Near, Size);
++}
++
+ bool FEXCore::Context::ContextImpl::RequiresRelocatableConstants() const {
+   // Support relocation when generating a cache or when generating reference code for validation
+   return CodeCache.IsGeneratingCache || FEXCore::Config::Get_ENABLECODECACHEVALIDATION() || DiskCache.IsWritingDiskCache();
+diff --git a/FEXCore/Source/Interface/Core/CPUBackend.h b/FEXCore/Source/Interface/Core/CPUBackend.h
+index 0183694..de18fdc 100644
+--- a/FEXCore/Source/Interface/Core/CPUBackend.h
++++ b/FEXCore/Source/Interface/Core/CPUBackend.h
+@@ -133,6 +133,9 @@ namespace CPU {
+ 
+     bool IsAddressInCodeBuffer(uintptr_t Address) const;
+ 
++    // See FEXCore::Context::Context::AllocateCodeStub.
++    uint8_t* AllocateCodeStub(uintptr_t Near, size_t Size);
++
+     // Updates the CodeBuffer if needed and returns a reference to the old one.
+     // The returned reference should be kept alive carefully to avoid early deletion of resources.
+     [[nodiscard]]
+diff --git a/FEXCore/Source/Interface/Core/CPUBackend.cpp b/FEXCore/Source/Interface/Core/CPUBackend.cpp
+index ac39051..01b1074 100644
+--- a/FEXCore/Source/Interface/Core/CPUBackend.cpp
++++ b/FEXCore/Source/Interface/Core/CPUBackend.cpp
+@@ -338,6 +338,26 @@ namespace CPU {
+     return nullptr;
+   }
+ 
++  uint8_t* CPUBackend::AllocateCodeStub(uintptr_t Near, size_t Size) {
++    if (!CurrentCodeBuffer) {
++      return nullptr;
++    }
++    const auto Base = reinterpret_cast<uintptr_t>(CurrentCodeBuffer->GetBufferBase());
++    if (Near < Base || Near >= Base + CurrentCodeBuffer->UsableSize()) {
++      return nullptr;
++    }
++    auto Allocation = CurrentCodeBuffer->AtomicAllocateBuffer(Size);
++    if (!Allocation.BufferAllocationOffset) {
++      return nullptr;
++    }
++    const auto Stub = reinterpret_cast<uintptr_t>(Allocation.BufferAllocationOffset);
++    const auto Distance = Stub > Near ? Stub - Near : Near - Stub;
++    if (Distance + Size >= (128ULL << 20)) {
++      return nullptr;
++    }
++    return Allocation.BufferAllocationOffset;
++  }
++
+   bool CPUBackend::IsAddressInCodeBuffer(uintptr_t Address) const {
+     const auto CheckCodeBuffer = [](const CodeBuffer& Buffer, uintptr_t Address) {
+       const auto BufferPtr = reinterpret_cast<uintptr_t>(Buffer.GetBufferBase());
+diff --git a/Source/Windows/ARM64EC/CMakeLists.txt b/Source/Windows/ARM64EC/CMakeLists.txt
+index 0c9a57a..f66fb5c 100644
+--- a/Source/Windows/ARM64EC/CMakeLists.txt
++++ b/Source/Windows/ARM64EC/CMakeLists.txt
+@@ -1,6 +1,7 @@
+ add_library(arm64ecfex SHARED
+   Module.cpp
+   Module.S
++  SousPages.cpp
+   libarm64ecfex.def
+   $<TARGET_OBJECTS:FEXCore_object>)
+ 
+diff --git a/Source/Windows/ARM64EC/Module.S b/Source/Windows/ARM64EC/Module.S
+index b6d4cde..93a4e3a 100644
+--- a/Source/Windows/ARM64EC/Module.S
++++ b/Source/Windows/ARM64EC/Module.S
+@@ -178,3 +178,98 @@ end:
+ "#JumpSetStack":
+   mov sp, x1
+   br x0
++
++// Cidre, sous-pages (SousPages.cpp) : appele par un talon avec x16 = Site*,
++// x30 = retour au talon, [sp] = { x16, x30 } d'origine. Sauve tout l'etat de
++// l'invite, appelle SousPagesAide(Site, trame), qui peut rebaser un registre
++// dans la trame, et restaure tout. Au retour : [sp] = decalage, [sp+8] = x30 a
++// restaurer par le talon ; x16 et les autres registres valent ceux de la trame.
++// Trame (0x320 octets) : x0-x30 a 8*n, sp a 0xf8, nzcv/fpsr a 0x100, retour a
++// 0x110, q0-q31 a 0x120.
++.globl SousPagesCommun
++SousPagesCommun:
++  sub sp, sp, #0x320
++  stp x0, x1, [sp, #0x00]
++  stp x2, x3, [sp, #0x10]
++  stp x4, x5, [sp, #0x20]
++  stp x6, x7, [sp, #0x30]
++  stp x8, x9, [sp, #0x40]
++  stp x10, x11, [sp, #0x50]
++  stp x12, x13, [sp, #0x60]
++  stp x14, x15, [sp, #0x70]
++  str x17, [sp, #0x88]
++  stp x18, x19, [sp, #0x90]
++  stp x20, x21, [sp, #0xa0]
++  stp x22, x23, [sp, #0xb0]
++  stp x24, x25, [sp, #0xc0]
++  stp x26, x27, [sp, #0xd0]
++  stp x28, x29, [sp, #0xe0]
++  str x30, [sp, #0x110]
++  add x2, sp, #0x320
++  ldp x0, x1, [x2]
++  str x0, [sp, #0x80]
++  str x1, [sp, #0xf0]
++  add x0, sp, #0x330
++  str x0, [sp, #0xf8]
++  mrs x0, nzcv
++  mrs x1, fpsr
++  stp x0, x1, [sp, #0x100]
++  stp q0, q1, [sp, #0x120]
++  stp q2, q3, [sp, #0x140]
++  stp q4, q5, [sp, #0x160]
++  stp q6, q7, [sp, #0x180]
++  stp q8, q9, [sp, #0x1a0]
++  stp q10, q11, [sp, #0x1c0]
++  stp q12, q13, [sp, #0x1e0]
++  stp q14, q15, [sp, #0x200]
++  stp q16, q17, [sp, #0x220]
++  stp q18, q19, [sp, #0x240]
++  stp q20, q21, [sp, #0x260]
++  stp q22, q23, [sp, #0x280]
++  stp q24, q25, [sp, #0x2a0]
++  stp q26, q27, [sp, #0x2c0]
++  stp q28, q29, [sp, #0x2e0]
++  stp q30, q31, [sp, #0x300]
++  mov x0, x16
++  mov x1, sp
++  bl "#SousPagesAide"
++  ldr x1, [sp, #0xf0]
++  add x2, sp, #0x320
++  stp x0, x1, [x2]
++  ldp q0, q1, [sp, #0x120]
++  ldp q2, q3, [sp, #0x140]
++  ldp q4, q5, [sp, #0x160]
++  ldp q6, q7, [sp, #0x180]
++  ldp q8, q9, [sp, #0x1a0]
++  ldp q10, q11, [sp, #0x1c0]
++  ldp q12, q13, [sp, #0x1e0]
++  ldp q14, q15, [sp, #0x200]
++  ldp q16, q17, [sp, #0x220]
++  ldp q18, q19, [sp, #0x240]
++  ldp q20, q21, [sp, #0x260]
++  ldp q22, q23, [sp, #0x280]
++  ldp q24, q25, [sp, #0x2a0]
++  ldp q26, q27, [sp, #0x2c0]
++  ldp q28, q29, [sp, #0x2e0]
++  ldp q30, q31, [sp, #0x300]
++  ldp x0, x1, [sp, #0x100]
++  msr nzcv, x0
++  msr fpsr, x1
++  ldp x0, x1, [sp, #0x00]
++  ldp x2, x3, [sp, #0x10]
++  ldp x4, x5, [sp, #0x20]
++  ldp x6, x7, [sp, #0x30]
++  ldp x8, x9, [sp, #0x40]
++  ldp x10, x11, [sp, #0x50]
++  ldp x12, x13, [sp, #0x60]
++  ldp x14, x15, [sp, #0x70]
++  ldp x16, x17, [sp, #0x80]
++  ldr x19, [sp, #0x98]
++  ldp x20, x21, [sp, #0xa0]
++  ldp x22, x23, [sp, #0xb0]
++  ldp x24, x25, [sp, #0xc0]
++  ldp x26, x27, [sp, #0xd0]
++  ldp x28, x29, [sp, #0xe0]
++  ldr x30, [sp, #0x110]
++  add sp, sp, #0x320
++  ret
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+index 75c272f..110d450 100644
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -37,6 +37,7 @@ $end_info$
+ #include "Common/Exception.h"
+ #include "Common/ImageTracker.h"
+ #include "Common/InvalidationTracker.h"
++#include "SousPages.h"
+ #include "Common/Threads.h"
+ #include "Common/OvercommitTracker.h"
+ #include "Common/TSOHandlerConfig.h"
+@@ -642,6 +643,10 @@ NTSTATUS ProcessInit() {
+   if (FEX::Windows::UnixLib::Available()) {
+     FEXCore::DiskCache::SetFileMapper(FEX::Windows::UnixLib::MapFile);
+   }
++  {
++    FEX_CONFIG_OPT(CodeCaching, ENABLECODECACHINGWIP);
++    FEX::Windows::SousPages::Init(NtDll, CodeCaching());
++  }
+ 
+   {
+     auto HostFeatures =
+@@ -720,6 +725,16 @@ bool ResetToConsistentStateImpl(const ThreadCPUArea CPUArea, EXCEPTION_RECORD* E
+     return true;
+   }
+ 
++  // Cidre, sous-pages : une faute sur la copie de l'instruction dans un talon est
++  // ramenee a l'instruction reecrite, contexte d'origine (voir SousPages.h). Une
++  // faute autre qu'une violation d'acces ou une page de garde (desalignement d'un
++  // atomique...) remet aussi l'instruction en place, pour le chemin habituel.
++  if (FEX::Windows::SousPages::Active() && CTX->IsAddressInCodeBuffer(Thread, NativeContext->Pc) &&
++      CTX->IsAddressInCodeBuffer(Thread, NativeContext->Pc - 20)) {
++    const bool Garder = Exception->ExceptionCode == EXCEPTION_ACCESS_VIOLATION || Exception->ExceptionCode == EXCEPTION_GUARD_PAGE;
++    FEX::Windows::SousPages::FixupStubFault(NativeContext, !Garder);
++  }
++
+   if (Exception->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
+     const auto FaultAddress = static_cast<uint64_t>(Exception->ExceptionInformation[1]);
+ 
+@@ -787,6 +802,16 @@ bool ResetToConsistentStateImpl(const ThreadCPUArea CPUArea, EXCEPTION_RECORD* E
+ 
+ NTSTATUS ResetToConsistentState(EXCEPTION_RECORD* Exception, CONTEXT* GuestContext, ARM64_NT_CONTEXT* NativeContext) {
+   bool Cont {};
++  if (Exception->ExceptionCode == FEX::Windows::SousPages::Code() && FEX::Windows::SousPages::Active()) {
++    // Proposition de Wine (sous-pages) : l'acces est deja rejoue et le contexte
++    // avance ; reecrire l'instruction si on le peut, puis reprendre tel quel.
++    const auto CPUArea = GetCPUArea();
++    {
++      ScopedCallbackDisable guard;
++      FEX::Windows::SousPages::HandleProposal(CTX.get(), CPUArea.ThreadState(), Exception);
++    }
++    NtContinueNative(NativeContext, false);
++  }
+   if (Exception->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
+     const auto FaultAddress = static_cast<uint64_t>(Exception->ExceptionInformation[1]);
+ 
+diff --git a/FEX/Source/Windows/ARM64EC/SousPages.h b/Source/Windows/ARM64EC/SousPages.h
+new file mode 100644
+index 0000000..f2b7def
+--- /dev/null
++++ b/Source/Windows/ARM64EC/SousPages.h
+@@ -0,0 +1,45 @@
++// SPDX-License-Identifier: MIT
++/*
++ * Cidre : acces du code JIT aux pages d'hote mixtes, sans signal.
++ *
++ * Sur Apple Silicon une page d'hote fait 16 Kio. Quand Windows ferme une page
++ * de 4 Kio (PAGE_NOACCESS) a cote de pages accessibles, Wine (correctif 0201)
++ * ferme toute la page d'hote ; chaque acces permis a une voisine fait faute et
++ * Wine le rejoue dans son gestionnaire de signal (~2,4 us). Wine propose alors
++ * l'instruction fautive a FEX (exception de code Code(), levee apres le rejeu)
++ * et FEX la remplace par un saut vers un talon : le talon demande a un
++ * assistant (SousPagesAide) si l'acces tombe sur une page mixte qui le permet
++ * et, si oui, rebase le registre de base sur un alias de la page d'hote le temps
++ * d'executer l'instruction d'origine. Sinon l'instruction s'execute telle
++ * quelle : une page vraiment fermee fait faute au meme endroit et la violation
++ * d'acces de l'invite reste exacte (FixupStubFault).
++ */
++#pragma once
++
++#include <cstdint>
++#include <windef.h>
++#include <winternl.h>
++
++namespace FEXCore::Context {
++class Context;
++}
++namespace FEXCore::Core {
++struct InternalThreadState;
++}
++
++namespace FEX::Windows::SousPages {
++// Annonce a Wine (appel unix de ntdll) ; sans Wine qui le comprend, rien n'est actif.
++void Init(HMODULE NtDll, bool CodeCaching);
++bool Active();
++// Code de l'exception de proposition (Wine), 0 si inactif.
++uint32_t Code();
++
++// Exception de proposition : reecrire l'instruction si on le peut. Le contexte
++// natif est deja apres l'instruction (Wine l'a rejouee) : l'appelant reprend tel quel.
++void HandleProposal(FEXCore::Context::Context* CTX, FEXCore::Core::InternalThreadState* Thread, const EXCEPTION_RECORD* Rec);
++
++// Si Pc est la copie de l'instruction dans un talon, ramene le contexte a
++// l'instruction d'origine (Pc, Sp, registre de base). Unpatch : remettre aussi
++// l'instruction d'origine en place (faute que le talon ne sait pas porter).
++bool FixupStubFault(ARM64_NT_CONTEXT* Context, bool Unpatch);
++} // namespace FEX::Windows::SousPages
+diff --git a/FEX/Source/Windows/ARM64EC/SousPages.cpp b/Source/Windows/ARM64EC/SousPages.cpp
+new file mode 100644
+index 0000000..9a60884
+--- /dev/null
++++ b/Source/Windows/ARM64EC/SousPages.cpp
+@@ -0,0 +1,691 @@
++// SPDX-License-Identifier: MIT
++// Cidre : acces du code JIT aux pages d'hote mixtes, sans signal. Voir SousPages.h.
++#include "SousPages.h"
++
++#include <FEXCore/Core/Context.h>
++#include <FEXCore/Utils/LogManager.h>
++
++#include <atomic>
++#include <mutex>
++#include <FEXCore/fextl/unordered_map.h>
++#include <cstdlib>
++#include <cstring>
++#include <windef.h>
++#include <winbase.h>
++#define __WINESRC__
++#include <winternl.h>
++#include <libloaderapi.h>
++#include <wine/unixlib.h>
++
++extern "C" {
++// Module.S : sauvegarde tout, appelle SousPagesAide, rend la main au talon.
++extern void* SousPagesCommun;
++uint64_t SousPagesAide(void* Site, uint64_t* Trame);
++}
++
++namespace FEX::Windows::SousPages {
++namespace {
++  // Disposition partagee avec Wine (dlls/ntdll/unix/unix_private.h, struct cidre_sous_pages_params).
++  struct Params {
++    uint32_t Op;
++    uint32_t Gen;
++    uint64_t Hote;
++    uint64_t Alias;
++    uint64_t GenPtr;
++    uint32_t Code;
++    uint32_t Mixte;
++    uint32_t Lecture;
++    uint32_t Ecriture;
++  };
++  static_assert(sizeof(Params) == 48);
++  constexpr unsigned UnixCallSousPages = 10; // entree fixe de unix_call_funcs (ntdll.so)
++  constexpr int MemoryCidreSousPages = 0xc1d0; // NtQueryVirtualMemory, annonce (ntdll.so)
++
++  constexpr uint64_t HostPageSize = 0x4000;
++  constexpr uint64_t HostPageMask = HostPageSize - 1;
++
++  bool Actif {};
++  uint32_t CodeProposition {};
++  const volatile uint32_t* Generation {};
++  unixlib_handle_t NtdllUnixLib {};
++  decltype(__wine_unix_call_dispatcher) UnixCallDirect {};
++  bool Diag {};
++
++  // Comme FEXUnixLib : sur ARM64EC, un appel indirect passe par le verificateur
++  // d'appel de FEX ; on saute directement au repartiteur de Wine.
++  NTSTATUS __attribute__((naked)) Trampoline(unixlib_handle_t, unsigned int, void*) {
++    asm(R"(
++    adrp x16, %[Cible];
++    ldr x16, [x16, #:lo12:%[Cible]]
++    br x16
++    )" ::[Cible] "S"(&UnixCallDirect)
++        : "memory");
++  }
++
++  NTSTATUS Appel(Params* P) {
++    return Trampoline(NtdllUnixLib, UnixCallSousPages, P);
++  }
++
++  // --- Sites reecrits -------------------------------------------------------
++  enum : uint8_t { MODE_BASE, MODE_IMM, MODE_REG, MODE_ZVA };
++
++  struct Site {
++    uint64_t Pc;      // instruction reecrite
++    uint64_t FaultPc; // sa copie dans le talon
++    uint32_t Insn;
++    uint32_t Taille;  // octets touches
++    int64_t Imm;
++    uint8_t Rn, Rm, Mode, Option;
++    uint8_t Shift, Lecture, Ecriture, RnDest;
++    uint64_t Talon;   // adresse du talon
++    uint32_t Saut;    // `b talon`, ecrit a Pc
++    uint32_t Normaux; // acces consecutifs hors page mixte (atomic_ref)
++  };
++
++  // Au-dela, le site ne voit plus de page mixte : l'instruction d'origine est
++  // remise (0,6 ns au lieu de ~23 par acces) et Wine pourra la reproposer.
++  constexpr uint32_t SeuilNormaux = 256;
++
++  // Sites deja reecrits, par Pc : une instruction remise puis reproposee reprend
++  // son talon. Sous verrou (exceptions seulement).
++  std::mutex SitesVerrou;
++  fextl::unordered_map<uint64_t, Site*> Sites;
++
++  // Decode les formes que le talon sait porter : l'adresse ne depend que de Rn
++  // (et d'un immediat ou de Rm), Rn n'est pas lu comme donnee. Les exclusifs
++  // (moniteur casse par les acces du talon), sp et les litteraux sont refuses.
++  bool Decoder(uint32_t I, Site& S) {
++    uint32_t Rt = I & 31;
++    uint32_t Dests = 0, Srcs = 0, RmIncr = 31;
++    bool Wb = false;
++    auto Gpr = [](uint32_t R) {
++      return R == 31 ? 0u : (1u << R);
++    };
++    auto Sext9 = [](uint32_t I) {
++      int64_t V = (I >> 12) & 0x1ff;
++      return V & 0x100 ? V - 0x200 : V;
++    };
++
++    S.Rn = (I >> 5) & 31;
++    S.Rm = 31;
++    S.Mode = MODE_BASE;
++    S.Option = 3;
++    S.Shift = 0;
++    S.Imm = 0;
++    S.Lecture = S.Ecriture = S.RnDest = 0;
++
++    if ((I & 0xffffffe0u) == 0xd50b7420u) {
++      // DC ZVA, Xt : adresse dans Rt, 64 octets (DCZID d'Apple)
++      S.Rn = Rt;
++      S.Mode = MODE_ZVA;
++      S.Taille = 64;
++      S.Ecriture = 1;
++    } else if ((I & 0x3a000000u) == 0x28000000u) {
++      // LDP/STP/LDNP/STNP/LDPSW, entier et SIMD
++      uint32_t Opc = I >> 30, V = (I >> 26) & 1, Idx = (I >> 23) & 3, L = (I >> 22) & 1, Rt2 = (I >> 10) & 31, Esz;
++      int64_t Imm7 = (I >> 15) & 0x7f;
++      if (Imm7 & 0x40) {
++        Imm7 -= 0x80;
++      }
++      if (V) {
++        if (Opc == 3) {
++          return false;
++        }
++        Esz = 4u << Opc;
++      } else {
++        if (Opc == 3 || (Opc == 1 && !L)) {
++          return false;
++        }
++        Esz = (Opc & 2) ? 8 : 4;
++      }
++      S.Taille = 2 * Esz;
++      S.Mode = Idx == 1 ? MODE_BASE : MODE_IMM;
++      S.Imm = Imm7 * (int64_t)Esz;
++      Wb = Idx == 1 || Idx == 3;
++      if (L) {
++        S.Lecture = 1;
++        if (!V) {
++          Dests = Gpr(Rt) | Gpr(Rt2);
++        }
++      } else {
++        S.Ecriture = 1;
++        if (!V) {
++          Srcs = Gpr(Rt) | Gpr(Rt2);
++        }
++      }
++    } else if ((I & 0x3b000000u) == 0x39000000u || (I & 0x3b200000u) == 0x38000000u || (I & 0x3b200c00u) == 0x38200800u) {
++      // LDR/STR (et signes, SIMD) : immediat non signe, imm9 (non echelonne, pre, post, non privilegie), registre
++      uint32_t Size = I >> 30, V = (I >> 26) & 1, Opc = (I >> 22) & 3, Echelle;
++      bool Charge;
++      if (V) {
++        if (Opc & 2) {
++          if (Size) {
++            return false;
++          }
++          Echelle = 4;
++        } else {
++          Echelle = Size;
++        }
++        Charge = Opc & 1;
++      } else {
++        Echelle = Size;
++        if ((Size == 3 && Opc == 2) || (Opc == 3 && Size >= 2)) {
++          return false; // PRFM, non alloue
++        }
++        Charge = Opc != 0;
++      }
++      S.Taille = 1u << Echelle;
++      if ((I & 0x3b000000u) == 0x39000000u) {
++        S.Mode = MODE_IMM;
++        S.Imm = (int64_t)((I >> 10) & 0xfff) << Echelle;
++      } else if ((I & 0x3b200c00u) == 0x38200800u) {
++        S.Mode = MODE_REG;
++        S.Rm = (I >> 16) & 31;
++        S.Option = (I >> 13) & 7;
++        S.Shift = ((I >> 12) & 1) ? Echelle : 0;
++        if (S.Option != 2 && S.Option != 3 && S.Option != 6 && S.Option != 7) {
++          return false;
++        }
++      } else {
++        uint32_t Op2 = (I >> 10) & 3;
++        S.Mode = Op2 == 1 ? MODE_BASE : MODE_IMM;
++        S.Imm = Sext9(I);
++        Wb = Op2 == 1 || Op2 == 3;
++      }
++      if (Charge) {
++        S.Lecture = 1;
++        if (!V) {
++          Dests = Gpr(Rt);
++        }
++      } else {
++        S.Ecriture = 1;
++        if (!V) {
++          Srcs = Gpr(Rt);
++        }
++      }
++    } else if ((I & 0x3f200c00u) == 0x38200000u) {
++      // Atomiques LSE (LDADD..LDUMIN, SWP) et LDAPR
++      uint32_t Size = I >> 30, O3 = (I >> 15) & 1, Opc = (I >> 12) & 7, Rs = (I >> 16) & 31;
++      S.Taille = 1u << Size;
++      if (O3 && Opc == 4) {
++        S.Lecture = 1;
++        Dests = Gpr(Rt);
++      } else if (!O3 || Opc == 0) {
++        S.Lecture = S.Ecriture = 1;
++        Srcs = Gpr(Rs);
++        Dests = Gpr(Rt);
++      } else {
++        return false;
++      }
++    } else if ((I & 0x3f000000u) == 0x08000000u) {
++      // Ordonnes (LDAR, STLR...), CAS, CASP ; exclusifs refuses
++      uint32_t Size = I >> 30, O2 = (I >> 23) & 1, L = (I >> 22) & 1, O1 = (I >> 21) & 1, Rs = (I >> 16) & 31;
++      if (O2 && !O1) {
++        S.Taille = 1u << Size;
++        if (L) {
++          S.Lecture = 1;
++          Dests = Gpr(Rt);
++        } else {
++          S.Ecriture = 1;
++          Srcs = Gpr(Rt);
++        }
++      } else if (O2 && O1) {
++        S.Taille = 1u << Size;
++        S.Lecture = S.Ecriture = 1;
++        Srcs = Gpr(Rs) | Gpr(Rt);
++        Dests = Gpr(Rs);
++      } else if (!O2 && O1 && !(I >> 31)) {
++        if ((Rs & 1) || (Rt & 1)) {
++          return false;
++        }
++        S.Taille = 2 * (4u << Size);
++        S.Lecture = S.Ecriture = 1;
++        Srcs = Gpr(Rs) | Gpr(Rs + 1) | Gpr(Rt) | Gpr(Rt + 1);
++        Dests = Gpr(Rs) | Gpr(Rs + 1);
++      } else {
++        return false;
++      }
++    } else if ((I & 0x3f200c00u) == 0x19000000u) {
++      // LDAPUR/STLUR (et signes)
++      uint32_t Size = I >> 30, Opc = (I >> 22) & 3;
++      S.Taille = 1u << Size;
++      S.Mode = MODE_IMM;
++      S.Imm = Sext9(I);
++      if (Opc == 0) {
++        S.Ecriture = 1;
++        Srcs = Gpr(Rt);
++      } else {
++        if ((Opc == 2 && Size == 3) || (Opc == 3 && Size >= 2)) {
++          return false;
++        }
++        S.Lecture = 1;
++        Dests = Gpr(Rt);
++      }
++    } else if ((I & 0xbfbf0000u) == 0x0c000000u || (I & 0xbfa00000u) == 0x0c800000u) {
++      // LD1-4/ST1-4 a plusieurs registres, sans offset ou post-indexe
++      uint32_t L = (I >> 22) & 1, Opcode = (I >> 12) & 15, Q = (I >> 30) & 1, N;
++      switch (Opcode) {
++      case 0x7: N = 1; break;
++      case 0xa:
++      case 0x8: N = 2; break;
++      case 0x6:
++      case 0x4: N = 3; break;
++      case 0x2:
++      case 0x0: N = 4; break;
++      default: return false;
++      }
++      S.Taille = N * (Q ? 16 : 8);
++      Wb = (I >> 23) & 1;
++      if (Wb) {
++        RmIncr = (I >> 16) & 31;
++      }
++      if (L) {
++        S.Lecture = 1;
++      } else {
++        S.Ecriture = 1;
++      }
++    } else if ((I & 0xbf9f0000u) == 0x0d000000u || (I & 0xbf800000u) == 0x0d800000u) {
++      // LD1/ST1 a un element et LD1R, sans offset ou post-indexe
++      uint32_t L = (I >> 22) & 1, R = (I >> 21) & 1, Opcode = (I >> 13) & 7, Sb = (I >> 12) & 1, Size = (I >> 10) & 3;
++      if (R) {
++        return false;
++      }
++      switch (Opcode) {
++      case 0: S.Taille = 1; break;
++      case 2:
++        if (Size & 1) {
++          return false;
++        }
++        S.Taille = 2;
++        break;
++      case 4:
++        if (Size == 0) {
++          S.Taille = 4;
++        } else if (Size == 1 && !Sb) {
++          S.Taille = 8;
++        } else {
++          return false;
++        }
++        break;
++      case 6:
++        if (!L) {
++          return false;
++        }
++        S.Taille = 1u << Size;
++        break;
++      default: return false;
++      }
++      Wb = (I >> 23) & 1;
++      if (Wb) {
++        RmIncr = (I >> 16) & 31;
++      }
++      if (L) {
++        S.Lecture = 1;
++      } else {
++        S.Ecriture = 1;
++      }
++    } else {
++      return false;
++    }
++
++    if (S.Rn == 31 || (Srcs & (1u << S.Rn))) {
++      return false;
++    }
++    if ((S.Mode == MODE_REG && S.Rm == S.Rn) || RmIncr == S.Rn) {
++      return false;
++    }
++    if (Dests & (1u << S.Rn)) {
++      if (Wb) {
++        return false;
++      }
++      S.RnDest = 1;
++    }
++    return S.Taille && S.Taille <= 64;
++  }
++
++  // --- Talon ----------------------------------------------------------------
++  //  T+0   stp x16, x30, [sp, #-16]!
++  //  T+4   ldr x16, T+48                 Site*
++  //  T+8   ldr x30, T+56                 SousPagesCommun
++  //  T+12  blr x30                       Rn += delta (0 : rien), [sp] = delta, [sp+8] = x30
++  //  T+16  ldr x30, [sp, #8]
++  //  T+20  <instruction d'origine>       une faute ici est ramenee a Pc (FixupStubFault)
++  //  T+24  str Sc, [sp, #8]
++  //  T+28  ldr Sc, [sp]
++  //  T+32  sub Rn, Rn, Sc                (nop si l'instruction a charge Rn)
++  //  T+36  ldr Sc, [sp, #8]
++  //  T+40  add sp, sp, #16
++  //  T+44  b Pc+4
++  //  T+48  Site*
++  //  T+56  SousPagesCommun
++  constexpr size_t TailleTalon = 64;
++  constexpr uint32_t STP_X16_X30_PRE = 0xa9bf7bf0u;
++  constexpr uint32_t BLR_X30 = 0xd63f03c0u;
++  constexpr uint32_t LDR_X30_SP_8 = 0xf94007feu;
++  constexpr uint32_t NOP = 0xd503201fu;
++
++  void ClearICache(void* Debut, size_t Taille) {
++    __builtin___clear_cache(static_cast<char*>(Debut), static_cast<char*>(Debut) + Taille);
++  }
++
++  Site* SiteDuTalon(uint64_t FaultPc) {
++    const auto* Code = reinterpret_cast<const uint32_t*>(FaultPc);
++    if (Code[-5] != STP_X16_X30_PRE || Code[-2] != BLR_X30 || Code[-1] != LDR_X30_SP_8) {
++      return nullptr;
++    }
++    auto* S = *reinterpret_cast<Site* const*>(FaultPc + 28);
++    if (!S || S->FaultPc != FaultPc) {
++      return nullptr;
++    }
++    return S;
++  }
++
++  // --- Cache des pages d'hote (lecture sans verrou, sequence par entree) ----
++  struct Entree {
++    std::atomic<uint32_t> Seq;
++    uint32_t Gen;
++    uint64_t Hote;
++    uint64_t Alias;
++    uint32_t Lecture, Ecriture, Mixte;
++  };
++  constexpr size_t NbEntrees = 1024;
++  Entree Cache[NbEntrees];
++
++  struct Etat {
++    uint32_t Gen;
++    uint64_t Alias;
++    uint32_t Lecture, Ecriture, Mixte;
++  };
++
++  bool LireCache(uint64_t Hote, uint32_t Gen, Etat& E) {
++    auto& C = Cache[(Hote >> 14) & (NbEntrees - 1)];
++    const uint32_t S1 = C.Seq.load(std::memory_order_acquire);
++    if (S1 & 1) {
++      return false;
++    }
++    const uint64_t H = std::atomic_ref<uint64_t>(C.Hote).load(std::memory_order_relaxed);
++    E.Gen = std::atomic_ref<uint32_t>(C.Gen).load(std::memory_order_relaxed);
++    E.Alias = std::atomic_ref<uint64_t>(C.Alias).load(std::memory_order_relaxed);
++    E.Lecture = std::atomic_ref<uint32_t>(C.Lecture).load(std::memory_order_relaxed);
++    E.Ecriture = std::atomic_ref<uint32_t>(C.Ecriture).load(std::memory_order_relaxed);
++    E.Mixte = std::atomic_ref<uint32_t>(C.Mixte).load(std::memory_order_relaxed);
++    std::atomic_thread_fence(std::memory_order_acquire);
++    return C.Seq.load(std::memory_order_relaxed) == S1 && H == Hote && E.Gen == Gen;
++  }
++
++  void EcrireCache(uint64_t Hote, const Etat& E) {
++    auto& C = Cache[(Hote >> 14) & (NbEntrees - 1)];
++    uint32_t S = C.Seq.load(std::memory_order_relaxed);
++    if ((S & 1) || !C.Seq.compare_exchange_strong(S, S + 1, std::memory_order_acquire)) {
++      return;
++    }
++    std::atomic_ref<uint64_t>(C.Hote).store(Hote, std::memory_order_relaxed);
++    std::atomic_ref<uint32_t>(C.Gen).store(E.Gen, std::memory_order_relaxed);
++    std::atomic_ref<uint64_t>(C.Alias).store(E.Alias, std::memory_order_relaxed);
++    std::atomic_ref<uint32_t>(C.Lecture).store(E.Lecture, std::memory_order_relaxed);
++    std::atomic_ref<uint32_t>(C.Ecriture).store(E.Ecriture, std::memory_order_relaxed);
++    std::atomic_ref<uint32_t>(C.Mixte).store(E.Mixte, std::memory_order_relaxed);
++    C.Seq.store(S + 2, std::memory_order_release);
++  }
++
++  // Compteurs (CIDRE_DIAG_SOUS_PAGES)
++  std::atomic<uint64_t> NbReecrits, NbRefuses, NbAppels, NbAlias, NbRequetes, NbFautes, NbRemis;
++
++  void Compter(std::atomic<uint64_t>& N, const char* Quoi) {
++    const uint64_t V = N.fetch_add(1, std::memory_order_relaxed) + 1;
++    if (Diag && (V <= 4 || !(V & (V - 1)))) {
++      LogMan::Msg::IFmt("sous-pages : {} {} (reecrits {}, refuses {}, appels {}, par l'alias {}, requetes {}, fautes {})", Quoi, V,
++                        NbReecrits.load(), NbRefuses.load(), NbAppels.load(), NbAlias.load(), NbRequetes.load(), NbFautes.load());
++    }
++  }
++} // namespace
++
++void Init(HMODULE NtDll, bool CodeCaching) {
++  const char* Env = getenv("CIDRE_DIAG_SOUS_PAGES");
++  Diag = Env && *Env && *Env != '0';
++  if (CodeCaching) {
++    // Le cache de code sur disque garderait le saut vers un talon disparu.
++    LogMan::Msg::IFmt("sous-pages : cache de code actif, reecriture coupee");
++    return;
++  }
++  const auto Dispatcher = GetProcAddress(NtDll, "__wine_unix_call_dispatcher");
++  const auto Handle = GetProcAddress(NtDll, "__wine_unixlib_handle");
++  if (!Dispatcher || !Handle) {
++    return;
++  }
++  UnixCallDirect = *reinterpret_cast<decltype(__wine_unix_call_dispatcher)*>(Dispatcher);
++  NtdllUnixLib = *reinterpret_cast<unixlib_handle_t*>(Handle);
++  if (!UnixCallDirect || !NtdllUnixLib) {
++    return;
++  }
++  // L'annonce passe par une classe d'information que seul un Wine qui connait
++  // les sous-pages accepte ; l'appel unix (entree 10) n'existe pas ailleurs.
++  Params P {};
++  P.Op = 0;
++  if (NtQueryVirtualMemory(NtCurrentProcess(), nullptr, static_cast<MEMORY_INFORMATION_CLASS>(MemoryCidreSousPages), &P, sizeof(P),
++                           nullptr) ||
++      !P.GenPtr || !P.Code) {
++    return;
++  }
++  Generation = reinterpret_cast<const volatile uint32_t*>(P.GenPtr);
++  CodeProposition = P.Code;
++  Actif = true;
++  if (Diag) {
++    LogMan::Msg::IFmt("sous-pages : reecriture des acces JIT active (code {:#x})", CodeProposition);
++  }
++}
++
++bool Active() {
++  return Actif;
++}
++
++uint32_t Code() {
++  return Actif ? CodeProposition : 0;
++}
++
++// Wine propose une instruction a chaque rejeu tant qu'on ne la lui a pas refusee :
++// toute issue sans reecriture (sauf course avec une autre reecriture) la refuse.
++static void Refuser(uint64_t Pc, uint32_t Insn) {
++  Params P {};
++  P.Op = 3;
++  P.Hote = Pc;
++  P.Code = Insn;
++  Appel(&P);
++}
++
++void HandleProposal(FEXCore::Context::Context* CTX, FEXCore::Core::InternalThreadState* Thread, const EXCEPTION_RECORD* Rec) {
++  if (!Actif || Rec->NumberParameters < 3) {
++    return;
++  }
++  const uint64_t Pc = Rec->ExceptionInformation[0];
++  const uint32_t Insn = static_cast<uint32_t>(Rec->ExceptionInformation[2]);
++
++  if (!Thread || (Pc & 3) || !CTX->IsAddressInCodeBuffer(Thread, Pc) || SiteDuTalon(Pc)) {
++    Refuser(Pc, Insn);
++    return;
++  }
++  auto* Code = reinterpret_cast<uint32_t*>(Pc);
++  if (std::atomic_ref<uint32_t>(*Code).load(std::memory_order_acquire) != Insn) {
++    return;
++  }
++  {
++    std::scoped_lock Lock(SitesVerrou);
++    auto It = Sites.find(Pc);
++    if (It != Sites.end()) {
++      Site* S = It->second;
++      const auto* T = reinterpret_cast<const uint32_t*>(S->Talon);
++      if (S->Insn == Insn && SiteDuTalon(S->FaultPc) == S && T[0] == STP_X16_X30_PRE) {
++        std::atomic_ref<uint32_t>(S->Normaux).store(0, std::memory_order_relaxed);
++        uint32_t Attendu = Insn;
++        if (std::atomic_ref<uint32_t>(*Code).compare_exchange_strong(Attendu, S->Saut, std::memory_order_release)) {
++          ClearICache(Code, 4);
++          Compter(NbReecrits, "instruction reecrite de nouveau");
++        }
++        return;
++      }
++      Sites.erase(It); // code regenere a cette adresse : talon perime
++    }
++  }
++  Site D {};
++  if (!Decoder(Insn, D)) {
++    Compter(NbRefuses, "instruction refusee");
++    if (Diag && NbRefuses.load(std::memory_order_relaxed) <= 64) {
++      LogMan::Msg::IFmt("sous-pages : forme non portee {:08x} a {:#x}", Insn, Pc);
++    }
++    Refuser(Pc, Insn);
++    return;
++  }
++  auto* T = reinterpret_cast<uint32_t*>(CTX->AllocateCodeStub(Thread, Pc, TailleTalon));
++  if (!T) {
++    Compter(NbRefuses, "pas de place pour un talon");
++    Refuser(Pc, Insn);
++    return;
++  }
++  auto* S = new Site(D);
++  S->Pc = Pc;
++  S->Insn = Insn;
++  S->FaultPc = reinterpret_cast<uint64_t>(&T[5]);
++
++  const uint32_t Sc = S->Rn == 16 ? 17 : 16;
++  const uint32_t Rn = S->Rn;
++  T[0] = STP_X16_X30_PRE;
++  T[1] = 0x58000000u | ((44 / 4) << 5) | 16; // ldr x16, T+48
++  T[2] = 0x58000000u | ((48 / 4) << 5) | 30; // ldr x30, T+56
++  T[3] = BLR_X30;
++  T[4] = LDR_X30_SP_8;
++  T[5] = Insn;
++  T[6] = 0xf90007e0u | Sc;                                            // str Sc, [sp, #8]
++  T[7] = 0xf94003e0u | Sc;                                            // ldr Sc, [sp]
++  T[8] = S->RnDest ? NOP : (0xcb000000u | (Sc << 16) | (Rn << 5) | Rn); // sub Rn, Rn, Sc
++  T[9] = 0xf94007e0u | Sc;                                            // ldr Sc, [sp, #8]
++  T[10] = 0x910043ffu;                                                // add sp, sp, #16
++  const int64_t Retour = static_cast<int64_t>(Pc + 4) - reinterpret_cast<int64_t>(&T[11]);
++  T[11] = 0x14000000u | ((static_cast<uint64_t>(Retour) >> 2) & 0x3ffffff);
++  *reinterpret_cast<uint64_t*>(&T[12]) = reinterpret_cast<uint64_t>(S);
++  *reinterpret_cast<uint64_t*>(&T[14]) = reinterpret_cast<uint64_t>(&SousPagesCommun);
++  ClearICache(T, TailleTalon);
++
++  const int64_t Aller = reinterpret_cast<int64_t>(T) - static_cast<int64_t>(Pc);
++  const uint32_t Saut = 0x14000000u | ((static_cast<uint64_t>(Aller) >> 2) & 0x3ffffff);
++  S->Talon = reinterpret_cast<uint64_t>(T);
++  S->Saut = Saut;
++  uint32_t Attendu = Insn;
++  if (!std::atomic_ref<uint32_t>(*Code).compare_exchange_strong(Attendu, Saut, std::memory_order_release)) {
++    // Un autre fil l'a deja reecrite (ou FEX l'a changee) : le talon reste inutilise.
++    return;
++  }
++  ClearICache(Code, 4);
++  {
++    std::scoped_lock Lock(SitesVerrou);
++    Sites[Pc] = S;
++  }
++  Compter(NbReecrits, "instruction reecrite");
++  if (Diag && NbReecrits.load(std::memory_order_relaxed) <= 64) {
++    LogMan::Msg::IFmt("sous-pages : {:08x} a {:#x} -> talon {:#x} (Rn x{}, {} octets, {}{})", Insn, Pc, reinterpret_cast<uint64_t>(T),
++                      Rn, S->Taille, S->Lecture ? "l" : "", S->Ecriture ? "e" : "");
++  }
++}
++
++bool FixupStubFault(ARM64_NT_CONTEXT* Context, bool Unpatch) {
++  if (!Actif || (Context->Pc & 3)) {
++    return false;
++  }
++  auto* S = SiteDuTalon(Context->Pc);
++  if (!S) {
++    return false;
++  }
++  const uint64_t Sp = Context->Sp;
++  const uint64_t Delta = *reinterpret_cast<const uint64_t*>(Sp);
++  Context->Pc = S->Pc;
++  Context->Sp = Sp + 16;
++  if (Delta) {
++    Context->X[S->Rn] -= Delta;
++  }
++  if (Unpatch) {
++    auto* Code = reinterpret_cast<uint32_t*>(S->Pc);
++    std::atomic_ref<uint32_t>(*Code).store(S->Insn, std::memory_order_release);
++    ClearICache(Code, 4);
++  }
++  Compter(NbFautes, Unpatch ? "faute dans un talon, instruction remise" : "faute dans un talon");
++  return true;
++}
++} // namespace FEX::Windows::SousPages
++
++using namespace FEX::Windows::SousPages;
++
++// Appele par SousPagesCommun (Module.S), registres de l'invite sauves dans
++// Trame (x0-x30, puis sp). Rend le decalage applique a Rn (alias - page d'hote),
++// ou 0 : l'instruction s'executera telle quelle.
++extern "C" uint64_t SousPagesAide(void* SiteV, uint64_t* Trame) {
++  const auto* S = static_cast<const Site*>(SiteV);
++  const uint64_t Base = Trame[S->Rn];
++  uint64_t Ea = Base;
++
++  if (Diag) {
++    Compter(NbAppels, "acces par le talon");
++  }
++  switch (S->Mode) {
++  case MODE_IMM: Ea = Base + S->Imm; break;
++  case MODE_REG: {
++    uint64_t M = S->Rm == 31 ? 0 : Trame[S->Rm];
++    switch (S->Option) {
++    case 2: M = static_cast<uint32_t>(M); break;
++    case 6: M = static_cast<uint64_t>(static_cast<int64_t>(static_cast<int32_t>(M))); break;
++    default: break;
++    }
++    Ea = Base + (M << S->Shift);
++    break;
++  }
++  case MODE_ZVA: Ea = Base & ~uint64_t {63}; break;
++  default: break;
++  }
++
++  const uint64_t Hote = Ea & ~HostPageMask;
++  if (((Ea + S->Taille - 1) & ~HostPageMask) != Hote) {
++    return 0; // a cheval sur deux pages d'hote : Wine rejoue
++  }
++  const uint32_t Gen = *Generation;
++  Etat E;
++  if (!LireCache(Hote, Gen, E)) {
++    Params P {};
++    P.Op = 1;
++    P.Hote = Hote;
++    if (Diag) {
++      Compter(NbRequetes, "requete a Wine");
++    }
++    if (Appel(&P)) {
++      return 0;
++    }
++    E = {P.Gen, P.Alias, P.Lecture, P.Ecriture, P.Mixte};
++    EcrireCache(Hote, E);
++  }
++  if (!E.Mixte || !E.Alias) {
++    auto* SM = const_cast<Site*>(S);
++    if (std::atomic_ref<uint32_t>(SM->Normaux).fetch_add(1, std::memory_order_relaxed) + 1 == SeuilNormaux) {
++      uint32_t Attendu = SM->Saut;
++      auto* Code = reinterpret_cast<uint32_t*>(SM->Pc);
++      if (std::atomic_ref<uint32_t>(*Code).compare_exchange_strong(Attendu, SM->Insn, std::memory_order_release)) {
++        ClearICache(Code, 4);
++        if (Diag) {
++          Compter(NbRemis, "instruction remise (plus de page mixte)");
++        }
++      }
++      std::atomic_ref<uint32_t>(SM->Normaux).store(0, std::memory_order_relaxed);
++    }
++    return 0;
++  }
++  const uint32_t Premiere = (Ea >> 12) & 3, Derniere = ((Ea + S->Taille - 1) >> 12) & 3;
++  const uint32_t Masque = ((2u << Derniere) - 1) & ~((1u << Premiere) - 1);
++  if ((S->Lecture && (E.Lecture & Masque) != Masque) || (S->Ecriture && (E.Ecriture & Masque) != Masque)) {
++    return 0; // page fermee (ou garde, ou suivi d'ecriture) : la faute reste celle de l'invite
++  }
++  if (std::atomic_ref<uint32_t>(const_cast<Site*>(S)->Normaux).load(std::memory_order_relaxed)) {
++    std::atomic_ref<uint32_t>(const_cast<Site*>(S)->Normaux).store(0, std::memory_order_relaxed);
++  }
++  const uint64_t Delta = E.Alias - Hote;
++  Trame[S->Rn] = Base + Delta;
++  if (Diag) {
++    Compter(NbAlias, "acces par l'alias");
++  }
++  return Delta;
++}
