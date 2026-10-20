@@ -1,0 +1,115 @@
+Generated-by: LLM
+
+KosmicKrisp (runtime Vulkan de Mesa) : vkGetPipelineCacheData rend de memoire la taille d'un cache qui n'a pas change (0213) -- une demande de taille (pData NULL) reserialisait a vide tous les objets du cache sous son verrou ; Detroit: Become Human (1222140) la demande sans cesse en partie : sur le M4 (v1.5.17, 96 505 objets), ~0,3 s de processeur par tranche de 3 s dans le parcours (blob_align, blob_write_uint32, _mesa_set_next_entry sous vk_common_GetPipelineCacheData, aucune recopie de donnees), pendant lesquelles toute creation ou recherche de pipeline attend le verrou. vk_pipeline_cache tient une generation du contenu (+1 a chaque objet ajoute, retire, remplace par sa forme vivante, ou apporte par vkMergePipelineCaches ; sous le verrou) et la taille du dernier calcul complet (taille seule, ou donnees rendues en entier) avec sa generation ; une demande de taille a generation inchangee rend cette taille sans parcourir. Les donnees sont toujours serialisees a la demande (les garder couterait la taille du cache en memoire : 1,3 Go pour Detroit). CIDRE_CACHE_TAILLE_RECALCULEE=1 revient au calcul a chaque appel. Temoin tests/temoin_cache_taille.sh (natif, cache fabrique de 96 505 objets bruts) : temps par demande de taille, et taille == longueur des donnees rendues avant tout changement, apres un pipeline cree dans le cache et apres vkMergePipelineCaches, avec et sans CIDRE_CACHE_TAILLE_RECALCULEE. vk_pipeline_cache.c entre dans l'empreinte de 0208 : la cle des caches change (a livrer avec 0208 et 0209, une seule recompilation).
+
+--- a/src/vulkan/runtime/vk_pipeline_cache.c
++++ b/src/vulkan/runtime/vk_pipeline_cache.c
+@@ -172,6 +172,7 @@
+          vk_pipeline_cache_object_unref(cache->base.device, object);
+ 
+       _mesa_set_remove(cache->object_cache, entry);
++      cache->cidre_generation++;   /* 0213 : le contenu change */
+    }
+ }
+ 
+@@ -314,6 +315,7 @@
+           assert(object->ref_cnt == 1);
+           entry->key = object;
+           object = found_object;
++          cache->cidre_generation++;   /* 0213 : objet brut remplace par l'objet vivant */
+        }
+ 
+       result = vk_pipeline_cache_object_ref((void *)entry->key);
+@@ -323,6 +325,7 @@
+          vk_pipeline_cache_object_ref(result);
+       else
+          vk_pipeline_cache_object_weak_ref(cache, result);
++      cache->cidre_generation++;   /* 0213 : objet ajoute */
+    }
+    vk_pipeline_cache_unlock(cache);
+ 
+@@ -734,6 +737,28 @@
+ {
+    VK_FROM_HANDLE(vk_device, device, _device);
+    VK_FROM_HANDLE(vk_pipeline_cache, cache, pipelineCache);
++
++   /* Cidre (0213) : la taille seule (pData NULL) est rendue de memoire tant
++    * que le contenu n'a pas change depuis le dernier calcul complet. Sans cela
++    * chaque demande de taille reserialisait a vide tous les objets du cache,
++    * sous son verrou : Detroit: Become Human le fait sans cesse en partie
++    * (~0,3 s de processeur par tranche de 3 s sur 96 505 objets), et toute
++    * creation de pipeline attendait le verrou. CIDRE_CACHE_TAILLE_RECALCULEE=1
++    * revient au calcul a chaque appel. */
++   static int recalculee = -1;
++   if (recalculee < 0)
++      recalculee = getenv("CIDRE_CACHE_TAILLE_RECALCULEE") != NULL;
++   if (!pData && !recalculee) {
++      vk_pipeline_cache_lock(cache);
++      bool connue = cache->cidre_taille_connue &&
++                    cache->cidre_taille_generation == cache->cidre_generation;
++      size_t taille = cache->cidre_taille;
++      vk_pipeline_cache_unlock(cache);
++      if (connue) {
++         *pDataSize = taille;
++         return VK_SUCCESS;
++      }
++   }
+ 
+    struct blob blob;
+    if (pData) {
+@@ -753,6 +778,7 @@
+    }
+ 
+    vk_pipeline_cache_lock(cache);
++   const uint64_t generation = cache->cidre_generation;
+ 
+    VkResult result = VK_SUCCESS;
+    if (cache->object_cache != NULL) {
+@@ -798,6 +824,14 @@
+       }
+    }
+ 
++   /* 0213 : un calcul complet (taille seule, ou donnees rendues en entier)
++    * donne la taille de cette generation */
++   if (result == VK_SUCCESS && !blob.out_of_memory) {
++      cache->cidre_taille = blob.size;
++      cache->cidre_taille_generation = generation;
++      cache->cidre_taille_connue = true;
++   }
++
+    vk_pipeline_cache_unlock(cache);
+ 
+    blob_overwrite_uint32(&blob, count_offset, count);
+@@ -855,11 +889,13 @@
+                 */
+                vk_pipeline_cache_object_unref(device, dst_object);
+                dst_entry->key = vk_pipeline_cache_object_ref(src_object);
++               dst->cidre_generation++;   /* 0213 */
+             }
+          } else {
+             /* We inserted src_object in dst so it needs a reference */
+             assert(dst_entry->key == (const void *)src_object);
+             vk_pipeline_cache_object_ref(src_object);
++            dst->cidre_generation++;   /* 0213 */
+          }
+       }
+ 
+--- a/src/vulkan/runtime/vk_pipeline_cache.h
++++ b/src/vulkan/runtime/vk_pipeline_cache.h
+@@ -163,6 +163,16 @@
+    simple_mtx_t lock;
+ 
+    struct set *object_cache;
++
++   /* Cidre (0213) : generation du contenu, +1 a chaque objet ajoute, retire ou
++    * remplace (sous lock), et taille rendue par vkGetPipelineCacheData pour
++    * cette generation. Un jeu qui demande souvent la taille (Detroit: Become
++    * Human, 96 505 objets) ne fait plus parcourir tout le cache sous le verrou
++    * a chaque appel. */
++   uint64_t cidre_generation;
++   uint64_t cidre_taille_generation;
++   size_t cidre_taille;
++   bool cidre_taille_connue;
+ };
+ 
+ VK_DEFINE_NONDISP_HANDLE_CASTS(vk_pipeline_cache, base, VkPipelineCache,
