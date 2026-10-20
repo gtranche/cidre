@@ -371,7 +371,7 @@ index 6a75998..8206473 100644
  extern void *main_module;
  extern SECTION_IMAGE_INFORMATION main_image_info;
 diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
-index 54092ac..643e413 100644
+index 54092ac..d532ede 100644
 --- a/dlls/ntdll/unix/virtual.c
 +++ b/dlls/ntdll/unix/virtual.c
 @@ -174,6 +174,7 @@ static pthread_mutex_t virtual_mutex;
@@ -410,7 +410,18 @@ index 54092ac..643e413 100644
      size_t idx = (size_t)addr >> page_shift;
      size_t end = ((size_t)addr + size + page_mask) >> page_shift;
  
-@@ -2047,6 +2055,7 @@ static void unmap_area( void *start, size_t size )
+@@ -1396,6 +1404,10 @@ static BOOL set_page_vprot_exec_write_protect( const void *addr, size_t size )
+         *ptr |= VPROT_WRITEWATCH;
+         ret = TRUE;
+     }
++#endif
++#ifdef __APPLE__
++    /* le suivi d'ecriture retire l'ecriture : les caches de FEX (sous-pages) doivent la relire */
++    if (ret) __atomic_fetch_add( &sous_pages_gen, 1, __ATOMIC_SEQ_CST );
+ #endif
+     return ret;
+ }
+@@ -2047,6 +2059,7 @@ static void unmap_area( void *start, size_t size )
      size = ROUND_SIZE( 0, size, host_page_mask );
  
      alias_perimer();
@@ -418,7 +429,7 @@ index 54092ac..643e413 100644
      if (!(size = unmap_area_above_user_limit( start, size ))) return;
  
      end = (char *)start + size;
-@@ -2132,6 +2141,7 @@ static void unregister_view( struct file_view *view )
+@@ -2132,6 +2145,7 @@ static void unregister_view( struct file_view *view )
  static void delete_view( struct file_view *view ) /* [in] View */
  {
      alias_perimer();
@@ -426,7 +437,7 @@ index 54092ac..643e413 100644
      if (!(view->protect & VPROT_SYSTEM)) unmap_area( view->base, view->size );
      set_page_vprot( view->base, view->size, 0 );
      if (view->protect & VPROT_ARM64EC) clear_arm64ec_range( view->base, view->size );
-@@ -2524,7 +2534,211 @@ refus:
+@@ -2524,7 +2538,211 @@ refus:
      mutex_unlock( &virtual_mutex );
      return FALSE;
  }
@@ -638,7 +649,7 @@ index 54092ac..643e413 100644
  static inline BOOL page_hote_mixte( const char *host ) { return FALSE; }
  static int get_host_page_unix_prot( char *host, BYTE set, BYTE clear )
  {
-@@ -3030,6 +3244,7 @@ static NTSTATUS map_file_into_view( struct file_view *view, int fd, size_t start
+@@ -3030,6 +3248,7 @@ static NTSTATUS map_file_into_view( struct file_view *view, int fd, size_t start
      assert( start + size <= view->size );
  
      alias_perimer();
@@ -646,7 +657,7 @@ index 54092ac..643e413 100644
      if (vprot & VPROT_WRITE) flags |= MAP_SHARED;
      else if (vprot & VPROT_WRITECOPY) flags |= MAP_PRIVATE;
      else
-@@ -7343,6 +7558,17 @@ NTSTATUS WINAPI NtQueryVirtualMemory( HANDLE process, LPCVOID addr,
+@@ -7343,6 +7562,17 @@ NTSTATUS WINAPI NtQueryVirtualMemory( HANDLE process, LPCVOID addr,
      TRACE("(%p, %p, info_class=%d, %p, %ld, %p)\n",
            process, addr, info_class, buffer, len, res_len);
  
