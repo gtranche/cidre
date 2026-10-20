@@ -1,0 +1,666 @@
+Generated-by: LLM
+
+wine11 : pages d hote mixtes (0201) vues par FEX (0211), et atomiques rejouees vraiment atomiques. sous_pages_gen change a toute modification de droits (set_page_vprot*) ou de projection ; alias permanents par page d hote (mach_vm_remap, table de 8192, liberes a la deprojection). Annonce de FEX par NtQueryVirtualMemory( MemoryCidreSousPages = 0xc1d0 ) (un Wine ancien refuse proprement), etat d une page d hote par l appel unix 10 (cidre_sous_pages : mixte, alias, droits de lecture et d ecriture par page de 4 Kio, generation ; op 3 : instruction refusee). segv_handler propose l instruction apres chaque rejeu depuis du code Windows (exception STATUS_CIDRE_SOUS_PAGE, contexte avance), sauf celles que FEX a refusees (table a correspondance directe ; retenir les propositions faites remplissait la table en secondes sur D2R). Rejeu des exclusifs : le STXR « reussissait toujours » et deux fils perdaient des increments (lock xadd sous FEX sans LSE : 135 000 sur 400 000, temoin K7b, deja faux en v1.5.17) ; moniteur exclusif par fil (adresse et valeur lues par LDXR/LDXP) et STXR/STXP par CAS sur l alias, echec si la memoire a change. CAS, CASP et atomiques LSE rejoues par atomiques materielles sur l alias (virtual_alias_sous_page) ; sans alias, l ancien rejeu reste. Temoins h64sous_page A-G et J, h64sous_page_talon K1-K8 OK ; D2R : d3d12 a 57 s (intermittent, voir 0211) ; PEAK, Dead Cells, Exp33 sans regression. S applique apres 0210 (sync.c, disjoint).
+
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index c92d604..3fa9593 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -1061,6 +1061,17 @@ static NTSTATUS unwind_builtin_dll( void *args )
+ #endif /* SO_DLLS_SUPPORTED */
+ 
+ 
++/* pages d'hote mixtes vues par FEX (virtual.c) : entree 10, fixee */
++static NTSTATUS cidre_sous_pages_appel( void *args )
++{
++#ifdef __APPLE__
++    if (*(const UINT *)args == 0) return STATUS_INVALID_PARAMETER;   /* op 0 : NtQueryVirtualMemory */
++    return cidre_sous_pages( args );
++#else
++    return STATUS_NOT_SUPPORTED;
++#endif
++}
++
+ static const unixlib_entry_t unix_call_funcs[] =
+ {
+     load_so_dll,
+@@ -1073,6 +1084,7 @@ static const unixlib_entry_t unix_call_funcs[] =
+     system_time_precise,
+     wait_on_address_sleep,
+     wait_on_address_wake,
++    cidre_sous_pages_appel,
+ };
+ 
+ 
+@@ -1095,6 +1107,7 @@ const unixlib_entry_t unix_call_wow64_funcs[] =
+     system_time_precise,
+     wow64_wait_on_address,
+     wow64_wait_on_address,
++    wow64_wait_on_address,   /* cidre_sous_pages : pas en wow64 */
+ };
+ 
+ #endif  /* _WIN64 */
+diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
+index 94840d4..581c6c8 100644
+--- a/dlls/ntdll/unix/signal_arm64.c
++++ b/dlls/ntdll/unix/signal_arm64.c
+@@ -1457,6 +1457,109 @@ static inline BOOL faute_dans( ULONG_PTR faute, ULONG_PTR ea, size_t n )
+     return faute >= (ea & ~(ULONG_PTR)0xfff) && faute < ea + n;
+ }
+ 
++/*
++ * Propositions a FEX : apres chaque rejeu d'un acces fait par du code Windows,
++ * l'instruction (adresse et encodage) est proposee a FEX (exception
++ * STATUS_CIDRE_SOUS_PAGE levee apres le rejeu, contexte deja avance). Une
++ * instruction reecrite ne fait plus faute : rien a retenir. Celles que FEX ne
++ * peut pas reecrire (hors de son code JIT, forme non portee...) lui sont
++ * signalees en retour (sous_pages_refuser) et ne sont plus proposees. Table a
++ * correspondance directe, sans verrou : une case ecrasee fait seulement
++ * reproposer une instruction, que FEX refuse de nouveau. Retenir les
++ * propositions faites (premiere version) remplissait la table en quelques
++ * secondes sur D2R, dont FEX regenere sans cesse le code.
++ */
++#define REFUS_NB 65536
++
++static UINT64 refus[REFUS_NB];
++
++static inline UINT64 proposition_cle( ULONG_PTR pc, UINT insn )
++{
++    return (pc & 0xffffffffffffull) | ((UINT64)((insn ^ (insn >> 16)) & 0xffff) << 48);
++}
++
++static inline unsigned int proposition_case( ULONG_PTR pc )
++{
++    return (unsigned int)((pc >> 2) * 0x9e3779b1u) & (REFUS_NB - 1);
++}
++
++static BOOL sous_pages_proposer( ULONG_PTR pc, UINT insn )
++{
++    return __atomic_load_n( &refus[proposition_case( pc )], __ATOMIC_RELAXED ) != proposition_cle( pc, insn );
++}
++
++/* FEX ne reecrira pas cette instruction : ne plus la proposer. */
++void sous_pages_refuser( ULONG_PTR pc, UINT insn )
++{
++    __atomic_store_n( &refus[proposition_case( pc )], proposition_cle( pc, insn ), __ATOMIC_RELAXED );
++}
++
++/*
++ * Atomiques rejoues : en vrai, sur l'alias permanent de la page (virtual.c), pour
++ * rester atomiques entre fils et avec les acces que FEX fait par son talon.
++ * Sans alias (table pleine), l'ancien rejeu sous virtual_mutex reste.
++ */
++static BOOL cas_alias( void *p, UINT nb, UINT64 *attendu, UINT64 nouveau )
++{
++    switch (nb)
++    {
++    case 1: { BYTE e = *attendu; BOOL ok = __atomic_compare_exchange_n( (BYTE *)p, &e, (BYTE)nouveau, FALSE, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST ); *attendu = e; return ok; }
++    case 2: { USHORT e = *attendu; BOOL ok = __atomic_compare_exchange_n( (USHORT *)p, &e, (USHORT)nouveau, FALSE, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST ); *attendu = e; return ok; }
++    case 4: { UINT e = *attendu; BOOL ok = __atomic_compare_exchange_n( (UINT *)p, &e, (UINT)nouveau, FALSE, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST ); *attendu = e; return ok; }
++    default: return __atomic_compare_exchange_n( (UINT64 *)p, attendu, nouveau, FALSE, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST );
++    }
++}
++
++static UINT64 lire_alias( void *p, UINT nb )
++{
++    switch (nb)
++    {
++    case 1: return __atomic_load_n( (BYTE *)p, __ATOMIC_SEQ_CST );
++    case 2: return __atomic_load_n( (USHORT *)p, __ATOMIC_SEQ_CST );
++    case 4: return __atomic_load_n( (UINT *)p, __ATOMIC_SEQ_CST );
++    default: return __atomic_load_n( (UINT64 *)p, __ATOMIC_SEQ_CST );
++    }
++}
++
++static BOOL cas16_alias( void *p, UINT64 *a1, UINT64 *a2, UINT64 n1, UINT64 n2 )
++{
++    unsigned __int128 e = ((unsigned __int128)*a2 << 64) | *a1, n = ((unsigned __int128)n2 << 64) | n1;
++    BOOL ok = __atomic_compare_exchange_n( (unsigned __int128 *)p, &e, n, FALSE, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST );
++    *a1 = (UINT64)e; *a2 = (UINT64)(e >> 64);
++    return ok;
++}
++
++/*
++ * Moniteur exclusif par fil : LDXR/LDXP rejoue note l'adresse et la valeur lue ;
++ * STXR/STXP rejoue reussit seulement si la memoire vaut toujours cette valeur
++ * (CAS sur l'alias), sinon il echoue et la boucle de l'invite recommence. Avant,
++ * le stockage reussissait toujours : deux fils perdaient des increments
++ * (tests/h64sous_page_talon.c, K7b). Table sans verrou ; une case reprise par un
++ * autre fil fait seulement echouer le STXR suivant (echec permis).
++ */
++#define MONITEURS_NB 1024
++static struct moniteur { UINT64 fil; ULONG_PTR ea; UINT nb; UINT64 v1, v2; } moniteurs[MONITEURS_NB];
++
++static struct moniteur *moniteur_du_fil( BOOL creer )
++{
++    UINT64 fil = (UINT64)(ULONG_PTR)pthread_self(), vu;
++    unsigned int i, h = (unsigned int)((fil >> 4) * 0x9e3779b1u) & (MONITEURS_NB - 1);
++
++    for (i = 0; i < 16; i++)
++    {
++        struct moniteur *m = &moniteurs[(h + i) & (MONITEURS_NB - 1)];
++        vu = __atomic_load_n( &m->fil, __ATOMIC_ACQUIRE );
++        if (vu == fil) return m;
++        if (!vu && creer && __sync_bool_compare_and_swap( &m->fil, 0, fil )) return m;
++    }
++    if (!creer) return NULL;
++    {
++        struct moniteur *m = &moniteurs[h];
++        vu = __atomic_load_n( &m->fil, __ATOMIC_ACQUIRE );
++        return __sync_bool_compare_and_swap( &m->fil, vu, fil ) ? m : NULL;
++    }
++}
++
+ static BOOL emuler_acces_sous_page( ucontext_t *ctx, ULONG_PTR faute )
+ {
+     const UINT insn = *(const UINT *)PC_sig( ctx );
+@@ -1613,6 +1716,32 @@ static BOOL emuler_acces_sous_page( ucontext_t *ctx, ULONG_PTR faute )
+         }
+         if (o3 && opc) return FALSE;
+         s = XT( Rs ) & masque;
++        {
++            void *p = virtual_alias_sous_page( (void *)ea, nb, TRUE );
++            if (p)
++            {
++                ancien = lire_alias( p, nb );
++                do
++                {
++                    INT64 sa = (INT64)(ancien << (64 - b)) >> (64 - b), ss = (INT64)(s << (64 - b)) >> (64 - b);
++                    if (o3) n = s;
++                    else switch (opc)
++                    {
++                    case 0: n = ancien + s; break;
++                    case 1: n = ancien & ~s; break;
++                    case 2: n = ancien ^ s; break;
++                    case 3: n = ancien | s; break;
++                    case 4: n = sa > ss ? ancien : s; break;
++                    case 5: n = sa < ss ? ancien : s; break;
++                    case 6: n = ancien > s ? ancien : s; break;
++                    default: n = ancien < s ? ancien : s; break;
++                    }
++                    n &= masque;
++                } while (!cas_alias( p, nb, &ancien, n ));
++                SET_XT( Rt, ancien );
++                goto fini;
++            }
++        }
+         virtual_sous_page_verrouiller( TRUE );
+         if (!LIRE( ea, nb )) { virtual_sous_page_verrouiller( FALSE ); return FALSE; }
+         memcpy( &ancien, buf, nb );
+@@ -1648,6 +1777,25 @@ static BOOL emuler_acces_sous_page( ucontext_t *ctx, ULONG_PTR faute )
+         if ((Rs & 1) || (Rt & 1)) return FALSE;
+         ea = base;
+         if (!faute_dans( faute, ea, 2 * nb )) return FALSE;
++        {
++            void *p = virtual_alias_sous_page( (void *)ea, 2 * nb, TRUE );
++            if (p)
++            {
++                if (nb == 8)
++                {
++                    a1 = XT(Rs); a2 = XT(Rs + 1);
++                    cas16_alias( p, &a1, &a2, XT(Rt), XT(Rt + 1) );
++                }
++                else
++                {
++                    UINT64 e = (XT(Rs) & masque) | ((XT(Rs + 1) & masque) << 32);
++                    cas_alias( p, 8, &e, (XT(Rt) & masque) | ((XT(Rt + 1) & masque) << 32) );
++                    a1 = e & masque; a2 = e >> 32;
++                }
++                SET_XT( Rs, a1 ); SET_XT( Rs + 1, a2 );
++                goto fini;
++            }
++        }
+         virtual_sous_page_verrouiller( TRUE );
+         if (!LIRE( ea, 2 * nb )) { virtual_sous_page_verrouiller( FALSE ); return FALSE; }
+         memcpy( &a1, buf, nb ); memcpy( &a2, buf + nb, nb );
+@@ -1677,13 +1825,34 @@ static BOOL emuler_acces_sous_page( ucontext_t *ctx, ULONG_PTR faute )
+             if (L)
+             {
+                 UINT64 v1 = 0, v2 = 0;
++                struct moniteur *m;
+                 if (!LIRE( ea, 2 * nb )) return FALSE;
+                 memcpy( &v1, buf, nb ); memcpy( &v2, buf + nb, nb );
++                if ((m = moniteur_du_fil( TRUE ))) { m->ea = ea; m->nb = 2 * nb; m->v1 = v1; m->v2 = v2; }
+                 SET_XT( Rt, v1 ); SET_XT( Rt2, v2 );
+             }
+             else
+             {
+                 UINT64 v1 = XT(Rt), v2 = XT(Rt2);
++                void *p = virtual_alias_sous_page( (void *)ea, 2 * nb, TRUE );
++                struct moniteur *m = moniteur_du_fil( FALSE );
++                if (p)
++                {
++                    BOOL ok = FALSE;
++                    if (m && m->ea == ea && m->nb == 2 * nb)
++                    {
++                        UINT64 a1 = m->v1, a2 = m->v2;
++                        if (nb == 8) ok = cas16_alias( p, &a1, &a2, v1, v2 );
++                        else
++                        {
++                            UINT64 e = (a1 & 0xffffffffull) | (a2 << 32);
++                            ok = cas_alias( p, 8, &e, (v1 & 0xffffffffull) | (v2 << 32) );
++                        }
++                    }
++                    if (m) m->ea = 0;
++                    SET_XT( Rs, ok ? 0 : 1 );
++                    goto fini;
++                }
+                 memcpy( buf, &v1, nb ); memcpy( buf + nb, &v2, nb );
+                 if (!ECRIRE( ea, 2 * nb )) return FALSE;
+                 SET_XT( Rs, 0 );
+@@ -1695,6 +1864,16 @@ static BOOL emuler_acces_sous_page( ucontext_t *ctx, ULONG_PTR faute )
+         {
+             UINT64 masque = nb == 8 ? ~0ull : ((1ull << (nb * 8)) - 1), ancien = 0, n = XT(Rt) & masque;
+             if (Rt2 != 31) return FALSE;
++            {
++                void *p = virtual_alias_sous_page( (void *)ea, nb, TRUE );
++                if (p)
++                {
++                    ancien = XT(Rs) & masque;
++                    cas_alias( p, nb, &ancien, n );
++                    SET_XT( Rs, ancien );
++                    goto fini;
++                }
++            }
+             virtual_sous_page_verrouiller( TRUE );
+             if (!LIRE( ea, nb )) { virtual_sous_page_verrouiller( FALSE ); return FALSE; }
+             memcpy( &ancien, buf, nb );
+@@ -1710,13 +1889,32 @@ static BOOL emuler_acces_sous_page( ucontext_t *ctx, ULONG_PTR faute )
+         if (L)   /* LDXR, LDAXR, LDAR, LDLAR */
+         {
+             UINT64 v = 0;
++            struct moniteur *m;
+             if (!LIRE( ea, nb )) return FALSE;
+             memcpy( &v, buf, nb );
++            if (!o2 && (m = moniteur_du_fil( TRUE ))) { m->ea = ea; m->nb = nb; m->v1 = v; }
+             SET_XT( Rt, v );
+         }
+         else     /* STXR, STLXR, STLR, STLLR */
+         {
+             UINT64 v = XT(Rt);
++            if (!o2)
++            {
++                void *p = virtual_alias_sous_page( (void *)ea, nb, TRUE );
++                struct moniteur *m = moniteur_du_fil( FALSE );
++                if (p)
++                {
++                    BOOL ok = FALSE;
++                    if (m && m->ea == ea && m->nb == nb)
++                    {
++                        UINT64 attendu = m->v1;
++                        ok = cas_alias( p, nb, &attendu, v & (nb == 8 ? ~0ull : ((1ull << (nb * 8)) - 1)) );
++                    }
++                    if (m) m->ea = 0;
++                    SET_XT( Rs, ok ? 0 : 1 );
++                    goto fini;
++                }
++            }
+             memcpy( buf, &v, nb );
+             if (!ECRIRE( ea, nb )) return FALSE;
+             if (!o2) SET_XT( Rs, 0 );   /* l'exclusif reussit */
+@@ -1989,13 +2187,35 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
+             emuler_acces_vers( sigcontext, (ULONG_PTR)user_shared_data + (a - 0x7ffe0000) ))
+             return;
+     }
+-    /* Page d'hote mixte : acces permis par sa page de 4 Kio, rejoue. */
++    /* Page d'hote mixte : acces permis par sa page de 4 Kio, rejoue. La
++     * premiere fois pour une instruction de code Windows, et si FEX s'est
++     * annonce, on la lui propose apres le rejeu : il peut reecrire son code JIT
++     * pour ne plus passer par ici (sous_pages_proposer). */
+     if (sous_pages_actives)
+     {
+         UINT ec = ESR_ELx_EC( esr );
+-        if ((ec == ESR_ELx_EC_DABT_LOW || ec == ESR_ELx_EC_DABT_CUR) &&
+-            emuler_acces_sous_page( sigcontext, (ULONG_PTR)siginfo->si_addr ))
+-            return;
++        if (ec == ESR_ELx_EC_DABT_LOW || ec == ESR_ELx_EC_DABT_CUR)
++        {
++            ULONG_PTR pc = PC_sig( sigcontext );
++            UINT insn = *(const UINT *)pc;
++
++            if (emuler_acces_sous_page( sigcontext, (ULONG_PTR)siginfo->si_addr ))
++            {
++                if (sous_pages_fex && !is_inside_syscall( data, SP_sig(sigcontext) ) &&
++                    sous_pages_proposer( pc, insn ))
++                {
++                    rec.ExceptionCode = STATUS_CIDRE_SOUS_PAGE;
++                    rec.ExceptionAddress = (void *)pc;
++                    rec.NumberParameters = 3;
++                    rec.ExceptionInformation[0] = pc;
++                    rec.ExceptionInformation[1] = (ULONG_PTR)siginfo->si_addr;
++                    rec.ExceptionInformation[2] = insn;
++                    save_context( &context, sigcontext );
++                    setup_raise_exception( data, sigcontext, &rec, &context );
++                }
++                return;
++            }
++        }
+     }
+ #endif
+ #ifdef SONDE_HAUTE
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 6a75998..8206473 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -82,6 +82,27 @@ extern BOOL luajit_miroir_engage( const void *host, BOOL ecriture );
+ extern BOOL sous_pages_actives;
+ extern BOOL virtual_acces_sous_page( void *addr, void *buf, size_t size, BOOL ecriture );
+ extern void virtual_sous_page_verrouiller( BOOL verrou );
++/* pages d'hote mixtes vues par FEX (virtual.c) ; disposition partagee avec
++ * xtajit64 (Source/Windows/ARM64EC/SousPages.cpp) */
++#define STATUS_CIDRE_SOUS_PAGE 0xe0c10201
++#define MemoryCidreSousPages ((MEMORY_INFORMATION_CLASS)0xc1d0)
++struct cidre_sous_pages_params
++{
++    UINT   op;        /* 0 : enregistrer FEX ; 1 : etat d'une page d'hote */
++    UINT   gen;       /* generation lue avec l'etat */
++    UINT64 hote;      /* adresse dans la page d'hote */
++    UINT64 alias;     /* alias de la page d'hote (0 : pas d'alias) */
++    UINT64 gen_ptr;   /* op 0 : adresse de sous_pages_gen */
++    UINT   code;      /* op 0 : code de l'exception de proposition */
++    UINT   mixte;
++    UINT   lecture;   /* bit i : page de 4 Kio i lisible */
++    UINT   ecriture;  /* bit i : page de 4 Kio i inscriptible par l'alias */
++};
++extern volatile unsigned int sous_pages_gen;
++extern BOOL sous_pages_fex;
++extern NTSTATUS cidre_sous_pages( void *args );
++extern void *virtual_alias_sous_page( void *addr, size_t size, BOOL ecriture );
++extern void sous_pages_refuser( ULONG_PTR pc, UINT insn );
+ #endif
+ extern void *main_module;
+ extern SECTION_IMAGE_INFORMATION main_image_info;
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 54092ac..643e413 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -174,6 +174,7 @@ static pthread_mutex_t virtual_mutex;
+ /* generation des alias de pages d'hote mixtes : toute (de)projection les perime */
+ static unsigned int alias_gen = 1;
+ #define alias_perimer() (alias_gen++)
++static void sous_pages_projection( const void *start, size_t size );
+ pthread_key_t thread_data_key = 0;
+ 
+ static const UINT page_shift = 12;
+@@ -362,6 +363,7 @@ void *anon_mmap_fixed( void *start, size_t size, int prot, int flags )
+     assert( !(size & host_page_mask) );
+ 
+     alias_perimer();
++    sous_pages_projection( start, size );
+     return mmap( start, size, prot, MAP_PRIVATE | MAP_ANON | MAP_FIXED | flags, -1, 0 );
+ }
+ 
+@@ -1338,6 +1340,9 @@ static SIZE_T get_vprot_range_size( char *base, SIZE_T size, BYTE mask, BYTE *vp
+  */
+ static void set_page_vprot( const void *addr, size_t size, BYTE vprot )
+ {
++#ifdef __APPLE__
++    __atomic_fetch_add( &sous_pages_gen, 1, __ATOMIC_SEQ_CST );
++#endif
+     size_t idx = (size_t)addr >> page_shift;
+     size_t end = ((size_t)addr + size + page_mask) >> page_shift;
+ 
+@@ -1362,6 +1367,9 @@ static void set_page_vprot( const void *addr, size_t size, BYTE vprot )
+  */
+ static void set_page_vprot_bits( const void *addr, size_t size, BYTE set, BYTE clear )
+ {
++#ifdef __APPLE__
++    __atomic_fetch_add( &sous_pages_gen, 1, __ATOMIC_SEQ_CST );
++#endif
+     size_t idx = (size_t)addr >> page_shift;
+     size_t end = ((size_t)addr + size + page_mask) >> page_shift;
+ 
+@@ -2047,6 +2055,7 @@ static void unmap_area( void *start, size_t size )
+     size = ROUND_SIZE( 0, size, host_page_mask );
+ 
+     alias_perimer();
++    sous_pages_projection( start, size );
+     if (!(size = unmap_area_above_user_limit( start, size ))) return;
+ 
+     end = (char *)start + size;
+@@ -2132,6 +2141,7 @@ static void unregister_view( struct file_view *view )
+ static void delete_view( struct file_view *view ) /* [in] View */
+ {
+     alias_perimer();
++    sous_pages_projection( view->base, view->size );
+     if (!(view->protect & VPROT_SYSTEM)) unmap_area( view->base, view->size );
+     set_page_vprot( view->base, view->size, 0 );
+     if (view->protect & VPROT_ARM64EC) clear_arm64ec_range( view->base, view->size );
+@@ -2524,7 +2534,211 @@ refus:
+     mutex_unlock( &virtual_mutex );
+     return FALSE;
+ }
++
++/***********************************************************************
++ *           Pages d'hote mixtes vues par l'emulateur (FEX)
++ *
++ * Un acces rejoue par signal coute ~2,4 us. Sur Diablo II Resurrected, des
++ * centaines de millions de lectures d'octet du code JIT de FEX tombent sur des
++ * pages mixtes. FEX (xtajit64) reecrit alors l'instruction fautive en un saut
++ * vers un talon qui rebase son registre de base sur un alias de la page d'hote,
++ * sans signal (proposition : signal_arm64.c). Il lui faut, par page d'hote :
++ * mixte ou non, les droits de lecture et d'ecriture de chacune de ses pages de
++ * 4 Kio, et un alias valide tant que la page reste projetee. Ces alias sont a
++ * part du cache de 64 (qui recycle les siens) : ils ne sont liberes qu'a la
++ * deprojection. sous_pages_gen change a toute modification de droits ou de
++ * projection ; FEX revalide son cache des que la valeur bouge. Entre la
++ * verification et l'acces, une course avec VirtualProtect ou une deprojection
++ * d'un autre fil reste possible, comme sous Windows entre deux fils.
++ */
++volatile unsigned int sous_pages_gen = 1;
++BOOL sous_pages_fex;
++
++#define FEX_ALIAS_NB 8192          /* puissance de 2 ; au plus la moitie occupee */
++#define FEX_ALIAS_TOMBE ((char *)1)
++static struct fex_alias { char *hote; char *alias; BOOL inscriptible; } fex_alias[FEX_ALIAS_NB];
++static unsigned int fex_alias_nb;   /* entrees vivantes */
++static pthread_mutex_t fex_alias_mutex = PTHREAD_MUTEX_INITIALIZER;
++
++static inline unsigned int fex_alias_hache( const char *host )
++{
++    return (unsigned int)(((UINT_PTR)host >> 14) * 0x9e3779b1u) & (FEX_ALIAS_NB - 1);
++}
++
++/* fex_alias_mutex tenu */
++static struct fex_alias *fex_alias_trouver( const char *host )
++{
++    unsigned int i, h = fex_alias_hache( host );
++    for (i = 0; i < FEX_ALIAS_NB; i++)
++    {
++        struct fex_alias *e = &fex_alias[(h + i) & (FEX_ALIAS_NB - 1)];
++        if (!e->hote) return NULL;
++        if (e->hote == host) return e;
++    }
++    return NULL;
++}
++
++/* fex_alias_mutex tenu */
++static void fex_alias_retirer( struct fex_alias *e )
++{
++    mach_vm_deallocate( mach_task_self(), (mach_vm_address_t)(UINT_PTR)e->alias, host_page_size );
++    e->hote = FEX_ALIAS_TOMBE;
++    e->alias = NULL;
++    fex_alias_nb--;
++}
++
++/* Une projection change sur [start, start+size) : les alias de FEX qui la
++ * touchent ne designent plus la bonne memoire. */
++static void sous_pages_projection( const void *start, size_t size )
++{
++    char *debut = ROUND_ADDR( start, host_page_mask ), *fin = (char *)start + size;
++    struct fex_alias *e;
++    unsigned int i;
++
++    __atomic_fetch_add( &sous_pages_gen, 1, __ATOMIC_SEQ_CST );
++    if (!sous_pages_fex || !fex_alias_nb) return;
++    pthread_mutex_lock( &fex_alias_mutex );
++    if ((size_t)(fin - debut) / host_page_size <= 256)
++    {
++        char *p;
++        for (p = debut; p < fin; p += host_page_size)
++            if ((e = fex_alias_trouver( p ))) fex_alias_retirer( e );
++    }
++    else for (i = 0; i < FEX_ALIAS_NB; i++)
++    {
++        e = &fex_alias[i];
++        if (e->hote > FEX_ALIAS_TOMBE && e->hote >= debut && e->hote < fin) fex_alias_retirer( e );
++    }
++    pthread_mutex_unlock( &fex_alias_mutex );
++}
++
++/* virtual_mutex tenu ; alias permanent de la page d'hote host pour FEX */
++static struct fex_alias *fex_alias_de( char *host )
++{
++    struct fex_alias *e, *libre = NULL;
++    unsigned int i, h = fex_alias_hache( host );
++    mach_vm_address_t cible = 0;
++    vm_prot_t cur, max;
++    kern_return_t kr;
++
++    pthread_mutex_lock( &fex_alias_mutex );
++    for (i = 0; i < FEX_ALIAS_NB; i++)
++    {
++        e = &fex_alias[(h + i) & (FEX_ALIAS_NB - 1)];
++        if (e->hote == host) goto fini;
++        if (e->hote == FEX_ALIAS_TOMBE) { if (!libre) libre = e; continue; }
++        if (!e->hote) { if (!libre) libre = e; break; }
++    }
++    e = NULL;
++    if (!libre || fex_alias_nb >= FEX_ALIAS_NB / 2) goto fini;
++    kr = mach_vm_remap( mach_task_self(), &cible, host_page_size, 0, VM_FLAGS_ANYWHERE,
++                        mach_task_self(), (mach_vm_address_t)(UINT_PTR)host, FALSE, &cur, &max, VM_INHERIT_NONE );
++    if (kr != KERN_SUCCESS) goto fini;
++    if (mach_vm_protect( mach_task_self(), cible, host_page_size, FALSE, VM_PROT_READ | (max & VM_PROT_WRITE) ))
++    {
++        mach_vm_deallocate( mach_task_self(), cible, host_page_size );
++        goto fini;
++    }
++    e = libre;
++    e->hote = host;
++    e->alias = (char *)(UINT_PTR)cible;
++    e->inscriptible = (max & VM_PROT_WRITE) != 0;
++    fex_alias_nb++;
++fini:
++    pthread_mutex_unlock( &fex_alias_mutex );
++    return e;
++}
++
++/***********************************************************************
++ *           virtual_alias_sous_page
++ *
++ * Adresse, dans l'alias permanent de sa page d'hote, d'un acces de size octets
++ * a addr que les pages de 4 Kio permettent (et qui ne deborde pas de la page
++ * d'hote), pour un atomique rejoue par signal_arm64.c : il s'y fait en vrai,
++ * comme ceux que FEX fait par son talon. NULL sinon. Sur pile de signal.
++ */
++void *virtual_alias_sous_page( void *addr, size_t size, BOOL ecriture )
++{
++    char *a = addr, *host = ROUND_ADDR( a, host_page_mask ), *sous;
++    struct fex_alias *e;
++    void *ret = NULL;
++
++    if (!size || ROUND_ADDR( a + size - 1, host_page_mask ) != host) return NULL;
++    mutex_lock( &virtual_mutex );
++    if (!page_hote_mixte( host )) goto fin;
++    for (sous = ROUND_ADDR( a, page_mask ); sous < a + size; sous += page_size)
++    {
++        BYTE v = get_page_vprot( sous );
++        if (!sous_page_ouverte( v )) goto fin;
++        if (ecriture && (!(v & (VPROT_WRITE | VPROT_WRITECOPY)) || (v & VPROT_WRITEWATCH))) goto fin;
++    }
++    if (!(e = fex_alias_de( host )) || (ecriture && !e->inscriptible)) goto fin;
++    ret = e->alias + (a - host);
++fin:
++    mutex_unlock( &virtual_mutex );
++    return ret;
++}
++
++/***********************************************************************
++ *           cidre_sous_pages   (appel unix de ntdll, depuis FEX)
++ *
++ * op 0 : FEX annonce qu'il reecrit ses acces ; rend l'adresse de
++ *        sous_pages_gen et le code de l'exception de proposition. Par
++ *        NtQueryVirtualMemory( MemoryCidreSousPages ) seulement.
++ * op 1 : etat de la page d'hote hote : mixte, alias, droits de lecture et
++ *        d'ecriture par page de 4 Kio (bit i = page i), generation.
++ * op 2 : (sans effet) FEX a remis une instruction d'origine.
++ * op 3 : FEX ne reecrira pas l'instruction hote (pc) d'encodage code.
++ */
++NTSTATUS cidre_sous_pages( void *args )
++{
++    struct cidre_sous_pages_params *p = args;
++    char *host;
++    struct fex_alias *e;
++    unsigned int i;
++    sigset_t sigset;
++
++    if (p->op == 0)
++    {
++        const char *env = getenv( "CIDRE_SOUS_PAGES_FEX" );
++        if (env && !atoi( env )) return STATUS_NOT_SUPPORTED;
++        if (host_page_size == page_size) return STATUS_NOT_SUPPORTED;
++        p->gen_ptr = (UINT64)(UINT_PTR)&sous_pages_gen;
++        p->code = STATUS_CIDRE_SOUS_PAGE;
++        sous_pages_fex = TRUE;
++        return STATUS_SUCCESS;
++    }
++    if (p->op == 2) return STATUS_SUCCESS;   /* ancienne annonce de remise : plus rien a oublier */
++    if (p->op == 3)
++    {
++        sous_pages_refuser( (ULONG_PTR)p->hote, p->code );
++        return STATUS_SUCCESS;
++    }
++    if (p->op != 1) return STATUS_INVALID_PARAMETER;
++
++    host = ROUND_ADDR( (char *)(UINT_PTR)p->hote, host_page_mask );
++    p->mixte = p->lecture = p->ecriture = 0;
++    p->alias = 0;
++    server_enter_uninterrupted_section( &virtual_mutex, &sigset );
++    p->gen = sous_pages_gen;
++    if (page_hote_mixte( host ) && (e = fex_alias_de( host )))
++    {
++        for (i = 0; i < host_page_size / page_size; i++)
++        {
++            BYTE v = get_page_vprot( host + i * page_size );
++            if (!sous_page_ouverte( v )) continue;
++            p->lecture |= 1u << i;
++            if (e->inscriptible && (v & (VPROT_WRITE | VPROT_WRITECOPY)) && !(v & VPROT_WRITEWATCH))
++                p->ecriture |= 1u << i;
++        }
++        p->alias = (UINT64)(UINT_PTR)e->alias;
++        p->mixte = 1;
++    }
++    server_leave_uninterrupted_section( &virtual_mutex, &sigset );
++    return STATUS_SUCCESS;
++}
+ #else
++static inline void sous_pages_projection( const void *start, size_t size ) { }
+ static inline BOOL page_hote_mixte( const char *host ) { return FALSE; }
+ static int get_host_page_unix_prot( char *host, BYTE set, BYTE clear )
+ {
+@@ -3030,6 +3244,7 @@ static NTSTATUS map_file_into_view( struct file_view *view, int fd, size_t start
+     assert( start + size <= view->size );
+ 
+     alias_perimer();
++    sous_pages_projection( (char *)view->base + start, size );
+     if (vprot & VPROT_WRITE) flags |= MAP_SHARED;
+     else if (vprot & VPROT_WRITECOPY) flags |= MAP_PRIVATE;
+     else
+@@ -7343,6 +7558,17 @@ NTSTATUS WINAPI NtQueryVirtualMemory( HANDLE process, LPCVOID addr,
+     TRACE("(%p, %p, info_class=%d, %p, %ld, %p)\n",
+           process, addr, info_class, buffer, len, res_len);
+ 
++#ifdef __APPLE__
++    if (info_class == MemoryCidreSousPages)
++    {
++        /* FEX s'annonce ici (op 0) : un Wine qui ne connait pas cette classe
++         * refuse proprement, alors qu'un appel unix inconnu sortirait de la
++         * table. Les requetes suivantes passent par l'appel unix. */
++        if (process != GetCurrentProcess()) return STATUS_INVALID_HANDLE;
++        if (len != sizeof(struct cidre_sous_pages_params)) return STATUS_INFO_LENGTH_MISMATCH;
++        return cidre_sous_pages( buffer );
++    }
++#endif
+     switch(info_class)
+     {
+         case MemoryBasicInformation:
