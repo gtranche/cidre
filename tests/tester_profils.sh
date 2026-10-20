@@ -26,6 +26,7 @@
 #       d3d9, dlss et generation_images (metalfx ou non) : valeurs, fiche, `cidre set`, lus par le lanceur ;
 #       sortie_normale (tests/sortie_normale.sh) : codes, duree minimale, fiche de Fahrenheit ;
 #       exe_sans_anticheat : exe de Steam remplace (faux ELDEN RING), absent, coupe, introuvable, chemin ;
+#       knowndlls (tests/knowndlls.sh) : fiche de D2R, validation, pose et retrait dans une ruche factice ;
 #   6d. version macOS 32 bits seulement : binaire installe (faux Mach-O), fiche,
 #      cache du client Steam ; list/play/dl/install la traitent en jeu Windows ;
 #   7. sh -n sur les scripts de la chaine.
@@ -569,7 +570,8 @@ rm -rf "$CIDRE_PROFILS_BASE"; mkdir -p "$CIDRE_PROFILS_BASE"
 printf '[cidre]\ntso = false\n' >"$CIDRE_PROFILS_BASE/424242.toml"   # une fiche qui n'est plus dans l'index
 sortie=$(CIDRE_PROFILS_URL="file://$R/profils/" sh "$R/tests/fiche_profil.sh" maj json); rc=$?
 verif "maj : code 0" "0" "$rc"
-n=$(ls "$R"/profils/[0-9]*.toml | wc -l | tr -d ' ')
+# toutes les fiches, Steam ou non (bnet-osi) : le nom que l'archive publiee retient
+n=$(ls "$R/profils" | grep -E '^[A-Za-z0-9_-]+\.toml$' | grep -vc '^index\.toml$')
 verif "maj : $n fiches recues" "\"fiches\":$n" "$(printf '%s' "$sortie" | grep -o '"fiches":[0-9]*')"
 verif "maj : index en cache" "" "$(cmp "$CIDRE_PROFILS_BASE/index.toml" "$R/profils/index.toml" 2>&1)"
 verif "maj : fiche en cache identique" "" "$(cmp "$CIDRE_PROFILS_BASE/1903340.toml" "$R/profils/1903340.toml" 2>&1)"
@@ -593,7 +595,7 @@ verif "hors reseau : cache intact" "" "$(cmp "$CIDRE_PROFILS_BASE/1903340.toml" 
 echo "== 5b. archive de la base, fiche provisoire"
 FP="$R/tests/fiche_profil.sh"
 mkdir -p "$T/arch"
-( cd "$R/profils" && COPYFILE_DISABLE=1 tar -czf "$T/arch/base.tar.gz" index.toml [0-9]*.toml )
+( cd "$R/profils" && ls | grep -E '^[A-Za-z0-9_-]+\.toml$' | COPYFILE_DISABLE=1 tar -czf "$T/arch/base.tar.gz" -T - )   # comme .github/workflows/profils.yml
 rm -rf "$CIDRE_PROFILS_BASE"
 sortie=$(CIDRE_PROFILS_ARCHIVE="file://$T/arch/base.tar.gz" sh "$FP" maj json); rc=$?
 verif "archive : code 0" "0" "$rc"
@@ -934,6 +936,52 @@ verif "exe_sans_anticheat : CIDRE_EXE_SANS_ANTICHEAT nomme l'exe" "eldenring.exe
 verif "exe_sans_anticheat : exe introuvable -> inchange, note" "start_protected_game.exe 1" "$(sh "$N/jouer.sh" "$N" "$JD" 'exe_sans_anticheat=absent.exe') $(grep -c 'absent.exe introuvable' "$N/journal")"
 verif "exe_sans_anticheat : chemin refuse" "start_protected_game.exe" "$(sh "$N/jouer.sh" "$N" "$JD" 'exe_sans_anticheat=../eldenring.exe')"
 verif "exe_sans_anticheat : fichiers du jeu intacts" "$avant" "$(ls -l "$JD" | md5 -q 2>/dev/null || ls -l "$JD" | md5sum)"
+# knowndlls : fiche de D2R, validation, et pose dans une ruche factice au format
+# de Wine (KnownDLLs de wine.inf) : ajout, idempotence, retrait des seules
+# valeurs de Cidre, prefixe occupe
+verif "fiche bnet-osi : dx12" "true" "$(valeur bnet-osi dx12)"
+verif "fiche bnet-osi : knowndlls" "d3d12 d3d12core" "$(valeur bnet-osi knowndlls)"
+verif "knowndlls valider : forme canonique" "d3d12 d3d12core" "$(sh "$R/tests/knowndlls.sh" valider 'D3D12.dll,d3d12core d3d12')"
+verif "knowndlls valider : chemin refuse" "1" "$(sh "$R/tests/knowndlls.sh" valider '../d3d12' 2>/dev/null; echo $?)"
+K=$T/pfx-knowndlls; mkdir -p "$K"
+cat >"$K/system.reg" <<'EOR'
+WINE REGISTRY Version 2
+;; All keys relative to \\Machine
+
+[System\\ControlSet001\\Control\\Session Manager\\KnownDLLs] 1790333337
+#time=1dd4cdb776491c2
+"_xtajit"="xtajit.dll"
+"gdi32"="gdi32.dll"
+"kernel32"="kernel32.dll"
+
+[System\\ControlSet001\\Control\\Session Manager\\Memory Management] 1790333337
+"PagingFiles"="pagefile.sys"
+EOR
+cp "$K/system.reg" "$T/knowndlls-origine"
+kd() { WINEPREFIX=$K CIDRE_SERVEUR_WINE=non sh "$R/tests/knowndlls.sh" poser "$@" >/dev/null 2>&1; echo $?; }
+kv() { awk '/^\[/ { d = index($0, "KnownDLLs]") > 0; next } d && /^"/ { printf "%s ", $0 }' "$K/system.reg"; }
+verif "knowndlls : pose d3d12 d3d12core" "0 \"_xtajit\"=\"xtajit.dll\" \"gdi32\"=\"gdi32.dll\" \"kernel32\"=\"kernel32.dll\" \"d3d12\"=\"d3d12.dll\" \"d3d12core\"=\"d3d12core.dll\" " "$(kd 'd3d12 d3d12core') $(kv)"
+verif "knowndlls : marque de Cidre" "d3d12 d3d12core" "$(paste -sd ' ' - <"$K/.cidre-knowndlls")"
+cp "$K/system.reg" "$T/knowndlls-pose"
+verif "knowndlls : relance = ruche inchangee" "0 " "$(kd 'd3d12 d3d12core') $(cmp "$K/system.reg" "$T/knowndlls-pose" 2>&1)"
+verif "knowndlls : une valeur de Wine demandee n'est pas prise pour celle de Cidre" "0 d3d12" "$(kd 'd3d12 gdi32') $(paste -sd ' ' - <"$K/.cidre-knowndlls")"
+cp "$K/system.reg" "$T/knowndlls-occupe"
+verif "knowndlls : prefixe tenu par un wineserver -> code 3, ruche pas touchee" "3 " "$(WINEPREFIX=$K CIDRE_SERVEUR_WINE=oui sh "$R/tests/knowndlls.sh" poser >/dev/null 2>&1; echo $?) $(cmp "$K/system.reg" "$T/knowndlls-occupe" 2>&1)"
+verif "knowndlls : jeu sans l'option -> celles de Cidre retirees, celles de Wine gardees" "0 \"_xtajit\"=\"xtajit.dll\" \"gdi32\"=\"gdi32.dll\" \"kernel32\"=\"kernel32.dll\"  absente" "$(kd) $(kv) $([ -f "$K/.cidre-knowndlls" ] && echo presente || echo absente)"
+verif "knowndlls : ruche revenue a l'origine (hors horodatage)" "" "$(grep -v '^#time' "$K/system.reg" | diff - "$T/knowndlls-origine" | grep -v '#time' | grep '^[<>]')"
+verif "knowndlls : prefixe absent -> code 3" "3" "$(WINEPREFIX=$T/pas-de-prefixe sh "$R/tests/knowndlls.sh" poser d3d12 >/dev/null 2>&1; echo $?)"
+grep -q 'KDLL=$(opt knowndlls CIDRE_KNOWNDLLS)' "$R/tests/lancer_depuis_steam.sh" && ok "lanceur : option knowndlls lue" || echec "lanceur : option knowndlls non lue"
+verif "knowndlls.sh est livre avec le runtime" "1" "$(grep -c ' knowndlls\.sh ' "$R/tests/empaqueter_runtime.sh")"
+# posee avant le premier processus Wine du lancement (le client de service), comme la version de Windows
+kl=$(grep -n 'knowndlls.sh" poser' "$R/tests/lancer_depuis_steam.sh" | head -1 | cut -d: -f1)
+kw=$(grep -n "etape2_pile_arm64ec.sh\" 'c:.faux_steam.exe'" "$R/tests/lancer_depuis_steam.sh" | head -1 | cut -d: -f1)
+[ -n "$kl" ] && [ -n "$kw" ] && [ "$kl" -lt "$kw" ] && ok "lanceur : knowndlls posees avant le premier processus Wine" || echec "lanceur : knowndlls.sh ($kl) doit preceder le client de service ($kw)"
+cp "$CIDRE_PROFILS" "$T/perso.avant-knowndlls" 2>/dev/null || : >"$T/perso.avant-knowndlls"
+sh "$R/cidre" set defaut knowndlls 'D3D12 d3d12core.dll' >/dev/null 2>&1
+verif "cidre set knowndlls : forme canonique ecrite" "d3d12 d3d12core" "$(valeur 1245620 knowndlls)"
+sh "$R/cidre" set defaut knowndlls '../x' >/dev/null 2>&1; rc=$?
+verif "cidre set knowndlls : chemin refuse" "2" "$rc"
+cp "$T/perso.avant-knowndlls" "$CIDRE_PROFILS"
 # d3d9 : dxvk ou wined3d, rien d'autre ; le lanceur la lit et pose le =n/=b
 cp "$CIDRE_PROFILS" "$T/perso.avant-d3d9"
 sh "$R/cidre" set defaut d3d9 wined3d >/dev/null 2>&1
@@ -1090,7 +1138,7 @@ else
 fi
 
 echo "== 7. syntaxe"
-for s in cidre tests/cidre_install.sh tests/profil_cidre.sh tests/fiche_profil.sh tests/reglages_jeu.sh tests/machine.sh tests/lancer_depuis_steam.sh tests/arguments_jeu.sh tests/empaqueter_runtime.sh tests/tester_profils.sh tests/prefixe_a_jour.sh tests/fin_de_partie.sh tests/sortie_normale.sh; do
+for s in cidre tests/cidre_install.sh tests/profil_cidre.sh tests/fiche_profil.sh tests/reglages_jeu.sh tests/machine.sh tests/lancer_depuis_steam.sh tests/arguments_jeu.sh tests/empaqueter_runtime.sh tests/tester_profils.sh tests/prefixe_a_jour.sh tests/fin_de_partie.sh tests/sortie_normale.sh tests/knowndlls.sh; do
    sh -n "$R/$s" 2>/dev/null && ok "sh -n $s" || echec "sh -n $s"
 done
 

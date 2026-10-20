@@ -1,0 +1,23 @@
+# Diablo II: Resurrected (Battle.net, code produit OSI) -- fiche ecrite a la main
+# (2026-10-20), d'apres les manches D2R du M1 Max. Voir BATTLENET.md.
+
+[jeu]
+appid = "bnet-osi"
+nom = "Diablo II: Resurrected"
+exe = "D2R.exe"
+api = "d3d12"
+api_disponibles = "d3d12"
+bits = 64
+lanceur = "battlenet"
+
+[cidre]
+# D3D12 seulement : vkd3d-proton + KosmicKrisp. Le d3d12 builtin de Wine retombe en
+# D3D11, que D2R n'a pas (pointeur nul dans un rappel de fenetre, rien a l'ecran).
+dx12 = true
+# Le dossier du jeu contient le d3d12.dll de Microsoft pour Windows 7 (D3D12On7) :
+# comme sous Windows 10, le D3D12 du systeme (vkd3d-proton, system32) passe devant.
+knowndlls = "d3d12 d3d12core"
+
+[compat]
+etat = "non-teste"
+date = "2026-10-20"

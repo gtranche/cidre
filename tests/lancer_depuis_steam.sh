@@ -423,6 +423,16 @@ fi
 WINVER=${CIDRE_WINDOWS_VERSION:-$(profil windows_version)}
 sh "$R/tests/version_windows.sh" poser "$WINVER" 2>&1 | tee -a "$JOURNAL" || true
 
+# DLL prises dans system32 meme si le jeu en livre une copie : knowndlls =
+# "d3d12 d3d12core" (Diablo II Resurrected, dont le dossier contient le D3D12
+# de Microsoft pour Windows 7). Reglee a chaque lancement comme la version de
+# Windows, dans HKLM\...\Session Manager\KnownDLLs, sans demarrer Wine ; un jeu
+# sans l'option retire celles que Cidre avait posees pour un autre. Jamais
+# bloquant. CIDRE_KNOWNDLLS pour un essai (=0 la coupe). Cf. tests/knowndlls.sh.
+KDLL=$(opt knowndlls CIDRE_KNOWNDLLS)
+[ "$KDLL" != false ] || KDLL=
+sh "$R/tests/knowndlls.sh" poser "$KDLL" 2>&1 | tee -a "$JOURNAL" || true
+
 # Rendu Direct3D 11 : d3d11 = "dxmt" (defaut depuis la 1.5.8) ou "dxvk" (CIDRE_D3D11=dxvk, repli).
 # DXVK est un natif pose en system32 (dxgi,d3d11=n, cf. etape2). DXMT (D3D11 ->
 # Metal en un saut, x3 a x4 mesure sur Expedition 33) est bati comme des

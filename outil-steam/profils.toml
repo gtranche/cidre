@@ -227,6 +227,15 @@
 #                    journal, et le jeu part en win10. `cidre set <id> windows_version win7`,
 #                    `cidre unset <id> windows_version` ; CIDRE_WINDOWS_VERSION=win7 pour un
 #                    essai. Cf. tests/version_windows.sh. APPLIQUE.
+#   knowndlls        DLL que le jeu doit prendre dans system32 meme s'il en livre une
+#                    copie dans son dossier : noms sans .dll separes par des espaces
+#                    ("d3d12 d3d12core" pour Diablo II Resurrected, qui livre le D3D12
+#                    de Microsoft pour Windows 7). Par jeu, comme windows_version : le
+#                    lanceur les met a chaque lancement dans HKLM\...\Session Manager\
+#                    KnownDLLs (sans demarrer Wine) et retire, pour un jeu sans l'option,
+#                    celles que Cidre avait posees -- jamais celles de Wine. `cidre set
+#                    <id> knowndlls "d3d12 d3d12core"` ; CIDRE_KNOWNDLLS pour un essai
+#                    (=0 la coupe). Cf. tests/knowndlls.sh. APPLIQUE.
 #   sortie_normale   codes de sortie qui sont, pour CE jeu, sa fin normale : une chaine,
 #                    codes separes par des espaces ("1"). Apres sortie_normale_apres
 #                    secondes de jeu (60 par defaut), le lanceur le dit au journal, ne

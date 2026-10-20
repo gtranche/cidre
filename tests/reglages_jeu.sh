@@ -481,7 +481,7 @@ entree() {
 }
 
 # Hors fiche : un reglage du prefixe qui n est pas celui d un jeu (la version de
-# Windows, tests/version_windows.sh). Memes gardes et meme ecriture qu une entree
+# Windows, tests/version_windows.sh ; les KnownDLLs, tests/knowndlls.sh). Memes gardes et meme ecriture qu une entree
 # au format registre, sur la ruche et la cle donnees.
 if [ "${2:-}" = ruche ]; then
    case ${3:-} in user.reg|system.reg) ;; *) echo "    reglages du jeu : ruche « ${3:-} » refusee (user.reg ou system.reg)"; exit 1 ;; esac

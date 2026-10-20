@@ -1974,6 +1974,11 @@ case "$cmd" in
         # la forme que Wine attend ; la liste est celle du lanceur
         val=$(sh "$R/tests/version_windows.sh" valider "$val") || exit 2
         val="\"$val\"" ;;
+      knowndlls)
+        # DLL prises dans system32 meme si le jeu en livre une copie : noms sans
+        # .dll, separes par des espaces ; la forme canonique est celle du lanceur
+        val=$(sh "$R/tests/knowndlls.sh" valider "$val") || exit 2
+        val="\"$val\"" ;;
       arguments)
         # options de ligne de commande du jeu, separees par des espaces ; une
         # chaine, sans guillemet ni barre oblique inverse (le profil est du TOML)
@@ -1988,7 +1993,7 @@ case "$cmd" in
         # une chaine : ecrite entre guillemets dans le profil (TOML)
         case $val in auto|fr|en|de|es|it|pt|ru|pl|ja|ko|zh) val="\"$val\"" ;;
           *) echo "langue attend auto ou un code : fr, en, de, es, it, pt, ru, pl, ja, ko, zh" >&2; exit 2 ;; esac ;;
-      *) echo "option inconnue : $cle (journal_detaille, tso, sync_local, vsync, hud, overlay, async, narrow_barriers, garde_index, dx12, sm66, d3d11, d3d9, metalfx, dlss, generation_images, fils_compilation, eac_untrusted, luajit, plein_ecran, mode_emule, retina, gamemode, maj_avant_lancement, langue, clavier, windows_version, arguments, reglages_jeu_appliques, deck, fex_cache_disque, fex_x87_reduit, fex_maxinst)" >&2; exit 2 ;;
+      *) echo "option inconnue : $cle (journal_detaille, tso, sync_local, vsync, hud, overlay, async, narrow_barriers, garde_index, dx12, sm66, d3d11, d3d9, metalfx, dlss, generation_images, fils_compilation, eac_untrusted, luajit, plein_ecran, mode_emule, retina, gamemode, maj_avant_lancement, langue, clavier, windows_version, knowndlls, arguments, reglages_jeu_appliques, deck, fex_cache_disque, fex_x87_reduit, fex_maxinst)" >&2; exit 2 ;;
     esac
     CIDRE_PROFILS=${CIDRE_PROFILS:-$CIDRE_DIR/profils.toml} sh "$R/tests/profil_cidre.sh" "$id" set "$cle" "$val" ;;
   unset)

@@ -7539,3 +7539,9 @@ nom = "Amnesia: Rebirth"
 etat = "non-teste"
 date = "2026-10-11"
 empreinte = "1b57ab505182399a1cbaed112212538d"
+
+[bnet-osi]
+nom = "Diablo II: Resurrected"
+etat = "non-teste"
+date = "2026-10-20"
+empreinte = "972c80d91c4ca4cd14725a8983bf2b00"
