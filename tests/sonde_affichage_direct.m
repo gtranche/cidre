@@ -36,6 +36,8 @@
  *   O  temoin fenetre : 1280x800, ni plein ecran ni couverture de l'ecran
  *   X  pas d'espace plein ecran (fenetre couvrant l'ecran, sans toggleFullScreen)
  *   D  drawable a une taille arbitraire 1280x800 (agrandi par l'affichage)
+ *   J  niveau kCGDockWindowLevel+1 (21) avant et apres l'entree dans l'espace : fenetre
+ *      topmost de winemac quand `fullscreen` retombe a 0 dans l'espace (LN, mode emule)
  *   P  chemin hors ecran de winemac : CAMetalLayer exportee par un CAContext,
  *      montree par un CALayerHost sous-couche de la contentView (CAContextSwapChain)
  */
@@ -236,6 +238,7 @@ static uint64_t ws_gpu_ns(void)
 {
     plein = YES;
     if (has('H')) [self masquerBarre];
+    if (has('J')) [win setLevel:kCGDockWindowLevel + 1];
     if (has('Z'))
     {
         [win setLevel:NSStatusWindowLevel + 1];
@@ -358,6 +361,7 @@ static uint64_t ws_gpu_ns(void)
     }
 
     if (has('L')) [win setLevel:NSStatusWindowLevel + 1];
+    if (has('J')) [win setLevel:kCGDockWindowLevel + 1];
     [NSApp activate];
     [NSApp activateIgnoringOtherApps:YES];
     [win makeKeyAndOrderFront:nil];

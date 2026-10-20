@@ -66,6 +66,21 @@ capture) :
   rectangles pleins, le client vient du toplevel).
 - CIDRE_DIRECT_DIAG affiche aussi les bandes d'un CAShapeLayer.
 
+3. Niveau de la fenetre dans l'espace (LN, 2026-10-20)
+
+Avec 1 et 2, LN en 1168x730 avait une couche opaque couvrant toute la vue,
+sans image GDI ni masque, MetalFX a l'aspect exact (3456x2168), et restait
+compose (0x70017). Le journal montrait la fenetre au niveau 21 : `fullscreen`
+vaut 0 des qu'il est recalcule dans l'espace (style
+NSWindowStyleMaskFullScreen), et le changement de mode emule le recalcule ;
+la fenetre topmost de LN tombait alors au niveau du Dock + 1. Sonde native
+(tests/sonde_affichage_direct.m, M1 Max, macOS 26, variante J = niveau 21) :
+WTLMHEC (niveau 26) detachement 0 sur 962 images, WTLMHECD (drawable
+1280x800 sur 1728x1084) 0 aussi, WTJMHEC et WTJMHECD (niveau 21) 0x70017.
+L'aspect du drawable ne compte pas ; le niveau, si. Dans l'espace, une
+fenetre active garde le niveau d'une fenetre plein ecran (NSStatusWindowLevel
++ 1, + 1 si topmost), recalcule a l'entree et a la sortie de l'espace.
+
 A verifier en jeu : LN en f067 (1168x730) sans bande et detachement 0 ;
 Demonologist, premier clic en partie sans saut ; un jeu a menus au pointeur
 (clic au bon endroit apres retour de capture).
@@ -177,7 +192,7 @@ Demonologist, premier clic en partie sans saut ; un jeu a menus au pointeur
  
  /***********************************************************************
 --- aa/dlls/winemac.drv/cocoa_window.m	2026-10-20 01:58:07
-+++ bb/dlls/winemac.drv/cocoa_window.m	2026-10-20 01:58:07
++++ bb/dlls/winemac.drv/cocoa_window.m	2026-10-20 02:22:48
 @@ -136,6 +136,27 @@
                   ml.drawableSize.width, ml.drawableSize.height, (unsigned long)ml.pixelFormat,
                   status & 0xffffffffULL, (status & 0xffffffffULL) ? " (compose)" : " (DIRECT)");
@@ -206,6 +221,42 @@ Demonologist, premier clic en partie sans saut ; un jeu a menus au pointeur
      fprintf(stderr, "cidre direct: %*s%s frame=(%.0f,%.0f %.0fx%.0f) opaque=%d hidden=%d contents=%d bg=%d mask=%d%s\n",
              depth * 2, "", [NSStringFromClass([layer class]) UTF8String],
              layer.frame.origin.x, layer.frame.origin.y, layer.frame.size.width, layer.frame.size.height,
+@@ -1297,7 +1318,15 @@
+ 
+             captured = (fullscreen || [self screen]) && [[WineApplicationController sharedController] areDisplaysCaptured];
+ 
+-            if (captured || fullscreen)
++            /* Cidre (0205) : dans l'espace plein ecran, `fullscreen` vaut 0 des
++               qu'il est recalcule (style NSWindowStyleMaskFullScreen) ; apres le
++               changement de mode emule de Little Nightmares, sa fenetre topmost
++               tombait au niveau du Dock + 1 (21) au lieu de 27. Or macOS ne
++               passe en affichage direct qu'au-dessus de la barre d'etat :
++               sonde native (M1 Max, 2026-10-20), niveau 26 -> detachement 0,
++               niveau 21 -> 0x70017. On garde le niveau d'une fenetre plein
++               ecran tant qu'elle est dans l'espace. */
++            if (captured || fullscreen || [self cidreInFullScreenSpace])
+             {
+                 if (captured)
+                     level = CGShieldingWindowLevel() + 1; /* Need +1 or we don't get mouse moves */
+@@ -3049,6 +3078,9 @@
+         enteredFullScreenTime = [[NSProcessInfo processInfo] systemUptime];
+         if ([self cidreOwnsFullScreenSpace])
+             [self cidreHideFullScreenTitlebar:YES];
++        /* Cidre (0205) : niveau d'une fenetre plein ecran dans l'espace. */
++        if ([self cidreOwnsFullScreenSpace])
++            [[WineApplicationController sharedController] adjustWindowLevels];
+         [self cidreUpdateDirect];
+         [[WineApplicationController sharedController] cidreUpdateCursorCapture];
+         if (pendingOrderOut)
+@@ -3060,6 +3092,8 @@
+         exitingFullScreen = FALSE;
+         [self setFrameAndWineFrame:nonFullscreenFrame];
+         [self windowDidResize:nil];
++        if ([self cidreOwnsFullScreenSpace])
++            [[WineApplicationController sharedController] adjustWindowLevels];
+         if (pendingOrderOut)
+             [self doOrderOut];
+     }
 --- aa/dlls/winemac.drv/macdrv_cocoa.h	2026-10-19 23:23:27
 +++ bb/dlls/winemac.drv/macdrv_cocoa.h	2026-10-20 01:58:07
 @@ -222,6 +222,7 @@
