@@ -958,11 +958,12 @@ verif "cidre set defaut generation_images metalfx" "metalfx" "$(valeur 998 gener
 sh "$R/cidre" set defaut generation_images oui >/dev/null 2>&1; rc=$?
 verif "cidre set generation_images : valeur inconnue refusee" "2" "$rc"
 cp "$T/perso.avant-fg" "$CIDRE_PROFILS"
-grep -q 'opt generation_images CIDRE_GENERATION_IMAGES)" = metalfx' "$R/tests/lancer_depuis_steam.sh" && grep -q 'export CIDRE_DXMT_FG=1' "$R/tests/lancer_depuis_steam.sh" \
-   && ok "lanceur : option generation_images lue (CIDRE_DXMT_FG, avec dlss seulement)" || echec "lanceur : option generation_images non lue"
+grep -q 'opt generation_images CIDRE_GENERATION_IMAGES)" = metalfx' "$R/tests/lancer_depuis_steam.sh" && ! grep -q 'export CIDRE_DXMT_FG=1' "$R/tests/lancer_depuis_steam.sh" \
+   && ok "lanceur : generation_images lue et refusee (jamais CIDRE_DXMT_FG=1)" || echec "lanceur : generation_images encore activable"
 # le bloc DLSS du lanceur, joue a part sur un faux jeu dont le chemin a des espaces
 # (« SSK SSD » : le 2026-10-18 un chemin decoupe faisait mourir le lanceur avant Wine)
-N=$T/nvext; JD="$N/Jeux Cidre/1903340"; mkdir -p "$JD/Sandfall/Binaries/Win64" "$JD/Sandfall/Plugins/NVIDIA/DLSS" "$N/dxmt/nvext" "$N/windll" "$N/sys32"
+N=$T/nvext; JD="$N/Jeux Cidre/1903340"; mkdir -p "$JD/Sandfall/Binaries/Win64" "$JD/Sandfall/Plugins/NVIDIA/DLSS" "$N/dxmt/nvext" "$N/windll" "$N/sys32" "$N/tests"
+cp "$R/tests/machine.sh" "$N/tests/machine.sh"
 printf 'MZ' >"$JD/Sandfall/Binaries/Win64/SandFall-Win64-Shipping.exe"; printf 'MZ' >"$JD/Expedition33_Steam.exe"
 printf 'signe' >"$JD/Sandfall/Plugins/NVIDIA/DLSS/nvngx_dlss.dll"
 printf 'nvapi' >"$N/dxmt/nvext/nvapi64.dll"; printf 'nvngx' >"$N/dxmt/nvext/nvngx.dll"
@@ -975,16 +976,28 @@ opt() { eval "v=\${$2:-}"; echo "$v"; }
 est_pe32() { return 1; }
 poser() { cmp -s "$1" "$2" && return 0; cp -p "$1" "$2.cidre-tmp" && mv -f "$2.cidre-tmp" "$2"; }
 . "$R/bloc.sh"
+echo "fg ${CIDRE_DXMT_FG:-0}"
 echo "fin ${DXMT_ENABLE_NVEXT:-0}"
 EOS
-fin=$(CIDRE_DLSS=metalfx sh "$N/jouer.sh" "$N" "$JD" 2>&1 | tail -1)
-verif "dlss : refuse sans CIDRE_DLSS_ESSAI=1 (garde du blocage GPU)" "fin 0 absent" "$fin $([ -e "$N/sys32/nvngx.dll" ] && echo pose || echo absent)"
-fin=$(CIDRE_DLSS=metalfx CIDRE_DLSS_ESSAI=1 sh "$N/jouer.sh" "$N" "$JD" 2>&1 | tail -1)
-verif "dlss : bloc du lanceur va au bout sur un chemin a espaces" "fin 1" "$fin"
+# garde du 2026-10-20 : DLSS seulement si famille_gpu >= 9, sans cle de contournement
+M1F="famille_gpu=7"; M2F="famille_gpu=8"; M4F="famille_gpu=9"
+fin=$(CIDRE_MACHINE=$M1F CIDRE_DLSS=metalfx sh "$N/jouer.sh" "$N" "$JD" 2>&1 | tail -1)
+verif "dlss : refuse sur M1 (famille 7)" "fin 0 absent" "$fin $([ -e "$N/sys32/nvngx.dll" ] && echo pose || echo absent)"
+verif "dlss : refus note au journal avec la famille" "1" "$(grep -c 'dlss : metalfx refuse sur famille_gpu 7' "$N/journal")"
+fin=$(CIDRE_MACHINE=$M1F CIDRE_DLSS=metalfx CIDRE_DLSS_ESSAI=1 sh "$N/jouer.sh" "$N" "$JD" 2>&1 | tail -1)
+verif "dlss : refuse sur M1 meme avec CIDRE_DLSS_ESSAI=1" "fin 0 absent" "$fin $([ -e "$N/sys32/nvngx.dll" ] && echo pose || echo absent)"
+fin=$(CIDRE_MACHINE=$M2F CIDRE_DLSS=metalfx sh "$N/jouer.sh" "$N" "$JD" 2>&1 | tail -1)
+verif "dlss : refuse sur famille 8 (non mesuree)" "fin 0" "$fin"
+fin=$(CIDRE_MACHINE=famille_gpu=x CIDRE_DLSS=metalfx sh "$N/jouer.sh" "$N" "$JD" 2>&1 | tail -1)
+verif "dlss : refuse si la famille est illisible" "fin 0 1" "$fin $(grep -c 'famille_gpu illisible' "$N/journal")"
+fin=$(CIDRE_MACHINE=$M4F CIDRE_DLSS=metalfx sh "$N/jouer.sh" "$N" "$JD" 2>&1 | tail -1)
+verif "dlss : accepte sur M4 (famille 9), bloc au bout sur un chemin a espaces" "fin 1" "$fin"
 verif "dlss : leurre signe a cote de l'exe et en system32" "signe signe signe" "$(cat "$JD/nvngx.dll" "$JD/Sandfall/Binaries/Win64/nvngx.dll" "$N/sys32/nvngx.dll" 2>/dev/null | tr '\n' ' ' | sed 's/signe/signe /g; s/  */ /g; s/ $//')"
-fin=$(sh "$N/jouer.sh" "$N" "$JD" 2>&1 | tail -1)
+fin=$(CIDRE_MACHINE=$M4F sh "$N/jouer.sh" "$N" "$JD" 2>&1 | tail -1)
 verif "dlss : retire au lancement suivant sans dlss" "fin 0 absent absent absent" "$fin $([ -e "$JD/nvngx.dll" ] && echo la || echo absent) $([ -e "$N/sys32/nvngx.dll" ] && echo la || echo absent) $([ -e "$N/windll/nvngx.dll" ] && echo la || echo absent)"
-# generation d'images : option d'essai, NE PAS ACTIVER (panique WindowServer du 2026-10-18) ; aucune fiche
+# generation d'images : fermee partout (2026-10-20), meme sur M4 avec dlss, et un CIDRE_DXMT_FG herite est retire
+sortie=$(CIDRE_MACHINE=$M4F CIDRE_DLSS=metalfx CIDRE_GENERATION_IMAGES=metalfx CIDRE_DXMT_FG=1 sh "$N/jouer.sh" "$N" "$JD" 2>&1 | tail -2 | tr '\n' ' ')
+verif "generation_images : refusee sur M4 avec dlss, CIDRE_DXMT_FG herite retire, note au journal" "fg 0 fin 1 oui" "$sortie$(grep -q 'generation_images : metalfx refuse' "$N/journal" && echo oui || echo non)"
 n=$(grep -l '^generation_images *= *"metalfx"' "$R"/profils/*.toml 2>/dev/null | wc -l | tr -d ' ')
 verif "generation_images : aucune fiche ne l'active" "0" "$n"
 grep -q 'nvngx/nvngx.dll' "$R/tests/construire_dxmt.sh" && grep -q 'enable_nvngx=true' "$R/tests/construire_dxmt.sh" \

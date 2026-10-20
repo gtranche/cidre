@@ -189,17 +189,18 @@
 #                    DXMT 64 bits seulement. Par fiche, jamais par defaut : un jeu qui
 #                    croit tourner sur NVIDIA peut prendre des chemins lents ailleurs.
 #                    "non" (defaut) : carte Apple, pas de DLSS.
-#                    REFUSE sans CIDRE_DLSS_ESSAI=1 : DLSS -> MetalFX a bloque le GPU du
-#                    M1 dans Expedition 33 (18 et 19/10, WindowServer tue ou panique).
+#                    Seulement si famille_gpu >= 9 (M3, M4), refuse en dessous sans
+#                    cle de contournement : DLSS -> MetalFX temporel a bloque le GPU du
+#                    M1 (Apple7) quatre fois dans Expedition 33 (18-20/10) ; M4 : 46
+#                    images/s contre 40 en TSR, aucun gel. Apple8 (M2) non mesure.
 #   generation_images "metalfx" : avec dlss = "metalfx", DXMT genere une image
 #                    intermediaire par image rendue (MTLFXFrameInterpolator, macOS 26)
 #                    a partir de la profondeur et des vecteurs de mouvement de DLSS, et
 #                    la presente une demi-periode avant la vraie : jusqu'a deux fois
 #                    plus d'images affichees quand le CPU limite, une demi-image de
 #                    latence en plus, l'interface peut trembler. "non" (defaut).
-#                    NE PAS ACTIVER : le 2026-10-18 le M1 a panique (WindowServer bloque
-#                    dans le pilote AGX) pendant une capture d'ecran, Expedition 33 en
-#                    generation d'images ; non tranche. Aucune fiche ne la pose.
+#                    FERMEE sur tous les Mac (2026-10-20) : le lanceur l'ignore et le
+#                    note au journal (le M1 a panique le 18/10 en generation d'images).
 #
 # --- base de compatibilite par jeu (inspiree des recettes CrossOver, cf.
 #     VEILLE_CROSSOVER.md). dll_overrides et windows_version sont APPLIQUES par le

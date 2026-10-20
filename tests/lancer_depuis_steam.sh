@@ -646,14 +646,20 @@ fi
 # pose est note dans $NVEXT_POSES et retire au lancement suivant sans dlss.
 DLSS=$(opt dlss CIDRE_DLSS)
 case $DLSS in metalfx) ;; *) DLSS= ;; esac
-# GARDE : DLSS -> MetalFX temporel a bloque le GPU du M1 dans Expedition 33, deux fois
-# (2026-10-18 avec la generation d'images, 2026-10-19 sans) : WindowServer tue par le
-# chien de garde ou panique du noyau, toute la session perdue. Tant que ce n'est pas
-# explique, dlss est refuse, d'une fiche comme de l'environnement, sans
-# CIDRE_DLSS_ESSAI=1 (essais hors jeu ou manches accordees par la coordination).
-if [ -n "$DLSS" ] && [ "${CIDRE_DLSS_ESSAI:-}" != 1 ]; then
-   echo "    dlss : metalfx refuse (blocage GPU du M1 constate les 18 et 19/10 ; CIDRE_DLSS_ESSAI=1 pour un essai) : DLSS absent" >>"$JOURNAL"
-   DLSS=
+# GARDE : DLSS -> MetalFX temporel bloque le GPU des Mac de famille Apple7 (M1) :
+# quatre gels dans Expedition 33 (18, 19 et 20/10, dont deux paniques du noyau par le
+# chien de garde de WindowServer), MetalFX dans le tampon du rendu comme dans une file
+# a part ; le jeu meurt coince dans le pilote AGXG13X. Le M4 (Apple9) tient (46 images/s
+# contre 40 en TSR, aucun gel). Decision du 2026-10-20 : DLSS seulement si famille_gpu
+# >= 9, d'une fiche comme de l'environnement ; famille illisible = refus. Aucune cle de
+# contournement (CIDRE_DLSS_ESSAI n'a plus d'effet). Apple8 (M2) n'est pas mesure.
+if [ -n "$DLSS" ]; then
+   FAMILLE_GPU=$(sh "$R/tests/machine.sh" famille_gpu 2>/dev/null | sed -n 's/^famille_gpu=//p')
+   case $FAMILLE_GPU in ''|*[!0-9]*) FAMILLE_GPU= ;; esac
+   if [ -z "$FAMILLE_GPU" ] || [ "$FAMILLE_GPU" -lt 9 ]; then
+      echo "    dlss : metalfx refuse sur famille_gpu ${FAMILLE_GPU:-illisible} (il faut >= 9 : MetalFX temporel bloque le GPU du M1, Apple7) : DLSS absent" >>"$JOURNAL"
+      DLSS=
+   fi
 fi
 NVEXT_POSES=$R/wine/.cidre-nvext-poses
 source_nvext() { # <fichier> : nvapi64.dll ou nvngx.dll
@@ -721,25 +727,16 @@ if [ -n "$DLSS" ]; then
       *) export CIDRE_DLL_OVERRIDES="${CIDRE_DLL_OVERRIDES:+$CIDRE_DLL_OVERRIDES;}$NVEXT_OV" ;;
    esac
    echo "    dlss : metalfx -> DLSS Super Resolution par MTLFXTemporalScaler (DXMT_ENABLE_NVEXT=1, nvapi64/nvngx depuis $(dirname "$(source_nvext nvngx.dll)"))" >>"$JOURNAL"
-   # generation_images = "metalfx" (CIDRE_GENERATION_IMAGES=metalfx) : DXMT fabrique une
-   # image intermediaire par image rendue (MTLFXFrameInterpolator, macOS 26), a partir de
-   # la profondeur et des vecteurs de mouvement que DLSS a recus, et la presente une
-   # demi-periode avant la vraie : deux fois plus d'images affichees quand le CPU limite,
-   # une demi-image de latence en plus. Seulement avec dlss = "metalfx" (sans DLSS, DXMT
-   # n'a ni profondeur ni vecteurs). Sous macOS 25, DXMT l'ignore.
-   # NE PAS ACTIVER : le 2026-10-18 le M1 a panique (WindowServer bloque dans le pilote
-   # AGX, watchdog 120 s) pendant une capture d'ecran, Expedition 33 en generation
-   # d'images ; la meme famille de gel que le 16/10 sans elle, non tranche. Option
-   # d'essai seulement, aucune fiche ne la pose ; le journal le rappelle.
-   if [ "$(opt generation_images CIDRE_GENERATION_IMAGES)" = metalfx ]; then
-      export CIDRE_DXMT_FG=1
-      echo "    dlss : generation d'images MetalFX (MTLFXFrameInterpolator, CIDRE_DXMT_FG=1) -- ESSAI : panique WindowServer vue le 2026-10-18 pendant une capture d'ecran, aucune capture pendant le jeu" >>"$JOURNAL"
-   fi
 else
    if [ -f "$NVEXT_POSES" ] || [ -f "$WINDLL/nvngx.dll" ]; then retirer_nvext "sans dlss"; fi
-   if [ "$(opt generation_images CIDRE_GENERATION_IMAGES)" = metalfx ]; then
-      echo "    generation_images = metalfx sans DLSS actif : sans effet (il faut dlss = \"metalfx\")" >>"$JOURNAL"
-   fi
+fi
+# generation_images (MTLFXFrameInterpolator de DXMT, CIDRE_DXMT_FG) : FERMEE partout,
+# sans condition (decision du 2026-10-20) ; le M1 a panique le 18/10 en generation
+# d'images. L'option d'une fiche ou de l'environnement est ignoree et notee ; un
+# CIDRE_DXMT_FG herite est retire.
+unset CIDRE_DXMT_FG
+if [ "$(opt generation_images CIDRE_GENERATION_IMAGES)" = metalfx ]; then
+   echo "    generation_images : metalfx refuse (fermee sur tous les Mac) : pas de generation d'images" >>"$JOURNAL"
 fi
 
 # metalfx en D3D12, Vulkan et DXVK (KosmicKrisp, 0202) : l'image du jeu est
