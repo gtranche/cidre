@@ -1,0 +1,52 @@
+Generated-by: LLM
+
+wine11 : arm64x_check_call (appel indirect ARM64EC vers du code x64) lit les octets de la cible pour y reconnaitre une sequence FFS, syscall ou jmp [rip] ; quand la cible n est pas lisible (jeu protege qui dechiffre ses pages a la premiere execution, D2R), la lecture fautait dans ntdll et devenait l exception de l invite, que le gestionnaire du jeu ne reconnait pas (il attend une faute d execution) : mort. Une violation d acces dont le pc est dans ces lectures (etiquettes arm64x_check_call_probe_start/_end) reprend desormais sur la sortie par le thunk de sortie (arm64x_check_call_exit) : le code x64 est appele normalement et faute a l execution, comme sous Windows. Temoin h64cible_chiffree (qsort EC et CreateThread vers une page fermee sur 16 Kio, gestionnaire qui ne traite que l execution) : avant, mort sur lecture a #arm64x_check_call+0x28 ; apres, OK. D2R : plus aucune faute dans arm64x_check_call (morts restantes : pile corrompue, autre cause).
+
+diff --git a/dlls/ntdll/signal_arm64ec.c b/dlls/ntdll/signal_arm64ec.c
+index eb6de4f..3c40f9a 100644
+--- a/dlls/ntdll/signal_arm64ec.c
++++ b/dlls/ntdll/signal_arm64ec.c
+@@ -206,6 +206,8 @@ void *peb_arm64ec = NULL;
+ #endif
+ 
+ static void arm64x_check_call(void);
++/* Bounds of the loads in arm64x_check_call that read the destination's code, and its exit thunk path. */
++extern const char arm64x_check_call_probe_start[], arm64x_check_call_probe_end[], arm64x_check_call_exit[];
+ 
+ /*******************************************************************
+  *         arm64ec_process_init
+@@ -1349,6 +1351,16 @@ static void dispatch_syscall( ARM64_NT_CONTEXT *context )
+ static void * __attribute__((used)) prepare_exception_arm64ec( EXCEPTION_RECORD *rec, ARM64EC_NT_CONTEXT *context, ARM64_NT_CONTEXT *arm_ctx )
+ {
+     if (rec->ExceptionCode == STATUS_EMULATION_SYSCALL) dispatch_syscall( arm_ctx );
++    /* arm64x_check_call reads the destination's code to recognize a fast-forward, syscall or jump sequence. When
++     * that code is not readable (a protected game decrypting its pages on first execution), the read must not
++     * become the guest's exception: on Windows the call reaches the x64 code, which faults on execution, and the
++     * guest's handler expects that fault. Treat the destination as plain x64 code and call it through the exit thunk. */
++    if (rec->ExceptionCode == STATUS_ACCESS_VIOLATION &&
++        arm_ctx->Pc >= (ULONG_PTR)arm64x_check_call_probe_start && arm_ctx->Pc < (ULONG_PTR)arm64x_check_call_probe_end)
++    {
++        arm_ctx->Pc = (ULONG_PTR)arm64x_check_call_exit;
++        syscall_NtContinue( arm_ctx, FALSE );
++    }
+     context_arm_to_x64( context, arm_ctx );
+     if (pResetToConsistentState) pResetToConsistentState( rec, &context->AMD64_Context, arm_ctx );
+     /* call x64 dispatcher if the thunk or the function pointer was modified */
+@@ -1964,6 +1976,7 @@ static void __attribute__((naked)) arm64x_check_call(void)
+          /* check if dest is aligned */
+          "tst x11, #15\n\t"                 /* dest & 15 */
+          "b.ne .Ljmp\n\t"
++         "arm64x_check_call_probe_start:\n\t"
+          "ldr x16, [x11]\n\t"               /* dest code */
+          /* check for fast-forward sequence */
+          "ldr x17, .Lffwd_seq\n\t"
+@@ -2009,7 +2022,9 @@ static void __attribute__((naked)) arm64x_check_call(void)
+          "add x16, x11, #6\n\t"             /* address after jump */
+          "ldr x11, [x16, w9, sxtw]\n\t"
+          "b \"#arm64x_check_call\"\n"       /* restart checks with jump destination */
++         "arm64x_check_call_probe_end:\n\t"
+          /* not a special sequence, call the exit thunk */
++         "arm64x_check_call_exit:\n\t"
+          ".Lexit:\n\t"
+          "mov x9, x11\n\t"
+          "mov x11, x10\n\t"
