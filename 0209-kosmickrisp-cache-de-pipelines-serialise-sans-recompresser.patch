@@ -1,0 +1,214 @@
+Generated-by: LLM
+
+KosmicKrisp et runtime Vulkan : vkGetPipelineCacheData recopie le MSL et le NIR compresses au lieu de les recompresser (0209) -- Mesa (vk_common_GetPipelineCacheData) reserialise tout le cache a chaque appel, deux fois par sauvegarde (taille puis donnees), sous le verrou du cache, et les objets relus deviennent vivants a leur premiere recherche (vk_pipeline_cache_lookup_object) ; depuis 0166, kk_msl_serialize et vk_pipeline_precomp_shader_serialize compressaient (zstd 3) a chaque serialisation. Sur le VkPipelineCache.bin de Detroit: Become Human (1222140, iMac M4 : 1,3 Go, 96 505 objets, ~5,6 Go de MSL brut), recompresser coute ~10,5 s par passe sur un coeur M1 Max (tests/outils/chiffrer_cache_pipelines.py), soit ~21 s par sauvegarde pendant lesquelles toute creation ou recherche de pipeline attend le verrou : les gels de ~10 s et creux a 24-36 images/s aux chargements, sans sync_local. La forme compressee est maintenant gardee dans l'objet (kk_shader::cache_packed[] par etage, vk_pipeline_precomp_shader::nir_packed), calculee une fois (publiee par CAS : deux fils qui serialisent ensemble gardent la meme) ou reprise telle qu'elle a ete lue a la deserialisation ; liberee avec l'objet ; CIDRE_CACHE_BRUT=1 inchange. Format du cache identique. Temoin tests/temoin_cache_serialise.sh (natif, M1 Max, 150 pipelines de calcul volumineux, 29,7 Mo de cache) : sans 0209 chaque sauvegarde 283 a 570 ms ; avec, 290 ms la premiere puis 2,6 a 4,5 ms, cache relu 6,5 ms des la premiere, contenu identique entree pour entree. kk_shader.c et vk_pipeline.c entrent dans l'empreinte de 0208 : la cle des caches change (a livrer avec 0208, une seule recompilation).
+
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -1368,6 +1368,9 @@
+    ralloc_free((void *)data->entrypoint_name);
+    ralloc_free((void *)data->code);
+ 
++   for (unsigned i = 0u; i < MESA_SHADER_STAGES; ++i)
++      free(shader->cache_packed[i]);
++
+    vk_shader_free(&dev->vk, pAllocator, &shader->vk);
+ }
+ 
+@@ -3060,16 +3063,41 @@
+    struct msl_compile_data *data = &shader->msl_data[stage];
+    uint32_t entrypoint_length = strlen(data->entrypoint_name) + 1;
+    uint32_t code_length = strlen(data->code) + 1;
+-   uint8_t *packed = NULL;
++   /* La forme compressee est calculee une fois puis gardee : Mesa reserialise
++    * tout le cache a chaque vkGetPipelineCacheData (deux fois : taille puis
++    * donnees), sous le verrou du cache. Sur Detroit (96 505 objets, 5,6 Go de
++    * MSL brut), recompresser a chaque fois coutait ~10 s par passe : gel de
++    * l'image a chaque sauvegarde du cache par le jeu. */
++   uint8_t *packed = __atomic_load_n((uint8_t **)&shader->cache_packed[stage],
++                                     __ATOMIC_ACQUIRE);
+    size_t packed_length = 0;
+-   if (!kk_cache_brut()) {
++   if (packed != NULL) {
++      packed_length = shader->cache_packed_length[stage];
++   } else if (!kk_cache_brut()) {
+       size_t max = util_compress_max_compressed_len(code_length);
+-      packed = max ? malloc(max) : NULL;
+-      if (packed != NULL)
++      uint8_t *tmp = max ? malloc(max) : NULL;
++      if (tmp != NULL)
+          packed_length = util_compress_deflate((const uint8_t *)data->code,
+-                                               code_length, packed, max);
++                                               code_length, tmp, max);
+       if (packed_length == 0 || packed_length >= code_length)
++         packed_length = 0;
++      /* garde au plus juste ; longueur 0 = brut, une case de 1 octet le note */
++      packed = tmp ? realloc(tmp, packed_length ? packed_length : 1) : NULL;
++      if (packed == NULL) {
++         free(tmp);
+          packed_length = 0;
++      } else {
++         void *expected = NULL;
++         shader->cache_packed_length[stage] = packed_length;
++         if (!__atomic_compare_exchange_n(&shader->cache_packed[stage], &expected,
++                                          packed, false, __ATOMIC_RELEASE,
++                                          __ATOMIC_ACQUIRE)) {
++            /* un autre fil l'a garde avant nous : meme contenu, on prend le sien */
++            free(packed);
++            packed = expected;
++            packed_length = shader->cache_packed_length[stage];
++         }
++      }
+    }
+    blob_write_uint32(blob, entrypoint_length);
+    blob_write_uint32(blob, code_length);
+@@ -3079,7 +3107,6 @@
+       blob_write_bytes(blob, packed, packed_length);
+    else
+       blob_write_bytes(blob, data->code, code_length);
+-   free(packed);
+ }
+ 
+ static bool
+@@ -3125,6 +3152,15 @@
+           !util_compress_inflate(packed, packed_length, (uint8_t *)data->code,
+                                  code_length))
+          return VK_ERROR_INCOMPATIBLE_SHADER_BINARY_EXT;
++      /* garde la forme compressee lue : la prochaine serialisation la recopie */
++      if (!kk_cache_brut() && shader->cache_packed[stage] == NULL) {
++         void *copy = malloc(packed_length);
++         if (copy != NULL) {
++            memcpy(copy, packed, packed_length);
++            shader->cache_packed_length[stage] = packed_length;
++            shader->cache_packed[stage] = copy;
++         }
++      }
+    } else {
+       blob_copy_bytes(blob, (void *)data->code, code_length);
+    }
+--- a/src/kosmickrisp/vulkan/kk_shader.h
++++ b/src/kosmickrisp/vulkan/kk_shader.h
+@@ -222,6 +222,11 @@
+ 
+    struct kk_shader_info info;
+    struct msl_compile_data msl_data[MESA_SHADER_STAGES];
++   /* Cidre : MSL compresse tel qu'il part dans le cache de pipelines (0166),
++    * garde pour que chaque vkGetPipelineCacheData le recopie au lieu de le
++    * recompresser (NULL = pas encore calcule, longueur 0 = stocke brut). */
++   void *cache_packed[MESA_SHADER_STAGES];
++   uint32_t cache_packed_length[MESA_SHADER_STAGES];
+    /* The programs poly_nir_lower_gs() produces alongside the main one. */
+    struct msl_compile_data gs_msl_data[KK_GS_PROGRAM_MAX];
+ };
+--- a/src/vulkan/runtime/vk_pipeline.c
++++ b/src/vulkan/runtime/vk_pipeline.c
+@@ -666,6 +666,12 @@
+    struct vk_sampler_state *embedded_samplers;
+ 
+    struct blob nir_blob;
++
++   /* Cidre : NIR compresse tel qu'il part dans le cache (0166), garde pour ne
++    * pas le recompresser a chaque vkGetPipelineCacheData (NULL = pas encore
++    * calcule, taille 0 = stocke brut). */
++   void *nir_packed;
++   size_t nir_packed_size;
+ };
+ 
+ static struct vk_pipeline_precomp_shader *
+@@ -771,16 +777,36 @@
+    blob_write_bytes(blob, shader->embedded_samplers,
+                     shader->embedded_sampler_count *
+                     sizeof(*shader->embedded_samplers));
+-   uint8_t *packed = NULL;
++   /* compresse une fois, puis recopie : Mesa reserialise tout le cache a
++    * chaque vkGetPipelineCacheData, sous son verrou (voir kk_msl_serialize) */
++   uint8_t *packed = __atomic_load_n((uint8_t **)&shader->nir_packed,
++                                     __ATOMIC_ACQUIRE);
+    size_t packed_size = 0;
+-   if (!vk_pipeline_cache_brut() && shader->nir_blob.size > 0) {
++   if (packed != NULL) {
++      packed_size = shader->nir_packed_size;
++   } else if (!vk_pipeline_cache_brut() && shader->nir_blob.size > 0) {
+       size_t max = util_compress_max_compressed_len(shader->nir_blob.size);
+-      packed = max ? malloc(max) : NULL;
+-      if (packed != NULL)
++      uint8_t *tmp = max ? malloc(max) : NULL;
++      if (tmp != NULL)
+          packed_size = util_compress_deflate(shader->nir_blob.data,
+-                                             shader->nir_blob.size, packed, max);
++                                             shader->nir_blob.size, tmp, max);
+       if (packed_size >= shader->nir_blob.size)
++         packed_size = 0;
++      packed = tmp ? realloc(tmp, packed_size ? packed_size : 1) : NULL;
++      if (packed == NULL) {
++         free(tmp);
+          packed_size = 0;
++      } else {
++         void *expected = NULL;
++         shader->nir_packed_size = packed_size;
++         if (!__atomic_compare_exchange_n(&shader->nir_packed, &expected, packed,
++                                          false, __ATOMIC_RELEASE,
++                                          __ATOMIC_ACQUIRE)) {
++            free(packed);
++            packed = expected;
++            packed_size = shader->nir_packed_size;
++         }
++      }
+    }
+    blob_write_uint64(blob, shader->nir_blob.size);
+    blob_write_uint64(blob, packed_size);
+@@ -788,7 +814,6 @@
+       blob_write_bytes(blob, packed, packed_size);
+    else
+       blob_write_bytes(blob, shader->nir_blob.data, shader->nir_blob.size);
+-   free(packed);
+ 
+    return !blob->out_of_memory;
+ }
+@@ -815,14 +840,18 @@
+    if (blob->overrun || nir_size > SIZE_MAX || packed_size > SIZE_MAX)
+       return NULL;
+ 
+-   void *unpacked = NULL;
++   void *unpacked = NULL, *kept = NULL;
+    const void *nir_data;
+    if (packed_size) {
+       const void *packed = blob_read_bytes(blob, packed_size);
++      /* garde la forme compressee lue : la prochaine serialisation la recopie */
++      if (!blob->overrun && !vk_pipeline_cache_brut() && (kept = malloc(packed_size)))
++         memcpy(kept, packed, packed_size);
+       unpacked = malloc(nir_size ? nir_size : 1);
+       if (blob->overrun || unpacked == NULL ||
+           !util_compress_inflate(packed, packed_size, unpacked, nir_size)) {
+          free(unpacked);
++         free(kept);
+          return NULL;
+       }
+       nir_data = unpacked;
+@@ -839,8 +868,11 @@
+    if (!vk_multialloc_zalloc(&ma, &device->alloc,
+                              VK_SYSTEM_ALLOCATION_SCOPE_DEVICE)) {
+       free(unpacked);
++      free(kept);
+       return NULL;
+    }
++   shader->nir_packed = kept;
++   shader->nir_packed_size = kept ? packed_size : 0;
+ 
+    assert(sizeof(shader->cache_key) == key_size);
+    memcpy(shader->cache_key, key_data, sizeof(shader->cache_key));
+@@ -868,6 +900,7 @@
+    return &shader->cache_obj;
+ 
+ fail_cache_obj:
++   free(shader->nir_packed);
+    vk_pipeline_cache_object_finish(&shader->cache_obj);
+    vk_free(&device->alloc, shader);
+ 
+@@ -891,6 +924,7 @@
+       vk_pipeline_precomp_shader_from_cache_obj(obj);
+ 
+    blob_finish(&shader->nir_blob);
++   free(shader->nir_packed);
+    vk_pipeline_cache_object_finish(&shader->cache_obj);
+    vk_free(&device->alloc, shader);
+ }
