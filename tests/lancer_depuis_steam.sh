@@ -885,6 +885,29 @@ if [ -n "${SteamAppId:-}" ] && [ -f "$TABLE" ]; then
    fi
 fi
 
+# Hors ligne sans anti-triche : la fiche nomme l'executable du jeu a lancer a la
+# place de celui que Steam donne (ex. ELDEN RING : eldenring.exe au lieu de
+# start_protected_game.exe, qui charge EasyAntiCheat et plante sous Cidre). Il
+# est cherche dans le dossier de l'executable de Steam ; aucun fichier du jeu
+# n'est renomme ni touche (une verification des fichiers par Steam ne casse
+# rien). Les arguments de Steam sont gardes. CIDRE_EXE_SANS_ANTICHEAT garde la
+# main ; CIDRE_EXE_SANS_ANTICHEAT=0 le coupe.
+# --- exe sans anticheat : debut ---
+SANS_AC=$(opt exe_sans_anticheat CIDRE_EXE_SANS_ANTICHEAT)
+case $SANS_AC in
+   ''|false) : ;;
+   */*|*\\*) echo "    sans anticheat : « $SANS_AC » refuse (un nom de fichier, pas un chemin), on garde $PROG" >>"$JOURNAL" ;;
+   *) if [ "$SANS_AC" = "$PROG" ]; then
+         :
+      elif [ -f "$DOSSIER/$SANS_AC" ]; then
+         echo "    sans anticheat : $PROG remplace par $SANS_AC (hors ligne, sans anti-triche ; fichiers du jeu intacts)" >>"$JOURNAL"
+         PROG=$SANS_AC
+      else
+         echo "    sans anticheat : $SANS_AC introuvable dans $DOSSIER, on garde $PROG" >>"$JOURNAL"
+      fi ;;
+esac
+# --- exe sans anticheat : fin ---
+
 # Reglages de FEX repris de Proton ARM64 (Steam Frame : FEX_Config.json et script
 # proton d'experimental_11.0), meme architecture que la notre (arm64ec + FEX).
 # Apres la table des lanceurs : le x87 se decide sur l'executable vraiment lance.

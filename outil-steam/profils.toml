@@ -88,6 +88,12 @@
 #                    false seulement pour un jeu ou l'image a ete verifiee sans.
 #   fils_compilation nombre de fils compilateurs DXVK ; 0 = defaut DXVK (tous les coeurs).
 #   eac_untrusted    ajoute -eac-untrusted (realm « Modded » ; EAC en ligne = mur).
+#   exe_sans_anticheat  nom de l'executable du jeu a lancer a la place de celui que
+#                    Steam donne (son lanceur protege), pris dans le meme dossier :
+#                    le jeu part hors ligne, sans anti-triche (ex. "eldenring.exe" au
+#                    lieu de start_protected_game.exe pour ELDEN RING). Aucun fichier
+#                    du jeu n'est renomme. Fiche seulement ; CIDRE_EXE_SANS_ANTICHEAT
+#                    pour un essai (=0 le coupe). Note au journal. APPLIQUE.
 #   luajit           fenetre basse 64 bits pour LuaJIT (PROTON_OUVERT_LUAJIT).
 #   plein_ecran      vrai plein ecran macOS (Space) auto quand le jeu couvre
 #                    l'ecran : couvre l'encoche, laisse macOS scaler une

@@ -25,6 +25,7 @@
 #   6b. arguments du jeu (option arguments) : decoupage, doublons, fiche, `cidre set` ;
 #       d3d9, dlss et generation_images (metalfx ou non) : valeurs, fiche, `cidre set`, lus par le lanceur ;
 #       sortie_normale (tests/sortie_normale.sh) : codes, duree minimale, fiche de Fahrenheit ;
+#       exe_sans_anticheat : exe de Steam remplace (faux ELDEN RING), absent, coupe, introuvable, chemin ;
 #   6d. version macOS 32 bits seulement : binaire installe (faux Mach-O), fiche,
 #      cache du client Steam ; list/play/dl/install la traitent en jeu Windows ;
 #   7. sh -n sur les scripts de la chaine.
@@ -910,6 +911,29 @@ sh "$R/cidre" set defaut arguments 'a"b' >/dev/null 2>&1; rc=$?
 verif "cidre set arguments : guillemet refuse" "2" "$rc"
 cp "$T/perso.avant-arguments" "$CIDRE_PROFILS"
 grep -q 'ARGJ=${CIDRE_ARGUMENTS:-$(profil arguments)}' "$R/tests/lancer_depuis_steam.sh" && ok "lanceur : option arguments lue" || echec "lanceur : option arguments non lue"
+# exe_sans_anticheat : le bloc du lanceur joue sur un faux ELDEN RING (chemin a
+# espaces) ; l'exe de Steam remplace par celui de la fiche, aucun fichier touche
+verif "fiche 1245620 : exe_sans_anticheat" "eldenring.exe" "$(valeur 1245620 exe_sans_anticheat)"
+N=$T/sans-ac; JD="$N/Jeux Cidre/ELDEN RING/Game"; mkdir -p "$JD"
+printf 'MZ' >"$JD/start_protected_game.exe"; printf 'MZ' >"$JD/eldenring.exe"
+awk '/^# --- exe sans anticheat : debut ---$/ { p = 1 } p { print } /^# --- exe sans anticheat : fin ---$/ { p = 0 }' "$R/tests/lancer_depuis_steam.sh" >"$N/bloc.sh"
+cat >"$N/jouer.sh" <<'EOS'
+set -e
+R=$1; DOSSIER=$2; PROG=start_protected_game.exe; JOURNAL=$R/journal; PROFIL=$3
+profil() { printf '%s\n' "$PROFIL" | sed -n "s/^$1=//p" | head -1; }
+opt() { eval "v=\${$2:-}"; case $v in 1) echo true; return ;; 0) echo false; return ;; '') ;; *) echo "$v"; return ;; esac; profil "$1"; }
+. "$R/bloc.sh"
+echo "$PROG"
+EOS
+avant=$(ls -l "$JD" | md5 -q 2>/dev/null || ls -l "$JD" | md5sum)
+verif "exe_sans_anticheat : pose -> exe remplace" "eldenring.exe" "$(sh "$N/jouer.sh" "$N" "$JD" 'exe_sans_anticheat=eldenring.exe')"
+verif "exe_sans_anticheat : remplacement note au journal" "1" "$(grep -c 'sans anticheat : start_protected_game.exe remplace par eldenring.exe' "$N/journal")"
+verif "exe_sans_anticheat : absent -> inchange" "start_protected_game.exe" "$(sh "$N/jouer.sh" "$N" "$JD" 'eac_untrusted=false')"
+verif "exe_sans_anticheat : CIDRE_EXE_SANS_ANTICHEAT=0 coupe la fiche" "start_protected_game.exe" "$(CIDRE_EXE_SANS_ANTICHEAT=0 sh "$N/jouer.sh" "$N" "$JD" 'exe_sans_anticheat=eldenring.exe')"
+verif "exe_sans_anticheat : CIDRE_EXE_SANS_ANTICHEAT nomme l'exe" "eldenring.exe" "$(CIDRE_EXE_SANS_ANTICHEAT=eldenring.exe sh "$N/jouer.sh" "$N" "$JD" '')"
+verif "exe_sans_anticheat : exe introuvable -> inchange, note" "start_protected_game.exe 1" "$(sh "$N/jouer.sh" "$N" "$JD" 'exe_sans_anticheat=absent.exe') $(grep -c 'absent.exe introuvable' "$N/journal")"
+verif "exe_sans_anticheat : chemin refuse" "start_protected_game.exe" "$(sh "$N/jouer.sh" "$N" "$JD" 'exe_sans_anticheat=../eldenring.exe')"
+verif "exe_sans_anticheat : fichiers du jeu intacts" "$avant" "$(ls -l "$JD" | md5 -q 2>/dev/null || ls -l "$JD" | md5sum)"
 # d3d9 : dxvk ou wined3d, rien d'autre ; le lanceur la lit et pose le =n/=b
 cp "$CIDRE_PROFILS" "$T/perso.avant-d3d9"
 sh "$R/cidre" set defaut d3d9 wined3d >/dev/null 2>&1

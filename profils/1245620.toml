@@ -22,6 +22,12 @@ bits = "pcgamingwiki 2026-10-11"
 anticheat = "pcgamingwiki 2026-10-11"
 drm = "pcgamingwiki 2026-10-11"
 
+[cidre]
+# Hors ligne, sans EasyAntiCheat (2026-10-20) : Steam lance start_protected_game.exe,
+# qui charge EAC et plante sous Cidre ; le lanceur demarre eldenring.exe, du meme
+# dossier Game/, a sa place (fichiers du jeu intacts). Pas de jeu en ligne.
+exe_sans_anticheat = "eldenring.exe"
+
 [compat]
 etat = "non-teste"
 date = "2026-10-11"
