@@ -1,6 +1,6 @@
 Generated-by: LLM
 
-fex : acces du code JIT aux pages d hote mixtes (wine11 0201) sans signal. Une page de 4 Kio NOACCESS a cote de pages accessibles ferme toute la page d hote de 16 Kio ; chaque acces permis a une voisine faisait faute et Wine le rejouait (~2,4 us). Wine (0212) propose l instruction fautive apres le rejeu (exception 0xE0C10201) ; ResetToConsistentState la reecrit en `b talon` : talon de 64 octets dans le tampon de code courant (Context::AllocateCodeStub), qui appelle SousPagesCommun (Module.S, sauve tout l etat) puis SousPagesAide (SousPages.cpp) : adresse effective decodee (LDR/STR toutes formes, paires, LDAR/STLR/LDAPR/LDAPUR/STLUR, LSE, CAS/CASP, LD1/ST1, DC ZVA ; exclusifs et sp refuses), cache sans verrou des pages d hote valide par la generation de Wine, droits de chaque page de 4 Kio ; si l acces est permis, le registre de base est rebase sur l alias permanent de la page et l instruction d origine s execute dans le talon (vrais atomiques), sinon elle s execute telle quelle : une page fermee fait faute dans le talon et FixupStubFault ramene Pc, Sp et le registre de base a l instruction d origine (violation d acces exacte ; autre faute : instruction remise). Apres 256 acces consecutifs hors page mixte, l instruction d origine est remise ; reproposee, elle reprend son talon. Instructions non reecrivables signalees a Wine (refus). Annonce par NtQueryVirtualMemory (classe 0xc1d0) : sans Wine 0212, rien n est actif. CIDRE_SOUS_PAGES_FEX=0 coupe ; CIDRE_DIAG_SOUS_PAGES=1 compte. Banc tests/h64sous_page_banc.c : 2 323 -> 23,6 ns par lecture d octet (x98), N1 (site reecrit puis page normale) 0,6 ns, alternance 1 193 -> 15,5 ns. Diablo II Resurrected : d3d12 charge a 57 s (avant : plus de 600 s sans d3d12), 426 M acces par l alias, ~1 M rejoues ; une autre manche (l1) meurt a ~30 s dans le second processus de D2R (rapporteur de Blizzard, cause non etablie, aucune faute dans un talon) : issue intermittente comme avant. En jeu sur runtime clone, A/B : PEAK ~142 contre ~143 images/s sur la meme scene, Exp33 sans regression, Dead Cells 118,5 (plafond 120). Temoins h64sous_page A-G et J, h64sous_page_talon K1-K8 OK, croisements avec Wine/FEX anciens OK. Correctif local (le CLAUDE.md de FEX refuse le code genere par IA en amont).
+fex : acces du code JIT aux pages d hote mixtes (wine11 0201) sans signal. Une page de 4 Kio NOACCESS a cote de pages accessibles ferme toute la page d hote de 16 Kio ; chaque acces permis a une voisine faisait faute et Wine le rejouait (~2,4 us). Wine (0212) propose l instruction fautive apres le rejeu (exception 0xE0C10201) ; ResetToConsistentState la reecrit en `b talon` : talon de 64 octets dans le tampon de code courant (Context::AllocateCodeStub), qui appelle SousPagesCommun (Module.S, sauve tout l etat) puis SousPagesAide (SousPages.cpp) : adresse effective decodee (LDR/STR toutes formes, paires, LDAR/STLR/LDAPR/LDAPUR/STLUR, LSE, CAS/CASP, LD1/ST1, DC ZVA ; exclusifs et sp refuses), cache sans verrou des pages d hote valide par la generation de Wine, droits de chaque page de 4 Kio ; si l acces est permis, le registre de base est rebase sur l alias permanent de la page et l instruction d origine s execute dans le talon (vrais atomiques), sinon elle s execute telle quelle : une page fermee fait faute dans le talon et FixupStubFault ramene Pc, Sp et le registre de base a l instruction d origine (violation d acces exacte ; autre faute : instruction remise). Apres 256 acces consecutifs hors page mixte, l instruction d origine est remise ; reproposee, elle reprend son talon. Instructions non reecrivables signalees a Wine (refus). Annonce par NtQueryVirtualMemory (classe 0xc1d0) : sans Wine 0212, rien n est actif. CIDRE_SOUS_PAGES_FEX=0 coupe ; CIDRE_DIAG_SOUS_PAGES=1 compte. Banc tests/h64sous_page_banc.c : 2 323 -> 23,6 ns par lecture d octet (x98), N1 (site reecrit puis page normale) 0,6 ns, alternance 1 193 -> 15,5 ns. Diablo II Resurrected : d3d12 charge a 57 s (avant : plus de 600 s sans d3d12), 426 M acces par l alias, ~1 M rejoues ; une autre manche (l1) meurt a ~30 s dans le second processus de D2R (rapporteur de Blizzard, cause non etablie, aucune faute dans un talon) : issue intermittente comme avant. En jeu sur runtime clone, A/B : PEAK ~142 contre ~143 images/s sur la meme scene, Exp33 sans regression, Dead Cells 118,5 (plafond 120). Temoins h64sous_page A-G et J, h64sous_page_talon K1-K8 OK, croisements avec Wine/FEX anciens OK. Un talon reutilise apres changement de tampon de code n'est relu et vise que s'il est encore dans un tampon projete du fil (sinon faute dans SiteDuTalon pendant le traitement de l'exception : D2R tue, manche V1). Correctif local (le CLAUDE.md de FEX refuse le code genere par IA en amont).
 
 diff --git a/FEXCore/include/FEXCore/Core/Context.h b/FEXCore/include/FEXCore/Core/Context.h
 index 3779e35..5eed535 100644
@@ -319,10 +319,10 @@ index 0000000..f2b7def
 +} // namespace FEX::Windows::SousPages
 diff --git a/FEX/Source/Windows/ARM64EC/SousPages.cpp b/Source/Windows/ARM64EC/SousPages.cpp
 new file mode 100644
-index 0000000..9a60884
+index 0000000..c87bb9b
 --- /dev/null
 +++ b/Source/Windows/ARM64EC/SousPages.cpp
-@@ -0,0 +1,691 @@
+@@ -0,0 +1,696 @@
 +// SPDX-License-Identifier: MIT
 +// Cidre : acces du code JIT aux pages d'hote mixtes, sans signal. Voir SousPages.h.
 +#include "SousPages.h"
@@ -825,7 +825,8 @@ index 0000000..9a60884
 +  const uint64_t Pc = Rec->ExceptionInformation[0];
 +  const uint32_t Insn = static_cast<uint32_t>(Rec->ExceptionInformation[2]);
 +
-+  if (!Thread || (Pc & 3) || !CTX->IsAddressInCodeBuffer(Thread, Pc) || SiteDuTalon(Pc)) {
++  // SiteDuTalon lit les 20 octets qui precedent : ils doivent etre dans un tampon de code projete.
++  if (!Thread || (Pc & 3) || !CTX->IsAddressInCodeBuffer(Thread, Pc) || !CTX->IsAddressInCodeBuffer(Thread, Pc - 20) || SiteDuTalon(Pc)) {
 +    Refuser(Pc, Insn);
 +    return;
 +  }
@@ -839,7 +840,11 @@ index 0000000..9a60884
 +    if (It != Sites.end()) {
 +      Site* S = It->second;
 +      const auto* T = reinterpret_cast<const uint32_t*>(S->Talon);
-+      if (S->Insn == Insn && SiteDuTalon(S->FaultPc) == S && T[0] == STP_X16_X30_PRE) {
++      // Le talon peut etre dans un tampon de code deja libere (FEX en a change depuis) : ne le lire, et n'y
++      // sauter, que s'il est encore dans un tampon projete de ce fil (D2R, manche V1 : faute dans SiteDuTalon
++      // pendant le traitement de l'exception, processus tue).
++      const bool TalonVivant = CTX->IsAddressInCodeBuffer(Thread, S->Talon) && CTX->IsAddressInCodeBuffer(Thread, S->Talon + TailleTalon - 1);
++      if (TalonVivant && S->Insn == Insn && SiteDuTalon(S->FaultPc) == S && T[0] == STP_X16_X30_PRE) {
 +        std::atomic_ref<uint32_t>(S->Normaux).store(0, std::memory_order_relaxed);
 +        uint32_t Attendu = Insn;
 +        if (std::atomic_ref<uint32_t>(*Code).compare_exchange_strong(Attendu, S->Saut, std::memory_order_release)) {
