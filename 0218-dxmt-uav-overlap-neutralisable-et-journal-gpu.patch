@@ -1,0 +1,351 @@
+Generated-by: LLM
+
+dxmt : UAV overlap neutralisable et journal GPU pousse sur le disque (Cidre 0218)
+
+Piste du gel du M1 (Apple7) sous DLSS -> MetalFX temporel : avec une carte NVIDIA
+annoncee (DXMT_ENABLE_NVEXT=1, dlss = "metalfx"), Unreal entoure des series de calculs
+(skin cache, cheveux, Niagara) de NvAPI_D3D11_BeginUAVOverlap/EndUAVOverlap, et DXMT
+retire alors les barrieres ecriture-apres-ecriture entre ces calculs, dans un encodeur
+de calcul concurrent. Sans NVEXT, jamais.
+
+- CIDRE_DXMT_SANS_UAV_OVERLAP=1 : BeginUAVOverlap/EndUAVOverlap sans effet, barrieres
+  gardees. Le releve CIDRE_DXMT_STATS compte dans tous les cas les appels (par seconde)
+  et les barrieres que l'UAV overlap a retirees (calcul, rendu).
+- CIDRE_DXMT_JOURNAL_GPU=1 (ou =<chemin Unix> ; defaut /tmp/cidre-journal-gpu-<pid>.txt) :
+  chaque tampon de commandes est cree avec MTLCommandBufferErrorOptionEncoderExecutionStatus
+  et un gestionnaire de fin. Un tampon en erreur donne le code, la description et l'etat
+  de chaque encodeur (etiquettes avec DXMT_ENCODER_LABELS=1 ; FAUTIF nomme l'encodeur) ;
+  un tampon de plus de 250 ms de GPU est note « lent » ; un fil ecrit un releve toutes
+  les 2 s et, quand plus rien ne se termine alors que des tampons sont en vol, une ligne
+  « GEL ? » par seconde. Chaque ligne est poussee par fsync : le journal DXMT d'un gel
+  du M1 s'arretait au milieu d'une ligne, perdu en tampon par la panique du noyau.
+  Le code est cote Unix (winemetal.so), sans nouvel appel : seul l'appel commandBuffer
+  change, et seulement avec la variable.
+
+Inerte par defaut. Temoins : tests/sonde_uav_overlap.cpp (dispatches chevauches,
+increments perdus avec l'overlap, aucun avec l'option), tests/temoin_journal_gpu.m
+(le bloc « cidre-journal-gpu » de winemetal_unix.c pousse sur ses chemins ERREUR,
+GEL et lent, sans Wine).
+
+diff --git a/src/d3d11/d3d11_context_impl.cpp b/src/d3d11/d3d11_context_impl.cpp
+index cc1eb25..5c64ced 100644
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -30,6 +30,7 @@
+ #include "d3d11_context_state.hpp"
+ #include "d3d11_device.hpp"
+ #include "d3d11_pipeline.hpp"
++#include "util_env.hpp"
+ #include "d3d11_query.hpp"
+ #include "dxmt_buffer.hpp"
+ #include "dxmt_context.hpp"
+@@ -5457,13 +5458,29 @@ public:
+     });
+   }
+ 
++  /* Cidre : CIDRE_DXMT_SANS_UAV_OVERLAP=1 rend BeginUAVOverlap/EndUAVOverlap
++     (NvAPI, appeles par Unreal sur une carte NVIDIA : skin cache, cheveux,
++     Niagara) sans effet : les barrieres ecriture-apres-ecriture entre calculs sont
++     gardees. Piste du gel du M1 sous DLSS. Les appels sont comptes au releve
++     CIDRE_DXMT_STATS dans les deux cas. */
++  static bool CidreSansUAVOverlap() {
++    static const bool sans = env::getEnvVar("CIDRE_DXMT_SANS_UAV_OVERLAP") == "1";
++    return sans;
++  }
++
+   void STDMETHODCALLTYPE BeginUAVOverlap() final {
++    g_cidre_uav_overlap.debuts.fetch_add(1, std::memory_order_relaxed);
++    if (CidreSansUAVOverlap())
++      return;
+     ctx_->EmitOP([](ArgumentEncodingContext &enc) {
+       enc.setIntrapassBarrierControl(kIntrapassControlBitIgnoreUAVWaW);
+     });
+   }
+ 
+   void STDMETHODCALLTYPE EndUAVOverlap() final {
++    g_cidre_uav_overlap.fins.fetch_add(1, std::memory_order_relaxed);
++    if (CidreSansUAVOverlap())
++      return;
+     ctx_->EmitOP([](ArgumentEncodingContext &enc) {
+       enc.setIntrapassBarrierControl(0);
+     });
+diff --git a/src/d3d11/d3d11_swapchain.cpp b/src/d3d11/d3d11_swapchain.cpp
+index a61ae32..b211643 100644
+--- a/src/d3d11/d3d11_swapchain.cpp
++++ b/src/d3d11/d3d11_swapchain.cpp
+@@ -1127,13 +1127,18 @@ public:
+       if (dt >= 2.0) {
+         uint32_t ev = g_cidre_dlss.evaluations.exchange(0, std::memory_order_relaxed);
+         uint32_t gi = g_cidre_fg_interpolees.exchange(0, std::memory_order_relaxed);
++        uint32_t uav_d = g_cidre_uav_overlap.debuts.exchange(0, std::memory_order_relaxed);
++        uint32_t uav_f = g_cidre_uav_overlap.fins.exchange(0, std::memory_order_relaxed);
++        uint32_t uav_bc = g_cidre_uav_overlap.barrieres_calcul_retirees.exchange(0, std::memory_order_relaxed);
++        uint32_t uav_br = g_cidre_uav_overlap.barrieres_rendu_retirees.exchange(0, std::memory_order_relaxed);
+         WARN(str::format(
+             "cidre-stats: ", std::format("{:.1f}", cidre_presentes_ / dt), " images/s rendues, ",
+             std::format("{:.1f}", (cidre_presentes_ + gi) / dt), " affichees (", std::format("{:.1f}", gi / dt),
+             " generees, intervalle moyen ", std::format("{:.1f}", cidre_fg_intervalle_ * 1000.0), " ms), DLSS ",
+             std::format("{:.1f}", ev / dt), "/s (", g_cidre_dlss.in_w.load(), "x", g_cidre_dlss.in_h.load(), " -> ",
+             g_cidre_dlss.out_w.load(), "x", g_cidre_dlss.out_h.load(), "), swapchain ", desc_.Width, "x", desc_.Height,
+-            ", image ", cidre_total_
++            ", image ", cidre_total_, ", UAV overlap ", std::format("{:.1f}", uav_d / dt), "/", std::format("{:.1f}", uav_f / dt),
++            " par s (barrieres retirees calcul ", uav_bc, " rendu ", uav_br, ")"
+         ));
+         cidre_presentes_ = 0;
+         cidre_t0_ = t;
+diff --git a/src/dxmt/dxmt_context.cpp b/src/dxmt/dxmt_context.cpp
+index e5a955e..328ea7e 100644
+--- a/src/dxmt/dxmt_context.cpp
++++ b/src/dxmt/dxmt_context.cpp
+@@ -36,6 +36,8 @@
+ 
+ namespace dxmt {
+ 
++CidreUavOverlapStats g_cidre_uav_overlap;
++
+ /*
+  * Etiquettes d'encodeur pour la trace GPU (DXMT_ENCODER_LABELS=1).
+  *
+@@ -1274,6 +1276,8 @@ ArgumentEncodingContext::resolveComputePassBarrier() {
+   assert(encoder_current);
+   assert(encoder_current->type == EncoderType::Compute);
+   auto &barrier_state = encoder_current->barrier_state;
++  if (unlikely(barrier_state.barrierSet && !(barrier_state.barrierSet & ~intrapass_barrier_control_bits_)))
++    g_cidre_uav_overlap.barrieres_calcul_retirees.fetch_add(1, std::memory_order_relaxed);
+   if (barrier_state.barrierSet & ~intrapass_barrier_control_bits_) {
+     auto &cmd = encodeComputeCommand<wmtcmd_compute_memory_barrier>();
+     cmd.type = WMTComputeCommandMemoryBarrier;
+@@ -1297,6 +1301,13 @@ ArgumentEncodingContext::resolveRenderPassBarrier() {
+     return;
+   }
+   // Individual barriers
++  if (unlikely(intrapass_barrier_control_bits_ &&
++               ((barrier_state.barrierSet && !(barrier_state.barrierSet & ~intrapass_barrier_control_bits_)) ||
++                (barrier_state.barrierPreRasterSet &&
++                 !(barrier_state.barrierPreRasterSet & ~intrapass_barrier_control_bits_)) ||
++                (barrier_state.barrierFragmentAfterPreRasterSet &&
++                 !(barrier_state.barrierFragmentAfterPreRasterSet & ~intrapass_barrier_control_bits_)))))
++    g_cidre_uav_overlap.barrieres_rendu_retirees.fetch_add(1, std::memory_order_relaxed);
+   if (barrier_state.barrierSet & ~intrapass_barrier_control_bits_) {
+     tile_barrier_cmd.dispatch();
+     barrier_state.barrierSet = 0;
+diff --git a/src/dxmt/dxmt_context.hpp b/src/dxmt/dxmt_context.hpp
+index 601253f..8ccf720 100644
+--- a/src/dxmt/dxmt_context.hpp
++++ b/src/dxmt/dxmt_context.hpp
+@@ -36,6 +36,7 @@
+ #include "airconv_public.h"
+ #include <cassert>
+ #include <memory>
++#include <atomic>
+ 
+ #define DXMT_IMPLEMENT_ME __builtin_unreachable();
+ #define DXMT_UNREACHABLE __builtin_unreachable();
+@@ -49,6 +50,16 @@ constexpr size_t kEncodingContextCPUHeapLifetime = 600;
+ 
+ constexpr auto kIntrapassControlBitIgnoreUAVWaW = 1ull << 1;
+ 
++/* Cidre : appels BeginUAVOverlap/EndUAVOverlap (fil du jeu) et barrieres que
++   l'UAV overlap a retirees (fil d'encodage), lus et remis a zero par le releve
++   CIDRE_DXMT_STATS de la swapchain. Une barriere retiree reste due : elle est
++   recomptee a chaque resolution jusqu'a EndUAVOverlap. */
++struct CidreUavOverlapStats {
++  std::atomic<uint32_t> debuts{0}, fins{0};
++  std::atomic<uint32_t> barrieres_calcul_retirees{0}, barrieres_rendu_retirees{0};
++};
++extern CidreUavOverlapStats g_cidre_uav_overlap;
++
+ inline std::size_t
+ align_forward_adjustment(const void *const ptr, const std::size_t &alignment) noexcept {
+   const auto iptr = reinterpret_cast<std::uintptr_t>(ptr);
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+index 12f5e75..5260996 100644
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -104,16 +104,185 @@ _NSAutoreleasePool_alloc_init(void *obj) {
+   return STATUS_SUCCESS;
+ }
+ 
++// cidre-journal-gpu: debut (inclus tel quel par tests/temoin_journal_gpu.m)
++/*
++ * Cidre : journal GPU (CIDRE_DXMT_JOURNAL_GPU=1, ou =<chemin Unix>).
++ *
++ * Chaque tampon de commandes recoit un gestionnaire de fin et, par son
++ * descripteur, MTLCommandBufferErrorOptionEncoderExecutionStatus : un tampon en
++ * erreur (faute GPU, expiration, victime d'une recuperation) donne une ligne avec
++ * le code, la description et l'etat de chacun de ses encodeurs (etiquette avec
++ * DXMT_ENCODER_LABELS=1 ; « Faulted » nomme l'encodeur fautif). Un tampon dont le
++ * GPU a pris plus de 250 ms est note lui aussi. Un fil de garde ecrit toutes les
++ * 2 s un releve (tampons soumis/termines, erreurs, temps GPU maximal, memoire du
++ * device) et, tant qu'aucun tampon ne se termine alors que d'autres sont en vol,
++ * une ligne par seconde : c'est la trace d'un gel du GPU. Chaque ligne est poussee
++ * sur le disque (fsync) : un gel du M1 finit en panique du noyau, et le journal
++ * DXMT, en tampon, s'y perdait au milieu d'une ligne. Fichier par defaut :
++ * /tmp/cidre-journal-gpu-<pid>.txt. Rien n'est change sans la variable.
++ */
++#include <fcntl.h>
++#include <pthread.h>
++#include <sys/time.h>
++#include <unistd.h>
++
++static int cidre_jgpu_fd = -1;
++static _Atomic uint64_t cidre_jgpu_crees, cidre_jgpu_finis, cidre_jgpu_erreurs, cidre_jgpu_lents;
++static _Atomic uint64_t cidre_jgpu_max_us; /* temps GPU maximal depuis le dernier releve */
++static _Atomic uint64_t cidre_jgpu_derniere_fin_ms; /* horloge monotone */
++static id<MTLDevice> cidre_jgpu_device;
++
++static uint64_t
++cidre_jgpu_ms(void) {
++  return (uint64_t)(CACurrentMediaTime() * 1000.0);
++}
++
++static void
++cidre_jgpu_ecrire(const char *fmt, ...) {
++  char ligne[4096];
++  struct timeval tv;
++  struct tm tm;
++  gettimeofday(&tv, NULL);
++  localtime_r(&tv.tv_sec, &tm);
++  int n = snprintf(ligne, sizeof(ligne), "%02d:%02d:%02d.%03d cidre-gpu: ", tm.tm_hour, tm.tm_min, tm.tm_sec,
++                   (int)(tv.tv_usec / 1000));
++  va_list ap;
++  va_start(ap, fmt);
++  n += vsnprintf(ligne + n, sizeof(ligne) - n - 1, fmt, ap);
++  va_end(ap);
++  if (n > (int)sizeof(ligne) - 2)
++    n = sizeof(ligne) - 2;
++  ligne[n++] = '\n';
++  write(cidre_jgpu_fd, ligne, n);
++  fsync(cidre_jgpu_fd);
++}
++
++static const char *
++cidre_jgpu_etat_encodeur(MTLCommandEncoderErrorState e) {
++  switch (e) {
++  case MTLCommandEncoderErrorStateUnknown: return "inconnu";
++  case MTLCommandEncoderErrorStateCompleted: return "fini";
++  case MTLCommandEncoderErrorStateAffected: return "touche";
++  case MTLCommandEncoderErrorStatePending: return "en attente";
++  case MTLCommandEncoderErrorStateFaulted: return "FAUTIF";
++  }
++  return "?";
++}
++
++static void
++cidre_jgpu_fin(id<MTLCommandBuffer> cb) {
++  @autoreleasepool {
++    uint64_t n = atomic_fetch_add(&cidre_jgpu_finis, 1) + 1;
++    atomic_store(&cidre_jgpu_derniere_fin_ms, cidre_jgpu_ms());
++    double gpu_ms = (cb.GPUEndTime - cb.GPUStartTime) * 1000.0;
++    if (gpu_ms > 0) {
++      uint64_t us = (uint64_t)(gpu_ms * 1000.0), m = atomic_load(&cidre_jgpu_max_us);
++      while (us > m && !atomic_compare_exchange_weak(&cidre_jgpu_max_us, &m, us))
++        ;
++    }
++    if (cb.status == MTLCommandBufferStatusError) {
++      atomic_fetch_add(&cidre_jgpu_erreurs, 1);
++      NSError *err = cb.error;
++      cidre_jgpu_ecrire("ERREUR tampon %llu (%s) : code %ld, %s, GPU %.1f ms", n,
++                        cb.label ? cb.label.UTF8String : "sans etiquette", (long)err.code,
++                        err.localizedDescription.UTF8String ?: "?", gpu_ms);
++      NSArray *infos = err.userInfo[MTLCommandBufferEncoderInfoErrorKey];
++      for (id<MTLCommandBufferEncoderInfo> info in infos) {
++        NSString *signets = info.debugSignposts.count ? [info.debugSignposts componentsJoinedByString:@","] : @"";
++        cidre_jgpu_ecrire("  encodeur %s : %s %s", info.label ? info.label.UTF8String : "sans etiquette",
++                          cidre_jgpu_etat_encodeur(info.errorState), signets.UTF8String);
++      }
++      if (!infos.count)
++        cidre_jgpu_ecrire("  (aucun etat d'encodeur ; userInfo %s)", err.userInfo.description.UTF8String ?: "?");
++    } else if (gpu_ms > 250.0) {
++      atomic_fetch_add(&cidre_jgpu_lents, 1);
++      cidre_jgpu_ecrire("lent : tampon %llu, GPU %.1f ms", n, gpu_ms);
++    }
++  }
++}
++
++static void *
++cidre_jgpu_garde(void *arg) {
++  (void)arg;
++  uint64_t tours = 0;
++  for (;;) {
++    sleep(1);
++    tours++;
++    uint64_t crees = atomic_load(&cidre_jgpu_crees), finis = atomic_load(&cidre_jgpu_finis);
++    uint64_t silence = cidre_jgpu_ms() - atomic_load(&cidre_jgpu_derniere_fin_ms);
++    if (crees > finis && silence >= 1000)
++      cidre_jgpu_ecrire("GEL ? aucun tampon termine depuis %.1f s, %llu en vol", silence / 1000.0, crees - finis);
++    if (tours % 2 == 0) {
++      uint64_t max_us = atomic_exchange(&cidre_jgpu_max_us, 0);
++      cidre_jgpu_ecrire("releve : %llu soumis, %llu finis, %llu erreurs, %llu lents, GPU max %.1f ms, memoire %.0f Mo",
++                        crees, finis, atomic_load(&cidre_jgpu_erreurs), atomic_load(&cidre_jgpu_lents), max_us / 1000.0,
++                        cidre_jgpu_device ? cidre_jgpu_device.currentAllocatedSize / 1048576.0 : 0.0);
++    }
++  }
++  return NULL;
++}
++
++static bool
++cidre_jgpu_actif(void) {
++  static dispatch_once_t once;
++  dispatch_once(&once, ^{
++    const char *e = getenv("CIDRE_DXMT_JOURNAL_GPU");
++    if (!e || !*e || !strcmp(e, "0"))
++      return;
++    char chemin[1024];
++    if (!strcmp(e, "1"))
++      snprintf(chemin, sizeof(chemin), "/tmp/cidre-journal-gpu-%d.txt", (int)getpid());
++    else
++      snprintf(chemin, sizeof(chemin), "%s", e);
++    cidre_jgpu_fd = open(chemin, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
++    if (cidre_jgpu_fd < 0) {
++      fprintf(stderr, "cidre-gpu: journal %s impossible a ouvrir\n", chemin);
++      return;
++    }
++    atomic_store(&cidre_jgpu_derniere_fin_ms, cidre_jgpu_ms());
++    cidre_jgpu_ecrire("journal ouvert (pid %d)", (int)getpid());
++    pthread_t t;
++    pthread_create(&t, NULL, cidre_jgpu_garde, NULL);
++    pthread_detach(t);
++  });
++  return cidre_jgpu_fd >= 0;
++}
++
++/* tampon de commandes journalise (autorelease, comme [queue commandBuffer]) */
++static id<MTLCommandBuffer>
++cidre_jgpu_tampon(id<MTLCommandQueue> queue) {
++  MTLCommandBufferDescriptor *desc = [[MTLCommandBufferDescriptor alloc] init];
++  desc.errorOptions = MTLCommandBufferErrorOptionEncoderExecutionStatus;
++  id<MTLCommandBuffer> cb = [queue commandBufferWithDescriptor:desc];
++  [desc release];
++  if (!cidre_jgpu_device)
++    cidre_jgpu_device = [queue.device retain];
++  [cb addCompletedHandler:^(id<MTLCommandBuffer> fini) {
++    cidre_jgpu_fin(fini);
++  }];
++  return cb;
++}
++
++/* a l'envoi (commit) : un tampon cree mais jamais soumis ne compte pas en vol */
++static void
++cidre_jgpu_soumis(void) {
++  if (cidre_jgpu_fd >= 0)
++    atomic_fetch_add(&cidre_jgpu_crees, 1);
++}
++// cidre-journal-gpu: fin
++
+ static NTSTATUS
+ _MTLCommandQueue_commandBuffer(void *obj) {
+   struct unixcall_generic_obj_obj_ret *params = obj;
+-  params->ret = (obj_handle_t)[(id<MTLCommandQueue>)params->handle commandBuffer];
++  id<MTLCommandQueue> queue = (id<MTLCommandQueue>)params->handle;
++  params->ret = (obj_handle_t)(cidre_jgpu_actif() ? cidre_jgpu_tampon(queue) : [queue commandBuffer]);
+   return STATUS_SUCCESS;
+ }
+ 
+ static NTSTATUS
+ _MTLCommandBuffer_commit(void *obj) {
+   struct unixcall_generic_obj_noret *params = obj;
++  cidre_jgpu_soumis(); /* Cidre : journal GPU */
+   [(id<MTLCommandBuffer>)params->handle commit];
+   return STATUS_SUCCESS;
+ }
