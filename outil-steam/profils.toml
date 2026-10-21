@@ -70,6 +70,9 @@
 #   fex_maxinst      taille maximale d'un bloc traduit par FEX : 0 (defaut) = celui de
 #                    FEX (5000) ; 500 = celui de Proton ARM64, aussi le minimum des
 #                    contournements Mono. Des blocs courts se compilent plus vite.
+#   fex_multiblock   false = un bloc traduit par FEX s'arrete au premier saut
+#                    (FEX_MULTIBLOCK=0). true (defaut) = celui de FEX. Pour un jeu
+#                    qui reprotege son code sans cesse (D2R) : moins de retraduction.
 #   vsync            false = syncInterval 0 (plus de plafond vblank ; tearing possible).
 #   hud              compteur fps + charge GPU a l'ecran (DXVK_HUD, MTL_HUD).
 #   overlay          overlay Steam en jeu (Maj+Tab, amis, succes, notifications) :
@@ -269,6 +272,7 @@ sync_local = true
 fex_cache_disque = false
 fex_x87_reduit = false
 fex_maxinst = 0
+fex_multiblock = true
 vsync = true
 hud = false
 overlay = true

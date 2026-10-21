@@ -17,6 +17,14 @@ dx12 = true
 # Le dossier du jeu contient le d3d12.dll de Microsoft pour Windows 7 (D3D12On7) :
 # comme sous Windows 10, le D3D12 du systeme (vkd3d-proton, system32) passe devant.
 knowndlls = "d3d12 d3d12core"
+# Blocs traduits courts : D2R re-protege sans cesse les pages de son code dechiffre, et chaque changement jette
+# puis recompile le bloc qui couvre la page. Avec les blocs de 5000 instructions de FEX (~1 Mio de code chacun),
+# ~200 Mio/s etaient recompiles et le cache de code de 128 Mio se vidait 1,6 fois par seconde (manche du M1,
+# 21/10) ; a 500 : 10 fois moins de code compile, 8 fois moins de vidages, images/s x2,4.
+fex_maxinst = 500
+# Et des blocs a une seule branche : 979 Mio compiles, 16 vidages, 20,3 img/s
+# (contre 6,2 Gio, 64 vidages, 7,5 img/s avec MaxInst 500 seul).
+fex_multiblock = false
 
 [compat]
 etat = "non-teste"

@@ -2028,6 +2028,9 @@ case "$cmd" in
       fex_maxinst)
         case $val in ''|*[!0-9]*) echo "fex_maxinst attend un entier (0 = defaut de FEX)" >&2; exit 2 ;; esac
         [ "$val" -le 20000 ] || { echo "fex_maxinst : 20000 au plus" >&2; exit 2; } ;;
+      fex_multiblock)
+        # blocs FEX a plusieurs branches (FEX_MULTIBLOCK) ; false pour D2R
+        case $val in true|false) ;; *) echo "$cle attend true ou false" >&2; exit 2 ;; esac ;;
       fils_compilation)
         case $val in ''|*[!0-9]*) echo "fils_compilation attend un entier (0 = defaut DXVK)" >&2; exit 2 ;; esac
         [ "$val" -le 64 ] || { echo "fils_compilation : 64 au plus" >&2; exit 2; } ;;
@@ -2076,7 +2079,7 @@ case "$cmd" in
         # une chaine : ecrite entre guillemets dans le profil (TOML)
         case $val in auto|fr|en|de|es|it|pt|ru|pl|ja|ko|zh) val="\"$val\"" ;;
           *) echo "langue attend auto ou un code : fr, en, de, es, it, pt, ru, pl, ja, ko, zh" >&2; exit 2 ;; esac ;;
-      *) echo "option inconnue : $cle (journal_detaille, tso, sync_local, vsync, hud, overlay, async, narrow_barriers, garde_index, dx12, sm66, d3d11, d3d9, metalfx, dlss, dlss_repli, generation_images, fils_compilation, eac_untrusted, luajit, plein_ecran, mode_emule, retina, gamemode, maj_avant_lancement, langue, clavier, windows_version, knowndlls, arguments, reglages_jeu_appliques, deck, fex_cache_disque, fex_x87_reduit, fex_maxinst)" >&2; exit 2 ;;
+      *) echo "option inconnue : $cle (journal_detaille, tso, sync_local, vsync, hud, overlay, async, narrow_barriers, garde_index, dx12, sm66, d3d11, d3d9, metalfx, dlss, dlss_repli, generation_images, fils_compilation, eac_untrusted, luajit, plein_ecran, mode_emule, retina, gamemode, maj_avant_lancement, langue, clavier, windows_version, knowndlls, arguments, reglages_jeu_appliques, deck, fex_cache_disque, fex_x87_reduit, fex_maxinst, fex_multiblock)" >&2; exit 2 ;;
     esac
     CIDRE_PROFILS=${CIDRE_PROFILS:-$CIDRE_DIR/profils.toml} sh "$R/tests/profil_cidre.sh" "$id" set "$cle" "$val" ;;
   unset)

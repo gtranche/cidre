@@ -232,7 +232,7 @@ lanceur = "steam"                  # steam, epic, gog, battlenet (id bnet-<code>
 # outil-steam/profils.toml (voir son en-tête pour le sens de chacune) :
 # langue, journal_detaille, maj_avant_lancement, tso, tso_sans, tso_msvc, sync_local, vsync, hud, overlay, async, narrow_barriers,
 # garde_index, fils_compilation, eac_untrusted, luajit, plein_ecran, mode_emule, gamemode,
-# dx12, d3d11, d3d9, metalfx, dlss, generation_images, clavier, deck, fex_cache_disque, fex_x87_reduit, fex_maxinst,
+# dx12, d3d11, d3d9, metalfx, dlss, generation_images, clavier, deck, fex_cache_disque, fex_x87_reduit, fex_maxinst, fex_multiblock,
 # arguments, exe_sans_anticheat, dll_overrides, windows_version, knowndlls, sortie_normale, sortie_normale_apres, dependances.
 # On n'y met que ce qui diffère de [defaut].
 async = true

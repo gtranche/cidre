@@ -970,6 +970,10 @@ esac
 #   fex_maxinst (500 comme Proton ; 0 = le defaut de FEX, 5000 ; CIDRE_FEX_MAXINST) :
 #     taille maximale d'un bloc traduit. Des blocs courts se compilent vite (moins
 #     de saccades) ; 500 est aussi le minimum des contournements Mono de FEX.
+#   fex_multiblock (false ; CIDRE_FEX_MULTIBLOCK=0/1) : FEX_MULTIBLOCK=0, un bloc
+#     traduit s'arrete au premier saut au lieu d'enchainer les branches d'une
+#     fonction. Pour les jeux qui reecrivent ou reprotegent leur code sans cesse
+#     (D2R) : FEX y retraduisait des blocs de 1 Mio en boucle et vidait son cache.
 # --- reglages FEX : debut ---
 if [ -z "${FEX_DISKCACHE:-}" ] && [ "$(opt fex_cache_disque CIDRE_FEX_CACHE_DISQUE)" = true ]; then
    export FEX_DISKCACHE=1
@@ -985,8 +989,11 @@ case $MAXINST in
    ''|0|*[!0-9]*) : ;;
    *) [ -n "${FEX_MAXINST:-}" ] || export FEX_MAXINST=$MAXINST ;;
 esac
+if [ -z "${FEX_MULTIBLOCK:-}" ] && [ "$(opt fex_multiblock CIDRE_FEX_MULTIBLOCK)" = false ]; then
+   export FEX_MULTIBLOCK=0
+fi
 # --- reglages FEX : fin ---
-echo "    fex     : tso ${FEX_TSOENABLED:-1}${FEX_EXTENDEDVOLATILEMETADATA:+ sauf $FEX_EXTENDEDVOLATILEMETADATA}${FEX_VOLATILEMETADATAALLBLOCKS:+, metadonnee MSVC prise au mot}, cache disque ${FEX_DISKCACHE:-0}, x87 reduit ${FEX_X87REDUCEDPRECISION:-0}, MaxInst ${FEX_MAXINST:-5000}, hote ${FEX_HOSTFEATURES}" >>"$JOURNAL"
+echo "    fex     : tso ${FEX_TSOENABLED:-1}${FEX_EXTENDEDVOLATILEMETADATA:+ sauf $FEX_EXTENDEDVOLATILEMETADATA}${FEX_VOLATILEMETADATAALLBLOCKS:+, metadonnee MSVC prise au mot}, cache disque ${FEX_DISKCACHE:-0}, x87 reduit ${FEX_X87REDUCEDPRECISION:-0}, MaxInst ${FEX_MAXINST:-5000}, multiblock ${FEX_MULTIBLOCK:-1}, hote ${FEX_HOSTFEATURES}" >>"$JOURNAL"
 
 # Arguments propres au profil. A poser APRES la table des lanceurs, qui remet les
 # arguments a zero quand elle remplace l'executable.
