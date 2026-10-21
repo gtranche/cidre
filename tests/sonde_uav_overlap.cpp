@@ -17,7 +17,7 @@
 //                      (CIDRE_DXMT_JOURNAL_GPU) ecrire sa ligne ERREUR. Sur le M4
 //                      seulement : le M1 (G13) a deja gele sur des fautes GPU.
 //
-//   x86_64-w64-mingw32-clang++ -O2 -std=c++20 sonde_uav_overlap.cpp -ld3d11 -ldxgi -o sonde_uav_overlap.exe
+//   x86_64-w64-mingw32-clang++ -O2 -std=c++20 sonde_uav_overlap.cpp -ld3d11 -ldxgi -static -o sonde_uav_overlap.exe
 //   DXMT_ENABLE_NVEXT=1 wine sonde_uav_overlap.exe <sans|overlap> [images] [dispatches]
 //
 // Sortie : une ligne « resultat : » (elements faux, pertes, temps GPU par image).
