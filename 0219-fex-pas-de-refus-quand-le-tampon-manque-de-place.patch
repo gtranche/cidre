@@ -1,0 +1,20 @@
+Generated-by: LLM
+
+fex : pas de refus definitif d un site de sous-page quand le tampon de code manque de place pour son talon (passager) -- le refus est definitif cote Wine, par adresse hote ; un tampon recycle reprend ces adresses pour du code neuf, dont les acces etaient rejoues pour toujours. Hygiene : sans effet mesurable sur D2R (4 manches alternees, 11-21 img/s des deux cotes). S applique apres 0211 et 0217.
+
+diff --git a/Source/Windows/ARM64EC/SousPages.cpp b/Source/Windows/ARM64EC/SousPages.cpp
+index 5d65c91..e6efbe0 100644
+--- a/Source/Windows/ARM64EC/SousPages.cpp
++++ b/Source/Windows/ARM64EC/SousPages.cpp
+@@ -657,8 +657,10 @@ void HandleProposal(FEXCore::Context::Context* CTX, FEXCore::Core::InternalThrea
+   const size_t Taille = Ea ? TailleTalonRapide : TailleTalon;
+   auto* T = reinterpret_cast<uint32_t*>(CTX->AllocateCodeStub(Thread, Pc, Taille));
+   if (!T) {
++    // Pas de refus : le manque de place est passager (tampon de code plein, bientot remplace), alors qu'un refus
++    // est definitif cote Wine, par adresse ; un tampon recycle reprend ces adresses pour du code neuf, dont les
++    // acces seraient alors rejoues pour toujours. Wine reproposera au prochain rejeu.
+     Compter(NbRefuses, "pas de place pour un talon");
+-    Refuser(Pc, Insn);
+     return;
+   }
+   auto* S = new Site(D);
