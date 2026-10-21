@@ -37,7 +37,10 @@
 #                      NVIDIA : le jeu voit une carte NVIDIA) ; "non" par defaut.
 #                      A ne poser que dans la fiche d'un jeu D3D11 64 bits essaye
 #                      avec CIDRE_DLSS=metalfx. Le lanceur le refuse si famille_gpu < 9
-#                      (blocage GPU du M1, 18-20/10), sans cle de contournement.
+#                      (blocage GPU du M1, 18-21/10), sauf avec dlss_repli = "spatial".
+#   dlss_repli = "spatial"   avec dlss = "metalfx", sous la famille 9 (M1, M2) : DLSS
+#                      servi par MetalFX spatial (jamais le temporel), sans anticrenelage
+#                      temporel ; "non" par defaut (DLSS refuse). Sans effet des la famille 9.
 #   generation_images = "metalfx"   avec dlss = "metalfx" : une image generee par
 #                      MetalFX entre deux images rendues (macOS 26) ; "non" par defaut.
 #                      FERMEE sur tous les Mac (2026-10-20) : le lanceur l'ignore

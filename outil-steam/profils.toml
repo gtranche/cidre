@@ -199,6 +199,11 @@
 #                    cle de contournement : DLSS -> MetalFX temporel a bloque le GPU du
 #                    M1 (Apple7) quatre fois dans Expedition 33 (18-20/10) ; M4 : 46
 #                    images/s contre 40 en TSR, aucun gel. Apple8 (M2) non mesure.
+#   dlss_repli "spatial" : avec dlss = "metalfx", sous la famille 9 (M1, M2) : DLSS
+#                    garde mais servi par MetalFX spatial (MTLFXSpatialScaler, sans
+#                    historique) au lieu du temporel, qui y gele le GPU. Image moins
+#                    lisse qu'en TSR (pas d'anticrenelage temporel). "non" (defaut) :
+#                    DLSS refuse sous 9. Sans effet des la famille 9.
 #   generation_images "metalfx" : avec dlss = "metalfx", DXMT genere une image
 #                    intermediaire par image rendue (MTLFXFrameInterpolator, macOS 26)
 #                    a partir de la profondeur et des vecteurs de mouvement de DLSS, et
@@ -283,6 +288,7 @@ d3d11 = "dxmt"
 dxmt_config = ""
 metalfx = false
 dlss = "non"
+dlss_repli = "non"
 generation_images = "non"
 clavier = "systeme"
 deck = false

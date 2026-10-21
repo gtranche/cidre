@@ -2039,6 +2039,10 @@ case "$cmd" in
         # DLSS traduit en MetalFX temporel (DXMT) : metalfx, ou non (defaut)
         case $val in metalfx|non) val="\"$val\"" ;;
           *) echo "dlss attend metalfx ou non" >&2; exit 2 ;; esac ;;
+      dlss_repli)
+        # DLSS sous la famille 9 (M1, M2) : spatial (MetalFX spatial au lieu du temporel), ou non (defaut, refuse)
+        case $val in spatial|non) val="\"$val\"" ;;
+          *) echo "dlss_repli attend spatial ou non" >&2; exit 2 ;; esac ;;
       generation_images)
         # generation d'images MetalFX (DXMT, avec dlss = metalfx) : metalfx, ou non (defaut)
         case $val in metalfx|non) val="\"$val\"" ;;
@@ -2072,7 +2076,7 @@ case "$cmd" in
         # une chaine : ecrite entre guillemets dans le profil (TOML)
         case $val in auto|fr|en|de|es|it|pt|ru|pl|ja|ko|zh) val="\"$val\"" ;;
           *) echo "langue attend auto ou un code : fr, en, de, es, it, pt, ru, pl, ja, ko, zh" >&2; exit 2 ;; esac ;;
-      *) echo "option inconnue : $cle (journal_detaille, tso, sync_local, vsync, hud, overlay, async, narrow_barriers, garde_index, dx12, sm66, d3d11, d3d9, metalfx, dlss, generation_images, fils_compilation, eac_untrusted, luajit, plein_ecran, mode_emule, retina, gamemode, maj_avant_lancement, langue, clavier, windows_version, knowndlls, arguments, reglages_jeu_appliques, deck, fex_cache_disque, fex_x87_reduit, fex_maxinst)" >&2; exit 2 ;;
+      *) echo "option inconnue : $cle (journal_detaille, tso, sync_local, vsync, hud, overlay, async, narrow_barriers, garde_index, dx12, sm66, d3d11, d3d9, metalfx, dlss, dlss_repli, generation_images, fils_compilation, eac_untrusted, luajit, plein_ecran, mode_emule, retina, gamemode, maj_avant_lancement, langue, clavier, windows_version, knowndlls, arguments, reglages_jeu_appliques, deck, fex_cache_disque, fex_x87_reduit, fex_maxinst)" >&2; exit 2 ;;
     esac
     CIDRE_PROFILS=${CIDRE_PROFILS:-$CIDRE_DIR/profils.toml} sh "$R/tests/profil_cidre.sh" "$id" set "$cle" "$val" ;;
   unset)

@@ -1,0 +1,295 @@
+Generated-by: LLM
+
+dxmt : DLSS servi par MetalFX spatial sur option, pour les Mac sous Apple9 (Cidre 0223)
+
+MetalFX temporel gele le GPU du M1 (Apple7, pilote AGXG13X) sous DLSS : cinq gels
+d'Expedition 33 du 18 au 21/10, dont le dernier avec les barrieres UAV gardees (0218).
+MetalFX spatial, lui, tourne sur le M1 depuis longtemps a la presentation (DXMT,
+KosmicKrisp 0176). CIDRE_DXMT_DLSS_SPATIAL=1 (pose par le lanceur avec
+dlss_repli = "spatial" sous la famille 9) fait servir DLSS Super Resolution par
+MTLFXSpatialScaler au lieu du temporel :
+- la zone rendue de l'entree est recopiee a sa taille (RGBA16Float) par un calcul qui
+  retire le jitter du moteur (filtre lineaire ; sans historique, l'image tremblerait
+  d'une fraction de pixel a chaque image) ; CIDRE_DXMT_DLSS_SPATIAL_JITTER = 1 (defaut,
+  decalage = +jitter), -1, 0, y : convention a trancher par sonde_dlss_metalfx ;
+- MTLFXSpatialScaler en mode HDR (la couleur de DLSS est lineaire, avant le
+  tonemapping) : WMTFXSpatialScalerInfo prend color_processing_mode (la swapchain
+  garde le perceptuel) ;
+- un scaler par taille de contenu et de sortie, huit au plus (definition dynamique).
+Ni vecteurs, ni profondeur, ni exposition : pas d'anticrenelage temporel, l'image est
+moins lisse qu'en TSR. Inerte sans la variable ; le chemin temporel est inchange.
+
+diff --git a/src/d3d11/d3d11_context_impl.cpp b/src/d3d11/d3d11_context_impl.cpp
+index 5c64ced..a936ee4 100644
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -5285,6 +5285,11 @@ public:
+     g_cidre_dlss.out_w.store(output->width(), std::memory_order_relaxed);
+     g_cidre_dlss.out_h.store(output->height(), std::memory_order_relaxed);
+ 
++    if (CidreDlssSpatial()) {
++      CidreSpatialUpscale(pDesc, input, output);
++      return;
++    }
++
+     WMTPixelFormat motion_vector_format = GetCorrectMotionVectorFormat(motion_vector->pixelFormat());
+     if (motion_vector_format == WMTPixelFormatInvalid) {
+       ERR("TemporalUpscale: invalid motion vector format ", motion_vector->pixelFormat());
+@@ -5458,6 +5463,101 @@ public:
+     });
+   }
+ 
++  /* Cidre : DLSS par MetalFX SPATIAL (CIDRE_DXMT_DLSS_SPATIAL=1, pose par le lanceur
++     sur les Mac de famille Apple < 9 avec dlss_repli = "spatial") : MetalFX temporel
++     y gele le GPU (pilote AGXG13X, cinq gels d'Expedition 33 sur le M1, barrieres UAV
++     gardees ou non), alors que le spatial y tourne depuis longtemps a la presentation
++     (DXMT, KosmicKrisp 0176). Ni historique, ni vecteurs, ni profondeur : la zone
++     rendue est recopiee a sa taille en retirant le jitter du moteur (sans quoi l'image
++     tremblerait d'une fraction de pixel a chaque image), puis agrandie par
++     MTLFXSpatialScaler en mode HDR (DLSS recoit la couleur lineaire, avant le
++     tonemapping). Pas d'anticrenelage temporel : l'image est moins lisse qu'en TSR.
++     CIDRE_DXMT_DLSS_SPATIAL_JITTER = 1 (defaut, decalage = +jitter), -1, 0 (aucun),
++     y (y inverse) : convention a trancher par la sonde sonde_dlss_metalfx. */
++  static bool CidreDlssSpatial() {
++    static const bool spatial = env::getEnvVar("CIDRE_DXMT_DLSS_SPATIAL") == "1";
++    return spatial;
++  }
++
++  struct CidreSpatialEntree {
++    uint32_t contenu_w, contenu_h, sortie_w, sortie_h;
++    WMTPixelFormat sortie_format;
++    Rc<Texture> recadree;
++    Rc<SpatialScaler> scaler;
++  };
++  std::vector<CidreSpatialEntree> cidre_spatial_cache_;
++
++  void CidreSpatialUpscale(const MTL_TEMPORAL_UPSCALE_D3D11_DESC *pDesc, Rc<Texture> &input, Rc<Texture> &output) {
++    static const std::string jitter = env::getEnvVar("CIDRE_DXMT_DLSS_SPATIAL_JITTER");
++    float sx = 1.0f, sy = 1.0f;
++    if (jitter == "0") sx = sy = 0.0f;
++    else if (jitter == "-1") sx = sy = -1.0f;
++    else if (jitter == "y") sy = -1.0f;
++    uint32_t cw = pDesc->InputContentWidth ? pDesc->InputContentWidth : input->width();
++    uint32_t ch = pDesc->InputContentHeight ? pDesc->InputContentHeight : input->height();
++    cw = std::min(cw, input->width());
++    ch = std::min(ch, input->height());
++    if (!cw || !ch)
++      return;
++
++    CidreSpatialEntree *e = nullptr;
++    for (auto &c : cidre_spatial_cache_)
++      if (c.contenu_w == cw && c.contenu_h == ch && c.sortie_w == output->width() && c.sortie_h == output->height() &&
++          c.sortie_format == output->pixelFormat()) {
++        e = &c;
++        break;
++      }
++    if (!e) {
++      /* definition dynamique : peu de tailles a la fois ; les plus anciennes partent
++         (les operations deja emises gardent leurs references) */
++      if (cidre_spatial_cache_.size() >= 8)
++        cidre_spatial_cache_.erase(cidre_spatial_cache_.begin());
++      CidreSpatialEntree n{cw, ch, output->width(), output->height(), output->pixelFormat(), {}, {}};
++      WMTTextureInfo tinfo;
++      tinfo.width = cw;
++      tinfo.height = ch;
++      tinfo.depth = 1;
++      tinfo.array_length = 1;
++      tinfo.mipmap_level_count = 1;
++      tinfo.pixel_format = WMTPixelFormatRGBA16Float;
++      tinfo.sample_count = 1;
++      tinfo.type = WMTTextureType2D;
++      tinfo.usage = WMTTextureUsageShaderRead | WMTTextureUsageShaderWrite;
++      tinfo.options = WMTResourceStorageModePrivate;
++      n.recadree = new Texture(tinfo, ctx_->device->GetMTLDevice());
++      Flags<TextureAllocationFlag> flags;
++      flags.set(TextureAllocationFlag::GpuPrivate);
++      n.recadree->rename(n.recadree->allocate(flags));
++      WMTFXSpatialScalerInfo info;
++      info.color_format = WMTPixelFormatRGBA16Float;
++      info.output_format = output->pixelFormat();
++      info.input_width = cw;
++      info.input_height = ch;
++      info.output_width = output->width();
++      info.output_height = output->height();
++      info.color_processing_mode = 2; /* MTLFXSpatialScalerColorProcessingModeHDR */
++      n.scaler = new SpatialScaler(ctx_->device->GetMTLDevice(), info);
++      WARN("cidre-dlss: MetalFX SPATIAL (DLSS sans temporel), contenu ", cw, "x", ch, " (texture ", input->width(), "x",
++           input->height(), ", format ", input->pixelFormat(), ") -> sortie ", output->width(), "x", output->height(),
++           " (format ", output->pixelFormat(), "), jitter retire x", sx, " y", sy, ", HDR");
++      cidre_spatial_cache_.push_back(std::move(n));
++      e = &cidre_spatial_cache_.back();
++    }
++
++    ctx_->InvalidateCurrentPass();
++    ctx_->EmitOP([input, output, recadree = e->recadree, scaler = e->scaler, cw, ch,
++                  dx = sx * pDesc->JitterOffsetX, dy = sy * pDesc->JitterOffsetY](ArgumentEncodingContext &enc) mutable {
++      enc.mv_scale_cmd.recadrerDlss(input, recadree, dx, dy, cw, ch);
++      auto &scaler_info = enc.currentFrameStatistics().last_scaler_info;
++      scaler_info.type = ScalerType::Spatial;
++      scaler_info.input_width = cw;
++      scaler_info.input_height = ch;
++      scaler_info.output_width = output->width();
++      scaler_info.output_height = output->height();
++      enc.upscale(recadree, output, scaler);
++    });
++  }
++
+   /* Cidre : CIDRE_DXMT_SANS_UAV_OVERLAP=1 rend BeginUAVOverlap/EndUAVOverlap
+      (NvAPI, appeles par Unreal sur une carte NVIDIA : skin cache, cheveux,
+      Niagara) sans effet : les barrieres ecriture-apres-ecriture entre calculs sont
+diff --git a/src/d3d11/d3d11_swapchain.cpp b/src/d3d11/d3d11_swapchain.cpp
+index b211643..aa51972 100644
+--- a/src/d3d11/d3d11_swapchain.cpp
++++ b/src/d3d11/d3d11_swapchain.cpp
+@@ -604,6 +604,7 @@ public:
+       info.output_width = desc_.Width * scale_factor;
+       info.color_format = backbuffer_->texture()->pixelFormat();
+       info.output_format =upscaled_backbuffer_->texture()->pixelFormat();
++      info.color_processing_mode = 0; /* perceptuel : le back buffer est deja tonemappe */
+       metalfx_scaler = new SpatialScaler(device_->GetMTLDevice(), info);
+       D3D11_ASSERT(metalfx_scaler && "otherwise metalfx failed to initialize");
+     }
+diff --git a/src/dxmt/dxmt_command.cpp b/src/dxmt/dxmt_command.cpp
+index 685eeda..43282d8 100644
+--- a/src/dxmt/dxmt_command.cpp
++++ b/src/dxmt/dxmt_command.cpp
+@@ -342,6 +342,56 @@ MTLFXMVScaleContext::MTLFXMVScaleContext(
+ 
+   auto cs_depth = library.newFunction("cs_copy_depth_r32");
+   pso_copy_depth_r32_ = device_.newComputePipelineState(cs_depth, err);
++
++  auto cs_recadrer = library.newFunction("cs_cidre_dlss_recadrer");
++  pso_cidre_dlss_recadrer_ = device_.newComputePipelineState(cs_recadrer, err);
++}
++
++struct cidre_dlss_recadrer_desc {
++  float decalage_x, decalage_y;
++  float entree_w, entree_h;
++  float contenu_w, contenu_h;
++};
++
++void
++MTLFXMVScaleContext::recadrerDlss(
++    const Rc<Texture> &entree, const Rc<Texture> &recadree, float decalage_x, float decalage_y, uint32_t contenu_w,
++    uint32_t contenu_h
++) {
++  ctx_.startComputePass(0);
++  auto tex_entree = ctx_.access(entree, entree->fullView, ResourceAccess::Read).texture;
++  auto tex_recadree = ctx_.access(recadree, recadree->fullView, ResourceAccess::Write).texture;
++
++  auto &setpso = ctx_.encodeComputeCommand<wmtcmd_compute_setpso>();
++  setpso.type = WMTComputeCommandSetPSO;
++  setpso.pso = pso_cidre_dlss_recadrer_;
++  setpso.threadgroup_size = {8, 8, 1};
++
++  auto &set0 = ctx_.encodeComputeCommand<wmtcmd_compute_settexture>();
++  set0.type = WMTComputeCommandSetTexture;
++  set0.texture = tex_entree;
++  set0.index = 0;
++
++  auto &set1 = ctx_.encodeComputeCommand<wmtcmd_compute_settexture>();
++  set1.type = WMTComputeCommandSetTexture;
++  set1.texture = tex_recadree;
++  set1.index = 1;
++
++  cidre_dlss_recadrer_desc desc{decalage_x, decalage_y, (float)entree->width(), (float)entree->height(),
++                                (float)contenu_w, (float)contenu_h};
++  auto &setdesc = ctx_.encodeComputeCommand<wmtcmd_compute_setbytes>();
++  setdesc.type = WMTComputeCommandSetBytes;
++  void *temp = ctx_.allocate_cpu_heap(sizeof(desc), 16);
++  memcpy(temp, &desc, sizeof(desc));
++  setdesc.bytes.set(temp);
++  setdesc.length = sizeof(desc);
++  setdesc.index = 0;
++
++  auto &dispatch = ctx_.encodeComputeCommand<wmtcmd_compute_dispatch>();
++  dispatch.type = WMTComputeCommandDispatchThreads;
++  dispatch.size = {contenu_w, contenu_h, 1};
++
++  ctx_.endPass();
+ }
+ 
+ void
+diff --git a/src/dxmt/dxmt_command.hpp b/src/dxmt/dxmt_command.hpp
+index f18871a..d0cce8f 100644
+--- a/src/dxmt/dxmt_command.hpp
++++ b/src/dxmt/dxmt_command.hpp
+@@ -238,11 +238,19 @@ public:
+   /* Cidre : plan de profondeur d'une Depth32Float_Stencil8 vers une R32Float */
+   void copyDepthR32(const Rc<Texture> &depth, const Rc<Texture> &r32);
+ 
++  /* Cidre : DLSS par MetalFX spatial ; zone rendue de l'entree recopiee a sa taille
++     dans <recadree>, decalee de (decalage_x, decalage_y) pixels (jitter retire) */
++  void recadrerDlss(
++      const Rc<Texture> &entree, const Rc<Texture> &recadree, float decalage_x, float decalage_y,
++      uint32_t contenu_w, uint32_t contenu_h
++  );
++
+ private:
+   ArgumentEncodingContext &ctx_;
+   WMT::Device device_;
+   WMT::Reference<WMT::ComputePipelineState> pso_downscale_dilated_mv_;
+   WMT::Reference<WMT::ComputePipelineState> pso_copy_depth_r32_;
++  WMT::Reference<WMT::ComputePipelineState> pso_cidre_dlss_recadrer_;
+ };
+ 
+ constexpr auto kBarrierTileSize = 16;
+diff --git a/src/dxmt/dxmt_command.metal b/src/dxmt/dxmt_command.metal
+index b257584..952fabf 100644
+--- a/src/dxmt/dxmt_command.metal
++++ b/src/dxmt/dxmt_command.metal
+@@ -676,6 +676,29 @@ struct downscale_dilated_mv_desc {
+   r32.write(float4(depth.read(pos)), pos);
+ }
+ 
++/* Cidre : DLSS servi par MetalFX spatial (famille Apple < 9, ou le temporel gele
++   le GPU). Recopie la zone rendue de l'entree dans une texture a sa taille, en
++   retirant le jitter du moteur (decalage en pixels de rendu, filtre lineaire) :
++   sans historique, l'image tremblerait d'une fraction de pixel a chaque image. */
++struct cidre_dlss_recadrer_desc {
++  float2 decalage;
++  float2 taille_entree;
++  float2 taille_contenu;
++};
++
++[[kernel]] void cs_cidre_dlss_recadrer(
++  uint2 pos [[thread_position_in_grid]],
++  constant cidre_dlss_recadrer_desc& desc [[buffer(0)]],
++  texture2d<float, access::sample> entree [[texture(0)]],
++  texture2d<float, access::write> sortie [[texture(1)]]
++) {
++  if (pos.x >= uint(desc.taille_contenu.x) || pos.y >= uint(desc.taille_contenu.y))
++    return;
++  constexpr sampler lineaire(coord::normalized, address::clamp_to_edge, filter::linear);
++  float2 p = clamp(float2(pos) + 0.5 + desc.decalage, float2(0.5), desc.taille_contenu - 0.5);
++  sortie.write(entree.sample(lineaire, p / desc.taille_entree, level(0)), pos);
++}
++
+ [[kernel]] void tile_barrier(ushort2 pos [[thread_position_in_threadgroup]]) {
+   // empty
+ }
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+index 5260996..9e2b881 100644
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -1726,6 +1726,7 @@ _MTLDevice_newSpatialScaler(void *obj) {
+   desc.inputHeight = info->input_height;
+   desc.outputWidth = info->output_width;
+   desc.outputHeight = info->output_height;
++  desc.colorProcessingMode = (MTLFXSpatialScalerColorProcessingMode)info->color_processing_mode;
+   params->ret = (obj_handle_t)[desc newSpatialScalerWithDevice:(id<MTLDevice>)params->device];
+   [desc release];
+   return STATUS_SUCCESS;
+diff --git a/src/winemetal/winemetal.h b/src/winemetal/winemetal.h
+index e155d3e..cd7d4de 100644
+--- a/src/winemetal/winemetal.h
++++ b/src/winemetal/winemetal.h
+@@ -1744,6 +1744,8 @@ struct WMTFXSpatialScalerInfo {
+   uint32_t input_height;
+   uint32_t output_width;
+   uint32_t output_height;
++  /* Cidre : MTLFXSpatialScalerColorProcessingMode (0 perceptuel, 1 lineaire, 2 HDR) */
++  uint32_t color_processing_mode;
+ };
+ 
+ WINEMETAL_API obj_handle_t MTLDevice_newTemporalScaler(obj_handle_t device, const struct WMTFXTemporalScalerInfo *info);

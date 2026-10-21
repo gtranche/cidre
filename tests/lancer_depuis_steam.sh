@@ -681,14 +681,26 @@ case $DLSS in metalfx) ;; *) DLSS= ;; esac
 # contre 40 en TSR, aucun gel). Decision du 2026-10-20 : DLSS seulement si famille_gpu
 # >= 9, d'une fiche comme de l'environnement ; famille illisible = refus. Aucune cle de
 # contournement (CIDRE_DLSS_ESSAI n'a plus d'effet). Apple8 (M2) n'est pas mesure.
+# REPLI SPATIAL (0223) : sous la famille 9, dlss_repli = "spatial" (CIDRE_DLSS_REPLI=spatial)
+# garde le DLSS du jeu mais le sert par MTLFXSpatialScaler (CIDRE_DXMT_DLSS_SPATIAL=1) :
+# jamais de MetalFX temporel, qui y gele le GPU (cinquieme gel le 21/10, barrieres UAV
+# gardees) ; le spatial y tourne deja a la presentation sans gel. Sans anticrenelage
+# temporel : image moins lisse qu'en TSR. Sans dlss_repli, la garde refuse comme avant.
+DLSS_SPATIAL=
 if [ -n "$DLSS" ]; then
    FAMILLE_GPU=$(sh "$R/tests/machine.sh" famille_gpu 2>/dev/null | sed -n 's/^famille_gpu=//p')
    case $FAMILLE_GPU in ''|*[!0-9]*) FAMILLE_GPU= ;; esac
    if [ -z "$FAMILLE_GPU" ] || [ "$FAMILLE_GPU" -lt 9 ]; then
-      echo "    dlss : metalfx refuse sur famille_gpu ${FAMILLE_GPU:-illisible} (il faut >= 9 : MetalFX temporel bloque le GPU du M1, Apple7) : DLSS absent" >>"$JOURNAL"
-      DLSS=
+      if [ -n "$FAMILLE_GPU" ] && [ "$(opt dlss_repli CIDRE_DLSS_REPLI)" = spatial ]; then
+         DLSS_SPATIAL=1
+         echo "    dlss : metalfx en SPATIAL sur famille_gpu $FAMILLE_GPU (dlss_repli = spatial ; jamais de temporel sous 9)" >>"$JOURNAL"
+      else
+         echo "    dlss : metalfx refuse sur famille_gpu ${FAMILLE_GPU:-illisible} (il faut >= 9 : MetalFX temporel bloque le GPU du M1, Apple7 ; dlss_repli = \"spatial\" pour un DLSS sans temporel) : DLSS absent" >>"$JOURNAL"
+         DLSS=
+      fi
    fi
 fi
+unset CIDRE_DXMT_DLSS_SPATIAL
 NVEXT_POSES=$R/wine/.cidre-nvext-poses
 source_nvext() { # <fichier> : nvapi64.dll ou nvngx.dll
    case $1 in nvapi64.dll) dev=nvapi/$1 ;; *) dev=nvngx/$1 ;; esac
@@ -754,7 +766,12 @@ if [ -n "$DLSS" ]; then
       *";$NVEXT_OV;"*) : ;;
       *) export CIDRE_DLL_OVERRIDES="${CIDRE_DLL_OVERRIDES:+$CIDRE_DLL_OVERRIDES;}$NVEXT_OV" ;;
    esac
-   echo "    dlss : metalfx -> DLSS Super Resolution par MTLFXTemporalScaler (DXMT_ENABLE_NVEXT=1, nvapi64/nvngx depuis $(dirname "$(source_nvext nvngx.dll)"))" >>"$JOURNAL"
+   if [ -n "$DLSS_SPATIAL" ]; then
+      export CIDRE_DXMT_DLSS_SPATIAL=1
+      echo "    dlss : metalfx -> DLSS Super Resolution par MTLFXSpatialScaler (CIDRE_DXMT_DLSS_SPATIAL=1, DXMT_ENABLE_NVEXT=1, nvapi64/nvngx depuis $(dirname "$(source_nvext nvngx.dll)"))" >>"$JOURNAL"
+   else
+      echo "    dlss : metalfx -> DLSS Super Resolution par MTLFXTemporalScaler (DXMT_ENABLE_NVEXT=1, nvapi64/nvngx depuis $(dirname "$(source_nvext nvngx.dll)"))" >>"$JOURNAL"
+   fi
 else
    if [ -f "$NVEXT_POSES" ] || [ -f "$WINDLL/nvngx.dll" ]; then retirer_nvext "sans dlss"; fi
 fi

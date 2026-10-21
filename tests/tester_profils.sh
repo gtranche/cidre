@@ -1104,6 +1104,7 @@ opt() { eval "v=\${$2:-}"; echo "$v"; }
 est_pe32() { return 1; }
 poser() { cmp -s "$1" "$2" && return 0; cp -p "$1" "$2.cidre-tmp" && mv -f "$2.cidre-tmp" "$2"; }
 . "$R/bloc.sh"
+echo "spatial ${CIDRE_DXMT_DLSS_SPATIAL:-0}"
 echo "fg ${CIDRE_DXMT_FG:-0}"
 echo "fin ${DXMT_ENABLE_NVEXT:-0}"
 EOS
@@ -1123,6 +1124,29 @@ verif "dlss : accepte sur M4 (famille 9), bloc au bout sur un chemin a espaces" 
 verif "dlss : leurre signe a cote de l'exe et en system32" "signe signe signe" "$(cat "$JD/nvngx.dll" "$JD/Sandfall/Binaries/Win64/nvngx.dll" "$N/sys32/nvngx.dll" 2>/dev/null | tr '\n' ' ' | sed 's/signe/signe /g; s/  */ /g; s/ $//')"
 fin=$(CIDRE_MACHINE=$M4F sh "$N/jouer.sh" "$N" "$JD" 2>&1 | tail -1)
 verif "dlss : retire au lancement suivant sans dlss" "fin 0 absent absent absent" "$fin $([ -e "$JD/nvngx.dll" ] && echo la || echo absent) $([ -e "$N/sys32/nvngx.dll" ] && echo la || echo absent) $([ -e "$N/windll/nvngx.dll" ] && echo la || echo absent)"
+# repli spatial (0223) : dlss_repli = spatial garde le DLSS sous la famille 9, par MetalFX
+# spatial seulement ; jamais sur famille illisible ; sans effet sur M4 ; un
+# CIDRE_DXMT_DLSS_SPATIAL herite ne passe pas sans lui
+s=$(CIDRE_MACHINE=$M1F CIDRE_DLSS=metalfx CIDRE_DLSS_REPLI=spatial sh "$N/jouer.sh" "$N" "$JD" 2>&1 | grep -E '^(spatial|fin) ' | tr '\n' ' ')
+verif "dlss_repli : M1 (famille 7) en spatial, leurre pose" "spatial 1 fin 1 pose" "$s$([ -e "$N/sys32/nvngx.dll" ] && echo pose || echo absent)"
+verif "dlss_repli : note au journal (SPATIAL, MTLFXSpatialScaler)" "1 1" "$(grep -c 'metalfx en SPATIAL sur famille_gpu 7' "$N/journal") $(grep -c 'par MTLFXSpatialScaler' "$N/journal")"
+s=$(CIDRE_MACHINE=$M2F CIDRE_DLSS=metalfx CIDRE_DLSS_REPLI=spatial sh "$N/jouer.sh" "$N" "$JD" 2>&1 | grep -E '^(spatial|fin) ' | tr '\n' ' ')
+verif "dlss_repli : famille 8 en spatial" "spatial 1 fin 1 " "$s"
+s=$(CIDRE_MACHINE=famille_gpu=x CIDRE_DLSS=metalfx CIDRE_DLSS_REPLI=spatial sh "$N/jouer.sh" "$N" "$JD" 2>&1 | grep -E '^(spatial|fin) ' | tr '\n' ' ')
+verif "dlss_repli : refuse si la famille est illisible" "spatial 0 fin 0 " "$s"
+s=$(CIDRE_MACHINE=$M1F CIDRE_DLSS=metalfx CIDRE_DLSS_REPLI=temporel sh "$N/jouer.sh" "$N" "$JD" 2>&1 | grep -E '^(spatial|fin) ' | tr '\n' ' ')
+verif "dlss_repli : valeur autre que spatial = refus sur M1" "spatial 0 fin 0 " "$s"
+s=$(CIDRE_MACHINE=$M4F CIDRE_DLSS=metalfx CIDRE_DLSS_REPLI=spatial sh "$N/jouer.sh" "$N" "$JD" 2>&1 | grep -E '^(spatial|fin) ' | tr '\n' ' ')
+verif "dlss_repli : sans effet sur M4 (temporel)" "spatial 0 fin 1 " "$s"
+s=$(CIDRE_MACHINE=$M4F CIDRE_DLSS=metalfx CIDRE_DXMT_DLSS_SPATIAL=1 sh "$N/jouer.sh" "$N" "$JD" 2>&1 | grep -E '^(spatial|fin) ' | tr '\n' ' ')
+verif "dlss_repli : CIDRE_DXMT_DLSS_SPATIAL herite retire" "spatial 0 fin 1 " "$s"
+verif "dlss_repli : non par defaut" "non" "$(valeur 998 dlss_repli)"
+cp "$CIDRE_PROFILS" "$T/perso.avant-repli"
+sh "$R/cidre" set defaut dlss_repli spatial >/dev/null 2>&1
+verif "cidre set defaut dlss_repli spatial" "spatial" "$(valeur 998 dlss_repli)"
+sh "$R/cidre" set defaut dlss_repli temporel >/dev/null 2>&1; rc=$?
+verif "cidre set dlss_repli : valeur inconnue refusee" "2" "$rc"
+cp "$T/perso.avant-repli" "$CIDRE_PROFILS"
 # generation d'images : fermee partout (2026-10-20), meme sur M4 avec dlss, et un CIDRE_DXMT_FG herite est retire
 sortie=$(CIDRE_MACHINE=$M4F CIDRE_DLSS=metalfx CIDRE_GENERATION_IMAGES=metalfx CIDRE_DXMT_FG=1 sh "$N/jouer.sh" "$N" "$JD" 2>&1 | tail -2 | tr '\n' ' ')
 verif "generation_images : refusee sur M4 avec dlss, CIDRE_DXMT_FG herite retire, note au journal" "fg 0 fin 1 oui" "$sortie$(grep -q 'generation_images : metalfx refuse' "$N/journal" && echo oui || echo non)"
