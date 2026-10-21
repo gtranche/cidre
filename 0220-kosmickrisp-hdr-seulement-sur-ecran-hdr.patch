@@ -1,0 +1,115 @@
+Generated-by: LLM
+
+KosmicKrisp (WSI Metal) : espaces de couleur HDR et EDR annonces seulement pour un ecran HDR, et HDR10/HLG jamais en BGRA8 (0220) -- la surface annoncait les 12 espaces de couleur pour chaque format, HDR10_ST2084 compris en B8G8R8A8 ; Detroit: Become Human (1222140), qui n'a aucun reglage HDR, prend de lui-meme B8G8R8A8_SRGB + HDR10_ST2084 (espace 1000104008 releve au journal, iMac M4, v1.5.18) : la couche passe en kCGColorSpaceITUR_2100_PQ et l'image sort delavee et brulee (fond et peau blancs, LED de tempe noyee, trainees cyan du bloom), sur un ecran SDR. Les espaces HDR/EDR (EXTENDED_SRGB lineaire et non lineaire, DISPLAY_P3_LINEAR, BT2020_LINEAR, HDR10_ST2084, HDR10_HLG) ne sont plus annonces que si un ecran a un potentiel EDR d'au moins 4 (maximumPotentialExtendedDynamicRangeColorComponentValue, lu par KVC sur NSScreen, sans lien AppKit : M1 Max XDR 16, iMac M4 2) ; HDR10 et HLG ne sont plus apparies a B8G8R8A8 (comme DXGI, qui veut R10G10B10A2 ou 16F). MESA_WSI_METAL_HDR=auto (defaut), 0 (jamais) ou 1 (ecran ignore). Le journal porte la decision ([CIDRE_WSI] HDR annonce|non annonce, EDR potentiel) et, a chaque chaine, son espace de couleur, son usage, ses drapeaux et son mode. Manche M4 (21/10, avec l'utilisateur) : « HDR non annonce (EDR potentiel 2.00) », Detroit prend B8G8R8A8_UNORM en SRGB_NONLINEAR, menu « bien mieux », comparable a la photo Windows. M1 Max : DXVK et vkd3d-proton ne demandent HDR10 qu'en 10 bits ou 16F, rien ne change pour eux (temoin : 50 -> 46 couples, les 4 retires sont BGRA8 x HDR10/HLG). Temoin tests/temoin_hdr_wsi.sh (vulkaninfo, auto/0/1). Fichiers de la WSI seulement : neutres pour la cle de code de 0208, le cache de pipelines est garde.
+
+--- a/src/vulkan/wsi/wsi_common_metal.c
++++ b/src/vulkan/wsi/wsi_common_metal.c
+@@ -242,10 +242,60 @@
+  * 0x120017, macOS 26, even in a full screen space with an opaque layer),
+  * BGRA8 and BGR10A2 are. So A2B10G10R10 is hidden in SDR without the overlay
+  * too; MESA_WSI_METAL_RGB10A2=1 advertises it again (never with the overlay). */
++/* Cidre : les espaces de couleur HDR et EDR ne sont annonces que pour un
++ * ecran HDR (maximumPotentialExtendedDynamicRangeColorComponentValue >= 4 :
++ * ecran XDR 16 ; l'iMac M4, SDR avec une marge EDR, 2), et HDR10/HLG jamais en
++ * 8 bits (comme DXGI). Detroit: Become Human prend de lui-meme HDR10_ST2084
++ * des qu'il est annonce, meme en B8G8R8A8_SRGB : la couche passe en
++ * ITUR_2100_PQ et l'image sort delavee et brulee (iMac M4).
++ * MESA_WSI_METAL_HDR=auto (defaut), 0 (jamais) ou 1 (ecran ignore). */
++static bool
++wsi_metal_color_space_is_hdr(VkColorSpaceKHR color_space)
++{
++   switch (color_space) {
++   case VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT:
++   case VK_COLOR_SPACE_EXTENDED_SRGB_NONLINEAR_EXT:
++   case VK_COLOR_SPACE_DISPLAY_P3_LINEAR_EXT:
++   case VK_COLOR_SPACE_BT2020_LINEAR_EXT:
++   case VK_COLOR_SPACE_HDR10_ST2084_EXT:
++   case VK_COLOR_SPACE_HDR10_HLG_EXT:
++      return true;
++   default:
++      return false;
++   }
++}
++
++static bool
++wsi_metal_hdr_announced(void)
++{
++   static int announced = -1;
++   if (announced < 0) {
++      const char *mode = debug_get_option("MESA_WSI_METAL_HDR", "auto");
++      float edr = wsi_metal_display_max_potential_edr();
++      if (!strcmp(mode, "0") || !strcmp(mode, "false"))
++         announced = 0;
++      else if (!strcmp(mode, "1") || !strcmp(mode, "true"))
++         announced = 1;
++      else
++         announced = edr >= 4.0f;
++      fprintf(stderr, "[CIDRE_WSI] HDR %s (MESA_WSI_METAL_HDR=%s, EDR potentiel %.2f)\n",
++              announced ? "annonce" : "non annonce", mode, edr);
++   }
++   return announced;
++}
++
+ static bool
+ wsi_metal_surface_format_hidden(bool overlay, VkFormat format,
+                                 VkColorSpaceKHR color_space)
+ {
++   if (wsi_metal_color_space_is_hdr(color_space) && !wsi_metal_hdr_announced())
++      return true;
++
++   if ((color_space == VK_COLOR_SPACE_HDR10_ST2084_EXT ||
++        color_space == VK_COLOR_SPACE_HDR10_HLG_EXT) &&
++       (format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_B8G8R8A8_UNORM))
++      return true;
++
+    if (!overlay && debug_get_bool_option("MESA_WSI_METAL_RGB10A2", false))
+       return false;
+ 
+@@ -1203,6 +1253,10 @@
+            chain->present_context || chain->upscaler ? 3 : 4,
+            debug_get_option("MESA_WSI_METAL_OPAQUE", "auto"),
+            pCreateInfo->imageFormat);
++   fprintf(stderr, "[CIDRE_WSI] espace de couleur %d, usage 0x%x, flags 0x%x, "
++           "mode %d, %u images, alpha 0x%x\n", pCreateInfo->imageColorSpace,
++           pCreateInfo->imageUsage, pCreateInfo->flags, pCreateInfo->presentMode,
++           pCreateInfo->minImageCount, pCreateInfo->compositeAlpha);
+ 
+    *swapchain_out = &chain->base;
+ 
+--- a/src/vulkan/wsi/wsi_common_metal_layer.h
++++ b/src/vulkan/wsi/wsi_common_metal_layer.h
+@@ -28,6 +28,9 @@
+ uint32_t
+ wsi_metal_layer_detach_code(const CAMetalLayer *metal_layer);
+ 
++float
++wsi_metal_display_max_potential_edr(void);
++
+ bool
+ wsi_metal_layer_is_opaque(const CAMetalLayer *metal_layer);
+ 
+--- a/src/vulkan/wsi/wsi_common_metal_layer.m
++++ b/src/vulkan/wsi/wsi_common_metal_layer.m
+@@ -782,3 +782,22 @@
+    free(u->done_values);
+    free(u);
+ }
++
++float
++wsi_metal_display_max_potential_edr(void)
++{
++   @autoreleasepool {
++      Class screen_class = NSClassFromString(@"NSScreen");
++      if (screen_class == nil)
++         return 1.0f;
++      NSArray *screens = [screen_class valueForKey:@"screens"];
++      double max_edr = 1.0;
++      for (id screen in screens) {
++         NSNumber *v = [screen valueForKey:
++            @"maximumPotentialExtendedDynamicRangeColorComponentValue"];
++         if (v != nil && v.doubleValue > max_edr)
++            max_edr = v.doubleValue;
++      }
++      return (float)max_edr;
++   }
++}
