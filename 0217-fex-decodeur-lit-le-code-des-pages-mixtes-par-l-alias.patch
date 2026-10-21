@@ -1,0 +1,184 @@
+Generated-by: LLM
+
+fex : le decodeur lit le code de l invite des pages d hote mixtes par l alias de Wine (apres 0211 v3). Diablo II Resurrected execute du code dechiffre a la demande : une page de 4 Kio ouverte au milieu de voisines NOACCESS, re-protegee sans cesse, donc retraduite sans cesse ; chaque octet que le decodeur de FEX lisait (PeekByte, ReadData, et la CRC de la detection complete du code auto-modifie dans GenerateIR) y faisait faute et Wine le rejouait (~2,4 us). Mesure au rendu (sample de 10 s, tous fils) : ~3,7 coeurs dans _sigtramp, dont 58 % par le decodeur. FEXCore recoit un crochet (Context::SetGuestCodeAlias) : decalage vers l alias pour une page d hote de 16 Kio, ou 0 ; le decodeur le garde par page d hote, remis a chaque traduction, et lit par Decoder::ReadCode (octet par octet, une lecture a cheval sur deux pages d hote est juste). Le module ARM64EC le branche sur SousPages::DecalageCode (cache des pages d hote valide par la generation de Wine, requete a Wine sinon) quand les sous-pages sont actives. L executabilite de la page de 4 Kio est verifiee avant toute lecture, comme avant : une page fermee n est jamais lue par l alias et l invite y fait toujours faute. Temoin tests/h64sous_page_code.c : retraduction depuis une page mixte 291 -> 195 us par tour, resultats justes, appel dans une page fermee : 20 fautes sur 20 ; h64sous_page_stress S1-S5 et h64sous_page_suspension OK. D2R (montage 0215b + 0214 + KnownDLLs d3d12, vkd3d-proton, 900 s) : premieres images ~245 s (0211 v3 seul : ~505), 1re soumission GPU ~109 s (~155), 29,9 images/s au rendu (17,3), signaux 3,7 -> 0,2 coeur. Correctif local (FEX refuse le code genere par IA en amont).
+diff --git a/FEXCore/include/FEXCore/Core/Context.h b/FEXCore/include/FEXCore/Core/Context.h
+index 5eed535..ce19b03 100644
+--- a/FEXCore/include/FEXCore/Core/Context.h
++++ b/FEXCore/include/FEXCore/Core/Context.h
+@@ -167,6 +167,14 @@ public:
+    */
+   FEX_DEFAULT_VISIBILITY virtual uint8_t* AllocateCodeStub(FEXCore::Core::InternalThreadState* Thread, uintptr_t Near, size_t Size) = 0;
+ 
++  /**
++   * @brief Cidre : the frontend reads guest code through this hook. Given a 16 KiB host page, it returns the offset to
++   * add to an address in that page to read it without faulting (alias of a mixed host page, whose neighbouring 4 KiB
++   * pages are closed), or 0 to read it in place. Executability is checked by the decoder before any read.
++   */
++  using GuestCodeAliasFn = int64_t (*)(uint64_t HostPage);
++  FEX_DEFAULT_VISIBILITY virtual void SetGuestCodeAlias(GuestCodeAliasFn Fn) = 0;
++
+   /**
+    * @brief Informs the context if hardware TSO is supported.
+    * Once hardware TSO is enabled, then TSO emulation through atomics is disabled and relies on the hardware.
+diff --git a/FEXCore/Source/Interface/Context/Context.h b/FEXCore/Source/Interface/Context/Context.h
+index e5f5eb2..47cc7a3 100644
+--- a/FEXCore/Source/Interface/Context/Context.h
++++ b/FEXCore/Source/Interface/Context/Context.h
+@@ -234,6 +234,10 @@ public:
+ 
+   bool IsAddressInCodeBuffer(FEXCore::Core::InternalThreadState* Thread, uintptr_t Address) const override;
+   uint8_t* AllocateCodeStub(FEXCore::Core::InternalThreadState* Thread, uintptr_t Near, size_t Size) override;
++  void SetGuestCodeAlias(GuestCodeAliasFn Fn) override {
++    GuestCodeAlias = Fn;
++  }
++  GuestCodeAliasFn GuestCodeAlias {};
+ 
+   // returns false if a handler was already registered
+   std::optional<CustomIRResult>
+diff --git a/FEXCore/Source/Interface/Core/Frontend.h b/FEXCore/Source/Interface/Core/Frontend.h
+index c2f65ef..068c237 100644
+--- a/FEXCore/Source/Interface/Core/Frontend.h
++++ b/FEXCore/Source/Interface/Core/Frontend.h
+@@ -176,6 +176,17 @@ private:
+   };
+ 
+   DecodeStream InstStream;
++
++  // Cidre : decalage de lecture du code pour la page d'hote AliasPage (voir Context::SetGuestCodeAlias).
++  uint64_t AliasPage {~0ULL};
++  int64_t AliasDelta {};
++
++public:
++  // Cidre : lit Size octets de code de l'invite a P (adresse hote), par l'alias de Wine si la page d'hote est
++  // mixte : ses voisines fermees feraient fauter chaque octet lu (rejoue par Wine, ~2,4 us).
++  void ReadCode(void* Dst, const uint8_t* P, size_t Size);
++
++private:
+   IR::OpSize GetGPROpSize() const {
+     return BlockInfo.Is64BitMode ? IR::OpSize::i64Bit : IR::OpSize::i32Bit;
+   }
+diff --git a/FEXCore/Source/Interface/Core/Frontend.cpp b/FEXCore/Source/Interface/Core/Frontend.cpp
+index 581367a..032dcc2 100644
+--- a/FEXCore/Source/Interface/Core/Frontend.cpp
++++ b/FEXCore/Source/Interface/Core/Frontend.cpp
+@@ -134,10 +134,29 @@ uint8_t Decoder::ReadByte() {
+   return *Byte;
+ }
+ 
++void Decoder::ReadCode(void* Dst, const uint8_t* P, size_t Size) {
++  auto* D = static_cast<uint8_t*>(Dst);
++  if (!CTX->GuestCodeAlias) {
++    std::memcpy(D, P, Size);
++    return;
++  }
++  for (size_t i = 0; i < Size; ++i) {
++    const auto A = reinterpret_cast<uint64_t>(P + i);
++    const auto Page = A & ~uint64_t {0x3fff};
++    if (Page != AliasPage) {
++      AliasPage = Page;
++      AliasDelta = CTX->GuestCodeAlias(Page);
++    }
++    D[i] = *reinterpret_cast<const uint8_t*>(A + AliasDelta);
++  }
++}
++
+ std::optional<uint8_t> Decoder::PeekByte(uint8_t Offset) {
+   uint64_t ByteAddress = reinterpret_cast<uint64_t>(InstStream.InstStream + InstructionSize + Offset);
+   if (CheckRangeExecutable(ByteAddress, 1)) {
+-    return InstStream.AdjustedInstStream[InstructionSize + Offset];
++    uint8_t Byte;
++    ReadCode(&Byte, &InstStream.AdjustedInstStream[InstructionSize + Offset], 1);
++    return Byte;
+   } else {
+     return std::nullopt;
+   }
+@@ -151,7 +170,7 @@ std::pair<uint64_t, bool> Decoder::ReadData(uint8_t Size) {
+   LastFieldReadOffset = (uint8_t)InstructionSize;
+   LastFieldReadSize = Size;
+   if (CheckRangeExecutable(Address, Size)) {
+-    std::memcpy(&Res, &InstStream.AdjustedInstStream[InstructionSize], Size);
++    ReadCode(&Res, &InstStream.AdjustedInstStream[InstructionSize], Size);
+   } else {
+     HitNonExecutableRange = true;
+     // See PeekByte, this specific case may cause some executable memory to read as 0 but it doesn't matter as the entire instruction will be rolled back anyway.
+@@ -1772,6 +1791,7 @@ void Decoder::SetupDecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState*
+ 
+   EntryPoint = PC;
+   BlockInfo.EntryPoints = {PC};
++  AliasPage = ~0ULL; // un alias peut avoir ete libere depuis la traduction precedente
+ 
+   TotalInstructions = 0;
+ 
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+index 5e8ded7..3531e09 100644
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -662,7 +662,9 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
+           auto ExistingCodePtr = const_cast<uint8_t*>(GuestCodePtr(Block.Entry + BlockInstructionsLength));
+           auto InstAddressReg = Thread->OpDispatcher->_EntrypointOffset(GPRSize, InstAddress - GuestRIP);
+ 
+-          auto Value = FEXCore::Utils::crc32(ExistingCodePtr, DecodedInfo->InstSize);
++          uint8_t CodeBytes[16];
++          Thread->FrontendDecoder->ReadCode(CodeBytes, ExistingCodePtr, DecodedInfo->InstSize);
++          auto Value = FEXCore::Utils::crc32(CodeBytes, DecodedInfo->InstSize);
+           auto CRC = WantsDiskCachePatching ?
+                        Thread->OpDispatcher->_PatchableGuestCRC(IR::OpSize::i64Bit, Value, (int64_t)ExistingCodePtr, DecodedInfo->InstSize) :
+                        Thread->OpDispatcher->Constant(Value);
+diff --git a/Source/Windows/ARM64EC/SousPages.cpp b/Source/Windows/ARM64EC/SousPages.cpp
+index 1534470..5d65c91 100644
+--- a/Source/Windows/ARM64EC/SousPages.cpp
++++ b/Source/Windows/ARM64EC/SousPages.cpp
+@@ -827,6 +827,25 @@ bool FixupStubFault(ARM64_NT_CONTEXT* Context, bool Unpatch) {
+ }
+ } // namespace FEX::Windows::SousPages
+ 
++int64_t FEX::Windows::SousPages::DecalageCode(uint64_t HostPage) {
++  if (!Actif) {
++    return 0;
++  }
++  const uint32_t Gen = *Generation;
++  Etat E;
++  if (!LireCache(HostPage, Gen, E)) {
++    Params P {};
++    P.Op = 1;
++    P.Hote = HostPage;
++    if (Appel(&P)) {
++      return 0;
++    }
++    E = {P.Gen, P.Alias, P.Lecture, P.Ecriture, P.Mixte};
++    EcrireCache(HostPage, E);
++  }
++  return (E.Mixte && E.Alias) ? static_cast<int64_t>(E.Alias - HostPage) : 0;
++}
++
+ using namespace FEX::Windows::SousPages;
+ 
+ // Appele par SousPagesCommun (Module.S), registres de l'invite sauves dans
+diff --git a/Source/Windows/ARM64EC/SousPages.h b/Source/Windows/ARM64EC/SousPages.h
+index 57e66f0..5848e3e 100644
+--- a/Source/Windows/ARM64EC/SousPages.h
++++ b/Source/Windows/ARM64EC/SousPages.h
+@@ -49,4 +49,8 @@ void HandleProposal(FEXCore::Context::Context* CTX, FEXCore::Core::InternalThrea
+ // l'instruction d'origine (Pc, Sp, registre de base). Unpatch : remettre aussi
+ // l'instruction d'origine en place (faute que le talon ne sait pas porter).
+ bool FixupStubFault(ARM64_NT_CONTEXT* Context, bool Unpatch);
++
++// Lecture du code de l'invite par le decodeur (Context::SetGuestCodeAlias) : decalage vers l'alias de la page d'hote
++// HostPage si elle est mixte, 0 sinon. Le decodeur ne lit qu'apres avoir verifie que la page de 4 Kio est executable.
++int64_t DecalageCode(uint64_t HostPage);
+ } // namespace FEX::Windows::SousPages
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+index 110d450..af4b608 100644
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -653,6 +653,10 @@ NTSTATUS ProcessInit() {
+       FEX::Windows::CPUFeatures::FetchHostFeatures(IsWine, FEXCore::HostFeatures::HostTypeEnum::Arm64ec, FEX::Windows::UnixLib::GetPID());
+     CTX = FEXCore::Context::Context::CreateNewContext(HostFeatures);
+   }
++  if (FEX::Windows::SousPages::Active()) {
++    // Le decodeur lit le code des pages d'hote mixtes par l'alias de Wine (sans faute rejouee par octet).
++    CTX->SetGuestCodeAlias(&FEX::Windows::SousPages::DecalageCode);
++  }
+ 
+   CTX->SetSignalDelegator(SignalDelegator.get());
+   CTX->SetSyscallHandler(SyscallHandler.get());
