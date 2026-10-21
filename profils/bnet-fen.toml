@@ -1,0 +1,24 @@
+# Diablo IV (Battle.net, uid fenris, code produit Fen) -- fiche ecrite a la main
+# (2026-10-21), avant tout essai sous Cidre. Voir BATTLENET.md.
+
+[jeu]
+appid = "bnet-fen"
+nom = "Diablo IV"
+exe = "Diablo IV.exe"
+api = "d3d12"
+api_disponibles = "d3d12"
+bits = 64
+lanceur = "battlenet"
+
+[cidre]
+# DirectX 12 obligatoire (eu.support.blizzard.com/article/251518) : vkd3d-proton +
+# KosmicKrisp. Shader Model 6.6 annonce, comme Demonologist en D3D12 (atomiques
+# 64 bits emulees sur M1, KosmicKrisp 0153) : hypothese a verifier a la premiere
+# manche, rien ne dit encore ce que D4 exige au-dela de SM 6.0.
+dx12 = true
+sm66 = true
+
+[compat]
+etat = "non-teste"
+date = "2026-10-21"
+notes = "Jamais lance sous Cidre. Tourne chez l'utilisateur sous Whisky/GPTK (D3DMetal, exclu ici). Saison 14 (3.1.0) : exige l'export FindNextFileNameW, present dans Wine 11.18."

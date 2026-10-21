@@ -50,6 +50,21 @@ LOCAUX="$CIDRE_DIR/jeux-locaux.conf"
 # L'index des emplacements (empl_indexer, au lancement) dit ou.
 est_local() { case $1 in local-*) return 0 ;; esac; return 1; }
 local_champ() { awk -F'\t' -v i="$1" -v n="$2" '$1==i {print $n; exit}' "$LOCAUX" 2>/dev/null; }
+# Jeux Battle.net (id bnet-<code>) : installes et mis a jour par le client de
+# Blizzard, dans son prefixe a lui (tests/battlenet.sh). Leur liste, lue une
+# fois par commande dans le registre de ce prefixe : id, nom, dossier, code,
+# uid, executable, taille, TAB-separes.
+est_bnet() { case $1 in bnet-*) return 0 ;; esac; return 1; }
+BNET_JEUX=$(sh "$R/tests/battlenet.sh" jeux 2>/dev/null)
+bnet_champ() { printf '%s\n' "$BNET_JEUX" | awk -F'\t' -v i="$1" -v n="$2" '$1==i {print $n; exit}'; }
+bnet_prefixe() { sh "$R/tests/battlenet.sh" prefixe; }
+# son dossier est un lien vers un disque debranche (le dossier par defaut du
+# client, lie a un disque externe : BATTLENET.md)
+bnet_hors_ligne() {
+   bh_d=$(bnet_champ "$1" 3); [ -n "$bh_d" ] && [ ! -d "$bh_d" ] || return 1
+   bh_c=$(readlink "$bh_d" 2>/dev/null) || return 1
+   volume_absent "$bh_c"
+}
 # le dossier d'un jeu sur un emplacement branche (rien, et 1, sinon) ; jd_q :
 # le meme dans jd_r, sans rien ecrire (sans sous-shell : champ() en abuse)
 jd_q() { case $1 in ''|*[!0-9]*) return 1 ;; esac; eval "jd_r=\${JD_$1:-}"; [ -n "$jd_r" ]; }
@@ -58,10 +73,11 @@ jd() { jd_q "$1" && printf '%s' "$jd_r"; }
 hors_ligne() { case $1 in ''|*[!0-9]*) return 1 ;; esac; eval "[ -n \"\${JH_$1:-}\" ]"; }
 # l'id de l'emplacement d'un jeu (rien : client Steam, hors Steam)
 empl_de() { case $1 in ''|*[!0-9]*) return 1 ;; esac; eval "printf '%s' \"\${JE_$1:-}\""; }
-source_de() { est_local "$1" && { echo local; return; }; { jd "$1" >/dev/null || hors_ligne "$1"; } && echo cidre || echo steam; }
+source_de() { est_local "$1" && { echo local; return; }; est_bnet "$1" && { echo battlenet; return; }; { jd "$1" >/dev/null || hors_ligne "$1"; } && echo cidre || echo steam; }
 acf()   { if jd_q "$1"; then echo "$jd_r/steamapps/appmanifest_$1.acf"; else echo "$SA/appmanifest_$1.acf"; fi; }
 champ() {
    est_local "$1" && return
+   est_bnet "$1" && { [ "$2" = SizeOnDisk ] && bnet_champ "$1" 7; return; }
    # emplacement debranche : ce qu'en garde son cache
    if hors_ligne "$1"; then
       case $2 in name) ch_v=JN ;; SizeOnDisk) ch_v=JT ;; StateFlags) ch_v=JS ;; buildid) ch_v=JB ;; LastPlayed) ch_v=JL ;; *) return ;; esac
@@ -69,10 +85,11 @@ champ() {
    fi
    sed -n 's/.*"'"$2"'"[[:space:]]*"\(.*\)".*/\1/p' "$(acf "$1")" 2>/dev/null | head -1
 }
-nom()   { est_local "$1" && { local_champ "$1" 2; return; }; champ "$1" name | sed 's/\\"/"/g; s/\\\\/\\/g'; }
+nom()   { est_local "$1" && { local_champ "$1" 2; return; }; est_bnet "$1" && { bnet_champ "$1" 2; return; }; champ "$1" name | sed 's/\\"/"/g; s/\\\\/\\/g'; }
 dir()   { champ "$1" installdir; }
 chemin() {
    est_local "$1" && { dirname "$(local_champ "$1" 3)"; return; }
+   est_bnet "$1" && { bnet_champ "$1" 3; return; }
    jd "$1" && return
    # hors ligne : le dernier chemin connu (absent tant que le disque l'est)
    hors_ligne "$1" && { eval "printf '%s\n' \"\${JH_$1}\""; return; }
@@ -80,6 +97,7 @@ chemin() {
 }
 connu() { # le jeu existe-t-il pour Cidre ?
    est_local "$1" && { [ -n "$(local_champ "$1" 1)" ]; return; }
+   est_bnet "$1" && { [ -n "$(bnet_champ "$1" 1)" ]; return; }
    [ -f "$(acf "$1")" ] || jd "$1" >/dev/null || hors_ligne "$1"
 }
 # appids Steam : manifestes du client + jeux des emplacements, branches ou non
@@ -531,8 +549,8 @@ empl_choisir_defaut() { # <emplacement>
       [ "$ER_EN_LIGNE" = oui ] || echo "  (il est debranche : rebranche-le avant d'installer un jeu)"
    fi
 }
-# tous les jeux : appids Steam, puis jeux hors Steam
-ids() { appids; awk -F'\t' '/^local-/ {print $1}' "$LOCAUX" 2>/dev/null; }
+# tous les jeux : appids Steam, puis jeux hors Steam, puis jeux Battle.net
+ids() { appids; awk -F'\t' '/^local-/ {print $1}' "$LOCAUX" 2>/dev/null; printf '%s\n' "$BNET_JEUX" | cut -f1 | grep '^bnet-'; }
 # Temoin « en cours » pour un jeu que cidre lance lui-meme et attend (dossier
 # Cidre, hors Steam). Steam, lui, note dans son registre le jeu qu'il a lance.
 EN_COURS="$CIDRE_DIR/en-cours"
@@ -547,7 +565,7 @@ temoin_en_cours() { # <id>
 SAVES_PERSO="$CIDRE_DIR/saves.conf"
 saves_ids() { cat "$SAVES_PERSO" "$R/outil-steam/saves.conf" 2>/dev/null | awk -F'\t' '!/^#/ && NF>=2 && !vu[$1]++ {print $1}'; }
 # Steam synchronise-t-il lui-meme les sauvegardes de ce jeu (`api`, `lien`) ?
-saves_steam() { est_local "$1" && return 1; sh "$R/tests/lier_saves_steam.sh" "$1" mode 2>/dev/null; }
+saves_steam() { { est_local "$1" || est_bnet "$1"; } && return 1; sh "$R/tests/lier_saves_steam.sh" "$1" mode 2>/dev/null; }
 # les jeux dont les sauvegardes sont suivies : par Steam, ou par la copie Cidre
 saves_suivis() { { saves_ids; for a in $(appids); do [ -n "$(saves_steam "$a")" ] && echo "$a"; done; } | awk '!vu[$0]++'; }
 
@@ -568,12 +586,13 @@ fiche_json() {
    w=null; [ "$s" = steam ] && { [ "$(cidre_wrap "$1")" = oui ] && w=true || w=false; }
    t=$(champ "$1" SizeOnDisk); d=$(champ "$1" LastPlayed)
    # un jeu hors Steam n'a pas d'appid : `id` est la cle commune a tous les jeux
-   est_local "$1" && a=null || a=$1
+   { est_local "$1" || est_bnet "$1"; } && a=null || a=$1
    # "emplacement" : l'id de l'emplacement d'un jeu Cidre (null ailleurs) ;
    # "en_ligne" : false quand son disque est debranche (il reste installe) ;
    # "deplacement" : son deplacement en cours ou inacheve (null sinon)
    fj_e=null; fj_l=true
    if est_local "$1"; then [ ! -f "$(local_champ "$1" 3)" ] && volume_absent "$(local_champ "$1" 3)" && fj_l=false
+   elif est_bnet "$1"; then bnet_hors_ligne "$1" && fj_l=false
    elif [ "$s" = cidre ]; then eval "fj_e=\\\"\${JE_$1:-}\\\""; hors_ligne "$1" && fj_l=false; fi
    printf '{"id":"%s","appid":%s,"nom":%s,"plateforme":"%s","lancement":"%s","source":"%s","installe":%s,"wrapper":%s,"chemin":%s,"taille":%s,"dernier_lancement":%s,"emplacement":%s,"en_ligne":%s,"deplacement":%s,"mac_32bits":%s' \
       "$1" "$a" "$(json "$(nom "$1")")" "$p" "$l" "$s" "$inst" "$w" "$(json "$(chemin "$1")")" "${t:-0}" "${d:-0}" "$fj_e" "$fj_l" "$(depl_json "$1")" "$m32"
@@ -659,6 +678,7 @@ steam_user() {
 plat() {
    # (un jeu hors Steam dont le disque est debranche reste un jeu Windows)
    est_local "$1" && { pl_e=$(local_champ "$1" 3); { [ -f "$pl_e" ] || volume_absent "$pl_e"; } && echo windows || echo absent; return; }
+   est_bnet "$1" && { { [ -f "$(bnet_champ "$1" 6)" ] || bnet_hors_ligne "$1"; } && echo windows || echo absent; return; }
    # emplacement debranche : ce qu'on en savait
    hors_ligne "$1" && { eval "pl_p=\${JP_$1:-}"; echo "${pl_p:-inconnu}"; return; }
    d=$(chemin "$1")
@@ -1237,6 +1257,8 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
                                   "deplacement" (null, ou etat d'un deplacement en cours ou inacheve),
                                   "mac_32bits" (true : version macOS installee en 32 bits seulement, qui ne
                                   se lance plus ; le jeu est alors un jeu Cidre ; null : jeu Windows)
+                                  "source" : steam, cidre (emplacement Cidre), local (hors Steam) ou battlenet
+                                  (installe par le client Battle.net ; id bnet-<code>, "appid" null)
   cidre info <id> [--json]        fiche d'un jeu : plateforme, taille, chemin, options actives
                                   --json : "maj" dit ou en est sa mise a jour (jeu du dossier Cidre ; voir updates)
   cidre play <id> [--sans-maj] [--accord-nuage] [--json] [-- <arguments du jeu>]
@@ -1265,7 +1287,8 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
                                   Steam non plus (code 9, {"evenement":"erreur","code":"mac_32bits",...}) :
                                   macOS ne la lance plus, cidre dl <appid> installe la version Windows
   cidre running [--json]          les jeux en cours
-  cidre stop [<id>]               force l'arret d'un jeu lance par Cidre (et de tout ce que Wine fait tourner)
+  cidre stop [<id>]               force l'arret d'un jeu lance par Cidre (et de tout ce que Wine fait tourner
+                                  dans son prefixe : pour un jeu Battle.net, le client avec lui)
   cidre log <id> [lignes]         la fin du journal du dernier lancement d'un jeu (sans les traces)
   cidre set <id> <option> <valeur>   regle une option de lancement du jeu (profils.toml)
   cidre unset <id> [option]       revient au reglage livre (sans option : toutes)
@@ -1378,6 +1401,11 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
   cidre add <jeu.exe> [nom] [--json]   ajoute un jeu Windows a la bibliotheque
   cidre run <fichier.exe> [args]  lance un .exe une fois (un installeur, par exemple)
   cidre prefix                    le disque C: ou atterrissent les installeurs
+  cidre battlenet [etat [--json] | ouvrir | arreter | prefixe [<chemin>|defaut]]
+                                  le client Battle.net, dans son prefixe (defaut : wine/pfx-battlenet ; prefixe
+                                  <chemin> : celui ou il est deja installe) : l'ouvrir pour se connecter, installer
+                                  ou mettre a jour un jeu ; `cidre play bnet-osi` lance le jeu par lui (il reste
+                                  ouvert apres la partie)
   cidre rm <id>                   retire un jeu hors Steam, ou desinstalle un jeu d'un emplacement Cidre
 USAGE
 }
@@ -1416,6 +1444,7 @@ case "$cmd" in
       case $(source_de "$id") in
         cidre) l="Cidre (dossier Cidre)" ;;
         local) l="Cidre (hors Steam)" ;;
+        battlenet) l="Cidre (Battle.net)" ;;
         steam) [ "$(cidre_wrap "$id")" = non ] && [ "$p" = windows ] && l="Cidre (wrapper absent!)" ;;
       esac
       printf "%-18s %-26.26s %-10s %s\n" "$id" "$(nom "$id")" "$p" "$l"
@@ -1524,6 +1553,25 @@ case "$cmd" in
       echo "lancement Cidre : $(basename "$EXE")  ($id)"
       temoin_en_cours "$id"
       CIDRE_JEU=$id sh "$LANCEUR" "$EXE" "$@"
+    elif est_bnet "$id"; then
+      # Jeu Battle.net : lance par le client de Blizzard, connecte, dans son
+      # prefixe (tests/battlenet.sh), a travers la pile Cidre et la fiche du jeu
+      # (profils/bnet-<code>.toml). Le client reste ouvert apres la partie.
+      connu "$id" || { echo "jeu inconnu : $id" >&2; exit 1; }
+      EXE=$(bnet_champ "$id" 6)
+      if [ ! -f "$EXE" ] && bnet_hors_ligne "$id"; then
+        m="$(nom "$id") est sur « $(volume_de "$(readlink "$(chemin "$id")")") », qui n'est pas branche : branche ce disque, puis recommence."
+        evenement "$(printf '{"evenement":"erreur","code":"hors_ligne","emplacement":null,"message":%s}' "$(json "$m")")"
+        echo "$m" >&2; exit 8
+      fi
+      [ -f "$EXE" ] || { echo "executable introuvable : $EXE (le jeu est-il installe, et a jour, dans Battle.net ?)" >&2; exit 1; }
+      [ -n "$(bnet_champ "$id" 4)" ] || { echo "$(nom "$id") : Cidre ne connait pas son code de lancement Battle.net (outil-steam/battlenet.conf)." >&2; exit 1; }
+      partir
+      echo "lancement Cidre par Battle.net : $(basename "$EXE")  ($id)"
+      echo "  (si le client demande de te connecter, fais-le dans sa fenetre : le jeu partira ensuite)"
+      temoin_en_cours "$id"
+      WINEPREFIX=$(bnet_prefixe) CIDRE_JEU=$id CIDRE_SANS_STEAM=1 CIDRE_SANS_FAUX_STEAM=1 \
+        sh "$LANCEUR" "$EXE" "$@"
     elif hors_ligne "$id"; then
       # Son disque est debranche : on le dit, sans rien toucher (code 8).
       m=$(hors_ligne_message "$id")
@@ -1596,6 +1644,15 @@ case "$cmd" in
       connu "$id" || { echo "jeu inconnu : $id" >&2; exit 1; }
       [ "$(plat "$id")" = macos ] && { echo "$(nom "$id") est un jeu natif : quitte-le depuis le jeu, ou depuis Steam." >&2; exit 1; }
     fi
+    # Un jeu Battle.net tourne dans le prefixe de Battle.net : c'est son
+    # wineserver (et le client avec lui) qu'on arrete. Sans id, un jeu
+    # Battle.net en cours d'abord, son lanceur fait ensuite ses sauvegardes.
+    ATT_LANCEURS=8
+    if [ -n "$id" ] && est_bnet "$id"; then
+      export WINEPREFIX="$(bnet_prefixe)"; ATT_LANCEURS=20
+    elif [ -z "$id" ] && ls "$EN_COURS"/bnet-* >/dev/null 2>&1; then
+      sh "$R/tests/battlenet.sh" arreter --force; ATT_LANCEURS=20
+    fi
     export WINEPREFIX="${WINEPREFIX:-$R/wine/pfx-arm64ec}"
     WS="$R/wine/wine11-arm64/bin/wineserver"
     # Le lanceur verra le jeu sortir en erreur : qu'il sache que c'est voulu
@@ -1604,27 +1661,47 @@ case "$cmd" in
     [ -z "$id" ] || touch "$R/build/logs/arret-demande-$id"
     # un chemin, en motif pour pgrep (les points et les espaces y comptent)
     motif() { printf '%s' "$1" | sed 's/[][\.*^$()+?{}|]/\\&/g'; }
-    LANCEURS="$(motif "$R/tests/")(lancer_depuis_steam|etape2_pile_arm64ec)\\.sh"
+    LANCEURS="$(motif "$R/tests/")(lancer_depuis_steam|etape2_pile_arm64ec|battlenet)\\.sh"
     # 1. Demander a Wine d'arreter ses processus. Le lanceur du jeu voit alors
     #    le jeu se terminer et finit son travail (sauvegardes, Mode Jeu).
     [ -x "$WS" ] && "$WS" -k 2>/dev/null
+    # Les lanceurs vises : ceux de Battle.net (le jeu est dans son prefixe, ou
+    # c'est battlenet.sh qui l'attend) pour un jeu Battle.net, les autres pour
+    # un jeu Steam ou hors Steam, tous sans id.
+    PFX_BNET=$(bnet_prefixe)
+    lanceurs() {
+      for lp in $(pgrep -f "$LANCEURS" 2>/dev/null); do
+        lc=$(ps -o command= -p "$lp" 2>/dev/null)
+        case $lc in *"$PFX_BNET/"*|*/tests/battlenet.sh*) lb=oui ;; *) lb=non ;; esac
+        if [ -z "$id" ] || { est_bnet "$id" && [ $lb = oui ]; } || { ! est_bnet "$id" && [ $lb = non ]; }; then echo "$lp"; fi
+      done
+    }
     # 2. Lui laisser quelques secondes pour ca...
-    i=0; while [ $i -lt 8 ] && pgrep -f "$LANCEURS" >/dev/null 2>&1; do sleep 1; i=$((i + 1)); done
+    i=0; while [ $i -lt $ATT_LANCEURS ] && [ -n "$(lanceurs)" ]; do sleep 1; i=$((i + 1)); done
     # 3. ...puis arreter ce qui reste : un lanceur bloque avant meme d'avoir
     #    demarre Wine, un serveur Wine qui ne repond plus.
-    if pgrep -f "$LANCEURS" >/dev/null 2>&1; then
-      pkill -TERM -f "$LANCEURS" 2>/dev/null; sleep 2
-      pkill -KILL -f "$LANCEURS" 2>/dev/null
+    if [ -n "$(lanceurs)" ]; then
+      kill -TERM $(lanceurs) 2>/dev/null; sleep 2
+      kill -KILL $(lanceurs) 2>/dev/null
     fi
     [ -x "$WS" ] && "$WS" -k9 2>/dev/null
     # 4. Les orphelins : des processus Windows de CE runtime qui ont survecu a
     #    leur serveur (vu sur macOS 27 : services.exe, plugplay.exe... restes
     #    des heures). On les reconnait au binaire Wine qu'ils ont en memoire --
-    #    ceux d'un autre Wine (CrossOver, Whisky) ne sont pas touches.
+    #    ceux d'un autre Wine (CrossOver, Whisky) ne sont pas touches, ni ceux
+    #    que tient encore le serveur du prefixe Battle.net (son client, son jeu).
+    VIVANTS_BNET=" $(sh "$R/tests/battlenet.sh" pids | tr '\n' ' ') "
     for pid in $(ps -axo pid=,command= | awk '$2 ~ /^[A-Za-z]:\\/ { print $1 }'); do
+      case $VIVANTS_BNET in *" $pid "*) continue ;; esac
       lsof -a -p "$pid" -d txt -Fn 2>/dev/null | grep -qF "n$R/wine/" && kill -KILL "$pid" 2>/dev/null
     done
-    rm -f "${EN_COURS:?}"/* 2>/dev/null
+    # (les temoins des jeux vises : un jeu Battle.net en cours garde le sien
+    # quand on arrete un jeu Steam, et inversement)
+    for f in "$EN_COURS"/*; do
+      [ -f "$f" ] || continue
+      case ${f##*/} in bnet-*) fb=oui ;; *) fb=non ;; esac
+      if [ -z "$id" ] || { est_bnet "$id" && [ $fb = oui ]; } || { ! est_bnet "$id" && [ $fb = non ]; }; then rm -f "$f"; fi
+    done
     echo "arrete" ;;
   log|journal)
     # La fin utile du journal d'un jeu, pour un rapport d'incident : son dernier
@@ -1666,6 +1743,7 @@ case "$cmd" in
         [ -n "$id" ] && [ -n "$d" ] || { echo "usage: cidre saves set <id> <dossier>" >&2; exit 2; }
         connu "$id" || { echo "jeu inconnu : $id" >&2; exit 1; }
         [ -d "$d" ] || { echo "dossier introuvable : $d" >&2; exit 1; }
+        est_bnet "$id" && WINEPREFIX=$(bnet_prefixe)
         d=$(cd "$d" && pwd -P)
         jeu=$(cd "$(chemin "$id")" 2>/dev/null && pwd -P)
         util=$(ls -d "$WINEPREFIX/drive_c/users/"*/AppData 2>/dev/null | head -1)
@@ -2166,12 +2244,25 @@ case "$cmd" in
     sh "$R/tests/lancer_depuis_steam.sh" "$exe" "$@" ;;
   prefix|prefixe)
     echo "${WINEPREFIX:-$R/wine/pfx-arm64ec}/drive_c" ;;
+  battlenet|bnet)
+    # Le client Battle.net, dans son prefixe (tests/battlenet.sh) : l'ouvrir
+    # pour se connecter, installer ou mettre a jour un jeu ; le fermer.
+    case ${1:-etat} in
+      etat|status) sh "$R/tests/battlenet.sh" etat $( [ "$JSON" = oui ] && echo --json) ;;
+      ouvrir|open) sh "$R/tests/battlenet.sh" ouvrir ;;
+      arreter|fermer|stop) sh "$R/tests/battlenet.sh" arreter ;;
+      prefixe|prefix) sh "$R/tests/battlenet.sh" prefixe "${2:-}" ;;
+      *) echo "usage: cidre battlenet [etat [--json] | ouvrir | arreter | prefixe [<chemin>|defaut]]" >&2; exit 2 ;;
+    esac ;;
   rm|retirer)
     id=${1:?usage: cidre rm <id>}
     if est_local "$id"; then
       connu "$id" || { echo "jeu inconnu : $id" >&2; exit 1; }
       awk -F'\t' -v i="$id" '$1!=i' "$LOCAUX" >"$LOCAUX.tmp" && mv "$LOCAUX.tmp" "$LOCAUX"
       echo "retire de la bibliotheque : $id (les fichiers du jeu ne sont pas touches)"
+    elif est_bnet "$id"; then
+      connu "$id" || { echo "jeu inconnu : $id" >&2; exit 1; }
+      echo "$(nom "$id") est installe par Battle.net : il se desinstalle depuis le client (cidre battlenet ouvrir)." >&2; exit 1
     else
       # un appid, rien d'autre : pas de chemin, pas de vide
       case $id in ''|*[!0-9]*) echo "id invalide : $id" >&2; exit 2 ;; esac

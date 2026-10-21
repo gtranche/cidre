@@ -35,7 +35,16 @@ exec 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&-
 # tourne mais que des restes trainent, on les retire. On ne touche a rien si un
 # jeu est deja en cours.
 export WINEPREFIX=${WINEPREFIX:-$R/wine/pfx-arm64ec}
-if ! pgrep -f '[v]ermintide2.exe' >/dev/null 2>&1; then
+# Un jeu Battle.net (id bnet-<code>, `cidre play`) tourne dans le prefixe de
+# Battle.net et part du client de Blizzard (tests/battlenet.sh) : pas de
+# faux_steam, et le client deja ouvert n'est pas un reste. Il est ferme s'il
+# l'a ete pour un autre jeu (il passe son environnement au jeu, et le prefixe se
+# regle sans wineserver) ; un jeu Battle.net deja en cours : on ne part pas.
+BNET=non; case ${CIDRE_JEU:-} in bnet-*) BNET=oui ;; esac
+if [ $BNET = oui ]; then
+   sh "$R/tests/battlenet.sh" preparer "$CIDRE_JEU" && RCB=0 || RCB=$?
+   [ $RCB -eq 0 ] || exit $RCB
+elif ! pgrep -f '[v]ermintide2.exe' >/dev/null 2>&1; then
    pkill -9 -f '[c]:\\faux_steam.exe' 2>/dev/null || true
    # Le wineserver de CE prefixe, et lui seul : « wineserver -k » le retrouve
    # par le verrou du prefixe, lui demande de s'arreter (il emporte ses
@@ -860,7 +869,8 @@ elif [ "${CIDRE_SANS_STEAM:-}" != 1 ]; then
 fi
 
 # Le client de service : un seul a la fois, reutilise s'il tourne deja.
-if ! pgrep -f 'c:\\faux_steam.exe' >/dev/null 2>&1; then
+# CIDRE_SANS_FAUX_STEAM=1 : pas de client de service (jeu Battle.net).
+if [ "${CIDRE_SANS_FAUX_STEAM:-}" != 1 ] && ! pgrep -f 'c:\\faux_steam.exe' >/dev/null 2>&1; then
    WINEDEBUG=$JOURNAL_WINE CIDRE_OVERLAY_DYLIB= sh "$R/tests/etape2_pile_arm64ec.sh" 'c:\faux_steam.exe' >>"$JOURNAL" 2>&1 &
    # On attend SA ligne « inscrit » : celle d'un lancement precedent est deja
    # dans le journal, on ne compte que ce qui s'y ajoute.
@@ -1113,13 +1123,21 @@ if [ "${CIDRE_SANS_STEAM:-}" != 1 ]; then
    ETAT_STEAM=${TMPDIR:-/tmp}/cidre-steam-discret.$$
    sh "$R/tests/client_steam_natif.sh" discret "$ETAT_STEAM" $$ >>"$JOURNAL" 2>&1 || true
 fi
-CIDRE_OVERLAY_DYLIB=$OVERLAY sh "$R/tests/etape2_pile_arm64ec.sh" "$PROG" "$@" >>"$JOURNAL" 2>&1 && RC=0 || RC=$?
+# Un jeu Battle.net part du client (--exec="launch <code>"), ouvert ici avec
+# l'environnement prepare pour le jeu, et l'on attend la fin du jeu, pas celle
+# du client (tests/battlenet.sh jouer).
+if [ $BNET = oui ]; then
+   CIDRE_BNET_JOURNAL=$JOURNAL CIDRE_OVERLAY_DYLIB= sh "$R/tests/battlenet.sh" jouer "$JEU" "$@" >>"$JOURNAL" 2>&1 && RC=0 || RC=$?
+else
+   CIDRE_OVERLAY_DYLIB=$OVERLAY sh "$R/tests/etape2_pile_arm64ec.sh" "$PROG" "$@" >>"$JOURNAL" 2>&1 && RC=0 || RC=$?
+fi
 [ -z "$ETAT_STEAM" ] || sh "$R/tests/client_steam_natif.sh" rendre "$ETAT_STEAM" >>"$JOURNAL" 2>&1 || true
 # Le jeu est sorti : le client de service n'a plus de raison d'etre. Une fois
 # constate que plus rien du jeu ne tourne dans le prefixe, on l'arrete, et le
 # wineserver s'en va avec ses services. Jamais un processus du jeu. Avant les
 # reglages du jeu : un wineserver en vie leur interdit le registre.
-sh "$R/tests/fin_de_partie.sh" >>"$JOURNAL" 2>&1 || true
+# (Battle.net : le client reste ouvert, `cidre battlenet arreter` le ferme)
+[ $BNET = oui ] || sh "$R/tests/fin_de_partie.sh" >>"$JOURNAL" 2>&1 || true
 [ -z "$JEU" ] || sh "$R/tests/reglages_jeu.sh" "$JEU" temoin-change "$TEMOIN" "$VOIE_TEMOIN" >>"$JOURNAL" 2>&1 || true
 # Ce que le jeu a eu le temps de compiler : la voie, la duree de la partie, le
 # macOS et le Cidre du moment (tests/etat_shaders.sh), pour annoncer au

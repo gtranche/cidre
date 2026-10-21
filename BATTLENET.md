@@ -462,3 +462,58 @@ vue par `prepare_exception_arm64ec`), ntdll.so SONDE10 (projections et allocatio
 
 Outils du prototype, hors depot : `~/Dev/cidre-battlenet/` (`essai/lancer.sh`, sondes `sondes/*.c`,
 constructions hors arbre `wine/construire*.sh`).
+
+## 6. Lancement par `cidre play` (2026-10-21)
+
+Code de la source `battlenet` (point 5 ci-dessus, avance : D2R s'affiche sous Cidre depuis le 21/10).
+
+- **`tests/battlenet.sh`** porte tout ce qui touche au client : `prefixe`, `jeux`, `etat`, `ouvrir`,
+  `arreter`, et pour le lanceur `preparer` et `jouer`. Temoin sans jeu : `tests/tester_battlenet.sh`
+  (prefixe fabrique ; la partie a faux processus, `CIDRE_ESSAI_PROCESSUS=1`, seulement quand rien ne
+  tourne sous Wine).
+- **Prefixe** : `CIDRE_BNET_PREFIXE`, sinon `~/Library/Application Support/Cidre/battlenet.prefixe`
+  (`cidre battlenet prefixe <chemin>`, pour un prefixe ou le client est deja installe et connecte),
+  sinon `wine/pfx-battlenet`. Sa creation par `cidre setup` et `cidre battlenet installer` restent a
+  faire.
+- **Jeux** : cles Uninstall de l'Agent (`--uid=osi`), traduites par `outil-steam/battlenet.conf` (uid,
+  code, executable, nom) en `bnet-osi` (D2R) et `bnet-fen` (D4). `cidre list --json` les rend avec
+  `"source":"battlenet"`, `"appid":null`, la taille du dossier, et `"en_ligne":false` quand le dossier
+  est un lien vers un disque debranche. Les entrees Steam sont inchangees (temoin).
+- **Lancement** : `cidre play bnet-osi` passe par `lancer_depuis_steam.sh` (fiche, dx12, knowndlls,
+  version de Windows, journal `build/logs/steam-bnet-osi.log`, sauvegardes), avec le prefixe
+  Battle.net, sans client Steam (`CIDRE_SANS_STEAM=1`) ni faux_steam (`CIDRE_SANS_FAUX_STEAM=1`). Au
+  lieu de l'executable, `battlenet.sh jouer` ouvre le client (Qt logiciel, `--in-process-gpu`) avec
+  `--exec="launch OSI"`, attend le jeu (900 s : connexion eventuelle ; la demande est refaite a 150
+  et 400 s), puis sa fin (trois releves vides a 2 s). Le jeu herite de l'environnement du client :
+  le client est donc rouvert quand il a ete ouvert pour un autre jeu ou avec d'autres reglages, et
+  ferme avant le reglage du prefixe (version de Windows, KnownDLLs : sans wineserver). Il reste
+  ouvert apres la partie (`cidre battlenet arreter`). `GameLaunchWindowBehavior` 2 est remis a 0.
+- **`cidre stop bnet-osi`** arrete le wineserver du prefixe Battle.net (jeu et client) ; `cidre stop`
+  sans id aussi, si un jeu Battle.net est en cours. Pour un jeu Steam, le client Battle.net, son jeu
+  et leurs lanceurs ne sont plus touches (avant, l'etape des orphelins tuait tout processus Windows
+  du runtime, quel que soit son prefixe).
+- **Sauvegardes** : `bnet-osi` -> `Saved Games/Diablo II Resurrected` (personnages hors ligne,
+  reglages), copie Cidre dans le prefixe Battle.net. D4 garde ses personnages sur les serveurs.
+- **Verger** : rien encore. `Game.Source` prend `battlenet` pour `steam` (`?? .steam`) ; le bouton
+  Jouer marcherait (`cidre play <id>`), mais la fiche montrerait des actions Steam.
+
+### Manche D2R par `cidre play bnet-osi` (M1 Max, 2026-10-21, 15:40-16:17)
+
+Runtime installe 1.5.18 (xtajit64 c147ed00, sans 0217), prefixe clone de `pfx-bnet`, arbre fige.
+
+- Le chemin marche : client ouvert par le lanceur, connexion vue par l'utilisateur, D2R lance par le client
+  (`--exec="launch OSI"`) avec l'environnement du jeu (DXGI de DXVK, vkd3d-proton par les KnownDLLs), chaine
+  1728x1084. Arret par `cidre stop bnet-osi` en 9 s, sauvegardes copiees, aucun processus restant.
+- Debit percu (lignes `[CIDRE_WSI]` de la chaine de D2R, fenetres ponderees par leur duree) : premieres images
+  454 s apres le depart de D2R ; sur 1 169 s, 2,4 images/s reelles, mediane ponderee 0,2, 87 % du temps sous
+  2 images/s, gels jusqu'a 60 s ; ~7 coeurs. « Le jeu tourne, a 2 a l'heure » (utilisateur). Le client presente
+  aussi par KosmicKrisp (chaine 1600x1000, ~8 images/s) : a ecarter des releves.
+- Trois defauts vus et corriges ensuite :
+  - la cle `HKCU\...\Run` « Battle.net » (`--autostarted`) : `wineboot -u` (prefixe_a_jour.sh) ouvrait le client
+    hors de l'environnement du jeu et `wineserver -w` l'attendait sans fin. Retiree avant chaque ouverture ;
+  - `jeu_vu` : la variable du nom cherche precedait le premier membre du tube et n'atteignait pas awk ; le premier
+    processus venu (`start.exe`) passait pour D2R, et la demande de lancement n'etait jamais refaite (refaite ici a
+    la main a 15:49:33 : D2R est parti aussitot) ;
+  - l'Agent s'ecrit `C:/ProgramData/Battle.net/...` (barres obliques) : il passait pour un jeu.
+  Le temoin (`CIDRE_ESSAI_PROCESSUS=1`) couvre les trois ; son faux wineserver, copie de /bin/sleep, doit etre
+  re-signe (`codesign -s -`), sinon macOS le tue.

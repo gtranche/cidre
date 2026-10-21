@@ -125,7 +125,7 @@ for f in etape2_pile_arm64ec.sh lancer_depuis_steam.sh brancher_jeux_steam.sh \
          majs_steam.awk brancher_jeux_steam.awk configurer_cidre.sh langue_jeu.sh langue_cidre.sh depots_langue.awk \
          installer_steamcmd.sh installer_client_steam_windows.sh diagnostic_cidre.sh \
          fiche_profil.sh reglages_jeu.sh arguments_jeu.sh version_windows.sh knowndlls.sh machine.sh client_steam_natif.sh expliquer_sortie.sh sortie_normale.sh deviner_saves.sh repli_dxmt.sh lier_saves_steam.sh prefixe_a_jour.sh etat_shaders.sh \
-         precompil_kk.sh diag_cidre.sh masquer_diag.awk envoyer_diag.sh fin_de_partie.sh extensions_fex.sh; do
+         precompil_kk.sh diag_cidre.sh masquer_diag.awk envoyer_diag.sh fin_de_partie.sh extensions_fex.sh battlenet.sh; do
    livrer "tests/$f"
 done
 # La base de profils par jeu (profils/README.md) : la copie livree, repli de
@@ -140,7 +140,7 @@ cp -R "$R/tests/outils_fenetre" "$STAGE/tests/" 2>/dev/null || true
 mkdir -p "$STAGE/outil-steam" "$STAGE/build"
 # jeux.conf est lu par lancer_depuis_steam.sh en $R/outil-steam/jeux.conf :
 # le livrer a CE chemin, pas a la racine (sinon la table de lanceurs est muette).
-for f in jeux.conf saves.conf profils.toml langues.conf; do livrer "outil-steam/$f"; done
+for f in jeux.conf saves.conf profils.toml langues.conf battlenet.conf; do livrer "outil-steam/$f"; done
 # `cidre diag envoyer` : l'adresse du service de depot, son jeton d'application
 # et la cle publique qui chiffre les archives (service/diag-depot/README.md).
 # Sans eux, Verger garde l'archive dans le Finder et ouvre le formulaire GitHub.

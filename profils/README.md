@@ -225,7 +225,7 @@ api = "d3d11"                      # d3d11, d3d12, opengl, vulkan (ce que le jeu
 bits = 64                          # 32 ou 64
 mac_32bits = true                  # optionnel : la version macOS n'existe qu'en 32 bits
 anticheat = "none"                 # none, eac, battleye, denuvo, vac
-lanceur = "steam"                  # steam, epic, gog, aucun
+lanceur = "steam"                  # steam, epic, gog, battlenet (id bnet-<code>, tests/battlenet.sh), aucun
 
 [cidre]
 # Les options de lancement, mêmes noms et mêmes valeurs que dans

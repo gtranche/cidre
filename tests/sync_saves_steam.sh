@@ -40,6 +40,8 @@ APPID=${1:-}; SENS=${2:-}
 [ -n "$APPID" ] && [ -n "$SENS" ] || exit 0
 R=$(cd "$(dirname "$0")/.." && pwd)
 PFX=${WINEPREFIX:-$R/wine/pfx-arm64ec}
+# un jeu Battle.net vit dans le prefixe de Battle.net (tests/battlenet.sh)
+case $APPID in bnet-*) PFX=$(sh "$R/tests/battlenet.sh" prefixe) ;; esac
 CIDRE_DIR=${CIDRE_DIR:-$HOME/Library/Application Support/Cidre}
 ICLOUD="$HOME/Library/Mobile Documents/com~apple~CloudDocs"
 # Le dossier des copies : la variable, sinon le choix de l'utilisateur (`cidre
