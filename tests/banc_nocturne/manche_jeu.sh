@@ -6,7 +6,7 @@
 # et du wineserver. Refus si un jeu ou un wineserver tourne deja, ou si l'ecran est verrouille.
 # Ecrit sur stdout UNE ligne TSV :
 #   jeu nom arbre statut demarrage_s vivant arret plateau mediane releves exceptions err remarque
-# statut : ok | pas-demarre | mort | arret-impossible | invalide (ecran verrouille pendant la mesure) | refus
+# statut : ok | pas-demarre | sorti (vu, puis parti seul avant la fin : vie en s dans la remarque) | mort | arret-impossible | invalide (ecran verrouille pendant la mesure) | refus
 # Code : 0 manche faite (quel qu'en soit le verdict) ; 3 refus ; 4 le jeu ou wineserver ne s'arrete pas (la suite
 # de la nuit doit s'arreter : jamais de pkill).
 set -u
@@ -25,14 +25,16 @@ if [ -n "$r" ] || [ -n "$(jeu)" ]; then ligne refus - - - - - - - - "${r:-$EXE t
 if ecran_verrouille || hors_console; then ligne refus - - - - - - - - "ecran verrouille"; exit 3; fi
 
 J=$S/build/logs/steam-$ID.log
-DEBUT=$(wc -l < "$J" 2>/dev/null || echo 0)
+DEBUT=$( { wc -l < "$J"; } 2>/dev/null || echo 0)
 ( cd "$S" && exec env CIDRE_HUD=0 CIDRE_DXMT_STATS=1 CIDRE_WSI_STATS=1 ./cidre play "$ID" ) > "$OUT/play-$TAG.txt" 2>&1 &
 n=0; while [ -z "$(jeu)" ] && [ $n -lt 240 ]; do sleep 1; n=$((n + 1)); done
-DEMARRE=$n
-VERROU=
+DEMARRE=$n; VU=; [ $n -lt 240 ] && VU=1
+VERROU=; k=0
 if [ -n "$(jeu)" ]; then
-   k=0; while [ $k -lt "$D" ]; do sleep 5; k=$((k + 5)); ecran_verrouille && VERROU=1; [ -n "$(jeu)" ] || break; done
+   while [ $k -lt "$D" ]; do sleep 5; k=$((k + 5)); ecran_verrouille && VERROU=1; [ -n "$(jeu)" ] || break; done
    VIVANT=$([ -n "$(jeu)" ] && echo oui || echo NON)
+elif [ -n "$VU" ]; then
+   VIVANT=NON   # vu au lancement, deja parti a la verification suivante
 else
    DEMARRE=-; VIVANT=-
 fi
@@ -52,6 +54,10 @@ ERR=$(grep -a -c -E "^[0-9a-f]{4}:err:" "$OUT/journal-$TAG.log" 2>/dev/null); ER
 
 REM=
 if [ "$DEMARRE" = - ]; then STATUT=pas-demarre; REM="voir play-$TAG.txt"
+elif [ "$VIVANT" != oui ] && [ $k -lt 30 ] && [ "$EXC" = 0 ]; then
+   # parti seul en moins de 30 s sans exception au journal (Dead Cells A le 22/10 : « 6 s de jeu ») : relance par
+   # le client, ou fermeture ; a distinguer d'une mort par plantage
+   STATUT=sorti; REM="parti seul apres ~$k s, aucune exception ; voir journal-$TAG.log"
 elif [ "$VIVANT" != oui ]; then STATUT=mort
 else STATUT=ok; fi
 [ -n "$VERROU" ] && { STATUT=invalide; REM="ecran verrouille pendant la mesure"; }

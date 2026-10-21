@@ -35,7 +35,8 @@ verdict_temoin() {
    elif [ "$rc" != 0 ]; then st=ECHEC; res="rc=$rc ; $res"
    elif grep -a -q -E "WineDbg attached|Unhandled exception|page fault on" "$log"; then st=ECHEC; res="plantage ; $res"
    elif grep -a -q "^bilan" "$log"; then
-      if grep -a "^bilan" "$log" | grep -q -e 'ECHEC' -e '-> ok$' -v; then st=ECHEC
+      # Wine ecrit des fins de ligne CRLF : sans tr, aucune ligne ne finit par « -> ok »
+      if tr -d '\r' < "$log" | grep -a "^bilan" | grep -q -e 'ECHEC' -e '-> ok$' -v; then st=ECHEC
       elif grep -a "^bilan" "$log" | grep -q ECHEC; then st=ECHEC; else st=ok; fi
    elif [ -n "$fin" ]; then
       # la ligne de synthese fait foi (h64sous_page : sa partie VirtualAlloc, informative, ecrit des ECHEC)

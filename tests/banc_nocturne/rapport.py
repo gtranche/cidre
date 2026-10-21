@@ -84,7 +84,8 @@ for nom in ordre_j:
                 ecarts.append((1, "%s : A et B a %d images/s, plafond vsync probable (mesure sans valeur)" % (nom, p)))
     if a["statut"] != b["statut"]:
         if b["statut"] == "ok":
-            ecarts.append((0, "%s : %s en A, ok en B" % (nom, a["statut"])))
+            # A hors service : pas de comparaison possible pour ce jeu cette nuit
+            ecarts.append((1, ("%s : %s en A, ok en B : comparaison impossible %s" % (nom, a["statut"], a["rem"])).strip()))
         else:
             ecarts.append((2, ("%s : %s en B (A : %s) %s" % (nom, b["statut"], a["statut"], b["rem"])).strip()))
     elif b["statut"] not in ("ok", "-"):
@@ -125,7 +126,7 @@ if candidat.startswith("aucune"):
     nom_b = "A, contre-epreuve A/A"
 else:
     d = os.path.dirname(candidat.split(" (")[0])
-    nom_b = os.path.basename(os.path.dirname(d)) if os.path.basename(d) == "livraison" else d
+    nom_b = os.path.basename(os.path.dirname(d)) if os.path.basename(d) == "livraison" else os.path.basename(d)
 sec = " (a sec)" if os.path.exists(os.path.join(nuit, "a-sec")) else ""
 if refus:
     synthese = "%s banc nocturne%s : REFUS -- %s" % (date, sec, refus.splitlines()[0])
