@@ -36,9 +36,13 @@ lanceur = "steam"
 # depasse 16,7 ms a 60 Hz. Sans vsync, le jeu peut monter au-dessus de 30, au prix de
 # dechirures (choix du joueur, 2026-10-16 ; gain pas encore mesure sur ce jeu).
 vsync = false
-# Synchro Wine en process (0103) : de nouveau active. Coupee du 2026-10-20 (une image toutes les
-# deux secondes en jeu, v1.5.17) jusqu'a 0210 : un ReleaseSemaphore sur un compte non nul ne
-# reveillait personne, les ouvriers du jeu attendaient le garde-fou de 2 s.
+# Synchro Wine en process (0103) coupee. 0210 (v1.5.18) a corrige le reveil perdu des semaphores
+# (une image toutes les deux secondes en jeu), mais un reveil perdu demeure au demarrage avec
+# compilation des pipelines : iMac M4, v1.5.18, 2026-10-21, ecran noir apres 99 453 pipelines,
+# 63 fils endormis, rien de presente ; sans elle, ecran de compilation puis menu a 55-58 fps.
+# Suspect : evenement auto signale deux fois avant la reprise du premier fil. A reactiver quand
+# ce cas sera corrige et teste.
+sync_local = false
 
 [compat]
 etat = "bronze"
