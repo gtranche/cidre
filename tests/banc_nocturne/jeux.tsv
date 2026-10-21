@@ -1,0 +1,8 @@
+# Jeux de reference du banc nocturne. Colonnes separees par des tabulations :
+#   nom  appid  motif-exe(pgrep -f)  secondes-au-menu  seuil-ecart-%  chemin-requis(- = aucun)
+# Au menu seulement, sans rien toucher (meme compte Steam que l'utilisateur : aucune sauvegarde nouvelle).
+# Seuil : ecart d'images/s B/A au-dela duquel le rapport signale. Les plateaux du menu de PEAK et d'Exp33 dependent
+# de la scene tiree au lancement (Exp33 : 162 contre 220 d'un lancement a l'autre) : seuils larges.
+PEAK	3527290	PEAK.exe	120	25	-
+DeadCells	588650	deadcells.exe	120	10	-
+Exp33	1903340	Expedition33	120	30	/Volumes/SSK SSD
