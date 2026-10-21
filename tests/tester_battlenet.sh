@@ -264,9 +264,59 @@ contient "saves : un fichier dans le prefixe Battle.net" '"local":{"fichiers":1'
 WINEPREFIX="$T/autre-prefixe" sh "$R/tests/sync_saves_steam.sh" bnet-osi backup >/dev/null 2>&1
 [ -f "$T/copies/bnet-osi/Lucas.d2s" ] && ok "saves : copie faite" || echec "saves : copie absente ($(find "$T/copies" -type f | head -3))"
 
+echo "== installer : faux Wine, faux installeur (rien n'est lance)"
+FW="$T/faux-wine"; mkdir -p "$FW/bin"
+# wineboot cree un prefixe minimal ; wine (reg import) et wineserver ne font rien
+printf '#!/bin/sh\nmkdir -p "$WINEPREFIX/drive_c/windows/system32" "$WINEPREFIX/drive_c/users/joueur/AppData/Roaming/Battle.net" && echo "WINE REGISTRY Version 2" >"$WINEPREFIX/system.reg"\n' >"$FW/bin/wineboot"
+printf '#!/bin/sh\nexit 0\n' >"$FW/bin/wineserver"
+# (printf et non echo : le echo de sh lit « \c » de C:\cidre comme une fin de sortie)
+cat >"$FW/bin/wine" <<'FIN'
+#!/bin/sh
+printf '%s\n' "$*" >>"$WINEPREFIX/faux-wine.txt"
+FIN
+chmod +x "$FW/bin/"*
+# l'installeur : il « installe » le client une seconde apres son lancement
+cat >"$T/etape2-installeur.sh" <<'FIN'
+#!/bin/sh
+printf '%s|' "$@" >>"$CIDRE_ESSAI/args-installeur"; echo >>"$CIDRE_ESSAI/args-installeur"
+sleep 1
+mkdir -p "$WINEPREFIX/drive_c/Program Files (x86)/Battle.net" && printf 'MZ' >"$WINEPREFIX/drive_c/Program Files (x86)/Battle.net/Battle.net.exe"
+FIN
+{ printf 'MZ'; dd if=/dev/zero bs=1024 count=1100 2>/dev/null; printf 'Blizzard Entertainment, Inc.'; } >"$T/Battle.net-Setup.exe"
+printf 'MZ pas Blizzard' >"$T/faux-setup.exe"
+PN="$T/pfx-neuf"
+export CIDRE_ESSAI="$T"
+r=$(CIDRE_BNET_PREFIXE="$PN" CIDRE_BNET_INSTALLEUR="$T/faux-setup.exe" sh "$B" installer --json 2>/dev/null); rc=$?
+verif "installeur invalide : code 1" 1 "$rc"
+contient "installeur invalide : evenement" '"code":"installeur_invalide"' "$r"
+[ ! -e "$PN" ] && ok "installeur invalide : aucun prefixe cree" || echec "installeur invalide : prefixe cree pour rien"
+r=$(CIDRE_BNET_PREFIXE="$PN" CIDRE_BNET_INSTALLEUR="$T/Battle.net-Setup.exe" CIDRE_BNET_WINE="$FW" CIDRE_BNET_ETAPE2="$T/etape2-installeur.sh" \
+     CIDRE_LANGUE_MAC=fr-FR sh "$B" installer --json 2>"$T/installer.err"); rc=$?
+verif "installer : code 0" 0 "$rc"
+verif "installer : etapes dans l'ordre" "telechargement prefixe installeur client" "$(printf '%s\n' "$r" | sed -n 's/.*"etape":"\([a-z]*\)".*/\1/p' | paste -sd ' ' -)"
+contient "installer : installe" '"evenement":"installe","deja":false' "$r"
+[ -f "$PN/drive_c/windows/system32/../../../system.reg" ] && ok "installer : prefixe cree" || echec "installer : pas de prefixe"
+contient "installer : runtime Visual C++ declare" "reg import C:" "$(cat "$PN/faux-wine.txt" 2>/dev/null)"
+contient "installer : son fichier .reg" "cidre-vcruntime.reg" "$(cat "$PN/faux-wine.txt" 2>/dev/null)"
+verif "installer : arguments de l'installeur" "Z:$(printf '%s' "$T" | tr '/' '\\')\\Battle.net-Setup.exe|--lang=frFR|--installpath=C:\\Program Files (x86)\\Battle.net|" "$(head -1 "$T/args-installeur")"
+verif "installer : marque" "pour=client" "$(cat "$PN/.cidre-client")"
+r=$(CIDRE_BNET_PREFIXE="$PN" sh "$B" installer --json 2>/dev/null)
+contient "installer : deja installe" '"evenement":"installe","deja":true' "$r"
+r=$(CIDRE_BNET_PREFIXE="$PN" sh "$R/cidre" battlenet installer 2>&1)
+contient "cidre battlenet installer : deja installe" "deja installe" "$r"
+verif "locale : fr-FR" frFR "$(CIDRE_LANGUE_MAC=fr-FR sh "$B" locale)"
+verif "locale : en-GB" enGB "$(CIDRE_LANGUE_MAC=en-GB sh "$B" locale)"
+verif "locale : pt-PT -> ptBR" ptBR "$(CIDRE_LANGUE_MAC=pt-PT sh "$B" locale)"
+verif "locale : zh-Hant-TW" zhTW "$(CIDRE_LANGUE_MAC=zh-Hant-TW sh "$B" locale)"
+verif "locale : inconnue -> enUS" enUS "$(CIDRE_LANGUE_MAC=xx-XX sh "$B" locale)"
+r=$(CIDRE_BNET_PREFIXE="$T/hors-ligne" CIDRE_BNET_INSTALLEUR_URL="http://127.0.0.1:9/rien" sh "$B" installer --json 2>/dev/null); rc=$?
+verif "hors ligne : code 1" 1 "$rc"
+contient "hors ligne : evenement" '"code":"telechargement"' "$r"
+
 echo "== livraison"
 grep -q 'battlenet.sh' "$R/tests/empaqueter_runtime.sh" && ok "empaqueter : battlenet.sh" || echec "empaqueter : battlenet.sh absent"
 grep -q 'battlenet.conf' "$R/tests/empaqueter_runtime.sh" && ok "empaqueter : battlenet.conf" || echec "empaqueter : battlenet.conf absent"
+grep -q 'vcruntime_registre.sh' "$R/tests/empaqueter_runtime.sh" && ok "empaqueter : vcruntime_registre.sh" || echec "empaqueter : vcruntime_registre.sh absent"
 verif "enveloppe : derniere ligne" "}" "$(tail -1 "$B")"
 
 echo "$nb verifications, $ko echec(s)"

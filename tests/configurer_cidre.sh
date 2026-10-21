@@ -65,32 +65,9 @@ fi
 # aussi, sinon ses classes COM manquent au registre.
 sh "$R/tests/prefixe_a_jour.sh"
 
-# Le runtime Visual C++, declare au registre dans ses deux vues. Wine fournit
-# ces bibliotheques (msvcp140, vcruntime140...) et les declare lui-meme, mais la
-# vue 32 bits -- celle que lisent les installeurs et les lanceurs Unreal -- est
-# ecrite par un programme 32 bits : la ou il n'a pas pu tourner, le lanceur du
-# jeu croit le runtime absent, propose de l'installer, et son installeur
-# echoue. On l'ecrit donc d'ici, depuis le cote 64 bits. La version est celle
-# du redistribuable courant de Microsoft : seuls des controles de version la
-# lisent.
-VC="$WINEPREFIX/drive_c/cidre-vcruntime.reg"
-{
-   echo 'Windows Registry Editor Version 5.00'
-   for vue in 'SOFTWARE\Microsoft' 'SOFTWARE\Wow6432Node\Microsoft'; do
-      for arch in x64 x86 arm64; do
-         printf '\n[HKEY_LOCAL_MACHINE\\%s\\VisualStudio\\14.0\\VC\\Runtimes\\%s]\n' "$vue" "$arch"
-         echo '"Installed"=dword:00000001'
-         echo '"Major"=dword:0000000e'
-         echo '"Minor"=dword:0000002c'
-         echo '"Bld"=dword:0000898b'
-         echo '"Rbld"=dword:00000000'
-         echo '"Version"="v14.44.35211.00"'
-      done
-   done
-} >"$VC"
-"$R/wine/wine11-arm64/bin/wine" reg import 'C:\cidre-vcruntime.reg' >/dev/null 2>&1 &&
-   echo "  runtime Visual C++ declare au registre (14.44, vues 64 et 32 bits)"
-rm -f "$VC"
+# Le runtime Visual C++, declare au registre dans ses deux vues (la vue 32
+# bits, que lisent les installeurs et les lanceurs Unreal) : tests/vcruntime_registre.sh.
+sh "$R/tests/vcruntime_registre.sh" || true
 
 echo "== 3/6 DXVK et FEX =="
 P="$WINEPREFIX/drive_c/windows/system32"
@@ -100,6 +77,9 @@ for d in d3d11 dxgi d3d10core d3d9 d3d8; do
    [ -f "$R/dxvk/async/$d.dll" ] && cp "$R/dxvk/async/$d.dll" "$P/" 2>/dev/null || true
 done
 WINE_ARM64="$R/wine/wine11-arm64" WINEPREFIX="$WINEPREFIX" sh "$R/tests/installer_fex.sh" >/dev/null 2>&1 || true
+# Le prefixe Battle.net, s'il existe (`cidre battlenet installer`) : remis au
+# runtime comme celui de Steam (DLL de Wine, FEX), sauf si le client y tourne.
+[ ! -f "$(sh "$R/tests/battlenet.sh" prefixe)/system.reg" ] || sh "$R/tests/battlenet.sh" creer
 
 echo "== 4/6 Pont Steam =="
 # Sans ce pont, le steam_api64.dll du jeu ne trouve pas de client (registre

@@ -14,6 +14,10 @@
 #                                     refuse (code 4) pendant un jeu, sauf --force (`cidre stop`)
 #   battlenet.sh preparer <id>        lancer_depuis_steam.sh, avant de regler le prefixe pour ce jeu
 #   battlenet.sh jouer <id> [args]    lancer_depuis_steam.sh, a la place de l'executable du jeu
+#   battlenet.sh creer                cree le prefixe s'il manque (Wine neuf, runtime Visual C++, DXVK, FEX ;
+#                                     sans le pont Steam), sinon le remet au runtime (cidre setup)
+#   battlenet.sh installer [--json]   cree le prefixe, telecharge l'installeur officiel et le lance ; rend la
+#                                     main quand le client est installe (l'utilisateur s'y connecte)
 #
 # Le prefixe : CIDRE_BNET_PREFIXE, sinon la premiere ligne de
 # ~/Library/Application Support/Cidre/battlenet.prefixe, sinon wine/pfx-battlenet.
@@ -53,7 +57,8 @@
 set -u
 R=$(cd "$(dirname "$0")/.." && pwd)
 CIDRE_DIR=${CIDRE_DIR:-$HOME/Library/Application Support/Cidre}
-W=$R/wine/wine11-arm64
+# (CIDRE_BNET_WINE : un autre Wine, pour les essais de creer/installer)
+W=${CIDRE_BNET_WINE:-$R/wine/wine11-arm64}
 # (CIDRE_BNET_TABLE : une autre table, pour les essais)
 TABLE=${CIDRE_BNET_TABLE:-$R/outil-steam/battlenet.conf}
 
@@ -166,15 +171,17 @@ empreinte() {
        | grep -vE '^(CIDRE_STEAM_CPU|CIDRE_BNET_[A-Z_]*|CIDRE_ACCORD_NUAGE|WINEDEBUG)=' | LC_ALL=C sort | shasum | cut -c1-40
 }
 
-# Le client, en arriere-plan et detache : il survit a `cidre play`, qui attend le jeu.
-lancer_client() { # <journal> [arguments du client]
-   lc_j=$1; shift
+# Le client (ou l'installeur, aussi en Qt et CEF), en arriere-plan et detache :
+# il survit a `cidre play`, qui attend le jeu.
+lancer_client_prog() { # <journal> <programme Windows> [arguments]
+   lc_j=$1; lc_p=$2; shift 2
    mkdir -p "$(dirname "$lc_j")"
    # (pas de « === » : `cidre log` prend la derniere ligne qui en commence une pour le debut du lancement)
-   echo "    battlenet : $(date '+%F %T') $CLIENT_W $CLIENT_ARGS $*" >>"$lc_j"
+   echo "    battlenet : $(date '+%F %T') $lc_p $*" >>"$lc_j"
    ( export WINEPREFIX="$PFX" QT_QUICK_BACKEND=${QT_QUICK_BACKEND:-software} QT_OPENGL=${QT_OPENGL:-software}
-     CIDRE_OVERLAY_DYLIB= nohup sh "$ETAPE2" "$CLIENT_W" $CLIENT_ARGS "$@" >>"$lc_j" 2>&1 </dev/null & )
+     CIDRE_OVERLAY_DYLIB= nohup sh "$ETAPE2" "$lc_p" "$@" >>"$lc_j" 2>&1 </dev/null & )
 }
+lancer_client() { lc_1=$1; shift; lancer_client_prog "$lc_1" "$CLIENT_W" $CLIENT_ARGS "$@"; }
 
 arreter_client() { # [raison]
    if serveur_vivant; then
@@ -184,6 +191,65 @@ arreter_client() { # [raison]
       echo "    battlenet : client ferme${1:+ ($1)}"
    fi
    rm -f "$MARQUE"
+}
+
+# --- Creation du prefixe, installation du client ---------------------------
+INSTALLEUR_URL=${CIDRE_BNET_INSTALLEUR_URL:-https://downloader.battle.net/download/getInstaller?os=win&installer=Battle.net-Setup.exe}
+# La langue du Mac en locale Blizzard (frFR, enUS...) : une langue d'installeur
+# differente de celle de la machine peut bloquer l'installation a 45 %.
+locale_blizzard() {
+   lb_l=$(sh "$R/tests/langue_cidre.sh" auto 2>/dev/null | sed -n 's/^locale=//p'); lb_l=${lb_l%%.*}
+   lb_c=$(printf '%s' "$lb_l" | tr -d '_')
+   case $lb_c in
+      deDE|enUS|enGB|esES|esMX|frFR|itIT|jaJP|koKR|plPL|ptBR|ruRU|zhCN|zhTW) echo "$lb_c" ;;
+      *) case ${lb_l%%_*} in
+            de) echo deDE ;; es) echo esES ;; fr) echo frFR ;; it) echo itIT ;; ja) echo jaJP ;; ko) echo koKR ;;
+            pl) echo plPL ;; pt) echo ptBR ;; ru) echo ruRU ;; zh) echo zhCN ;; *) echo enUS ;;
+         esac ;;
+   esac
+}
+# Un prefixe a lui, comme celui de Steam (configurer_cidre.sh, etapes 2 et 3),
+# sans le pont Steam ni faux_steam. Deja la : remis au runtime (DLL de Wine,
+# FEX), sauf si le client y tourne -- il le sera au prochain lancement.
+creer() {
+   if [ -f "$PFX/system.reg" ] && [ -d "$PFX/drive_c/windows/system32" ]; then
+      if serveur_vivant; then echo "  prefixe Battle.net : en usage, remis au runtime au prochain lancement"; return 0; fi
+      WINEPREFIX=$PFX sh "$R/tests/prefixe_a_jour.sh"
+      WINE_ARM64=$W WINEPREFIX=$PFX sh "$R/tests/installer_fex.sh" >/dev/null 2>&1 || true
+      echo "  prefixe Battle.net a jour ($PFX)"
+      return 0
+   fi
+   mkdir -p "$PFX" || { echo "  prefixe Battle.net : impossible de creer $PFX" >&2; return 1; }
+   echo "  prefixe Battle.net : creation dans $PFX (une minute)"
+   ( export WINEPREFIX="$PFX" WINEDEBUG=-all WINEDLLOVERRIDES="mscoree=d;mshtml=d"
+     "$W/bin/wineboot" -u >/dev/null 2>&1 || true
+     "$W/bin/wineserver" -w 2>/dev/null
+     [ -d "$PFX/drive_c/windows/system32" ] || exit 1
+     sh "$R/tests/prefixe_a_jour.sh" --marquer
+     CIDRE_VC_WINE=$W/bin/wine sh "$R/tests/vcruntime_registre.sh" || true
+     "$W/bin/wineserver" -w 2>/dev/null
+     for d in d3d11 dxgi d3d10core d3d9 d3d8; do
+        [ -f "$R/dxvk/async/$d.dll" ] && cp "$R/dxvk/async/$d.dll" "$PFX/drive_c/windows/system32/" 2>/dev/null || true
+     done
+     WINE_ARM64=$W sh "$R/tests/installer_fex.sh" >/dev/null 2>&1 || true ) \
+      || { echo "  prefixe Battle.net : Wine n'a pas cree $PFX (cidre doctor)" >&2; return 1; }
+   echo "  prefixe Battle.net cree"
+}
+# L'installeur officiel, ou CIDRE_BNET_INSTALLEUR (un fichier deja la, essais).
+# Verifie : un executable Windows de plus de 1 Mo, signe au nom de Blizzard
+# (le nom est cherche dans le bloc de signature : ce n'est pas une verification
+# cryptographique de la signature, qu'un Mac sans outils ne sait pas faire ; le
+# telechargement passe par HTTPS depuis downloader.battle.net).
+installeur() {
+   if [ -n "${CIDRE_BNET_INSTALLEUR:-}" ]; then printf '%s' "$CIDRE_BNET_INSTALLEUR"; return 0; fi
+   i_f=$CIDRE_DIR/cache/Battle.net-Setup.exe
+   mkdir -p "$CIDRE_DIR/cache" || return 1
+   curl -fsSL --retry 2 --max-time 600 -o "$i_f.part" "$INSTALLEUR_URL" 2>/dev/null && mv "$i_f.part" "$i_f" || { rm -f "$i_f.part"; return 1; }
+   printf '%s' "$i_f"
+}
+installeur_valide() {
+   [ "$(head -c 2 "$1" 2>/dev/null)" = MZ ] && [ "$(wc -c <"$1" 2>/dev/null)" -gt 1000000 ] &&
+      LC_ALL=C grep -aq 'Blizzard Entertainment' "$1"
 }
 
 absent() {
@@ -304,7 +370,54 @@ case ${1:-} in
       done
       echo "    battlenet : $nexe sorti apres $(( $(date +%s) - debut )) s ; client laisse ouvert (cidre battlenet arreter)"
       exit 0 ;;
-   *) echo "usage : battlenet.sh prefixe | etat [--json] | jeux | ouvrir | arreter [--force] | preparer <id> | jouer <id> [args]" >&2; exit 2 ;;
+   creer) creer ;;
+   # (la locale Blizzard de la langue du Mac : essais)
+   locale) locale_blizzard ;;
+   installer)
+      # --json : un evenement par ligne, pour Verger :
+      #   {"evenement":"etape","etape":"prefixe"|"telechargement"|"installeur"|"client"}
+      #   {"evenement":"installe","deja":bool,"prefixe":...}   {"evenement":"erreur","code":...,"message":...}
+      J_=non; [ "${2:-}" = --json ] && J_=oui
+      ev() { [ $J_ = non ] || printf '%s\n' "$1"; }
+      dire_() { if [ $J_ = oui ]; then printf '%s\n' "$*" >&2; else printf '%s\n' "$*"; fi; }
+      echec() { # <code> <message>
+         ev "$(printf '{"evenement":"erreur","code":"%s","message":%s}' "$1" "$(json "$2")")"; echo "$2" >&2; exit 1; }
+      if [ -f "$CLIENT" ]; then
+         ev "$(printf '{"evenement":"installe","deja":true,"prefixe":%s}' "$(json "$PFX")")"
+         dire_ "Battle.net est deja installe ($PFX) : \`cidre battlenet ouvrir\` pour te connecter ou installer un jeu."
+         exit 0
+      fi
+      serveur_vivant && echec prefixe_en_usage "Le prefixe Battle.net est en usage (un programme Windows y tourne) : \`cidre battlenet arreter\`, puis recommence."
+      # (l'installeur d'abord : hors ligne, pas de prefixe cree pour rien)
+      ev '{"evenement":"etape","etape":"telechargement"}'
+      dire_ "Telechargement de l'installeur Battle.net..."
+      INST=$(installeur) || echec telechargement "L'installeur Battle.net n'a pas pu etre telecharge (hors ligne ?) : recommence une fois en ligne."
+      installeur_valide "$INST" || { [ -n "${CIDRE_BNET_INSTALLEUR:-}" ] || rm -f "$INST"
+         echec installeur_invalide "Le fichier telecharge n'est pas l'installeur de Blizzard (pas un executable Windows signe Blizzard Entertainment) : rien n'a ete lance."; }
+      ev '{"evenement":"etape","etape":"prefixe"}'
+      creer >&2 || echec prefixe "Le prefixe Battle.net n'a pas pu etre cree dans $PFX : \`cidre doctor\` dira si Wine demarre."
+      LANG_B=$(locale_blizzard)
+      ev '{"evenement":"etape","etape":"installeur"}'
+      dire_ "Installation de Battle.net (langue $LANG_B) : suis l'installeur dans sa fenetre ; la connexion se fait ensuite dans le client."
+      config_lancement >/dev/null
+      printf 'pour=client\n' >"$MARQUE"
+      INST_W="Z:$(printf '%s' "$INST" | tr '/' '\\')"
+      lancer_client_prog "$JOURNAL_CLIENT" "$INST_W" "--lang=$LANG_B" '--installpath=C:\Program Files (x86)\Battle.net'
+      # Le client installe apparait dans Program Files ; l'installeur l'ouvre ensuite.
+      ATT=${CIDRE_BNET_ATTENTE_INSTALLATION:-1800}; t0=$(date +%s); vu=non
+      while [ ! -f "$CLIENT" ]; do
+         t=$(( $(date +%s) - t0 ))
+         if processus | grep -qi 'battle\.net-setup\|battle\.net launcher\|[\\/]battle\.net[\\/]'; then vu=oui
+         elif [ $vu = oui ] || [ $t -ge 120 ]; then
+            echec installeur_ferme "L'installeur Battle.net s'est ferme sans installer le client (apres $t s) : journal $JOURNAL_CLIENT."
+         fi
+         [ $t -lt "$ATT" ] || echec trop_long "L'installation de Battle.net n'est pas finie apres $ATT s : l'installeur reste ouvert ; relance \`cidre battlenet installer\` quand il a fini."
+         sleep 3
+      done
+      ev '{"evenement":"etape","etape":"client"}'
+      ev "$(printf '{"evenement":"installe","deja":false,"prefixe":%s}' "$(json "$PFX")")"
+      dire_ "Battle.net est installe ($PFX). Connecte-toi dans sa fenetre (coche « Rester connecte »), installe tes jeux, puis \`cidre play bnet-...\`." ;;
+   *) echo "usage : battlenet.sh prefixe [<chemin>|defaut] | etat [--json] | jeux | pids | ouvrir | arreter [--force] | preparer <id> | jouer <id> [args] | creer | installer [--json]" >&2; exit 2 ;;
 esac
 exit 0
 }

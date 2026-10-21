@@ -1401,11 +1401,12 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
   cidre add <jeu.exe> [nom] [--json]   ajoute un jeu Windows a la bibliotheque
   cidre run <fichier.exe> [args]  lance un .exe une fois (un installeur, par exemple)
   cidre prefix                    le disque C: ou atterrissent les installeurs
-  cidre battlenet [etat [--json] | ouvrir | arreter | prefixe [<chemin>|defaut]]
+  cidre battlenet [etat [--json] | installer [--json] | ouvrir | arreter | prefixe [<chemin>|defaut]]
                                   le client Battle.net, dans son prefixe (defaut : wine/pfx-battlenet ; prefixe
-                                  <chemin> : celui ou il est deja installe) : l'ouvrir pour se connecter, installer
-                                  ou mettre a jour un jeu ; `cidre play bnet-osi` lance le jeu par lui (il reste
-                                  ouvert apres la partie)
+                                  <chemin> : celui ou il est deja installe) : installer cree le prefixe, telecharge
+                                  l'installeur officiel et le lance ; ouvrir, pour se connecter, installer ou mettre
+                                  a jour un jeu ; `cidre play bnet-osi` lance le jeu par lui (il reste ouvert apres
+                                  la partie)
   cidre rm <id>                   retire un jeu hors Steam, ou desinstalle un jeu d'un emplacement Cidre
 USAGE
 }
@@ -2252,7 +2253,8 @@ case "$cmd" in
       ouvrir|open) sh "$R/tests/battlenet.sh" ouvrir ;;
       arreter|fermer|stop) sh "$R/tests/battlenet.sh" arreter ;;
       prefixe|prefix) sh "$R/tests/battlenet.sh" prefixe "${2:-}" ;;
-      *) echo "usage: cidre battlenet [etat [--json] | ouvrir | arreter | prefixe [<chemin>|defaut]]" >&2; exit 2 ;;
+      installer|install) sh "$R/tests/battlenet.sh" installer $( [ "$JSON" = oui ] && echo --json) ;;
+      *) echo "usage: cidre battlenet [etat [--json] | installer [--json] | ouvrir | arreter | prefixe [<chemin>|defaut]]" >&2; exit 2 ;;
     esac ;;
   rm|retirer)
     id=${1:?usage: cidre rm <id>}

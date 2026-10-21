@@ -473,8 +473,18 @@ Code de la source `battlenet` (point 5 ci-dessus, avance : D2R s'affiche sous Ci
   tourne sous Wine).
 - **Prefixe** : `CIDRE_BNET_PREFIXE`, sinon `~/Library/Application Support/Cidre/battlenet.prefixe`
   (`cidre battlenet prefixe <chemin>`, pour un prefixe ou le client est deja installe et connecte),
-  sinon `wine/pfx-battlenet`. Sa creation par `cidre setup` et `cidre battlenet installer` restent a
-  faire.
+  sinon `wine/pfx-battlenet`.
+- **Installation** : `cidre battlenet installer [--json]` telecharge l'installeur officiel
+  (downloader.battle.net, HTTPS), le verifie (executable Windows de plus de 1 Mo, nom « Blizzard
+  Entertainment » dans sa signature : pas une verification cryptographique, qu'un Mac sans outils ne sait
+  pas faire), cree le prefixe s'il manque (`battlenet.sh creer` : Wine neuf, runtime Visual C++ par
+  `tests/vcruntime_registre.sh`, partage avec `cidre setup`, DXVK, FEX ; sans le pont Steam), puis lance
+  l'installeur (`--lang=` langue du Mac, `--installpath=C:\Program Files (x86)\Battle.net`) et rend la main
+  quand le client est installe ; l'utilisateur s'y connecte. Evenements `--json` : etapes telechargement,
+  prefixe, installeur, client, puis installe, ou erreur (telechargement, installeur_invalide, prefixe,
+  installeur_ferme, trop_long). `cidre setup` remet un prefixe Battle.net existant au runtime (etape 3/6 ; pas
+  d'etape de plus : Verger compte les `== k/6 ==`), sauf si le client y tourne. Une mise a jour du runtime
+  (archive extraite par-dessus) garde `wine/pfx-battlenet` comme `wine/pfx-arm64ec`.
 - **Jeux** : cles Uninstall de l'Agent (`--uid=osi`), traduites par `outil-steam/battlenet.conf` (uid,
   code, executable, nom) en `bnet-osi` (D2R) et `bnet-fen` (D4). `cidre list --json` les rend avec
   `"source":"battlenet"`, `"appid":null`, la taille du dossier, et `"en_ligne":false` quand le dossier
