@@ -43,6 +43,10 @@ vsync = false
 # Suspect : evenement auto signale deux fois avant la reprise du premier fil. A reactiver quand
 # ce cas sera corrige et teste.
 sync_local = false
+# Avertissement « Your graphics card is not officially supported by Detroit: Become Human. [...] Do you
+# still want to launch the game? » a chaque lancement (carte annoncee Apple ; une identite AMD deforme les
+# personnages, cf. plus haut) : la boite est repondue OK sans s'afficher (correctif Wine 0221).
+boite_ok = "not officially supported by Detroit"
 
 [compat]
 etat = "bronze"

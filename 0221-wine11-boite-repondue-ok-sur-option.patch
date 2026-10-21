@@ -1,0 +1,49 @@
+Generated-by: LLM
+
+Wine 11 (user32) : boite repondue OK sans s'afficher sur option (0221) -- CIDRE_MSGBOX_OK=<extrait> : MessageBoxIndirectW (donc MessageBoxA/W/ExA/ExW/IndirectA, qui y menent) rend IDOK d'elle-meme pour une boite OK ou OK/Annuler dont le texte contient l'extrait, casse ignoree (StrStrIW de kernelbase, deja importee par user32) ; une boite d'un autre type, un texte en ressource, une variable absente, vide ou de plus de 255 caracteres : rien ne change. Trace +msgbox « CIDRE_MSGBOX_OK : OK sans affichage pour ... ». Option de fiche boite_ok, exportee par le lanceur. Detroit: Become Human (1222140) demande a chaque lancement « Your graphics card is not officially supported by Detroit: Become Human. The game is likely to crash or fail at launch. Do you still want to launch the game? » (texte releve par WINEDEBUG=+msgbox sur l'iMac M4, v1.5.18, 21/10) et attend un clic, ce qui bloquait aussi toute manche automatique ; annoncer une carte AMD (vk_identite) deformait les personnages. Fiche : boite_ok = "not officially supported by Detroit".
+
+--- a/dlls/user32/msgbox.c
++++ b/dlls/user32/msgbox.c
+@@ -26,6 +26,7 @@
+ #include "winbase.h"
+ #include "wingdi.h"
+ #include "winternl.h"
++#include "shlwapi.h"
+ #include "dlgs.h"
+ #include "user_private.h"
+ #include "resources.h"
+@@ -510,6 +511,25 @@
+     if (!IS_INTRESOURCE(captionW.Buffer)) RtlFreeUnicodeString(&captionW);
+     if (!IS_INTRESOURCE(iconW.Buffer)) RtlFreeUnicodeString(&iconW);
+     return ret;
++}
++
++/* Cidre : CIDRE_MSGBOX_OK=<extrait> (option de fiche boite_ok) repond OK, sans
++ * l'afficher, a une boite qui a un bouton OK et dont le texte contient l'extrait
++ * (casse ignoree). Detroit: Become Human pose a chaque lancement une question
++ * sur la carte graphique inconnue, OK pour continuer. */
++static BOOL MSGBOX_AutoOk( const MSGBOXPARAMSW *msgbox )
++{
++    WCHAR extrait[256];
++    UINT type = msgbox->dwStyle & MB_TYPEMASK;
++    DWORD n;
++
++    if (type != MB_OK && type != MB_OKCANCEL) return FALSE;
++    if (!msgbox->lpszText || IS_INTRESOURCE(msgbox->lpszText)) return FALSE;
++    n = GetEnvironmentVariableW( L"CIDRE_MSGBOX_OK", extrait, ARRAY_SIZE(extrait) );
++    if (!n || n >= ARRAY_SIZE(extrait)) return FALSE;
++    if (!StrStrIW( msgbox->lpszText, extrait )) return FALSE;
++    TRACE_(msgbox)("CIDRE_MSGBOX_OK : OK sans affichage pour %s\n", debugstr_w(msgbox->lpszText));
++    return TRUE;
+ }
+ 
+ /**************************************************************************
+@@ -523,6 +543,8 @@
+     UINT i;
+     struct ThreadWindows threadWindows;
+ 
++    if (MSGBOX_AutoOk( msgbox )) return IDOK;
++
+     if (!(hRes = FindResourceExW(user32_module, (LPWSTR)RT_DIALOG, L"MSGBOX", msgbox->dwLanguageId)))
+     {
+         if (!msgbox->dwLanguageId ||

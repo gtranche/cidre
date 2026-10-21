@@ -497,6 +497,15 @@ if [ -n "$VKID" ]; then
    [ "$D3D11" = dxmt ] || dxvk_config "dxgi.customVendorId=$VKVEN;dxgi.customDeviceId=$VKDEV"
    echo "    carte annoncee : $VKID (Vulkan et DXGI)" >>"$JOURNAL"
 fi
+# Boite repondue OK sans s'afficher (fiche : boite_ok = "<extrait du texte>", correctif Wine 0221) :
+# une boite OK ou OK/Annuler dont le texte contient l'extrait (casse ignoree) rend OK d'elle-meme.
+# Detroit: Become Human demande a chaque lancement s'il faut continuer avec une carte graphique non
+# reconnue. Un CIDRE_MSGBOX_OK explicite garde la main.
+BOITE_OK=$(opt boite_ok CIDRE_MSGBOX_OK)
+if [ -n "$BOITE_OK" ]; then
+   export CIDRE_MSGBOX_OK="$BOITE_OK"
+   echo "    boite OK d'office : texte contenant « $BOITE_OK »" >>"$JOURNAL"
+fi
 if [ "$D3D11" = dxmt ] && [ -n "$DXMTCFG" ]; then
    export DXMT_CONFIG="$DXMTCFG;${DXMT_CONFIG:-}"
    echo "    d3d11 : options DXMT du profil : $DXMTCFG" >>"$JOURNAL"
