@@ -36,11 +36,9 @@ lanceur = "steam"
 # depasse 16,7 ms a 60 Hz. Sans vsync, le jeu peut monter au-dessus de 30, au prix de
 # dechirures (choix du joueur, 2026-10-16 ; gain pas encore mesure sur ce jeu).
 vsync = false
-# Synchro Wine en process (0103, par defaut depuis la v1.5.16) coupee : avec elle, en jeu, une
-# image toutes les deux secondes (0,5 fps, GPU a 4 %, fils en attente : reveil perdu puis delai
-# depasse) ; sans elle, 50 a 57 fps en 2240x1260, affichage direct (iMac M4, v1.5.17,
-# 2026-10-20). Le menu restait fluide dans les deux cas. Cause dans 0103 a trouver.
-sync_local = false
+# Synchro Wine en process (0103) : de nouveau active. Coupee du 2026-10-20 (une image toutes les
+# deux secondes en jeu, v1.5.17) jusqu'a 0210 : un ReleaseSemaphore sur un compte non nul ne
+# reveillait personne, les ouvriers du jeu attendaient le garde-fou de 2 s.
 
 [compat]
 etat = "bronze"
