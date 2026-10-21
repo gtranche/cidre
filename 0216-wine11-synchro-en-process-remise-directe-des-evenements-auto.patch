@@ -1,0 +1,412 @@
+wine11 : synchro en process, remise directe des evenements auto (0216)
+
+Sous Windows, SetEvent sur un evenement auto qu'un fil attend remet l'unite a
+CE fil, et l'evenement reste non signale : un second SetEvent en libere un
+second. La synchro en process (0103) gardait un simple mot d'etat : un SetEvent
+arrive pendant que le fil reveille par le precedent n'avait pas encore repris
+tombait sur l'etat encore a 1 et se perdait, sans garde-fou pour le rattraper
+(l'etat relu valait 0 ensuite). Temoin tests/temoin_rafale_auto.c (2 000
+manches : 12 dormeurs, attentes simples et multiples, un dormeur tue une fois
+sur quatre, 4 producteurs) : avec 0210 seul, 160 dormeurs restes endormis dans
+83 manches ; avec le wineserver, aucun.
+
+Remise directe : tout dormeur d'un evenement auto s'inscrit dans la table de la
+case avec le drapeau SHM_REMISE (l'attente simple passe donc par l'inscription,
+sauf si l'evenement est deja signale) ; SetEvent prend une inscription par CAS
+(SHM_ACCORDE) : l'unite appartient a ce fil, l'etat ne bouge pas. Le fil qui
+retire son inscription et trouve SHM_ACCORDE possede l'unite : il la prend
+(meme a l'echeance, comme Windows), ou la re-signale s'il a deja ete servi par
+un autre objet. Le CAS departage remise et retrait : l'unite va a un seul fil,
+jamais perdue, jamais dupliquee. WaitAll, semaphores, mutex et evenements
+manuels inchanges. PulseEvent auto : une remise s'il y a un dormeur, puis non
+signale.
+
+La table n'a que CIDRE_SYNC_WAITER_SLOTS (8) places : au-dela, les dormeurs
+scrutent l'etat (1 ms) et sont comptes dans waiters (inutilise autrement pour
+un evenement auto) ; sans inscrit libre, un SetEvent leur ajoute une unite en
+attente, au plus waiters + 1 (le « + 1 » est l'etat signale qui reste quand
+tous ont repris la leur) ; un dormeur qui sort sans la sienne ramene ce
+plafond. Sans cela, avec 12 dormeurs, 9 seulement repartaient a chaque manche
+(premiere version).
+
+Fil tue en attente (TerminateThread : quit_handler -> abort_thread, dans le fil
+lui-meme) : abort_thread appelle cidre_sync_thread_abort, qui retire ses
+inscriptions et re-signale une unite deja remise ; inscriptions notees dans une
+cle pthread (get/setspecific n'allouent pas, contrairement au premier acces a
+une variable __thread d'une dylib, interdit dans un gestionnaire de signal).
+Limite connue : un processus tue en entier laisse ses inscriptions (une remise
+peut s'y perdre sur un evenement nomme partage).
+
+Temoins (M1 Max, runtime et prefixe clones, CIDRE_SYNC_LOCAL=1) :
+- tests/temoin_rafale_auto.c : 0 dormeur perdu, 0 liberation de trop, 0 etat
+  final faux sur 2 000 manches (pire 14,7 ms) ;
+- tests/temoin_sync_reveils.c strict : 6/6 cas a 0,1 ms (evenements auto compris) ;
+- tests/temoin_surliberation.c : tue simple et multiple 0/50, verrou ok, servi
+  0 excedent ; test_sync_xproc 34/34, h64suspend, h64alerte 30 4 ok ;
+- banc_sync : +0,01 a +0,03 us par appel (WaitForMultipleObjects 0,13 -> 0,16).
+En jeu, entrelace avec 0210 seul : Dead Cells, PEAK, Expedition 33 sans
+regression (Exp33 : 70,0/70,0 contre 77,2/70,5 images/s, 252 a 257 s couverts
+sur 4 passes, aucun trou) ; Detroit: Become Human (iMac M4, 1.5.18, synchro
+active, recompilation complete) : ecran de compilation, 99 453 pipelines en
+228 s, menu a 43-59 images/s, cache ecrit, 0 reveil manque.
+
+--- a/dlls/ntdll/unix/sync.c
++++ b/dlls/ntdll/unix/sync.c
+@@ -473,7 +473,13 @@
+ 
+ static struct cidre_sync_slot *shm_slots;
+ static int get_inproc_alert_fd(void);
++static void shm_cle_init(void);
++/* inscriptions dans la table waiter[] d'une case (remise directe des evenements auto, voir shm_remettre) */
++#define SHM_INSCRIT_INDEX 0x000fffffu   /* index de la case du fil */
++#define SHM_REMISE        0x40000000u   /* l'inscrit accepte une remise directe (attente simple ou WaitAny) */
++#define SHM_ACCORDE       0x80000000u   /* une unite lui a ete remise */
+ 
++
+ #define SHM_INDEX(tok)  ((unsigned int)(tok) & 0xfffff)
+ #define SHM_GEN(tok)    (((unsigned int)(tok) >> 20) & 0x7ff)   /* 11 bits : le jeton reste positif */
+ #define SHM_WAIT_FLAGS  OS_SYNC_WAIT_ON_ADDRESS_SHARED
+@@ -502,6 +508,7 @@
+         munmap( ptr, (size_t)CIDRE_SYNC_MAX_SLOTS * CIDRE_SYNC_SLOT_SIZE );
+         return FALSE;
+     }
++    shm_cle_init();
+     shm_slots = ptr;
+     TRACE( "synchronisation en process activee (memoire partagee %p)\n", ptr );
+     return TRUE;
+@@ -571,7 +578,7 @@
+     }
+     for (i = 0; i < CIDRE_SYNC_WAITER_SLOTS; i++)
+     {
+-        if (!(idx = __atomic_load_n( &slot->waiter[i], __ATOMIC_SEQ_CST )) || idx >= CIDRE_SYNC_MAX_SLOTS) continue;
++        if (!(idx = __atomic_load_n( &slot->waiter[i], __ATOMIC_SEQ_CST ) & SHM_INSCRIT_INDEX) || idx >= CIDRE_SYNC_MAX_SLOTS) continue;
+         CIDRE_STAT( WAKE_SYSCALL );
+         __atomic_add_fetch( &shm_slots[idx].wake_seq, 1, __ATOMIC_SEQ_CST );
+         os_sync_wake_by_address_all( &shm_slots[idx].wake_seq, 4, SHM_WAKE_FLAGS );
+@@ -627,8 +634,82 @@
+     if (now >= dl->when) return FALSE;
+     *remaining = dl->when - now;
+     return TRUE;
++}
++
++/*
++ * Evenements auto : remise directe (Cidre, 0216). Sous Windows, SetEvent sur un evenement auto qu'un fil attend
++ * remet l'unite a CE fil, et l'evenement reste non signale : un second SetEvent en libere un second. Avec un simple
++ * mot d'etat, le second SetEvent tombait sur l'etat encore a 1 (le premier fil reveille n'avait pas repris) et se
++ * perdait, sans garde-fou pour le rattraper : Detroit: Become Human ne presentait jamais une image au demarrage avec
++ * recompilation (2026-10-21). Ici tout dormeur d'un evenement auto s'inscrit dans la table de la case avec le drapeau
++ * SHM_REMISE ; SetEvent prend une inscription par CAS (SHM_ACCORDE) : l'unite appartient a ce fil, l'etat ne bouge
++ * pas. Le fil qui retire son inscription et trouve SHM_ACCORDE possede l'unite : il la prend (meme a l'echeance), ou
++ * la re-signale s'il en a deja une autre (attente multiple). Un fil tue la rend (cidre_sync_thread_abort). Le CAS
++ * departage remise et retrait : l'unite va a un seul fil, jamais perdue, jamais dupliquee. Sans inscrit (ou table
++ * pleine, ou WaitAll), etat = 1 comme avant.
++ */
++
++/* evenement auto (cree par un client) : remise directe possible */
++static inline int shm_par_remise( const struct cidre_sync_slot *slot )
++{
++    return (__atomic_load_n( &slot->flags, __ATOMIC_SEQ_CST ) & CIDRE_SYNC_TYPE_MASK) == INPROC_SYNC_EVENT && !slot->aux;
+ }
+ 
++/* remet une unite a un inscrit qui l'accepte et n'en a pas encore ; 1 si fait */
++static int shm_remettre( struct cidre_sync_slot *slot )
++{
++    unsigned int i, k, v, idx, debut = (unsigned int)GetCurrentThreadId();
++
++    for (k = 0; k < CIDRE_SYNC_WAITER_SLOTS; k++)
++    {
++        i = (debut + k) % CIDRE_SYNC_WAITER_SLOTS;   /* depart variable : pas toujours le meme fil servi */
++        v = __atomic_load_n( &slot->waiter[i], __ATOMIC_SEQ_CST );
++        if (!(v & SHM_REMISE) || (v & SHM_ACCORDE)) continue;
++        if (!__atomic_compare_exchange_n( &slot->waiter[i], &v, v | SHM_ACCORDE, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST ))
++            continue;
++        idx = v & SHM_INSCRIT_INDEX;
++        if (idx && idx < CIDRE_SYNC_MAX_SLOTS)
++        {
++            CIDRE_STAT( WAKE_SYSCALL );
++            __atomic_add_fetch( &shm_slots[idx].wake_seq, 1, __ATOMIC_SEQ_CST );
++            os_sync_wake_by_address_all( &shm_slots[idx].wake_seq, 4, SHM_WAKE_FLAGS );
++        }
++        return 1;
++    }
++    return 0;
++}
++
++/* SetEvent d'un evenement auto : remise directe a un inscrit ; sinon une unite en etat. La table d'inscription n'a que
++ * CIDRE_SYNC_WAITER_SLOTS places : au-dela, les dormeurs scrutent l'etat (toutes les 1 ms) et sont comptes dans
++ * waiters (inutilise autrement pour un evenement auto). Tant qu'il reste de ces dormeurs, chaque SetEvent leur doit une
++ * unite : l'etat compte les unites en attente, au plus waiters + 1 (le « + 1 » est l'etat signale qui reste quand
++ * tous ont repris la leur). Rend l'etat d'avant, 0 ou 1. */
++static unsigned int shm_signaler_auto( struct cidre_sync_slot *slot )
++{
++    unsigned int prev, next;
++
++    if (shm_remettre( slot )) return 0;
++    prev = __atomic_load_n( &slot->state, __ATOMIC_SEQ_CST );
++    for (;;)
++    {
++        if (!prev) next = 1;
++        else if (prev <= __atomic_load_n( &slot->waiters, __ATOMIC_SEQ_CST )) next = prev + 1;
++        else return 1;   /* deja signale, personne de plus a servir : SetEvent sans effet, comme sous Windows */
++        if (__atomic_compare_exchange_n( &slot->state, &prev, next, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST )) break;
++    }
++    if (!prev) shm_wake( slot, 0 );
++    return prev != 0;
++}
++
++/* un dormeur en scrutation sort (servi ou non) : waiters-- et plafond des unites en attente a waiters + 1 */
++static void shm_scrutateur_sort( struct cidre_sync_slot *slot )
++{
++    unsigned int n = __atomic_sub_fetch( &slot->waiters, 1, __ATOMIC_SEQ_CST ), v;
++
++    v = __atomic_load_n( &slot->state, __ATOMIC_SEQ_CST );
++    while (v > n + 1 && !__atomic_compare_exchange_n( &slot->state, &v, v - 1, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST )) {}
++}
++
+ static NTSTATUS linux_release_semaphore_obj( int obj, ULONG count, ULONG *prev_count )
+ {
+     struct cidre_sync_slot *slot;
+@@ -665,8 +746,12 @@
+     unsigned int prev;
+ 
+     if (!(slot = shm_slot( obj ))) return STATUS_INVALID_HANDLE;
+-    prev = __atomic_exchange_n( &slot->state, 1, __ATOMIC_SEQ_CST );
+-    if (!prev) shm_wake( slot, slot->aux != 0 );
++    if (shm_par_remise( slot )) prev = shm_signaler_auto( slot );
++    else
++    {
++        prev = __atomic_exchange_n( &slot->state, 1, __ATOMIC_SEQ_CST );
++        if (!prev) shm_wake( slot, slot->aux != 0 );
++    }
+     if (prev_state) *prev_state = prev;
+     return STATUS_SUCCESS;
+ }
+@@ -678,7 +763,7 @@
+ 
+     if (!(slot = shm_slot( obj ))) return STATUS_INVALID_HANDLE;
+     prev = __atomic_exchange_n( &slot->state, 0, __ATOMIC_SEQ_CST );
+-    if (prev_state) *prev_state = prev;
++    if (prev_state) *prev_state = prev != 0;
+     return STATUS_SUCCESS;
+ }
+ 
+@@ -689,6 +774,14 @@
+     unsigned int prev, one = 1;
+ 
+     if (!(slot = shm_slot( obj ))) return STATUS_INVALID_HANDLE;
++    if (shm_par_remise( slot ))
++    {
++        /* auto : libere un dormeur s'il y en a un, l'evenement finit non signale */
++        shm_remettre( slot );
++        prev = __atomic_exchange_n( &slot->state, 0, __ATOMIC_SEQ_CST );
++        if (prev_state) *prev_state = prev != 0;
++        return STATUS_SUCCESS;
++    }
+     prev = __atomic_exchange_n( &slot->state, 1, __ATOMIC_SEQ_CST );
+     shm_wake( slot, 1 );
+     __atomic_compare_exchange_n( &slot->state, &one, 0, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST );
+@@ -702,7 +795,7 @@
+ 
+     if (!(slot = shm_slot( obj ))) return STATUS_INVALID_HANDLE;
+     info->EventType = slot->aux ? NotificationEvent : SynchronizationEvent;
+-    info->EventState = __atomic_load_n( &slot->state, __ATOMIC_SEQ_CST );
++    info->EventState = __atomic_load_n( &slot->state, __ATOMIC_SEQ_CST ) != 0;
+     return STATUS_SUCCESS;
+ }
+ 
+@@ -756,7 +849,9 @@
+     case INPROC_SYNC_EVENT:
+         if (!v) { *observed = 0; return 0; }
+         if (slot->aux) return 1;   /* manuel : non consomme */
+-        if (__atomic_compare_exchange_n( &slot->state, &v, 0, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST )) return 1;
++        /* auto : l'etat peut compter plusieurs unites en attente (voir shm_signaler_auto) ; on en prend une */
++        while (v)
++            if (__atomic_compare_exchange_n( &slot->state, &v, v - 1, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST )) return 1;
+         *observed = 0;   /* consomme par un autre entre-temps */
+         return 0;
+ 
+@@ -812,7 +907,8 @@
+     case INPROC_SYNC_INTERNAL:
+     case INPROC_SYNC_EVENT:
+         if (slot->aux) break;
+-        if (!__atomic_exchange_n( &slot->state, 1, __ATOMIC_SEQ_CST )) shm_wake( slot, 0 );
++        if (shm_par_remise( slot )) shm_signaler_auto( slot );
++        else if (!__atomic_exchange_n( &slot->state, 1, __ATOMIC_SEQ_CST )) shm_wake( slot, 0 );
+         break;
+     case INPROC_SYNC_SEMAPHORE:
+         if (!__atomic_fetch_add( &slot->state, 1, __ATOMIC_SEQ_CST )) shm_wake( slot, 0 );
+@@ -854,18 +950,71 @@
+     return 0;
+ }
+ 
+-static void shm_unregister( struct cidre_sync_slot *slot, int where, unsigned int me )
++/* retire l'inscription (valeur me, drapeaux compris) ; 1 si une unite avait ete remise a ce fil (il la possede) */
++static int shm_unregister( struct cidre_sync_slot *slot, int where, unsigned int me )
+ {
+     unsigned int expected = me;
+-    if (where) __atomic_compare_exchange_n( &slot->waiter[where - 1], &expected, 0, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST );
++
++    if (!where) return 0;
++    if (__atomic_compare_exchange_n( &slot->waiter[where - 1], &expected, 0, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST ))
++        return 0;
++    if (expected != (me | SHM_ACCORDE)) return 0;   /* deja retiree ? (ne devrait pas arriver) */
++    __atomic_store_n( &slot->waiter[where - 1], 0, __ATOMIC_SEQ_CST );   /* seul ce fil touche une entree accordee */
++    return 1;
+ }
+ 
++/* une unite remise est-elle arrivee sur cette inscription ? */
++static inline int shm_accordee( struct cidre_sync_slot *slot, int where )
++{
++    return where && (__atomic_load_n( &slot->waiter[where - 1], __ATOMIC_SEQ_CST ) & SHM_ACCORDE);
++}
++
++/* Inscriptions de l'attente en cours, pour les retirer si le fil meurt pendant qu'il dort (TerminateThread :
++ * quit_handler -> abort_thread, dans le fil lui-meme) : une unite remise a un fil mort est re-signalee. Cle pthread
++ * plutot que __thread : le premier acces d'un fil a une variable __thread d'une dylib peut allouer, ce qui n'est pas
++ * permis dans un gestionnaire de signal ; get/setspecific n'allouent pas. Un processus tue en entier laisse ses
++ * inscriptions (limite connue). */
++struct shm_inscriptions
++{
++    struct cidre_sync_slot **slots;
++    const int *registered;
++    const unsigned int *valeurs;
++    const unsigned char *scrute;   /* evenement auto sans place dans la table : compte dans waiters */
++    unsigned int total;
++};
++static pthread_key_t shm_cle_inscrit;
++static BOOL shm_cle_prete;
++
++static void shm_cle_init(void)
++{
++    if (!pthread_key_create( &shm_cle_inscrit, NULL )) shm_cle_prete = TRUE;
++}
++
++/* appele par abort_thread (thread.c) : le fil meurt, peut-etre au milieu d'une attente */
++void cidre_sync_thread_abort(void)
++{
++    struct shm_inscriptions *ins;
++    unsigned int i;
++
++    if (!shm_cle_prete || !(ins = pthread_getspecific( shm_cle_inscrit ))) return;
++    pthread_setspecific( shm_cle_inscrit, NULL );
++    for (i = 0; i < ins->total; i++)
++    {
++        if (ins->scrute[i]) shm_scrutateur_sort( ins->slots[i] );
++        if (shm_unregister( ins->slots[i], ins->registered[i], ins->valeurs[i] ))
++            shm_signaler_auto( ins->slots[i] );   /* unite remise a un mort : a un autre */
++    }
++}
++
+ static NTSTATUS linux_wait_objs( int device, DWORD count, const int *objs, WAIT_TYPE type,
+                                  int alert_fd, const LARGE_INTEGER *timeout )
+ {
+     struct cidre_sync_slot *slots[MAXIMUM_WAIT_OBJECTS + 1], *me = NULL;
+     int registered[MAXIMUM_WAIT_OBJECTS + 1];
+-    unsigned int gens[MAXIMUM_WAIT_OBJECTS + 1];
++    unsigned int gens[MAXIMUM_WAIT_OBJECTS + 1], valeurs[MAXIMUM_WAIT_OBJECTS + 1];
++    unsigned char scrute[MAXIMUM_WAIT_OBJECTS + 1];
++    struct shm_inscriptions ins;
++    int par_remise = -1;   /* objet obtenu par remise directe (sinon -1) */
+     unsigned int tid = GetCurrentThreadId(), total = count, i, me_index = 0;
+     struct shm_deadline dl;
+     ULONGLONG remaining;
+@@ -881,9 +1030,16 @@
+     }
+     shm_deadline_init( &dl, timeout );
+ 
+-    /* chemin rapide : un seul objet, pas d'alerte : on dort directement sur son mot d'etat */
+-    if (total == 1)
++    /* chemin rapide : un seul objet, pas d'alerte : on dort directement sur son mot d'etat ; un evenement auto passe
++     * par l'inscription (remise directe), sauf s'il est deja signale */
++    if (total == 1 && shm_par_remise( slots[0] ))
+     {
++        unsigned int observed;
++        if (shm_try_acquire( slots[0], tid, &abandoned, &observed )) return STATUS_SUCCESS;
++        if (timeout && !timeout->QuadPart) return STATUS_TIMEOUT;
++    }
++    else if (total == 1)
++    {
+         struct cidre_sync_slot *slot = slots[0];
+         unsigned int observed;
+         int rc;
+@@ -925,9 +1081,19 @@
+ 
+     for (i = 0; i < total; i++)
+     {
+-        registered[i] = me ? shm_register( slots[i], me_index ) : 0;
++        int remise = type != WaitAll && i < count && shm_par_remise( slots[i] );
++        valeurs[i] = me_index | (remise ? SHM_REMISE : 0);
++        registered[i] = me ? shm_register( slots[i], valeurs[i] ) : 0;
++        scrute[i] = remise && !registered[i];
++        if (scrute[i]) __atomic_add_fetch( &slots[i]->waiters, 1, __ATOMIC_SEQ_CST );   /* hors table : une unite lui est due */
+         if (!registered[i]) polling = 1;
+     }
++    ins.slots = slots;
++    ins.registered = registered;
++    ins.valeurs = valeurs;
++    ins.scrute = scrute;
++    ins.total = total;
++    if (shm_cle_prete) pthread_setspecific( shm_cle_inscrit, &ins );
+ 
+     for (i = 0; i < count; i++) gens[i] = __atomic_load_n( &slots[i]->wake_seq, __ATOMIC_SEQ_CST );
+ 
+@@ -939,6 +1105,8 @@
+         if (type != WaitAll)
+         {
+             for (i = 0; i < count; i++)
++                if (shm_accordee( slots[i], registered[i] )) { par_remise = i; ret = i; goto done; }
++            for (i = 0; i < count; i++)
+             {
+                 if (!shm_try_acquire( slots[i], tid, &abandoned, &observed ))
+                 {
+@@ -983,7 +1151,15 @@
+     }
+ 
+ done:
+-    for (i = 0; i < total; i++) shm_unregister( slots[i], registered[i], me_index );
++    if (shm_cle_prete) pthread_setspecific( shm_cle_inscrit, NULL );
++    for (i = 0; i < total; i++)
++    {
++        if (scrute[i]) shm_scrutateur_sort( slots[i] );
++        if (!shm_unregister( slots[i], registered[i], valeurs[i] )) continue;
++        if ((int)i == par_remise) continue;   /* c'est l'unite rendue */
++        if (ret == STATUS_TIMEOUT && par_remise < 0) { par_remise = i; ret = i; continue; }   /* remise a l'echeance : satisfait */
++        shm_signaler_auto( slots[i] );   /* deja servi par un autre objet : l'unite repart */
++    }
+     if (ret == count && alert_fd)
+     {
+         static const LARGE_INTEGER zero;
+@@ -1050,6 +1226,9 @@
+ void cidre_sync_init_stats(void)
+ {
+ }
++void cidre_sync_thread_abort(void)
++{
++}
+ #endif
+ 
+ #endif /* NTSYNC_IOC_EVENT_READ */
+--- a/dlls/ntdll/unix/thread.c
++++ b/dlls/ntdll/unix/thread.c
+@@ -1499,7 +1499,11 @@
+     if (id) *id = make_client_id( pid, data->tid );
+     return status;
+ }
++
+ 
++#ifdef __APPLE__
++extern void cidre_sync_thread_abort(void);   /* sync.c (Cidre, 0210) ; a declarer dans unix_private.h dans le correctif */
++#endif
+ 
+ /***********************************************************************
+  *           abort_thread
+@@ -1507,6 +1511,9 @@
+ void abort_thread( int status )
+ {
+     pthread_sigmask( SIG_BLOCK, &server_block_set, NULL );
++#ifdef __APPLE__
++    cidre_sync_thread_abort();   /* le fil meurt peut-etre au milieu d'une attente en process : la retirer */
++#endif
+     if (InterlockedDecrement( &nb_threads ) <= 0) abort_process( status );
+     pthread_exit_wrapper( status );
+ }
