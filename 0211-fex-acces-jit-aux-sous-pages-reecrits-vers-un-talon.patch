@@ -2,6 +2,7 @@ Generated-by: LLM
 
 fex : acces du code JIT aux pages d hote mixtes (wine11 0201) sans signal. Une page de 4 Kio NOACCESS a cote de pages accessibles ferme toute la page d hote de 16 Kio ; chaque acces permis a une voisine faisait faute et Wine le rejouait (~2,4 us). Wine (0212) propose l instruction fautive apres le rejeu (exception 0xE0C10201) ; ResetToConsistentState la reecrit en `b talon` : talon de 64 octets dans le tampon de code courant (Context::AllocateCodeStub), qui appelle SousPagesCommun (Module.S, sauve tout l etat) puis SousPagesAide (SousPages.cpp) : adresse effective decodee (LDR/STR toutes formes, paires, LDAR/STLR/LDAPR/LDAPUR/STLUR, LSE, CAS/CASP, LD1/ST1, DC ZVA ; exclusifs et sp refuses), cache sans verrou des pages d hote valide par la generation de Wine, droits de chaque page de 4 Kio ; si l acces est permis, le registre de base est rebase sur l alias permanent de la page et l instruction d origine s execute dans le talon (vrais atomiques), sinon elle s execute telle quelle : une page fermee fait faute dans le talon et FixupStubFault ramene Pc, Sp et le registre de base a l instruction d origine (violation d acces exacte ; autre faute : instruction remise). Apres 256 acces consecutifs hors page mixte, l instruction d origine est remise ; reproposee, elle reprend son talon. Instructions non reecrivables signalees a Wine (refus). Annonce par NtQueryVirtualMemory (classe 0xc1d0) : sans Wine 0212, rien n est actif. CIDRE_SOUS_PAGES_FEX=0 coupe ; CIDRE_DIAG_SOUS_PAGES=1 compte. Banc tests/h64sous_page_banc.c : 2 323 -> 23,6 ns par lecture d octet (x98), N1 (site reecrit puis page normale) 0,6 ns, alternance 1 193 -> 15,5 ns. Diablo II Resurrected : d3d12 charge a 57 s (avant : plus de 600 s sans d3d12), 426 M acces par l alias, ~1 M rejoues ; une autre manche (l1) meurt a ~30 s dans le second processus de D2R (rapporteur de Blizzard, cause non etablie, aucune faute dans un talon) : issue intermittente comme avant. En jeu sur runtime clone, A/B : PEAK ~142 contre ~143 images/s sur la meme scene, Exp33 sans regression, Dead Cells 118,5 (plafond 120). Temoins h64sous_page A-G et J, h64sous_page_talon K1-K8 OK, croisements avec Wine/FEX anciens OK. Un talon reutilise apres changement de tampon de code n'est relu et vise que s'il est encore dans un tampon projete du fil (sinon faute dans SiteDuTalon pendant le traitement de l'exception : D2R tue, manche V1). FPSR n'est plus sauve par SousPagesCommun (msr fpsr serialise le coeur : premier point chaud d'un sample de D2R, 297 echantillons sur 3 s) et le talon ne tient plus de compteurs par acces (boucles LDXR/STXR partagees entre fils, meme en diagnostic). Correctif local (le CLAUDE.md de FEX refuse le code genere par IA en amont).
 
+ v3 : chemin rapide. Pour les formes dont l adresse tient en une instruction (base, base+imm, base+registre etendu), le talon (176 octets) calcule l adresse dans x16 et consulte un cache par site (SousPagesRapide, Module.S : sequence, generation de Wine, page d hote, sous-pages permises, decalage) sans sauver l etat ; en cas d echec, chemin lent inchange. Le post-indexe (ldr w12, [x11], #4 : REP MOVS) s execute sur [x16] sans ecriture en retour, puis Rn avance a part ; Rn ne vaut jamais l alias. Garde de l entree perimee : une faute n est ramenee au site par la table RapidesParFaute que si le code a Pc est encore ce talon (mot d acces a Pc, cbz x17 a Pc-20) ; sinon l entree est oubliee. Sans cette garde, un tampon de code recycle mettait un bloc neuf a l adresse d un ancien talon : un ldar desaligne ordinaire de ce bloc (SIGBUS, des centaines par manche de D2R) etait pris pour une faute du talon, Pc ramene a l ancien site, instruction remise, desalignement rendu a l invite (Unhandled JIT SIGBUS, rapporteur de Blizzard : 4 morts sur 4). CIDRE_SP8_FAMILLES (masque, defaut 0x1ff) restreint les familles admises (0 : chemin lent seul, = v2). Banc : 13,9 -> 3,1 ns par acces. D2R (montage 0215b + 0214 + KnownDLLs d3d12, vkd3d-proton) : 4 manches de 300 s vivantes sur 4 ; 900 s : premieres images a ~429 s (v2 : ~729 s), 1re soumission GPU ~159 s (v2 ~213), 19 images/s au rendu (v2 18), CPU ~5 coeurs (inchange). Temoin tests/h64sous_page_suspension.c (LODS et REP MOVS sur page mixte : suspension et Get/SetThreadContext, droits changeants sur la voisine, page lue fermee : faute manquee comptee) ; h64sous_page_stress S1-S5 OK.
 diff --git a/FEXCore/include/FEXCore/Core/Context.h b/FEXCore/include/FEXCore/Core/Context.h
 index 3779e35..5eed535 100644
 --- a/FEXCore/include/FEXCore/Core/Context.h
@@ -107,10 +108,10 @@ index 0c9a57a..f66fb5c 100644
    $<TARGET_OBJECTS:FEXCore_object>)
  
 diff --git a/Source/Windows/ARM64EC/Module.S b/Source/Windows/ARM64EC/Module.S
-index b6d4cde..7a1872d 100644
+index b6d4cde..5d1b2d1 100644
 --- a/Source/Windows/ARM64EC/Module.S
 +++ b/Source/Windows/ARM64EC/Module.S
-@@ -178,3 +178,98 @@ end:
+@@ -178,3 +178,146 @@ end:
  "#JumpSetStack":
    mov sp, x1
    br x0
@@ -209,6 +210,54 @@ index b6d4cde..7a1872d 100644
 +  ldr x30, [sp, #0x110]
 +  add sp, sp, #0x320
 +  ret
++
++// Cidre, sous-pages : chemin rapide (SousPages.cpp). Entree : x16 = adresse
++// effective, x17 = Site* (cache Rapide en tete). Sortie : x17 = decalage vers
++// l'alias si le cache du site concorde (meme page d'hote, meme generation de
++// Wine, sous-pages permises, pas a cheval), 0 sinon. Ne touche ni aux drapeaux
++// ni a d'autres registres que x16 et x17 (x0-x2 sauves sur la pile).
++.globl SousPagesRapide
++SousPagesRapide:
++  stp x0, x1, [sp, #-32]!
++  str x2, [sp, #16]
++  ldar w2, [x17]
++  tbnz w2, #0, 1f
++  ldr w0, [x17, #4]
++  adrp x1, SousPagesGen
++  ldr x1, [x1, #:lo12:SousPagesGen]
++  ldr w1, [x1]
++  eor w0, w0, w1
++  cbnz w0, 1f
++  ldr x0, [x17, #8]
++  and x1, x16, #0xffffffffffffc000
++  eor x0, x0, x1
++  cbnz x0, 1f
++  ldr w0, [x17, #28]
++  add x0, x16, x0
++  eor x1, x0, x16
++  lsr x1, x1, #14
++  cbnz x1, 1f
++  ubfx x0, x0, #12, #2
++  ldr w1, [x17, #24]
++  lsr w0, w1, w0
++  tbz w0, #0, 1f
++  ubfx x0, x16, #12, #2
++  lsr w0, w1, w0
++  tbz w0, #0, 1f
++  ldr x0, [x17, #16]
++  dmb ishld
++  ldr w1, [x17]
++  eor w1, w1, w2
++  cbnz w1, 1f
++  mov x17, x0
++  ldr x2, [sp, #16]
++  ldp x0, x1, [sp], #32
++  ret
++1:
++  mov x17, #0
++  ldr x2, [sp, #16]
++  ldp x0, x1, [sp], #32
++  ret
 diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
 index 75c272f..110d450 100644
 --- a/Source/Windows/ARM64EC/Module.cpp
@@ -268,10 +317,10 @@ index 75c272f..110d450 100644
  
 diff --git a/FEX/Source/Windows/ARM64EC/SousPages.h b/Source/Windows/ARM64EC/SousPages.h
 new file mode 100644
-index 0000000..f2b7def
+index 0000000..57e66f0
 --- /dev/null
 +++ b/Source/Windows/ARM64EC/SousPages.h
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,52 @@
 +// SPDX-License-Identifier: MIT
 +/*
 + * Cidre : acces du code JIT aux pages d'hote mixtes, sans signal.
@@ -287,6 +336,13 @@ index 0000000..f2b7def
 + * d'executer l'instruction d'origine. Sinon l'instruction s'execute telle
 + * quelle : une page vraiment fermee fait faute au meme endroit et la violation
 + * d'acces de l'invite reste exacte (FixupStubFault).
++ *
++ * Chemin rapide : pour les formes dont l'adresse tient en une instruction, le
++ * talon consulte d'abord un cache par site (SousPagesRapide, Module.S, ~3 ns
++ * contre ~14) ; le post-indexe s'execute sur [x16] puis Rn avance a part. Une
++ * faute dans le chemin rapide n'est ramenee au site que si le talon est encore
++ * en place : un tampon de code recycle met d'autre code a la meme adresse.
++ * CIDRE_SP8_FAMILLES restreint les familles admises (0 : chemin lent seul).
 + */
 +#pragma once
 +
@@ -319,10 +375,10 @@ index 0000000..f2b7def
 +} // namespace FEX::Windows::SousPages
 diff --git a/FEX/Source/Windows/ARM64EC/SousPages.cpp b/Source/Windows/ARM64EC/SousPages.cpp
 new file mode 100644
-index 0000000..4bf3734
+index 0000000..1534470
 --- /dev/null
 +++ b/Source/Windows/ARM64EC/SousPages.cpp
-@@ -0,0 +1,690 @@
+@@ -0,0 +1,915 @@
 +// SPDX-License-Identifier: MIT
 +// Cidre : acces du code JIT aux pages d'hote mixtes, sans signal. Voir SousPages.h.
 +#include "SousPages.h"
@@ -331,6 +387,7 @@ index 0000000..4bf3734
 +#include <FEXCore/Utils/LogManager.h>
 +
 +#include <atomic>
++#include <cstddef>
 +#include <mutex>
 +#include <FEXCore/fextl/unordered_map.h>
 +#include <cstdlib>
@@ -345,7 +402,10 @@ index 0000000..4bf3734
 +extern "C" {
 +// Module.S : sauvegarde tout, appelle SousPagesAide, rend la main au talon.
 +extern void* SousPagesCommun;
++extern void* SousPagesRapide;
 +uint64_t SousPagesAide(void* Site, uint64_t* Trame);
++// Lu par SousPagesRapide (Module.S) : adresse de la generation de Wine.
++const volatile uint32_t* SousPagesGen;
 +}
 +
 +namespace FEX::Windows::SousPages {
@@ -394,7 +454,21 @@ index 0000000..4bf3734
 +  // --- Sites reecrits -------------------------------------------------------
 +  enum : uint8_t { MODE_BASE, MODE_IMM, MODE_REG, MODE_ZVA };
 +
++  // Cache du chemin rapide, en tete de Site (decalages lus par SousPagesRapide, Module.S) : la page d'hote
++  // du dernier acces permis, la generation de Wine d'alors, le decalage vers l'alias, les sous-pages
++  // permises pour la nature de l'acces. Seq impair pendant une ecriture (un seul ecrivain, par CAS).
++  struct Rapide {
++    uint32_t Seq;      // 0
++    uint32_t Gen;      // 4
++    uint64_t Hote;     // 8
++    uint64_t Delta;    // 16
++    uint32_t Masque;   // 24
++    uint32_t TailleM1; // 28
++  };
++  static_assert(sizeof(Rapide) == 32);
++
 +  struct Site {
++    Rapide R;         // en tete : SousPagesRapide le lit a Site+0
 +    uint64_t Pc;      // instruction reecrite
 +    uint64_t FaultPc; // sa copie dans le talon
 +    uint32_t Insn;
@@ -405,7 +479,12 @@ index 0000000..4bf3734
 +    uint64_t Talon;   // adresse du talon
 +    uint32_t Saut;    // `b talon`, ecrit a Pc
 +    uint32_t Normaux; // acces consecutifs hors page mixte (atomic_ref)
++    uint64_t FastPc;  // copie de l'instruction dans le chemin rapide (0 : pas de chemin rapide)
++    uint32_t TailleTalonEffective;
++    uint8_t PostIndexe; // chemin rapide sur [x16] puis avancee de Rn a part : Rn ne vaut jamais l'alias
++    uint32_t InsnRapide; // mot a FastPc : sert a reconnaitre un talon rapide encore en place
 +  };
++  static_assert(offsetof(Site, R) == 0);
 +
 +  // Au-dela, le site ne voit plus de page mixte : l'instruction d'origine est
 +  // remise (0,6 ns au lieu de ~23 par acces) et Wine pourra la reproposer.
@@ -684,6 +763,81 @@ index 0000000..4bf3734
 +  //  T+48  Site*
 +  //  T+56  SousPagesCommun
 +  constexpr size_t TailleTalon = 64;
++  // Talon avec chemin rapide :
++  //  T+0   sub sp, sp, #32 ; stp x16, x17, [sp] ; str x30, [sp, #16]
++  //  T+12  x16 = adresse effective (une instruction selon la forme)
++  //  T+16  ldr x17, Site* ; ldr x30, SousPagesRapide ; blr x30   -> x17 = decalage, ou 0
++  //  T+28  cbz x17, lent
++  //  T+32  add Rn, Rn, x17 ; str x17, [sp, #24] ; ldr x30, [sp, #16] ; ldp x16, x17, [sp]
++  //  T+48  <instruction d'origine>       faute ramenee a Pc (FixupStubFault)
++  //  T+52  str x16, [sp] ; ldr x16, [sp, #24] ; sub Rn, Rn, x16 (nop si chargee) ; ldr x16, [sp]
++  //  T+68  add sp, sp, #32 ; b Pc+4
++  //  T+76  lent : ldr x30, [sp, #16] ; ldp x16, x17, [sp] ; add sp, sp, #32
++  //  T+88  talon lent ci-dessous (64 octets, inchange)
++  //  T+152 Site* ; T+160 SousPagesRapide
++  constexpr size_t TailleTalonRapide = 176;
++  std::mutex RapidesVerrou;
++  fextl::unordered_map<uint64_t, Site*> RapidesParFaute;
++
++  // Familles admises au chemin rapide (CIDRE_SP8_FAMILLES, masque, defaut 0x1ff = toutes ; 0 = chemin lent
++  // seul, comme 0211 v2). Servi a la bissection du defaut de sp8 (entree perimee de RapidesParFaute, voir
++  // FixupStubFault). 0x1 lecture entiere simple (immediat), 0x2 ecriture entiere simple (immediat), 0x4 forme
++  // registre, 0x8 paires entieres, 0x10 SIMD/FP (simple, paire, LD1/ST1), 0x20 ordonnees/LSE/CAS, 0x40 registre
++  // simple pre-indexe, 0x80 registre simple post-indexe, 0x100 le reste.
++  uint32_t FamillesRapides = 0x1ff;
++  std::atomic<uint32_t> VusParFamille[9];
++  uint32_t Famille(uint32_t I) {
++    const bool V = (I >> 26) & 1;
++    if ((I & 0x3F000000u) == 0x08000000u || (I & 0x3B200C00u) == 0x19000000u || (I & 0x3B200C00u) == 0x38200000u) {
++      return 0x20;
++    }
++    if ((I & 0xBE000000u) == 0x0C000000u) {
++      return 0x10;
++    }
++    if ((I & 0x3A000000u) == 0x28000000u) {
++      return V ? 0x10 : 0x08;
++    }
++    if ((I & 0x3B000000u) == 0x39000000u || (I & 0x3B200C00u) == 0x38000000u) {
++      return V ? 0x10 : (((I >> 22) & 3) ? 0x01 : 0x02);
++    }
++    if ((I & 0x3B200C00u) == 0x38200800u) {
++      return V ? 0x10 : 0x04;
++    }
++    if ((I & 0x3B200C00u) == 0x38000C00u) {
++      return 0x40;
++    }
++    if ((I & 0x3B200C00u) == 0x38000400u) {
++      return 0x80;
++    }
++    return 0x100;
++  }
++
++  // x16 = adresse effective, sans toucher aux drapeaux ; 0 si la forme n'a pas de chemin rapide (base ou indice
++  // dans x16, x17 ou x30, que le talon utilise ; immediat hors de portee ; DC ZVA).
++  uint32_t InstructionAdresse(const Site& S) {
++    const uint32_t Rn = S.Rn;
++    if (Rn == 16 || Rn == 17 || Rn == 30 || Rn == 31) {
++      return 0;
++    }
++    switch (S.Mode) {
++    case MODE_BASE: return 0xaa0003f0u | (Rn << 16); // mov x16, Rn
++    case MODE_IMM:
++      if (S.Imm >= 0 && S.Imm < 4096) {
++        return 0x91000010u | (static_cast<uint32_t>(S.Imm) << 10) | (Rn << 5); // add x16, Rn, #imm
++      }
++      if (S.Imm < 0 && -S.Imm < 4096) {
++        return 0xd1000010u | (static_cast<uint32_t>(-S.Imm) << 10) | (Rn << 5); // sub x16, Rn, #imm
++      }
++      return 0;
++    case MODE_REG:
++      if (S.Rm == 16 || S.Rm == 17 || S.Rm == 30 || S.Shift > 4) {
++        return 0;
++      }
++      return 0x8b200010u | (static_cast<uint32_t>(S.Rm) << 16) | (static_cast<uint32_t>(S.Option) << 13) |
++             (static_cast<uint32_t>(S.Shift) << 10) | (Rn << 5); // add x16, Rn, Rm, <ext> #shift
++    default: return 0;
++    }
++  }
 +  constexpr uint32_t STP_X16_X30_PRE = 0xa9bf7bf0u;
 +  constexpr uint32_t BLR_X30 = 0xd63f03c0u;
 +  constexpr uint32_t LDR_X30_SP_8 = 0xf94007feu;
@@ -768,6 +922,10 @@ index 0000000..4bf3734
 +void Init(HMODULE NtDll, bool CodeCaching) {
 +  const char* Env = getenv("CIDRE_DIAG_SOUS_PAGES");
 +  Diag = Env && *Env && *Env != '0';
++  if (const char* F = getenv("CIDRE_SP8_FAMILLES"); F && *F) {
++    FamillesRapides = static_cast<uint32_t>(strtoul(F, nullptr, 0));
++    LogMan::Msg::IFmt("sous-pages : chemin rapide limite aux familles {:#x}", FamillesRapides);
++  }
 +  if (CodeCaching) {
 +    // Le cache de code sur disque garderait le saut vers un talon disparu.
 +    LogMan::Msg::IFmt("sous-pages : cache de code actif, reecriture coupee");
@@ -793,6 +951,7 @@ index 0000000..4bf3734
 +    return;
 +  }
 +  Generation = reinterpret_cast<const volatile uint32_t*>(P.GenPtr);
++  SousPagesGen = Generation;
 +  CodeProposition = P.Code;
 +  Actif = true;
 +  if (Diag) {
@@ -843,8 +1002,9 @@ index 0000000..4bf3734
 +      // Le talon peut etre dans un tampon de code deja libere (FEX en a change depuis) : ne le lire, et n'y
 +      // sauter, que s'il est encore dans un tampon projete de ce fil (D2R, manche V1 : faute dans SiteDuTalon
 +      // pendant le traitement de l'exception, processus tue).
-+      const bool TalonVivant = CTX->IsAddressInCodeBuffer(Thread, S->Talon) && CTX->IsAddressInCodeBuffer(Thread, S->Talon + TailleTalon - 1);
-+      if (TalonVivant && S->Insn == Insn && SiteDuTalon(S->FaultPc) == S && T[0] == STP_X16_X30_PRE) {
++      const bool TalonVivant = CTX->IsAddressInCodeBuffer(Thread, S->Talon) &&
++                               CTX->IsAddressInCodeBuffer(Thread, S->Talon + S->TailleTalonEffective - 1);
++      if (TalonVivant && S->Insn == Insn && SiteDuTalon(S->FaultPc) == S && T[0] == (S->FastPc ? 0xd10083ffu : STP_X16_X30_PRE)) {
 +        std::atomic_ref<uint32_t>(S->Normaux).store(0, std::memory_order_relaxed);
 +        uint32_t Attendu = Insn;
 +        if (std::atomic_ref<uint32_t>(*Code).compare_exchange_strong(Attendu, S->Saut, std::memory_order_release)) {
@@ -865,7 +1025,18 @@ index 0000000..4bf3734
 +    Refuser(Pc, Insn);
 +    return;
 +  }
-+  auto* T = reinterpret_cast<uint32_t*>(CTX->AllocateCodeStub(Thread, Pc, TailleTalon));
++  const uint32_t Fam = Famille(Insn);
++  const bool PostIdx = Fam == 0x80;
++  const bool RtLibre = (Insn >> 26 & 1) || ((Insn & 31) != 16 && (Insn & 31) != 17 && (Insn & 31) != 30);
++  const uint32_t Ea = ((FamillesRapides & Fam) && (!PostIdx || RtLibre)) ? InstructionAdresse(D) : 0;
++  if (Ea && Diag) {
++    const uint32_t K = __builtin_ctz(Fam);
++    if (VusParFamille[K].fetch_add(1, std::memory_order_relaxed) < 8) {
++      LogMan::Msg::IFmt("sous-pages : chemin rapide famille {:#x} : {:08x} a {:#x}", Fam, Insn, Pc);
++    }
++  }
++  const size_t Taille = Ea ? TailleTalonRapide : TailleTalon;
++  auto* T = reinterpret_cast<uint32_t*>(CTX->AllocateCodeStub(Thread, Pc, Taille));
 +  if (!T) {
 +    Compter(NbRefuses, "pas de place pour un talon");
 +    Refuser(Pc, Insn);
@@ -874,10 +1045,61 @@ index 0000000..4bf3734
 +  auto* S = new Site(D);
 +  S->Pc = Pc;
 +  S->Insn = Insn;
++  S->R.TailleM1 = S->Taille - 1;
++  S->PostIndexe = Ea && PostIdx;
++  S->TailleTalonEffective = Taille;
++  const uint32_t Rn = S->Rn;
++  uint32_t* const Debut = T;
++  if (Ea) {
++    T[0] = 0xd10083ffu; // sub sp, sp, #32
++    T[1] = 0xa90047f0u; // stp x16, x17, [sp]
++    T[2] = 0xf9000bfeu; // str x30, [sp, #16]
++    T[3] = Ea;
++    T[4] = 0x58000000u | (34u << 5) | 17; // ldr x17, T+152
++    T[5] = 0x58000000u | (35u << 5) | 30; // ldr x30, T+160
++    T[6] = BLR_X30;
++    T[7] = 0xb4000000u | (12u << 5) | 17;                  // cbz x17, T+76
++    if (S->PostIndexe) {
++      // Post-indexe (ldr w12, [x11], #4...) : l'acces se fait sur x16 = Rn + decalage, sans ecriture en
++      // retour, puis Rn avance a part. Rn ne contient jamais que des adresses invitees ; une faute sur
++      // l'acces (T+48) laisse Rn intact (FixupStubFault remet x16).
++      const int64_t Pas = S->Imm;
++      T[8] = 0x8b000000u | (17u << 16) | (16u << 5) | 16;   // add x16, x16, x17
++      T[9] = 0xf9000ff1u;                                    // str x17, [sp, #24]
++      T[10] = 0xf9400bfeu;                                   // ldr x30, [sp, #16]
++      T[11] = 0xf94007f1u;                                   // ldr x17, [sp, #8]
++      T[12] = (Insn & ~((0x1ffu << 12) | (3u << 10) | (31u << 5))) | (16u << 5); // meme acces, [x16], sans avancee
++      T[13] = 0xf94003f0u;                                   // ldr x16, [sp]
++      T[14] = Pas >= 0 ? (0x91000000u | (static_cast<uint32_t>(Pas) << 10) | (Rn << 5) | Rn)   // add Rn, Rn, #pas
++                       : (0xd1000000u | (static_cast<uint32_t>(-Pas) << 10) | (Rn << 5) | Rn); // sub Rn, Rn, #pas
++      T[15] = NOP;
++      T[16] = NOP;
++    } else {
++      T[8] = 0x8b000000u | (17u << 16) | (Rn << 5) | Rn;     // add Rn, Rn, x17
++      T[9] = 0xf9000ff1u;                                    // str x17, [sp, #24]
++      T[10] = 0xf9400bfeu;                                   // ldr x30, [sp, #16]
++      T[11] = 0xa94047f0u;                                   // ldp x16, x17, [sp]
++      T[12] = Insn;
++      T[13] = 0xf90003f0u;                                   // str x16, [sp]
++      T[14] = 0xf9400ff0u;                                   // ldr x16, [sp, #24]
++      T[15] = S->RnDest ? NOP : (0xcb000000u | (16u << 16) | (Rn << 5) | Rn); // sub Rn, Rn, x16
++      T[16] = 0xf94003f0u;                                   // ldr x16, [sp]
++    }
++    T[17] = 0x910083ffu;                                   // add sp, sp, #32
++    const int64_t RetourRapide = static_cast<int64_t>(Pc + 4) - reinterpret_cast<int64_t>(&T[18]);
++    T[18] = 0x14000000u | ((static_cast<uint64_t>(RetourRapide) >> 2) & 0x3ffffff);
++    T[19] = 0xf9400bfeu;                                   // ldr x30, [sp, #16]
++    T[20] = 0xa94047f0u;                                   // ldp x16, x17, [sp]
++    T[21] = 0x910083ffu;                                   // add sp, sp, #32
++    *reinterpret_cast<uint64_t*>(&T[38]) = reinterpret_cast<uint64_t>(S);
++    *reinterpret_cast<uint64_t*>(&T[40]) = reinterpret_cast<uint64_t>(&SousPagesRapide);
++    S->FastPc = reinterpret_cast<uint64_t>(&T[12]);
++    S->InsnRapide = T[12];
++    T += 22; // talon lent a la suite
++  }
 +  S->FaultPc = reinterpret_cast<uint64_t>(&T[5]);
 +
 +  const uint32_t Sc = S->Rn == 16 ? 17 : 16;
-+  const uint32_t Rn = S->Rn;
 +  T[0] = STP_X16_X30_PRE;
 +  T[1] = 0x58000000u | ((44 / 4) << 5) | 16; // ldr x16, T+48
 +  T[2] = 0x58000000u | ((48 / 4) << 5) | 30; // ldr x30, T+56
@@ -893,7 +1115,12 @@ index 0000000..4bf3734
 +  T[11] = 0x14000000u | ((static_cast<uint64_t>(Retour) >> 2) & 0x3ffffff);
 +  *reinterpret_cast<uint64_t*>(&T[12]) = reinterpret_cast<uint64_t>(S);
 +  *reinterpret_cast<uint64_t*>(&T[14]) = reinterpret_cast<uint64_t>(&SousPagesCommun);
-+  ClearICache(T, TailleTalon);
++  T = Debut;
++  ClearICache(T, Taille);
++  if (S->FastPc) {
++    std::scoped_lock Lock(RapidesVerrou);
++    RapidesParFaute[S->FastPc] = S;
++  }
 +
 +  const int64_t Aller = reinterpret_cast<int64_t>(T) - static_cast<int64_t>(Pc);
 +  const uint32_t Saut = 0x14000000u | ((static_cast<uint64_t>(Aller) >> 2) & 0x3ffffff);
@@ -920,7 +1147,47 @@ index 0000000..4bf3734
 +  if (!Actif || (Context->Pc & 3)) {
 +    return false;
 +  }
-+  auto* S = SiteDuTalon(Context->Pc);
++  Site* S = nullptr;
++  {
++    std::scoped_lock Lock(RapidesVerrou);
++    auto It = RapidesParFaute.find(Context->Pc);
++    if (It != RapidesParFaute.end()) {
++      S = It->second;
++    }
++  }
++  if (S) {
++    // L'entree peut etre perimee : tampon de code vide puis reutilise, une autre traduction a cette adresse (D2R :
++    // un ldar desaligne d'un bloc neuf pris pour une faute du talon, Pc ramene a l'ancien site, instruction
++    // d'origine remise, desalignement rendu a l'invite). Le talon est reconnu a son acces (Pc) et a son
++    // cbz x17 (Pc - 20), deux mots dans la plage deja verifiee par l'appelant.
++    const auto* W = reinterpret_cast<const uint32_t*>(Context->Pc);
++    if (W[0] != S->InsnRapide || W[-5] != (0xb4000000u | (12u << 5) | 17)) {
++      std::scoped_lock Lock(RapidesVerrou);
++      RapidesParFaute.erase(Context->Pc);
++      Compter(NbFautes, "entree de talon rapide perimee, oubliee");
++      S = nullptr;
++    }
++  }
++  if (S) {
++    // Faute dans le chemin rapide : x16, x17, x30 y sont deja restaures ; [sp+24] = decalage.
++    const uint64_t SpR = Context->Sp;
++    const uint64_t DeltaR = *reinterpret_cast<const uint64_t*>(SpR + 24);
++    Context->Pc = S->Pc;
++    Context->Sp = SpR + 32;
++    if (S->PostIndexe) {
++      Context->X[16] = *reinterpret_cast<const uint64_t*>(SpR); // x16 portait l'adresse de l'alias ; Rn intact
++    } else if (DeltaR) {
++      Context->X[S->Rn] -= DeltaR;
++    }
++    if (Unpatch) {
++      auto* Code = reinterpret_cast<uint32_t*>(S->Pc);
++      std::atomic_ref<uint32_t>(*Code).store(S->Insn, std::memory_order_release);
++      ClearICache(Code, 4);
++    }
++    Compter(NbFautes, Unpatch ? "faute dans un talon rapide, instruction remise" : "faute dans un talon rapide");
++    return true;
++  }
++  S = SiteDuTalon(Context->Pc);
 +  if (!S) {
 +    return false;
 +  }
@@ -1010,6 +1277,20 @@ index 0000000..4bf3734
 +    std::atomic_ref<uint32_t>(const_cast<Site*>(S)->Normaux).store(0, std::memory_order_relaxed);
 +  }
 +  const uint64_t Delta = E.Alias - Hote;
++  if (S->FastPc) {
++    // Remplit le cache du chemin rapide (un seul ecrivain : CAS sur Seq pair -> impair).
++    auto* SM = const_cast<Site*>(S);
++    std::atomic_ref<uint32_t> Seq(SM->R.Seq);
++    uint32_t Sq = Seq.load(std::memory_order_relaxed);
++    if (!(Sq & 1) && Seq.compare_exchange_strong(Sq, Sq + 1, std::memory_order_acquire)) {
++      std::atomic_thread_fence(std::memory_order_release);
++      SM->R.Gen = E.Gen;
++      SM->R.Hote = Hote;
++      SM->R.Delta = Delta;
++      SM->R.Masque = (S->Lecture && S->Ecriture) ? (E.Lecture & E.Ecriture) : (S->Ecriture ? E.Ecriture : E.Lecture);
++      Seq.store(Sq + 2, std::memory_order_release);
++    }
++  }
 +  Trame[S->Rn] = Base + Delta;
 +  return Delta;
 +}
