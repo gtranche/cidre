@@ -774,7 +774,8 @@ d'écrire (`tests/deviner_saves.sh`).
 cidre profils                 # la base (cache ou copie livrée) : appid, nom, état, date
 cidre profils --json
 cidre profils maj             # l'archive de la base (une requête), sinon l'index puis les fiches depuis GitHub main
-cidre info <appid> --json     # ... "fiche": {"jeu":{}, "cidre":{}, "compat":{}, "protondb":{}|null, "reglages_jeu":[{fichier, format, section, valeurs}], "variantes":["si …"],
+cidre info <appid> --json     # ... "fiche": {"jeu":{}, "cidre":{}, "compat":{}, "protondb":{}|null, "pcgamingwiki":{}|null,
+                              #               "applegamingwiki":{}|null, "crossover":{}|null, "jeu_sources":{}, "reglages_jeu":[{fichier, format, section, valeurs}], "variantes":["si …"],
                               #               "compat_reference":{}, "compat_machines":[{nom, si, voie, etat, …, applique}], "origine": "cache|livree|provisoire", "rapports": n}
 sh tests/fiche_profil.sh <commande> ...   # chemin, plat, json, reglages, compat, variantes, index, generer-index, maj, provisoire
 sh tests/machine.sh [json [fait…] | si "<condition>"]   # les faits de la machine, une condition
@@ -859,6 +860,32 @@ renouvelés chaque mois) ; l'archive fait 4,9 Mo. `maj` par l'archive : 6 s
 avec un cache vide, 10 s sinon, plus le téléchargement ; une à une, il
 faudrait ~0,3 s par fiche de réseau (plus de deux heures) et l'index relu
 pour chacune.
+
+### Ce que le catalogue change au lancement
+
+Presque rien, et c'est voulu : les blocs importés (`[compat.protondb]`,
+`[compat.pcgamingwiki]`, `[compat.applegamingwiki]`, `[compat.crossover]`) et
+la provenance (`[jeu.sources]`) sont **pour information**. `cidre info <appid>
+--json` les rend tels quels (`"protondb"`, `"pcgamingwiki"`,
+`"applegamingwiki"`, `"crossover"`, `null` si la fiche n'en a pas, et
+`"jeu_sources"`) ; Verger les montre dans la fiche du jeu (anti-triche en
+clair, le reste sous « Ce qu'en disent d'autres sources »), sans rien régler.
+Le lanceur, lui, ne lit que `[cidre]`, que l'import du catalogue ne touche
+pas (les recettes CrossOver n'y entrent que pour les fiches du dépôt, relues
+avant commit), et deux familles de valeurs de `[jeu]` :
+
+- `moteur`, `anticheat`, `api`, `etat`, `source`, rendus à plat dans le profil
+  pour le journal et l'explication d'une sortie (`tests/expliquer_sortie.sh`) :
+  ils ne règlent rien ;
+- `api_disponibles = "d3d12"` seul (PCGamingWiki) : `dx12 = true` par défaut,
+  faute de quoi le jeu ne démarrerait pas (le d3d12 intégré à Wine échoue sur
+  KosmicKrisp) ; tout choix explicite passe devant (voir `profil_cidre.sh`).
+
+Une valeur importée qui devrait régler le lancement (une option ProtonDB, une
+DLL forcée par CrossOver, un `[reglages_jeu]` d'après PCGamingWiki) passe par
+un essai, puis par la fiche du dépôt, à la main ou `source = "cidre-test"`.
+`tests/tester_profils.sh` vérifie qu'une fiche du catalogue qui n'a que des
+blocs importés donne les options d'un jeu sans fiche.
 
 ## Fiche provisoire
 

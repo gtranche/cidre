@@ -183,6 +183,62 @@ verif "api_disponibles d3d12 + [jeu] api = d3d11 : pas de dx12" "false" "$(api12
 verif "api_disponibles d3d12 + [jeu] api = vulkan : pas de dx12" "false" "$(api12 'api = "vulkan"\n' '')"
 verif "api_disponibles d3d12 + [cidre] dx12 = false : pas de dx12" "false" "$(api12 '' 'dx12 = false\n')"
 verif "api_disponibles d3d12 + api = d3d11 + dx12 = true : dx12" "true" "$(api12 'api = "d3d11"\n' 'dx12 = true\n')"
+
+# Une fiche du catalogue qui ne porte que des blocs importes (ProtonDB, PCGamingWiki,
+# AppleGamingWiki, CrossOver) et un [jeu] importe : `json` les rend pour Verger,
+# mais les options de lancement sont celles d un jeu sans fiche (hors moteur,
+# anticheat, api, etat et source, rendus a plat pour le journal, qui ne reglent rien).
+cat >"$CIDRE_PROFILS_BASE/424245.toml" <<'FICHE'
+[jeu]
+appid = 424245
+nom = "Jeu importe"
+moteur = "unreal"
+api = "d3d11"
+api_disponibles = "d3d11 d3d12"
+bits = 64
+anticheat = "eac"
+drm = "steam"
+[jeu.sources]
+moteur = "pcgamingwiki 2026-10-15"
+anticheat = "pcgamingwiki 2026-10-15"
+[compat]
+etat = "non-teste"
+date = "2026-10-15"
+[compat.protondb]
+palier = "gold"
+options_lancement_1 = "PROTON_USE_WINED3D=1 %command% (x9)"
+source = "protondb"
+date = "2026-10-01"
+[compat.pcgamingwiki]
+fichiers_reglages = "AppData/Local/Jeu/Saved/Config/Windows/GameUserSettings.ini"
+source = "pcgamingwiki"
+date = "2026-10-15"
+url = "https://www.pcgamingwiki.com/wiki/Jeu"
+[compat.applegamingwiki]
+crossover = "jouable"
+wine = "ko"
+source = "applegamingwiki"
+date = "2026-10-15"
+[compat.crossover]
+recette = "com.codeweavers.c4.1"
+bouteille = "win7_64"
+graphismes = "dxvk"
+dll_overrides = "xaudio2_7=n"
+environnement = "WINEESYNC=1"
+source = "crossover"
+date = "2026-10-13"
+FICHE
+J=$(sh "$R/tests/fiche_profil.sh" json 424245)
+verif "importe : json pcgamingwiki" '"pcgamingwiki":{"fichiers_reglages":"AppData/Local/Jeu/Saved/Config/Windows/GameUserSettings.ini","source":"pcgamingwiki","date":"2026-10-15","url":"https://www.pcgamingwiki.com/wiki/Jeu"}' "$(printf '%s' "$J" | grep -o '"pcgamingwiki":{[^}]*}')"
+verif "importe : json applegamingwiki" '"applegamingwiki":{"crossover":"jouable","wine":"ko","source":"applegamingwiki","date":"2026-10-15"}' "$(printf '%s' "$J" | grep -o '"applegamingwiki":{[^}]*}')"
+verif "importe : json crossover (graphismes)" '"graphismes":"dxvk"' "$(printf '%s' "$J" | grep -o '"crossover":{[^}]*}' | grep -o '"graphismes":"dxvk"')"
+verif "importe : json jeu_sources" '"jeu_sources":{"moteur":"pcgamingwiki 2026-10-15","anticheat":"pcgamingwiki 2026-10-15"}' "$(printf '%s' "$J" | grep -o '"jeu_sources":{[^}]*}')"
+verif "importe : json valide" "ok" "$(printf '%s' "$J" | python3 -I -c 'import json,sys; json.load(sys.stdin); print("ok")' 2>&1)"
+verif "999 sans blocs importes : null" '"pcgamingwiki":null,"applegamingwiki":null,"crossover":null,"jeu_sources":{}' \
+   "$(sh "$R/tests/fiche_profil.sh" json 999 | grep -o '"pcgamingwiki":null,"applegamingwiki":null,"crossover":null,"jeu_sources":{}')"
+sans_info() { resoudre "$1" | grep -Ev '^(moteur|anticheat|api|api_disponibles|etat|source)='; }
+verif "importe : options de lancement = jeu sans fiche" "$(sans_info 998)" "$(sans_info 424245)"
+verif "importe : dll_overrides de [compat.crossover] non appliquees" "" "$(valeur 424245 dll_overrides)"
 printf '[defaut]\nd3d11 = "dxvk"\n' >"$CIDRE_PROFILS"
 verif "d3d11 du [defaut] utilisateur : pas un choix pour ce jeu, dx12" "true" "$(api12 '' '')"
 printf '[424244]\nd3d11 = "dxmt"\n' >"$CIDRE_PROFILS"

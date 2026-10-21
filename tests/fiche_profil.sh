@@ -7,7 +7,8 @@
 #   fiche_profil.sh plat <appid>            les options de lancement de la fiche, en lignes TOML `cle = valeur`
 #                                           ([cidre], plus moteur/anticheat de [jeu] et etat/source de [compat])
 #   fiche_profil.sh json <appid>            la fiche en JSON : {"jeu":{},"cidre":{},"compat":{},"protondb":{}|null,
-#                                           "reglages_jeu":[...],"variantes":[...],"compat_reference":{},"compat_machines":[...],
+#                                           "pcgamingwiki":{}|null,"applegamingwiki":{}|null,"crossover":{}|null,
+#                                           "jeu_sources":{},"reglages_jeu":[...],"variantes":[...],"compat_reference":{},"compat_machines":[...],
 #                                           "origine":"cache|livree|provisoire","rapports":n} ; "compat" est celle de CETTE machine
 #   fiche_profil.sh reglages <appid>        [reglages_jeu] en lignes TAB, une entree (section INI visee) par numero :
 #                                           `n TAB fichier|format|section|id|creer TAB val`, puis `n TAB valeur TAB cle TAB val`
@@ -391,6 +392,13 @@ case $CMD in
       # le resume ProtonDB importe ([compat.protondb]), ou null
       if LC_ALL=C grep -q '^compat\.protondb	' "$P"; then printf '"protondb":%s,' "$(objet_json "$P" compat.protondb)"
       else printf '"protondb":null,'; fi
+      # les autres blocs importes, pour information (le lanceur ne les lit pas), ou
+      # null ; "jeu_sources" : la provenance des cles de [jeu] ([jeu.sources])
+      for b in pcgamingwiki applegamingwiki crossover; do
+         if LC_ALL=C grep -q "^compat\.$b	" "$P"; then printf '"%s":%s,' "$b" "$(objet_json "$P" "compat.$b")"
+         else printf '"%s":null,' "$b"; fi
+      done
+      printf '"jeu_sources":%s,' "$(objet_json "$P" jeu.sources)"
       # "reglages_jeu" : toujours un tableau, une entree par section visee ([reglages_jeu]
       # simple = une entree ; [[reglages_jeu]] = une par element), vide s il n y en a pas
       printf '"reglages_jeu":['; sep=""
