@@ -1,0 +1,122 @@
+Generated-by: LLM
+
+KosmicKrisp : resultats des requetes d'occlusion cumules entre encodeurs de rendu (MTLVisibilityResultTypeAccumulate) (0222) -- le descripteur de passe MTL4 gardait visibilityResultType par defaut (Reset) : Metal remet a zero les resultats de visibilite a la creation de chaque encodeur de rendu, y compris ceux de requetes deja finies dans une passe precedente et pas encore relues. Detroit: Become Human (1222140, iMac M4, v1.5.18 + 0220) : un policier SWAT disparait par moments derriere l'encadrement d'une porte (corps, casque et lampe ; son fusil, objet a part, reste) -- test d'occlusion du jeu qui repond « invisible ». Manches du 21/10 avec l'utilisateur dans la meme scene : Accumulate (S1, 9 min) policier toujours visible ; Reset (S2, CIDRE_OCCLUSION_CUMULEE=0) il disparait de nouveau ; compteur CIDRE_DIAG_OCCLUSION : 5 100 requetes, aucune a cheval sur deux encodeurs (le defaut ne vient pas d'une requete coupee par une decoupe de passe). Vulkan remet les requetes a zero par vkCmdResetQueryPool / vkResetQueryPool, que KosmicKrisp fait deja lui-meme (emit_zero_queries, host_zero_queries) : cumuler est la semantique de Vulkan. CIDRE_OCCLUSION_CUMULEE=0 revient a Reset. CIDRE_DIAG_OCCLUSION=1 ecrit toutes les 100 requetes « [CIDRE_OCCLUSION] n requetes, k a cheval sur plusieurs encodeurs » (encodeurs ouverts entre le debut et la fin de chaque requete). Fichiers neutres pour la cle de code (pont Metal, kk_query_pool.c) : le cache de pipelines est garde.
+
+--- a/src/kosmickrisp/bridge/mtl_render_state.m
++++ b/src/kosmickrisp/bridge/mtl_render_state.m
+@@ -15,6 +15,8 @@
+ #include "vulkan/vulkan.h"
+ 
+ #include <Metal/MTL4RenderPass.h>
++#include <stdlib.h>
++#include <string.h>
+ #include <Metal/MTLDepthStencil.h>
+ 
+ /* Render pass descriptor */
+@@ -267,6 +269,23 @@
+       MTL4RenderPassDescriptor *desc = (MTL4RenderPassDescriptor *)descriptor;
+       id<MTLBuffer> buffer = (id<MTLBuffer>)visibility_buffer;
+       desc.visibilityResultBuffer = buffer;
++      /* Cidre : par defaut (Reset), Metal remet a zero les resultats de
++       * visibilite a la creation de chaque encodeur de rendu, y compris ceux
++       * de requetes deja finies dans une passe precedente et pas encore relues
++       * par le jeu. Detroit: Become Human (M4, 21/10) : un policier SWAT
++       * disparait par moments, son arme reste ; 5 100 requetes, aucune a
++       * cheval sur deux encodeurs (CIDRE_DIAG_OCCLUSION), et le defaut suit le
++       * seul mode (Accumulate : visible ; Reset : disparait). Vulkan remet les
++       * requetes a zero par vkCmdResetQueryPool / vkResetQueryPool, que KK
++       * fait lui-meme (emit_zero_queries, host_zero_queries) : on cumule.
++       * CIDRE_OCCLUSION_CUMULEE=0 revient au comportement de Metal. */
++      static int cumul = -1;
++      if (cumul < 0) {
++         const char *v = getenv("CIDRE_OCCLUSION_CUMULEE");
++         cumul = !(v && !strcmp(v, "0"));
++      }
++      desc.visibilityResultType = cumul ? MTLVisibilityResultTypeAccumulate
++                                        : MTLVisibilityResultTypeReset;
+    }
+ }
+ 
+--- a/src/kosmickrisp/vulkan/kk_query_pool.c
++++ b/src/kosmickrisp/vulkan/kk_query_pool.c
+@@ -20,6 +20,12 @@
+ #include "kk_query_table.h"
+ 
+ #include "kosmickrisp/bridge/mtl_bridge.h"
++
++#include "util/u_atomic.h"
++
++#include <inttypes.h>
++#include <stdio.h>
++#include <stdlib.h>
+ 
+ struct kk_query_report {
+    uint64_t value;
+@@ -582,14 +588,58 @@
+    kk_cmd_write(cmd, (struct libkk_imm_write){q->available_addr, true});
+ 
+    q->active = false;
++}
++
++/* CIDRE_DIAG_OCCLUSION : compte les requetes d'occlusion dont la fin tombe dans
++ * un autre encodeur de rendu que le debut (passe decoupee pendant la requete). */
++static bool
++kk_diag_occlusion_enabled(void)
++{
++   static int enabled = -1;
++   if (enabled < 0)
++      enabled = getenv("CIDRE_DIAG_OCCLUSION") != NULL;
++   return enabled;
++}
++
++static _Thread_local const struct kk_cmd_buffer *kk_diag_oq_cmd;
++static _Thread_local uint32_t kk_diag_oq_encodeurs;
++static _Thread_local bool kk_diag_oq_sans_encodeur;
++static uint64_t kk_diag_oq_total, kk_diag_oq_a_cheval;
++
++static void
++kk_diag_occlusion_debut(const struct kk_cmd_buffer *cmd)
++{
++   kk_diag_oq_cmd = cmd;
++   kk_diag_oq_encodeurs = cmd->metal.encoders_in_cmd_buf;
++   kk_diag_oq_sans_encodeur = cmd->metal.render == NULL;
+ }
+ 
++static void
++kk_diag_occlusion_fin(const struct kk_cmd_buffer *cmd)
++{
++   uint64_t n = p_atomic_inc_return(&kk_diag_oq_total);
++   if (kk_diag_oq_cmd == cmd) {
++      uint32_t fin = cmd->metal.encoders_in_cmd_buf;
++      uint32_t ouverts = kk_diag_oq_sans_encodeur ? 1u : 0u;
++      if (fin < kk_diag_oq_encodeurs || fin - kk_diag_oq_encodeurs > ouverts)
++         p_atomic_inc(&kk_diag_oq_a_cheval);
++   }
++   kk_diag_oq_cmd = NULL;
++   if (n == 1 || n % 100 == 0)
++      fprintf(stderr,
++              "[CIDRE_OCCLUSION] %" PRIu64 " requetes, %" PRIu64
++              " a cheval sur plusieurs encodeurs\n",
++              n, p_atomic_read(&kk_diag_oq_a_cheval));
++}
++
+ VKAPI_ATTR void VKAPI_CALL
+ kk_CmdBeginQuery(VkCommandBuffer commandBuffer, VkQueryPool queryPool,
+                  uint32_t query, VkQueryControlFlags flags)
+ {
+    VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
+    VK_FROM_HANDLE(kk_query_pool, pool, queryPool);
++   if (kk_diag_occlusion_enabled())
++      kk_diag_occlusion_debut(cmd);
+    cmd->state.gfx.occlusion.mode = flags & VK_QUERY_CONTROL_PRECISE_BIT
+                                       ? MTL_VISIBILITY_RESULT_MODE_COUNTING
+                                       : MTL_VISIBILITY_RESULT_MODE_BOOLEAN;
+@@ -604,6 +654,8 @@
+ {
+    VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
+    VK_FROM_HANDLE(kk_query_pool, pool, queryPool);
++   if (kk_diag_occlusion_enabled())
++      kk_diag_occlusion_fin(cmd);
+    cmd->state.gfx.occlusion.mode = MTL_VISIBILITY_RESULT_MODE_DISABLED;
+    cmd->state.gfx.dirty |= KK_DIRTY_OCCLUSION;
+ 
