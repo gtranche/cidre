@@ -1,6 +1,8 @@
 # Temoins hors jeu du banc nocturne, passes sur chaque arbre (A puis B) dans un prefixe a part (clone du prefixe
 # en accord de l'arbre). Colonnes separees par des tabulations :
-#   nom  source(tests/)  arguments(- = aucun)  environnement(- | VAR=val | natif)  limite_s
+#   nom  source(tests/)  arguments(- = aucun)  environnement(- | VAR=val | natif)  limite_s  [rare]
+# rare : defaut connu a quelques % des passes, present aussi dans la release installee (h64alerte : 3-7 % des passes en
+# 1.5.18 comme en 1.5.19, 300 passes, 22/10) : rejoue jusqu'a 3 fois, l'echec ne compte que s'il persiste.
 # natif = script de tests/ lance sans Wine avec la dylib KK de l'arbre en dernier argument.
 # CIDRE_SYNC_LOCAL est lu au demarrage du wineserver : le banc le relance quand l'environnement change.
 h64cible_chiffree	h64cible_chiffree.c	-	-	180
@@ -12,9 +14,9 @@ h64sous_page_suspension	h64sous_page_suspension.c	-	-	180
 h64sous_page_talon	h64sous_page_talon.c	-	-	180
 h64sous_page_banc	h64sous_page_banc.c	-	-	300
 h64suspend	h64suspend.c	-	-	180
-h64alerte	h32alerte.c	30 4	-	180
+h64alerte	h32alerte.c	30 4	-	180	rare
 temoin_sync_reveils	temoin_sync_reveils.c	-	CIDRE_SYNC_LOCAL=1	300
-h64alerte-sync	h32alerte.c	30 4	CIDRE_SYNC_LOCAL=1	180
+h64alerte-sync	h32alerte.c	30 4	CIDRE_SYNC_LOCAL=1	180	rare
 h64suspend-sync	h64suspend.c	-	CIDRE_SYNC_LOCAL=1	180
 temoin_cache_serialise	temoin_cache_serialise.sh	150	natif	600
 temoin_cache_taille	temoin_cache_taille.sh	-	natif	600

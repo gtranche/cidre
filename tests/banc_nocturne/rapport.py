@@ -111,6 +111,10 @@ for nom in ordre_t:
             ecarts.append((2, "temoin %s : %s en B (A : %s) -- %s" % (nom, b["statut"], a["statut"], b["resume"])))
     elif b["statut"] not in ("ok", "-"):
         ecarts.append((1, "temoin %s : %s en A et en B -- %s" % (nom, b["statut"], b["resume"])))
+    for t, x in (("A", a), ("B", b)):
+        # temoin rare rejoue : l'echec n'a pas persiste, on le dit sans le compter
+        if x["statut"] == "ok" and x["resume"].startswith("[rare "):
+            ecarts.append((0, "temoin %s : %s ok apres rejeu %s" % (nom, t, x["resume"].split("]")[0] + "]")))
     mes = ""
     if a["mesures"] != "-" or b["mesures"] != "-":
         mes = "%s / %s" % (a["mesures"].strip() or "-", b["mesures"].strip() or "-")

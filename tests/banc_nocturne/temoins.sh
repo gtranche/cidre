@@ -6,6 +6,7 @@
 #   passe les temoins sur l'arbre fantome, dans un prefixe a part (wine/pfx-temoins, clone du prefixe en accord de
 #   l'arbre : jamais pfx-arm64ec lui-meme). Ecrit une ligne TSV par temoin sur stdout :
 #     temoin nom arbre statut duree_s resume mesures
+#   Un temoin marque « rare » dans temoins.tsv est rejoue jusqu'a 3 fois ; ECHEC seulement si les 3 echouent.
 #   statut : ok | ECHEC | BLOQUE | absent | refus. Code 3 = refus (un jeu ou un wineserver tourne).
 set -u
 H=$(cd "$(dirname "$0")" && pwd)
@@ -78,25 +79,38 @@ passer() {
    fi
 
    ENV_PREC=-
-   grep -v '^#' "$LISTE" | while IFS="$TAB" read -r nom src args env lim; do
+   grep -v '^#' "$LISTE" | while IFS="$TAB" read -r nom src args env lim rare; do
       [ -n "$nom" ] || continue
-      log=$J/$nom.log
       [ "$args" = - ] && args=
-      if [ "$env" = natif ]; then
-         # shellcheck disable=SC2086
-         ( unset WINEPREFIX DYLD_LIBRARY_PATH; lancer "$lim" "$log" sh "$S/tests/$src" $args "$S/prefix/lib/libvulkan_kosmickrisp.dylib"; echo "$rc $n" > "$log.rc" )
-         read -r rc n < "$log.rc"
-      else
-         exe=${src%.c}.exe; [ "$src" = h32alerte.c ] && exe=h64alerte.exe
-         if [ ! -f "$P/drive_c/$exe" ]; then printf 'temoin\t%s\t%s\tabsent\t-\t%s non construit\t-\n' "$nom" "$T" "$exe"; continue; fi
-         if [ "$env" != "$ENV_PREC" ]; then "$WS" -k 2>/dev/null; "$WS" -w; ENV_PREC=$env; fi
-         # shellcheck disable=SC2086
-         if [ "$env" = - ]; then lancer "$lim" "$log" "$W" "c:\\$exe" $args
-         else lancer "$lim" "$log" env "$env" "$W" "c:\\$exe" $args; fi
-         [ "$rc" = bloque ] && { "$WS" -k 2>/dev/null; "$WS" -w; }
+      exe=${src%.c}.exe; [ "$src" = h32alerte.c ] && exe=h64alerte.exe
+      if [ "$env" != natif ] && [ ! -f "$P/drive_c/$exe" ]; then
+         printf 'temoin\t%s\t%s\tabsent\t-\t%s non construit\t-\n' "$nom" "$T" "$exe"; continue
       fi
-      v=$(verdict_temoin "$log" "$rc")
-      printf 'temoin\t%s\t%s\t%s\n' "$nom" "$T" "$(echo "$v" | cut -f1)$TAB$n$TAB$(echo "$v" | cut -f2-)"
+      # temoin « rare » (defaut connu a quelques % des passes) : rejoue jusqu'a 3 fois, l'echec ne compte que s'il
+      # persiste ; le resume dit « [rare k/3] » (k echecs) des qu'un essai a echoue
+      essais=1; [ "$rare" = rare ] && essais=3
+      i=0; echecs=0
+      while [ $i -lt $essais ]; do
+         i=$((i + 1))
+         log=$J/$nom.log; [ $i -gt 1 ] && log=$J/$nom.essai$i.log
+         if [ "$env" = natif ]; then
+            # shellcheck disable=SC2086
+            ( unset WINEPREFIX DYLD_LIBRARY_PATH; lancer "$lim" "$log" sh "$S/tests/$src" $args "$S/prefix/lib/libvulkan_kosmickrisp.dylib"; echo "$rc $n" > "$log.rc" )
+            read -r rc n < "$log.rc"
+         else
+            if [ "$env" != "$ENV_PREC" ]; then "$WS" -k 2>/dev/null; "$WS" -w; ENV_PREC=$env; fi
+            # shellcheck disable=SC2086
+            if [ "$env" = - ]; then lancer "$lim" "$log" "$W" "c:\\$exe" $args
+            else lancer "$lim" "$log" env "$env" "$W" "c:\\$exe" $args; fi
+            [ "$rc" = bloque ] && { "$WS" -k 2>/dev/null; "$WS" -w; }
+         fi
+         v=$(verdict_temoin "$log" "$rc")
+         [ "$(echo "$v" | cut -f1)" = ok ] && break
+         echecs=$((echecs + 1))
+      done
+      st=$(echo "$v" | cut -f1); res=$(echo "$v" | cut -f2); mes=$(echo "$v" | cut -f3)
+      [ $essais -gt 1 ] && [ $echecs -gt 0 ] && res="[rare $echecs/$essais] $res"
+      printf 'temoin\t%s\t%s\t%s\t%s\t%s\t%s\n' "$nom" "$T" "$st" "$n" "$res" "$mes"
    done
    "$WS" -k 2>/dev/null; "$WS" -w
 }
