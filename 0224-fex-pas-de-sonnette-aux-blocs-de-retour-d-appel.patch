@@ -1,0 +1,75 @@
+Generated-by: LLM
+
+fex : pas de sonnette de suspension a l entree des blocs de retour d appel -- le fil y arrive par un ret ; la suspension reste vue a la prochaine entree de fonction ou arete arriere (0194). Deux instructions et une lecture de moins par retour : banc appels (fib) 10,7 -> 9,6 ms, 59 -> 66 % de Rosetta, 3 series entrelacees ; indirect +2,6 %. Temoins : h64suspend_appels (3000 suspensions d un fil qui ne fait qu appeler, latence max 0,14 ms), h64sous_page_suspension, h64sous_page_stress. CIDRE_SONNETTE_RETOUR=1 remet la sonnette, pour comparer. S applique apres 0194.
+
+diff --git a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+index 78f3d50..07170c9 100644
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -825,7 +825,7 @@ void Arm64JITCore::EmitSuspendInterruptCheck() {
+ #endif
+ }
+ 
+-void Arm64JITCore::EmitEntryPoint(ARMEmitter::BackwardLabel& HeaderLabel, bool CheckTF) {
++void Arm64JITCore::EmitEntryPoint(ARMEmitter::BackwardLabel& HeaderLabel, bool CheckTF, bool RetourDAppel) {
+   // Get the address of the JITCodeHeader and store in to the core state.
+   // Two instruction cost, each 1 cycle.
+   adr_OrRestart(TMP1, &HeaderLabel);
+@@ -846,7 +846,11 @@ void Arm64JITCore::EmitEntryPoint(ARMEmitter::BackwardLabel& HeaderLabel, bool C
+     }
+   }
+ 
+-  EmitSuspendInterruptCheck();
++  // Cidre 0224 : pas de sonnette a l'entree d'un bloc de retour d'appel. Le fil y arrive par un ret ; la suspension
++  // reste vue a la prochaine entree de fonction ou arete arriere, sans cout a chaque retour.
++  if (!RetourDAppel || CidreSonnetteRetour > 0) {
++    EmitSuspendInterruptCheck();
++  }
+ }
+ 
+ 
+@@ -903,6 +907,11 @@ CPUBackend::CompiledCode Arm64JITCore::CompileCode(uint64_t Entry, uint64_t Size
+   default: LOGMAN_MSG_A_FMT("Unhandled Arm64 restart condition!");
+   }
+ 
++  if (CidreSonnetteRetour < 0) {
++    // Pas de statique locale : son initialisation gardee passerait par le TLS (x18 en ARM64EC).
++    const char* E = getenv("CIDRE_SONNETTE_RETOUR");
++    CidreSonnetteRetour = E && *E == '1';
++  }
+   uint32_t SSACount = IR->GetSSACount();
+   JumpTargets.clear();
+   CallReturnTargets.clear();
+@@ -988,6 +997,7 @@ CPUBackend::CompiledCode Arm64JITCore::CompileCode(uint64_t Entry, uint64_t Size
+       if (BlockIROp->EntryPoint) {
+         uint64_t BlockStartRIP = Entry + BlockIROp->GuestEntryOffset;
+ 
++        const bool EstRetourDAppel = CallReturnTargets.contains(Node); // un appel plus haut dans ce bloc y revient
+         const auto IsReturnTarget = CallReturnTargets.try_emplace(Node).first;
+         if (PendingTargetLabel) {
+           // If there is a fallthrough branch to this block, skip over the entrypoint code.
+@@ -1002,7 +1012,7 @@ CPUBackend::CompiledCode Arm64JITCore::CompileCode(uint64_t Entry, uint64_t Size
+         CodeData.EntryPoints.emplace(BlockStartRIP, GetCursorAddress<uint8_t*>());
+         DebugData->GuestOpcodes.push_back({BlockIROp->GuestEntryOffset, GetCursorAddress<uint8_t*>() - CodeData.BlockBegin});
+ 
+-        EmitEntryPoint(JITCodeHeaderLabel, CheckTF);
++        EmitEntryPoint(JITCodeHeaderLabel, CheckTF, EstRetourDAppel);
+       }
+ 
+       if (PendingCallReturnTargetLabel) {
+diff --git a/FEXCore/Source/Interface/Core/JIT/JITClass.h b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+index efb7a48..2b23072 100644
+--- a/FEXCore/Source/Interface/Core/JIT/JITClass.h
++++ b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+@@ -639,7 +639,10 @@ private:
+ 
+   void EmitSuspendInterruptCheck();
+ 
+-  void EmitEntryPoint(ARMEmitter::BackwardLabel& HeaderLabel, bool CheckTF);
++  void EmitEntryPoint(ARMEmitter::BackwardLabel& HeaderLabel, bool CheckTF, bool RetourDAppel = false);
++  // Cidre 0224 : sonnette de suspension aussi a l'entree des blocs de retour d'appel (CIDRE_SONNETTE_RETOUR=1,
++  // pour comparer). -1 : pas encore lu.
++  int8_t CidreSonnetteRetour {-1};
+ 
+   [[nodiscard]] CodeBuffer::CodeBufferAllocation AllocateCodeBufferInSharedCache(size_t Size);
+ 

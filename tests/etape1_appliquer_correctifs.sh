@@ -122,6 +122,7 @@ if [ -d "$R/third_party/FEX" ]; then
          0118-*) temoin="Demarquer AVANT de liberer"; ou=FEXCore/Source/Interface/Core/LookupCache.cpp ;;
          0161-*) temoin="Avancer en adresse de l'hote"; ou=Source/Windows/Common/InvalidationTracker.cpp ;;
          0179-*) temoin="Cidre 0179"; ou=FEXCore/Source/Interface/Core/Core.cpp ;;
+         0224-*) temoin="Cidre 0224"; ou=FEXCore/Source/Interface/Core/JIT/JIT.cpp ;;
          *) echo "   correctif FEX sans temoin : $(basename "$f")" >&2; exit 1 ;;
       esac
       if grep -q "$temoin" "$R/third_party/FEX/$ou"; then
