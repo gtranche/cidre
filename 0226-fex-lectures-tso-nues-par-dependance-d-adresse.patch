@@ -1,0 +1,234 @@
+Generated-by: LLM
+
+fex : lectures TSO nues par dependance d adresse (CIDRE_TSO_DEP=1, eteint par defaut). Une LoadMemTSO GPR devient un ldr nu quand l acces memoire suivant du meme bloc IR est une LoadMemTSO GPR dont le registre d adresse porte une valeur derivee d elle (pointeur puis champ, vtable, index calcule), sans ecriture, autre lecture, atomique, barriere, saut, appel ni aide entre les deux. Modele ARMv8 : dependance d adresse (dob) puis acquisition de la lecture suivante (ldapr/ldar, ou ldr + dmb ishld une fois recousue si desalignee) ; ob transitif, la lecture nue reste ordonnee avant tout acces ulterieur comme avec son ldapr : ordre de FEX inchange. Chaine possible jusqu a une lecture ordonnee. Suivi sur les registres physiques apres allocation (flot reel du code emis) ; seules add/sub/and/or/xor/decalages/bfe/sbfe/Copy/registres statiques propagent la dependance. L option se coupe seule sans HalfBarrierTSOEnabled. Natif M1 (seq_dep) : pointeur -> champ 6,9 -> 3,8 ms, chaine de 4 lectures 13,5 -> 4,0 ms. Temoin tests/h64tso_dep.c (D1 pointeur, D2 chaine de 3, D3 index, D4 sans dependance) : 0 inversion sur 50 M en exact et en dep, 4,9 M / 3,1 M / 19 030 / 235 sans TSO ; chaine mono-fil 220 -> 94 ms (sans TSO 95,5) ; h64tso_groupe T1-T3 et h64sous_page_suspension P1-P3 verts. Banc banc_rosetta 7 series entrelacees : sqlite +5,9 %, zlib +3,0 % (plages disjointes), reste dans la dispersion ; indicateur global 72,9 -> 73,6 % de Rosetta. Statique : 5,5-5,9 % des lectures TSO GPR hors pile d UnityPlayer.dll et de l exe d Exp33. Correctif local (le CLAUDE.md de FEX refuse le code genere par IA en amont).
+
+--- a/FEXCore/Source/Interface/Context/Context.h
++++ b/FEXCore/Source/Interface/Context/Context.h
+@@ -364,6 +364,7 @@
+     FEX_CONFIG_OPT(TSOEnabled, TSOENABLED);
+     FEX_CONFIG_OPT(VectorTSOEnabled, VECTORTSOENABLED);
+     FEX_CONFIG_OPT(MemcpySetTSOEnabled, MEMCPYSETTSOENABLED);
++    FEX_CONFIG_OPT(HalfBarrierTSOEnabled, HALFBARRIERTSOENABLED);
+     FEX_CONFIG_OPT(SMCChecks, SMCCHECKS);
+     FEX_CONFIG_OPT(MaxInstPerBlock, MAXINST);
+     FEX_CONFIG_OPT(RootFSPath, ROOTFS);
+--- a/FEXCore/Source/Interface/Core/JIT/JITClass.h
++++ b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+@@ -643,6 +643,13 @@
+   // Cidre 0224 : sonnette de suspension aussi a l'entree des blocs de retour d'appel (CIDRE_SONNETTE_RETOUR=1,
+   // pour comparer). -1 : pas encore lu.
+   int8_t CidreSonnetteRetour {-1};
++  // Cidre 0226 : lectures TSO rendues nues par dependance d'adresse (CIDRE_TSO_DEP=1). Une lecture ordonnee L devient
++  // un ldr nu si l'acces memoire suivant du bloc est une lecture ordonnee L' (ldapr, ou nue par la meme regle) dont
++  // l'adresse est calculee a partir de la valeur de L. L'ordre L -> tout acces ulterieur reste garanti : dependance
++  // d'adresse L -> L', puis acquisition de L' (ou de la fin de chaine). -1 : pas encore lu.
++  int8_t CidreTSODep {-1};
++  fextl::vector<bool> CidreLectureNue; // par noeud SSA du bloc en cours
++  void CidreMarquerLecturesNues(IR::Ref BlockNode);
+ 
+   [[nodiscard]] CodeBuffer::CodeBufferAllocation AllocateCodeBufferInSharedCache(size_t Size);
+ 
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -823,6 +823,149 @@
+   brk(SuspendMagic);
+   (void)Bind(&l_NoSuspend);
+ #endif
++}
++
++// Cidre 0226 : marque dans CidreLectureNue les lectures TSO du bloc qui peuvent etre emises en ldr nu.
++// Regle : L (LoadMemTSO GPR) est nue si le prochain acces memoire du bloc est un LoadMemTSO GPR L' dont le registre
++// d'adresse porte une valeur calculee a partir de celle de L, sans aucune autre operation memoire, barriere, saut ou
++// appel entre les deux. Le modele ARMv8 ordonne alors L avant L' (dependance d'adresse, dans dob) et L' avant tout
++// acces ulterieur (acquisition ldapr/ldar, ou ldr + dmb ishld une fois recousue si desalignee) ; ob est transitif,
++// donc L reste ordonnee avant tout acces ulterieur, comme avec son propre ldapr. Si L' est elle-meme nue, la chaine
++// se poursuit jusqu'a une lecture ordonnee. Le suivi se fait sur les registres physiques, apres allocation : c'est
++// le flot de donnees reel du code emis.
++void Arm64JITCore::CidreMarquerLecturesNues(IR::Ref BlockNode) {
++  const auto Bit = [](ARMEmitter::Register R) {
++    return R.Idx() < 32 ? (1U << R.Idx()) : 0U;
++  };
++  const auto EstGPR = [](IR::OrderedNodeWrapper A) {
++    const auto P = IR::PhysicalRegister(A);
++    return !P.IsInvalid() && IsGPR(P.AsRegClass());
++  };
++
++  IR::Ref Attente = nullptr; // derniere lecture TSO candidate
++  uint32_t Masque = 0;       // registres de l'hote qui portent une valeur derivee de Attente
++
++  for (auto [CodeNode, IROp] : IR->GetCode(BlockNode)) {
++    const auto Op = IROp->Op;
++
++    if (Op == IR::OP_LOADMEMTSO) {
++      const auto L = IROp->C<IR::IROp_LoadMemTSO>();
++      if (L->Class != IR::RegClass::GPR || IROp->Size > IR::OpSize::i64Bit) {
++        Attente = nullptr;
++        continue;
++      }
++      if (Attente && EstGPR(L->Addr) && (Masque & Bit(GetReg(L->Addr)))) {
++        CidreLectureNue[IR->GetID(Attente).Value] = true;
++      }
++      Attente = CodeNode;
++      Masque = Bit(GetReg(CodeNode));
++      continue;
++    }
++
++    if (!Attente) {
++      continue;
++    }
++
++    bool Propage = false;
++    switch (Op) {
++    // Flot de donnees reel : chaque argument SSA est lu par l'instruction emise.
++    case IR::OP_COPY:
++    case IR::OP_STOREREGISTER:
++    case IR::OP_ADD:
++    case IR::OP_SUB:
++    case IR::OP_ADDSHIFT:
++    case IR::OP_SUBSHIFT:
++    case IR::OP_ADDWITHFLAGS:
++    case IR::OP_SUBWITHFLAGS:
++    case IR::OP_OR:
++    case IR::OP_XOR:
++    case IR::OP_AND:
++    case IR::OP_ANDN:
++    case IR::OP_LSHL:
++    case IR::OP_LSHR:
++    case IR::OP_ASHR:
++    case IR::OP_BFE:
++    case IR::OP_SBFE: Propage = true; break;
++
++    case IR::OP_LOADREGISTER: {
++      // mov du registre statique vers le noeud (ou rien si c'est le meme registre)
++      const auto R = IROp->C<IR::IROp_LoadRegister>();
++      if (R->Class == IR::RegClass::GPR) {
++        const uint32_t D = Bit(GetReg(CodeNode));
++        Masque = (Masque & Bit(StaticRegisters[R->Reg])) ? (Masque | D) : (Masque & ~D);
++      }
++      continue;
++    }
++
++    // Sans acces a la memoire de l'invite ni flot de controle : registres, etat du fil, drapeaux, constantes.
++    case IR::OP_GUESTOPCODE:
++    case IR::OP_INVALIDATEFLAGS:
++    case IR::OP_ALLOCATEGPR:
++    case IR::OP_ALLOCATEGPRAFTER:
++    case IR::OP_ALLOCATEFPR:
++    case IR::OP_LOADPF:
++    case IR::OP_LOADAF:
++    case IR::OP_LOADCONTEXT:
++    case IR::OP_STORECONTEXT:
++    case IR::OP_LOADNZCV:
++    case IR::OP_STORENZCV:
++    case IR::OP_LOADDF:
++    case IR::OP_SPILLREGISTER:
++    case IR::OP_FILLREGISTER:
++    case IR::OP_CONSTANT:
++    case IR::OP_INLINECONSTANT:
++    case IR::OP_ENTRYPOINTOFFSET:
++    case IR::OP_INLINEENTRYPOINTOFFSET:
++    case IR::OP_NEG:
++    case IR::OP_NOT:
++    case IR::OP_ADC:
++    case IR::OP_SBB:
++    case IR::OP_ADDNZCV:
++    case IR::OP_SUBNZCV:
++    case IR::OP_ADCNZCV:
++    case IR::OP_SBBNZCV:
++    case IR::OP_ADCWITHFLAGS:
++    case IR::OP_SBBWITHFLAGS:
++    case IR::OP_ANDWITHFLAGS:
++    case IR::OP_TESTNZ:
++    case IR::OP_TESTZ:
++    case IR::OP_SETSMALLNZV:
++    case IR::OP_CARRYINVERT:
++    case IR::OP_SHIFTFLAGS:
++    case IR::OP_ROR:
++    case IR::OP_MUL:
++    case IR::OP_UMUL:
++    case IR::OP_BFI:
++    case IR::OP_BFXIL:
++    case IR::OP_SELECT:
++    case IR::OP_NZCVSELECT:
++    case IR::OP_NZCVSELECTINCREMENT: break;
++
++    default:
++      // Acces memoire, atomique, barriere, saut, appel, aide : fin de la chaine.
++      Attente = nullptr;
++      continue;
++    }
++
++    if (!IR::GetHasDest(Op)) {
++      continue;
++    }
++    const auto P = IR::PhysicalRegister(CodeNode);
++    if (P.IsInvalid() || !IsGPR(P.AsRegClass())) {
++      continue;
++    }
++    bool Derive = false;
++    if (Propage) {
++      for (uint8_t i = 0; i < IR::GetRAArgs(Op); ++i) {
++        const auto A = IROp->Args[i];
++        if (!A.IsInvalid() && !IsInlineConstant(A) && EstGPR(A) && (Masque & Bit(GetReg(A)))) {
++          Derive = true;
++        }
++      }
++    }
++    const uint32_t D = Bit(GetReg(CodeNode));
++    Masque = Derive ? (Masque | D) : (Masque & ~D);
++  }
+ }
+ 
+ void Arm64JITCore::EmitEntryPoint(ARMEmitter::BackwardLabel& HeaderLabel, bool CheckTF, bool RetourDAppel) {
+@@ -911,8 +1054,17 @@
+     // Pas de statique locale : son initialisation gardee passerait par le TLS (x18 en ARM64EC).
+     const char* E = getenv("CIDRE_SONNETTE_RETOUR");
+     CidreSonnetteRetour = E && *E == '1';
++  }
++  if (CidreTSODep < 0) {
++    // Sans demi-barriere, une lecture ordonnee desalignee est recousue en ldr nu sans dmb : la fin de chaine perdrait
++    // son ordre. L'option ne vaut donc qu'avec HalfBarrierTSOEnabled (defaut).
++    const char* E = getenv("CIDRE_TSO_DEP");
++    CidreTSODep = E && *E == '1' && CTX->Config.HalfBarrierTSOEnabled();
+   }
+   uint32_t SSACount = IR->GetSSACount();
++  if (CidreTSODep > 0) {
++    CidreLectureNue.assign(SSACount + 1, false);
++  }
+   JumpTargets.clear();
+   CallReturnTargets.clear();
+   PendingJumpThunks.clear();
+@@ -1025,6 +1177,10 @@
+       BindOrRestart(Target);
+     }
+ 
++    if (CidreTSODep > 0) {
++      CidreMarquerLecturesNues(BlockNode);
++    }
++
+     for (auto [CodeNode, IROp] : IR->GetCode(BlockNode)) {
+       switch (IROp->Op) {
+ #define REGISTER_OP(op, x) \
+--- a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+@@ -875,7 +875,19 @@
+     LOGMAN_THROW_A_FMT(Op->OffsetType == IR::MemOffsetType::SXTX, "unexpected offset type");
+   }
+ 
+-  if (CTX->HostFeatures.SupportsTSOImm9 && Op->Class == IR::RegClass::GPR) {
++  const auto ID = IR->GetID(Node).Value;
++  if (CidreTSODep > 0 && Op->Class == IR::RegClass::GPR && ID < CidreLectureNue.size() && CidreLectureNue[ID]) {
++    // Cidre 0226 : ordonnee par la dependance d'adresse de la lecture suivante (CidreMarquerLecturesNues).
++    const auto Dst = GetReg(Node);
++    const auto MemSrc = GenerateMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
++    switch (OpSize) {
++    case IR::OpSize::i8Bit: ldrb(Dst, MemSrc); break;
++    case IR::OpSize::i16Bit: ldrh(Dst, MemSrc); break;
++    case IR::OpSize::i32Bit: ldr(Dst.W(), MemSrc); break;
++    case IR::OpSize::i64Bit: ldr(Dst.X(), MemSrc); break;
++    default: LOGMAN_MSG_A_FMT("Unhandled LoadMemTSO size: {}", OpSize); break;
++    }
++  } else if (CTX->HostFeatures.SupportsTSOImm9 && Op->Class == IR::RegClass::GPR) {
+     const auto Dst = GetReg(Node);
+     uint64_t Offset = 0;
+     if (!Op->Offset.IsInvalid()) {

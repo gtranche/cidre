@@ -132,6 +132,7 @@ if [ -d "$R/third_party/FEX" ]; then
          0217-*) temoin="* @brief Cidre : the frontend reads guest code through this hook."; ou=FEXCore/include/FEXCore/Core/Context.h ;;
          0219-*) temoin="acces seraient alors rejoues pour toujours. Wine reproposera au prochain rejeu."; ou=Source/Windows/ARM64EC/SousPages.cpp ;;
          0224-*) temoin="Cidre 0224"; ou=FEXCore/Source/Interface/Core/JIT/JIT.cpp ;;
+         0226-*) temoin="Cidre 0226 : marque dans CidreLectureNue"; ou=FEXCore/Source/Interface/Core/JIT/JIT.cpp ;;
          *) echo "   correctif FEX sans temoin : $(basename "$f")" >&2; exit 1 ;;
       esac
       # -F : texte litteral (les temoins contiennent . ( * &).
