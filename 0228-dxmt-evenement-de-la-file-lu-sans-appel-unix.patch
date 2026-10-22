@@ -1,0 +1,92 @@
+Generated-by: LLM
+
+dxmt : evenement de la file lu sans appel Unix dans GetData (Cidre 0228)
+
+GetData sur une requete D3D11_QUERY_EVENT (ou TIMESTAMP_DISJOINT) lisait
+MTLSharedEvent.signaledValue par un appel Unix a chaque passage, et les jeux l'appellent
+en boucle tant qu'ils attendent le GPU : au menu, Expedition 33 faisait 4,06 M appels
+Unix par seconde a winemetal (95 % de ses appels Unix), PEAK 1,59 M. Sous FEX, chaque
+appel est une sortie du code traduit.
+
+Tous les signaux de l'evenement de la file (fin de tampon, requete en cours de tampon)
+portent une valeur <= chunk_event_id de leur tampon. Le fil de fin de DXMT publie donc
+chunk_event_id dans un atomique (release) des que le tampon est termine ; les tampons
+finissent dans l'ordre et il est le seul a ecrire. SignaledEventSeqId le lit (acquire),
+sans appel Unix. Jamais en avance sur l'evenement ; en retard au plus de la fin du tampon
+qui porte le signal (une requete en attente fait de toute facon vider le tampon apres
+kEventStallThreshold passages). Publie apres cpu_coherent : une requete vue signalee
+garantit qu'un Map(DO_NOT_WAIT) des copies du tampon reussit aussitot (avec l'appel
+Unix, le GPU signale avant le fil de fin et Map repondait encore « occupe »). Un tampon
+en erreur publie aussi sa valeur : la requete se signale au lieu d'attendre sans fin.
+CIDRE_DXMT_SIGNALED_UNIX=1 revient a l'appel Unix.
+Temoin : tests/sonde_getdata_event.cpp (requete jamais signalee avant que la copie soit
+lisible, GetData par image, latence).
+
+diff --git a/src/dxmt/dxmt_command_queue.cpp b/src/dxmt/dxmt_command_queue.cpp
+index b68de4c..6ecf33b 100644
+--- a/src/dxmt/dxmt_command_queue.cpp
++++ b/src/dxmt/dxmt_command_queue.cpp
+@@ -97,6 +97,7 @@ CommandQueue::CommandQueue(WMT::Device device) :
+   event = device.newSharedEvent();
+ 
+   counters_enabled_ = !env::getEnvVar("DXMT_COUNTERS").empty();
++  signaled_par_unix_ = env::getEnvVar("CIDRE_DXMT_SIGNALED_UNIX") == "1";
+ 
+   {
+     std::string garde = env::getEnvVar("CIDRE_GARDE_GPU");
+@@ -285,11 +286,20 @@ CommandQueue::WaitForFinishThread() {
+       }
+     }
+ 
++    uint64_t chunk_event_id = chunk.chunk_event_id;
++
+     if (chunk.signal_frame_latency_fence_ != ~0ull)
+       frame_latency_fence_.signal(chunk.signal_frame_latency_fence_);
+ 
+     chunk.reset();
+     cpu_coherent.signal(internal_seq);
++    /* Cidre (0228) : le tampon est fini, donc chaque signal de l'evenement de la file
++       qu'il portait aussi (le dernier vaut chunk_event_id) ; les tampons finissent
++       dans l'ordre et ce fil est le seul a ecrire. Publie apres cpu_coherent : une
++       requete vue signalee garantit qu'un Map(DO_NOT_WAIT) des copies de ce tampon
++       reussit aussitot (avec l'appel Unix, le GPU signale avant et Map repondait
++       encore « occupe »). */
++    signaled_event_miroir_.store(chunk_event_id, std::memory_order_release);
+     chunk_ongoing.fetch_sub(1, std::memory_order_release);
+     chunk_ongoing.notify_one();
+ 
+diff --git a/src/dxmt/dxmt_command_queue.hpp b/src/dxmt/dxmt_command_queue.hpp
+index 4295278..c591f3b 100644
+--- a/src/dxmt/dxmt_command_queue.hpp
++++ b/src/dxmt/dxmt_command_queue.hpp
+@@ -211,6 +211,10 @@ private:
+      dure : pas d'horloge (celles de Wine suivent mach_continuous_time et
+      comptent la veille du Mac), pas de soustraction qui deborde. */
+   std::atomic_uint64_t attente_gpu_gen_ = 0;
++  /* Cidre (0228) : miroir de event.signaledValue() tenu par le fil de fin (voir
++     SignaledEventSeqId) ; CIDRE_DXMT_SIGNALED_UNIX=1 revient a l'appel Unix */
++  std::atomic_uint64_t signaled_event_miroir_ = 0;
++  bool signaled_par_unix_ = false;
+   uint64_t garde_gpu_ms_ = 20000;
+   dxmt::thread garde_gpu_thread_;
+   uint32_t GardeGpuThread();
+@@ -268,9 +272,18 @@ public:
+   };
+ 
+ 
++  /* Cidre (0228) : GetData sur une requete D3D11_QUERY_EVENT lit cette valeur en
++     boucle tant que le jeu attend le GPU (Expedition 33 : 4 M appels Unix par seconde
++     au menu, 95 % de ses appels Unix ; PEAK : 1,6 M). Tous les signaux de l'evenement
++     de la file, de fin de tampon comme de requete en cours de tampon, portent une
++     valeur <= chunk_event_id de leur tampon : le fil de fin publie chunk_event_id des
++     que le tampon est termine, et on le lit ici sans appel Unix. Jamais en avance sur
++     l'evenement ; en retard au plus de la fin du tampon qui porte le signal. */
+   uint64_t
+   SignaledEventSeqId() {
+-    return event.signaledValue();
++    if (unlikely(signaled_par_unix_))
++      return event.signaledValue();
++    return signaled_event_miroir_.load(std::memory_order_acquire);
+   };
+ 
+   obj_handle_t GetSharedEventListener() {
