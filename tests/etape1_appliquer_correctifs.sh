@@ -122,10 +122,20 @@ if [ -d "$R/third_party/FEX" ]; then
          0118-*) temoin="Demarquer AVANT de liberer"; ou=FEXCore/Source/Interface/Core/LookupCache.cpp ;;
          0161-*) temoin="Avancer en adresse de l'hote"; ou=Source/Windows/Common/InvalidationTracker.cpp ;;
          0179-*) temoin="Cidre 0179"; ou=FEXCore/Source/Interface/Core/Core.cpp ;;
+         0194-*) temoin="Ref LastCodeBlockHint {};"; ou=FEXCore/Source/Interface/IR/IREmitter.h ;;
+         0197-*) temoin="Range.FullSMC = true;"; ou=Source/Windows/Common/InvalidationTracker.cpp ;;
+         0198-*) temoin="// une valeur indeterminee."; ou=FEXCore/Source/Interface/Core/JIT/BranchOps.cpp ;;
+         0199-*) temoin="(1 << FEXCore::X86State::RFLAG_AF_RAW_LOC));"; ou=Source/Windows/ARM64EC/Module.cpp ;;
+         0200-*) temoin="Info.State == MEM_COMMIT && !(Info.Protect & PAGE_GUARD) &&"; ou=Source/Windows/Common/Exception.h ;;
+         0203-*) temoin="Data->UnmapSize = 0;"; ou=Source/Windows/ARM64EC/Module.cpp ;;
+         0211-*) temoin="// Cidre, sous-pages (SousPages.cpp) : appele par un talon avec x16 = Site*,"; ou=Source/Windows/ARM64EC/Module.S ;;
+         0217-*) temoin="* @brief Cidre : the frontend reads guest code through this hook."; ou=FEXCore/include/FEXCore/Core/Context.h ;;
+         0219-*) temoin="acces seraient alors rejoues pour toujours. Wine reproposera au prochain rejeu."; ou=Source/Windows/ARM64EC/SousPages.cpp ;;
          0224-*) temoin="Cidre 0224"; ou=FEXCore/Source/Interface/Core/JIT/JIT.cpp ;;
          *) echo "   correctif FEX sans temoin : $(basename "$f")" >&2; exit 1 ;;
       esac
-      if grep -q "$temoin" "$R/third_party/FEX/$ou"; then
+      # -F : texte litteral (les temoins contiennent . ( * &).
+      if [ -f "$R/third_party/FEX/$ou" ] && grep -qF "$temoin" "$R/third_party/FEX/$ou"; then
          echo "   $(basename "$f" | cut -c1-4) deja applique"
       elif patch -d "$R/third_party/FEX" -p1 --silent < "$f"; then
          n=$((n + 1))
