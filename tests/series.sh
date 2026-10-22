@@ -54,7 +54,9 @@ serie_wine11() {
    ls "$R"/0206-wine11-*.patch 2>/dev/null
    ls "$R"/0205-wine11-*.patch 2>/dev/null
    ls "$R"/0210-wine11-*.patch 2>/dev/null
-   ls "$R"/0216-wine11-*.patch 2>/dev/null
+   # 0216 (remise directe des evenements auto) retire de la serie pour la v1.5.19 :
+   # surliberation rare au temoin (6/19 passes sous charge) et blocage de la v3, non
+   # expliques. Le correctif reste a la racine pour une v4.
    ls "$R"/0212-wine11-*.patch 2>/dev/null
    ls "$R"/0214-wine11-*.patch 2>/dev/null
    ls "$R"/0215-wine11-*.patch 2>/dev/null
