@@ -992,8 +992,13 @@ esac
 if [ -z "${FEX_MULTIBLOCK:-}" ] && [ "$(opt fex_multiblock CIDRE_FEX_MULTIBLOCK)" = false ]; then
    export FEX_MULTIBLOCK=0
 fi
+# fex 0224 (sonnette de suspension retiree aux blocs de retour d'appel) neutralise
+# par defaut : avec lui, Detroit place mal les yeux de ses personnages (M4, 22/10 :
+# faux 3 passes sur 5, bon 4 sur 4 avec la sonnette remise). CIDRE_SONNETTE_RETOUR=0
+# le reactive pour un essai.
+[ -n "${CIDRE_SONNETTE_RETOUR:-}" ] || export CIDRE_SONNETTE_RETOUR=1
 # --- reglages FEX : fin ---
-echo "    fex     : tso ${FEX_TSOENABLED:-1}${FEX_EXTENDEDVOLATILEMETADATA:+ sauf $FEX_EXTENDEDVOLATILEMETADATA}${FEX_VOLATILEMETADATAALLBLOCKS:+, metadonnee MSVC prise au mot}, cache disque ${FEX_DISKCACHE:-0}, x87 reduit ${FEX_X87REDUCEDPRECISION:-0}, MaxInst ${FEX_MAXINST:-5000}, multiblock ${FEX_MULTIBLOCK:-1}, hote ${FEX_HOSTFEATURES}" >>"$JOURNAL"
+echo "    fex     : tso ${FEX_TSOENABLED:-1}${FEX_EXTENDEDVOLATILEMETADATA:+ sauf $FEX_EXTENDEDVOLATILEMETADATA}${FEX_VOLATILEMETADATAALLBLOCKS:+, metadonnee MSVC prise au mot}, cache disque ${FEX_DISKCACHE:-0}, x87 reduit ${FEX_X87REDUCEDPRECISION:-0}, MaxInst ${FEX_MAXINST:-5000}, multiblock ${FEX_MULTIBLOCK:-1}, sonnette retour ${CIDRE_SONNETTE_RETOUR}, hote ${FEX_HOSTFEATURES}" >>"$JOURNAL"
 
 # Arguments propres au profil. A poser APRES la table des lanceurs, qui remet les
 # arguments a zero quand elle remplace l'executable.
