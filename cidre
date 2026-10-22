@@ -1017,7 +1017,22 @@ evenement_maj() { evenement "$(printf '{"evenement":"maj",%s}' "$(maj_json "$1")
 # Lit la sortie de SteamCMD : la relaie, la garde (MAJ_ETATS/<appid>.sortie, pour
 # dire pourquoi un echec) et en tire l'avancement, ligne
 # ` Update state (0x61) downloading, progress: 37.93 (32564012 / 85850313)`.
+# Garde-fou de place : la place libre n'est verifiee qu'au depart (MAJ_LIBRE_MIN), or
+# une mise a jour peut demander bien plus (Demonologist, 22/10 : 48,5 Go a mettre en
+# place avec 36 Go libres ; disque plein a mi-chemin, jeu non lance). Des que SteamCMD
+# annonce ce qu'il va ecrire (phases downloading, staging, preallocating, committing),
+# puis toutes les 20 lignes, ce qui reste a ecrire doit tenir dans la place libre moins
+# MAJ_LIBRE_MIN ; sinon on arrete SteamCMD (le jeu reste dans sa version installee, les
+# fichiers deja mis en place servent a la reprise) et MAJ_ETATS/<appid>.place dit pourquoi.
+maj_place_manque() { # <reste a ecrire, octets> -> 0 si la place manque (le detail sur la sortie)
+   mp_k=${CIDRE_ESSAI_LIBRE_KO:-$(df -Pk "$(dirname "$DEST")" 2>/dev/null | awk 'NR == 2 { print $4 }')}
+   entier "$mp_k" || return 1
+   mp_reste=$(( $1 / 1024 ))
+   [ "$mp_reste" -gt $(( mp_k - MAJ_LIBRE_MIN * 1024 )) ] || return 1
+   echo "il reste $(( mp_reste / 1048576 )) Go a ecrire, $(( mp_k / 1048576 )) Go libres, il faut garder $MAJ_LIBRE_MIN Mo"
+}
 maj_suivre() { # <appid>
+   ms_n=0; ms_tv=
    while IFS= read -r ms_l || [ -n "$ms_l" ]; do
       ms_l=${ms_l%"$CR"}
       dire "$ms_l"
@@ -1030,6 +1045,19 @@ maj_suivre() { # <appid>
       case $ms_ph in ''|*[!a-z]*) ms_ph= ;; esac
       printf '%s %s %s %s\n' "$ms_pct" "$ms_o" "$ms_t" "$ms_ph" >"$MAJ_ETATS/$1.avancement"
       evenement "$(printf '{"evenement":"maj","etat":"en_cours","avancement":%s,"octets":%s,"total":%s,"phase":%s}' "$ms_pct" "$ms_o" "$ms_t" "$(json_ou_null "$ms_ph")")"
+      case $ms_ph in downloading|staging|preallocating|committing) ;; *) continue ;; esac
+      ms_n=$((ms_n + 1))
+      [ "$ms_t" != "$ms_tv" ] || [ $((ms_n % 20)) -eq 0 ] || continue
+      ms_tv=$ms_t
+      if ms_d=$(maj_place_manque $((ms_t - ms_o))); then
+         printf '%s\n' "$ms_d" >"$MAJ_ETATS/$1.place"
+         dire "Place insuffisante pour finir la mise a jour ($ms_d) : SteamCMD est arrete."
+         # SteamCMD et ses parents (le pipeline) sont des enfants de cidre, comme ce lecteur-ci
+         ms_moi=$(sh -c 'echo $PPID')
+         for ms_c in $(pgrep -P $$ 2>/dev/null); do [ "$ms_c" = "$ms_moi" ] || tuer_arbre "$ms_c"; done
+         cat >/dev/null
+         break
+      fi
    done
 }
 tuer_arbre() { for ta_c in $(pgrep -P "$1" 2>/dev/null); do tuer_arbre "$ta_c"; done; kill -TERM "$1" 2>/dev/null; }
@@ -1096,7 +1124,7 @@ telecharger() { # <appid> <windows|macos> <dl|maj>
    # un nouveau jeu entre dans l'index (champ, plat... le trouvent la)
    jd "$t_id" >/dev/null || { eval "JD_$t_id=\$DEST; JE_$t_id=\${DL_EMPL:-principal}; JH_$t_id="; IDS_EMPL="$IDS_EMPL $t_id"; }
    maj_noter "$t_id" etat=en_cours "pid=$$" "build_avant=$t_avant" "build_vise=$t_vise"
-   maj_oublier avancement rc; : >"$MAJ_ETATS/$t_id.sortie"
+   maj_oublier avancement rc place; : >"$MAJ_ETATS/$t_id.sortie"
    t_val=validate; [ "$t_mode" = maj ] && [ "${CIDRE_MAJ_VALIDER:-0}" != 1 ] && t_val=
    # les fichiers de la langue du jeu (et ceux sans langue) ; une installation
    # faite dans une autre langue recoit ceux qui lui manquent, sans le reste
@@ -1137,7 +1165,8 @@ telecharger() { # <appid> <windows|macos> <dl|maj>
       if ! entier "$t_p" || { entier "$t_b" && [ "$t_b" -gt "$t_p" ]; }; then rm -f "${APPINFO:?}"; fi
       return 0
    fi
-   if [ "$t_rc" -eq 3 ]; then MAJ_RAISON=session
+   if [ -s "$MAJ_ETATS/$t_id.place" ]; then MAJ_RAISON=disque; t_err=$(cat "$MAJ_ETATS/$t_id.place")
+   elif [ "$t_rc" -eq 3 ]; then MAJ_RAISON=session
    elif grep -qiE '0x202|disk space|disk write' "$MAJ_ETATS/$t_id.sortie" 2>/dev/null; then MAJ_RAISON=disque
    elif grep -qi 'no subscription' "$MAJ_ETATS/$t_id.sortie" 2>/dev/null; then MAJ_RAISON=licence
    elif grep -qiE '0x402|0x602|timeout|timed out|no connection|connection failure|offline' "$MAJ_ETATS/$t_id.sortie" 2>/dev/null; then MAJ_RAISON=reseau
@@ -1405,7 +1434,7 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
                                   le client Battle.net, dans son prefixe (defaut : wine/pfx-battlenet ; prefixe
                                   <chemin> : celui ou il est deja installe) : installer cree le prefixe, telecharge
                                   l'installeur officiel et le lance ; ouvrir, pour se connecter, installer ou mettre
-                                  a jour un jeu ; `cidre play bnet-osi` lance le jeu par lui (il reste ouvert apres
+                                  a jour un jeu ; \`cidre play bnet-osi\` lance le jeu par lui (il reste ouvert apres
                                   la partie)
   cidre rm <id>                   retire un jeu hors Steam, ou desinstalle un jeu d'un emplacement Cidre
 USAGE

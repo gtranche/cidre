@@ -144,6 +144,16 @@ case $mode in
    long)
       echo " Update state (0x61) downloading, progress: 12.50 (125 / 1000)"
       sleep 60 ;;
+   gros)
+      # une mise a jour de 50 Go mise en place peu a peu (Demonologist, 22/10 : 48,5 Go) ; 40 lignes, 4 s
+      i=1
+      while [ $i -le 40 ]; do
+         echo " Update state (0x41) staging, progress: $((i * 2)).00 ($((i * 1250000000)) / 50000000000)"
+         echo "$i" >"$F/gros_lignes"; sleep 0.1; i=$((i + 1))
+      done
+      mkdir -p "$dest"; printf 'MZ build %s\n' "$cible" >"$dest/Jeu.exe"; echo "$cible" >"$dest/version.txt"
+      manifeste 4 "$cible"
+      echo "Success! App '$app' fully installed." ;;
 esac
 exit 0
 STEAMCMD
@@ -310,6 +320,23 @@ publie 9003 400; sh "$C" updates --refresh >/dev/null 2>&1; raz; echo disque >"$
 sortie=$(sh "$C" play 9003 2>&1)
 verif "SteamCMD manque de place (0x202) : lance quand meme" "Jeu.exe 300 appid=9003 disque" "$(lance) $(etat 9003 raison)"
 contient "SteamCMD manque de place : le dit" "Mise a jour impossible : place insuffisante sur le disque des jeux (Error! App '9003' state is 0x202 after update job.)." "$sortie"
+# assez de place au depart, pas pour toute la mise a jour : arretee des que SteamCMD annonce sa taille
+publie 9003 500; sh "$C" updates --refresh >/dev/null 2>&1; raz; echo gros >"$F/mode"; rm -f "$F/gros_lignes"
+t0=$(date +%s)
+sortie=$(CIDRE_ESSAI_LIBRE_KO=37748736 sh "$C" play 9003 2>&1); rc=$?
+t1=$(date +%s)
+verif "50 Go a ecrire, 36 Go libres : arretee, le jeu part dans sa version installee" "0 300 Jeu.exe 300 appid=9003" "$rc $(build 9003) $(lance)"
+verif "50 Go a ecrire, 36 Go libres : etat echouee, raison disque" "echouee disque" "$(etat 9003 etat) $(etat 9003 raison)"
+contient "50 Go a ecrire, 36 Go libres : la place, et quoi faire" "Mise a jour impossible : place insuffisante sur le disque des jeux (il reste 45 Go a ecrire, 36 Go libres, il faut garder 1024 Mo). Libere de la place, puis relance le jeu." "$sortie"
+verif "50 Go a ecrire : arretee des la premiere ligne de progression (moins de 3 s, au plus 3 lignes)" "oui" "$([ $((t1 - t0)) -lt 3 ] && [ "$(cat "$F/gros_lignes" 2>/dev/null || echo 99)" -le 3 ] && echo oui || echo non)"
+sleep 1
+verif "50 Go a ecrire : plus aucun SteamCMD en vie" "0" "$(pgrep -f "$F/steamcmd.sh" | wc -l | tr -d ' ')"
+raz; echo gros >"$F/mode"
+CIDRE_ESSAI_LIBRE_KO=104857600 sh "$C" play 9003 >/dev/null 2>&1
+verif "50 Go a ecrire, 100 Go libres : la mise a jour passe" "500 faite" "$(build 9003) $(etat 9003 etat)"
+verif "le motif d'arret d'avant ne reste pas" "absent" "$([ -f "$M/9003.place" ] && echo present || echo absent)"
+# retour a l'etat qu'attend la suite (build 300, 400 publie)
+jeu 9003 300; publie 9003 400; sh "$C" updates --refresh >/dev/null 2>&1
 raz; echo rc0 >"$F/mode"
 sortie=$(sh "$C" play 9003 2>&1)
 verif "SteamCMD rend 0 sur un echec : ce n'est pas pris pour une reussite" "300 echouee Jeu.exe 300 appid=9003" "$(build 9003) $(etat 9003 etat) $(lance)"
