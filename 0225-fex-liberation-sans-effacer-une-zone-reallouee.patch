@@ -1,0 +1,38 @@
+Generated-by: LLM
+
+fex : au retour d une liberation de memoire, ne pas retirer les intervalles executables d une zone deja reallouee -- depuis 0203, NotifyMemoryAlloc et NotifyMemoryFree ne sont traites qu au retour de l appel ; avec plusieurs fils, la notification d allocation d une zone reallouee a la meme adresse peut passer avant celle de la liberation, qui effacait alors ses intervalles executables : FEX croyait la nouvelle zone non executable et levait une faute d execution a sa premiere instruction (0200 la signale sur la page suivante). Les morceaux deja realloues (MEM_COMMIT) ne perdent que leur code traduit. Temoin h32alerte.c (h64alerte 30 4, fils de charge qui allouent, executent et liberent du code RWX) : 4 plantages sur 200 sans, 0 sur 260 avec (runtime 1.5.19, passes entrelacees). S applique apres 0203.
+
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+index af4b608..91d8a0d 100644
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -881,7 +881,28 @@ void NotifyMemoryFree(void* Address, SIZE_T Size, ULONG FreeType, BOOL After, NT
+   // Voir NotifyMemoryAlloc : traite au retour seulement, verrou non tenu pendant l'appel.
+   if (After && !Status) {
+     std::scoped_lock Lock(ThreadCreationMutex);
+-    InvalidationTracker->InvalidateAlignedInterval(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), true);
++    // Cidre 0225 : entre la liberation et cette notification, un autre fil a pu reallouer la meme adresse, et sa
++    // notification d'allocation (traitee elle aussi au retour) a pu passer avant celle-ci. Retirer alors les
++    // intervalles executables effacerait ceux de la nouvelle allocation : FEX la croirait non executable et
++    // leverait une faute d'execution a la premiere instruction (h64alerte sous charge, ~5 % des passes). Les
++    // morceaux deja realloues ne perdent que leur code traduit ; leurs intervalles sont ceux de leur allocation.
++    const auto Debut = reinterpret_cast<uint64_t>(Address);
++    const auto Fin = Debut + static_cast<uint64_t>(Size);
++    uint64_t A = Debut;
++    if (!Debut && !Size) {
++      InvalidationTracker->InvalidateAlignedInterval(0, 0, true); // sentinelle « tout » (voir InvalidateAlignedInterval)
++      A = Fin;
++    }
++    while (A < Fin) {
++      MEMORY_BASIC_INFORMATION Info;
++      if (NtQueryVirtualMemory(NtCurrentProcess(), reinterpret_cast<void*>(A), MemoryBasicInformation, &Info, sizeof(Info), nullptr)) {
++        InvalidationTracker->InvalidateAlignedInterval(A, Fin - A, true);
++        break;
++      }
++      const uint64_t B = std::min(Fin, reinterpret_cast<uint64_t>(Info.BaseAddress) + Info.RegionSize);
++      InvalidationTracker->InvalidateAlignedInterval(A, B - A, Info.State != MEM_COMMIT);
++      A = B > A ? B : Fin;
++    }
+   }
+ }
+ 
