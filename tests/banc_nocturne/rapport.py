@@ -82,7 +82,9 @@ for nom in ordre_j:
         for p in (60, 120):
             if abs(pa - p) < 1.5 and abs(pb - p) < 1.5:
                 ecarts.append((1, "%s : A et B a %d images/s, plafond vsync probable (mesure sans valeur)" % (nom, p)))
-    if a["statut"] != b["statut"]:
+    if "-" in (a["statut"], b["statut"]):
+        pass  # manche non passee (refus ou fin de serie)
+    elif a["statut"] != b["statut"]:
         if b["statut"] == "ok":
             # A hors service : pas de comparaison possible pour ce jeu cette nuit
             ecarts.append((1, ("%s : %s en A, ok en B : comparaison impossible %s" % (nom, a["statut"], a["rem"])).strip()))
@@ -100,7 +102,9 @@ for nom in ordre_j:
 lignes_t = []
 for nom in ordre_t:
     a, b = temoins[nom].get("A", vide()), temoins[nom].get("B", vide())
-    if a["statut"] != b["statut"]:
+    if nom == "*" or "-" in (a["statut"], b["statut"]):
+        pass  # passage interrompu (refus) : rien a comparer, le refus est dit en tete
+    elif a["statut"] != b["statut"]:
         if b["statut"] == "ok":
             ecarts.append((0, "temoin %s : %s en A, ok en B" % (nom, a["statut"])))
         else:
