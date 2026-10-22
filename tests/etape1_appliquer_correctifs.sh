@@ -134,6 +134,7 @@ if [ -d "$R/third_party/FEX" ]; then
          0224-*) temoin="Cidre 0224"; ou=FEXCore/Source/Interface/Core/JIT/JIT.cpp ;;
          0226-*) temoin="Cidre 0226 : marque dans CidreLectureNue"; ou=FEXCore/Source/Interface/Core/JIT/JIT.cpp ;;
          0225-*) temoin="Cidre 0225 : entre la liberation"; ou=Source/Windows/ARM64EC/Module.cpp ;;
+         0229-*) temoin="Cidre 0229 : le contexte ARM64"; ou=Source/Windows/ARM64EC/Module.cpp ;;
          *) echo "   correctif FEX sans temoin : $(basename "$f")" >&2; exit 1 ;;
       esac
       # -F : texte litteral (les temoins contiennent . ( * &).
