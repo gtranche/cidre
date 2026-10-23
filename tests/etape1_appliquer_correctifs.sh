@@ -135,6 +135,7 @@ if [ -d "$R/third_party/FEX" ]; then
          0226-*) temoin="Cidre 0226 : marque dans CidreLectureNue"; ou=FEXCore/Source/Interface/Core/JIT/JIT.cpp ;;
          0225-*) temoin="Cidre 0225 : entre la liberation"; ou=Source/Windows/ARM64EC/Module.cpp ;;
          0229-*) temoin="Cidre 0229 : le contexte ARM64"; ou=Source/Windows/ARM64EC/Module.cpp ;;
+         0230-*) temoin="Cidre, diag CIDRE_DIAG_HAUT_NUL"; ou=FEXCore/Source/Interface/Core/JIT/JIT.cpp ;;
          0233-*) temoin="Cidre 0233 : NtDllRedirectionLUTSize"; ou=Source/Windows/ARM64EC/Module.S ;;
          *) echo "   correctif FEX sans temoin : $(basename "$f")" >&2; exit 1 ;;
       esac

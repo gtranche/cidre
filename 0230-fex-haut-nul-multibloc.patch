@@ -1,0 +1,702 @@
+Generated-by: LLM
+
+fex : scalaires SSE sans ins quand la moitie haute du xmm est connue nulle, etat propage sur tout le multibloc (hotes sans AFP : M1). Passe IR CidreHautNul avant l allocation des registres (qui remplace les arguments SSA par des registres : la version H1 dans le JIT etait inerte) ; elle pose CidreHautNul (IR.json) sur addsd/subsd/mulsd/divsd/minsd/maxsd/sqrtsd, cvtss2sd/cvtsd2ss, cvtsi2s*, roundsd et equivalents ss ; le JIT ecrit alors le registre S/D directement. CIDRE_HAUT_NUL=2 : flot de donnees sur le multibloc (Jump/CondJump ; inconnu aux entrees, retours d appel, blocs sans predecesseur, apres les ops qui vident les registres statiques) ; =1 : dans le bloc ; eteint par defaut. Banc 5 series entrelacees : flottant 15,6 -> 9,7 ms, 61 -> 98 % de Rosetta (+37,9 %), sqlite/zlib neutres, sommes identiques. Temoins h64sse_haut et h64sse_multibloc (boucle, diamant, appel, exception, saut indirect, NaN, denormaux, FTZ/DAZ, arrondis, chaines 32/64 jusqu a sqrtsd) : sorties identiques au mode 0 octet pour octet. CIDRE_DIAG_HAUT_NUL=1 : compteur des ins supprimes ; =2 : journal des ins gardes. S applique apres 0229 (0224, 0225, 0226, 0229).
+
+diff --git a/FEXCore/Source/CMakeLists.txt b/FEXCore/Source/CMakeLists.txt
+index bfed4ad..e770396 100644
+--- a/FEXCore/Source/CMakeLists.txt
++++ b/FEXCore/Source/CMakeLists.txt
+@@ -65,6 +65,7 @@ set(SRCS
+   Interface/IR/PassManager.cpp
+   Interface/IR/Passes/IRDumperPass.cpp
+   Interface/IR/Passes/IRValidation.cpp
++  Interface/IR/Passes/CidreHautNul.cpp
+   Interface/IR/Passes/RedundantFlagCalculationElimination.cpp
+   Interface/IR/Passes/RegisterAllocationPass.cpp
+   Interface/IR/Passes/x87StackOptimizationPass.cpp
+diff --git a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+index 29ed507..a8860d9 100644
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -46,6 +46,8 @@ $end_info$
+ #endif
+ 
+ namespace {
++// Cidre, diag CIDRE_DIAG_HAUT_NUL : totaux sur tous les fils (initialisation constante, pas de TLS).
++std::atomic<uint64_t> CidreTotalInsSupprimes {0}, CidreTotalInsGardes {0};
+ struct DivRem {
+   uint64_t Quotient;
+   uint64_t Remainder;
+@@ -1061,6 +1063,11 @@ CPUBackend::CompiledCode Arm64JITCore::CompileCode(uint64_t Entry, uint64_t Size
+     const char* E = getenv("CIDRE_TSO_DEP");
+     CidreTSODep = E && *E == '1' && CTX->Config.HalfBarrierTSOEnabled();
+   }
++  if (CidreDiagHautNul < 0) {
++    const char* D = getenv("CIDRE_DIAG_HAUT_NUL");
++    CidreDiagHautNul = D && *D >= '1' && *D <= '9' ? *D - '0' : 0;
++  }
++  CidreInsSupprimes = CidreInsGardes = 0; // recompte a chaque tentative (reprise par saut long comprise)
+   uint32_t SSACount = IR->GetSSACount();
+   if (CidreTSODep > 0) {
+     CidreLectureNue.assign(SSACount + 1, false);
+@@ -1364,6 +1371,16 @@ CPUBackend::CompiledCode Arm64JITCore::CompileCode(uint64_t Entry, uint64_t Size
+ 
+   this->IR = nullptr;
+ 
++  // Cidre, CIDRE_DIAG_HAUT_NUL=1 : scalaires inseres ecrits sans ins (moitie haute connue nulle) contre ins gardes.
++  if (CidreInsSupprimes || CidreInsGardes) {
++    const uint64_t S = CidreTotalInsSupprimes.fetch_add(CidreInsSupprimes, std::memory_order_relaxed) + CidreInsSupprimes;
++    const uint64_t G = CidreTotalInsGardes.fetch_add(CidreInsGardes, std::memory_order_relaxed) + CidreInsGardes;
++    const uint64_t N = S + G, A = N - CidreInsSupprimes - CidreInsGardes;
++    if (CidreDiagHautNul > 0 && ((N >> 10) != (A >> 10) || (N < 1024 && (N >> 4) != (A >> 4)))) {
++      LogMan::Msg::IFmt("haut nul : {} ins supprimes, {} gardes ({:.1f} % supprimes)", S, G, 100.0 * S / N);
++    }
++  }
++
+   return std::move(CodeData);
+ }
+ 
+diff --git a/FEXCore/Source/Interface/Core/JIT/JITClass.h b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+index 47d4c95..cbd2936 100644
+--- a/FEXCore/Source/Interface/Core/JIT/JITClass.h
++++ b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+@@ -623,12 +623,16 @@ private:
+                             ARMEmitter::VRegister Upper, ARMEmitter::VRegister Vector1, ARMEmitter::VRegister Vector2,
+                             ARMEmitter::VRegister Addend);
+   using ScalarBinaryOpCaller = std::function<void(ARMEmitter::VRegister Dst, ARMEmitter::VRegister Src1, ARMEmitter::VRegister Src2)>;
++  // Cidre : HautNul (drapeau CidreHautNul de l'op, pose par la passe CidreHautNul avant l'allocation) : Vector1 est nul
++  // au-dela de l'element, le scalaire s'ecrit sans ins (l'ecriture d'un registre H/S/D met le reste a zero).
+   void VFScalarOperation(IR::OpSize OpSize, IR::OpSize ElementSize, bool ZeroUpperBits, ScalarBinaryOpCaller ScalarEmit,
+-                         ARMEmitter::VRegister Dst, ARMEmitter::VRegister Vector1, ARMEmitter::VRegister Vector2);
++                         ARMEmitter::VRegister Dst, ARMEmitter::VRegister Vector1, ARMEmitter::VRegister Vector2, bool HautNul = false);
+   using ScalarUnaryOpCaller = std::function<void(ARMEmitter::VRegister Dst, std::variant<ARMEmitter::VRegister, ARMEmitter::Register> SrcVar)>;
+   void VFScalarUnaryOperation(IR::OpSize OpSize, IR::OpSize ElementSize, bool ZeroUpperBits, ScalarUnaryOpCaller ScalarEmit,
+                               ARMEmitter::VRegister Dst, ARMEmitter::VRegister Vector1,
+-                              std::variant<ARMEmitter::VRegister, ARMEmitter::Register> Vector2);
++                              std::variant<ARMEmitter::VRegister, ARMEmitter::Register> Vector2, bool HautNul = false);
++  uint64_t CidreInsSupprimes {}, CidreInsGardes {}; // scalaires inseres de la compilation en cours (diag)
++  int8_t CidreDiagHautNul {-1};
+ 
+   void Emulate128BitGather(IR::OpSize Size, IR::OpSize ElementSize, ARMEmitter::VRegister Dst, ARMEmitter::VRegister IncomingDst,
+                            std::optional<ARMEmitter::Register> BaseAddr, ARMEmitter::VRegister VectorIndexLow,
+diff --git a/FEXCore/Source/Interface/Core/JIT/VectorOps.cpp b/FEXCore/Source/Interface/Core/JIT/VectorOps.cpp
+index 43e38d8..267c29f 100644
+--- a/FEXCore/Source/Interface/Core/JIT/VectorOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/VectorOps.cpp
+@@ -193,7 +193,7 @@ namespace FEXCore::CPU {
+     const auto Vector1 = GetVReg(Op->Vector1);                                                                                \
+     const auto Vector2 = GetVReg(Op->Vector2);                                                                                \
+                                                                                                                               \
+-    VFScalarOperation(IROp->Size, ElementSize, Op->ZeroUpperBits, ScalarEmit, Dst, Vector1, Vector2);                         \
++    VFScalarOperation(IROp->Size, ElementSize, Op->ZeroUpperBits, ScalarEmit, Dst, Vector1, Vector2, Op->CidreHautNul);       \
+   }
+ 
+ #define DEF_FMAOP_SCALAR_INSERT(FEXOp, ARMOp)                                                                                \
+@@ -294,8 +294,17 @@ void Arm64JITCore::VFScalarFMAOperation(IR::OpSize OpSize, IR::OpSize ElementSiz
+ // The result is stored into the destination. The untouched bits of the destination come from Vector1, unless it's a 256 vector
+ // and ZeroUpperBits is true, in which case the upper bits are zero.
+ void Arm64JITCore::VFScalarOperation(IR::OpSize OpSize, IR::OpSize ElementSize, bool ZeroUpperBits, ScalarBinaryOpCaller ScalarEmit,
+-                                     ARMEmitter::VRegister Dst, ARMEmitter::VRegister Vector1, ARMEmitter::VRegister Vector2) {
++                                     ARMEmitter::VRegister Dst, ARMEmitter::VRegister Vector1, ARMEmitter::VRegister Vector2, bool HautNul) {
+   const auto Is256Bit = OpSize == IR::OpSize::i256Bit;
++  if (!HostSupportsAFP && !Is256Bit && !ZeroUpperBits) {
++    if (HautNul) {
++      // Cidre : Vector1 est nul au-dela de l'element ; l'ecriture scalaire de Dst rend exactement le meme vecteur.
++      ScalarEmit(Dst, Vector1, Vector2);
++      ++CidreInsSupprimes;
++      return;
++    }
++    ++CidreInsGardes;
++  }
+   LOGMAN_THROW_A_FMT(!Is256Bit || HostSupportsSVE256, "Need SVE256 support in order to use {} with 256-bit operation", __func__);
+   LOGMAN_THROW_A_FMT(Is256Bit || !ZeroUpperBits, "128-bit operation doesn't support ZeroUpperBits in {}", __func__);
+ 
+@@ -368,8 +377,17 @@ void Arm64JITCore::VFScalarOperation(IR::OpSize OpSize, IR::OpSize ElementSize,
+ // and ZeroUpperBits is true, in which case the upper bits are zero.
+ void Arm64JITCore::VFScalarUnaryOperation(IR::OpSize OpSize, IR::OpSize ElementSize, bool ZeroUpperBits, ScalarUnaryOpCaller ScalarEmit,
+                                           ARMEmitter::VRegister Dst, ARMEmitter::VRegister Vector1,
+-                                          std::variant<ARMEmitter::VRegister, ARMEmitter::Register> Vector2) {
++                                          std::variant<ARMEmitter::VRegister, ARMEmitter::Register> Vector2, bool HautNul) {
+   const auto Is256Bit = OpSize == IR::OpSize::i256Bit;
++  if (!HostSupportsAFP && !Is256Bit && !ZeroUpperBits) {
++    // Cidre : la passe ne marque que les ops dont ScalarEmit est une instruction unique (lit Vector2 puis ecrit Dst).
++    if (HautNul) {
++      ScalarEmit(Dst, Vector2);
++      ++CidreInsSupprimes;
++      return;
++    }
++    ++CidreInsGardes;
++  }
+   LOGMAN_THROW_A_FMT(!Is256Bit || HostSupportsSVE256, "Need SVE256 support in order to use {} with 256-bit operation", __func__);
+   LOGMAN_THROW_A_FMT(Is256Bit || !ZeroUpperBits, "128-bit operation doesn't support ZeroUpperBits in {}", __func__);
+ 
+@@ -463,7 +481,7 @@ DEF_OP(VFMinScalarInsert) {
+   const auto Vector1 = GetVReg(Op->Vector1);
+   const auto Vector2 = GetVReg(Op->Vector2);
+ 
+-  VFScalarOperation(IROp->Size, ElementSize, Op->ZeroUpperBits, ScalarEmit, Dst, Vector1, Vector2);
++  VFScalarOperation(IROp->Size, ElementSize, Op->ZeroUpperBits, ScalarEmit, Dst, Vector1, Vector2, Op->CidreHautNul);
+ }
+ 
+ DEF_OP(VFMaxScalarInsert) {
+@@ -489,7 +507,7 @@ DEF_OP(VFMaxScalarInsert) {
+   const auto Vector1 = GetVReg(Op->Vector1);
+   const auto Vector2 = GetVReg(Op->Vector2);
+ 
+-  VFScalarOperation(IROp->Size, ElementSize, Op->ZeroUpperBits, ScalarEmit, Dst, Vector1, Vector2);
++  VFScalarOperation(IROp->Size, ElementSize, Op->ZeroUpperBits, ScalarEmit, Dst, Vector1, Vector2, Op->CidreHautNul);
+ }
+ 
+ DEF_OP(VFSqrtScalarInsert) {
+@@ -508,7 +526,7 @@ DEF_OP(VFSqrtScalarInsert) {
+   const auto Vector1 = GetVReg(Op->Vector1);
+   const auto Vector2 = GetVReg(Op->Vector2);
+ 
+-  VFScalarUnaryOperation(IROp->Size, ElementSize, Op->ZeroUpperBits, ScalarEmit, Dst, Vector1, Vector2);
++  VFScalarUnaryOperation(IROp->Size, ElementSize, Op->ZeroUpperBits, ScalarEmit, Dst, Vector1, Vector2, Op->CidreHautNul);
+ }
+ 
+ DEF_OP(VFRSqrtScalarInsert) {
+@@ -629,7 +647,7 @@ DEF_OP(VFToFScalarInsert) {
+   const auto Vector1 = GetVReg(Op->Vector1);
+   const auto Vector2 = GetVReg(Op->Vector2);
+ 
+-  VFScalarUnaryOperation(IROp->Size, ElementSize, Op->ZeroUpperBits, ScalarEmit, Dst, Vector1, Vector2);
++  VFScalarUnaryOperation(IROp->Size, ElementSize, Op->ZeroUpperBits, ScalarEmit, Dst, Vector1, Vector2, Op->CidreHautNul);
+ }
+ 
+ DEF_OP(VSToFVectorInsert) {
+@@ -665,7 +683,7 @@ DEF_OP(VSToFVectorInsert) {
+   // Might be scalar 8-byte (cvtsi2ss xmm0, rax)
+   // Might be vector i32v2 (cvtpi2ps xmm0, mm0)
+   if (!HasTwoElements) {
+-    VFScalarUnaryOperation(IROp->Size, ElementSize, Op->ZeroUpperBits, ScalarEmit, Dst, Vector1, Vector2);
++    VFScalarUnaryOperation(IROp->Size, ElementSize, Op->ZeroUpperBits, ScalarEmit, Dst, Vector1, Vector2, Op->CidreHautNul);
+     return;
+   }
+ 
+@@ -734,7 +752,7 @@ DEF_OP(VSToFGPRInsert) {
+   const auto Vector = GetVReg(Op->Vector);
+   const auto GPR = GetReg(Op->Src);
+ 
+-  VFScalarUnaryOperation(IROp->Size, ElementSize, Op->ZeroUpperBits, ScalarEmit, Dst, Vector, GPR);
++  VFScalarUnaryOperation(IROp->Size, ElementSize, Op->ZeroUpperBits, ScalarEmit, Dst, Vector, GPR, Op->CidreHautNul);
+ }
+ 
+ DEF_OP(VFToIScalarInsert) {
+@@ -761,7 +779,7 @@ DEF_OP(VFToIScalarInsert) {
+   const auto Vector1 = GetVReg(Op->Vector1);
+   const auto Vector2 = GetVReg(Op->Vector2);
+ 
+-  VFScalarUnaryOperation(IROp->Size, ElementSize, Op->ZeroUpperBits, ScalarEmit, Dst, Vector1, Vector2);
++  VFScalarUnaryOperation(IROp->Size, ElementSize, Op->ZeroUpperBits, ScalarEmit, Dst, Vector1, Vector2, Op->CidreHautNul);
+ }
+ 
+ DEF_OP(VFCMPScalarInsert) {
+diff --git a/FEXCore/Source/Interface/IR/IR.json b/FEXCore/Source/Interface/IR/IR.json
+index 172d62d..adf35ef 100644
+--- a/FEXCore/Source/Interface/IR/IR.json
++++ b/FEXCore/Source/Interface/IR/IR.json
+@@ -1653,7 +1653,7 @@
+       }
+     },
+     "VectorScalar": {
+-      "FPR = VFAddScalarInsert OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2, i1:$ZeroUpperBits": {
++      "FPR = VFAddScalarInsert OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2, i1:$ZeroUpperBits, i1:$CidreHautNul{false}": {
+         "Desc": ["Does a scalar 'add' between Vector1 and Vector2.",
+                  "Inserting the result in to the lower element of Vector1 and returning the results.",
+                  "If ZeroUpperBits is set then in a 256-bit wide operation it will zero the upper 128-bits of the destination.",
+@@ -1663,7 +1663,7 @@
+         "DestSize": "RegisterSize",
+         "ElementSize": "ElementSize"
+       },
+-      "FPR = VFSubScalarInsert OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2, i1:$ZeroUpperBits": {
++      "FPR = VFSubScalarInsert OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2, i1:$ZeroUpperBits, i1:$CidreHautNul{false}": {
+         "Desc": ["Does a scalar 'sub' between Vector1 and Vector2.",
+                  "Inserting the result in to the lower element of Vector1 and returning the results.",
+                  "If ZeroUpperBits is set then in a 256-bit wide operation it will zero the upper 128-bits of the destination.",
+@@ -1673,7 +1673,7 @@
+         "DestSize": "RegisterSize",
+         "ElementSize": "ElementSize"
+       },
+-      "FPR = VFMulScalarInsert OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2, i1:$ZeroUpperBits": {
++      "FPR = VFMulScalarInsert OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2, i1:$ZeroUpperBits, i1:$CidreHautNul{false}": {
+         "Desc": ["Does a scalar 'mul' between Vector1 and Vector2.",
+                  "Inserting the result in to the lower element of Vector1 and returning the results.",
+                  "If ZeroUpperBits is set then in a 256-bit wide operation it will zero the upper 128-bits of the destination.",
+@@ -1683,7 +1683,7 @@
+         "DestSize": "RegisterSize",
+         "ElementSize": "ElementSize"
+       },
+-      "FPR = VFDivScalarInsert OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2, i1:$ZeroUpperBits": {
++      "FPR = VFDivScalarInsert OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2, i1:$ZeroUpperBits, i1:$CidreHautNul{false}": {
+         "Desc": ["Does a scalar 'div' between Vector1 and Vector2.",
+                  "Inserting the result in to the lower element of Vector1 and returning the results.",
+                  "If ZeroUpperBits is set then in a 256-bit wide operation it will zero the upper 128-bits of the destination.",
+@@ -1693,7 +1693,7 @@
+         "DestSize": "RegisterSize",
+         "ElementSize": "ElementSize"
+       },
+-      "FPR = VFMinScalarInsert OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2, i1:$ZeroUpperBits": {
++      "FPR = VFMinScalarInsert OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2, i1:$ZeroUpperBits, i1:$CidreHautNul{false}": {
+         "Desc": ["Does a scalar 'min' between Vector1 and Vector2.",
+                  "Inserting the result in to the lower element of Vector1 and returning the results.",
+                  "If ZeroUpperBits is set then in a 256-bit wide operation it will zero the upper 128-bits of the destination.",
+@@ -1707,7 +1707,7 @@
+         "ElementSize": "ElementSize",
+         "ImplicitFlagClobber": true
+       },
+-      "FPR = VFMaxScalarInsert OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2, i1:$ZeroUpperBits": {
++      "FPR = VFMaxScalarInsert OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2, i1:$ZeroUpperBits, i1:$CidreHautNul{false}": {
+         "Desc": ["Does a scalar 'max' between Vector1 and Vector2.",
+                  "Inserting the result in to the lower element of Vector1 and returning the results.",
+                  "If ZeroUpperBits is set then in a 256-bit wide operation it will zero the upper 128-bits of the destination.",
+@@ -1721,7 +1721,7 @@
+         "ElementSize": "ElementSize",
+         "ImplicitFlagClobber": true
+       },
+-      "FPR = VFSqrtScalarInsert OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2, i1:$ZeroUpperBits": {
++      "FPR = VFSqrtScalarInsert OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2, i1:$ZeroUpperBits, i1:$CidreHautNul{false}": {
+         "Desc": ["Does a scalar 'sqrt' on Vector2, inserting in to Vector1 and storing in to the destination.",
+                  "Inserting the result in to the lower element of Vector1 and returning the results.",
+                  "If ZeroUpperBits is set then in a 256-bit wide operation it will zero the upper 128-bits of the destination.",
+@@ -1751,7 +1751,7 @@
+         "DestSize": "RegisterSize",
+         "ElementSize": "ElementSize"
+       },
+-      "FPR = VFToFScalarInsert OpSize:#RegisterSize, OpSize:#DstElementSize, OpSize:$SrcElementSize, FPR:$Vector1, FPR:$Vector2, i1:$ZeroUpperBits": {
++      "FPR = VFToFScalarInsert OpSize:#RegisterSize, OpSize:#DstElementSize, OpSize:$SrcElementSize, FPR:$Vector1, FPR:$Vector2, i1:$ZeroUpperBits, i1:$CidreHautNul{false}": {
+         "Desc": ["Does a scalar 'cvt' between Vector1 and Vector2.",
+                  "Inserting the result in to the lower element of Vector1 and returning the results.",
+                  "If ZeroUpperBits is set then in a 256-bit wide operation it will zero the upper 128-bits of the destination.",
+@@ -1761,7 +1761,7 @@
+         "DestSize": "RegisterSize",
+         "ElementSize": "DstElementSize"
+       },
+-      "FPR = VSToFVectorInsert OpSize:#RegisterSize, OpSize:#DstElementSize, OpSize:$SrcElementSize, FPR:$Vector1, FPR:$Vector2, i8:$HasTwoElements, i1:$ZeroUpperBits": {
++      "FPR = VSToFVectorInsert OpSize:#RegisterSize, OpSize:#DstElementSize, OpSize:$SrcElementSize, FPR:$Vector1, FPR:$Vector2, i8:$HasTwoElements, i1:$ZeroUpperBits, i1:$CidreHautNul{false}": {
+         "Desc": ["Does a Vector 'scvt' between Vector1 and Vector2.",
+                  "Inserting the result in to the lower element of Vector1 and returning the results.",
+                  "If ZeroUpperBits is set then in a 256-bit wide operation it will zero the upper 128-bits of the destination.",
+@@ -1773,7 +1773,7 @@
+         "DestSize": "RegisterSize",
+         "ElementSize": "DstElementSize"
+       },
+-      "FPR = VSToFGPRInsert OpSize:#RegisterSize, OpSize:#DstElementSize, OpSize:$SrcElementSize, FPR:$Vector, GPR:$Src, i1:$ZeroUpperBits": {
++      "FPR = VSToFGPRInsert OpSize:#RegisterSize, OpSize:#DstElementSize, OpSize:$SrcElementSize, FPR:$Vector, GPR:$Src, i1:$ZeroUpperBits, i1:$CidreHautNul{false}": {
+         "Desc": ["Does a scalar 'cvt' between Vector1 and GPR.",
+                  "Inserting the result in to the lower element of Vector1 and returning the results.",
+                  "If ZeroUpperBits is set then in a 256-bit wide operation it will zero the upper 128-bits of the destination.",
+@@ -1783,7 +1783,7 @@
+         "DestSize": "RegisterSize",
+         "ElementSize": "DstElementSize"
+       },
+-      "FPR = VFToIScalarInsert OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2, RoundType:$Round, i1:$ZeroUpperBits": {
++      "FPR = VFToIScalarInsert OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2, RoundType:$Round, i1:$ZeroUpperBits, i1:$CidreHautNul{false}": {
+         "Desc": ["Does a scalar round float to integral on Vector2, inserting in to Vector1 and storing in to the destination.",
+                  "Rounding mode determined by argument",
+                  "Inserting the result in to the lower element of Vector1 and returning the results.",
+diff --git a/FEXCore/Source/Interface/IR/PassManager.cpp b/FEXCore/Source/Interface/IR/PassManager.cpp
+index 5d3bcec..b4a1b5b 100644
+--- a/FEXCore/Source/Interface/IR/PassManager.cpp
++++ b/FEXCore/Source/Interface/IR/PassManager.cpp
+@@ -77,6 +77,8 @@ void PassManager::AddDefaultPasses(Context::ContextImpl* ctx) {
+     InsertPass(CreateDeadFlagCalculationEliminination());
+   }
+ 
++  // Cidre : analyse sur le SSA, avant que l'allocation ne remplace les arguments par des registres.
++  InsertPass(CreateCidreHautNulPass(ctx->HostFeatures));
+   InsertPass(IR::CreateRegisterAllocationPass(&ctx->CPUID), "RA");
+ 
+ #if defined(ASSERTIONS_ENABLED) && ASSERTIONS_ENABLED
+diff --git a/FEXCore/Source/Interface/IR/Passes.h b/FEXCore/Source/Interface/IR/Passes.h
+index 213967a..7a89512 100644
+--- a/FEXCore/Source/Interface/IR/Passes.h
++++ b/FEXCore/Source/Interface/IR/Passes.h
+@@ -12,6 +12,7 @@ namespace FEXCore::IR {
+ class Pass;
+ 
+ fextl::unique_ptr<Pass> CreateDeadFlagCalculationEliminination();
++fextl::unique_ptr<Pass> CreateCidreHautNulPass(const HostFeatures& Features);
+ fextl::unique_ptr<Pass> CreateRegisterAllocationPass(const CPUIDEmu* CPUID);
+ fextl::unique_ptr<Pass> CreateX87StackOptimizationPass(const HostFeatures&, OpSize GPROpSize);
+ 
+diff --git a/FEXCore/Source/Interface/IR/Passes/CidreHautNul.cpp b/FEXCore/Source/Interface/IR/Passes/CidreHautNul.cpp
+new file mode 100644
+index 0000000..31b24b3
+--- /dev/null
++++ b/FEXCore/Source/Interface/IR/Passes/CidreHautNul.cpp
+@@ -0,0 +1,373 @@
++// SPDX-License-Identifier: MIT
++/*
++$info$
++tags: ir|opts
++desc: Cidre : scalaires SSE sans ins quand la moitie haute du xmm est connue nulle (hotes sans AFP)
++$end_info$
++*/
++
++// Sans AFP (M1), un scalaire insere (addsd, mulsd, sqrtsd...) s'ecrit fop dans un temporaire puis ins dans le registre,
++// pour garder les bits de Vector1 au-dela de l'element. Si ces bits sont connus nuls, l'ecriture directe du registre
++// H/S/D (qui met le reste a zero) rend exactement le meme vecteur : la passe pose alors CidreHautNul sur l'op et le JIT
++// omet l'ins. Elle tourne avant l'allocation des registres, qui remplace ensuite les arguments SSA par des registres.
++//
++// CIDRE_HAUT_NUL=1 : largeurs suivies dans le bloc (lecture scalaire en memoire, scalaire insere sur une telle
++// valeur..., y compris d'une instruction a l'autre par StoreRegister/LoadRegister). =2 : aussi l'etat des xmm a
++// l'entree de chaque bloc du multibloc, propage par les arcs internes (Jump,
++// CondJump) ; inconnu a l'entree des blocs ou l'on arrive de l'exterieur (premier bloc, points d'entree, retours
++// d'appel, blocs sans predecesseur) et apres toute operation qui vide puis recharge les registres statiques (appel au
++// code natif : il peut reecrire le contexte). CIDRE_DIAG_HAUT_NUL=2 : journal des scalaires laisses avec leur ins.
++
++#include "Interface/IR/IR.h"
++#include "Interface/IR/IREmitter.h"
++#include "Interface/IR/PassManager.h"
++#include "Interface/IR/Passes.h"
++#include "Interface/IR/RegisterAllocationData.h"
++
++#include <FEXCore/Core/HostFeatures.h>
++#include <FEXCore/IR/IR.h>
++#include <FEXCore/Utils/LogManager.h>
++#include <FEXCore/Utils/Profiler.h>
++#include <FEXCore/fextl/vector.h>
++
++#include <algorithm>
++#include <array>
++#include <cstdlib>
++
++namespace FEXCore::IR {
++namespace {
++  constexpr size_t NX = 16; // xmm0-15
++  constexpr uint8_t Inconnue = 255;
++  constexpr uint8_t PasCalculee = 0; // memo, et etat d'entree pas encore atteint (neutre pour le max)
++
++  class CidreHautNulPass final : public Pass {
++  public:
++    explicit CidreHautNulPass(const HostFeatures& Features) {
++      const char* E = getenv("CIDRE_HAUT_NUL");
++      Mode = E && (*E == '1' || *E == '2') ? *E - '0' : 0;
++      if (Features.SupportsAFP || (Features.SupportsAVX && Features.SupportsSVE256)) {
++        Mode = 0; // AFP : pas d'ins a supprimer ; registres de 256 bits : non traite
++      }
++      const char* D = getenv("CIDRE_DIAG_HAUT_NUL");
++      Diag = D && *D >= '2';
++    }
++    void Run(IREmitter* IREmit) override;
++
++  private:
++    uint8_t Largeur(OrderedNodeWrapper V, int Profondeur = 0);
++    void AnalyseMultibloc();
++    void Journal(Ref Node, const IROp_Header* IROp, OrderedNodeWrapper V1);
++
++    int Mode {};
++    bool Diag {};
++    IRListView* IR {};
++    fextl::vector<uint8_t> Memo; // largeur par NodeID (PasCalculee : a calculer)
++    fextl::vector<uint8_t> LR;   // largeur de chaque LoadRegister FPR au point de lecture
++  };
++
++  uint8_t Bits(OpSize S) {
++    return S == OpSize::i16Bit ? 16 : S == OpSize::i32Bit ? 32 : S == OpSize::i64Bit ? 64 : Inconnue;
++  }
++  // Largeurs 16, 32, 64 ou inconnue ; au-dela de 64 bits, rien n'est suivi.
++  uint8_t Borne(unsigned W) {
++    return W <= 16 ? 16 : W <= 32 ? 32 : W <= 64 ? 64 : Inconnue;
++  }
++
++  // Largeur en bits de la partie basse de V au-dela de laquelle la valeur (vue sur 128 bits) est connue nulle.
++  uint8_t CidreHautNulPass::Largeur(OrderedNodeWrapper V, int Profondeur) {
++    if (V.IsImmediate() || V.IsInvalid() || Profondeur > 12) {
++      return Inconnue;
++    }
++    const auto ID = V.ID().Value;
++    if (ID < Memo.size() && Memo[ID] != PasCalculee) {
++      return Memo[ID];
++    }
++    const auto* H = IR->GetOp<IROp_Header>(V);
++    const auto Insere = [&](OrderedNodeWrapper V1, OpSize Element) -> uint8_t {
++      if (H->Size != OpSize::i128Bit) {
++        return Inconnue;
++      }
++      const uint8_t W = Largeur(V1, Profondeur + 1), E = Bits(Element);
++      return (W == Inconnue || E == Inconnue) ? Inconnue : std::max(W, E);
++    };
++    // Operation sur 64 bits ou moins : registre D/S ecrit, le reste a zero.
++    const auto Taille = [&](uint8_t W) -> uint8_t {
++      return H->Size == OpSize::i128Bit ? W : H->Size < OpSize::i128Bit ? std::min(W, Borne(OpSizeAsBits(H->Size))) : Inconnue;
++    };
++    uint8_t R = Inconnue;
++    switch (H->Op) {
++    case OP_LOADMEM: R = H->C<IROp_LoadMem>()->Class == RegClass::FPR ? Bits(H->Size) : Inconnue; break;
++    case OP_LOADMEMTSO: R = H->C<IROp_LoadMemTSO>()->Class == RegClass::FPR ? Bits(H->Size) : Inconnue; break;
++    case OP_LOADREGISTER:
++      // Ne passe pas par le memo : depend du point de lecture, rempli par l'analyse du multibloc.
++      return H->C<IROp_LoadRegister>()->Class == RegClass::FPR && ID < LR.size() && LR[ID] != PasCalculee ? LR[ID] : Inconnue;
++    case OP_VECTORIMM: R = H->C<IROp_VectorImm>()->Immediate == 0 && H->Size <= OpSize::i128Bit ? 16 : Inconnue; break;
++    case OP_LOADNAMEDVECTORCONSTANT:
++      R = H->C<IROp_LoadNamedVectorConstant>()->Constant == NamedVectorConstant::NAMED_VECTOR_ZERO && H->Size <= OpSize::i128Bit ? 16 : Inconnue;
++      break;
++    case OP_VCASTFROMGPR: R = H->ElementSize == OpSize::i64Bit ? 64 : 32; break; // fmov S/D
++    case OP_VMOV: R = Taille(Largeur(H->C<IROp_VMov>()->Source, Profondeur + 1)); break;
++    case OP_VINSELEMENT: {
++      const auto* Op = H->C<IROp_VInsElement>();
++      const uint8_t W = Largeur(Op->DestVector, Profondeur + 1);
++      if (H->Size == OpSize::i128Bit && W != Inconnue && Bits(H->ElementSize) != Inconnue) {
++        R = std::max(W, Borne((Op->DestIdx + 1u) * OpSizeAsBits(H->ElementSize)));
++      }
++      break;
++    }
++    case OP_VAND: {
++      const auto* Op = H->C<IROp_VAnd>();
++      R = Taille(std::min(Largeur(Op->Vector1, Profondeur + 1), Largeur(Op->Vector2, Profondeur + 1)));
++      break;
++    }
++    case OP_VANDN: R = Taille(Largeur(H->C<IROp_VAndn>()->Vector1, Profondeur + 1)); break; // bic : V1 & ~V2
++    case OP_VOR:
++    case OP_VXOR: {
++      const auto* Op = H->C<IROp_VOr>();
++      if (H->Op == OP_VXOR && Op->Vector1.ID() == Op->Vector2.ID()) {
++        R = 16;
++      } else {
++        R = Taille(std::max(Largeur(Op->Vector1, Profondeur + 1), Largeur(Op->Vector2, Profondeur + 1)));
++      }
++      break;
++    }
++    case OP_VFADDSCALARINSERT: R = Insere(H->C<IROp_VFAddScalarInsert>()->Vector1, H->ElementSize); break;
++    case OP_VFSUBSCALARINSERT: R = Insere(H->C<IROp_VFSubScalarInsert>()->Vector1, H->ElementSize); break;
++    case OP_VFMULSCALARINSERT: R = Insere(H->C<IROp_VFMulScalarInsert>()->Vector1, H->ElementSize); break;
++    case OP_VFDIVSCALARINSERT: R = Insere(H->C<IROp_VFDivScalarInsert>()->Vector1, H->ElementSize); break;
++    case OP_VFMINSCALARINSERT: R = Insere(H->C<IROp_VFMinScalarInsert>()->Vector1, H->ElementSize); break;
++    case OP_VFMAXSCALARINSERT: R = Insere(H->C<IROp_VFMaxScalarInsert>()->Vector1, H->ElementSize); break;
++    case OP_VFSQRTSCALARINSERT: R = Insere(H->C<IROp_VFSqrtScalarInsert>()->Vector1, H->ElementSize); break;
++    case OP_VFRSQRTSCALARINSERT: R = Insere(H->C<IROp_VFRSqrtScalarInsert>()->Vector1, H->ElementSize); break;
++    case OP_VFRECPSCALARINSERT: R = Insere(H->C<IROp_VFRecpScalarInsert>()->Vector1, H->ElementSize); break;
++    case OP_VFTOFSCALARINSERT: R = Insere(H->C<IROp_VFToFScalarInsert>()->Vector1, H->ElementSize); break;
++    case OP_VFTOISCALARINSERT: R = Insere(H->C<IROp_VFToIScalarInsert>()->Vector1, H->ElementSize); break;
++    case OP_VFCMPSCALARINSERT: R = Insere(H->C<IROp_VFCMPScalarInsert>()->Vector1, H->ElementSize); break;
++    case OP_VSTOFGPRINSERT: R = Insere(H->C<IROp_VSToFGPRInsert>()->Vector, H->ElementSize); break;
++    case OP_VSTOFVECTORINSERT: {
++      const auto* Op = H->C<IROp_VSToFVectorInsert>();
++      R = Insere(Op->Vector1, Op->HasTwoElements ? OpSize::i64Bit : H->ElementSize);
++      break;
++    }
++    default: break;
++    }
++    // Pas de memo pendant le point fixe du multibloc (les LoadRegister changent encore) : Memo est vide alors.
++    if (ID < Memo.size()) {
++      Memo[ID] = R;
++    }
++    return R;
++  }
++
++  void CidreHautNulPass::AnalyseMultibloc() {
++    using Etat = std::array<uint8_t, NX>;
++    const uint32_t NB = IR->GetHeader()->BlockCount;
++
++    LR.assign(IR->GetSSACount(), PasCalculee);
++    fextl::vector<Etat> Entree(NB), Sortie(NB);
++    fextl::vector<uint8_t> Exterieur(NB, 0), Predecesseurs(NB, 0);
++    fextl::vector<fextl::vector<uint32_t>> Succ(NB);
++    fextl::vector<Ref> Noeud(NB, nullptr);
++    for (auto& E : Entree) {
++      E.fill(PasCalculee);
++    }
++
++    const auto IDBloc = [&](OrderedNodeWrapper B) -> uint32_t {
++      return IR->GetOp<IROp_CodeBlock>(B)->ID;
++    };
++    bool Premier = true;
++    for (auto [BlockNode, BlockHeader] : IR->GetBlocks()) {
++      const auto* BlockIROp = BlockHeader->C<IROp_CodeBlock>();
++      const uint32_t B = BlockIROp->ID;
++      if (B >= NB) {
++        LR.clear();
++        return;
++      }
++      Noeud[B] = BlockNode;
++      Exterieur[B] |= Premier || BlockIROp->EntryPoint;
++      Premier = false;
++      for (auto [CodeNode, IROp] : IR->GetCode(BlockNode)) {
++        switch (IROp->Op) {
++        case OP_JUMP: Succ[B].push_back(IDBloc(IROp->C<IROp_Jump>()->TargetBlock)); break;
++        case OP_CONDJUMP:
++          Succ[B].push_back(IDBloc(IROp->C<IROp_CondJump>()->TrueBlock));
++          Succ[B].push_back(IDBloc(IROp->C<IROp_CondJump>()->FalseBlock));
++          break;
++        case OP_EXITFUNCTION:
++          if (const auto R = IROp->C<IROp_ExitFunction>()->CallReturnBlock; !R.IsInvalid() && !R.IsImmediate()) {
++            const auto C = IDBloc(R);
++            if (C >= NB) {
++              LR.clear();
++              return;
++            }
++            Exterieur[C] = 1; // on y revient par un ret, apres du code inconnu
++          }
++          break;
++        default: break;
++        }
++      }
++    }
++    for (uint32_t B = 0; B < NB; ++B) {
++      for (auto S : Succ[B]) {
++        if (S >= NB) {
++          LR.clear();
++          return;
++        }
++        Predecesseurs[S] = 1;
++      }
++    }
++    for (uint32_t B = 0; B < NB; ++B) {
++      if (Mode < 2 || Exterieur[B] || !Predecesseurs[B] || !Noeud[B]) { // mode 1 : rien n'entre par les arcs
++        Entree[B].fill(Inconnue);
++      }
++    }
++
++    const auto Transfert = [&](uint32_t B) {
++      Etat S = Entree[B];
++      for (auto [CodeNode, IROp] : IR->GetCode(Noeud[B])) {
++        switch (IROp->Op) {
++        case OP_LOADREGISTER: {
++          const auto* Op = IROp->C<IROp_LoadRegister>();
++          if (Op->Class == RegClass::FPR) {
++            LR[IR->GetID(CodeNode).Value] = Op->Reg < NX ? S[Op->Reg] : Inconnue;
++          }
++          break;
++        }
++        case OP_STOREREGISTER: {
++          // Le registre fixe est pose a la creation du noeud (FlushRegisterCache).
++          const auto Reg = PhysicalRegister(CodeNode);
++          if (Reg.AsRegClass() == RegClass::FPRFixed && Reg.Reg < NX) {
++            S[Reg.Reg] = Largeur(IROp->C<IROp_StoreRegister>()->Value);
++          }
++          break;
++        }
++        // Vident les registres statiques dans le contexte, appellent du code natif, puis les rechargent.
++        case OP_CALLBACKRETURN:
++        case OP_SYSCALL:
++        case OP_THUNK:
++        case OP_THREADREMOVECODEENTRY:
++        case OP_CPUID:
++        case OP_XGETBV:
++        case OP_PRINT:
++        case OP_PRINTMSG:
++        case OP_PROCESSORID:
++        case OP_RDRAND:
++        case OP_MONOBACKPATCHERWRITE:
++        case OP_BREAK: S.fill(Inconnue); break;
++        default: break;
++        }
++      }
++      Sortie[B] = S;
++    };
++
++    // Point fixe : les largeurs ne font que croitre (max), hauteur 4 par xmm.
++    bool Change = true;
++    for (int Tour = 0; Change; ++Tour) {
++      if (Tour > 64) {
++        LR.clear();
++        return;
++      }
++      Change = false;
++      for (uint32_t B = 0; B < NB; ++B) {
++        if (!Noeud[B]) {
++          continue;
++        }
++        Transfert(B);
++        for (auto Sc : Succ[B]) {
++          for (size_t r = 0; r < NX; ++r) {
++            if (Sortie[B][r] > Entree[Sc][r]) {
++              Entree[Sc][r] = Sortie[B][r];
++              Change = true;
++            }
++          }
++        }
++      }
++    }
++    // Blocs jamais atteints depuis une entree : rien n'est suppose. Les blocs atteints n'ont plus d'etat PasCalculee,
++    // ce dernier passage ne change donc pas leurs LR.
++    for (uint32_t B = 0; B < NB; ++B) {
++      if (Noeud[B]) {
++        for (auto& W : Entree[B]) {
++          W = W == PasCalculee ? Inconnue : W;
++        }
++        Transfert(B);
++      }
++    }
++  }
++
++  void CidreHautNulPass::Journal(Ref Node, const IROp_Header* IROp, OrderedNodeWrapper V1) {
++    const auto* H = IR->GetOp<IROp_Header>(V1);
++    uint32_t Reg = ~0u, W = ~0u;
++    if (H->Op == OP_LOADREGISTER) {
++      Reg = H->C<IROp_LoadRegister>()->Reg;
++      W = V1.ID().Value < LR.size() ? LR[V1.ID().Value] : ~0u;
++    }
++    LogMan::Msg::IFmt("haut nul : {} %{} : V1 = %{} {} taille {} reg {} largeur {}", GetName(IROp->Op), IR->GetID(Node).Value,
++                      V1.ID().Value, GetName(H->Op), OpSizeToSize(H->Size), Reg, W);
++  }
++
++  void CidreHautNulPass::Run(IREmitter* IREmit) {
++    if (!Mode) {
++      return;
++    }
++    FEXCORE_PROFILE_SCOPED("PassManager::CidreHautNul");
++    auto CurrentIR = IREmit->ViewIR();
++    IR = &CurrentIR;
++    Memo.clear();
++    LR.clear();
++    AnalyseMultibloc();
++    Memo.assign(IR->GetSSACount(), PasCalculee);
++
++    for (auto [BlockNode, BlockHeader] : IR->GetBlocks()) {
++      for (auto [CodeNode, IROp] : IR->GetCode(BlockNode)) {
++        OrderedNodeWrapper V1 {};
++        bool* Drapeau = nullptr;
++        bool ZeroUpper = true;
++        OpSize E = IROp->ElementSize;
++        switch (IROp->Op) {
++#define CAS(Code, Nom, Champ)                          \
++  case OP_##Code: {                                    \
++    auto* Op = IROp->CW<IROp_##Nom>();                 \
++    V1 = Op->Champ;                                    \
++    Drapeau = &Op->CidreHautNul;                       \
++    ZeroUpper = Op->ZeroUpperBits;                     \
++    break;                                             \
++  }
++          CAS(VFADDSCALARINSERT, VFAddScalarInsert, Vector1)
++          CAS(VFSUBSCALARINSERT, VFSubScalarInsert, Vector1)
++          CAS(VFMULSCALARINSERT, VFMulScalarInsert, Vector1)
++          CAS(VFDIVSCALARINSERT, VFDivScalarInsert, Vector1)
++          CAS(VFMINSCALARINSERT, VFMinScalarInsert, Vector1)
++          CAS(VFMAXSCALARINSERT, VFMaxScalarInsert, Vector1)
++          CAS(VFSQRTSCALARINSERT, VFSqrtScalarInsert, Vector1)
++          CAS(VFTOFSCALARINSERT, VFToFScalarInsert, Vector1)
++          CAS(VFTOISCALARINSERT, VFToIScalarInsert, Vector1)
++          CAS(VSTOFGPRINSERT, VSToFGPRInsert, Vector)
++#undef CAS
++        case OP_VSTOFVECTORINSERT: {
++          auto* Op = IROp->CW<IROp_VSToFVectorInsert>();
++          if (!Op->HasTwoElements) { // la forme a deux elements garde son ins (chemin a part dans le JIT)
++            V1 = Op->Vector1;
++            Drapeau = &Op->CidreHautNul;
++            ZeroUpper = Op->ZeroUpperBits;
++          }
++          break;
++        }
++        default: break;
++        }
++        if (!Drapeau || ZeroUpper || IROp->Size != OpSize::i128Bit || Bits(E) == Inconnue) {
++          continue;
++        }
++        *Drapeau = Largeur(V1) <= Bits(E);
++        if (Diag && !*Drapeau) {
++          Journal(CodeNode, IROp, V1);
++        }
++      }
++    }
++    IR = nullptr;
++  }
++} // namespace
++
++fextl::unique_ptr<Pass> CreateCidreHautNulPass(const HostFeatures& Features) {
++  return fextl::make_unique<CidreHautNulPass>(Features);
++}
++} // namespace FEXCore::IR

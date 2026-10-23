@@ -997,8 +997,11 @@ fi
 # faux 3 passes sur 5, bon 4 sur 4 avec la sonnette remise). CIDRE_SONNETTE_RETOUR=0
 # le reactive pour un essai.
 [ -n "${CIDRE_SONNETTE_RETOUR:-}" ] || export CIDRE_SONNETTE_RETOUR=1
+# fex 0230 : scalaires SSE sans ins quand la moitie haute du xmm est connue nulle (multibloc) ; banc flottant
+# 61 -> 98 % de Rosetta, temoins 30/30, PEAK sans changement ni defaut (23/10). CIDRE_HAUT_NUL=0 le coupe.
+[ -n "${CIDRE_HAUT_NUL:-}" ] || export CIDRE_HAUT_NUL=2
 # --- reglages FEX : fin ---
-echo "    fex     : tso ${FEX_TSOENABLED:-1}${FEX_EXTENDEDVOLATILEMETADATA:+ sauf $FEX_EXTENDEDVOLATILEMETADATA}${FEX_VOLATILEMETADATAALLBLOCKS:+, metadonnee MSVC prise au mot}, cache disque ${FEX_DISKCACHE:-0}, x87 reduit ${FEX_X87REDUCEDPRECISION:-0}, MaxInst ${FEX_MAXINST:-5000}, multiblock ${FEX_MULTIBLOCK:-1}, sonnette retour ${CIDRE_SONNETTE_RETOUR}, hote ${FEX_HOSTFEATURES}" >>"$JOURNAL"
+echo "    fex     : tso ${FEX_TSOENABLED:-1}${FEX_EXTENDEDVOLATILEMETADATA:+ sauf $FEX_EXTENDEDVOLATILEMETADATA}${FEX_VOLATILEMETADATAALLBLOCKS:+, metadonnee MSVC prise au mot}, cache disque ${FEX_DISKCACHE:-0}, x87 reduit ${FEX_X87REDUCEDPRECISION:-0}, MaxInst ${FEX_MAXINST:-5000}, multiblock ${FEX_MULTIBLOCK:-1}, sonnette retour ${CIDRE_SONNETTE_RETOUR}, haut nul ${CIDRE_HAUT_NUL}, hote ${FEX_HOSTFEATURES}" >>"$JOURNAL"
 
 # Arguments propres au profil. A poser APRES la table des lanceurs, qui remet les
 # arguments a zero quand elle remplace l'executable.
