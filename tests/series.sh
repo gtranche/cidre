@@ -81,5 +81,5 @@ serie_dxmt() {
 # FEX vit dans third_party/FEX, pas dans src/ : etape1 et la verification le
 # traitent a part.
 serie_fex() {
-   ls "$R"/0070-fex-*.patch "$R"/0118-fex-*.patch "$R"/0161-fex-*.patch "$R"/0179-fex-*.patch "$R"/0194-fex-*.patch "$R"/0197-fex-*.patch "$R"/0198-fex-*.patch "$R"/0199-fex-*.patch "$R"/0200-fex-*.patch "$R"/0203-fex-*.patch "$R"/0211-fex-*.patch "$R"/0217-fex-*.patch "$R"/0219-fex-*.patch "$R"/0224-fex-*.patch "$R"/0226-fex-*.patch "$R"/0225-fex-*.patch "$R"/0229-fex-*.patch 2>/dev/null
+   ls "$R"/0070-fex-*.patch "$R"/0118-fex-*.patch "$R"/0161-fex-*.patch "$R"/0179-fex-*.patch "$R"/0194-fex-*.patch "$R"/0197-fex-*.patch "$R"/0198-fex-*.patch "$R"/0199-fex-*.patch "$R"/0200-fex-*.patch "$R"/0203-fex-*.patch "$R"/0211-fex-*.patch "$R"/0217-fex-*.patch "$R"/0219-fex-*.patch "$R"/0224-fex-*.patch "$R"/0226-fex-*.patch "$R"/0225-fex-*.patch "$R"/0229-fex-*.patch "$R"/0233-fex-*.patch 2>/dev/null
 }

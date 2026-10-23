@@ -1,0 +1,23 @@
+Generated-by: LLM
+
+fex : CheckCall lit la taille de la table de redirection de ntdll sur 32 bits et borne l indice strictement (ARM64EC) -- Module.S lisait NtDllRedirectionLUTSize (uint32_t, Module.cpp) par un ldr de 8 octets : la borne comparee a l indice prenait sa moitie haute dans la variable voisine, et lld refusait le lien des que le symbole tombait sur une adresse non alignee sur 8 (« misaligned ldr/str offset », vu en ajoutant des variables a Module.cpp). Lecture 32 bits (ldr w17, etendue a x17). Et la table a NtDllRedirectionLUTSize entrees : l indice egal a la taille est hors table (lecture de 4 octets apres la fin, redirection vers NtDllBase + valeur lue) ; b.hi devient b.hs. Temoin tests/temoin_0233.sh : desassemble CheckCall dans Module.S.obj d une construction (ldr w17 et b.hs attendus). Defaut present en amont (FEX 72b2ff8).
+
+diff --git a/Source/Windows/ARM64EC/Module.S b/Source/Windows/ARM64EC/Module.S
+index 5d1b2d1..8254c3a 100644
+--- a/Source/Windows/ARM64EC/Module.S
++++ b/Source/Windows/ARM64EC/Module.S
+@@ -163,9 +163,12 @@ DIRECT_SYSCALL_WRAPPER("#NtProtectVirtualMemoryNative", WineNtProtectVirtualMemo
+   subs x16, x11, x9
+   b.lo end
+   adrp x17, NtDllRedirectionLUTSize
+-  ldr x17, [x17, #:lo12:NtDllRedirectionLUTSize]
++  // Cidre 0233 : NtDllRedirectionLUTSize est un uint32_t (Module.cpp) : lecture 32 bits, etendue a x17. Lu sur 8 octets, il
++  // comparait l'indice a une borne dont la moitie haute venait de la variable voisine, et lld refusait le lien des
++  // que le symbole tombait sur une adresse non alignee sur 8 (« misaligned ldr/str offset »).
++  ldr w17, [x17, #:lo12:NtDllRedirectionLUTSize]
+   cmp x16, x17
+-  b.hi end
++  b.hs end // la table a NtDllRedirectionLUTSize entrees : l'indice egal a la taille est deja dehors
+   adrp x17, NtDllRedirectionLUT
+   ldr x17, [x17, #:lo12:NtDllRedirectionLUT]
+   ldr w11, [x17, x16, lsl #2]
