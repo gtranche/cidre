@@ -133,6 +133,42 @@ contient "preparer : demarrage automatique retire" "demarrage automatique du cli
 absent "user.reg : plus de Battle.net sous Run" '"Battle.net"=' "$(cat "$P/user.reg")"
 contient "user.reg : les autres valeurs gardees" '"Autre"="autre.exe"' "$(cat "$P/user.reg")"
 verif "preparer : rien a retirer ensuite" "" "$(sh "$B" preparer bnet-osi)"
+
+echo "== preparer : arguments du jeu dans Battle.net.config (AdditionalLaunchArguments)"
+# un Battle.net.config comme celui du client : CRLF, un bloc par jeu sous Games
+printf '{\r\n    "Client": {\r\n        "GameLaunchWindowBehavior": "0"\r\n    },\r\n    "Games": {\r\n        "battle_net": {\r\n            "ServerUid": "battle.net",\r\n            "Resumable": "false"\r\n        },\r\n        "osi": {\r\n            "ServerUid": "osi",\r\n            "LastPlayed": "1792590581"\r\n        }\r\n    }\r\n}\r\n' >"$CFG"
+aa() { awk '/"osi": \{/ { b = 1 } b && /AdditionalLaunchArguments/ { v = $0; sub(/^[^:]*: *"/, "", v); sub(/",?\r?$/, "", v); print v; exit } b && /^ *}/ { exit }' "$CFG"; }
+json_ok() { python3 -I -c 'import json, sys; json.load(open(sys.argv[1])); print("ok")' "$CFG" 2>&1; }
+r=$(CIDRE_ARGUMENTS="-a -b" sh "$B" preparer bnet-osi)
+verif "arguments : poses" "-a -b" "$(aa)"
+contient "arguments : dit au journal" "arguments du jeu pour osi" "$r"
+verif "arguments : ce que Cidre a ajoute, retenu" "-a -b" "$(cat "$P/.cidre-bnet-args/osi" 2>/dev/null)"
+verif "arguments : JSON valide" "ok" "$(json_ok)"
+verif "arguments : CRLF garde" "$(grep -c . "$CFG")" "$(grep -c "$(printf '\r')\$" "$CFG")"
+verif "arguments : un seul AdditionalLaunchArguments" 1 "$(grep -c AdditionalLaunchArguments "$CFG")"
+verif "arguments : rien de plus la seconde fois" "" "$(CIDRE_ARGUMENTS="-a -b" sh "$B" preparer bnet-osi)"
+# l'utilisateur ajoute les siens devant (reglage du client) ; Cidre ne retire que sa part
+sed -i '' 's/"AdditionalLaunchArguments": "-a -b"/"AdditionalLaunchArguments": "-u -a -b"/' "$CFG"
+CIDRE_ARGUMENTS="-c" sh "$B" preparer bnet-osi >/dev/null
+verif "arguments : part de l'utilisateur gardee, celle de Cidre changee" "-u -c" "$(aa)"
+CIDRE_ARGUMENTS= sh "$B" preparer bnet-osi >/dev/null
+verif "arguments : plus rien de Cidre, la part de l'utilisateur reste" "-u" "$(aa)"
+[ ! -e "$P/.cidre-bnet-args/osi" ] && ok "arguments : plus rien de retenu" || echec "arguments : marque restee"
+# l'utilisateur a tout remplace : sa valeur reste, une option deja la n'est pas doublee
+sed -i '' 's/"AdditionalLaunchArguments": "-u"/"AdditionalLaunchArguments": "-z"/' "$CFG"
+CIDRE_ARGUMENTS="-z -y" sh "$B" preparer bnet-osi >/dev/null
+verif "arguments : option de l'utilisateur pas doublee" "-z -y" "$(aa)"
+# ceux de la ligne de commande (`cidre play <id> -- ...`), puis ceux de la fiche
+CIDRE_ARGUMENTS="-a" sh "$B" preparer bnet-osi -w >/dev/null
+verif "arguments : ligne de commande puis fiche" "-z -w -a" "$(aa)"
+r=$(CIDRE_ARGUMENTS='-q"x' sh "$B" preparer bnet-osi)
+contient "arguments : guillemet refuse" "refuses" "$r"
+verif "arguments : valeur gardee apres refus" "-z -w -a" "$(aa)"
+verif "arguments : JSON toujours valide" "ok" "$(json_ok)"
+contient "arguments : les autres cles intactes" '"LastPlayed": "1792590581"' "$(cat "$CFG")"
+contient "arguments : jeu absent de Games" "absent de Battle.net.config" "$(CIDRE_ARGUMENTS=-a sh "$B" preparer bnet-fen)"
+printf '{\n    "Client": {\n        "GameLaunchWindowBehavior": "0",\n        "AutoLogin": "true"\n    }\n}\n' >"$CFG"
+rm -rf "$P/.cidre-bnet-args"
 sh "$B" jouer bnet-truc >/dev/null; verif "jouer sans code : 2" 2 $?
 CIDRE_BNET_PREFIXE="$T/rien" sh "$B" preparer bnet-osi >/dev/null 2>&1; verif "preparer sans client : 5" 5 $?
 verif "arreter sans client ouvert" "Battle.net n'etait pas ouvert." "$(sh "$B" arreter)"

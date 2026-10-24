@@ -42,7 +42,8 @@ export WINEPREFIX=${WINEPREFIX:-$R/wine/pfx-arm64ec}
 # regle sans wineserver) ; un jeu Battle.net deja en cours : on ne part pas.
 BNET=non; case ${CIDRE_JEU:-} in bnet-*) BNET=oui ;; esac
 if [ $BNET = oui ]; then
-   sh "$R/tests/battlenet.sh" preparer "$CIDRE_JEU" && RCB=0 || RCB=$?
+   # (avec les arguments de `cidre play <id> -- ...` : $1 est l'executable)
+   ( shift; sh "$R/tests/battlenet.sh" preparer "$CIDRE_JEU" "$@" ) && RCB=0 || RCB=$?
    [ $RCB -eq 0 ] || exit $RCB
 elif ! pgrep -f '[v]ermintide2.exe' >/dev/null 2>&1; then
    pkill -9 -f '[c]:\\faux_steam.exe' 2>/dev/null || true

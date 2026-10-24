@@ -13,7 +13,8 @@
 #                                     --json : {"evenement":"ouvert","deja":bool} ou {"evenement":"erreur",...}
 #   battlenet.sh arreter [--force]    ferme le client, et le wineserver du prefixe avec lui ;
 #                                     refuse (code 4) pendant un jeu, sauf --force (`cidre stop`)
-#   battlenet.sh preparer <id>        lancer_depuis_steam.sh, avant de regler le prefixe pour ce jeu
+#   battlenet.sh preparer <id> [args] lancer_depuis_steam.sh, avant de regler le prefixe pour ce jeu (et ses
+#                                     arguments : AdditionalLaunchArguments de Battle.net.config)
 #   battlenet.sh jouer <id> [args]    lancer_depuis_steam.sh, a la place de l'executable du jeu
 #   battlenet.sh creer                cree le prefixe s'il manque (Wine neuf, runtime Visual C++, DXVK, FEX ;
 #                                     sans le pont Steam), sinon le remet au runtime (cidre setup)
@@ -155,6 +156,82 @@ config_lancement() {
    [ -n "$cf" ] && grep -q '"GameLaunchWindowBehavior": *"2"' "$cf" 2>/dev/null || return 0
    sed 's/"GameLaunchWindowBehavior": *"2"/"GameLaunchWindowBehavior": "0"/' "$cf" >"$cf.cidre-neuf" && mv "$cf.cidre-neuf" "$cf" &&
       echo "    battlenet : GameLaunchWindowBehavior 2 -> 0 (le client reste ouvert pendant le jeu)"
+}
+
+# Les arguments du jeu (option `arguments` de sa fiche, ou CIDRE_ARGUMENTS, et ceux
+# de `cidre play <id> -- ...`) : le client lance le jeu avec ses propres arguments,
+# plus ceux de son reglage « Arguments de ligne de commande supplementaires »,
+# AdditionalLaunchArguments du bloc Games.<uid> de Battle.net.config. Cidre y ajoute
+# les siens, client ferme, et retient dans .cidre-bnet-args/<uid> ce qu'il a ajoute :
+# la fois suivante il retire cela seul, et laisse ce que l'utilisateur y a mis a la
+# main (une option deja la n'est pas doublee, tests/arguments_jeu.sh). Pas de
+# guillemet ni de barre oblique inverse (la valeur est une chaine JSON) ; fin de
+# ligne CRLF du fichier gardee.
+bnet_config() { ls -d "$PFX/drive_c/users/"*/AppData/Roaming/Battle.net/Battle.net.config 2>/dev/null | head -1; }
+# la valeur actuelle de AdditionalLaunchArguments pour <uid> (rien si absente)
+args_actuels() { # <config> <uid>
+   U=$2 awk 'BEGIN { u = "\"" ENVIRON["U"] "\": {" }
+      { sub(/\r$/, "") }
+      /^ *"Games": *\{/ { g = 1; next }
+      g && index($0, u) { b = 1; next }
+      b && /^ *}/ { exit }
+      b && /"AdditionalLaunchArguments":/ { v = $0; sub(/^[^:]*: *"/, "", v); sub(/",? *$/, "", v); print v; exit }' "$1"
+}
+# pose <valeur> pour <uid> : remplace la ligne si le bloc du jeu l'a, sinon l'ajoute en
+# tete du bloc ; code 1 si le bloc du jeu manque (jeu jamais vu par ce client). Deux
+# lectures du fichier : la premiere dit si la cle est deja dans le bloc.
+poser_args() { # <config> <uid> <valeur>
+   U=$2 V=$3 awk 'BEGIN { u = "\"" ENVIRON["U"] "\": {"; v = ENVIRON["V"] }
+      { cr = sub(/\r$/, ""); fin = cr ? "\r" : "" }
+      /^ *"Games": *\{/ { g = 1 }
+      FNR == NR { if (g && !vu && index($0, u)) { vu = 1; b = 1; next }
+                  if (b && /^ *}/) b = 0
+                  if (b && /"AdditionalLaunchArguments":/) a = 1
+                  next }
+      FNR == 1 { g = 0; b = 0 }
+      g && !fait && index($0, u) && $0 !~ /\{ *}/ { print $0 fin; b = 1; ind = $0; sub(/[^ ].*$/, "", ind)
+         if (!a) { print ind "    \"AdditionalLaunchArguments\": \"" v "\"," fin; fait = 1 }
+         next }
+      b && a && /"AdditionalLaunchArguments":/ { l = $0; sub(/"AdditionalLaunchArguments":.*$/, "", l)
+         c = ($0 ~ /", *$/) ? "," : ""; print l "\"AdditionalLaunchArguments\": \"" v "\"" c fin; fait = 1; next }
+      b && /^ *}/ { b = 0 }
+      { print $0 fin }
+      END { exit !fait }' "$1" "$1" >"$1.cidre-neuf" && mv "$1.cidre-neuf" "$1" || { rm -f "$1.cidre-neuf"; return 1; }
+}
+# les arguments que Cidre veut pour le jeu : ceux de la ligne de commande, puis ceux de la fiche qui n'y sont pas
+args_voulus() { # <id> [arguments de la ligne de commande...]
+   av_id=$1; shift
+   av_f=${CIDRE_ARGUMENTS:-$(sh "$R/tests/profil_cidre.sh" "$av_id" 2>/dev/null | sed -n 's/^arguments=//p' | head -1)}
+   av_n="$*"
+   [ -z "$av_f" ] || av_n="$av_n $(sh "$R/tests/arguments_jeu.sh" "$av_f" "$@" | paste -sd ' ' -)"
+   printf '%s' "$av_n" | awk '{ $1 = $1; print }'
+}
+regler_args() { # <id> [arguments de la ligne de commande...] : client ferme
+   ra_id=$1; shift
+   ra_cf=$(bnet_config); [ -n "$ra_cf" ] || return 0
+   ra_uid=$(jeux_registre | awk -F'\t' -v i="$ra_id" '$1 == i { print $5; exit }'); [ -n "$ra_uid" ] || return 0
+   ra_m=$PFX/.cidre-bnet-args/$ra_uid
+   ra_neuf=$(args_voulus "$ra_id" "$@")
+   case $ra_neuf in *'"'*|*'\'*) echo "    battlenet : arguments du jeu refuses (guillemet ou barre oblique inverse) : $ra_neuf"; return 0 ;; esac
+   ra_cur=$(args_actuels "$ra_cf" "$ra_uid"); ra_old=$(cat "$ra_m" 2>/dev/null)
+   # la part de l'utilisateur : la valeur, sans ce que Cidre y avait ajoute
+   ra_user=$ra_cur
+   if [ -n "$ra_old" ]; then
+      case $ra_cur in "$ra_old") ra_user= ;; *" $ra_old") ra_user=${ra_cur%" $ra_old"} ;; esac
+   fi
+   # shellcheck disable=SC2086
+   ra_add=$(sh "$R/tests/arguments_jeu.sh" "$ra_neuf" $ra_user | paste -sd ' ' -)
+   ra_val=$(printf '%s %s' "$ra_user" "$ra_add" | awk '{ $1 = $1; print }')
+   if [ "$ra_val" != "$ra_cur" ]; then
+      if [ -z "$ra_cur" ] && ! grep -q '"AdditionalLaunchArguments":' "$ra_cf" && [ -z "$ra_val" ]; then :
+      elif poser_args "$ra_cf" "$ra_uid" "$ra_val"; then
+         echo "    battlenet : arguments du jeu pour $ra_uid : « $ra_val »${ra_user:+ (dont « $ra_user » pose a la main)}"
+      else
+         echo "    battlenet : $ra_uid absent de Battle.net.config, arguments du jeu non poses"; return 0
+      fi
+   fi
+   mkdir -p "$PFX/.cidre-bnet-args"
+   if [ -n "$ra_add" ]; then printf '%s\n' "$ra_add" >"$ra_m"; else rm -f "$ra_m"; fi
 }
 
 # La cle Run « Battle.net » (« Lancer Battle.net au demarrage » du client, qui la
@@ -326,7 +403,7 @@ case ${1:-} in
       fi
       if serveur_vivant; then arreter_client; else rm -f "$MARQUE"; echo "Battle.net n'etait pas ouvert."; fi ;;
    preparer)
-      id=${2:?usage: battlenet.sh preparer <id>}
+      id=${2:?usage: battlenet.sh preparer <id> [arguments du jeu...]}; shift 2
       absent && exit 5
       dj=$(des_jeux)
       if [ -n "$dj" ]; then
@@ -334,14 +411,15 @@ case ${1:-} in
          exit 4
       fi
       if serveur_vivant; then
-         if [ -n "$(du_client)" ] && [ "$(marque pour)" = "$id" ]; then
+         # (le client relit Battle.net.config a son ouverture : des arguments changes le font rouvrir)
+         if [ -n "$(du_client)" ] && [ "$(marque pour)" = "$id" ] && [ "$(marque arguments)" = "$(args_voulus "$id" "$@")" ]; then
             echo "    battlenet : client deja ouvert pour ce jeu"
          else
             pour=$(marque pour)
             arreter_client "ouvert ${pour:+pour $pour }; il sera rouvert pour ce jeu, avec son environnement"
          fi
       fi
-      serveur_vivant || { config_lancement; sans_demarrage_auto; }
+      serveur_vivant || { config_lancement; sans_demarrage_auto; regler_args "$id" "$@"; }
       exit 0 ;;
    jouer)
       id=${2:?usage: battlenet.sh jouer <id> [arguments]}; shift 2
@@ -349,7 +427,7 @@ case ${1:-} in
       l=$(jeux | awk -F'\t' -v i="$id" '$1 == i')
       code=$(printf '%s' "$l" | cut -f4); exe=$(printf '%s' "$l" | cut -f6); nexe=${exe##*/}
       [ -n "$code" ] && [ -n "$nexe" ] || { echo "    battlenet : $id n'a pas de code de lancement (outil-steam/battlenet.conf)"; exit 2; }
-      [ $# -eq 0 ] || echo "    battlenet : arguments ignores ($*) : le client lance le jeu avec les siens"
+      # (les arguments du jeu passent par Battle.net.config, poses par `preparer`)
       J=${CIDRE_BNET_JOURNAL:-$R/build/logs/steam-$id.log}
       emp=$(empreinte); garde=non
       if [ -n "$(du_client)" ]; then
@@ -361,7 +439,7 @@ case ${1:-} in
          echo "    battlenet : client deja ouvert pour ce jeu, lancement de $code demande"
          lancer_client "$J" "--exec=launch $code"
       else
-         printf 'pour=%s\nempreinte=%s\n' "$id" "$emp" >"$MARQUE"
+         printf 'pour=%s\nempreinte=%s\narguments=%s\n' "$id" "$emp" "$(args_voulus "$id" "$@")" >"$MARQUE"
          echo "    battlenet : ouverture du client ($CLIENT_ARGS, Qt logiciel), qui lancera $code"
          lancer_client "$J" "--exec=launch $code"
       fi
