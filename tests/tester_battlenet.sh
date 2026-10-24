@@ -12,6 +12,8 @@ trap 'rm -rf "$T"' EXIT
 # (chemin reel : cidre compare les chemins des disques a /Volumes resolu)
 T=$(cd "$T" && pwd -P)
 export CIDRE_DIR="$T/cidre" CIDRE_SAVES_DIR="$T/copies" CIDRE_VOLUMES="$T/Volumes"
+# (le journal du client aussi : sinon le temoin ecrit dans build/logs/battlenet-client.log)
+export CIDRE_BNET_JOURNAL_CLIENT="$T/battlenet-client.log"
 mkdir -p "$CIDRE_DIR" "$CIDRE_VOLUMES"
 nb=0; ko=0
 ok()   { nb=$((nb + 1)); echo "  ok   $1"; }
@@ -231,7 +233,10 @@ contient "info : fiche livree" '"lanceur":"battlenet"' "$i"
 contient "info : options de la fiche" '"knowndlls":"d3d12 d3d12core"' "$i"
 contient "info : sauvegardes connues" '"sauvegardes":true' "$i"
 contient "list texte" "Cidre (Battle.net)" "$(sh "$C" list)"
-contient "info fen : fiche D4" '"exe":"Diablo IV.exe"' "$(sh "$C" info bnet-fen --json)"
+i=$(sh "$C" info bnet-fen --json)
+contient "info fen : fiche D4" '"exe":"Diablo IV.exe"' "$i"
+contient "info fen : vkd3d-proton devant l'Agility SDK" '"knowndlls":"d3d12 d3d12core"' "$i"
+contient "info fen : blocs FEX courts" '"fex_maxinst":500' "$i"
 sh "$C" info bnet-inconnu >/dev/null 2>&1; verif "info : id inconnu" 1 $?
 
 echo "== cidre rm / play"

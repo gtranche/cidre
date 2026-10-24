@@ -7543,8 +7543,8 @@ empreinte = "1b57ab505182399a1cbaed112212538d"
 [bnet-fen]
 nom = "Diablo IV"
 etat = "non-teste"
-date = "2026-10-21"
-empreinte = "9fbfdbddd9286a514c2c449e67af4e0c"
+date = "2026-10-24"
+empreinte = "aa8e9b4094fa45bd9ef10f6f9a44d3ab"
 
 [bnet-osi]
 nom = "Diablo II: Resurrected"

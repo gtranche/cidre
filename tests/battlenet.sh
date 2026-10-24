@@ -75,7 +75,8 @@ CLIENT="$PFX/drive_c/Program Files (x86)/Battle.net/Battle.net.exe"
 CLIENT_ARGS=${CIDRE_BNET_ARGS_CLIENT:---in-process-gpu}
 # pour quel jeu Cidre a ouvert le client, et l'empreinte de son environnement
 MARQUE=$PFX/.cidre-client
-JOURNAL_CLIENT=$R/build/logs/battlenet-client.log
+# (CIDRE_BNET_JOURNAL_CLIENT : un autre journal, pour les essais -- le temoin ecrivait dans le vrai)
+JOURNAL_CLIENT=${CIDRE_BNET_JOURNAL_CLIENT:-$R/build/logs/battlenet-client.log}
 # (CIDRE_BNET_ETAPE2 : un autre lanceur de programme Windows, pour les essais)
 ETAPE2=${CIDRE_BNET_ETAPE2:-$R/tests/etape2_pile_arm64ec.sh}
 SRV=/tmp/.wine-$(id -u)/server-$(stat -f '%Xd-%Xi' "$PFX" 2>/dev/null)
@@ -178,7 +179,8 @@ lancer_client_prog() { # <journal> <programme Windows> [arguments]
    lc_j=$1; lc_p=$2; shift 2
    mkdir -p "$(dirname "$lc_j")"
    # (pas de « === » : `cidre log` prend la derniere ligne qui en commence une pour le debut du lancement)
-   echo "    battlenet : $(date '+%F %T') $lc_p $*" >>"$lc_j"
+   # (printf et non echo : le echo de sh lisait \t, \v... dans les chemins Windows)
+   printf '    battlenet : %s %s %s\n' "$(date '+%F %T')" "$lc_p" "$*" >>"$lc_j"
    ( export WINEPREFIX="$PFX" QT_QUICK_BACKEND=${QT_QUICK_BACKEND:-software} QT_OPENGL=${QT_OPENGL:-software}
      CIDRE_OVERLAY_DYLIB= nohup sh "$ETAPE2" "$lc_p" "$@" >>"$lc_j" 2>&1 </dev/null & )
 }
@@ -307,10 +309,16 @@ case ${1:-} in
       WINEPREFIX=$PFX sh "$R/tests/prefixe_a_jour.sh" >&2
       config_lancement >&2
       printf 'pour=client\n' >"$MARQUE"
+      # Un jeu lance par « Jouer » du client herite de cet environnement, pas de sa
+      # fiche : Diablo IV, le 24/10, est parti avec le d3d12 de Wine (D3D12CreateDevice
+      # E_NOINTERFACE, « Echec de l'initialisation des systemes graphiques »). Les jeux
+      # Battle.net vises sont en D3D12 : vkd3d-proton (system32, pose par un lancement en
+      # dx12) passe devant, s'il est la. Le client, 32 bits, ne charge pas d3d12.
+      grep -aq 'vkd3d-proton' "$PFX/drive_c/windows/system32/d3d12.dll" 2>/dev/null && export CIDRE_D3D12=${CIDRE_D3D12:-n}
       # la langue du Mac, comme l'installeur (Qt logiciel et --in-process-gpu : lancer_client)
       lancer_client "$JOURNAL_CLIENT" "--lang=$(locale_blizzard)"
       [ $J_ = non ] || echo '{"evenement":"ouvert","deja":false}'
-      dire_ "Battle.net s'ouvre (une a deux minutes) : connecte-toi, puis lance tes jeux depuis le client." ;;
+      dire_ "Battle.net s'ouvre (une a deux minutes) : connecte-toi, installe ou mets a jour tes jeux. Lance-les par Cidre (Jouer dans Verger, ou \`cidre play bnet-...\`) : « Jouer » dans le client les lance sans les reglages de leur fiche." ;;
    arreter)
       dj=$(des_jeux)
       if [ -n "$dj" ] && [ "${2:-}" != --force ]; then

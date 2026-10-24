@@ -17,8 +17,17 @@ lanceur = "battlenet"
 # manche, rien ne dit encore ce que D4 exige au-dela de SM 6.0.
 dx12 = true
 sm66 = true
+# Le D3D12 du systeme (vkd3d-proton, system32) devant tout autre : le jeu livre l'Agility SDK
+# de Microsoft (D3D12\D3D12Core.dll). Avec ces KnownDLLs (restees de D2R), le lancement du
+# 24/10 15:07 a cree son device ; celui de 15:47, avec le d3d12 de Wine, a eu E_NOINTERFACE.
+knowndlls = "d3d12 d3d12core"
+# Le chargeur protege du jeu (diablo_iv_loader.dll, ou la partie de 15:07 est morte : violation
+# d'acces a +0x21A8D7, 20 s apres le device) est de la famille de celui de D2R : memes blocs
+# FEX courts a une branche (fiche bnet-osi). Hypothese, a verifier a la premiere manche.
+fex_maxinst = 500
+fex_multiblock = false
 
 [compat]
 etat = "non-teste"
-date = "2026-10-21"
-notes = "Jamais lance sous Cidre. Tourne chez l'utilisateur sous Whisky/GPTK (D3DMetal, exclu ici). Saison 14 (3.1.0) : exige l'export FindNextFileNameW, present dans Wine 11.18."
+date = "2026-10-24"
+notes = "Pas encore lance par Cidre : les deux parties du 24/10 sont parties de « Jouer » du client Battle.net, sans la fiche. 15:07 : vkd3d-proton (KnownDLLs de D2R), « Created Dx12 device », fenetre 1728x1117, puis violation d'acces dans diablo_iv_loader.dll. 15:47 : d3d12 de Wine, D3D12CreateDevice E_NOINTERFACE, « Echec de l'initialisation des systemes graphiques ». Tourne chez l'utilisateur sous Whisky/GPTK (D3DMetal, exclu ici). Saison 14 (3.1.0) : exige l'export FindNextFileNameW, present dans Wine 11.18."
