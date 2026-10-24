@@ -1,0 +1,459 @@
+Generated-by: LLM
+
+KosmicKrisp : compilation Metal differee et variantes de rendu prechauffees (CIDRE_COMPILE_DIFFEREE, CIDRE_PRECHAUFFAGE)
+
+vkd3d-proton cree chaque PSO par un vkCreate*Pipelines synchrone, sur le fil
+du jeu qui appelle CreatePipelineState. Diablo IV (24/10, premier lancement,
+M1 Max) les cree tous depuis un seul fil : 3 513 bibliotheques en 400 s
+d'ecran noir, ~2 coeurs sur 10. Profil du fil (sample) : 66 % frontal MSL ->
+AIR, 28 % pipeline de calcul pour la puce, 5 % NIR -> MSL, < 1 % code emule.
+
+Avec CIDRE_COMPILE_DIFFEREE, vkCreate*Pipelines s'arrete apres le MSL : la
+bibliotheque d'une etape de rendu (VS sans NIR retenu, FS) ou le pipeline de
+calcul est compile par une util_queue du device, puis attendu au premier
+vkCmdBindPipeline / vkCmdBindShadersEXT (kk_cmd_bind_shaders) ou a la
+destruction. VS et FS d'un meme pipeline partent en parallele. Restent
+synchrones : VS emule en calcul (tess/geom), FS de repli, FS vide du device.
+Un echec n'est plus rendu a vkCreate* : il est ecrit sur stderr ; les dispatchs
+d'un pipeline de calcul NULL et les dessins dont le VS ou le FS a echoue sont
+sautes (kk_cmd_dispatch.c, kk_cmd_draw.c), comme un PSO qui n'aurait pas ete cree.
+
+Prechauffage (actif avec la compilation differee, CIDRE_PRECHAUFFAGE=0 le
+coupe) : le fil qui compile le FS compile ensuite la variante de rendu VS+FS
+que le premier dessin demandera si les cibles liees ont les formats declares
+(kk_get_render_pipeline_variant, cle identique a celle de kk_cmd_draw.c) ; elle
+etait compilee au premier dessin, sur le fil qui enregistre (saccades en jeu).
+Un VS partage par le cache de pipelines attend, a sa destruction, les
+prechauffages qui lisent encore sa fonction (prewarm_refs).
+
+CIDRE_COMPILE_DIFFEREE : absente/0 = coupe (comportement d'origine) ; 1 = coeurs
+- 2 fils (1 a 8) ; N = N fils (64 au plus). MESA_KK_COMPILE_STATS affiche aussi
+le nombre de variantes prechauffees.
+
+Banc banc_creation (~/Dev/cidre-premier-lancement/banc, M1 Max, macOS 26.5,
+hors jeu) : 600 modules SPIR-V reels de Diablo IV (extraits de son
+vkd3d-proton.cache.write : 16 calcul, 328 VS reels, 256 FS reels + VS genere),
+un fil cree tout puis lie tout, reserve d'AIR vide et cache de Metal neuf a
+chaque passe, 3 tours entrelaces :
+   sans dessins : dylib posee 55,9 s ; 0237 coupe 55,9 s ; 4 fils 14,1 s (x4,0) ;
+                  8 fils 8,5 s (x6,6)
+   un dessin par pipeline de rendu : dylib posee 66,0 s ; 0237 coupe 65,8 s ;
+                  8 fils sans prechauffage 14,0 s ; 8 fils + prechauffage 10,0 s
+                  (lien et dessins 10,2 -> 6,8 s ; 256/256 variantes prechauffees
+                  retrouvees au dessin, aucune compilee deux fois)
+Destruction aussitot apres creation (8 fils, 677 pipelines) : sans faute.
+Non-regression (tests/test_*, probe_*, bench_*_vulkan de Cidre, dylib posee /
+0237 coupe / 0237 8 fils) : 16 tests identiques (code 0), 5 bancs identiques
+aux temps pres (sortie de calcul identique).
+Non essaye : le chemin d'echec d'une compilation differee (aucun echec dans le
+banc), un jeu sous Wine.
+La cle de code (0208) change avec ce correctif (kk_shader.c, kk_cmd_draw.c,
+kk_cmd_dispatch.c y entrent) sans que le MSL change : les reserves d'AIR et
+caches de pipelines des joueurs se refont une fois.
+
+diff --color -ru pa/src/kosmickrisp/vulkan/kk_cmd_dispatch.c pb/src/kosmickrisp/vulkan/kk_cmd_dispatch.c
+--- a/src/kosmickrisp/vulkan/kk_cmd_dispatch.c	2026-10-24 17:30:56
++++ b/src/kosmickrisp/vulkan/kk_cmd_dispatch.c	2026-10-24 17:30:56
+@@ -125,6 +125,9 @@
+    desc->root.cs.base_group[2] = baseGroupZ;
+ 
+    struct kk_shader *cs = cmd->state.shaders[MESA_SHADER_COMPUTE];
++   /* Cidre : compilation differee echouee (CIDRE_COMPILE_DIFFEREE) : rien a lancer. */
++   if (cs->pipeline.cs == NULL)
++      return;
+    struct mtl_size local_size = cs->info.cs.local_size;
+ 
+    mtl_compute_encoder *encoder = cs_get_compute(cmd);
+@@ -179,6 +182,9 @@
+    desc->root.cs.base_group[2] = 0;
+ 
+    struct kk_shader *cs = cmd->state.shaders[MESA_SHADER_COMPUTE];
++   /* Cidre : compilation differee echouee (CIDRE_COMPILE_DIFFEREE) : rien a lancer. */
++   if (cs->pipeline.cs == NULL)
++      return;
+    struct mtl_size local_size = cs->info.cs.local_size;
+ 
+    mtl_compute_encoder *encoder = cs_get_compute(cmd);
+@@ -256,6 +262,9 @@
+    }
+ 
+    struct kk_shader *cs = cmd->state.shaders[MESA_SHADER_COMPUTE];
++   /* Cidre : compilation differee echouee (CIDRE_COMPILE_DIFFEREE) : rien a lancer. */
++   if (cs->pipeline.cs == NULL)
++      return;
+    struct mtl_size local_size = cs->info.cs.local_size;
+    mtl_compute_encoder *encoder = cs_get_compute(cmd);
+ 
+diff --color -ru pa/src/kosmickrisp/vulkan/kk_cmd_draw.c pb/src/kosmickrisp/vulkan/kk_cmd_draw.c
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c	2026-10-24 17:30:56
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c	2026-10-24 17:30:56
+@@ -2845,6 +2845,13 @@
+ {
+    struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
+ 
++   /* Cidre : VS ou FS dont la compilation differee a echoue
++    * (CIDRE_COMPILE_DIFFEREE) : le dessin est saute, comme si le pipeline
++    * n'avait pas pu etre cree, au lieu de partir avec l'etat precedent. */
++   if (kk_shader_compile_failed(cmd->state.shaders[MESA_SHADER_VERTEX]) ||
++       kk_shader_compile_failed(cmd->state.shaders[MESA_SHADER_FRAGMENT]))
++      return;
++
+    /* Must run before the root table is uploaded. */
+    kk_flush_xfb_state(cmd, data);
+ 
+diff --color -ru pa/src/kosmickrisp/vulkan/kk_device.h pb/src/kosmickrisp/vulkan/kk_device.h
+--- a/src/kosmickrisp/vulkan/kk_device.h	2026-10-24 17:30:56
++++ b/src/kosmickrisp/vulkan/kk_device.h	2026-10-24 17:30:56
+@@ -22,6 +22,7 @@
+ #include "util/hash_table.h"
+ #include "util/simple_mtx.h"
+ #include "util/u_dynarray.h"
++#include "util/u_queue.h"
+ 
+ #include "vk_device.h"
+ #include "vk_meta.h"
+@@ -121,6 +122,12 @@
+ 
+    simple_mtx_t empty_fs_lock;
+    struct kk_shader *empty_fs;
++
++   /* Cidre : compilation Metal differee (CIDRE_COMPILE_DIFFEREE). Les
++    * bibliotheques et pipelines de calcul sont compiles par ces fils, hors de
++    * vkCreate*Pipelines ; on ne les attend qu'au premier vkCmdBindPipeline. */
++   struct util_queue compile_queue;
++   bool compile_queue_ok;
+ };
+ 
+ VK_DEFINE_HANDLE_CASTS(kk_device, vk.base, VkDevice, VK_OBJECT_TYPE_DEVICE)
+diff --color -ru pa/src/kosmickrisp/vulkan/kk_shader.c pb/src/kosmickrisp/vulkan/kk_shader.c
+--- a/src/kosmickrisp/vulkan/kk_shader.c	2026-10-24 17:30:56
++++ b/src/kosmickrisp/vulkan/kk_shader.c	2026-10-24 17:30:56
+@@ -6,6 +6,9 @@
+  */
+ 
+ #include "kk_shader.h"
++
++#include <stdatomic.h>
++#include <unistd.h>
+ #include "util/compress.h"
+ 
+ #include "kk_cmd_buffer.h"
+@@ -1257,6 +1260,19 @@
+ {
+    struct kk_device *dev = container_of(vk_dev, struct kk_device, vk);
+ 
++   /* Cidre : un pipeline detruit avant la fin de sa compilation differee. */
++   if (shader->compile_async) {
++      util_queue_fence_wait(&shader->compile_ready);
++      util_queue_fence_destroy(&shader->compile_ready);
++      shader->compile_async = false;
++   }
++   /* Prechauffage d'un FS qui lit encore la fonction de ce VS (VS partage par
++    * le cache de pipelines, FS d'un autre pipeline encore en file). */
++   while (atomic_load(&shader->prewarm_refs) != 0)
++      usleep(100);
++   free(shader->prewarm_key);
++   shader->prewarm_key = NULL;
++
+    struct kk_pipeline_handles *pipe = &shader->pipeline;
+ 
+    if (shader->info.stage == MESA_SHADER_COMPUTE) {
+@@ -2708,6 +2724,9 @@
+    return device->empty_fs;
+ }
+ 
++static unsigned kk_compile_async_threads(void);
++static _Atomic uint32_t kk_prewarm_count;
++
+ VkResult
+ kk_device_init_shader_cache(struct kk_device *device)
+ {
+@@ -2721,12 +2740,29 @@
+       simple_mtx_destroy(&device->empty_fs_lock);
+       return VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
++
++   device->compile_queue_ok = false;
++   unsigned threads = kk_compile_async_threads();
++   if (threads > 0) {
++      device->compile_queue_ok =
++         util_queue_init(&device->compile_queue, "kkcomp", 1024, threads,
++                         UTIL_QUEUE_INIT_RESIZE_IF_FULL, NULL);
++      if (device->compile_queue_ok)
++         fprintf(stderr, "kk: compilation differee, %u fils\n", threads);
++   }
+    return VK_SUCCESS;
+ }
+ 
+ void
+ kk_device_finish_shader_cache(struct kk_device *device)
+ {
++   if (device->compile_queue_ok) {
++      util_queue_destroy(&device->compile_queue);
++      device->compile_queue_ok = false;
++      if (getenv("MESA_KK_COMPILE_STATS"))
++         fprintf(stderr, "kk: %u variantes de rendu prechauffees\n",
++                 atomic_load(&kk_prewarm_count));
++   }
+    if (device->rp_variant_cache) {
+       hash_table_foreach(device->rp_variant_cache, entry)
+          mtl_release(entry->data);
+@@ -2817,7 +2853,136 @@
+    return gs;
+ }
+ 
++/* Cidre : compilation Metal differee (CIDRE_COMPILE_DIFFEREE).
++ *
++ * vkd3d-proton cree chaque PSO D3D12 par un vkCreate*Pipelines synchrone, sur
++ * le fil du jeu qui appelle CreatePipelineState ; beaucoup de jeux les creent
++ * tous depuis un seul fil au chargement (Diablo IV, 24/10 : 3 513 bibliotheques
++ * en 400 s, un fil, ~2 coeurs sur 10). Le temps y passe dans Metal : 66 % le
++ * frontal MSL -> AIR (newLibraryWithSource), 28 % le pipeline de calcul pour la
++ * puce, 5 % NIR -> MSL. Ici, vkCreate*Pipelines s'arrete apres le MSL ; la
++ * bibliotheque (etape de rendu) ou le pipeline de calcul est compile par un
++ * fil de compile_queue, et attendu au premier vkCmdBindPipeline (ou a la
++ * destruction). Metal compile ces requetes en parallele (plusieurs
++ * MTLCompilerService) : banc bench_variantes_paralleles, 8 fils, x4,6.
++ *
++ * Valeur : absente ou 0 = coupe (comportement d'origine) ; 1 = fils par
++ * defaut (coeurs - 2, de 1 a 8) ; N = N fils (64 au plus). */
++static unsigned
++kk_compile_async_threads(void)
++{
++   static int threads = -1;
++   if (threads < 0) {
++      const char *v = getenv("CIDRE_COMPILE_DIFFEREE");
++      long n = v ? strtol(v, NULL, 10) : 0;
++      if (n == 1) {
++         long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
++         n = CLAMP(ncpu - 2, 1, 8);
++      }
++      threads = (int)CLAMP(n, 0, 64);
++   }
++   return (unsigned)threads;
++}
++
++static void
++kk_async_compile_execute(void *job, UNUSED void *gdata,
++                         UNUSED int thread_index)
++{
++   struct kk_shader *s = job;
++   struct kk_device *dev = s->compile_dev;
++
++   if (s->info.stage == MESA_SHADER_COMPUTE)
++      s->compile_result =
++         kk_compile_compute_pipeline(dev, &s->msl_data[MESA_SHADER_COMPUTE],
++                                     s->compile_local_size, &s->pipeline.cs);
++   else
++      s->compile_result = kk_build_stage_library(dev, s);
++
++   if (s->compile_result != VK_SUCCESS)
++      fprintf(stderr, "kk: compilation differee echouee (etape %d) : "
++                      "les dessins qui l'emploient seront sautes\n",
++              (int)s->info.stage);
++
++   /* Prechauffage : la variante de rendu VS+FS que le premier dessin
++    * demandera si les cibles liees ont les formats declares par le pipeline.
++    * Le VS a ete mis en file avant ce FS (file FIFO) : il est fini ou en
++    * cours sur un autre fil, l'attendre ici ne peut pas bloquer la file. */
++   struct kk_shader *vs = s->prewarm_vs;
++   if (vs != NULL) {
++      util_queue_fence_wait(&vs->compile_ready);
++      if (s->compile_result == VK_SUCCESS && vs->compile_result == VK_SUCCESS &&
++          vs->function != NULL && s->function != NULL) {
++         s->prewarm_key->vs_function = vs->function;
++         s->prewarm_key->fs_function = s->function;
++         mtl_render_pipeline_state *st = kk_get_render_pipeline_variant(
++            dev, vs->function, vs, s, s->prewarm_key);
++         if (st != NULL)
++            atomic_fetch_add(&kk_prewarm_count, 1);
++      }
++      s->prewarm_vs = NULL;
++      atomic_fetch_sub(&vs->prewarm_refs, 1);
++   }
++}
++
++/* Cidre (0237) : CIDRE_PRECHAUFFAGE=0 coupe le prechauffage des variantes de
++ * rendu (actif par defaut avec la compilation differee). */
++static bool
++kk_prewarm_enabled(void)
++{
++   static int enabled = -1;
++   if (enabled < 0) {
++      const char *v = getenv("CIDRE_PRECHAUFFAGE");
++      enabled = !(v && v[0] == '0');
++   }
++   return enabled;
++}
++
++/* La cle que kk_cmd_draw.c calculera pour ce VS et ce FS quand les cibles
++ * liees ont les formats declares (vs->vs_nir == NULL, VS non emule). */
++static struct kk_rp_variant_key *
++kk_prewarm_key(const struct kk_shader *vs, const struct kk_shader *fs)
++{
++   struct kk_rp_variant_key *key = calloc(1, sizeof(*key));
++   if (key == NULL)
++      return NULL;
++   key->topology = vs->info.vs.topology;
++   for (uint32_t i = 0u; i < MAX_DRAW_BUFFERS; ++i) {
++      enum mtl_pixel_format declared = fs->info.fs.rt_formats[i];
++      key->formats[i] = declared;
++      key->blend[i] = fs->info.fs.blend[i];
++      key->blend_write_mask[i] = fs->info.fs.blend_write_mask[i];
++      if (declared == MTL_PIXEL_FORMAT_INVALID)
++         key->write_disable_mask |= BITFIELD_BIT(i);
++   }
++   return key;
++}
++
++/* Compile tout de suite, ou met en file quand la compilation differee est
++ * active. Ne sert que pour les cas simples : etape de rendu sans NIR retenu
++ * (pas de vs_nir, pas d'emulation en calcul) et pipeline de calcul. */
+ static VkResult
++kk_compile_maybe_async(struct kk_device *dev, struct kk_shader *s,
++                       uint32_t local_size_threads)
++{
++   if (!dev->compile_queue_ok) {
++      if (s->info.stage == MESA_SHADER_COMPUTE)
++         return kk_compile_compute_pipeline(
++            dev, &s->msl_data[MESA_SHADER_COMPUTE], local_size_threads,
++            &s->pipeline.cs);
++      return kk_build_stage_library(dev, s);
++   }
++
++   s->compile_dev = dev;
++   s->compile_local_size = local_size_threads;
++   s->compile_result = VK_SUCCESS;
++   util_queue_fence_init(&s->compile_ready);
++   s->compile_async = true;
++   util_queue_add_job(&dev->compile_queue, s, &s->compile_ready,
++                      kk_async_compile_execute, NULL, 0);
++   return VK_SUCCESS;
++}
++
++static VkResult
+ kk_compile_shaders(struct vk_device *device, uint32_t shader_count,
+                    struct vk_shader_compile_info *infos,
+                    const struct vk_graphics_pipeline_state *state,
+@@ -2964,9 +3129,7 @@
+       uint32_t local_size_threads = s->info.cs.local_size.x *
+                                     s->info.cs.local_size.y *
+                                     s->info.cs.local_size.z;
+-      result =
+-         kk_compile_compute_pipeline(dev, &s->msl_data[MESA_SHADER_COMPUTE],
+-                                     local_size_threads, &s->pipeline.cs);
++      result = kk_compile_maybe_async(dev, s, local_size_threads);
+    } else {
+       struct kk_shader *vs =
+          shaders[0]->info.stage == MESA_SHADER_VERTEX ? shaders[0] : NULL;
+@@ -2988,7 +3151,7 @@
+          if (emulated)
+             result = kk_compile_graphics_vertex_side(dev, vs);
+          else if (vs->vs_nir == NULL)
+-            result = kk_build_stage_library(dev, vs);
++            result = kk_compile_maybe_async(dev, vs, 0);
+ 
+          if (result == VK_SUCCESS && vs->info.vs.has_ds)
+             vs->pipeline.gfx.ds_handle = kk_compile_ds_state(dev, &vs->info);
+@@ -2996,7 +3159,18 @@
+ 
+       if (result == VK_SUCCESS && fs != NULL) {
+          kk_gather_fragment_info(state, fs);
+-         result = kk_build_stage_library(dev, fs);
++         /* Cidre (0237) : prechauffer la variante de rendu apres le FS. */
++         if (dev->compile_queue_ok && kk_prewarm_enabled() && vs != NULL &&
++             vs->compile_async && vs->vs_nir == NULL && !vs->info.has_gs &&
++             !(vs->info.vs.additional_stages_bits &
++               BITFIELD_BIT(MESA_SHADER_TESS_CTRL))) {
++            fs->prewarm_key = kk_prewarm_key(vs, fs);
++            if (fs->prewarm_key != NULL) {
++               atomic_fetch_add(&vs->prewarm_refs, 1);
++               fs->prewarm_vs = vs;
++            }
++         }
++         result = kk_compile_maybe_async(dev, fs, 0);
+       }
+ 
+       if (result == VK_SUCCESS && vs != NULL && fs == NULL &&
+@@ -3207,9 +3381,7 @@
+       uint32_t local_size_threads = shader->info.cs.local_size.x *
+                                     shader->info.cs.local_size.y *
+                                     shader->info.cs.local_size.z;
+-      result = kk_compile_compute_pipeline(
+-         dev, &shader->msl_data[MESA_SHADER_COMPUTE], local_size_threads,
+-         &shader->pipeline.cs);
++      result = kk_compile_maybe_async(dev, shader, local_size_threads);
+    } else if (info.stage == MESA_SHADER_VERTEX) {
+       bool emulated = shader->info.has_gs ||
+                       (shader->info.vs.additional_stages_bits &
+@@ -3284,6 +3456,9 @@
+ 
+    for (uint32_t i = 0; i < stage_count; i++) {
+       struct kk_shader *shader = container_of(shaders[i], struct kk_shader, vk);
++
++      /* Cidre : la compilation differee doit etre finie avant d'encoder. */
++      kk_shader_wait_compiled(shader);
+ 
+       if (stages[i] == MESA_SHADER_COMPUTE || stages[i] == MESA_SHADER_KERNEL)
+          kk_cmd_bind_compute_shader(cmd, shader);
+diff --color -ru pa/src/kosmickrisp/vulkan/kk_shader.h pb/src/kosmickrisp/vulkan/kk_shader.h
+--- a/src/kosmickrisp/vulkan/kk_shader.h	2026-10-24 17:30:56
++++ b/src/kosmickrisp/vulkan/kk_shader.h	2026-10-24 17:30:56
+@@ -15,6 +15,7 @@
+ 
+ #include "util/hash_table.h"
+ #include "util/simple_mtx.h"
++#include "util/u_queue.h"
+ 
+ #include "kosmickrisp/bridge/mtl_compiler.h"
+ #include "kosmickrisp/bridge/mtl_format.h"
+@@ -188,6 +189,8 @@
+ 
+ struct msl_compile_data;
+ 
++struct kk_rp_variant_key;
++
+ struct kk_shader {
+    struct vk_shader vk;
+ 
+@@ -229,7 +232,40 @@
+    uint32_t cache_packed_length[MESA_SHADER_STAGES];
+    /* The programs poly_nir_lower_gs() produces alongside the main one. */
+    struct msl_compile_data gs_msl_data[KK_GS_PROGRAM_MAX];
++
++   /* Cidre : compilation Metal differee. compile_async n'est pose qu'avant la
++    * mise en file ; compile_ready est signale quand library/function (etape de
++    * rendu) ou pipeline.cs (calcul) sont prets, ou NULL apres un echec. */
++   bool compile_async;
++   struct util_queue_fence compile_ready;
++   struct kk_device *compile_dev;
++   uint32_t compile_local_size;
++   VkResult compile_result;
++
++   /* Cidre (0237, prechauffage) : pour un FS, le VS du meme pipeline dont la
++    * variante de rendu sera compilee a la suite de sa bibliotheque, et la cle
++    * supposee (cibles = formats declares). Pour un VS, le nombre de
++    * prechauffages en cours qui lisent sa fonction : sa destruction les attend. */
++   struct kk_shader *prewarm_vs;
++   struct kk_rp_variant_key *prewarm_key;
++   _Atomic uint32_t prewarm_refs;
+ };
++
++static inline void
++kk_shader_wait_compiled(struct kk_shader *shader)
++{
++   if (shader != NULL && shader->compile_async)
++      util_queue_fence_wait(&shader->compile_ready);
++}
++
++/* Vrai si la compilation differee de cette etape a echoue. Appele apres le
++ * bind, qui l'a attendue : compile_result est alors fixe. */
++static inline bool
++kk_shader_compile_failed(const struct kk_shader *shader)
++{
++   return shader != NULL && shader->compile_async &&
++          shader->compile_result != VK_SUCCESS;
++}
+ 
+ struct kk_vs_vbo_attrib_key {
+    uint32_t format;

@@ -1,0 +1,29 @@
+Generated-by: LLM
+
+fex : la faute d acces ne prend ThreadCreationMutex que pour une ecriture (ARM64EC, ResetToConsistentStateImpl) -- le piege SMC d une page RWX ne retire que l ecriture : seule une AV d ecriture peut relever de HandleRWXAccessViolation. Une AV de lecture ou d execution prenait quand meme ThreadCreationMutex, d ou un interblocage par inversion d ordre (D2R, 24/10) : un fil qui compile tient CodeInvalidationMutex en partage, fait une AV de lecture dans Decoder::ReadCode parce que la protection du code change sous lui, et attend ThreadCreationMutex ; un fil dans NotifyMemoryProtect tient ThreadCreationMutex et attend CodeInvalidationMutex en exclusif. Partout ailleurs, l ordre est ThreadCreationMutex puis CodeInvalidationMutex. Temoin : tests/h64verrou_ordre.c (cidre-fex-tso).
+
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+index aa42f8a..ade9edf 100644
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -781,8 +781,18 @@ bool ResetToConsistentStateImpl(const ThreadCPUArea CPUArea, EXCEPTION_RECORD* E
+       return true;
+     }
+ 
+-    std::scoped_lock Lock(ThreadCreationMutex);
+-    if (InvalidationTracker && InvalidationTracker->HandleRWXAccessViolation(Thread, NativeContext->Pc, FaultAddress)) {
++    // Cidre : seule une ECRITURE peut etre le piege d'une page de code RWX (le piege ne retire que l'ecriture). Une AV
++    // de lecture ou d'execution ne prend pas ThreadCreationMutex : sinon interblocage (D2R) entre un fil qui compile
++    // (tient CodeInvalidationMutex en partage, faute de lecture dans Decoder::ReadCode quand la protection du code
++    // change sous lui) et attendait ici ThreadCreationMutex, et un fil dans NotifyMemoryProtect qui tient
++    // ThreadCreationMutex et attend CodeInvalidationMutex en exclusif (HandleMemoryProtectionNotification ->
++    // InvalidateIntervalInternal). L'ordre partout ailleurs est ThreadCreationMutex puis CodeInvalidationMutex.
++    const bool CidreEcriture = Exception->NumberParameters >= 1 && Exception->ExceptionInformation[0] == 1;
++    std::unique_lock<std::recursive_mutex> Lock(ThreadCreationMutex, std::defer_lock);
++    if (CidreEcriture) {
++      Lock.lock();
++    }
++    if (CidreEcriture && InvalidationTracker && InvalidationTracker->HandleRWXAccessViolation(Thread, NativeContext->Pc, FaultAddress)) {
+       FEXCORE_PROFILE_INSTANT_INCREMENT(Thread, AccumulatedSMCCount, 1);
+       if (CTX->IsAddressInCodeBuffer(Thread, NativeContext->Pc) && !CTX->IsCurrentBlockSingleInst(CPUArea.ThreadState()) &&
+           CTX->IsAddressInCurrentBlock(Thread, FaultAddress & FEXCore::Utils::FEX_PAGE_MASK, FEXCore::Utils::FEX_PAGE_SIZE)) {

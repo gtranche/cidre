@@ -1,0 +1,48 @@
+Generated-by: LLM
+
+fex : le LookupCache reste engage apres un vidage (ClearL2Cache, ClearThreadLocalCaches) -- VirtualDontNeed decommissionnait la plage : apres chaque vidage du cache de code, chaque fil refaisait une rafale d AV d overcommit sur sa plage de 256 Mio (AddBlockMapping), chacune resolue par le gestionnaire d overcommit. Sous Windows, on fait MEM_DECOMMIT puis MEM_COMMIT PAGE_READWRITE (appel direct, le crochet FEXCore::Allocator::VirtualAlloc ajoute MEM_RESERVE). Sous Wine, la memoire residente est rendue et les pages se remplissent de zeros a la premiere ecriture : la residence ne croit qu avec l usage, comme avant. Protection explicite, parce que VirtualDontNeed(..., true) la relirait par VirtualQuery et lirait 0 sur une page jamais engagee. Hors Windows : inchange.
+
+diff --git a/FEXCore/Source/Interface/Core/LookupCache.cpp b/FEXCore/Source/Interface/Core/LookupCache.cpp
+index 4c650f7..5d5642d 100644
+--- a/FEXCore/Source/Interface/Core/LookupCache.cpp
++++ b/FEXCore/Source/Interface/Core/LookupCache.cpp
+@@ -82,18 +82,36 @@ LookupCache::~LookupCache() {
+   // These will get freed when their memory allocators are deallocated.
+ }
+ 
++// Cidre : vide une plage du cache (zeros) en la laissant engagee. Sans recommission, chaque fil refaisait apres chaque
++// vidage du cache de code une rafale d'AV d'overcommit sur sa plage de 256 Mio (AddBlockMapping), chacune resolue par
++// le gestionnaire d'overcommit (exception, NtAllocateVirtualMemory, reprise). Sous Wine, MEM_DECOMMIT remplace la plage
++// par des pages anonymes neuves PROT_NONE (anon_mmap_fixed : la memoire residente est rendue) et MEM_COMMIT sur une
++// reservation ne fait que mprotect RW (set_vprot) : rien n'est touche, les pages se remplissent de zeros a la premiere
++// ecriture, la residence ne croit qu'avec l'usage, comme avant. Le gestionnaire d'overcommit reste en place (plage
++// toujours marquee) et ne sert plus qu'aux pages jamais engagees depuis la creation du cache.
++// Protection explicite PAGE_READWRITE : VirtualDontNeed(…, true) relit la protection a Ptr par VirtualQuery, qui vaut 0
++// si la premiere page n'a jamais ete engagee (reserve seule) ; la recommission echouerait alors sans bruit. Le crochet
++// FEXCore::Allocator::VirtualAlloc ajoute MEM_RESERVE, refuse sur une plage deja reservee : appel direct.
++static void CidreViderEngage(void* Ptr, size_t Size) {
++#ifdef _WIN32
++  ::VirtualFree(Ptr, Size, MEM_DECOMMIT);
++  ::VirtualAlloc(Ptr, Size, MEM_COMMIT, PAGE_READWRITE);
++#else
++  FEXCore::Allocator::VirtualDontNeed(Ptr, Size, false);
++#endif
++}
++
+ void LookupCache::ClearL2Cache(const FEXCore::LookupCacheBaseLockToken& lk) {
+   // Clear out the page memory
+   // PagePointer and PageMemory are sequential with each other. Clear both at once.
+-  FEXCore::Allocator::VirtualDontNeed(reinterpret_cast<void*>(PagePointer),
+-                                      ctx->Config.VirtualMemSize / FEXCore::Utils::FEX_PAGE_SIZE * 8 + CODE_SIZE, false);
++  CidreViderEngage(reinterpret_cast<void*>(PagePointer), ctx->Config.VirtualMemSize / FEXCore::Utils::FEX_PAGE_SIZE * 8 + CODE_SIZE);
+   AllocateOffset = 0;
+ }
+ 
+ void LookupCache::ClearThreadLocalCaches(const LookupCacheWriteLockToken&) {
+   // TODO: Preserve code cache entries?
+   // Clear L1 and L2 by clearing the full cache.
+-  FEXCore::Allocator::VirtualDontNeed(reinterpret_cast<void*>(PagePointer), TotalCacheSize, false);
++  CidreViderEngage(reinterpret_cast<void*>(PagePointer), TotalCacheSize);
+ 
+   // TODO: Rename this member to avoid confusion with code caching
+   CachedCodePages.clear();

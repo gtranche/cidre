@@ -1,0 +1,168 @@
+Generated-by: LLM
+
+fex : le code executable d une plage qui perd la lecture est retire et invalide AVANT l appel (ARM64EC, NotifyMemoryProtect et NotifyMemoryFree, notification Before) -- Wine change la protection de l hote des l appel, alors que FEX ne l apprenait qu au retour : entre les deux, un fil qui compilait lisait le code de la page (Decoder::ReadCode) et faisait une AV dans FEX meme. Issues : interblocage avec ThreadCreationMutex, ou exception remontee au jeu depuis le code de FEX (D2R, h64verrou_ordre). Concerne PAGE_NOACCESS, PAGE_GUARD, la decommission et la liberation de taille connue. Sans code executable connu dans la plage (cas courant), aucun verrou n est pris (InvalidationTracker::ContientExecutable, IntervalsLock en partage). Si l appel echoue, les droits reels de la plage sont relus (NtQueryVirtualMemory) et reinscrits au retour. Une liberation de taille nulle reste traitee au retour seulement (0225).
+
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+index ade9edf..1a17b59 100644
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -141,6 +141,10 @@ struct FrontendThreadData {
+   // Section invalidee avant un NtUnmapViewOfSection, invalidee de nouveau apres.
+   uint64_t UnmapStart {};
+   uint64_t UnmapSize {};
++  // Cidre : plage retiree des intervalles executables avant un NtProtect/NtFreeVirtualMemory reducteur (Before) ;
++  // si l'appel echoue, ses droits reels sont reinscrits apres (After).
++  uint64_t CidreRetireStart {};
++  uint64_t CidreRetireSize {};
+ };
+ 
+ namespace {
+@@ -913,11 +917,66 @@ void NotifyMemoryAlloc(void* Address, SIZE_T Size, ULONG Type, ULONG Prot, BOOL
+   }
+ }
+ 
++// Cidre : une reduction de droits (perte de la lecture) est traitee AVANT l'appel. Wine change la protection hote des
++// l'appel, alors que FEX ne l'apprenait qu'au retour (After) : entre les deux, un fil qui compilait lisait le code de la
++// page (Decoder::ReadCode) et faisait une AV dans FEX meme, sans bonne issue (interblocage avec ThreadCreationMutex,
++// ou exception remontee au jeu depuis le code de FEX : D2R, h64verrou_ordre). RetirerExecutableAvant prend les verrous
++// et les rend avant l'appel (aucun n'est tenu pendant : voir NotifyMemoryAlloc). Si l'appel echoue, les droits reels de
++// la plage sont relus et reinscrits au retour.
++static bool CidreReduitLecture(ULONG Prot) {
++  return (Prot & 0xff) == PAGE_NOACCESS || (Prot & PAGE_GUARD);
++}
++static void CidreRetirerAvant(uint64_t Address, uint64_t Size) {
++  auto* Data = GetFrontendThreadData(GetCPUArea().ThreadState());
++  Data->CidreRetireStart = Data->CidreRetireSize = 0;
++  // Pas de code executable connu dans la plage (cas courant, et toutes les liberations internes de FEX) : rien a faire,
++  // et surtout ThreadCreationMutex n'est pas pris (un fil qui tiendrait CodeInvalidationMutex en partage le prendrait
++  // sinon dans le mauvais ordre).
++  if (!Size || !InvalidationTracker->ContientExecutable(Address, Size)) {
++    return;
++  }
++  std::scoped_lock Lock(ThreadCreationMutex);
++  if (InvalidationTracker->RetirerExecutableAvant(Address, Size)) {
++    Data->CidreRetireStart = Address;
++    Data->CidreRetireSize = Size;
++  }
++}
++// au retour d'un appel reducteur qui a echoue : reinscrire les droits reels de ce qui a ete retire avant
++static void CidreReinscrireSiEchec(NTSTATUS Status) {
++  auto* Data = GetFrontendThreadData(GetCPUArea().ThreadState());
++  const uint64_t Debut = Data->CidreRetireStart, Taille = Data->CidreRetireSize;
++  Data->CidreRetireStart = Data->CidreRetireSize = 0;
++  if (!Status || !Taille) {
++    return;
++  }
++  std::scoped_lock Lock(ThreadCreationMutex);
++  for (uint64_t A = Debut & FEXCore::Utils::FEX_PAGE_MASK; A < Debut + Taille;) {
++    MEMORY_BASIC_INFORMATION Info {};
++    if (NtQueryVirtualMemory(NtCurrentProcess(), reinterpret_cast<void*>(A), MemoryBasicInformation, &Info, sizeof(Info), nullptr) ||
++        !Info.RegionSize) {
++      break;
++    }
++    const uint64_t Fin = std::min<uint64_t>(reinterpret_cast<uint64_t>(Info.BaseAddress) + Info.RegionSize, Debut + Taille);
++    if (Info.State == MEM_COMMIT) {
++      InvalidationTracker->HandleMemoryProtectionNotification(A, Fin - A, Info.Protect);
++    }
++    A = Fin;
++  }
++}
++
+ void NotifyMemoryFree(void* Address, SIZE_T Size, ULONG FreeType, BOOL After, NTSTATUS Status) {
+   if (!InvalidationTracker || !GetCPUArea().ThreadState()) {
+     return;
+   }
+ 
++  // Cidre : decommission ou liberation de taille connue, retirees avant l'appel (voir CidreReduitLecture). Une
++  // liberation de taille nulle (MEM_RELEASE de toute l'allocation) reste traitee au retour seulement.
++  if (!After) {
++    CidreRetirerAvant(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size));
++  } else {
++    CidreReinscrireSiEchec(Status);
++  }
++
+   // Voir NotifyMemoryAlloc : traite au retour seulement, verrou non tenu pendant l'appel.
+   if (After && !Status) {
+     std::scoped_lock Lock(ThreadCreationMutex);
+@@ -951,6 +1010,15 @@ void NotifyMemoryProtect(void* Address, SIZE_T Size, ULONG NewProt, BOOL After,
+     return;
+   }
+ 
++  // Cidre : perte de la lecture retiree avant l'appel (voir CidreReduitLecture).
++  if (!After) {
++    if (CidreReduitLecture(NewProt)) {
++      CidreRetirerAvant(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size));
++    }
++  } else {
++    CidreReinscrireSiEchec(Status);
++  }
++
+   // Voir NotifyMemoryAlloc : traite au retour seulement, verrou non tenu pendant l'appel.
+   if (After && !Status) {
+     std::scoped_lock Lock(ThreadCreationMutex);
+diff --git a/Source/Windows/Common/InvalidationTracker.cpp b/Source/Windows/Common/InvalidationTracker.cpp
+index f1ebe70..eb23394 100644
+--- a/Source/Windows/Common/InvalidationTracker.cpp
++++ b/Source/Windows/Common/InvalidationTracker.cpp
+@@ -118,6 +118,43 @@ void InvalidationTracker::HandleMemoryProtectionNotification(uint64_t Address, u
+   }
+ }
+ 
++bool InvalidationTracker::ContientExecutable(uint64_t Address, uint64_t Size) {
++  if (!Size) {
++    return false;
++  }
++  const auto AlignedBase = Address & FEXCore::Utils::FEX_PAGE_MASK;
++  const auto AlignedSize = (Address - AlignedBase + Size + FEXCore::Utils::FEX_PAGE_SIZE - 1) & FEXCore::Utils::FEX_PAGE_MASK;
++  std::shared_lock Lock(IntervalsLock);
++  return XIntervals.Intersect({AlignedBase, AlignedBase + AlignedSize});
++}
++
++bool InvalidationTracker::RetirerExecutableAvant(uint64_t Address, uint64_t Size) {
++  if (!Size) {
++    return false;
++  }
++  const auto AlignedBase = Address & FEXCore::Utils::FEX_PAGE_MASK;
++  const auto AlignedSize = (Address - AlignedBase + Size + FEXCore::Utils::FEX_PAGE_SIZE - 1) & FEXCore::Utils::FEX_PAGE_MASK;
++  const bool Retire = [&] {
++    std::unique_lock Lock(IntervalsLock);
++    const FEXCore::IntervalList<uint64_t>::Interval I {AlignedBase, AlignedBase + AlignedSize};
++    if (!XIntervals.Intersect(I)) {
++      return false;
++    }
++    XIntervals.Remove(I);
++    RWXIntervals.Remove(I);
++    AliasXIntervals.Remove(I);
++    if (DEPDisabled) {
++      DEPPromotedIntervals.Remove(I);
++    }
++    return true;
++  }();
++  if (Retire) {
++    // IntervalsLock cannot be held during invalidation
++    InvalidateIntervalInternal(AlignedBase, AlignedSize);
++  }
++  return Retire;
++}
++
+ void InvalidationTracker::HandleProcessExecuteFlagsChange(ULONG Flags) {
+   const bool DisableDEP = (Flags & MEM_EXECUTE_OPTION_ENABLE) != 0;
+ 
+diff --git a/Source/Windows/Common/InvalidationTracker.h b/Source/Windows/Common/InvalidationTracker.h
+index 5df5fb2..7040d52 100644
+--- a/Source/Windows/Common/InvalidationTracker.h
++++ b/Source/Windows/Common/InvalidationTracker.h
+@@ -32,6 +32,13 @@ public:
+   };
+   InvalidateContainingSectionResult InvalidateContainingSection(uint64_t Address, bool Free);
+   void InvalidateAlignedInterval(uint64_t Address, uint64_t Size, bool Free);
++  // Cidre : retire [Address, Address + Size) des intervalles executables et invalide son code AVANT un appel qui lui
++  // fera perdre la lecture (PAGE_NOACCESS, PAGE_GUARD, decommission, liberation). L'invalidation prend
++  // CodeInvalidationMutex en exclusif, donc attend la fin des compilations en cours ; ensuite le decodeur ne lit plus
++  // la plage (CheckRangeExecutable : non executable). Rend vrai si la plage contenait du code executable.
++  bool RetirerExecutableAvant(uint64_t Address, uint64_t Size);
++  // Cidre : la plage contient-elle du code executable connu ? (IntervalsLock partage seulement, sans autre verrou)
++  bool ContientExecutable(uint64_t Address, uint64_t Size);
+   void ReprotectRWXIntervals(uint64_t Address, uint64_t Size);
+   bool HandleRWXAccessViolation(FEXCore::Core::InternalThreadState* Thread, uint64_t HostPC, uint64_t FaultAddress);
+ 

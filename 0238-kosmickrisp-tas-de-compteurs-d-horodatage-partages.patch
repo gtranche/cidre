@@ -1,0 +1,416 @@
+Generated-by: LLM
+
+KosmicKrisp : tas de compteurs d'horodatage partages par device (reserve de 32 tas de 4 096 entrees)
+
+Metal n'accorde que 32 MTL4CounterHeap par processus, de 4 096 entrees au plus
+(au-dela : « too many heaps already allocated in this process »). KosmicKrisp en
+prenait au moins un par VkQueryPool d'horodatage. Diablo IV en cree ~63 (profileur
+Prism, breadcrumbs) : 31 CreateQueryHeap en E_OUTOFMEMORY, puis un plantage sur un
+pool nul 60 s apres la creation du device.
+
+Le device tient une reserve (kk_ts_reserve, kk_query_pool.c) : tas crees a la
+demande jusqu'a 32, et un util_vma_heap par tas pour les plages libres. Chaque
+pool recoit une plage contigue par tranche de 4 096 requetes, dans le premier tas
+qui l'a, sinon dans un tas neuf, sinon coupee sur les trous des tas existants
+(kk_ts_segment ; kk_ts_heap_for retrouve tas et entree par plage, le reste du
+code -- vkCmdWriteTimestamp2, reutilisation par etape, resolution vers le BO,
+vkCmdResetQueryPool, vkGetQueryPoolResults, vkCmdCopyQueryPoolResults -- ne voit
+que le couple tas/entree, inchange). Les plages sont rendues a la destruction du
+pool, les tas a celle du device. VK_ERROR_OUT_OF_DEVICE_MEMORY seulement si la
+reserve n'a plus assez d'entrees libres en tout (message « reserve d'horodatage
+pleine ») ; si Metal refuse un tas avant 32 (autres tas du processus), la
+reserve s'en tient a ceux qu'elle a. CIDRE_TAS_HORODATAGE_MAX=<n> (essais) borne
+le nombre de tas. Occlusion (table de requetes du device) et pipeline statistics
+(non annonce) ne passent pas par les tas de compteurs : inchanges.
+kk_query_pool.c/h et kk_device.c/h sont neutres pour la cle de code (0208) : elle
+ne change pas.
+
+Temoin tests/temoin_tas_horodatage.c (~/Dev/cidre-premier-lancement/banc) : 100
+pools de 64 requetes dans un processus, reset + horodatages autour de dispatchs,
+relus par vkGetQueryPoolResults (WAIT) et par vkCmdCopyQueryPoolResults (valeurs
+non nulles, croissantes, identiques par les deux voies), moitie detruite et
+recreee, un pool de 5 000 requetes, un pool d'occlusion :
+   dylib posee : 32/100 pools, premier echec au 33e -> TEMOIN KO
+   0237 + 0238 : 100/100, 0 erreur -> TEMOIN OK ; aussi avec
+                 CIDRE_TAS_HORODATAGE_MAX=2 (6 400 requetes sur 2 tas), et
+                 3 pools de 2 500 sur 2 tas (troisieme pool coupe sur deux trous)
+   reserve vraiment pleine : MAX=1 -> 64 pools puis refus propres ; 40 pools de
+                 4 096 -> 32 crees, 8 refus propres, aucune faute.
+Non-regression (test_*, probe_*, bench_*_vulkan de Cidre, bench_horodatages de
+0134 avec et sans CIDRE_HORODATAGES_PRECIS) : identique a la dylib posee, aux
+temps pres ; bench_frag/bench_pass mesurent par horodatages GPU.
+
+diff --color -ru a/src/kosmickrisp/vulkan/kk_device.c b/src/kosmickrisp/vulkan/kk_device.c
+--- a/src/kosmickrisp/vulkan/kk_device.c	2026-10-24 19:13:34
++++ b/src/kosmickrisp/vulkan/kk_device.c	2026-10-24 19:13:34
+@@ -6,6 +6,7 @@
+  */
+ 
+ #include "kk_device.h"
++#include "kk_query_pool.h"
+ #include "kk_debug.h"
+ 
+ #include "kk_buffer.h"
+@@ -329,6 +330,7 @@
+                                 KK_MAX_OCCLUSION_QUERIES);
+    if (result != VK_SUCCESS)
+       goto fail_meta;
++   kk_ts_reserve_init(dev);
+ 
+    result = kk_init_sampler_heap(dev, &dev->samplers);
+    if (result != VK_SUCCESS)
+@@ -372,6 +374,7 @@
+    kk_destroy_sampler_heap(dev, &dev->samplers);
+ fail_query_table:
+    kk_query_table_finish(dev, &dev->occlusion_queries);
++   kk_ts_reserve_finish(dev);
+ fail_meta:
+    kk_device_finish_meta(dev);
+ fail_mem_cache:
+@@ -419,6 +422,7 @@
+    kk_device_finish_shader_cache(dev);
+    kk_device_finish_lib(dev);
+    kk_query_table_finish(dev, &dev->occlusion_queries);
++   kk_ts_reserve_finish(dev);
+    kk_destroy_sampler_heap(dev, &dev->samplers);
+    if (dev->atomic64_locks)
+       kk_destroy_bo(dev, dev->atomic64_locks);
+diff --color -ru a/src/kosmickrisp/vulkan/kk_device.h b/src/kosmickrisp/vulkan/kk_device.h
+--- a/src/kosmickrisp/vulkan/kk_device.h	2026-10-24 19:13:34
++++ b/src/kosmickrisp/vulkan/kk_device.h	2026-10-24 19:13:34
+@@ -22,6 +22,7 @@
+ #include "util/hash_table.h"
+ #include "util/simple_mtx.h"
+ #include "util/u_dynarray.h"
++#include "util/vma.h"
+ #include "util/u_queue.h"
+ 
+ #include "vk_device.h"
+@@ -94,6 +95,17 @@
+ 
+    struct kk_sampler_heap samplers;
+    struct kk_query_table occlusion_queries;
++
++   /* Cidre (0238) : tas de compteurs d'horodatage partages par les
++    * VkQueryPool du device (Metal : 32 tas par processus). */
++   struct {
++      simple_mtx_t lock;
++      uint32_t heap_count;
++      uint32_t heap_limit;
++      bool exhausted;
++      mtl_counter_heap *heaps[32];
++      struct util_vma_heap vma[32];
++   } ts_reserve;
+ 
+    /* Spin locks of the emulated 64-bit atomics (KK_ATOMIC64_LOCK_COUNT 32-bit
+     * words, zero when free), bound at buffer(3). NULL unless emulated. */
+diff --color -ru a/src/kosmickrisp/vulkan/kk_query_pool.c b/src/kosmickrisp/vulkan/kk_query_pool.c
+--- a/src/kosmickrisp/vulkan/kk_query_pool.c	2026-10-24 19:13:34
++++ b/src/kosmickrisp/vulkan/kk_query_pool.c	2026-10-24 19:13:34
+@@ -142,6 +142,181 @@
+    }
+ }
+ 
++/* Cidre (0238) : reserve de tas de compteurs d'horodatage par device.
++ *
++ * Metal n'accorde que 32 MTL4CounterHeap par processus (au-dela,
++ * newCounterHeapWithDescriptor rend nil : « too many heaps already
++ * allocated »), de 4 096 entrees au plus. KosmicKrisp en prenait un par
++ * VkQueryPool : Diablo IV, qui en cree ~63 (profileur, breadcrumbs), voyait 31
++ * CreateQueryHeap en E_OUTOFMEMORY puis plantait sur un pool nul. Ici les tas
++ * sont crees a la demande, jusqu'a heap_limit, et partages : chaque pool recoit
++ * une plage contigue par tranche de 4 096 requetes, prise dans le premier tas
++ * qui l'a ; a defaut, un tas neuf ; a defaut encore, la plage est coupee sur
++ * les trous des tas existants. VK_ERROR_OUT_OF_DEVICE_MEMORY seulement quand
++ * la reserve n'a plus assez d'entrees libres en tout.
++ * Les plages vivent dans un util_vma_heap par tas, decale de 1 (0 = echec).
++ * CIDRE_TAS_HORODATAGE_MAX=<n> (essais) : moins de tas. */
++VkResult
++kk_ts_reserve_init(struct kk_device *dev)
++{
++   simple_mtx_init(&dev->ts_reserve.lock, mtx_plain);
++   dev->ts_reserve.heap_count = 0;
++   dev->ts_reserve.exhausted = false;
++   uint32_t limit = KK_TS_RESERVE_MAX_HEAPS;
++   const char *v = getenv("CIDRE_TAS_HORODATAGE_MAX");
++   if (v && atoi(v) > 0)
++      limit = MIN2((uint32_t)atoi(v), KK_TS_RESERVE_MAX_HEAPS);
++   dev->ts_reserve.heap_limit = limit;
++   return VK_SUCCESS;
++}
++
++void
++kk_ts_reserve_finish(struct kk_device *dev)
++{
++   for (uint32_t i = 0; i < dev->ts_reserve.heap_count; ++i) {
++      util_vma_heap_finish(&dev->ts_reserve.vma[i]);
++      mtl_release(dev->ts_reserve.heaps[i]);
++      dev->ts_reserve.heaps[i] = NULL;
++   }
++   dev->ts_reserve.heap_count = 0;
++   simple_mtx_destroy(&dev->ts_reserve.lock);
++}
++
++/* Sous le verrou. Une plage de `want` entrees au plus (au moins une) ; rend
++ * le nombre pris, 0 si la reserve est vide. */
++static uint32_t
++kk_ts_reserve_take(struct kk_device *dev, uint32_t want, bool contiguous_only,
++                   uint32_t *slot_out, uint32_t *base_out)
++{
++   for (uint32_t h = 0; h < dev->ts_reserve.heap_count; ++h) {
++      uint64_t off = util_vma_heap_alloc(&dev->ts_reserve.vma[h], want, 1);
++      if (off != 0) {
++         *slot_out = h;
++         *base_out = (uint32_t)(off - 1);
++         return want;
++      }
++   }
++
++   if (!dev->ts_reserve.exhausted &&
++       dev->ts_reserve.heap_count < dev->ts_reserve.heap_limit) {
++      mtl_counter_heap *heap = mtl_new_timestamp_counter_heap(
++         dev->mtl_handle, KK_TS_COUNTER_HEAP_ENTRIES);
++      if (heap != NULL) {
++         uint32_t h = dev->ts_reserve.heap_count++;
++         dev->ts_reserve.heaps[h] = heap;
++         util_vma_heap_init(&dev->ts_reserve.vma[h], 1,
++                            KK_TS_COUNTER_HEAP_ENTRIES);
++         uint64_t off = util_vma_heap_alloc(&dev->ts_reserve.vma[h], want, 1);
++         assert(off != 0);
++         *slot_out = h;
++         *base_out = (uint32_t)(off - 1);
++         return want;
++      }
++      /* Metal refuse : d'autres tas du processus (un autre device, une
++       * couche) ont pris les places. On s'en tient a ceux qu'on a. */
++      dev->ts_reserve.exhausted = true;
++      fprintf(stderr, "kk: reserve d'horodatage limitee a %u tas de compteurs\n",
++              dev->ts_reserve.heap_count);
++   }
++
++   if (contiguous_only)
++      return 0;
++
++   /* Le plus grand trou des tas existants. */
++   uint32_t best = UINT32_MAX;
++   uint64_t best_size = 0;
++   for (uint32_t h = 0; h < dev->ts_reserve.heap_count; ++h) {
++      uint64_t sz =
++         util_vma_heap_get_max_free_continuous_size(&dev->ts_reserve.vma[h]);
++      if (sz > best_size) {
++         best_size = sz;
++         best = h;
++      }
++   }
++   if (best_size == 0)
++      return 0;
++   uint32_t take = (uint32_t)MIN2((uint64_t)want, best_size);
++   uint64_t off = util_vma_heap_alloc(&dev->ts_reserve.vma[best], take, 1);
++   if (off == 0)
++      return 0;
++   *slot_out = best;
++   *base_out = (uint32_t)(off - 1);
++   return take;
++}
++
++static void
++kk_ts_reserve_release_segs(struct kk_device *dev, struct kk_query_pool *pool)
++{
++   for (uint32_t i = 0; i < pool->ts.seg_count; ++i) {
++      const struct kk_ts_segment *s = &pool->ts.segs[i];
++      util_vma_heap_free(&dev->ts_reserve.vma[s->slot], (uint64_t)s->base + 1,
++                         s->count);
++   }
++   pool->ts.seg_count = 0;
++}
++
++static VkResult
++kk_ts_reserve_alloc(struct kk_device *dev, struct kk_query_pool *pool,
++                    const VkAllocationCallbacks *pAllocator)
++{
++   uint32_t total = MAX2(pool->vk.query_count, 1u);
++   /* Plages possibles au pire : une par tas et par tranche de 4 096. */
++   uint32_t max_segs = DIV_ROUND_UP(total, KK_TS_COUNTER_HEAP_ENTRIES) +
++                       KK_TS_RESERVE_MAX_HEAPS;
++   pool->ts.segs = vk_zalloc2(&dev->vk.alloc, pAllocator,
++                              max_segs * sizeof(*pool->ts.segs), 8,
++                              VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
++   if (pool->ts.segs == NULL)
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++   pool->ts.seg_count = 0;
++
++   simple_mtx_lock(&dev->ts_reserve.lock);
++   uint32_t done = 0;
++   while (done < total) {
++      uint32_t want = MIN2(total - done, KK_TS_COUNTER_HEAP_ENTRIES);
++      uint32_t slot = 0, base = 0;
++      /* D'abord une plage d'un seul tenant (tas existant ou neuf), puis des
++       * morceaux sur les trous. */
++      uint32_t got = kk_ts_reserve_take(dev, want, true, &slot, &base);
++      if (got == 0)
++         got = kk_ts_reserve_take(dev, want, false, &slot, &base);
++      if (got == 0 || pool->ts.seg_count == max_segs) {
++         if (got != 0)
++            util_vma_heap_free(&dev->ts_reserve.vma[slot], (uint64_t)base + 1,
++                               got);
++         kk_ts_reserve_release_segs(dev, pool);
++         simple_mtx_unlock(&dev->ts_reserve.lock);
++         fprintf(stderr, "kk: reserve d'horodatage pleine (%u requetes "
++                         "demandees, %u tas)\n",
++                 total, dev->ts_reserve.heap_count);
++         return VK_ERROR_OUT_OF_DEVICE_MEMORY;
++      }
++      pool->ts.segs[pool->ts.seg_count++] = (struct kk_ts_segment){
++         .heap = dev->ts_reserve.heaps[slot],
++         .slot = slot,
++         .first_query = done,
++         .base = base,
++         .count = got,
++      };
++      done += got;
++   }
++   simple_mtx_unlock(&dev->ts_reserve.lock);
++   return VK_SUCCESS;
++}
++
++static void
++kk_ts_reserve_free(struct kk_device *dev, struct kk_query_pool *pool,
++                   const VkAllocationCallbacks *pAllocator)
++{
++   if (pool->ts.segs == NULL)
++      return;
++   simple_mtx_lock(&dev->ts_reserve.lock);
++   kk_ts_reserve_release_segs(dev, pool);
++   simple_mtx_unlock(&dev->ts_reserve.lock);
++   vk_free2(&dev->vk.alloc, pAllocator, pool->ts.segs);
++   pool->ts.segs = NULL;
++}
++
+ VKAPI_ATTR VkResult VKAPI_CALL
+ kk_CreateQueryPool(VkDevice device, const VkQueryPoolCreateInfo *pCreateInfo,
+                    const VkAllocationCallbacks *pAllocator,
+@@ -219,32 +394,13 @@
+          remap_index[i] = i * reports_per_query;
+    } else if (kk_pool_is_ts(pool)) {
+       /* Timestamps are sampled into a Metal counter heap (one entry per query)
+-       * and resolved into `bo` after the GPU writes them. */
+-      uint32_t remaining = MAX2(pool->vk.query_count, 1u);
+-
+-      pool->ts.heap_count =
+-         DIV_ROUND_UP(remaining, KK_TS_COUNTER_HEAP_ENTRIES);
+-      pool->ts.heaps = vk_zalloc2(&dev->vk.alloc, pAllocator,
+-                                  pool->ts.heap_count * sizeof(*pool->ts.heaps),
+-                                  8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+-      if (pool->ts.heaps == NULL) {
++       * and resolved into `bo` after the GPU writes them. Cidre (0238) : les
++       * entrees viennent de la reserve du device, en une plage ou plusieurs. */
++      result = kk_ts_reserve_alloc(dev, pool, pAllocator);
++      if (result != VK_SUCCESS) {
+          kk_DestroyQueryPool(device, kk_query_pool_to_handle(pool), pAllocator);
+-         return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
++         return vk_error(dev, result);
+       }
+-
+-      for (uint32_t i = 0; i < pool->ts.heap_count; ++i) {
+-         uint32_t entries = MIN2(remaining, KK_TS_COUNTER_HEAP_ENTRIES);
+-
+-         pool->ts.heaps[i] =
+-            mtl_new_timestamp_counter_heap(dev->mtl_handle, entries);
+-         if (pool->ts.heaps[i] == NULL) {
+-            kk_DestroyQueryPool(device, kk_query_pool_to_handle(pool),
+-                                pAllocator);
+-            return vk_error(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+-         }
+-
+-         remaining -= entries;
+-      }
+    }
+ 
+    if (pCreateInfo->flags & VK_QUERY_POOL_CREATE_RESET_BIT_KHR)
+@@ -271,11 +427,7 @@
+          kk_query_table_remove(dev, &dev->occlusion_queries, remap_index[i]);
+       }
+    } else if (kk_pool_is_ts(pool)) {
+-      for (uint32_t i = 0; pool->ts.heaps && i < pool->ts.heap_count; ++i) {
+-         if (pool->ts.heaps[i])
+-            mtl_release(pool->ts.heaps[i]);
+-      }
+-      vk_free2(&dev->vk.alloc, pAllocator, pool->ts.heaps);
++      kk_ts_reserve_free(dev, pool, pAllocator);
+    }
+ 
+    kk_destroy_bo(dev, pool->bo);
+@@ -407,12 +559,16 @@
+ kk_ts_heap_for(const struct kk_query_pool *pool, uint32_t query,
+                uint32_t *index_out)
+ {
+-   uint32_t heap = query / KK_TS_COUNTER_HEAP_ENTRIES;
+-
+-   assert(heap < pool->ts.heap_count);
+-   *index_out = query % KK_TS_COUNTER_HEAP_ENTRIES;
+-
+-   return pool->ts.heaps[heap];
++   /* Cidre (0238) : la plage qui porte cette requete (une seule, sauf pool
++    * plus grand qu'un tas ou reserve morcelee). */
++   for (uint32_t i = 0; i < pool->ts.seg_count; ++i) {
++      const struct kk_ts_segment *s = &pool->ts.segs[i];
++      if (query >= s->first_query && query - s->first_query < s->count) {
++         *index_out = s->base + (query - s->first_query);
++         return s->heap;
++      }
++   }
++   UNREACHABLE("requete hors des plages du pool");
+ }
+ 
+ VKAPI_ATTR void VKAPI_CALL
+@@ -423,7 +579,7 @@
+    VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
+    VK_FROM_HANDLE(kk_query_pool, pool, queryPool);
+    struct kk_device *dev = kk_cmd_buffer_device(cmd);
+-   assert(kk_pool_is_ts(pool) && pool->ts.heaps);
++   assert(kk_pool_is_ts(pool) && pool->ts.segs);
+ 
+    uint32_t count = kk_mv_query_count(cmd);
+    enum mtl_render_stages mtl_stage =
+diff --color -ru a/src/kosmickrisp/vulkan/kk_query_pool.h b/src/kosmickrisp/vulkan/kk_query_pool.h
+--- a/src/kosmickrisp/vulkan/kk_query_pool.h	2026-10-24 19:13:34
++++ b/src/kosmickrisp/vulkan/kk_query_pool.h	2026-10-24 19:13:34
+@@ -12,14 +12,34 @@
+ 
+ #include "vulkan/runtime/vk_query_pool.h"
+ 
++/* Cidre (0238) : une plage d'entrees d'un tas de compteurs de la reserve du
++ * device (kk_ts_reserve), qui porte les requetes [first_query, first_query +
++ * count) du pool aux entrees [base, base + count) du tas. */
++struct kk_ts_segment {
++   mtl_counter_heap *heap;
++   uint32_t slot;
++   uint32_t first_query;
++   uint32_t base;
++   uint32_t count;
++};
++
+ struct kk_ts_state {
+    /* Metal 4 counter heaps backing VK_QUERY_TYPE_TIMESTAMP pools. Timestamps
+     * are sampled into them and later resolved into `bo` (see kk_query_pool.c).
+-    * A single heap holds at most KK_TS_COUNTER_HEAP_ENTRIES entries, so a pool
+-    * larger than that is spread over several. NULL for non-timestamp pools. */
+-   mtl_counter_heap **heaps;
+-   uint32_t heap_count;
++    * Cidre (0238) : Metal n'accorde que 32 tas par processus ; les pools
++    * recoivent des plages de tas partages par le device, une ou plusieurs
++    * (au plus KK_TS_COUNTER_HEAP_ENTRIES entrees par tas). NULL hors
++    * horodatage. */
++   struct kk_ts_segment *segs;
++   uint32_t seg_count;
+ };
++
++/* Cidre (0238) : reserve de tas de compteurs d'horodatage, par device. */
++#define KK_TS_RESERVE_MAX_HEAPS 32
++
++struct kk_device;
++VkResult kk_ts_reserve_init(struct kk_device *dev);
++void kk_ts_reserve_finish(struct kk_device *dev);
+ 
+ struct kk_oq_state {
+    unsigned queries;
