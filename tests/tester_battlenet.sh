@@ -321,6 +321,35 @@ r=$(CIDRE_BNET_PREFIXE="$T/hors-ligne" CIDRE_BNET_INSTALLEUR_URL="http://127.0.0
 verif "hors ligne : code 1" 1 "$rc"
 contient "hors ligne : evenement" '"code":"telechargement"' "$r"
 
+echo "== lanceur : options FEX de la fiche pour le seul exe du jeu (AppConfig)"
+FB=$(awk '/^# --- fex du jeu battle.net : debut ---/,/^# --- fex du jeu battle.net : fin ---/' "$R/tests/lancer_depuis_steam.sh")
+[ -n "$FB" ] && ok "bloc trouve dans lancer_depuis_steam.sh" || echec "bloc absent de lancer_depuis_steam.sh"
+fex_bnet() { # <BNET> <MAXINST> <MULTIBLOCK> : env apres le bloc, une variable par ligne
+   ( WINEPREFIX="$T/pfx-fex" JOURNAL="$T/fex.log" PROG="Diablo IV.exe" BNET=$1
+     unset FEX_MAXINST FEX_MULTIBLOCK FEX_APP_CONFIG_LOCATION
+     [ -z "$2" ] || export FEX_MAXINST=$2; [ -z "$3" ] || export FEX_MULTIBLOCK=$3
+     mkdir -p "$WINEPREFIX"; eval "$FB"
+     printf 'MAXINST=%s\nMULTIBLOCK=%s\nLOC=%s\n' "${FEX_MAXINST:-}" "${FEX_MULTIBLOCK:-}" "${FEX_APP_CONFIG_LOCATION:-}" )
+}
+e=$(fex_bnet oui 500 0)
+contient "battle.net : FEX_MAXINST retire de l'environnement" "MAXINST=
+MULTIBLOCK=
+" "$e"
+verif "battle.net : AppConfig du jeu" '{"Config":{"MaxInst":"500","Multiblock":"0"}}' "$(cat "$T/pfx-fex/.cidre-fex/AppConfig/Diablo IV.exe.json" 2>/dev/null)"
+verif "battle.net : FEX_APP_CONFIG_LOCATION en chemin Windows" "LOC=Z:$(printf '%s' "$T/pfx-fex/.cidre-fex/" | tr '/' '\\')" "$(printf '%s\n' "$e" | grep '^LOC=')"
+contient "battle.net : dit au journal" "pour Diablo IV.exe seul" "$(cat "$T/fex.log")"
+rm -rf "$T/pfx-fex"
+fex_bnet oui 500 "" >/dev/null
+verif "battle.net : MaxInst seul" '{"Config":{"MaxInst":"500"}}' "$(cat "$T/pfx-fex/.cidre-fex/AppConfig/Diablo IV.exe.json" 2>/dev/null)"
+rm -rf "$T/pfx-fex"
+e=$(fex_bnet non 500 0)
+contient "Steam : l'environnement garde FEX_MAXINST" "MAXINST=500
+MULTIBLOCK=0
+LOC=" "$e"
+[ ! -e "$T/pfx-fex/.cidre-fex" ] && ok "Steam : pas d'AppConfig" || echec "Steam : AppConfig ecrit"
+rm -rf "$T/pfx-fex"
+verif "battle.net sans option : rien" "LOC=" "$(fex_bnet oui "" "" | grep '^LOC=')"
+
 echo "== livraison"
 grep -q 'battlenet.sh' "$R/tests/empaqueter_runtime.sh" && ok "empaqueter : battlenet.sh" || echec "empaqueter : battlenet.sh absent"
 grep -q 'battlenet.conf' "$R/tests/empaqueter_runtime.sh" && ok "empaqueter : battlenet.conf" || echec "empaqueter : battlenet.conf absent"

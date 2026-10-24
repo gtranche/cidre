@@ -1002,6 +1002,28 @@ fi
 [ -n "${CIDRE_HAUT_NUL:-}" ] || export CIDRE_HAUT_NUL=2
 # --- reglages FEX : fin ---
 echo "    fex     : tso ${FEX_TSOENABLED:-1}${FEX_EXTENDEDVOLATILEMETADATA:+ sauf $FEX_EXTENDEDVOLATILEMETADATA}${FEX_VOLATILEMETADATAALLBLOCKS:+, metadonnee MSVC prise au mot}, cache disque ${FEX_DISKCACHE:-0}, x87 reduit ${FEX_X87REDUCEDPRECISION:-0}, MaxInst ${FEX_MAXINST:-5000}, multiblock ${FEX_MULTIBLOCK:-1}, sonnette retour ${CIDRE_SONNETTE_RETOUR}, haut nul ${CIDRE_HAUT_NUL}, hote ${FEX_HOSTFEATURES}" >>"$JOURNAL"
+# Battle.net : le jeu part du client, qui herite de cet environnement -- et avec
+# lui son CEF (page de connexion, controle de securite de Blizzard). Les blocs
+# FEX de la fiche (MaxInst, multibloc), voulus pour le chargeur protege du jeu,
+# ralentissaient le client : Diablo IV, 24/10 16:28, le controle
+# « token-security-checkpoint » ne passait plus (11 s, puis la page du mot de
+# passe ; 6 s et passe sans eux, a 15:47). Ils vont dans la configuration par
+# programme de FEX, AppConfig/<exe du jeu>.json, lue par le seul processus du
+# jeu (FEX_APP_CONFIG_LOCATION : un dossier du prefixe, en chemin Windows).
+# --- fex du jeu battle.net : debut ---
+if [ $BNET = oui ] && { [ -n "${FEX_MAXINST:-}" ] || [ -n "${FEX_MULTIBLOCK:-}" ]; }; then
+   FEXCFG=$WINEPREFIX/.cidre-fex
+   mkdir -p "$FEXCFG/AppConfig"
+   { printf '{"Config":{'
+     [ -z "${FEX_MAXINST:-}" ] || printf '"MaxInst":"%s"' "$FEX_MAXINST"
+     [ -z "${FEX_MAXINST:-}" ] || [ -z "${FEX_MULTIBLOCK:-}" ] || printf ','
+     [ -z "${FEX_MULTIBLOCK:-}" ] || printf '"Multiblock":"%s"' "$FEX_MULTIBLOCK"
+     printf '}}\n'; } >"$FEXCFG/AppConfig/$PROG.json"
+   export FEX_APP_CONFIG_LOCATION="Z:$(printf '%s' "$FEXCFG/" | tr '/' '\\')"
+   echo "    fex     : MaxInst ${FEX_MAXINST:-5000}, multiblock ${FEX_MULTIBLOCK:-1} pour $PROG seul (AppConfig de FEX) ; le client Battle.net garde ceux de FEX" >>"$JOURNAL"
+   unset FEX_MAXINST FEX_MULTIBLOCK
+fi
+# --- fex du jeu battle.net : fin ---
 
 # Arguments propres au profil. A poser APRES la table des lanceurs, qui remet les
 # arguments a zero quand elle remplace l'executable.
