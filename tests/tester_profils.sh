@@ -464,6 +464,41 @@ sortie=$(sh "$R/tests/reglages_jeu.sh" 999); rc=$?
 verif "gvas + section introuvable : laissees, dit, code 0" "0 1 1" "$rc $(printf '%s\n' "$sortie" | grep -c 'pas ajoutees (Absente : structure trouvee 0 fois)') $(gvas_lire "$SG/111/Reglages.sav" ShadowQuality)"
 printf 'pas une sauvegarde' >"$SG/222/Reglages.sav"
 verif "gvas : un fichier qui n est pas GVAS -> code 1, pas touche" "1 pas une sauvegarde" "$(sh "$R/tests/reglages_jeu.sh" 999 >/dev/null; echo $?) $(cat "$SG/222/Reglages.sav")"
+# format xml : un GraphicsConfig.xml d ELDEN RING factice (UTF-16LE sans BOM, CRLF), puis avec BOM, puis en UTF-8
+XD="$U/AppData/Roaming/Jeu"; mkdir -p "$XD"
+printf '<?xml version="1.0" encoding="UTF-16" ?>\r\n<config><ScreenMode>FULLSCREEN</ScreenMode>\r\n<Resolution-WindowScreenWidth>1680</Resolution-WindowScreenWidth>\r\n<QualitySetting>HIGH</QualitySetting>\r\n<Double>1</Double><Double>2</Double>\r\n</config>\r\n' |
+   iconv -f UTF-8 -t UTF-16LE >"$XD/GraphicsConfig.xml"
+cp "$XD/GraphicsConfig.xml" "$T/xml-origine"
+cat >"$CIDRE_PROFILS_BASE/999.toml" <<'FICHE'
+[reglages_jeu]
+fichier = "AppData/Roaming/Jeu/GraphicsConfig.xml"
+format = "xml"
+[reglages_jeu.valeurs]
+"ScreenMode" = "WINDOW"
+"Resolution-WindowScreenWidth" = "1280"
+"Absente" = "1"
+"Double" = "9"
+FICHE
+xml_lire() { iconv -f "${2:-UTF-16LE}" -t UTF-8 "$1" | tr -d '\r'; }
+sortie=$(sh "$R/tests/reglages_jeu.sh" 999); rc=$?
+verif "xml : code 0, poses" "0 1" "$rc $(printf '%s\n' "$sortie" | grep -c poses)"
+verif "xml : valeurs remplacees" "<config><ScreenMode>WINDOW</ScreenMode> <Resolution-WindowScreenWidth>1280</Resolution-WindowScreenWidth>" "$(xml_lire "$XD/GraphicsConfig.xml" | sed -n 2,3p | tr '\n' ' ' | sed 's/ $//')"
+verif "xml : le reste intact (QualitySetting, double laisse)" "<QualitySetting>HIGH</QualitySetting> <Double>1</Double><Double>2</Double>" "$(xml_lire "$XD/GraphicsConfig.xml" | sed -n 4,5p | tr '\n' ' ' | sed 's/ $//')"
+verif "xml : element absent et element double dits" "1 1" "$(printf '%s\n' "$sortie" | grep -c '<Absente> trouve 0 fois') $(printf '%s\n' "$sortie" | grep -c '<Double> trouve 2 fois')"
+verif "xml : UTF-16LE sans BOM garde" "3c003f00" "$(od -An -N4 -tx1 "$XD/GraphicsConfig.xml" | tr -d ' ')"
+verif "xml : CRLF garde, sans saut de ligne de plus" "6 6" "$(xml_lire "$XD/GraphicsConfig.xml" UTF-16LE | wc -l | tr -d ' ') $(iconv -f UTF-16LE -t UTF-8 "$XD/GraphicsConfig.xml" | grep -c "$(printf '\r')\$")"
+verif "xml : taille = origine - 4 caracteres (FULLSCREEN -> WINDOW) " "$(( $(wc -c <"$T/xml-origine") - 8 ))" "$(wc -c <"$XD/GraphicsConfig.xml" | tr -d ' ')"
+verif "xml : sauvegarde .avant-cidre = origine" "" "$(cmp "$XD/GraphicsConfig.xml.avant-cidre" "$T/xml-origine" 2>&1)"
+sortie=$(sh "$R/tests/reglages_jeu.sh" 999); rc=$?
+verif "xml : relance = deja en place, fichier inchange" "0 1" "$rc $(printf '%s\n' "$sortie" | grep -c 'deja en place')"
+{ printf '\377\376'; iconv -f UTF-16LE -t UTF-16LE "$T/xml-origine"; } >"$XD/GraphicsConfig.xml"; rm -f "$XD/GraphicsConfig.xml.avant-cidre"
+sh "$R/tests/reglages_jeu.sh" 999 >/dev/null
+verif "xml : avec BOM UTF-16LE, BOM garde et valeur posee" "fffe3c00 1" "$(od -An -N4 -tx1 "$XD/GraphicsConfig.xml" | tr -d ' ') $(xml_lire "$XD/GraphicsConfig.xml" | grep -c '<ScreenMode>WINDOW</ScreenMode>')"
+iconv -f UTF-16LE -t UTF-8 "$T/xml-origine" >"$XD/GraphicsConfig.xml"; rm -f "$XD/GraphicsConfig.xml.avant-cidre"
+sh "$R/tests/reglages_jeu.sh" 999 >/dev/null
+verif "xml : en UTF-8, valeur posee, encodage garde" "1 3c3f786d" "$(tr -d '\r' <"$XD/GraphicsConfig.xml" | grep -c '<ScreenMode>WINDOW</ScreenMode>') $(od -An -N4 -tx1 "$XD/GraphicsConfig.xml" | tr -d ' ')"
+printf 'pas du xml' >"$XD/GraphicsConfig.xml"
+verif "xml : un fichier qui n est pas du XML -> code 1, pas touche" "1 pas du xml" "$(sh "$R/tests/reglages_jeu.sh" 999 >/dev/null; echo $?) $(cat "$XD/GraphicsConfig.xml")"
 printf '[reglages_jeu]\nfichier = "AppData/Local/Jeu/Saved/SaveGames/*/Absent.sav"\nformat = "gvas"\nvaleurs = { "k" = "1" }\n' >"$CIDRE_PROFILS_BASE/999.toml"
 verif "chemin a * sans aucun fichier : code 3" "3" "$(sh "$R/tests/reglages_jeu.sh" 999 >/dev/null; echo $?)"
 printf '[reglages_jeu]\nfichier = "AppData/Local/Jeu/Config/*.ini"\nsection = "ScalabilityGroups"\nvaleurs = { "sg.ShadowQuality" = "2" }\n' >"$CIDRE_PROFILS_BASE/999.toml"

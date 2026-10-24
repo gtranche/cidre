@@ -244,7 +244,7 @@ garde_index = false
 # Une entrée par section INI visée ; une fiche qui n'en vise qu'une peut
 # écrire une table simple `[reglages_jeu]` au lieu du tableau.
 fichier = "AppData/Local/Sandfall/Saved/Config/Windows/GameUserSettings.ini"
-format = "ini"                     # ini (défaut), gvas (sauvegarde Unreal), playerprefs (Unity) ou registre, voir plus bas
+format = "ini"                     # ini (défaut), gvas (sauvegarde Unreal), playerprefs (Unity), registre ou xml, voir plus bas
 section = "ScalabilityGroups"      # optionnel : la section INI où vivent les clés
                                    # (exemple de forme : ce jeu-ci relit sa qualité ailleurs, voir plus bas)
 [reglages_jeu.valeurs]             # ou, en ligne : valeurs = { "sg.ShadowQuality" = "1" }
@@ -399,6 +399,12 @@ les pose, une fois :
   toujours `Value` (`"Graphics_VerticalSync.Value" = "0"`). Les en-têtes
   d'Unreal 5.4 et ceux d'Unreal 4 (taille sur 8 octets) sont reconnus ; une
   telle clé n'est jamais ajoutée si elle manque.
+- `format = "xml"` : un fichier de réglages XML plat, un élément par réglage
+  (`<Cle>valeur</Cle>`), en UTF-16 (avec ou sans BOM) ou en UTF-8 : ELDEN RING,
+  `AppData/Roaming/EldenRing/GraphicsConfig.xml`. Chaque clé de `valeurs` est un
+  nom d'élément ; son texte est remplacé s'il apparaît exactement une fois, sinon
+  il est laissé et le journal le dit. L'encodage, le BOM, les fins de ligne CRLF et
+  le reste du fichier sont gardés. Un élément absent n'est pas ajouté.
 - `format = "playerprefs"` : le jeu est en Unity et garde ses options dans les
   PlayerPrefs, que Unity range sous Windows dans le registre
   (`HKEY_CURRENT_USER\Software\<éditeur>\<jeu>`). `fichier` vaut alors

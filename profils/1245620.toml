@@ -28,6 +28,36 @@ drm = "pcgamingwiki 2026-10-11"
 # dossier Game/, a sa place (fichiers du jeu intacts). Pas de jeu en ligne.
 exe_sans_anticheat = "eldenring.exe"
 
+[[reglages_jeu]]
+# Mode fenetre 1280x720, qualite Basse (M1 Max, 2026-10-24) : en plein ecran (et en sans bordure),
+# le jeu cale ses images sur une grille de 60 Hz (attente active sur QueryPerformanceCounter jusqu'au
+# multiple suivant, eldenring+0xe86491) : ~21 ms de travail -> images de 33 ou 50 ms, mediane 18-22 img/s.
+# En fenetre 1280x720 : mediane 28,1 et 29,5 img/s, 0 % du temps sous 20/s. Ni le mode annonce a 120 Hz
+# (0240), ni l'affichage sans espace plein ecran, ni QPC sans appel systeme (0239) n'y changent rien ;
+# une fenetre 1680x945 retombe a 22. Pose une fois (reglages_jeu_appliques) : le joueur peut changer ensuite.
+fichier = "AppData/Roaming/EldenRing/GraphicsConfig.xml"
+format = "xml"
+[reglages_jeu.valeurs]
+"ScreenMode" = "WINDOW"
+"Resolution-WindowScreenWidth" = "1280"
+"Resolution-WindowScreenHeight" = "720"
+"Auto-detectBestRenderingSettings" = "OFF"
+"QualitySetting" = "LOW"
+"TextureQuality" = "LOW"
+"Antialiasing" = "LOW"
+"SSAO" = "LOW"
+"DepthOfField" = "LOW"
+"MotionBlur" = "LOW"
+"ShadowQuality" = "LOW"
+"LightingQuality" = "LOW"
+"EffectsQuality" = "LOW"
+"ReflectionQuality" = "LOW"
+"WaterSurfaceQuality" = "LOW"
+"ShadeQuality" = "LOW"
+"VolumetricEffectQuality" = "LOW"
+"GIDataQuality" = "LOW"
+"GrassQuality" = "LOW"
+
 [compat]
 etat = "non-teste"
 date = "2026-10-11"

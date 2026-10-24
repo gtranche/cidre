@@ -26,11 +26,12 @@
 # encore cree : on reessaiera au prochain lancement, les entrees deja posees
 # seront alors « deja en place ») ; 1 = erreur.
 #
-# Quatre formats (cle `format` de l'entree) : `ini` (defaut), `gvas` pour une
+# Cinq formats (cle `format` de l entree) : `ini` (defaut), `gvas` pour une
 # sauvegarde Unreal ou le jeu range des reglages (proprietes entieres remplacees
 # sur place, cf. poser_gvas), `registre` et `playerprefs` (les PlayerPrefs
 # d'Unity) pour un jeu qui les garde dans le registre du prefixe (cf.
-# poser_registre). `fichier` peut contenir un `*` pour un dossier au
+# poser_registre), `xml` pour un fichier XML plat, en UTF-16 ou UTF-8 (cf.
+# poser_xml). `fichier` peut contenir un `*` pour un dossier au
 # nom inconnu d'avance (un par compte) : chaque fichier qui correspond est traite.
 #
 # Format ini : seules les cles voulues sont reecrites, si leur valeur differe : les autres
@@ -426,6 +427,52 @@ poser_registre() { # <nom affiche>
 }
 poser_playerprefs() { poser_registre "$@"; }
 
+# Format xml : un fichier de reglages XML plat, un element par reglage (<Cle>valeur</Cle>), en UTF-16
+# little endian, avec ou sans BOM (ELDEN RING : GraphicsConfig.xml), ou en UTF-8. Chaque cle de $V est un nom
+# d element ; son texte est remplace s il apparait exactement une fois, sinon l element est laisse et une
+# ligne le dit. Le fichier est converti en UTF-8 par iconv, retouche, puis reconverti dans son encodage
+# d origine : BOM, fins de ligne CRLF et le reste du fichier sont gardes. Rend 0, ou 1 si le fichier n est
+# pas du XML lisible.
+poser_xml() { # <nom affiche>
+   nom=$1
+   case $(od -An -N4 -tx1 "$F" | tr -d ' ') in
+      fffe*|3c00*) ENC=UTF-16LE ;;
+      feff*|003c*) ENC=UTF-16BE ;;
+      efbbbf3c*|3c*) ENC=UTF-8 ;;
+      *) echo "    reglages du jeu : $nom n'est pas un fichier XML reconnu"; return 1 ;;
+   esac
+   [ "$(wc -c <"$F")" -le 1048576 ] || { echo "    reglages du jeu : $nom est trop gros pour etre retouche"; return 1; }
+   iconv -f "$ENC" -t UTF-8 "$F" >"$V.utf8" 2>/dev/null || { rm -f "$V.utf8"; echo "    reglages du jeu : $nom illisible en $ENC"; return 1; }
+   LC_ALL=C awk -F'\t' -v vf="$V" '
+      BEGIN { while ((getline l < vf) > 0) { split(l, p, "\t"); voulu[p[1]] = p[2]; n[p[1]] = 0 } }
+      function compter(t, m,   k, d) { k = 0; while ((d = index(t, m)) > 0) { k++; t = substr(t, d + length(m)) } return k }
+      { lignes[NR] = $0; for (c in voulu) n[c] += compter($0, "<" c ">") }
+      END {
+         for (c in voulu) if (n[c] != 1) { printf "%s\t%d\n", c, n[c] > "/dev/stderr"; delete voulu[c] }
+         for (i = 1; i <= NR; i++) {
+            l = lignes[i]
+            for (c in voulu) {
+               o = "<" c ">"; f = "</" c ">"
+               if ((d = index(l, o)) && (e = index(substr(l, d + length(o)), f)))
+                  l = substr(l, 1, d + length(o) - 1) voulu[c] substr(l, d + length(o) + e - 1)
+            }
+            printf "%s\n", l
+         }
+      }
+   ' "$V.utf8" >"$V.utf8.neuf" 2>"$V.laisses" || { rm -f "$V.utf8" "$V.utf8.neuf" "$V.laisses"; echo "    reglages du jeu : echec de la reecriture de $nom"; return 1; }
+   while IFS='	' read -r c k; do
+      echo "    reglages du jeu : element <$c> trouve $k fois dans $(basename "$F"), laisse"
+   done <"$V.laisses"
+   # awk ajoute un saut de ligne final : on garde celui du fichier d origine (present ou non)
+   if [ -n "$(tail -c 1 "$V.utf8")" ]; then
+      head -c $(( $(wc -c <"$V.utf8.neuf") - 1 )) "$V.utf8.neuf" >"$V.utf8.fin" && mv -f "$V.utf8.fin" "$V.utf8.neuf"
+   fi
+   iconv -f UTF-8 -t "$ENC" "$V.utf8.neuf" >"$F.cidre-tmp" 2>/dev/null || { rm -f "$V.utf8" "$V.utf8.neuf" "$V.laisses" "$F.cidre-tmp"; echo "    reglages du jeu : echec de la reecriture de $nom"; return 1; }
+   rm -f "$V.utf8" "$V.utf8.neuf" "$V.laisses"
+   remplacer "$nom" ""
+   return 0
+}
+
 # Une entree : <numero>. Rend 0 (pose ou deja la), 3 (pas maintenant), 1 (erreur).
 entree() {
    N=$1
@@ -434,7 +481,7 @@ entree() {
    [ -n "$REL" ] || { echo "    reglages du jeu : entree $N sans fichier, rien a faire"; return 3; }
    case $REL in /*|*..*) echo "    reglages du jeu : chemin refuse ($REL)"; return 1 ;; esac
    FORMAT=${FORMAT:-ini}
-   case $FORMAT in ini|gvas|registre|playerprefs) ;; *) echo "    reglages du jeu : format « $FORMAT » inconnu, rien a faire"; return 3 ;; esac
+   case $FORMAT in ini|gvas|registre|playerprefs|xml) ;; *) echo "    reglages du jeu : format « $FORMAT » inconnu, rien a faire"; return 3 ;; esac
    # ou vit le fichier : le dossier utilisateur du prefixe, ou le prefixe lui-meme
    # pour le registre (user.reg, la ruche de HKEY_CURRENT_USER, et elle seule)
    BASE=$(dirname "$UH")
