@@ -9,7 +9,8 @@
 #   battlenet.sh pids                 les processus que tient le wineserver du prefixe (cidre stop)
 #   battlenet.sh jeux                 les jeux installes, un par ligne, TAB-separe : id, nom,
 #                                     dossier, code, uid, executable (chemins POSIX), taille (octets)
-#   battlenet.sh ouvrir               ouvre le client (connexion, telechargements), sans attendre
+#   battlenet.sh ouvrir [--json]      ouvre le client (connexion, telechargements, jeux), sans attendre ;
+#                                     --json : {"evenement":"ouvert","deja":bool} ou {"evenement":"erreur",...}
 #   battlenet.sh arreter [--force]    ferme le client, et le wineserver du prefixe avec lui ;
 #                                     refuse (code 4) pendant un jeu, sauf --force (`cidre stop`)
 #   battlenet.sh preparer <id>        lancer_depuis_steam.sh, avant de regler le prefixe pour ce jeu
@@ -291,14 +292,25 @@ case ${1:-} in
          jeux | awk -F'\t' '{ printf "jeu     : %s  %s%s\n", $1, $2, ($4 == "" ? " (code de lancement inconnu)" : "") }'
       fi ;;
    ouvrir)
-      absent && exit 5
-      [ -z "$(du_client)" ] || { echo "Battle.net est deja ouvert."; exit 0; }
+      # --json (Verger) : une ligne d'evenement sur la sortie, les messages sur l'erreur
+      J_=non; [ "${2:-}" = --json ] && J_=oui
+      dire_() { if [ $J_ = oui ]; then printf '%s\n' "$*" >&2; else printf '%s\n' "$*"; fi; }
+      if [ ! -f "$CLIENT" ]; then
+         [ $J_ = non ] || printf '{"evenement":"erreur","code":"absent","message":%s}\n' "$(json "Battle.net n'est pas installe dans $PFX.")"
+         absent; exit 5
+      fi
+      if [ -n "$(du_client)" ]; then
+         [ $J_ = non ] || echo '{"evenement":"ouvert","deja":true}'
+         dire_ "Battle.net est deja ouvert."; exit 0
+      fi
       serveur_vivant || sans_demarrage_auto
-      WINEPREFIX=$PFX sh "$R/tests/prefixe_a_jour.sh"
-      config_lancement
+      WINEPREFIX=$PFX sh "$R/tests/prefixe_a_jour.sh" >&2
+      config_lancement >&2
       printf 'pour=client\n' >"$MARQUE"
-      lancer_client "$JOURNAL_CLIENT"
-      echo "Battle.net s'ouvre (une a deux minutes) : connecte-toi, installe ou mets a jour tes jeux, puis \`cidre play bnet-...\`." ;;
+      # la langue du Mac, comme l'installeur (Qt logiciel et --in-process-gpu : lancer_client)
+      lancer_client "$JOURNAL_CLIENT" "--lang=$(locale_blizzard)"
+      [ $J_ = non ] || echo '{"evenement":"ouvert","deja":false}'
+      dire_ "Battle.net s'ouvre (une a deux minutes) : connecte-toi, puis lance tes jeux depuis le client." ;;
    arreter)
       dj=$(des_jeux)
       if [ -n "$dj" ] && [ "${2:-}" != --force ]; then
@@ -417,7 +429,7 @@ case ${1:-} in
       ev '{"evenement":"etape","etape":"client"}'
       ev "$(printf '{"evenement":"installe","deja":false,"prefixe":%s}' "$(json "$PFX")")"
       dire_ "Battle.net est installe ($PFX). Connecte-toi dans sa fenetre (coche « Rester connecte »), installe tes jeux, puis \`cidre play bnet-...\`." ;;
-   *) echo "usage : battlenet.sh prefixe [<chemin>|defaut] | etat [--json] | jeux | pids | ouvrir | arreter [--force] | preparer <id> | jouer <id> [args] | creer | installer [--json]" >&2; exit 2 ;;
+   *) echo "usage : battlenet.sh prefixe [<chemin>|defaut] | etat [--json] | jeux | pids | ouvrir [--json] | arreter [--force] | preparer <id> | jouer <id> [args] | creer | installer [--json]" >&2; exit 2 ;;
 esac
 exit 0
 }

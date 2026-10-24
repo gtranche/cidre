@@ -304,6 +304,9 @@ r=$(CIDRE_BNET_PREFIXE="$PN" sh "$B" installer --json 2>/dev/null)
 contient "installer : deja installe" '"evenement":"installe","deja":true' "$r"
 r=$(CIDRE_BNET_PREFIXE="$PN" sh "$R/cidre" battlenet installer 2>&1)
 contient "cidre battlenet installer : deja installe" "deja installe" "$r"
+r=$(CIDRE_BNET_PREFIXE="$T/sans-client" sh "$R/cidre" battlenet ouvrir --json 2>/dev/null); rc=$?
+verif "ouvrir --json sans client : code 5" 5 "$rc"
+contient "ouvrir --json sans client : evenement" '"evenement":"erreur","code":"absent"' "$r"
 verif "locale : fr-FR" frFR "$(CIDRE_LANGUE_MAC=fr-FR sh "$B" locale)"
 verif "locale : en-GB" enGB "$(CIDRE_LANGUE_MAC=en-GB sh "$B" locale)"
 verif "locale : pt-PT -> ptBR" ptBR "$(CIDRE_LANGUE_MAC=pt-PT sh "$B" locale)"
