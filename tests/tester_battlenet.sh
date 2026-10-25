@@ -386,109 +386,10 @@ LOC=" "$e"
 rm -rf "$T/pfx-fex"
 verif "battle.net sans option : rien" "LOC=" "$(fex_bnet oui "" "" | grep '^LOC=')"
 
-echo "== ilot : fiche, environnement, runtime, prefixe aligne (sans Wine)"
-IL="$R/tests/ilot.sh"
-verif "fiche bnet-osi : ilot" true "$(sh "$R/tests/profil_cidre.sh" bnet-osi 2>/dev/null | sed -n 's/^ilot=//p' | head -1)"
-verif "fiche bnet-fen : ilot" true "$(sh "$R/tests/profil_cidre.sh" bnet-fen 2>/dev/null | sed -n 's/^ilot=//p' | head -1)"
-verif "defaut : pas d'ilot" false "$(sh "$R/tests/profil_cidre.sh" bnet-truc 2>/dev/null | sed -n 's/^ilot=//p' | head -1)"
-e=$(sh "$IL" env "Diablo IV.exe")
-contient "env : exe avec espace" "export CIDRE_ILOT_EXE='Diablo IV.exe'" "$e"
-contient "env : un seul processus" "export CIDRE_ILOT_UNIQUE='1'" "$e"
-contient "env : jumelles armees" "export CIDRE_SMC_ARME='1'" "$e"
-contient "env : vues partagees en copie" "export CIDRE_ILOT_VUES_PARTAGEES='copie'" "$e"
-absent "env : pas de chronologie en production" "CIDRE_ILOT_CHRONO" "$e"
-absent "env : pas de XPROC en production" "CIDRE_ILOT_XPROC" "$e"
-contient "env : chronologie au journal detaille" "CIDRE_ILOT_CHRONO='1'" "$(CIDRE_ILOT_JOURNAL=1 sh "$IL" env D2R.exe)"
-sh "$IL" env "a'b" >/dev/null 2>&1; verif "env : nom avec apostrophe refuse" 2 "$?"
-# runtimes factices : celui de Cidre et un runtime de dev de l'ilot ; chargeurs Mach-O (copies de /bin/echo)
-FR="$T/rel"; FD="$T/dev-ilot"
-for d in "$FR" "$FD"; do
-   mkdir -p "$d/bin" "$d/lib/wine/aarch64-unix" "$d/lib/wine/aarch64-windows"
-   cp /bin/echo "$d/bin/wine"; cp /bin/echo "$d/lib/wine/aarch64-unix/wine"
-done
-printf 'ntdll de cidre' >"$FR/lib/wine/aarch64-unix/ntdll.so"; printf 'win32u de cidre' >"$FR/lib/wine/aarch64-unix/win32u.so"
-printf 'winemac' >"$FR/lib/wine/aarch64-unix/winemac.so"
-for f in ntdll.dll xtajit64.dll xtajit.dll user32.dll; do printf "$f de cidre" >"$FR/lib/wine/aarch64-windows/$f"; done
-printf 'ntdll ilot garde controlee' >"$FD/lib/wine/aarch64-unix/ntdll.so"; printf 'win32u ilot' >"$FD/lib/wine/aarch64-unix/win32u.so"
-for f in ntdll.dll xtajit64.dll xtajit.dll; do printf "$f de l'ilot" >"$FD/lib/wine/aarch64-windows/$f"; done
-export CIDRE_ILOT_REL="$FR" CIDRE_ILOT_SOURCE="$T/ilot-src" CIDRE_ILOT_RUNTIME="$T/cidre/ilot/wine11-arm64"
-r=$(sh "$IL" disponible); verif "disponible : runtime absent" "non : runtime de l'ilot absent ($CIDRE_ILOT_RUNTIME)" "$r"
-r=$(sh "$IL" preparer 2>&1); verif "preparer : sans artefacts, code 3" "ilot : artefacts absents ($T/ilot-src)" "$r"
-printf 'pas de garde' >"$T/sans-garde.so"; mkdir -p "$T/dev-sans/lib/wine/aarch64-unix"; cp "$T/sans-garde.so" "$T/dev-sans/lib/wine/aarch64-unix/ntdll.so"
-sh "$IL" importer "$T/dev-sans" >/dev/null 2>&1; verif "importer : ntdll sans garde refuse" 2 "$?"
-sh "$IL" importer "$FD" >/dev/null 2>&1; verif "importer : manifeste" 5 "$(wc -l <"$T/ilot-src/ilot.manifeste" | tr -d ' ')"
-r=$(sh "$IL" preparer 2>&1); contient "preparer : runtime fait" "runtime prepare" "$r"
-verif "runtime : ntdll.so de l'ilot" "ntdll ilot garde controlee" "$(cat "$CIDRE_ILOT_RUNTIME/lib/wine/aarch64-unix/ntdll.so")"
-verif "runtime : le reste vient de Cidre" "winemac user32.dll de cidre" "$(cat "$CIDRE_ILOT_RUNTIME/lib/wine/aarch64-unix/winemac.so") $(cat "$CIDRE_ILOT_RUNTIME/lib/wine/aarch64-windows/user32.dll")"
-codesign -d --entitlements - "$CIDRE_ILOT_RUNTIME/lib/wine/aarch64-unix/wine" 2>/dev/null | grep -q com.apple.security.hypervisor \
-   && ok "runtime : chargeur signe avec le droit hyperviseur" || echec "runtime : chargeur sans le droit hyperviseur"
-codesign -d --entitlements - "$FR/lib/wine/aarch64-unix/wine" 2>/dev/null | grep -q com.apple.security.hypervisor \
-   && echec "runtime de Cidre re-signe (il ne doit pas etre touche)" || ok "runtime de Cidre intact"
-verif "preparer : deja a jour" "ilot : runtime a jour ($CIDRE_ILOT_RUNTIME)" "$(sh "$IL" preparer 2>&1)"
-if [ "$(sysctl -n kern.hv_support 2>/dev/null)" = 1 ]; then verif "disponible : oui" oui "$(sh "$IL" disponible)"
-else contient "disponible : sans hyperviseur" "hyperviseur indisponible" "$(sh "$IL" disponible)"; fi
-printf 'ntdll de cidre, mise a jour' >"$FR/lib/wine/aarch64-unix/ntdll.so"
-contient "runtime de Cidre change : perime" "perime" "$(sh "$IL" disponible)"
-contient "runtime de Cidre change : refait" "runtime prepare" "$(sh "$IL" preparer 2>&1)"
-verif "runtime refait : ntdll.so de l'ilot garde" "ntdll ilot garde controlee" "$(cat "$CIDRE_ILOT_RUNTIME/lib/wine/aarch64-unix/ntdll.so")"
-# prefixe aligne : DLL lues sur le disque, d'un runtime a l'autre
-AP="$T/pfx-aligne"; mkdir -p "$AP/drive_c/windows/system32"
-for f in ntdll.dll xtajit64.dll xtajit.dll; do cp "$FR/lib/wine/aarch64-windows/$f" "$AP/drive_c/windows/system32/"; done
-r=$(sh "$IL" aligner "$AP" ilot); contient "aligner ilot : dit" "3 DLL" "$r"
-verif "aligner ilot : ntdll.dll de l'ilot" "ntdll.dll de l'ilot" "$(cat "$AP/drive_c/windows/system32/ntdll.dll")"
-verif "aligner ilot : marque" ilot "$(cat "$AP/.cidre-ilot-alignement")"
-verif "aligner ilot : relance sans rien" "" "$(sh "$IL" aligner "$AP" ilot)"
-sh "$IL" aligner "$AP" normal >/dev/null
-verif "aligner normal : retour au runtime de Cidre" "xtajit64.dll de cidre" "$(cat "$AP/drive_c/windows/system32/xtajit64.dll")"
-sh "$IL" aligner "$AP" autre >/dev/null 2>&1; verif "aligner : mode inconnu" 2 "$?"
-# lanceur : bloc de l'ilot (choix du runtime et de l'environnement)
-IB=$(awk '/^# --- ilot : debut ---/,/^# --- ilot : fin ---/' "$R/tests/lancer_depuis_steam.sh")
-[ -n "$IB" ] && ok "bloc ilot trouve dans lancer_depuis_steam.sh" || echec "bloc ilot absent de lancer_depuis_steam.sh"
-ilot_bloc() { # <BNET> <ilot de la fiche> [runtime de l'ilot] : env apres le bloc
-   ( JOURNAL="$T/ilot.log" PROG="Diablo IV.exe" BNET=$1 V=$2; : >"$JOURNAL"
-     [ -z "${3:-}" ] || export CIDRE_ILOT_RUNTIME=$3 CIDRE_ILOT_SOURCE=$3-artefacts   # (ni runtime ni artefacts)
-     opt() { case $1 in ilot) echo "$V" ;; *) echo false ;; esac; }
-     unset WINE CIDRE_BNET_WINE WINE_ARM64 CIDRE_ILOT CIDRE_ILOT_EXE CIDRE_ILOT_ALIGNEMENT
-     eval "$IB"
-     printf 'JEU=%s\nWINE=%s\nBNETW=%s\nARM64=%s\nEXE=%s\nALIGN=%s\n' "$ILOT_JEU" "${WINE:-}" "${CIDRE_BNET_WINE:-}" "${WINE_ARM64:-}" \
-        "${CIDRE_ILOT_EXE:-}" "${CIDRE_ILOT_ALIGNEMENT:-}" )
-}
-if [ "$(sysctl -n kern.hv_support 2>/dev/null)" = 1 ]; then
-   e=$(ilot_bloc oui true)
-   contient "lanceur : jeu dans l'ilot" "JEU=oui" "$e"
-   contient "lanceur : client par le runtime de l'ilot" "WINE=$CIDRE_ILOT_RUNTIME/bin/wine" "$e"
-   contient "lanceur : wineserver et FEX du runtime de l'ilot" "BNETW=$CIDRE_ILOT_RUNTIME
-ARM64=$CIDRE_ILOT_RUNTIME" "$e"
-   contient "lanceur : exe du jeu" "EXE=Diablo IV.exe" "$e"
-   contient "lanceur : prefixe a aligner sur l'ilot" "ALIGN=ilot" "$e"
-   contient "lanceur : dit au journal" "dans l'ilot" "$(cat "$T/ilot.log")"
-fi
-e=$(ilot_bloc oui true "$T/nulle-part")
-contient "lanceur : ilot indisponible, hors ilot" "JEU=non
-WINE=
-" "$e"
-contient "lanceur : indisponible, prefixe remis au runtime de Cidre" "ALIGN=normal" "$e"
-contient "lanceur : indisponible dit au journal" "indisponible" "$(cat "$T/ilot.log")"
-verif "lanceur : fiche sans ilot" "JEU=non ALIGN=normal" "$(ilot_bloc oui false | grep -E '^(JEU|ALIGN)=' | paste -sd ' ' -)"
-verif "lanceur : Steam, pas d'ilot ni d'alignement" "JEU=non ALIGN=" "$(ilot_bloc non true | grep -E '^(JEU|ALIGN)=' | paste -sd ' ' -)"
-# AppConfig : TSO logiciel coupe pour le seul exe du jeu dans l'ilot
-( WINEPREFIX="$T/pfx-tso" JOURNAL="$T/fex.log" PROG="Diablo IV.exe" BNET=oui ILOT_JEU=oui
-  unset FEX_MAXINST FEX_MULTIBLOCK; export FEX_MAXINST=500; mkdir -p "$WINEPREFIX"; eval "$FB" )
-verif "AppConfig : TSO coupe dans l'ilot" '{"Config":{"MaxInst":"500","TSOEnabled":"0"}}' "$(cat "$T/pfx-tso/.cidre-fex/AppConfig/Diablo IV.exe.json" 2>/dev/null)"
-( WINEPREFIX="$T/pfx-tso2" JOURNAL="$T/fex.log" PROG="D2R.exe" BNET=oui ILOT_JEU=oui
-  unset FEX_MAXINST FEX_MULTIBLOCK; mkdir -p "$WINEPREFIX"; eval "$FB" )
-verif "AppConfig : TSO seul" '{"Config":{"TSOEnabled":"0"}}' "$(cat "$T/pfx-tso2/.cidre-fex/AppConfig/D2R.exe.json" 2>/dev/null)"
-grep -q 'aligner_ilot "${CIDRE_ILOT_ALIGNEMENT:-normal}"' "$B" && ok "battlenet jouer : prefixe aligne" || echec "battlenet jouer : pas d'alignement"
-grep -q 'aligner_ilot normal' "$B" && ok "battlenet ouvrir : prefixe remis au runtime de Cidre" || echec "battlenet ouvrir : pas d'alignement"
-verif "ilot.sh : enveloppe" "}" "$(tail -1 "$IL")"
-unset CIDRE_ILOT_REL CIDRE_ILOT_SOURCE CIDRE_ILOT_RUNTIME
-
 echo "== livraison"
 grep -q 'battlenet.sh' "$R/tests/empaqueter_runtime.sh" && ok "empaqueter : battlenet.sh" || echec "empaqueter : battlenet.sh absent"
 grep -q 'battlenet.conf' "$R/tests/empaqueter_runtime.sh" && ok "empaqueter : battlenet.conf" || echec "empaqueter : battlenet.conf absent"
 grep -q 'vcruntime_registre.sh' "$R/tests/empaqueter_runtime.sh" && ok "empaqueter : vcruntime_registre.sh" || echec "empaqueter : vcruntime_registre.sh absent"
-grep -q 'ilot.sh' "$R/tests/empaqueter_runtime.sh" && ok "empaqueter : ilot.sh" || echec "empaqueter : ilot.sh absent"
-grep -q 'outils/hyperviseur.plist' "$R/tests/empaqueter_runtime.sh" && ok "empaqueter : hyperviseur.plist" || echec "empaqueter : hyperviseur.plist absent"
 verif "enveloppe : derniere ligne" "}" "$(tail -1 "$B")"
 
 echo "$nb verifications, $ko echec(s)"

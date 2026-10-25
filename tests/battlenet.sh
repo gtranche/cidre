@@ -244,14 +244,6 @@ sans_demarrage_auto() {
       echo "    battlenet : demarrage automatique du client retire (wineboot l'ouvrait hors du jeu)"
 }
 
-# Ilot TSO (option ilot de la fiche, tests/ilot.sh) : le jeu lit sur le disque des DLL (ntdll.dll, FEX) qui
-# different entre le runtime de l'ilot et celui de Cidre ; le prefixe est aligne sur le runtime qui va servir,
-# wineserver arrete. « Jouer » du client, ouvert seul, part du runtime de Cidre : aligne sur lui.
-aligner_ilot() { # ilot|normal
-   [ -f "$R/tests/ilot.sh" ] || return 0
-   sh "$R/tests/ilot.sh" aligner "$PFX" "$1" || echo "    battlenet : prefixe non aligne pour l'ilot ($1)"
-}
-
 # L'environnement qui passera au jeu (variables de la pile), en empreinte.
 empreinte() {
    env | grep -E '^(FEX_|DXVK_|VKD3D_|MESA_|DXMT_|VK_|WINE|QT_|GST_|DYLD_|PROTON_OUVERT_|CIDRE_|LC_ALL=|LANG=)' \
@@ -390,7 +382,7 @@ case ${1:-} in
          [ $J_ = non ] || echo '{"evenement":"ouvert","deja":true}'
          dire_ "Battle.net est deja ouvert."; exit 0
       fi
-      serveur_vivant || { sans_demarrage_auto; aligner_ilot normal >&2; }
+      serveur_vivant || sans_demarrage_auto
       WINEPREFIX=$PFX sh "$R/tests/prefixe_a_jour.sh" >&2
       config_lancement >&2
       printf 'pour=client\n' >"$MARQUE"
@@ -442,8 +434,6 @@ case ${1:-} in
          if [ "$(marque pour)" = "$id" ] && [ "$(marque empreinte)" = "$emp" ]; then garde=oui
          else arreter_client "ouvert avec un autre environnement"; fi
       fi
-      # (client ferme ici, sauf s'il est garde : aligne a son ouverture pour ce meme environnement)
-      [ $garde = oui ] || aligner_ilot "${CIDRE_ILOT_ALIGNEMENT:-normal}"
       debut=$(date +%s)
       if [ $garde = oui ]; then
          echo "    battlenet : client deja ouvert pour ce jeu, lancement de $code demande"

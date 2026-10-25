@@ -73,12 +73,6 @@
 #   fex_multiblock   false = un bloc traduit par FEX s'arrete au premier saut
 #                    (FEX_MULTIBLOCK=0). true (defaut) = celui de FEX. Pour un jeu
 #                    qui reprotege son code sans cesse (D2R) : moins de retraduction.
-#   ilot             true = l'executable du jeu tourne dans l'ilot TSO (tests/ilot.sh) : un vCPU de
-#                    Hypervisor.framework, TSO materiel, sous-pages exactes de 4 Kio, au lieu du TSO
-#                    logiciel de FEX et de ses talons de sous-pages. Pour les jeux que FEX seul ne fait
-#                    pas tourner, ou mal (Diablo II Resurrected, Diablo IV). Jeux Battle.net seulement
-#                    pour l'instant. Indisponible (Mac, hyperviseur, runtime) : lancement hors ilot, dit
-#                    au journal. CIDRE_JOUER_ILOT=1/0 pour un essai. false (defaut). APPLIQUE.
 #   vsync            false = syncInterval 0 (plus de plafond vblank ; tearing possible).
 #   hud              compteur fps + charge GPU a l'ecran (DXVK_HUD, MTL_HUD).
 #   overlay          overlay Steam en jeu (Maj+Tab, amis, succes, notifications) :
@@ -279,7 +273,6 @@ fex_cache_disque = false
 fex_x87_reduit = false
 fex_maxinst = 0
 fex_multiblock = true
-ilot = false
 vsync = true
 hud = false
 overlay = true

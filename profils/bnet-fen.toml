@@ -26,10 +26,6 @@ knowndlls = "d3d12 d3d12core"
 # FEX courts a une branche (fiche bnet-osi). Hypothese, a verifier a la premiere manche.
 fex_maxinst = 500
 fex_multiblock = false
-# Dans l'ilot TSO (tests/ilot.sh) : hors ilot, le jeu exige les sous-pages de 4 Kio de FEX (sans elles, son chargeur
-# meurt en 14 s) et, avec elles, son prechargement passe 80 a 90 % de son temps dans leurs talons et n'aboutit pas
-# en 29 min. Dans l'ilot (sous-pages exactes, sans talons) : 49 a 60 img/s (M1, 24/10, bnet_d4_ilot.sh).
-ilot = true
 
 [compat]
 etat = "non-teste"

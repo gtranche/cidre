@@ -25,10 +25,6 @@ fex_maxinst = 500
 # Et des blocs a une seule branche : 979 Mio compiles, 16 vidages, 20,3 img/s
 # (contre 6,2 Gio, 64 vidages, 7,5 img/s avec MaxInst 500 seul).
 fex_multiblock = false
-# Dans l'ilot TSO (tests/ilot.sh) : TSO materiel et sous-pages exactes de 4 Kio, sans le TSO logiciel ni les talons
-# de FEX. Manches du M1 (24/10) : 79 img/s et 6 a 13 trous de plus de 150 ms dans l'intro (contre 20 img/s hors
-# ilot avec les memes blocs FEX), partie jouee par Battle.net. Le client reste hors ilot.
-ilot = true
 
 [compat]
 etat = "non-teste"
