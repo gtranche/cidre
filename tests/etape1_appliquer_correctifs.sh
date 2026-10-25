@@ -137,6 +137,9 @@ if [ -d "$R/third_party/FEX" ]; then
          0229-*) temoin="Cidre 0229 : le contexte ARM64"; ou=Source/Windows/ARM64EC/Module.cpp ;;
          0230-*) temoin="Cidre, diag CIDRE_DIAG_HAUT_NUL"; ou=FEXCore/Source/Interface/Core/JIT/JIT.cpp ;;
          0233-*) temoin="Cidre 0233 : NtDllRedirectionLUTSize"; ou=Source/Windows/ARM64EC/Module.S ;;
+         0234-*) temoin="const bool CidreEcriture = Exception->NumberParameters >= 1"; ou=Source/Windows/ARM64EC/Module.cpp ;;
+         0235-*) temoin="Data->CidreRetireStart = Data->CidreRetireSize = 0;"; ou=Source/Windows/ARM64EC/Module.cpp ;;
+         0236-*) temoin="static void CidreViderEngage(void* Ptr, size_t Size) {"; ou=FEXCore/Source/Interface/Core/LookupCache.cpp ;;
          *) echo "   correctif FEX sans temoin : $(basename "$f")" >&2; exit 1 ;;
       esac
       # -F : texte litteral (les temoins contiennent . ( * &).
