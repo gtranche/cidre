@@ -125,7 +125,7 @@ for f in etape2_pile_arm64ec.sh lancer_depuis_steam.sh brancher_jeux_steam.sh \
          majs_steam.awk brancher_jeux_steam.awk configurer_cidre.sh langue_jeu.sh langue_cidre.sh depots_langue.awk \
          installer_steamcmd.sh installer_client_steam_windows.sh diagnostic_cidre.sh \
          fiche_profil.sh reglages_jeu.sh arguments_jeu.sh version_windows.sh knowndlls.sh machine.sh client_steam_natif.sh expliquer_sortie.sh sortie_normale.sh deviner_saves.sh repli_dxmt.sh lier_saves_steam.sh prefixe_a_jour.sh etat_shaders.sh \
-         precompil_kk.sh diag_cidre.sh masquer_diag.awk envoyer_diag.sh fin_de_partie.sh extensions_fex.sh battlenet.sh vcruntime_registre.sh; do
+         precompil_kk.sh diag_cidre.sh masquer_diag.awk envoyer_diag.sh fin_de_partie.sh extensions_fex.sh battlenet.sh vcruntime_registre.sh ilot.sh; do
    livrer "tests/$f"
 done
 # La base de profils par jeu (profils/README.md) : la copie livree, repli de
@@ -134,6 +134,15 @@ done
 FICHES=$(git -C "$R" ls-files profils 2>/dev/null)
 [ -n "$FICHES" ] || FICHES=$(ls "$R"/profils/* | sed "s#^$R/##")
 for f in $FICHES; do livrer "$f"; done
+# L'ilot TSO (option ilot, tests/ilot.sh) : le droit hyperviseur des chargeurs re-signes, et les fichiers de l'ilot
+# (wine/ilot, faits par `ilot.sh importer`, en attendant leur construction par la release) avec leur manifeste.
+livrer outils/hyperviseur.plist
+if [ -f "$R/wine/ilot/ilot.manifeste" ]; then
+   mkdir -p "$STAGE/wine/ilot" && ( cd "$R/wine/ilot" && tar cf - . ) | ( cd "$STAGE/wine/ilot" && tar xf - )
+   echo "  wine/ilot : fichiers de l'ilot livres"
+else
+   echo "  wine/ilot : absent, l'option ilot retombera hors ilot (ilot.sh importer)"
+fi
 # La CLI `cidre` : le contrat que pilote Verger (list/info --json, play, dl, sync).
 livrer cidre
 cp -R "$R/tests/outils_fenetre" "$STAGE/tests/" 2>/dev/null || true

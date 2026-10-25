@@ -1002,6 +1002,39 @@ fi
 # 61 -> 98 % de Rosetta, temoins 30/30, PEAK sans changement ni defaut (23/10). CIDRE_HAUT_NUL=0 le coupe.
 [ -n "${CIDRE_HAUT_NUL:-}" ] || export CIDRE_HAUT_NUL=2
 # --- reglages FEX : fin ---
+
+# Ilot TSO (option ilot ; CIDRE_JOUER_ILOT=1/0 pour un essai) : l'executable du jeu tourne dans un vCPU de
+# Hypervisor.framework, en TSO materiel et avec des sous-pages exactes de 4 Kio (tests/ilot.sh). Jeux Battle.net
+# seulement pour l'instant : le client et le jeu partagent un wineserver, donc un runtime -- celui de l'ilot, ou son
+# code dort pour tout autre processus que le jeu. Le runtime de l'ilot est refait s'il le faut (clone APFS du
+# runtime de Cidre, quelques secondes) ; indisponible (Mac, hyperviseur, runtime, signature) : lancement hors ilot,
+# dit au journal. Le prefixe est aligne (DLL lues sur le disque) client ferme, par battlenet.sh jouer.
+# --- ilot : debut ---
+ILOT_JEU=non
+if [ "$(opt ilot CIDRE_JOUER_ILOT)" = true ]; then
+   if [ $BNET != oui ]; then
+      echo "    ilot    : demande, mais reserve aux jeux Battle.net pour l'instant ; lancement hors ilot" >>"$JOURNAL"
+   else
+      sh "$R/tests/ilot.sh" preparer >>"$JOURNAL" 2>&1 || true
+      ILOT_DISPO=$(sh "$R/tests/ilot.sh" disponible 2>&1)
+      if [ "$ILOT_DISPO" = oui ]; then
+         ILOT_JEU=oui
+         ILOT_RT=$(sh "$R/tests/ilot.sh" chemin)
+         ILOT_J=0; [ "$(opt journal_detaille CIDRE_JOURNAL_DETAILLE)" != true ] || ILOT_J=1
+         eval "$(CIDRE_ILOT_JOURNAL=$ILOT_J sh "$R/tests/ilot.sh" env "$PROG")"
+         # WINE : etape2 lance le client par lui ; CIDRE_BNET_WINE : wineserver du prefixe ; WINE_ARM64 : installer_fex
+         # (etape2, a chaque lancement) pose dans le prefixe le FEX de ce runtime, celui de l'ilot
+         export WINE="$ILOT_RT/bin/wine" CIDRE_BNET_WINE="$ILOT_RT" WINE_ARM64="$ILOT_RT"
+         # (TSO logiciel coupe pour le jeu par son AppConfig ; une variable FEX_TSOENABLED le primerait)
+         [ -n "${CIDRE_TSO:-}" ] || unset FEX_TSOENABLED
+         echo "    ilot    : $PROG dans l'ilot (TSO materiel, sous-pages exactes) ; runtime $ILOT_RT" >>"$JOURNAL"
+      else
+         echo "    ilot    : indisponible ($ILOT_DISPO) ; lancement hors ilot" >>"$JOURNAL"
+      fi
+   fi
+fi
+[ $BNET != oui ] || export CIDRE_ILOT_ALIGNEMENT=$([ $ILOT_JEU = oui ] && echo ilot || echo normal)
+# --- ilot : fin ---
 echo "    fex     : tso ${FEX_TSOENABLED:-1}${FEX_EXTENDEDVOLATILEMETADATA:+ sauf $FEX_EXTENDEDVOLATILEMETADATA}${FEX_VOLATILEMETADATAALLBLOCKS:+, metadonnee MSVC prise au mot}, cache disque ${FEX_DISKCACHE:-0}, x87 reduit ${FEX_X87REDUCEDPRECISION:-0}, MaxInst ${FEX_MAXINST:-5000}, multiblock ${FEX_MULTIBLOCK:-1}, sonnette retour ${CIDRE_SONNETTE_RETOUR}, haut nul ${CIDRE_HAUT_NUL}, hote ${FEX_HOSTFEATURES}" >>"$JOURNAL"
 # Battle.net : le jeu part du client, qui herite de cet environnement -- et avec
 # lui son CEF (page de connexion, controle de securite de Blizzard). Les blocs
@@ -1012,16 +1045,18 @@ echo "    fex     : tso ${FEX_TSOENABLED:-1}${FEX_EXTENDEDVOLATILEMETADATA:+ sau
 # programme de FEX, AppConfig/<exe du jeu>.json, lue par le seul processus du
 # jeu (FEX_APP_CONFIG_LOCATION : un dossier du prefixe, en chemin Windows).
 # --- fex du jeu battle.net : debut ---
-if [ $BNET = oui ] && { [ -n "${FEX_MAXINST:-}" ] || [ -n "${FEX_MULTIBLOCK:-}" ]; }; then
+# Dans l'ilot, le TSO est materiel : FEX sans TSO logiciel, pour le seul exe du jeu (le client, hors ilot, le garde).
+if [ $BNET = oui ] && { [ -n "${FEX_MAXINST:-}" ] || [ -n "${FEX_MULTIBLOCK:-}" ] || [ "${ILOT_JEU:-non}" = oui ]; }; then
    FEXCFG=$WINEPREFIX/.cidre-fex
    mkdir -p "$FEXCFG/AppConfig"
+   FEXSEP=
    { printf '{"Config":{'
-     [ -z "${FEX_MAXINST:-}" ] || printf '"MaxInst":"%s"' "$FEX_MAXINST"
-     [ -z "${FEX_MAXINST:-}" ] || [ -z "${FEX_MULTIBLOCK:-}" ] || printf ','
-     [ -z "${FEX_MULTIBLOCK:-}" ] || printf '"Multiblock":"%s"' "$FEX_MULTIBLOCK"
+     [ -z "${FEX_MAXINST:-}" ] || { printf '"MaxInst":"%s"' "$FEX_MAXINST"; FEXSEP=,; }
+     [ -z "${FEX_MULTIBLOCK:-}" ] || { printf '%s"Multiblock":"%s"' "$FEXSEP" "$FEX_MULTIBLOCK"; FEXSEP=,; }
+     [ "${ILOT_JEU:-non}" != oui ] || printf '%s"TSOEnabled":"0"' "$FEXSEP"
      printf '}}\n'; } >"$FEXCFG/AppConfig/$PROG.json"
    export FEX_APP_CONFIG_LOCATION="Z:$(printf '%s' "$FEXCFG/" | tr '/' '\\')"
-   echo "    fex     : MaxInst ${FEX_MAXINST:-5000}, multiblock ${FEX_MULTIBLOCK:-1} pour $PROG seul (AppConfig de FEX) ; le client Battle.net garde ceux de FEX" >>"$JOURNAL"
+   echo "    fex     : MaxInst ${FEX_MAXINST:-5000}, multiblock ${FEX_MULTIBLOCK:-1}$([ "${ILOT_JEU:-non}" != oui ] || echo ', TSO logiciel coupe (ilot)') pour $PROG seul (AppConfig de FEX) ; le client Battle.net garde ceux de FEX" >>"$JOURNAL"
    unset FEX_MAXINST FEX_MULTIBLOCK
 fi
 # --- fex du jeu battle.net : fin ---
