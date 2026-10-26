@@ -32,6 +32,7 @@
 #   exe_sans_anticheat = "eldenring.exe"          exe lance a la place de celui de Steam (hors ligne, sans anti-triche)
 #   knowndlls = "d3d12 d3d12core"                 DLL prises dans system32 meme si le jeu en livre une copie
 #   boite_ok = "not officially supported by"      boite OK/Annuler du jeu repondue OK sans s afficher (0221)
+#   code_kk = "ssbo_sans_bornes ssbo_nul_puits"    options de generation de code de KosmicKrisp (README)
 # Une option a choix s'ecrit en chaine, ex. :
 #   dlss = "metalfx"   DLSS du jeu traduit en MetalFX temporel par DXMT (extensions
 #                      NVIDIA : le jeu voit une carte NVIDIA) ; "non" par defaut.

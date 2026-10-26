@@ -178,6 +178,27 @@ le jeu lancé avant lui.
 est dans `tests/version_windows.sh` ; essais : `sh
 tests/tester_version_windows.sh`.
 
+### KosmicKrisp en vrai D3D12 (`pile_kk`, `demi_precision`, `calcul_avant_passe`, `compile_differee`, `code_kk`)
+
+Les options de KosmicKrisp sont coupées par défaut dans le pilote ; le
+lanceur les pose (variables `CIDRE_*`, dites au journal sur la ligne `kk`) :
+
+| Clé | Défaut | Effet |
+|---|---|---|
+| `pile_kk` | `true` | pour un jeu en `dx12` : `CIDRE_VISIB=2` (0250), `CIDRE_RESOLVE_GROUPE=4` (0251), `CIDRE_FILES=4` (0252), `CIDRE_AIR_DIRECT=1` (0260, repli MSL par nuanceur), et `CIDRE_TEX_COMPRESSION=3` (0239) dès `famille_gpu >= 9` ; Demonologist M4 ~35 → ~70 images/s présentées, ELDEN RING M1 neutre ou mieux |
+| `demi_precision` | `true` | avec `sm66` : `CIDRE_DEMI_PRECISION=1` (0261), vkd3d-proton expose `Native16BitShaderOpsSupported` (Demonologist M4 +10 %) |
+| `calcul_avant_passe` | `false` | `CIDRE_CALCUL_AVANT_PASSE=1` (0242) : calcul interne des dessins hissé avant la passe de rendu (ELDEN RING M1 +18 %) |
+| `compile_differee` | `false` | `CIDRE_COMPILE_DIFFEREE=1` (0237) : compilation Metal sur une file de fils |
+| `code_kk` | `""` | options de génération de code, noms séparés par des espaces : `lectures_cachees`, `w10_sans_court_circuit`, `images_nulles_sans_branche`, `ssbo_sans_bornes`, `ssbo_nul_puits`, `contraction_malgre_precis`, `reductions_simd`, `minmax_zero_entier`, `textures_nulles_sans_branche` |
+
+Les options de code et `calcul_avant_passe` se mesurent jeu par jeu
+(`ssbo_sans_bornes` seul fait fauter Unreal 5 au démarrage ; avec
+`ssbo_nul_puits`, non). Toutes changent la clé du cache de pipelines (une
+recompilation au premier lancement). `CIDRE_<option>=0` en retire une pour un
+essai, une valeur explicite garde la main ; `vsync = false` coupe aussi la
+synchro d'affichage de KosmicKrisp (`CIDRE_WSI_VSYNC=0`, 0258 : sinon
+`IMMEDIATE` la garde, sans déchirement).
+
 ### Fin normale sur un code d'erreur (`sortie_normale`)
 
 Certains jeux se ferment toujours sur un code non nul, sans rien perdre :

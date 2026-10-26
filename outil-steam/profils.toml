@@ -296,5 +296,13 @@ dlss_repli = "non"
 generation_images = "non"
 clavier = "systeme"
 deck = false
+# KosmicKrisp en vrai D3D12 : pile_kk pose VISIB=2, RESOLVE_GROUPE=4, FILES=4,
+# AIR_DIRECT=1 (et TEX_COMPRESSION=3 des famille_gpu 9) ; demi_precision suit
+# sm66. calcul_avant_passe, compile_differee et code_kk se reglent par fiche.
+pile_kk = true
+demi_precision = true
+calcul_avant_passe = false
+compile_differee = false
+code_kk = ""
 
 # (plus de section par jeu ici : profils/<appid>.toml, section [cidre])

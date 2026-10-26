@@ -20,7 +20,8 @@ plateformes_steam = "steam 2026-10-11"
 #     D3D12, reglages par defaut, 2240x1260              8 fps   GPU 113 ms
 #     D3D12, tout au minimum, 1600x900, FSR Ultra Perf. 18 fps   GPU  55 ms
 #     idem + generation d images FSR 3                  32 fps affiches (~16 reels)
-# Pas active par defaut : decision de l utilisateur le 2026-10-16 (DXMT partout,
+# (Historique, remplace le 2026-10-26 par le bloc M2 plus bas.) Pas active par
+# defaut : decision de l utilisateur le 2026-10-16 (DXMT partout,
 # trop lent en D3D12 sur un M4 de base). Pour l activer sur M2 et suivants :
 #     cidre set 1929610 dx12 true
 #     cidre set 1929610 sm66 true
@@ -69,6 +70,21 @@ creer = true
 "r.Lumen.Reflections.Allow" = "0"
 "r.LumenScene.SurfaceCache.CardCaptureRefreshFraction" = "0.0625"
 "r.Lumen.ScreenProbeGather.RadianceCache.ProbeResolution" = "16"
+
+# M2 et suivants (famille_gpu >= 8 ; M4 = 9) : meme voie D3D12 + SM 6.6 que le M1,
+# sans Lumen allege (essaye le 2026-10-25 sur le M4 : r.Lumen.* sans effet, le jeu
+# efface Engine.ini ; limite = debit des nuanceurs). Avec la pile KosmicKrisp du
+# 26/10 (lanceur : VISIB, RESOLVE_GROUPE, FILES, AIR direct, compression des
+# textures, demi-precision par sm66), Demonologist M4 au menu passe de ~35 a ~70
+# images/s presentees ; partie multijoueur validee par l utilisateur (pont
+# lsteamclient 0257) ; chargements « le jour et la nuit » avec l AIR direct.
+
+[[machine]]
+si = "famille_gpu >= 8"
+[machine.cidre]
+dx12 = true
+sm66 = true
+arguments = "-dx12"
 
 [compat]
 etat = "bronze"

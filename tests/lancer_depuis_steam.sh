@@ -82,6 +82,19 @@ opt() { # <cle du profil> <variable d'environnement>
    profil "$1"
 }
 dxvk_config() { export DXVK_CONFIG="${DXVK_CONFIG:+$DXVK_CONFIG;}$1"; }
+# kk_defaut <variable> <valeur> : option de KosmicKrisp posee a <valeur> si
+# l'environnement ne la donne pas ; <valeur> 0, ou la variable a 0 dans
+# l'environnement, la retire (plusieurs options ne regardent que sa presence).
+# Les options posees sont dites au journal (KK_OPTIONS).
+KK_OPTIONS=
+kk_defaut() {
+   eval "kk_v=\${$1:-}"
+   [ -n "$kk_v" ] || kk_v=$2
+   case $kk_v in
+      0) unset "$1" ;;
+      *) export "$1=$kk_v"; KK_OPTIONS="${KK_OPTIONS:+$KK_OPTIONS }${1#CIDRE_}=$kk_v" ;;
+   esac
+}
 
 # Cache de pipelines Metal (KosmicKrisp) : les shaders compiles (MSL -> binaire
 # Metal) sont ranges par jeu dans une archive MTL4 et relus au lancement suivant,
@@ -219,11 +232,15 @@ fi
 # vsync = false (ou CIDRE_VSYNC=0) force syncInterval=0 cote DXVK (pas de
 # penalite vblank ; tearing possible). On l'ajoute au DXVK_CONFIG sans ecraser
 # l'existant.
+# KosmicKrisp (0258) garde la synchro d'affichage en IMMEDIATE (plus de
+# dechirement en affichage direct, Demonologist M4) : vsync = false la lui fait
+# couper aussi (CIDRE_WSI_VSYNC=0, debit libre, dechirement possible).
 if [ "$(opt vsync CIDRE_VSYNC)" = false ]; then
    case ";${DXVK_CONFIG:-};" in
       *syncInterval*) : ;;
       *) dxvk_config "dxgi.syncInterval=0;d3d11.syncInterval=0" ;;
    esac
+   export CIDRE_WSI_VSYNC=${CIDRE_WSI_VSYNC:-0}
 fi
 
 # DXVK async (build gplasync) : compile les pipelines en fond au lieu de bloquer
@@ -280,8 +297,66 @@ if [ "$(opt dx12 CIDRE_DX12)" = true ]; then
    # chaque barriere (0155) : sans cela, Lumen y rendait un bruit lumineux par blocs.
    if [ "$(opt sm66 CIDRE_SM66)" = true ]; then
       export CIDRE_VKD3D_DENORMAUX_LIBRES=1 CIDRE_DERIVEES_CALCUL=1 CIDRE_ATOMIQUES_64=1
+      # Demi-precision native (KosmicKrisp 0261) : KK annonce les denormaux fp16
+      # conserves (le materiel Apple les garde), vkd3d-proton expose alors
+      # Native16BitShaderOpsSupported comme D3DMetal, et Unreal 5 prend ses
+      # variantes FP16 (FidelityFX, TSR). Demonologist M4 : GPU -11 %, img/s
+      # +10 %, image identique ; Elden Ring (sans SM 6.6) neutre. Pour toute fiche
+      # sm66 ; demi_precision = false (ou CIDRE_DEMI_PRECISION=0) la retire.
+      kk_defaut CIDRE_DEMI_PRECISION "$( [ "$(opt demi_precision CIDRE_DEMI_PRECISION)" = false ] && echo 0 || echo 1)"
    fi
 fi
+
+# Pile KosmicKrisp du 26/10 pour le vrai D3D12 (vkd3d-proton). Chaque option est
+# coupee par defaut dans le pilote ; le lanceur les pose pour tout jeu en dx12,
+# mesurees ensemble sur Demonologist (M4, UE 5.6) et ELDEN RING (M1) :
+#   CIDRE_VISIB=2          barrieres sans l'option alias, sauf avant la copie des
+#                          requetes d'occlusion (0250)               M4 +13 %
+#   CIDRE_RESOLVE_GROUPE=4 resolutions d'horodatage groupees a la file et remises
+#                          a zero differees (0251) : ~4 100 resolveCounterHeap/s
+#                          a ~70-85 us de GPU chacune sous UE5      M4 +50 %
+#   CIDRE_FILES=4          4 files Vulkan, vkd3d-proton ne serialise plus ses
+#                          files D3D12 sur une seule file Metal (0252) M4 +11 %
+#   CIDRE_AIR_DIRECT=1     NIR -> AIR sans le frontal MSL (0260), repli MSL par
+#                          nuanceur : bibliotheque 0,36 s -> 2,5 ms ; ER M1 a
+#                          froid 90 -> 31 s de chargement, mediane +6 %
+#   CIDRE_TEX_COMPRESSION=3 compression sans perte gardee sur les textures a
+#                          vues de meme disposition (0239), famille_gpu >= 9
+#                          seulement : M4 +9-12 %, sans effet mesurable sur M1
+# ELDEN RING M1 neutre ou mieux sur chacune, 0 erreur GPU. Les jeux D3D11/D3D9
+# (DXVK, DXMT) n'en heritent pas : pas de mesure de non-regression sur eux.
+# pile_kk = false (ou CIDRE_PILE_KK=0) n'en pose aucune ; CIDRE_<option>=0 en
+# retire une, une valeur explicite garde la main.
+if [ "$(opt dx12 CIDRE_DX12)" = true ] && [ "$(opt pile_kk CIDRE_PILE_KK)" != false ]; then
+   kk_defaut CIDRE_VISIB 2
+   kk_defaut CIDRE_RESOLVE_GROUPE 4
+   kk_defaut CIDRE_FILES 4
+   kk_defaut CIDRE_AIR_DIRECT 1
+   FAMILLE_GPU=${FAMILLE_GPU:-$(sh "$R/tests/machine.sh" famille_gpu 2>/dev/null | sed -n 's/^famille_gpu=//p')}
+   case $FAMILLE_GPU in
+      ''|*[!0-9]*) kk_defaut CIDRE_TEX_COMPRESSION 0 ;;
+      *) if [ "$FAMILLE_GPU" -ge 9 ]; then kk_defaut CIDRE_TEX_COMPRESSION 3
+         else kk_defaut CIDRE_TEX_COMPRESSION 0; fi ;;
+   esac
+fi
+# Options de KosmicKrisp propres a une fiche (mesurees jeu par jeu) :
+#   calcul_avant_passe = true   calcul interne des dessins hisse avant la passe de
+#                               rendu (0242) : ELDEN RING M1 mediane +18 %
+#   compile_differee = true     compilation Metal sur une file de fils (0237)
+#   code_kk = "nom ..."         options de generation de code (0156-0159, 0132,
+#                               0256), noms en minuscules sans CIDRE_ : la plupart
+#                               plantent ou ralentissent ailleurs (SSBO_SANS_BORNES
+#                               seul : Unreal 5 faute au demarrage).
+# Elles changent la cle du cache de pipelines. CIDRE_<option>=0 en retire une.
+[ "$(opt calcul_avant_passe CIDRE_CALCUL_AVANT_PASSE)" = true ] && kk_defaut CIDRE_CALCUL_AVANT_PASSE 1
+[ "$(opt compile_differee CIDRE_COMPILE_DIFFEREE)" = true ] && kk_defaut CIDRE_COMPILE_DIFFEREE 1
+for o in $(profil code_kk | tr -d '"'); do
+   case $o in
+      lectures_cachees|w10_sans_court_circuit|images_nulles_sans_branche|ssbo_sans_bornes|ssbo_nul_puits|contraction_malgre_precis|reductions_simd|minmax_zero_entier|textures_nulles_sans_branche)
+         kk_defaut "CIDRE_$(printf '%s' "$o" | tr '[:lower:]' '[:upper:]')" 1 ;;
+      *) echo "code_kk : option inconnue ignoree : $o" >&2 ;;
+   esac
+done
 
 # Overrides DLL propres au jeu (base de compat, cf. profils.toml). Format Wine
 # "a,b=n;c=b" (n=natif, b=builtin, =disable). etape2 les AJOUTE aux overrides par
@@ -404,6 +479,7 @@ DEBUT_EPOCH=$(date +%s)
    VARIANTES=$(sh "$R/tests/fiche_profil.sh" variantes "$JEU" 2>/dev/null | tr '\n' ';' | sed 's/;$//; s/;/ ; /g')
    [ -z "$VARIANTES" ] || echo "    fiche   : variante pour cette machine (si $VARIANTES)"
    [ -z "${MESA_KK_PRECOMPIL:-}" ] || echo "    precompil : pipelines precompiles livres ($MESA_KK_PRECOMPIL)"
+   [ -z "$KK_OPTIONS" ] || echo "    kk      : $KK_OPTIONS"
    [ -z "${MESA_KK_AIR_LOCAL:-}" ] || echo "    air local : $(ls "$MESA_KK_AIR_LOCAL/air" 2>/dev/null | grep -c '\.metallib$') bibliotheques en reserve ($MESA_KK_AIR_LOCAL)"
    [ -z "${CIDRE_DECK:-}" ] || echo "    deck    : mode Deck simule (IsSteamRunningOnSteamDeck rend vrai)"
    [ -z "$DECK_COUPE" ] || echo "    deck    : coupe en D3D12 (la fiche le demande ; CIDRE_DECK=1 pour forcer)"
