@@ -46,6 +46,12 @@ plateformes_steam = "steam 2026-10-11"
 # Ne pas mesurer avec le HUD Metal (hud = true) : en D3D12 il fige une partie
 # sur deux a 0,9 image/s.
 
+[cidre]
+# Code KosmicKrisp des nuanceurs (26/10) : seule combinaison gagnante au banc,
+# +5 % au menu sur M1 (21,7 -> 22,85) ; sur M4, les reductions SIMD ramenent la
+# passe Lumen ConvertToIrradiance de x13 a x5,5 du temps D3DMetal.
+code_kk = "ssbo_sans_bornes ssbo_nul_puits reductions_simd"
+
 [[machine]]
 si = "famille_gpu <= 7"
 [machine.cidre]
