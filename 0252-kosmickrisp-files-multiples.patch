@@ -1,0 +1,191 @@
+Generated-by: LLM
+
+KosmicKrisp : jusqu'a 4 files Vulkan dans la famille de files (CIDRE_FILES, coupe par defaut)
+
+Chantier CPU<->GPU (Demonologist D3D12, M4, 2026-10-26), sur 0251. KK
+n'exposait qu'une VkQueue : vkd3d-proton fait alors passer toutes ses files
+D3D12 (directe, calcul, copie) par une seule MTL4CommandQueue, et chaque
+soumission attend la precedente dans IOGPUCommandQueueSubmit (55 % du fil de
+soumission). CIDRE_FILES=N (2 a 4) annonce N files dans l'unique famille ;
+kk_CreateDevice cree les files supplementaires (dev->queues_sup), chacune avec
+sa MTL4CommandQueue et sa liste de resolutions d'horodatage (0251). Les
+resolutions en attente sur une autre file qui recouvrent les requetes qu'un
+enregistrement lit sont videes (et attendues, 5 s au plus) avant son commit ;
+kk_queue_ts_flush_overlap / purge / purge_pool parcourent toutes les files.
+
+Mesures : Demonologist M4 mediane presentee 56,1 -> 62,4 img/s (+11 %) avec
+CIDRE_VISIB=2 CIDRE_RESOLVE_GROUPE=4 ; Elden Ring M1 neutre ; temoin a 2 files
+(~/Dev/cidre-kk-cpu/temoin) : 0 ecart.
+
+Retires a l'integration : la trace binaire des soumissions (CIDRE_TRACE_SOUM,
+diagnostic lourd) et le recyclage des tampons de resolution (CIDRE_TS_RECYCLE,
+bruit).
+
+diff --git a/src/kosmickrisp/vulkan/kk_device.c b/src/kosmickrisp/vulkan/kk_device.c
+index 9de5c7d..f162da3 100644
+--- a/src/kosmickrisp/vulkan/kk_device.c
++++ b/src/kosmickrisp/vulkan/kk_device.c
+@@ -320,6 +320,14 @@ kk_CreateDevice(VkPhysicalDevice physicalDevice,
+       if (result != VK_SUCCESS)
+          goto fail_vab_memory;
+       dev->has_queue = true;
++      uint32_t nq = pCreateInfo->pQueueCreateInfos[0].queueCount;
++      for (uint32_t i = 1; i < nq && i <= ARRAY_SIZE(dev->queues_sup); i++) {
++         result = kk_queue_init(dev, &dev->queues_sup[i - 1],
++                                &pCreateInfo->pQueueCreateInfos[0], i);
++         if (result != VK_SUCCESS)
++            goto fail_vab_memory;
++         dev->n_queues_sup = i;
++      }
+    }
+ 
+    result = kk_device_init_meta(dev);
+@@ -379,6 +387,9 @@ fail_meta:
+    kk_device_finish_meta(dev);
+ fail_mem_cache:
+    if (dev->has_queue) {
++      for (uint32_t i = 0; i < dev->n_queues_sup; i++)
++         kk_queue_finish(dev, &dev->queues_sup[i]);
++      dev->n_queues_sup = 0;
+       kk_queue_finish(dev, &dev->queue);
+       dev->has_queue = false;
+    }
+@@ -432,6 +443,9 @@ kk_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
+       kk_destroy_bo(dev, dev->heap);
+ 
+    if (dev->has_queue) {
++      for (uint32_t i = 0; i < dev->n_queues_sup; i++)
++         kk_queue_finish(dev, &dev->queues_sup[i]);
++      dev->n_queues_sup = 0;
+       kk_queue_finish(dev, &dev->queue);
+       dev->has_queue = false;
+    }
+diff --git a/src/kosmickrisp/vulkan/kk_device.h b/src/kosmickrisp/vulkan/kk_device.h
+index a753ef7..257702b 100644
+--- a/src/kosmickrisp/vulkan/kk_device.h
++++ b/src/kosmickrisp/vulkan/kk_device.h
+@@ -122,6 +122,8 @@ struct kk_device {
+ 
+    bool has_queue;
+    struct kk_queue queue;
++   uint32_t n_queues_sup;
++   struct kk_queue queues_sup[3];
+ 
+    struct vk_meta_device meta;
+ 
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
+index 10784b7..f50ebbd 100644
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -1436,6 +1436,12 @@ kk_enumerate_physical_devices(struct vk_instance *_instance)
+          (KK_EXPERIMENTAL(FL12) ? VK_QUEUE_SPARSE_BINDING_BIT : 0),
+       .queue_count = 1,
+    };
++   {
++      const char *nf = getenv("CIDRE_FILES");
++      int v = nf ? atoi(nf) : 1;
++      if (v > 1)
++         pdev->queue_families[pdev->queue_family_count - 1].queue_count = MIN2(v, 4);
++   }
+    assert(pdev->queue_family_count <= ARRAY_SIZE(pdev->queue_families));
+ 
+    pdev->sync_binary_type = vk_sync_binary_get_type(&kk_sync_type);
+diff --git a/src/kosmickrisp/vulkan/kk_queue.c b/src/kosmickrisp/vulkan/kk_queue.c
+index f03aa2c..f72a754 100644
+--- a/src/kosmickrisp/vulkan/kk_queue.c
++++ b/src/kosmickrisp/vulkan/kk_queue.c
+@@ -341,8 +341,8 @@ kk_queue_ts_overlap_locked(struct kk_queue *queue, struct kk_query_pool *pool,
+    return false;
+ }
+ 
+-void
+-kk_queue_ts_flush_overlap(struct kk_queue *queue, struct kk_query_pool *pool,
++static void
++kk_queue_ts_flush_overlap_une(struct kk_queue *queue, struct kk_query_pool *pool,
+                           uint32_t first, uint32_t count)
+ {
+    struct kk_ts_flush_data *f = NULL;
+@@ -358,8 +358,8 @@ kk_queue_ts_flush_overlap(struct kk_queue *queue, struct kk_query_pool *pool,
+    }
+ }
+ 
+-void
+-kk_queue_ts_purge(struct kk_queue *queue, uint64_t lo, uint64_t hi)
++static void
++kk_queue_ts_purge_une(struct kk_queue *queue, uint64_t lo, uint64_t hi)
+ {
+    simple_mtx_lock(&queue->ts_lock);
+    struct kk_ts_resolve *r = queue->ts_pending.data;
+@@ -372,8 +372,8 @@ kk_queue_ts_purge(struct kk_queue *queue, uint64_t lo, uint64_t hi)
+    simple_mtx_unlock(&queue->ts_lock);
+ }
+ 
+-void
+-kk_queue_ts_purge_pool(struct kk_queue *queue, struct kk_query_pool *pool)
++static void
++kk_queue_ts_purge_pool_une(struct kk_queue *queue, struct kk_query_pool *pool)
+ {
+    simple_mtx_lock(&queue->ts_lock);
+    struct kk_ts_zero *z = queue->ts_zeros.data;
+@@ -401,6 +401,29 @@ kk_queue_ts_before_commit(struct kk_queue *queue, struct kk_cmd_buffer *cmd)
+       }
+    }
+    simple_mtx_unlock(&queue->ts_lock);
++
++   struct kk_device *dev = kk_queue_device(queue);
++   for (int32_t i = -1; i < (int32_t)dev->n_queues_sup; i++) {
++      struct kk_queue *autre = i < 0 ? &dev->queue : &dev->queues_sup[i];
++      if (autre == queue)
++         continue;
++      struct kk_ts_flush_data *f = NULL;
++      simple_mtx_lock(&autre->ts_lock);
++      util_dynarray_foreach(&cmd->ts_needs, struct kk_ts_need, need) {
++         if (kk_queue_ts_overlap_locked(autre, need->pool, need->first,
++                                        need->count, need->copie)) {
++            f = kk_queue_ts_flush_locked(autre, true);
++            break;
++         }
++      }
++      simple_mtx_unlock(&autre->ts_lock);
++      if (f) {
++         uint64_t t0 = os_time_get_nano();
++         while (!p_atomic_read(&f->done) && os_time_get_nano() - t0 < 5000000000ull)
++            os_time_sleep(20);
++         kk_ts_flush_unref(f);
++      }
++   }
+ }
+ 
+ static void
+@@ -837,3 +860,31 @@ kk_queue_finish(struct kk_device *dev, struct kk_queue *queue)
+ 
+    vk_queue_finish(&queue->vk);
+ }
++
++void
++kk_queue_ts_flush_overlap(struct kk_queue *queue, struct kk_query_pool *pool,
++                          uint32_t first, uint32_t count)
++{
++   struct kk_device *dev = kk_queue_device(queue);
++   kk_queue_ts_flush_overlap_une(&dev->queue, pool, first, count);
++   for (uint32_t i = 0; i < dev->n_queues_sup; i++)
++      kk_queue_ts_flush_overlap_une(&dev->queues_sup[i], pool, first, count);
++}
++
++void
++kk_queue_ts_purge(struct kk_queue *queue, uint64_t lo, uint64_t hi)
++{
++   struct kk_device *dev = kk_queue_device(queue);
++   kk_queue_ts_purge_une(&dev->queue, lo, hi);
++   for (uint32_t i = 0; i < dev->n_queues_sup; i++)
++      kk_queue_ts_purge_une(&dev->queues_sup[i], lo, hi);
++}
++
++void
++kk_queue_ts_purge_pool(struct kk_queue *queue, struct kk_query_pool *pool)
++{
++   struct kk_device *dev = kk_queue_device(queue);
++   kk_queue_ts_purge_pool_une(&dev->queue, pool);
++   for (uint32_t i = 0; i < dev->n_queues_sup; i++)
++      kk_queue_ts_purge_pool_une(&dev->queues_sup[i], pool);
++}

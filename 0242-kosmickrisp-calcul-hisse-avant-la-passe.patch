@@ -1,0 +1,637 @@
+Generated-by: LLM
+
+KosmicKrisp : calcul interne des dessins hisse avant la passe de rendu (CIDRE_CALCUL_AVANT_PASSE), au lieu de couper la passe
+
+Un dessin qui a besoin d'un calcul prealable appelait cs_get_compute() en pleine
+passe : fin de l'encodeur de rendu (stockage des attachements), encodeur de
+calcul, puis reprise (rechargement des attachements) -- un aller-retour complet
+tuile <-> memoire par dessin sur un GPU a tuiles. ELDEN RING (vkd3d-proton, M1
+Max, Low 1280x720, options S) en faisait ~78 par image (30 % des passes ouvertes) :
+  deroulage d'index « strip sans redemarrage » (strips indexes 16 bits avec
+  primitive restart coupe : Metal redemarre toujours sur 0xFFFF)        68 %
+  tessellation emulee (VS/TCS en calcul, tessellateur ; d'abord la remise
+  a zero du tas, kk_heap, a la premiere utilisation du tampon)           31 %
+  nuanceur de geometrie emule                                              1 %
+(CIDRE_REPRISES_STATS=1, ligne [CIDRE_REPRISES] toutes les 20 000 reprises ;
+causes posees par l'appelant, adresse de retour des reprises sans cause.)
+
+Ce calcul ne lit que des donnees que Vulkan exige pretes avant le debut de
+l'instance de passe (tampon d'index, arguments indirects, compte, predicat de
+rendu conditionnel, sommets et descripteurs lus par le VS/TCS emules : dans
+une passe de rendu dynamique, une barriere ne peut viser que des etages de
+l'espace image, jamais DRAW_INDIRECT/VERTEX_INPUT/VERTEX_SHADER/CONDITIONAL_
+RENDERING) et n'ecrit que de la memoire interne neuve (pool du tampon de
+commandes, tas de deroulage/tessellation). Avec CIDRE_CALCUL_AVANT_PASSE=1, il
+est encode dans un tampon de commandes Metal a part (allocateur a part),
+insere dans l'ordre de commit juste avant le tampon qui porte l'encodeur de
+rendu : le tampon courant est scelle au debut de chaque passe (des que le
+processus a vu une coupure evitable ; =2 : seulement dans un tampon de
+commandes Vulkan qui en a deja eu une). Barrieres : l'encodeur hisse attend
+tout le travail precedent de la file (barrierAfterQueueStages ALL ->
+DISPATCH, comme l'encodeur de calcul qu'il remplace), et a sa fermeture
+(fin de la passe) bloque tout le travail suivant de la file jusqu'a la fin de
+ses dispatchs (barrierAfterStages DISPATCH -> ALL). kk_heap remet le tas a
+zero dans l'encodeur hisse (kk_cmd_write l'aurait repoussee apres la passe).
+Hisses : predicats (compte, rendu conditionnel), tous les deroulages sauf GS
++ redemarrage, tessellation sans transform feedback. Restent coupants : GS,
+tessellation avec xfb, xfb, requetes, DGC, changement de carte de couleurs ou
+de positions d'echantillons (comptes aussi dans [CIDRE_REPRISES]).
+Sans la variable : comportement inchange (seuls les compteurs, inertes sans
+CIDRE_REPRISES_STATS, et un horodatage t= dans [CIDRE_PASSES]).
+Fichiers non NEUTRES pour 0208 : la cle de code change (une recompilation des
+nuanceurs au premier lancement), le MSL produit ne change pas.
+
+Mesures ELDEN RING, M1 Max, en jeu, manches de 270 s, options S dans les deux
+bras, B = sans, H = CIDRE_CALCUL_AVANT_PASSE=1, entrelacees B H H B B H :
+          img/s ponderes  mediane   GPU ms/img  passes/img  reprises/img
+   B a1-3   33,8 34,0 34,0  31,1 31,5 31,5   28,1        ~258        ~78
+   H a1-3   39,0 38,9 38,8  37,3 37,1 37,2   24,2        ~189        ~1 (GS)
+=> mediane 31,5 -> 37,2 (+18 %), ponderes +15 %, temps GPU par image -14 %,
+occupation GPU inchangee (~95 % en jeu) ; 0 erreur GPU, aucun gel, plus long gel
+0 s ; sauvegarde et GraphicsConfig.xml identiques a l'octet apres chaque manche.
+Temoin D3D12 Demonologist (1929610, menu, 180 s, B H H B) : mediane 21,8/22,1
+contre 21,3/21,9, 0 erreur GPU (ses quelques reprises ne sont pas des causes
+hissables) : neutre.
+
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.c b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+index c44da2d..2548f49 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+@@ -10,8 +10,10 @@
+ 
+ #include "util/simple_mtx.h"
+ #include "util/u_atomic.h"
++#include "util/os_time.h"
+ 
+ #include <stdlib.h>
++#include <dlfcn.h>
+ #include <string.h>
+ 
+ /* Chantier barrieres : relachement CIBLE des barrieres ALL->ALL de cloture
+@@ -206,6 +208,8 @@ kk_cmd_release_resources(struct kk_device *dev, struct kk_cmd_buffer *cmd)
+ }
+ 
+ /* Ends Metal command buffer recording and returns allocator to pool for reuse */
++static void kk_pre_finish(struct kk_cmd_buffer *cmd);
++
+ static void
+ end_recording(struct kk_cmd_buffer *cmd)
+ {
+@@ -213,10 +217,16 @@ end_recording(struct kk_cmd_buffer *cmd)
+       return;
+ 
+    cs_end(cmd);
++   kk_pre_finish(cmd);
+    mtl_end_command_buffer(cmd->metal.cmd_buf);
+ 
+    kk_cmd_pool_return_allocator(kk_cmd_buffer_pool(cmd), cmd->metal.allocator);
+    cmd->metal.allocator = NULL;
++   if (cmd->metal.pre_allocator) {
++      kk_cmd_pool_return_allocator(kk_cmd_buffer_pool(cmd),
++                                   cmd->metal.pre_allocator);
++      cmd->metal.pre_allocator = NULL;
++   }
+ }
+ 
+ static void
+@@ -394,6 +404,10 @@ kk_BeginCommandBuffer(VkCommandBuffer commandBuffer,
+    }
+    mtl_begin_command_buffer(cmd->metal.cmd_buf, cmd->metal.allocator);
+    cmd->metal.encoders_in_cmd_buf = 0u;
++   cmd->metal.pre_slot = -1;
++   cmd->metal.pre_wanted = false;
++   cmd->metal.pre_cmd_buf = NULL;
++   cmd->metal.pre_compute = NULL;
+ 
+    return VK_SUCCESS;
+ 
+@@ -599,7 +613,8 @@ kk_pass_stats_record(struct kk_cmd_buffer *cmd, bool had_closing)
+    for (unsigned i = 0; i < KK_PASS_CLASS_COUNT; i++)
+       total += kk_pass_class_counts[i];
+    if (total % 20000u == 0u) {
+-      fprintf(stderr, "[CIDRE_PASSES] total=%llu", (unsigned long long)total);
++      fprintf(stderr, "[CIDRE_PASSES] t=%.1f total=%llu", os_time_get_nano() / 1e9,
++              (unsigned long long)total);
+       for (unsigned i = 0; i < KK_PASS_CLASS_COUNT; i++)
+          fprintf(stderr, " %s=%llu", kk_pass_class_names[i],
+                  (unsigned long long)kk_pass_class_counts[i]);
+@@ -607,6 +622,159 @@ kk_pass_stats_record(struct kk_cmd_buffer *cmd, bool had_closing)
+    }
+ }
+ 
++/*
++ * Cidre : calcul hisse avant la passe (CIDRE_CALCUL_AVANT_PASSE=1).
++ *
++ * Un dessin qui a besoin d'un calcul prealable (deroulage d'index pour la
++ * robustesse ou le redemarrage de primitive, predicats de dessin indirect a
++ * compte ou de rendu conditionnel) coupait la passe de rendu Metal : fin de
++ * l'encodeur (stockage des attachements), encodeur de calcul, puis reprise
++ * (rechargement). Sur un GPU a tuiles, chaque coupure est un aller-retour
++ * complet des attachements en memoire.
++ *
++ * Ce calcul ne lit que des donnees que Vulkan exige pretes avant le debut de
++ * l'instance de passe (tampon d'index, arguments indirects, compte, tampon de
++ * predicat : aucune barriere vers DRAW_INDIRECT / VERTEX_INPUT /
++ * CONDITIONAL_RENDERING n'est permise dans une passe de rendu dynamique), et
++ * n'ecrit que de la memoire interne neuve (pool du tampon de commandes, tas de
++ * deroulage). On peut donc l'executer avant tout l'encodeur de rendu : il est
++ * encode dans un tampon de commandes Metal a part, insere dans l'ordre de
++ * commit juste avant le tampon qui porte l'encodeur de rendu. Pour cela le
++ * tampon courant est scelle au debut de chaque passe (des que le pilote a vu
++ * une coupure evitable). Barrieres : le calcul hisse attend tout le travail
++ * precedent de la file (comme l'encodeur de calcul qu'il remplace) et la
++ * passe attend la fin du calcul hisse avant ses etages de sommets.
++ */
++static int
++kk_calcul_avant_passe_enabled(void)
++{
++   static int enabled = -1;
++   if (enabled < 0) {
++      /* 1 : chaque passe reserve sa place des la premiere coupure evitable
++       * vue dans le processus ; 2 : seulement dans un tampon de commandes
++       * Vulkan qui en a deja eu une. */
++      const char *e = getenv("CIDRE_CALCUL_AVANT_PASSE");
++      enabled = e ? atoi(e) : 0;
++   }
++   return enabled;
++}
++
++/* Une coupure evitable a ete vue : desormais chaque passe reserve sa place. */
++static bool kk_pre_hint;
++
++bool
++kk_reprise_cause_hissable(enum kk_reprise_cause c)
++{
++   switch (c) {
++   case KK_REPRISE_PREDICAT_COMPTE:
++   case KK_REPRISE_PREDICAT_COND:
++   case KK_REPRISE_DEROULE_EVENTAIL:
++   case KK_REPRISE_DEROULE_INDEX8_OU_STRIP:
++   case KK_REPRISE_DEROULE_STRIP_SANS_RESTART:
++   case KK_REPRISE_TESS_SANS_XFB:
++   case KK_REPRISE_DEROULE_ROBUSTESSE:
++   case KK_REPRISE_DEROULE_RESTART:
++   case KK_REPRISE_DEROULE_FLAT:
++      return true;
++   default:
++      /* GS, tessellation : lisent l'etat du dessin et ecrivent des sorties
++       * (xfb) visibles : pas hisses. */
++      return false;
++   }
++}
++
++/* Ferme le tampon de calcul hisse de la passe courante, s'il existe. La passe
++ * (et tout ce qui suit dans la file) attend la fin de ses dispatchs. */
++static void
++kk_pre_finish(struct kk_cmd_buffer *cmd)
++{
++   if (cmd->metal.pre_compute) {
++      mtl_barrier_after_stages(cmd->metal.pre_compute, MTL_STAGE_DISPATCH,
++                               MTL_STAGE_ALL);
++      mtl_end_encoding(cmd->metal.pre_compute);
++      mtl_release(cmd->metal.pre_compute);
++      cmd->metal.pre_compute = NULL;
++   }
++   if (cmd->metal.pre_cmd_buf) {
++      mtl_end_command_buffer(cmd->metal.pre_cmd_buf);
++      cmd->metal.pre_cmd_buf = NULL;
++   }
++   cmd->metal.pre_slot = -1;
++}
++
++/* Encodeur de calcul hisse pour la passe courante, ou NULL si la passe n'a pas
++ * de place reservee. */
++static mtl_compute_encoder *
++kk_pre_compute(struct kk_cmd_buffer *cmd)
++{
++   if (cmd->metal.pre_compute)
++      return cmd->metal.pre_compute;
++   if (cmd->metal.pre_slot < 0)
++      return NULL;
++
++   struct kk_cmd_pool *pool = kk_cmd_buffer_pool(cmd);
++   if (cmd->metal.pre_allocator == NULL) {
++      cmd->metal.pre_allocator = kk_cmd_pool_get_allocator(pool);
++      if (cmd->metal.pre_allocator == NULL)
++         return NULL;
++   }
++   mtl_command_buffer *pre = kk_cmd_pool_get_cmd_buf(pool);
++   if (pre == NULL)
++      return NULL;
++   mtl_begin_command_buffer(pre, cmd->metal.pre_allocator);
++
++   /* Insere a son rang : juste avant le tampon qui porte la passe. */
++   uint32_t n = util_dynarray_num_elements(&cmd->metal.sealed_cmd_bufs,
++                                           mtl_command_buffer *);
++   util_dynarray_append(&cmd->metal.sealed_cmd_bufs, pre);
++   mtl_command_buffer **bufs = cmd->metal.sealed_cmd_bufs.data;
++   uint32_t slot = MIN2((uint32_t)cmd->metal.pre_slot, n);
++   memmove(&bufs[slot + 1], &bufs[slot], (n - slot) * sizeof(*bufs));
++   bufs[slot] = pre;
++
++   cmd->metal.pre_cmd_buf = pre;
++   cmd->metal.pre_compute = mtl_new_compute_command_encoder(pre);
++   mtl_compute_set_argument_table(cmd->metal.pre_compute, cmd->argument_table);
++   kk_encoder_update_debug(cmd, cmd->metal.pre_compute);
++   /* Comme l'encodeur de calcul ouvert en pleine passe : apres tout le
++    * travail deja dans la file. */
++   mtl_barrier_after_queue_stages(cmd->metal.pre_compute, MTL_STAGE_ALL,
++                                  MTL_STAGE_DISPATCH);
++   cmd->state.argtable_addr0 = KK_ARGTABLE_UNKNOWN;
++   return cmd->metal.pre_compute;
++}
++
++/* Au debut d'une passe : scelle le tampon courant pour reserver la place du
++ * calcul hisse (seulement apres une premiere coupure evitable). */
++static void
++kk_pre_reserve(struct kk_cmd_buffer *cmd)
++{
++   assert(cmd->metal.render == NULL && cmd->metal.compute == NULL);
++   kk_pre_finish(cmd);
++
++   int mode = kk_calcul_avant_passe_enabled();
++   if (!mode || !(mode == 2 ? cmd->metal.pre_wanted : p_atomic_read(&kk_pre_hint)))
++      return;
++
++   if (cmd->metal.encoders_in_cmd_buf > 0) {
++      struct kk_cmd_pool *pool = kk_cmd_buffer_pool(cmd);
++      mtl_command_buffer *next = kk_cmd_pool_get_cmd_buf(pool);
++      if (next == NULL)
++         return;
++      mtl_end_command_buffer(cmd->metal.cmd_buf);
++      util_dynarray_append(&cmd->metal.sealed_cmd_bufs, cmd->metal.cmd_buf);
++      cmd->metal.cmd_buf = next;
++      mtl_begin_command_buffer(cmd->metal.cmd_buf, cmd->metal.allocator);
++      cmd->metal.encoders_in_cmd_buf = 0u;
++      if (cmd->vk.base.object_name)
++         mtl_command_buffer_set_label(cmd->metal.cmd_buf,
++                                      cmd->vk.base.object_name);
++   }
++
++   cmd->metal.pre_slot = util_dynarray_num_elements(
++      &cmd->metal.sealed_cmd_bufs, mtl_command_buffer *);
++}
++
+ void
+ cs_start_render(struct kk_cmd_buffer *cmd)
+ {
+@@ -636,6 +804,7 @@ cs_start_render(struct kk_cmd_buffer *cmd)
+    cmd->metal.start_reason = 0;
+ 
+    kk_cmd_buffer_split_if_full(cmd);
++   kk_pre_reserve(cmd);
+    cmd->metal.encoders_in_cmd_buf++;
+ 
+    cmd->metal.render = mtl_new_render_command_encoder_with_descriptor(
+@@ -705,10 +874,87 @@ cs_get_render(struct kk_cmd_buffer *cmd)
+    return cmd->metal.render;
+ }
+ 
++int
++kk_reprises_stats_enabled(void)
++{
++   static int enabled = -1;
++   if (enabled < 0)
++      enabled = getenv("CIDRE_REPRISES_STATS") != NULL;
++   return enabled;
++}
++
++static const char *const kk_reprise_names[KK_REPRISE_COUNT] = {
++   "autre", "predicat_compte", "predicat_cond", "deroule_eventail",
++   "deroule_gs_restart", "deroule_index8_ou_strip", "deroule_robustesse",
++   "deroule_restart", "deroule_flat", "gs", "tess", "xfb", "requete", "dgc",
++   "carte_couleur", "positions_echantillons", "hisse_avant_passe", "deroule_strip_sans_restart", "tess_sans_xfb",
++};
++static uint64_t kk_reprise_counts[KK_REPRISE_COUNT];
++/* Appelants des reprises sans cause connue (adresse de retour de
++ * cs_get_compute), pour atos. */
++#define KK_REPRISE_APPELANTS 16
++static void *kk_reprise_appelant[KK_REPRISE_APPELANTS];
++static uint64_t kk_reprise_appelant_n[KK_REPRISE_APPELANTS];
++
++static void
++kk_reprise_appelant_record(void *ra)
++{
++   for (unsigned i = 0; i < KK_REPRISE_APPELANTS; i++) {
++      if (kk_reprise_appelant[i] == ra || kk_reprise_appelant[i] == NULL) {
++         kk_reprise_appelant[i] = ra;
++         kk_reprise_appelant_n[i]++;
++         return;
++      }
++   }
++}
++
++void
++kk_reprise_record(enum kk_reprise_cause cause)
++{
++   static uint64_t total;
++   p_atomic_inc(&kk_reprise_counts[cause]);
++   uint64_t t = p_atomic_inc_return(&total);
++   if (t % 20000u == 0u) {
++      fprintf(stderr, "[CIDRE_REPRISES] t=%.1f total=%llu",
++              os_time_get_nano() / 1e9, (unsigned long long)t);
++      for (unsigned i = 0; i < KK_REPRISE_COUNT; i++)
++         if (kk_reprise_counts[i])
++            fprintf(stderr, " %s=%llu", kk_reprise_names[i],
++                    (unsigned long long)kk_reprise_counts[i]);
++      Dl_info di;
++      for (unsigned i = 0; i < KK_REPRISE_APPELANTS && kk_reprise_appelant[i];
++           i++) {
++         if (dladdr(kk_reprise_appelant[i], &di) && di.dli_fbase)
++            fprintf(stderr, " autre@+0x%lx=%llu",
++                    (unsigned long)((char *)kk_reprise_appelant[i] -
++                                    (char *)di.dli_fbase),
++                    (unsigned long long)kk_reprise_appelant_n[i]);
++      }
++      fprintf(stderr, "\n");
++   }
++}
++
+ mtl_compute_encoder *
+ cs_get_compute(struct kk_cmd_buffer *cmd)
+ {
++   if (cmd->metal.render && kk_calcul_avant_passe_enabled() &&
++       kk_reprise_cause_hissable(cmd->metal.reprise_cause)) {
++      mtl_compute_encoder *pre = kk_pre_compute(cmd);
++      if (pre) {
++         if (kk_reprises_stats_enabled())
++            kk_reprise_record(KK_REPRISE_HISSE);
++         return pre;
++      }
++      p_atomic_set(&kk_pre_hint, true);
++      cmd->metal.pre_wanted = true;
++   }
++
+    /* If we are inside render, we need to force a restart later */
++   if (cmd->metal.render && kk_reprises_stats_enabled()) {
++      if (cmd->metal.reprise_cause == KK_REPRISE_AUTRE)
++         kk_reprise_appelant_record(__builtin_return_address(0));
++      kk_reprise_record(cmd->metal.reprise_cause);
++   }
+    if (cmd->metal.render) {
+       kk_apply_attachment_store_ops(cmd, true);
+       cs_end(cmd);
+@@ -913,6 +1159,7 @@ cs_end(struct kk_cmd_buffer *cmd)
+          kk_pass_trace_end(cmd);
+       end_encoder(cmd, cmd->metal.render);
+       cmd->metal.render = NULL;
++      kk_pre_finish(cmd);
+ 
+       /* The stage map is only valid for the current render encoder */
+       util_dynarray_clear(&cmd->ts_stage_map);
+@@ -962,6 +1209,7 @@ kk_cs_end_render_pass(struct kk_cmd_buffer *cmd)
+    cmd->metal.render_closing = cmd->metal.render;
+    cmd->metal.closing_needs_barrier = false;
+    cmd->metal.render = NULL;
++   kk_pre_finish(cmd);
+ 
+    util_dynarray_clear(&cmd->ts_stage_map);
+ }
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.h b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+index 72f512e..a6a1d73 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+@@ -352,6 +352,19 @@ struct kk_cmd_buffer {
+       /* Encoders opened on cmd_buf since it was begun. */
+       uint32_t encoders_in_cmd_buf;
+       uint8_t start_reason;
++      /* Cidre (CIDRE_REPRISES_STATS) : cause du prochain calcul ouvert en
++       * pleine passe de rendu (enum kk_reprise_cause), posee par l'appelant. */
++      uint8_t reprise_cause;
++      /* Cidre (CIDRE_CALCUL_AVANT_PASSE) : calcul interne d'un dessin
++       * (deroulage d'index, predicats) hisse avant l'encodeur de rendu courant,
++       * dans un tampon Metal a part commite juste avant celui de la passe.
++       * pre_slot : rang de ce tampon dans sealed_cmd_bufs (-1 : pas de place
++       * reservee pour la passe courante). */
++      int32_t pre_slot;
++      bool pre_wanted;
++      mtl_command_buffer *pre_cmd_buf;
++      mtl_compute_encoder *pre_compute;
++      mtl_command_allocator *pre_allocator;
+       uint8_t prev_att_count;
+       uint64_t prev_atts[KK_MAX_RTS + 2];
+    } metal;
+@@ -433,6 +446,38 @@ kk_get_descriptors_state(struct kk_cmd_buffer *cmd,
+ void cs_start_render(struct kk_cmd_buffer *cmd);
+ mtl_render_encoder *cs_get_render(struct kk_cmd_buffer *cmd);
+ mtl_compute_encoder *cs_get_compute(struct kk_cmd_buffer *cmd);
++
++/* Cidre : statistiques des reprises de passe par cause (CIDRE_REPRISES_STATS). */
++enum kk_reprise_cause {
++   KK_REPRISE_AUTRE = 0,
++   KK_REPRISE_PREDICAT_COMPTE,
++   KK_REPRISE_PREDICAT_COND,
++   KK_REPRISE_DEROULE_EVENTAIL,
++   KK_REPRISE_DEROULE_GS_RESTART,
++   KK_REPRISE_DEROULE_INDEX8_OU_STRIP,
++   KK_REPRISE_DEROULE_ROBUSTESSE,
++   KK_REPRISE_DEROULE_RESTART,
++   KK_REPRISE_DEROULE_FLAT,
++   KK_REPRISE_GS,
++   KK_REPRISE_TESS,
++   KK_REPRISE_XFB,
++   KK_REPRISE_REQUETE,
++   KK_REPRISE_DGC,
++   KK_REPRISE_CARTE_COULEUR,
++   KK_REPRISE_POSITIONS_ECHANTILLONS,
++   KK_REPRISE_HISSE,
++   KK_REPRISE_DEROULE_STRIP_SANS_RESTART,
++   KK_REPRISE_TESS_SANS_XFB,
++   KK_REPRISE_COUNT,
++};
++int kk_reprises_stats_enabled(void);
++bool kk_reprise_cause_hissable(enum kk_reprise_cause c);
++void kk_reprise_record(enum kk_reprise_cause cause);
++static inline void
++kk_reprise_cause(struct kk_cmd_buffer *cmd, enum kk_reprise_cause c)
++{
++   cmd->metal.reprise_cause = c;
++}
+ void cs_end(struct kk_cmd_buffer *cmd);
+ void kk_barrier_stats_print(void);
+ void kk_draw_stats_print(void);
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_draw.c b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+index fbf3613..a8fbb91 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -1013,6 +1013,10 @@ kk_flush_render_pass(struct kk_cmd_buffer *cmd)
+     * current encoder and prepare to restart it */
+    bool active_render = cmd->metal.render != NULL;
+    if (needs_restart && active_render) {
++      if (kk_reprises_stats_enabled())
++         kk_reprise_record(color_attachment_map_changed
++                              ? KK_REPRISE_CARTE_COULEUR
++                              : KK_REPRISE_POSITIONS_ECHANTILLONS);
+       if (!color_attachment_map_changed) {
+          /* Sample locations changed and color attachment map didn't. */
+          kk_apply_attachment_store_ops(cmd, true);
+@@ -1180,8 +1184,17 @@ kk_heap(struct kk_cmd_buffer *cmd)
+        * since this path is only taken by tessellation and unroll which already
+        * force a compute encoder break */
+       mtl_compute_encoder *encoder = cs_get_compute(cmd);
+-      kk_cmd_write(cmd, (struct libkk_imm_write){
+-                           addr + offsetof(struct poly_heap, bottom), 0});
++      /* Cidre : calcul hisse avant la passe (CIDRE_CALCUL_AVANT_PASSE), la
++       * passe de rendu reste ouverte : la remise a zero doit preceder le
++       * deroulage dans le meme encodeur hisse, pas attendre la fin de la
++       * passe comme kk_cmd_write le ferait. */
++      if (cmd->metal.render) {
++         libkk_write_u32(cmd, kk_grid_1d(1), true,
++                         addr + offsetof(struct poly_heap, bottom), 0);
++      } else {
++         kk_cmd_write(cmd, (struct libkk_imm_write){
++                              addr + offsetof(struct poly_heap, bottom), 0});
++      }
+ 
+       /* Ensure heap is set to 0 before we allocate anything. */
+       mtl_barrier_after_encoder_stages(encoder, MTL_STAGE_DISPATCH,
+@@ -1798,6 +1811,9 @@ kk_predicate_draws(struct kk_cmd_buffer *cmd, struct kk_draw_command *data)
+     * which only contains the commands to run if the condition is true. For the
+     * time being, we apply predicates by zeroing out disabled indirect data */
+    struct kk_grid grid = kk_grid_1d(data->draw_count);
++   kk_reprise_cause(cmd, data->predicate_op[0] == KK_PREDICATE_GT_DRAW_ID
++                            ? KK_REPRISE_PREDICAT_COMPTE
++                            : KK_REPRISE_PREDICAT_COND);
+    for (uint32_t i = 0; i < data->predicate_count; i++) {
+       uint64_t addr = data->predicate_addr[i];
+       switch (data->predicate_op[i]) {
+@@ -2134,17 +2150,32 @@ requires_unroll(struct kk_cmd_buffer *cmd, struct kk_draw_command *data)
+       return false;
+ 
+    /* Metal does not support triangle fans */
+-   if (data->prim == MESA_PRIM_TRIANGLE_FAN)
++   if (data->prim == MESA_PRIM_TRIANGLE_FAN) {
++      kk_reprise_cause(cmd, KK_REPRISE_DEROULE_EVENTAIL);
+       return true;
++   }
+ 
+-   if (kk_draw_has_gs(cmd) && data->restart && data->indexed)
++   if (kk_draw_has_gs(cmd) && data->restart && data->indexed) {
++      kk_reprise_cause(cmd, KK_REPRISE_DEROULE_GS_RESTART);
+       return true;
++   }
+ 
+    /* Check for remaining unroll conditions */
+-   return requires_unroll_index_promotion(data) ||
+-          requires_unroll_robustness(cmd, data) ||
+-          requires_unroll_restart(cmd, data) ||
+-          requires_unroll_flatshade(cmd, data);
++   enum kk_reprise_cause c = KK_REPRISE_AUTRE;
++   if (requires_unroll_index_promotion(data))
++      c = data->index_buffer_el_size_B == sizeof(uint8_t)
++             ? KK_REPRISE_DEROULE_INDEX8_OU_STRIP
++             : KK_REPRISE_DEROULE_STRIP_SANS_RESTART;
++   else if (requires_unroll_robustness(cmd, data))
++      c = KK_REPRISE_DEROULE_ROBUSTESSE;
++   else if (requires_unroll_restart(cmd, data))
++      c = KK_REPRISE_DEROULE_RESTART;
++   else if (requires_unroll_flatshade(cmd, data))
++      c = KK_REPRISE_DEROULE_FLAT;
++   else
++      return false;
++   kk_reprise_cause(cmd, c);
++   return true;
+ }
+ 
+ static uint64_t
+@@ -2181,6 +2212,8 @@ upload_base_instance(struct kk_cmd_buffer *cmd, const struct kk_draw_data *data)
+ 
+ /* Prepares emulation data for stages like tessellation. It also upload system
+  * values not present in Metal such as drawID. */
++static void kk_tess_cause(struct kk_cmd_buffer *cmd);
++
+ static void
+ kk_upload_per_draw_data(struct kk_cmd_buffer *cmd, uint32_t upload_mask,
+                         uint32_t draw_id, const struct kk_draw_data *draw)
+@@ -2194,6 +2227,7 @@ kk_upload_per_draw_data(struct kk_cmd_buffer *cmd, uint32_t upload_mask,
+    /* Prepare emulation data for tessellation. */
+    bool tess = upload_mask & BITFIELD_BIT(MESA_SHADER_TESS_EVAL);
+    if (tess) {
++      kk_tess_cause(cmd);
+       gfx->per_draw_data.index_size = draw->index.el_size_B;
+       gfx->per_draw_data.base_vertex_addr = upload_base_vertex(cmd, draw);
+       gfx->per_draw_data.base_instance_addr = upload_base_instance(cmd, draw);
+@@ -2245,6 +2279,7 @@ kk_dispatch_compute(mtl_compute_encoder *enc, struct kk_grid grid,
+ static struct kk_draw_data
+ kk_launch_gs(struct kk_cmd_buffer *cmd, struct kk_draw_data draw)
+ {
++   kk_reprise_cause(cmd, KK_REPRISE_GS);
+    struct kk_device *dev = kk_cmd_buffer_device(cmd);
+    struct kk_graphics_state *gfx = &cmd->state.gfx;
+    struct kk_shader *vs = cmd->state.shaders[MESA_SHADER_VERTEX];
+@@ -2366,9 +2401,23 @@ kk_launch_gs(struct kk_cmd_buffer *cmd, struct kk_draw_data draw)
+    return draw;
+ }
+ 
++/* Cidre : la tessellation emulee (VS et TCS en calcul, tessellateur) ne lit
++ * que l'etat du dessin et des donnees pretes avant la passe, et n'ecrit que le
++ * tas et le pool : hissable avant la passe, sauf si elle alimente le
++ * transform feedback (ecritures visibles par l'application). */
++static void
++kk_tess_cause(struct kk_cmd_buffer *cmd)
++{
++   const struct kk_shader *tes = cmd->state.shaders[MESA_SHADER_TESS_EVAL];
++   bool xfb = cmd->state.gfx.xfb.tess_snapshot.gpu != 0u ||
++              (tes && tes->info.tess.has_xfb);
++   kk_reprise_cause(cmd, xfb ? KK_REPRISE_TESS : KK_REPRISE_TESS_SANS_XFB);
++}
++
+ static struct kk_draw_data
+ kk_launch_tess(struct kk_cmd_buffer *cmd, struct kk_draw_data draw)
+ {
++   kk_tess_cause(cmd);
+    struct kk_device *dev = kk_cmd_buffer_device(cmd);
+    struct kk_graphics_state *gfx = &cmd->state.gfx;
+    struct kk_grid grid_vs, grid_tcs, grid_tess;
+@@ -2634,6 +2683,7 @@ kk_flush_xfb_state(struct kk_cmd_buffer *cmd, const struct kk_draw_command *data
+       return;
+ 
+    desc->root_dirty = true;
++   kk_reprise_cause(cmd, KK_REPRISE_XFB);
+ 
+    struct kk_ptr counters = kk_xfb_counters(cmd);
+    for (unsigned i = 0u; i < MAX_XFB_BUFFERS; ++i) {
+@@ -2852,6 +2902,7 @@ kk_draw(struct kk_cmd_buffer *cmd, struct kk_draw_command *data)
+        kk_shader_compile_failed(cmd->state.shaders[MESA_SHADER_FRAGMENT]))
+       return;
+ 
++   kk_reprise_cause(cmd, KK_REPRISE_AUTRE);
+    /* Must run before the root table is uploaded. */
+    kk_flush_xfb_state(cmd, data);
+ 
+@@ -2872,15 +2923,20 @@ kk_draw(struct kk_cmd_buffer *cmd, struct kk_draw_command *data)
+       dyn->rs.provoking_vertex == VK_PROVOKING_VERTEX_MODE_FIRST_VERTEX_EXT;
+ 
+    /* Convert to indirect and process predicates. Skip draw if we fail. */
+-   if (data->predicate_count > 0 && !kk_predicate_draws(cmd, data))
++   if (data->predicate_count > 0 && !kk_predicate_draws(cmd, data)) {
++      kk_reprise_cause(cmd, KK_REPRISE_AUTRE);
+       return;
++   }
+ 
+    bool tess = cmd->state.shaders[MESA_SHADER_TESS_EVAL];
+    bool geom = kk_draw_has_gs(cmd);
+ 
+    /* Unroll geometry. Skip draw if we fail. */
+-   if (requires_unroll(cmd, data) && !kk_unroll_geometry(cmd, data))
++   if (requires_unroll(cmd, data) && !kk_unroll_geometry(cmd, data)) {
++      kk_reprise_cause(cmd, KK_REPRISE_AUTRE);
+       return;
++   }
++   kk_reprise_cause(cmd, KK_REPRISE_AUTRE);
+ 
+    for (uint32_t i = 0; i < data->draw_count; i++) {
+       struct kk_draw_data draw_data = build_draw_data(cmd, data, i);
+diff --git a/src/kosmickrisp/vulkan/kk_indirect_commands.c b/src/kosmickrisp/vulkan/kk_indirect_commands.c
+index ac5fa63..bd539b8 100644
+--- a/src/kosmickrisp/vulkan/kk_indirect_commands.c
++++ b/src/kosmickrisp/vulkan/kk_indirect_commands.c
+@@ -237,6 +237,8 @@ kk_dgc_build_roots(struct kk_cmd_buffer *cmd,
+ 
+    uint64_t out_va = info->preprocessAddress;
+ 
++   kk_reprise_cause(cmd, KK_REPRISE_DGC);
++
+    libkk_dgc_patch_root_struct(
+       cmd, kk_grid_1d(info->maxSequenceCount), true,
+       ((struct libkk_dgc_patch_root_args){

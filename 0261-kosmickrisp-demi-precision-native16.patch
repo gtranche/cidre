@@ -1,0 +1,58 @@
+Generated-by: LLM
+
+KosmicKrisp : demi-precision native annoncee (CIDRE_DEMI_PRECISION=1, coupe par defaut)
+
+Les GPU Apple conservent les denormaux fp16 en materiel (bancs
+~/Dev/cidre-kk-caps/bancs/denorm16 ; seul le fp32 est vide a zero). Avec
+CIDRE_DEMI_PRECISION=1, KK annonce shaderDenormPreserveFloat16 et
+denormBehaviorIndependence = 32_BIT_ONLY : vkd3d-proton expose alors
+Native16BitShaderOpsSupported (comme D3DMetal) ; FidelityFX choisit ses
+variantes FP16, TSR son 16BitVALU. Seul ecart de capacites D3D12 utile entre
+vkd3d+KK et D3DMetal (~/Dev/cidre-kk-caps, 27/10).
+
+Mesures : Demonologist M4 GPU -11 %, ScreenProbe Lumen 11,2 -> 7,1 ms,
+img/s +10 %, image identique ; Elden Ring M1 neutre (38,8 contre 38,5). Dans la
+cle pipelineCacheUUID (le code produit change).
+
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
+index cb5662a..0b64c4a 100644
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -597,6 +597,14 @@ kk_get_device_properties(
+     */
+    uint32_t ident_vendor = 0, ident_device = 0;
+    const char *ident_name = NULL;
++   /* CIDRE_DEMI_PRECISION=1 (repris de cidre-kk-half) : annonce la conservation des
++    * denormaux fp16 (verifie : les GPU Apple les conservent en materiel, bancs
++    * cidre-kk-caps/bancs/denorm16 ; seul le fp32 est vide a zero) et un comportement
++    * des denormaux independant pour le 32 bits. vkd3d-proton expose alors
++    * Native16BitShaderOpsSupported (comme D3DMetal) : FidelityFX choisit ses
++    * variantes FP16, TSR son 16BitVALU. */
++   const bool demi_precision = getenv("CIDRE_DEMI_PRECISION") != NULL &&
++                               getenv("CIDRE_DEMI_PRECISION")[0] == '1';
+    const char *ident = getenv("CIDRE_VK_IDENTITE");
+    if (ident != NULL && ident[0] != '\0') {
+       char *fin = NULL;
+@@ -774,12 +782,12 @@ kk_get_device_properties(
+       .independentResolve = true,
+       .driverID = VK_DRIVER_ID_MESA_KOSMICKRISP,
+       .conformanceVersion = (VkConformanceVersion){1, 4, 3, 2},
+-      .denormBehaviorIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE,
++      .denormBehaviorIndependence = demi_precision ? VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_32_BIT_ONLY : VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE,
+       .roundingModeIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE,
+       .shaderSignedZeroInfNanPreserveFloat16 = true,
+       .shaderSignedZeroInfNanPreserveFloat32 = true,
+       .shaderSignedZeroInfNanPreserveFloat64 = false,
+-      .shaderDenormPreserveFloat16 = false,
++      .shaderDenormPreserveFloat16 = demi_precision,
+       .shaderDenormPreserveFloat32 = false,
+       .shaderDenormPreserveFloat64 = false,
+       .shaderDenormFlushToZeroFloat16 = false,
+@@ -1191,6 +1199,7 @@ kk_physical_device_init_pipeline_cache(struct kk_physical_device *pdev)
+       "CIDRE_DESCRIPTEURS_CONSTANT",
+       "CIDRE_REDUCTIONS_SIMD",
+       "CIDRE_LECTURES_VECTORISEES",
++      "CIDRE_DEMI_PRECISION",
+    };
+    for (unsigned i = 0; i < ARRAY_SIZE(options_codegen); i++) {
+       uint8_t pose = getenv(options_codegen[i]) != NULL;

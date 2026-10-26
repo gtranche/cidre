@@ -1,0 +1,1251 @@
+Generated-by: LLM
+
+KosmicKrisp : resolutions d'horodatage regroupees au niveau de la file, remises a zero differees, enregistrements vides sans commit (CIDRE_RESOLVE_GROUPE, coupe par defaut)
+
+Chantier « bulles GPU » (Demonologist D3D12, M4, 2026-10-26), sur 0250.
+Temoin Metal 4 (temoin_enc.m) : chaque encodeur coute ~18-30 us de GPU fixe
+(calcul) / ~40 us (rendu) sur M4, ~25/44 us sur M1 ; une barriere avec
+MTL4VisibilityOptionResourceAlias +40-70 us (M4) ; chaque resolveCounterHeap
+isole entre deux encodeurs ~70-85 us (M4), ~22-25 us (M1), meme groupees en fin
+de command buffer si ce sont des appels separes ; un horodatage seul ne coute
+rien, un writeTimestampIntoHeap au niveau du command buffer ~18 us.
+
+Sous vkd3d-proton, Unreal 5.6 soumet ~5 000 enregistrements Vulkan/s dont
+~2 100 ne contiennent qu'un vkCmdResetQueryPool et ~800 deux horodatages :
+~4 000 encodeurs de calcul/s et ~4 100 resolveCounterHeap/s rien que pour les
+requetes d'horodatage.
+
+  CIDRE_RESOLVE_GROUPE=1 : les resolutions d'un enregistrement ne sont plus
+    emises a chaque fermeture d'encodeur mais en fin de command buffer Metal
+    (ou avant une copie / remise a zero qui les recouvre), triees et fusionnees
+    en plages contigues.
+  CIDRE_RESOLVE_GROUPE=2 : les resolutions restantes passent a la file, dans
+    l'ordre des soumissions ; elles partent dans un command buffer Metal a part,
+    commis juste avant le premier enregistrement qui copie ou remet a zero une
+    requete concernee (ou des que la liste depasse 8 192), et avant toute
+    lecture CPU (vkGetQueryPoolResults). vkDestroyQueryPool et vkResetQueryPool
+    (hote) retirent les resolutions du pool.
+  CIDRE_RESOLVE_GROUPE=3 : 2, et chaque horodatage de calcul a sa propre entree
+    du tas (plus de reutilisation de l'entree du precedent dans le meme
+    encodeur) : les plages deviennent contigues, une resolution par pool.
+  CIDRE_RESOLVE_GROUPE=4 : 3, et vkCmdResetQueryPool d'un pool d'horodatage
+    n'ouvre plus d'encodeur : la remise a zero est differee a la file (fill
+    0xff dans un seul encodeur du command buffer de resolutions), annulee par
+    une ecriture ulterieure de la requete, emise dans l'enregistrement si une
+    copie de ce meme enregistrement la lit ; une lecture CPU attend le vidage.
+  CIDRE_RESOLVE_GROUPE=5 : 4, et un enregistrement sans encodeur ni resolution
+    (remises a zero seules, barrieres seules) n'est plus commis a Metal.
+  Diagnostic : CIDRE_ENC_STATS (encodeurs ouverts/fermes par appelant,
+    resolutions, enregistrements, commits, vidages de file, signature de chaque
+    enregistrement : R/C encodeurs, z remise, t horodatage, q copie, d dispatch,
+    b barriere, P debut de passe).
+
+Temoins : ~/Dev/cidre-kk-enc/temoin/temoin_sync.c (TEMOIN_TS=1 : ts, ts2 =
+horodatages dans et hors passe, reutilisation, copies au milieu, remise a zero
+et reecriture, lecture CPU ; ts3 = remises differees lues par copie dans un
+autre enregistrement, reecriture apres remise) : 0 ecart dans les modes 0-5 ;
+cas de synchronisation cc/cr/rc sem/bar : 0 erreur.
+diff --git a/src/kosmickrisp/bridge/mtl_encoder.h b/src/kosmickrisp/bridge/mtl_encoder.h
+index 45cffa7..baeba8e 100644
+--- a/src/kosmickrisp/bridge/mtl_encoder.h
++++ b/src/kosmickrisp/bridge/mtl_encoder.h
+@@ -62,6 +62,8 @@ void mtl_encoder_pop_debug_group(void *encoder);
+ mtl_compute_encoder *
+ mtl_new_compute_command_encoder(mtl_command_buffer *cmd_buffer);
+ 
++void mtl_fill_buffer(mtl_compute_encoder *encoder, mtl_buffer *buf, size_t offset,
++                     size_t size, uint8_t value);
+ void mtl_copy_from_buffer_to_buffer(mtl_compute_encoder *encoder,
+                                     mtl_buffer *src_buf, size_t src_offset,
+                                     mtl_buffer *dst_buf, size_t dst_offset,
+diff --git a/src/kosmickrisp/bridge/mtl_encoder.m b/src/kosmickrisp/bridge/mtl_encoder.m
+index 308718e..aed8135 100644
+--- a/src/kosmickrisp/bridge/mtl_encoder.m
++++ b/src/kosmickrisp/bridge/mtl_encoder.m
+@@ -216,6 +216,16 @@
+    }
+ }
+ 
++void
++mtl_fill_buffer(mtl_compute_encoder *encoder, mtl_buffer *buf, size_t offset,
++                size_t size, uint8_t value)
++{
++   @autoreleasepool {
++      id<MTL4ComputeCommandEncoder> enc = (id<MTL4ComputeCommandEncoder>)encoder;
++      [enc fillBuffer:(id<MTLBuffer>)buf range:NSMakeRange(offset, size) value:value];
++   }
++}
++
+ void
+ mtl_copy_from_buffer_to_texture(mtl_compute_encoder *encoder,
+                                 struct mtl_buffer_image_copy *data)
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.c b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+index 16c91d5..408fe4d 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+@@ -204,12 +204,67 @@ kk_cmd_release_resources(struct kk_device *dev, struct kk_cmd_buffer *cmd)
+    util_dynarray_clear(&cmd->large_bos);
+    util_dynarray_clear(&cmd->post_render_writes);
+    util_dynarray_clear(&cmd->ts_resolves);
++   util_dynarray_clear(&cmd->ts_needs);
++   util_dynarray_clear(&cmd->ts_zeros);
++   util_dynarray_clear(&cmd->ts_written);
++   cmd->ts_cur = false;
+    util_dynarray_clear(&cmd->ts_stage_map);
+ }
+ 
+ /* Ends Metal command buffer recording and returns allocator to pool for reuse */
+ static void kk_pre_finish(struct kk_cmd_buffer *cmd);
+ 
++
++#define KK_SIG_SLOTS 64
++static struct { char s[44]; uint64_t n; } kk_sigtab[KK_SIG_SLOTS];
++static uint64_t kk_sig_autres, kk_sig_total, kk_sig_t0;
++static simple_mtx_t kk_sig_lock = SIMPLE_MTX_INITIALIZER;
++
++static void
++kk_sig_end(struct kk_cmd_buffer *cmd)
++{
++   if (!kk_enc_stats_enabled())
++      return;
++   cmd->sig[cmd->sig_n] = 0;
++   simple_mtx_lock(&kk_sig_lock);
++   uint64_t now = os_time_get_nano();
++   if (!kk_sig_t0)
++      kk_sig_t0 = now;
++   kk_sig_total++;
++   unsigned i;
++   for (i = 0; i < KK_SIG_SLOTS; i++) {
++      if (kk_sigtab[i].n == 0) {
++         memcpy(kk_sigtab[i].s, cmd->sig, cmd->sig_n + 1);
++         kk_sigtab[i].n = 1;
++         break;
++      }
++      if (!strcmp(kk_sigtab[i].s, cmd->sig)) {
++         kk_sigtab[i].n++;
++         break;
++      }
++   }
++   if (i == KK_SIG_SLOTS)
++      kk_sig_autres++;
++   if (now - kk_sig_t0 >= 10000000000ull) {
++      double dt = (now - kk_sig_t0) / 1e9;
++      for (unsigned pass = 0; pass < 20; pass++) {
++         unsigned best = KK_SIG_SLOTS;
++         for (unsigned j = 0; j < KK_SIG_SLOTS; j++)
++            if (kk_sigtab[j].n && (best == KK_SIG_SLOTS || kk_sigtab[j].n > kk_sigtab[best].n))
++               best = j;
++         if (best == KK_SIG_SLOTS)
++            break;
++         fprintf(stderr, "[CIDRE_ENC] sig %.0f/s '%s'\n", kk_sigtab[best].n / dt, kk_sigtab[best].s);
++         kk_sigtab[best].n = 0;
++      }
++      fprintf(stderr, "[CIDRE_ENC] sig total=%.0f/s autres=%.0f/s\n", kk_sig_total / dt, kk_sig_autres / dt);
++      memset(kk_sigtab, 0, sizeof(kk_sigtab));
++      kk_sig_autres = kk_sig_total = 0;
++      kk_sig_t0 = now;
++   }
++   simple_mtx_unlock(&kk_sig_lock);
++}
++
+ static void
+ end_recording(struct kk_cmd_buffer *cmd)
+ {
+@@ -218,6 +273,9 @@ end_recording(struct kk_cmd_buffer *cmd)
+ 
+    cs_end(cmd);
+    kk_pre_finish(cmd);
++   kk_sig_end(cmd);
++   if (kk_resolve_groupe() < 2)
++      kk_ts_resolves_flush(cmd);
+    mtl_end_command_buffer(cmd->metal.cmd_buf);
+ 
+    kk_cmd_pool_return_allocator(kk_cmd_buffer_pool(cmd), cmd->metal.allocator);
+@@ -258,6 +316,9 @@ kk_destroy_cmd_buffer(struct vk_command_buffer *vk_cmd_buffer)
+    util_dynarray_fini(&cmd->unordered_writes);
+    util_dynarray_fini(&cmd->opening_reads);
+    util_dynarray_fini(&cmd->ts_resolves);
++   util_dynarray_fini(&cmd->ts_needs);
++   util_dynarray_fini(&cmd->ts_zeros);
++   util_dynarray_fini(&cmd->ts_written);
+    util_dynarray_fini(&cmd->ts_stage_map);
+ 
+    vk_free(&pool->vk.alloc, cmd);
+@@ -289,6 +350,9 @@ kk_create_cmd_buffer(struct vk_command_pool *vk_pool,
+       goto alloc_fail;
+ 
+    cmd->ts_resolves = UTIL_DYNARRAY_INIT;
++   cmd->ts_needs = UTIL_DYNARRAY_INIT;
++   cmd->ts_zeros = UTIL_DYNARRAY_INIT;
++   cmd->ts_written = UTIL_DYNARRAY_INIT;
+    cmd->ts_stage_map = UTIL_DYNARRAY_INIT;
+    cmd->post_render_writes = UTIL_DYNARRAY_INIT;
+    cmd->closing_writes = UTIL_DYNARRAY_INIT;
+@@ -402,7 +466,12 @@ kk_BeginCommandBuffer(VkCommandBuffer commandBuffer,
+       if (cmd->metal.allocator == NULL)
+          goto fail_allocator;
+    }
++   if (kk_enc_stats_enabled()) kk_enc_stat(KK_ENCS_MTLCB, NULL);
+    mtl_begin_command_buffer(cmd->metal.cmd_buf, cmd->metal.allocator);
++   if (kk_enc_stats_enabled())
++      kk_enc_stat(KK_ENCS_VKCB, NULL);
++   cmd->sig_n = 0;
++   cmd->ts_emis = false;
+    cmd->metal.encoders_in_cmd_buf = 0u;
+    cmd->metal.pre_slot = -1;
+    cmd->metal.pre_wanted = false;
+@@ -470,6 +539,7 @@ kk_cmd_buffer_split_if_full(struct kk_cmd_buffer *cmd)
+    if (next == NULL)
+       return;
+ 
++   kk_ts_resolves_flush(cmd);
+    mtl_end_command_buffer(cmd->metal.cmd_buf);
+    util_dynarray_append(&cmd->metal.sealed_cmd_bufs, cmd->metal.cmd_buf);
+ 
+@@ -478,6 +548,7 @@ kk_cmd_buffer_split_if_full(struct kk_cmd_buffer *cmd)
+     * buffers, while 38000 in a single one is refused -- so the recording
+     * keeps the allocator it started with. */
+    cmd->metal.cmd_buf = next;
++   if (kk_enc_stats_enabled()) kk_enc_stat(KK_ENCS_MTLCB, NULL);
+    mtl_begin_command_buffer(cmd->metal.cmd_buf, cmd->metal.allocator);
+    cmd->metal.encoders_in_cmd_buf = 0u;
+ 
+@@ -721,6 +792,7 @@ kk_pre_compute(struct kk_cmd_buffer *cmd)
+    mtl_command_buffer *pre = kk_cmd_pool_get_cmd_buf(pool);
+    if (pre == NULL)
+       return NULL;
++   if (kk_enc_stats_enabled()) kk_enc_stat(KK_ENCS_MTLCB, NULL);
+    mtl_begin_command_buffer(pre, cmd->metal.pre_allocator);
+ 
+    /* Insere a son rang : juste avant le tampon qui porte la passe. */
+@@ -761,9 +833,11 @@ kk_pre_reserve(struct kk_cmd_buffer *cmd)
+       mtl_command_buffer *next = kk_cmd_pool_get_cmd_buf(pool);
+       if (next == NULL)
+          return;
++      kk_ts_resolves_flush(cmd);
+       mtl_end_command_buffer(cmd->metal.cmd_buf);
+       util_dynarray_append(&cmd->metal.sealed_cmd_bufs, cmd->metal.cmd_buf);
+       cmd->metal.cmd_buf = next;
++      if (kk_enc_stats_enabled()) kk_enc_stat(KK_ENCS_MTLCB, NULL);
+       mtl_begin_command_buffer(cmd->metal.cmd_buf, cmd->metal.allocator);
+       cmd->metal.encoders_in_cmd_buf = 0u;
+       if (cmd->vk.base.object_name)
+@@ -834,6 +908,9 @@ cs_start_render(struct kk_cmd_buffer *cmd)
+    kk_pre_reserve(cmd);
+    cmd->metal.encoders_in_cmd_buf++;
+ 
++   if (kk_enc_stats_enabled())
++      kk_enc_stat(KK_ENCS_OUV_RENDU, __builtin_return_address(0));
++   kk_sig(cmd, 'R');
+    cmd->metal.render = mtl_new_render_command_encoder_with_descriptor(
+       cmd->metal.cmd_buf, state->render_pass_descriptor);
+ 
+@@ -961,6 +1038,71 @@ kk_reprise_record(enum kk_reprise_cause cause)
+    }
+ }
+ 
++
++int
++kk_enc_stats_enabled(void)
++{
++   static int enabled = -1;
++   if (enabled < 0)
++      enabled = getenv("CIDRE_ENC_STATS") != NULL;
++   return enabled;
++}
++
++#define KK_ENCS_SLOTS 40
++static const char *const kk_encs_names[KK_ENCS_COUNT] = {
++   "ouv_rendu", "ouv_calcul", "ouv_calcul2", "ferm", "ferm2", "ferm_diff",
++   "resolve", "vkcb", "mtlcb", "commit", "qflush", "qentrees", "qruns", "cflush",
++};
++static struct {
++   uint64_t n;
++   void *ra[KK_ENCS_SLOTS];
++   uint64_t ran[KK_ENCS_SLOTS];
++} kk_encs[KK_ENCS_COUNT];
++static simple_mtx_t kk_encs_lock = SIMPLE_MTX_INITIALIZER;
++static uint64_t kk_encs_t0;
++
++void
++kk_enc_stat(unsigned ev, void *ra)
++{
++   simple_mtx_lock(&kk_encs_lock);
++   uint64_t now = os_time_get_nano();
++   if (!kk_encs_t0)
++      kk_encs_t0 = now;
++   kk_encs[ev].n++;
++   if (ra) {
++      for (unsigned i = 0; i < KK_ENCS_SLOTS; i++) {
++         if (kk_encs[ev].ra[i] == ra || kk_encs[ev].ra[i] == NULL) {
++            kk_encs[ev].ra[i] = ra;
++            kk_encs[ev].ran[i]++;
++            break;
++         }
++      }
++   }
++   if (now - kk_encs_t0 >= 5000000000ull) {
++      double dt = (now - kk_encs_t0) / 1e9;
++      fprintf(stderr, "[CIDRE_ENC] t=%.1f dt=%.2f", now / 1e9, dt);
++      for (unsigned e = 0; e < KK_ENCS_COUNT; e++)
++         fprintf(stderr, " %s=%.0f/s", kk_encs_names[e], kk_encs[e].n / dt);
++      fprintf(stderr, "\n");
++      Dl_info di;
++      for (unsigned e = 0; e < KK_ENCS_COUNT; e++) {
++         if (!kk_encs[e].ra[0])
++            continue;
++         fprintf(stderr, "[CIDRE_ENC] %s", kk_encs_names[e]);
++         for (unsigned i = 0; i < KK_ENCS_SLOTS && kk_encs[e].ra[i]; i++) {
++            if (dladdr(kk_encs[e].ra[i], &di) && di.dli_fbase)
++               fprintf(stderr, " +0x%lx=%.0f",
++                       (unsigned long)((char *)kk_encs[e].ra[i] - (char *)di.dli_fbase),
++                       kk_encs[e].ran[i] / dt);
++         }
++         fprintf(stderr, "\n");
++      }
++      memset(kk_encs, 0, sizeof(kk_encs));
++      kk_encs_t0 = now;
++   }
++   simple_mtx_unlock(&kk_encs_lock);
++}
++
+ mtl_compute_encoder *
+ cs_get_compute(struct kk_cmd_buffer *cmd)
+ {
+@@ -996,6 +1138,11 @@ cs_get_compute(struct kk_cmd_buffer *cmd)
+        * cs_end() to flush post-render writes, where splitting would cut the
+        * recording in an awkward place. */
+       cmd->metal.encoders_in_cmd_buf++;
++      if (kk_enc_stats_enabled()) {
++         kk_enc_stat(KK_ENCS_OUV_CALCUL, __builtin_return_address(0));
++         kk_enc_stat(KK_ENCS_OUV_CALCUL2, __builtin_return_address(1));
++      }
++      kk_sig(cmd, 'C');
+       cmd->metal.compute = mtl_new_compute_command_encoder(cmd->metal.cmd_buf);
+       mtl_compute_set_argument_table(cmd->metal.compute, cmd->argument_table);
+       kk_encoder_update_debug(cmd, cmd->metal.compute);
+@@ -1005,14 +1152,89 @@ cs_get_compute(struct kk_cmd_buffer *cmd)
+    return cmd->metal.compute;
+ }
+ 
++int
++kk_resolve_groupe(void)
++{
++   static int mode = -1;
++   if (mode < 0) {
++      const char *v = getenv("CIDRE_RESOLVE_GROUPE");
++      mode = v ? atoi(v) : 0;
++   }
++   return mode;
++}
++
++bool
++kk_ts_resolves_pending_cur(struct kk_cmd_buffer *cmd)
++{
++   if (kk_resolve_groupe())
++      return cmd->ts_cur;
++   return util_dynarray_num_elements(&cmd->ts_resolves, struct kk_ts_resolve) > 0;
++}
++
++static int
++kk_ts_resolve_cmp(const void *a, const void *b)
++{
++   const struct kk_ts_resolve *x = a, *y = b;
++   if (x->heap != y->heap)
++      return (uintptr_t)x->heap < (uintptr_t)y->heap ? -1 : 1;
++   if (x->index != y->index)
++      return x->index < y->index ? -1 : 1;
++   if (x->dst_addr != y->dst_addr)
++      return x->dst_addr < y->dst_addr ? -1 : 1;
++   return 0;
++}
++
++void
++kk_ts_emit_resolves(mtl_command_buffer *cb, struct kk_ts_resolve *r, uint32_t n)
++{
++   if (n > 1)
++      qsort(r, n, sizeof(*r), kk_ts_resolve_cmp);
++   uint32_t i = 0;
++   while (i < n) {
++      uint32_t k = 1;
++      while (i + k < n && r[i + k].heap == r[i].heap &&
++             r[i + k].index == r[i].index + k &&
++             r[i + k].dst_addr == r[i].dst_addr + k * sizeof(uint64_t))
++         k++;
++      if (kk_enc_stats_enabled())
++         kk_enc_stat(KK_ENCS_RESOLVE, NULL);
++      mtl_command_resolve_counter_heap(cb, r[i].heap, r[i].index, k,
++                                       r[i].dst_addr);
++      i += k;
++   }
++}
++
++void
++kk_ts_resolves_flush(struct kk_cmd_buffer *cmd)
++{
++   assert(cmd->metal.render == NULL && cmd->metal.compute == NULL);
++   uint32_t n = util_dynarray_num_elements(&cmd->ts_resolves, struct kk_ts_resolve);
++   if (n == 0)
++      return;
++   if (kk_enc_stats_enabled())
++      kk_enc_stat(KK_ENCS_CFLUSH, __builtin_return_address(0));
++   kk_ts_emit_resolves(cmd->metal.cmd_buf, cmd->ts_resolves.data, n);
++   cmd->ts_emis = true;
++   util_dynarray_clear(&cmd->ts_resolves);
++   cmd->ts_cur = false;
++}
++
+ static void
+ close_encoder(struct kk_cmd_buffer *cmd, mtl_command_encoder *encoder)
+ {
+    mtl_end_encoding(encoder);
+    mtl_release(encoder);
+ 
++   if (kk_resolve_groupe()) {
++      cmd->ts_cur = false;
++      return;
++   }
++
+    /* Fold the pending timestamp counter-heap resolves into `cmd_buf` */
+    util_dynarray_foreach(&cmd->ts_resolves, struct kk_ts_resolve, r) {
++      if (kk_enc_stats_enabled())
++         kk_enc_stat(KK_ENCS_RESOLVE, NULL);
++      kk_sig(cmd, 'r');
+       mtl_command_resolve_counter_heap(cmd->metal.cmd_buf, r->heap, r->index,
+                                        1u, r->dst_addr);
+    }
+@@ -1099,6 +1321,8 @@ cs_flush_closing(struct kk_cmd_buffer *cmd, bool force_barrier)
+    }
+ 
+    cmd->metal.closing_needs_barrier = false;
++   if (kk_enc_stats_enabled())
++      kk_enc_stat(KK_ENCS_FERM_DIFF, __builtin_return_address(0));
+    close_encoder(cmd, encoder);
+ }
+ 
+@@ -1178,6 +1402,10 @@ cs_end(struct kk_cmd_buffer *cmd)
+ {
+    assert(cmd);
+ 
++   if (kk_enc_stats_enabled() && (cmd->metal.render || cmd->metal.compute)) {
++      kk_enc_stat(KK_ENCS_FERM, __builtin_return_address(0));
++      kk_enc_stat(KK_ENCS_FERM2, __builtin_return_address(1));
++   }
+    cs_flush_closing(cmd, true);
+ 
+    /* Render first as it may open a compute encoder for post render writes. */
+@@ -1215,8 +1443,7 @@ kk_cs_end_render_pass(struct kk_cmd_buffer *cmd)
+ 
+    bool has_post_render_writes = util_dynarray_num_elements(
+       &cmd->post_render_writes, struct libkk_imm_write) > 0;
+-   bool has_ts_resolves =
+-      util_dynarray_num_elements(&cmd->ts_resolves, struct kk_ts_resolve) > 0;
++   bool has_ts_resolves = kk_ts_resolves_pending_cur(cmd);
+ 
+    if (KK_DEBUG(BLANKET_BARRIER) || cmd->metal.render == NULL ||
+        cmd->metal.compute != NULL || has_post_render_writes || has_ts_resolves ||
+@@ -1399,6 +1626,7 @@ kk_CmdPipelineBarrier2(VkCommandBuffer commandBuffer,
+                        const VkDependencyInfo *pDependencyInfo)
+ {
+    VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
++   kk_sig(cmd, 'b');
+ 
+    /* En mode cible, on traduit les VRAIES stages src/dst de la barriere. On ne
+     * les retient (pending_barrier_*) que sur les chemins qui FERMENT un encodeur
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.h b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+index 52f5547..1016960 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+@@ -307,6 +307,22 @@ struct kk_ts_resolve {
+    uint64_t dst_addr;
+ };
+ 
++struct kk_ts_need {
++   struct kk_query_pool *pool;
++   uint32_t first;
++   uint32_t count;
++   bool copie;
++};
++
++struct kk_ts_zero {
++   struct kk_query_pool *pool;
++   uint32_t first;
++   uint32_t count;
++};
++
++void kk_ts_emit_resolves(mtl_command_buffer *cb, struct kk_ts_resolve *r,
++                         uint32_t n);
++
+ #define KK_TS_STAGE_COMPUTE ((enum mtl_render_stages)(1UL << 16))
+ 
+ struct kk_ts_stage_entry {
+@@ -370,6 +386,13 @@ struct kk_cmd_buffer {
+    } metal;
+    /* Pending timestamp resolves (struct kk_ts_resolve), flushed at cs_end. */
+    struct util_dynarray ts_resolves;
++   struct util_dynarray ts_needs;
++   struct util_dynarray ts_zeros;
++   struct util_dynarray ts_written;
++   bool ts_cur;
++   bool ts_emis;
++   char sig[44];
++   uint8_t sig_n;
+    /* Timestamps already sampled by the current render encoder. (struct
+     * kk_ts_stage_entry). */
+    struct util_dynarray ts_stage_map;
+@@ -473,6 +496,39 @@ enum kk_reprise_cause {
+ int kk_reprises_stats_enabled(void);
+ bool kk_reprise_cause_hissable(enum kk_reprise_cause c);
+ void kk_reprise_record(enum kk_reprise_cause cause);
++
++enum kk_encs_ev {
++   KK_ENCS_OUV_RENDU,
++   KK_ENCS_OUV_CALCUL,
++   KK_ENCS_OUV_CALCUL2,
++   KK_ENCS_FERM,
++   KK_ENCS_FERM2,
++   KK_ENCS_FERM_DIFF,
++   KK_ENCS_RESOLVE,
++   KK_ENCS_VKCB,
++   KK_ENCS_MTLCB,
++   KK_ENCS_COMMIT,
++   KK_ENCS_QFLUSH,
++   KK_ENCS_QENTREES,
++   KK_ENCS_QRUNS,
++   KK_ENCS_CFLUSH,
++   KK_ENCS_COUNT,
++};
++int kk_enc_stats_enabled(void);
++static inline void
++kk_sig(struct kk_cmd_buffer *cmd, char c)
++{
++   if (!kk_enc_stats_enabled())
++      return;
++   if (cmd->sig_n < 40)
++      cmd->sig[cmd->sig_n++] = c;
++   else if (cmd->sig_n == 40)
++      cmd->sig[cmd->sig_n++] = '+';
++}
++int kk_resolve_groupe(void);
++void kk_ts_resolves_flush(struct kk_cmd_buffer *cmd);
++bool kk_ts_resolves_pending_cur(struct kk_cmd_buffer *cmd);
++void kk_enc_stat(unsigned ev, void *ra);
+ static inline void
+ kk_reprise_cause(struct kk_cmd_buffer *cmd, enum kk_reprise_cause c)
+ {
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_clear.c b/src/kosmickrisp/vulkan/kk_cmd_clear.c
+index 3d47aec..c616d07 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_clear.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_clear.c
+@@ -139,6 +139,7 @@ kk_CmdClearColorImage(VkCommandBuffer commandBuffer, VkImage _image,
+ {
+    VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
+    VK_FROM_HANDLE(kk_image, image, _image);
++   kk_sig(cmd, 'k');
+ 
+    VkClearValue clear_value = {
+       .color = *pColor,
+@@ -164,6 +165,7 @@ kk_CmdClearDepthStencilImage(VkCommandBuffer commandBuffer, VkImage _image,
+ {
+    VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
+    VK_FROM_HANDLE(kk_image, image, _image);
++   kk_sig(cmd, 'k');
+ 
+    const VkClearValue clear_value = {
+       .depthStencil = *pDepthStencil,
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_copy.c b/src/kosmickrisp/vulkan/kk_cmd_copy.c
+index 598646d..58b67d0 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_copy.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_copy.c
+@@ -25,6 +25,7 @@ kk_CmdCopyBuffer2(VkCommandBuffer commandBuffer,
+    VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
+    VK_FROM_HANDLE(kk_buffer, src, pCopyBufferInfo->srcBuffer);
+    VK_FROM_HANDLE(kk_buffer, dst, pCopyBufferInfo->dstBuffer);
++   kk_sig(cmd, 'y');
+ 
+    mtl_compute_encoder *encoder = cs_get_compute(cmd);
+    for (uint32_t i = 0; i < pCopyBufferInfo->regionCount; i++) {
+@@ -120,6 +121,7 @@ kk_CmdCopyImageToBuffer2(VkCommandBuffer commandBuffer,
+    VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
+    VK_FROM_HANDLE(kk_image, image, pCopyImageToBufferInfo->srcImage);
+    VK_FROM_HANDLE(kk_buffer, buffer, pCopyImageToBufferInfo->dstBuffer);
++   kk_sig(cmd, 'i');
+ 
+    mtl_compute_encoder *encoder = cs_get_compute(cmd);
+    for (unsigned r = 0; r < pCopyImageToBufferInfo->regionCount; r++) {
+@@ -365,6 +367,7 @@ kk_CmdCopyImage2(VkCommandBuffer commandBuffer,
+    VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
+    VK_FROM_HANDLE(kk_image, src, pCopyImageInfo->srcImage);
+    VK_FROM_HANDLE(kk_image, dst, pCopyImageInfo->dstImage);
++   kk_sig(cmd, 'i');
+ 
+    size_t buffer_size = 0u;
+ 
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_dispatch.c b/src/kosmickrisp/vulkan/kk_cmd_dispatch.c
+index 7e22c50..d8af9c9 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_dispatch.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_dispatch.c
+@@ -115,6 +115,7 @@ kk_CmdDispatchBase(VkCommandBuffer commandBuffer, uint32_t baseGroupX,
+       return;
+ 
+    VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
++   kk_sig(cmd, 'd');
+ 
+    struct kk_descriptor_state *desc = &cmd->state.cs.descriptors;
+    desc->root_dirty |= desc->root.cs.base_group[0] != baseGroupX;
+@@ -172,6 +173,7 @@ kk_CmdDispatchIndirect2KHR(VkCommandBuffer commandBuffer,
+                            const VkDispatchIndirect2InfoKHR *pInfo)
+ {
+    VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
++   kk_sig(cmd, 'd');
+ 
+    struct kk_descriptor_state *desc = &cmd->state.cs.descriptors;
+    desc->root_dirty |= desc->root.cs.base_group[0] != 0;
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_draw.c b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+index a8fbb91..c1aa5e3 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -282,6 +282,7 @@ kk_CmdBeginRendering(VkCommandBuffer commandBuffer,
+                      const VkRenderingInfo *pRenderingInfo)
+ {
+    VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
++   kk_sig(cmd, 'P');
+    struct kk_device *dev = kk_cmd_buffer_device(cmd);
+    struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
+ 
+diff --git a/src/kosmickrisp/vulkan/kk_query_pool.c b/src/kosmickrisp/vulkan/kk_query_pool.c
+index 83150ec..4b23cf2 100644
+--- a/src/kosmickrisp/vulkan/kk_query_pool.c
++++ b/src/kosmickrisp/vulkan/kk_query_pool.c
+@@ -427,6 +427,11 @@ kk_DestroyQueryPool(VkDevice device, VkQueryPool queryPool,
+          kk_query_table_remove(dev, &dev->occlusion_queries, remap_index[i]);
+       }
+    } else if (kk_pool_is_ts(pool)) {
++      if (kk_resolve_groupe() >= 2 && dev->has_queue)
++         kk_queue_ts_purge(&dev->queue, kk_query_report_addr(dev, pool, 0),
++                           kk_query_report_addr(dev, pool, pool->vk.query_count));
++      if (kk_resolve_groupe() >= 4 && dev->has_queue)
++         kk_queue_ts_purge_pool(&dev->queue, pool);
+       kk_ts_reserve_free(dev, pool, pAllocator);
+    }
+ 
+@@ -442,6 +447,9 @@ kk_ResetQueryPool(VkDevice device, VkQueryPool queryPool, uint32_t firstQuery,
+    VK_FROM_HANDLE(kk_device, dev, device);
+    VK_FROM_HANDLE(kk_query_pool, pool, queryPool);
+ 
++   if (kk_resolve_groupe() >= 2 && dev->has_queue && kk_pool_is_ts(pool))
++      kk_queue_ts_purge(&dev->queue, kk_query_report_addr(dev, pool, firstQuery),
++                        kk_query_report_addr(dev, pool, firstQuery + queryCount));
+    host_zero_queries(dev, pool, firstQuery, queryCount, false);
+ }
+ 
+@@ -473,19 +481,152 @@ kk_mv_query_count(struct kk_cmd_buffer *cmd)
+    return render->view_mask ? util_bitcount(render->view_mask) : 1;
+ }
+ 
++static mtl_counter_heap *kk_ts_heap_for(const struct kk_query_pool *pool,
++                                        uint32_t query, uint32_t *index_out);
++
++static void emit_zero_queries(struct kk_cmd_buffer *cmd,
++                              struct kk_query_pool *pool, uint32_t first_index,
++                              uint32_t num_queries, bool set_available);
++
++uint64_t
++kk_ts_report_addr(struct kk_device *dev, struct kk_query_pool *pool,
++                  uint32_t query)
++{
++   return kk_query_report_addr(dev, pool, query);
++}
++
++bool
++kk_ts_pool_is_ts(struct kk_query_pool *pool)
++{
++   return kk_pool_is_ts(pool);
++}
++
++mtl_counter_heap *
++kk_ts_heap_lookup(struct kk_query_pool *pool, uint32_t query,
++                  uint32_t *index_out)
++{
++   return kk_ts_heap_for(pool, query, index_out);
++}
++
++static void
++kk_ts_need_record(struct kk_cmd_buffer *cmd, struct kk_query_pool *pool,
++                  uint32_t first, uint32_t count, bool copie)
++{
++   if (kk_resolve_groupe() < 2)
++      return;
++   struct kk_ts_need need = {.pool = pool, .first = first, .count = count,
++                             .copie = copie};
++   util_dynarray_append(&cmd->ts_needs, need);
++}
++
++static void
++kk_ts_zero_remove(struct util_dynarray *zeros, struct kk_query_pool *pool,
++                  uint32_t first, uint32_t count)
++{
++   uint32_t n = util_dynarray_num_elements(zeros, struct kk_ts_zero);
++   for (uint32_t i = 0; i < n; i++) {
++      struct kk_ts_zero *z = util_dynarray_element(zeros, struct kk_ts_zero, i);
++      if (z->pool != pool || z->count == 0)
++         continue;
++      uint32_t zlo = z->first, zhi = z->first + z->count;
++      uint32_t lo = MAX2(zlo, first), hi = MIN2(zhi, first + count);
++      if (lo >= hi)
++         continue;
++      struct kk_ts_zero droite = {.pool = pool, .first = hi, .count = zhi - hi};
++      z->count = lo - zlo;
++      if (droite.count)
++         util_dynarray_append(zeros, droite);
++   }
++   struct kk_ts_zero *z = zeros->data;
++   uint32_t k = 0;
++   n = util_dynarray_num_elements(zeros, struct kk_ts_zero);
++   for (uint32_t i = 0; i < n; i++)
++      if (z[i].count)
++         z[k++] = z[i];
++   zeros->size = k * sizeof(*z);
++}
++
++void
++kk_ts_zero_remove_pub(struct util_dynarray *zeros, struct kk_query_pool *pool,
++                      uint32_t first, uint32_t count)
++{
++   kk_ts_zero_remove(zeros, pool, first, count);
++}
++
++static void
++kk_ts_zeros_emit_overlap(struct kk_cmd_buffer *cmd, struct kk_query_pool *pool,
++                         uint32_t first, uint32_t count)
++{
++   uint32_t n = util_dynarray_num_elements(&cmd->ts_zeros, struct kk_ts_zero);
++   bool vu = false;
++   for (uint32_t i = 0; i < n; i++) {
++      struct kk_ts_zero z =
++         *util_dynarray_element(&cmd->ts_zeros, struct kk_ts_zero, i);
++      if (z.pool != pool || z.first >= first + count || z.first + z.count <= first)
++         continue;
++      emit_zero_queries(cmd, z.pool, z.first, z.count, false);
++      util_dynarray_element(&cmd->ts_zeros, struct kk_ts_zero, i)->count = 0;
++      vu = true;
++   }
++   if (vu)
++      kk_ts_zero_remove(&cmd->ts_zeros, NULL, 0, 0);
++}
++
++static bool
++kk_ts_pending_overlap(struct kk_cmd_buffer *cmd, struct kk_device *dev,
++                      struct kk_query_pool *pool, uint32_t first, uint32_t count)
++{
++   uint64_t lo = kk_query_report_addr(dev, pool, first);
++   uint64_t hi = kk_query_report_addr(dev, pool, first + count);
++   util_dynarray_foreach(&cmd->ts_resolves, struct kk_ts_resolve, r) {
++      if (r->dst_addr >= lo && r->dst_addr < hi)
++         return true;
++      if (kk_pool_is_ts(pool)) {
++         for (uint32_t q = first; q < first + count; q++) {
++            uint32_t idx;
++            mtl_counter_heap *h = kk_ts_heap_for(pool, q, &idx);
++            if (h == r->heap && idx == r->index)
++               return true;
++         }
++      }
++   }
++   return false;
++}
++
+ VKAPI_ATTR void VKAPI_CALL
+ kk_CmdResetQueryPool(VkCommandBuffer commandBuffer, VkQueryPool queryPool,
+                      uint32_t firstQuery, uint32_t queryCount)
+ {
+    VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
+    VK_FROM_HANDLE(kk_query_pool, pool, queryPool);
++   kk_sig(cmd, 'z');
+ 
+    assert(cmd->metal.render == NULL);
+ 
++   kk_ts_need_record(cmd, pool, firstQuery, queryCount, false);
++
++   if (kk_resolve_groupe() >= 4 && kk_pool_is_ts(pool)) {
++      if (kk_ts_pending_overlap(cmd, kk_cmd_buffer_device(cmd), pool,
++                                firstQuery, queryCount)) {
++         cs_end(cmd);
++         kk_ts_resolves_flush(cmd);
++      }
++      struct kk_ts_zero z = {.pool = pool, .first = firstQuery,
++                             .count = queryCount};
++      util_dynarray_append(&cmd->ts_zeros, z);
++      return;
++   }
++
+    /* A prior timestamp write may have a resolve still pending. Land it before
+     * the reset zeroes the pool BO, otherwise the deferred resolve would clobber
+     * the reset and leave the query spuriously available. */
+-   if (util_dynarray_num_elements(&cmd->ts_resolves, struct kk_ts_resolve) > 0)
++   if (kk_resolve_groupe()) {
++      if (kk_ts_pending_overlap(cmd, kk_cmd_buffer_device(cmd), pool,
++                                firstQuery, queryCount)) {
++         cs_end(cmd);
++         kk_ts_resolves_flush(cmd);
++      }
++   } else if (util_dynarray_num_elements(&cmd->ts_resolves, struct kk_ts_resolve) > 0)
+       cs_end(cmd);
+ 
+    emit_zero_queries(cmd, pool, firstQuery, queryCount, false);
+@@ -578,10 +719,16 @@ kk_CmdWriteTimestamp2(VkCommandBuffer commandBuffer,
+ {
+    VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
+    VK_FROM_HANDLE(kk_query_pool, pool, queryPool);
++   kk_sig(cmd, 't');
+    struct kk_device *dev = kk_cmd_buffer_device(cmd);
+    assert(kk_pool_is_ts(pool) && pool->ts.segs);
+ 
+    uint32_t count = kk_mv_query_count(cmd);
++   if (kk_resolve_groupe() >= 4) {
++      kk_ts_zero_remove(&cmd->ts_zeros, pool, query, count);
++      struct kk_ts_zero w = {.pool = pool, .first = query, .count = count};
++      util_dynarray_append(&cmd->ts_written, w);
++   }
+    enum mtl_render_stages mtl_stage =
+       kk_pipeline_stages_to_mtl_render_stage(stage);
+ 
+@@ -627,7 +774,7 @@ kk_CmdWriteTimestamp2(VkCommandBuffer commandBuffer,
+       util_dynarray_foreach(&cmd->ts_stage_map, struct kk_ts_stage_entry,
+                             entry) {
+          if (entry->stage == KK_TS_STAGE_COMPUTE && entry->pool == pool &&
+-             !kk_precise_timestamps()) {
++             !kk_precise_timestamps() && kk_resolve_groupe() < 3) {
+             heap = entry->heap;
+             heap_index = entry->index;
+             reused = true;
+@@ -657,6 +804,7 @@ kk_CmdWriteTimestamp2(VkCommandBuffer commandBuffer,
+       };
+       util_dynarray_append(&cmd->ts_resolves, resolve);
+    }
++   cmd->ts_cur = true;
+ }
+ 
+ /*
+@@ -895,6 +1043,9 @@ kk_GetQueryPoolResults(VkDevice device, VkQueryPool queryPool,
+    if (vk_device_is_lost(&dev->vk))
+       return VK_ERROR_DEVICE_LOST;
+ 
++   if (kk_resolve_groupe() >= 2 && dev->has_queue && kk_pool_is_ts(pool))
++      kk_queue_ts_flush_overlap(&dev->queue, pool, firstQuery, queryCount);
++
+    VkResult status = VK_SUCCESS;
+    for (uint32_t i = 0; i < queryCount; i++) {
+       const uint32_t query = firstQuery + i;
+@@ -940,14 +1091,25 @@ kk_CmdCopyQueryPoolResultsToMemoryKHR(
+ {
+    VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
+    VK_FROM_HANDLE(kk_query_pool, pool, queryPool);
++   kk_sig(cmd, 'q');
+    struct kk_device *dev = kk_cmd_buffer_device(cmd);
+ 
++   kk_ts_need_record(cmd, pool, firstQuery, queryCount, true);
++
+    /* Timestamp results are resolved into the pool BO on a deferred command
+     * buffer; make sure any pending resolve lands before this copy reads it.
+     * This also gives VK_QUERY_RESULT_WAIT_BIT its meaning for timestamps. */
+-   if (util_dynarray_num_elements(&cmd->ts_resolves, struct kk_ts_resolve) > 0)
++   if (kk_resolve_groupe()) {
++      if (kk_ts_pending_overlap(cmd, dev, pool, firstQuery, queryCount)) {
++         cs_end(cmd);
++         kk_ts_resolves_flush(cmd);
++      }
++   } else if (util_dynarray_num_elements(&cmd->ts_resolves, struct kk_ts_resolve) > 0)
+       cs_end(cmd);
+ 
++   if (kk_resolve_groupe() >= 4 && kk_pool_is_ts(pool))
++      kk_ts_zeros_emit_overlap(cmd, pool, firstQuery, queryCount);
++
+    mtl_compute_encoder *encoder = cs_get_compute(cmd);
+    /* The resolveCounterHeap runs on the blit stage and it needs to be available
+     * for the compute job to copy results to the bo. */
+diff --git a/src/kosmickrisp/vulkan/kk_query_pool.h b/src/kosmickrisp/vulkan/kk_query_pool.h
+index ecda194..43116db 100644
+--- a/src/kosmickrisp/vulkan/kk_query_pool.h
++++ b/src/kosmickrisp/vulkan/kk_query_pool.h
+@@ -38,6 +38,7 @@ struct kk_ts_state {
+ #define KK_TS_RESERVE_MAX_HEAPS 32
+ 
+ struct kk_device;
++struct util_dynarray;
+ VkResult kk_ts_reserve_init(struct kk_device *dev);
+ void kk_ts_reserve_finish(struct kk_device *dev);
+ 
+@@ -64,5 +65,14 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(kk_query_pool, vk.base, VkQueryPool,
+                                VK_OBJECT_TYPE_QUERY_POOL)
+ 
+ uint16_t *kk_pool_index_ptr(const struct kk_query_pool *pool);
++struct kk_device;
++struct util_dynarray;
++uint64_t kk_ts_report_addr(struct kk_device *dev, struct kk_query_pool *pool,
++                           uint32_t query);
++bool kk_ts_pool_is_ts(struct kk_query_pool *pool);
++void kk_ts_zero_remove_pub(struct util_dynarray *zeros, struct kk_query_pool *pool,
++                           uint32_t first, uint32_t count);
++mtl_counter_heap *kk_ts_heap_lookup(struct kk_query_pool *pool, uint32_t query,
++                                    uint32_t *index_out);
+ 
+ #endif /* KK_QUERY_POOL_H */
+diff --git a/src/kosmickrisp/vulkan/kk_queue.c b/src/kosmickrisp/vulkan/kk_queue.c
+index 9df8514..f03aa2c 100644
+--- a/src/kosmickrisp/vulkan/kk_queue.c
++++ b/src/kosmickrisp/vulkan/kk_queue.c
+@@ -6,7 +6,9 @@
+  */
+ 
+ #include "kk_queue.h"
++#include "kk_query_pool.h"
+ #include "kk_buffer.h"
++#include "kk_bo.h"
+ #include "kk_cmd_buffer.h"
+ #include "kk_device.h"
+ #include "kk_device_memory.h"
+@@ -21,6 +23,7 @@
+ #include "vk_cmd_queue.h"
+ 
+ #include "util/os_time.h"
++#include "util/u_atomic.h"
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -168,8 +171,8 @@ kk_cmd_buffer_has_work(struct kk_cmd_buffer *cmd)
+ }
+ 
+ static void
+-kk_queue_commit(struct kk_queue *queue, struct kk_cmd_buffer *cmd,
+-                mtl_feedback_handler_callback callback, void *user_data)
++kk_queue_commit_inner(struct kk_queue *queue, struct kk_cmd_buffer *cmd,
++                      mtl_feedback_handler_callback callback, void *user_data)
+ {
+    assert(kk_cmd_buffer_has_work(cmd));
+ 
+@@ -183,6 +186,7 @@ kk_queue_commit(struct kk_queue *queue, struct kk_cmd_buffer *cmd,
+       &cmd->metal.sealed_cmd_bufs, mtl_command_buffer *);
+ 
+    if (sealed_count == 0u) {
++      if (kk_enc_stats_enabled()) kk_enc_stat(KK_ENCS_COMMIT, NULL);
+       mtl_command_queue_commit(queue->mtl_handle, &cmd->metal.cmd_buf, 1u,
+                                options);
+    } else {
+@@ -197,6 +201,8 @@ kk_queue_commit(struct kk_queue *queue, struct kk_cmd_buffer *cmd,
+                 sealed_count * sizeof(*buffers));
+          buffers[sealed_count] = cmd->metal.cmd_buf;
+ 
++         if (kk_enc_stats_enabled()) kk_enc_stat(KK_ENCS_COMMIT, NULL);
++
+          mtl_command_queue_commit(queue->mtl_handle, buffers, count, options);
+          vk_free(&dev->vk.alloc, buffers);
+       } else {
+@@ -206,9 +212,11 @@ kk_queue_commit(struct kk_queue *queue, struct kk_cmd_buffer *cmd,
+          util_dynarray_foreach(&cmd->metal.sealed_cmd_bufs,
+                                mtl_command_buffer *, cmd_buf) {
+             mtl_commit_options *bare = mtl_new_commit_options();
++            if (kk_enc_stats_enabled()) kk_enc_stat(KK_ENCS_COMMIT, NULL);
+             mtl_command_queue_commit(queue->mtl_handle, cmd_buf, 1u, bare);
+             mtl_release(bare);
+          }
++         if (kk_enc_stats_enabled()) kk_enc_stat(KK_ENCS_COMMIT, NULL);
+          mtl_command_queue_commit(queue->mtl_handle, &cmd->metal.cmd_buf, 1u,
+                                   options);
+       }
+@@ -217,6 +225,218 @@ kk_queue_commit(struct kk_queue *queue, struct kk_cmd_buffer *cmd,
+    mtl_release(options);
+ }
+ 
++
++struct kk_ts_flush_data {
++   mtl_command_allocator *alloc;
++   mtl_command_buffer *cb;
++   int ref;
++   int done;
++};
++
++static void
++kk_ts_flush_unref(struct kk_ts_flush_data *f)
++{
++   if (p_atomic_dec_zero(&f->ref))
++      free(f);
++}
++
++static void
++kk_ts_flush_done(struct mtl_feedback_data *data)
++{
++   struct kk_ts_flush_data *f = data->user_data;
++   mtl_release(f->cb);
++   mtl_release(f->alloc);
++   p_atomic_set(&f->done, 1);
++   kk_ts_flush_unref(f);
++}
++
++__attribute__((noinline)) static struct kk_ts_flush_data *
++kk_queue_ts_flush_locked(struct kk_queue *queue, bool attendre)
++{
++   uint32_t n = util_dynarray_num_elements(&queue->ts_pending, struct kk_ts_resolve);
++   uint32_t nz = util_dynarray_num_elements(&queue->ts_zeros, struct kk_ts_zero);
++   if (n == 0 && nz == 0)
++      return NULL;
++   struct kk_device *dev = kk_queue_device(queue);
++   struct kk_ts_flush_data *f = calloc(1, sizeof(*f));
++   if (!f)
++      return NULL;
++   f->ref = attendre ? 2 : 1;
++   f->alloc = mtl_new_command_allocator(dev->mtl_handle);
++   f->cb = mtl_new_command_buffer(dev->mtl_handle);
++   mtl_begin_command_buffer(f->cb, f->alloc);
++   if (nz) {
++      mtl_compute_encoder *enc = mtl_new_compute_command_encoder(f->cb);
++      mtl_barrier_after_queue_stages(enc, MTL_STAGE_ALL, MTL_STAGE_ALL);
++      util_dynarray_foreach(&queue->ts_zeros, struct kk_ts_zero, z) {
++         uint64_t lo = kk_ts_report_addr(dev, z->pool, z->first);
++         mtl_fill_buffer(enc, z->pool->bo->map, lo - z->pool->bo->gpu,
++                         (size_t)z->count * sizeof(uint64_t), 0xff);
++      }
++      mtl_barrier_after_stages(enc, MTL_STAGE_ALL, MTL_STAGE_ALL);
++      mtl_end_encoding(enc);
++      mtl_release(enc);
++      util_dynarray_clear(&queue->ts_zeros);
++   }
++   if (kk_enc_stats_enabled()) {
++      kk_enc_stat(KK_ENCS_QFLUSH, __builtin_return_address(0));
++      for (uint32_t i = 0; i < n; i++)
++         kk_enc_stat(KK_ENCS_QENTREES, NULL);
++      for (uint32_t i = 0; i < nz; i++)
++         kk_enc_stat(KK_ENCS_QRUNS, NULL);
++   }
++   if (n && kk_enc_stats_enabled()) {
++      static uint64_t dernier;
++      uint64_t t = os_time_get_nano();
++      if (t - dernier > 5000000000ull) {
++         dernier = t;
++         struct kk_ts_resolve *r = queue->ts_pending.data;
++         fprintf(stderr, "[CIDRE_ENC] qflush n=%u nz=%u :", n, nz);
++         for (uint32_t i = 0; i < n && i < 64; i++)
++            fprintf(stderr, " %llx/%u/%llx", (unsigned long long)((uintptr_t)r[i].heap & 0xfffff),
++                    r[i].index, (unsigned long long)(r[i].dst_addr & 0xffffff));
++         fprintf(stderr, "\n");
++      }
++   }
++   if (n) {
++      kk_ts_emit_resolves(f->cb, queue->ts_pending.data, n);
++      util_dynarray_clear(&queue->ts_pending);
++   }
++   mtl_end_command_buffer(f->cb);
++   mtl_commit_options *options = mtl_new_commit_options();
++   mtl_commit_options_add_feedback_handler(options, kk_ts_flush_done, f);
++   if (kk_enc_stats_enabled()) kk_enc_stat(KK_ENCS_COMMIT, NULL);
++   mtl_command_queue_commit(queue->mtl_handle, &f->cb, 1u, options);
++   mtl_release(options);
++   return attendre ? f : NULL;
++}
++
++static bool
++kk_queue_ts_overlap_locked(struct kk_queue *queue, struct kk_query_pool *pool,
++                           uint32_t first, uint32_t count, bool zeros)
++{
++   struct kk_device *dev = kk_queue_device(queue);
++   if (zeros) {
++      util_dynarray_foreach(&queue->ts_zeros, struct kk_ts_zero, z) {
++         if (z->pool == pool && z->first < first + count && first < z->first + z->count)
++            return true;
++      }
++   }
++   uint64_t lo = kk_ts_report_addr(dev, pool, first);
++   uint64_t hi = kk_ts_report_addr(dev, pool, first + count);
++   util_dynarray_foreach(&queue->ts_pending, struct kk_ts_resolve, r) {
++      if (r->dst_addr >= lo && r->dst_addr < hi)
++         return true;
++   }
++   if (kk_ts_pool_is_ts(pool)) {
++      for (uint32_t qy = first; qy < first + count; qy++) {
++         uint32_t idx;
++         mtl_counter_heap *h = kk_ts_heap_lookup(pool, qy, &idx);
++         util_dynarray_foreach(&queue->ts_pending, struct kk_ts_resolve, r) {
++            if (h == r->heap && idx == r->index)
++               return true;
++         }
++      }
++   }
++   return false;
++}
++
++void
++kk_queue_ts_flush_overlap(struct kk_queue *queue, struct kk_query_pool *pool,
++                          uint32_t first, uint32_t count)
++{
++   struct kk_ts_flush_data *f = NULL;
++   simple_mtx_lock(&queue->ts_lock);
++   if (kk_queue_ts_overlap_locked(queue, pool, first, count, true))
++      f = kk_queue_ts_flush_locked(queue, kk_resolve_groupe() >= 4);
++   simple_mtx_unlock(&queue->ts_lock);
++   if (f) {
++      uint64_t t0 = os_time_get_nano();
++      while (!p_atomic_read(&f->done) && os_time_get_nano() - t0 < 5000000000ull)
++         os_time_sleep(20);
++      kk_ts_flush_unref(f);
++   }
++}
++
++void
++kk_queue_ts_purge(struct kk_queue *queue, uint64_t lo, uint64_t hi)
++{
++   simple_mtx_lock(&queue->ts_lock);
++   struct kk_ts_resolve *r = queue->ts_pending.data;
++   uint32_t n = util_dynarray_num_elements(&queue->ts_pending, struct kk_ts_resolve);
++   uint32_t k = 0;
++   for (uint32_t i = 0; i < n; i++)
++      if (!(r[i].dst_addr >= lo && r[i].dst_addr < hi))
++         r[k++] = r[i];
++   queue->ts_pending.size = k * sizeof(*r);
++   simple_mtx_unlock(&queue->ts_lock);
++}
++
++void
++kk_queue_ts_purge_pool(struct kk_queue *queue, struct kk_query_pool *pool)
++{
++   simple_mtx_lock(&queue->ts_lock);
++   struct kk_ts_zero *z = queue->ts_zeros.data;
++   uint32_t n = util_dynarray_num_elements(&queue->ts_zeros, struct kk_ts_zero);
++   uint32_t k = 0;
++   for (uint32_t i = 0; i < n; i++)
++      if (z[i].pool != pool)
++         z[k++] = z[i];
++   queue->ts_zeros.size = k * sizeof(*z);
++   simple_mtx_unlock(&queue->ts_lock);
++}
++
++static void
++kk_queue_ts_before_commit(struct kk_queue *queue, struct kk_cmd_buffer *cmd)
++{
++   if (kk_resolve_groupe() < 2 ||
++       !util_dynarray_num_elements(&cmd->ts_needs, struct kk_ts_need))
++      return;
++   simple_mtx_lock(&queue->ts_lock);
++   util_dynarray_foreach(&cmd->ts_needs, struct kk_ts_need, need) {
++      if (kk_queue_ts_overlap_locked(queue, need->pool, need->first, need->count,
++                                     need->copie)) {
++         kk_queue_ts_flush_locked(queue, false);
++         break;
++      }
++   }
++   simple_mtx_unlock(&queue->ts_lock);
++}
++
++static void
++kk_queue_ts_after_commit(struct kk_queue *queue, struct kk_cmd_buffer *cmd)
++{
++   uint32_t n = util_dynarray_num_elements(&cmd->ts_resolves, struct kk_ts_resolve);
++   uint32_t nz = util_dynarray_num_elements(&cmd->ts_zeros, struct kk_ts_zero);
++   uint32_t nw = util_dynarray_num_elements(&cmd->ts_written, struct kk_ts_zero);
++   if (kk_resolve_groupe() < 2 || (n == 0 && nz == 0 && nw == 0))
++      return;
++   simple_mtx_lock(&queue->ts_lock);
++   if (nw && util_dynarray_num_elements(&queue->ts_zeros, struct kk_ts_zero)) {
++      util_dynarray_foreach(&cmd->ts_written, struct kk_ts_zero, w)
++         kk_ts_zero_remove_pub(&queue->ts_zeros, w->pool, w->first, w->count);
++   }
++   if (nz)
++      util_dynarray_append_array(&queue->ts_zeros, struct kk_ts_zero,
++                                 cmd->ts_zeros.data, nz);
++   if (n)
++      util_dynarray_append_array(&queue->ts_pending, struct kk_ts_resolve,
++                                 cmd->ts_resolves.data, n);
++   if (util_dynarray_num_elements(&queue->ts_pending, struct kk_ts_resolve) > 8192u ||
++       util_dynarray_num_elements(&queue->ts_zeros, struct kk_ts_zero) > 4096u)
++      kk_queue_ts_flush_locked(queue, false);
++   simple_mtx_unlock(&queue->ts_lock);
++}
++
++static void
++kk_queue_commit(struct kk_queue *queue, struct kk_cmd_buffer *cmd,
++                mtl_feedback_handler_callback callback, void *user_data)
++{
++   kk_queue_ts_before_commit(queue, cmd);
++   kk_queue_commit_inner(queue, cmd, callback, user_data);
++   kk_queue_ts_after_commit(queue, cmd);
++}
++
+ static VkResult
+ rerecord_and_commit_cmd_buffer(struct kk_queue *queue,
+                                struct kk_cmd_buffer *cmd)
+@@ -471,6 +691,7 @@ kk_queue_submit(struct vk_queue *vk_queue, struct vk_queue_submit *submit)
+             mtl_commit_options *options = mtl_new_commit_options();
+             mtl_commit_options_add_feedback_handler(options, commit_callback,
+                                                     dev);
++            if (kk_enc_stats_enabled()) kk_enc_stat(KK_ENCS_COMMIT, NULL);
+             mtl_command_queue_commit(queue->mtl_handle, grp, n, options);
+             mtl_release(options);
+          }
+@@ -496,7 +717,15 @@ kk_queue_submit(struct vk_queue *vk_queue, struct vk_queue_submit *submit)
+          if (result != VK_SUCCESS)
+             return result;
+       } else if (kk_cmd_buffer_has_work(cmd_buffer)) {
+-         kk_queue_commit(queue, cmd_buffer, commit_callback, dev);
++         if (kk_resolve_groupe() >= 5 && !cmd_buffer->drawable &&
++             cmd_buffer->metal.encoders_in_cmd_buf == 0u && !cmd_buffer->ts_emis &&
++             !util_dynarray_num_elements(&cmd_buffer->metal.sealed_cmd_bufs,
++                                         mtl_command_buffer *)) {
++            kk_queue_ts_before_commit(queue, cmd_buffer);
++            kk_queue_ts_after_commit(queue, cmd_buffer);
++         } else {
++            kk_queue_commit(queue, cmd_buffer, commit_callback, dev);
++         }
+       }
+ 
+       cmd_buffer->submitted = true;
+@@ -575,6 +804,9 @@ kk_queue_init(struct kk_device *dev, struct kk_queue *queue,
+    queue->commits_in_flight = 0u;
+    mtx_init(&queue->mutex, mtx_plain);
+    cnd_init(&queue->cond);
++   simple_mtx_init(&queue->ts_lock, mtx_plain);
++   queue->ts_pending = UTIL_DYNARRAY_INIT;
++   queue->ts_zeros = UTIL_DYNARRAY_INIT;
+ 
+    queue->mtl_handle = mtl_new_command_queue(dev->mtl_handle);
+    mtl_command_queue_add_residency_set(queue->mtl_handle,
+@@ -590,6 +822,8 @@ kk_queue_finish(struct kk_device *dev, struct kk_queue *queue)
+ {
+    /* There may be in-flight command buffers, wait for them to finish. */
+    kk_queue_wait_for_commits(queue);
++   util_dynarray_fini(&queue->ts_pending);
++   util_dynarray_fini(&queue->ts_zeros);
+ 
+    mtl_command_queue_remove_residency_set(queue->mtl_handle,
+                                           dev->residency_set.handle);
+diff --git a/src/kosmickrisp/vulkan/kk_queue.h b/src/kosmickrisp/vulkan/kk_queue.h
+index ddc9a3c..139b7f1 100644
+--- a/src/kosmickrisp/vulkan/kk_queue.h
++++ b/src/kosmickrisp/vulkan/kk_queue.h
+@@ -9,6 +9,8 @@
+ #define KK_QUEUE_H 1
+ 
+ #include "kk_private.h"
++#include "util/simple_mtx.h"
++#include "util/u_dynarray.h"
+ 
+ #include "kk_cmd_pool.h"
+ 
+@@ -31,8 +33,19 @@ struct kk_queue {
+    uint32_t commits_in_flight;
+    mtx_t mutex;
+    cnd_t cond;
++
++   simple_mtx_t ts_lock;
++   struct util_dynarray ts_pending;
++   struct util_dynarray ts_zeros;
+ };
+ 
++struct kk_cmd_buffer;
++struct kk_query_pool;
++void kk_queue_ts_flush_overlap(struct kk_queue *queue, struct kk_query_pool *pool,
++                               uint32_t first, uint32_t count);
++void kk_queue_ts_purge(struct kk_queue *queue, uint64_t lo, uint64_t hi);
++void kk_queue_ts_purge_pool(struct kk_queue *queue, struct kk_query_pool *pool);
++
+ static inline struct kk_device *
+ kk_queue_device(struct kk_queue *queue)
+ {

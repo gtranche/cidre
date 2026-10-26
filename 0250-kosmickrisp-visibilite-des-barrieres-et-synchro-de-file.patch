@@ -1,0 +1,522 @@
+Generated-by: LLM
+
+KosmicKrisp : visibilite des barrieres (CIDRE_VISIB) et synchronisation de file allegee (attentes, residence, commits), tout derriere des interrupteurs coupes par defaut
+
+Chantier « bulles GPU » (Demonologist D3D12, M4, 2026-10-26). Rien ne change sans
+variable d'environnement.
+
+  CIDRE_VISIB=1 (repris du banc xt) : barrieres sans MTL4VisibilityOptionResourceAlias.
+  CIDRE_VISIB=2 : pareil, sauf une barriere consommatrice avec alias avant la copie
+    des resultats d occlusion (seul cas que le TODO amont designe). Le seul levier
+    mesure : Demonologist M4 mediane 35,6 -> 40,2-40,5 img/s presentees (3/3) ;
+    Elden Ring M1 neutre, 0 erreur.
+  CIDRE_ATTENTE_FILE=1 : une attente de chronologie deja signalee dans cette file
+    (ou deja arrivee) ne devient plus un [MTL4CommandQueue waitForEvent:] (chaque
+    encodeur se fermant par une barriere de file productrice tout->tout, l'ordre
+    de la file suffit). Sans gain mesure.
+  CIDRE_RESIDENCE_PARESSEUSE=1 : [residencySet commit]/[requestResidency] seulement
+    si l'ensemble a change depuis la derniere soumission. Sans gain mesure.
+  CIDRE_COMMIT_GROUPE=1 : les enregistrements d'une soumission partent en un seul
+    commit Metal. Sans gain mesure.
+  Diagnostic : CIDRE_SOUM_STATS (soumissions/enregistrements/attentes/signaux par
+    seconde).
+
+Retires a l'integration (sans gain, 26/10) : CIDRE_FIN_ENCODEUR (fermeture
+d'encodeur sans barriere de file hors dependance) et CIDRE_HORODATAGES_LEGERS
+(remises a zero et horodatages sans coupure ni barriere intra-encodeur), avec
+leur compteur CIDRE_FIN_STATS.
+
+Temoins : ~/Dev/cidre-kk-sync/temoin/temoin_sync.c (calcul->calcul, calcul->rendu,
+rendu->calcul, chacun dans un enregistrement avec vkCmdPipelineBarrier2 et en
+soumissions separees avec attente de chronologie, ou avec barriere de debut
+d'enregistrement ; TEMOIN_TS=1 : remise a zero + horodatage hors passe, copie WAIT) :
+0 erreur dans toutes les combinaisons.
+
+diff --git a/src/kosmickrisp/bridge/mtl_encoder.h b/src/kosmickrisp/bridge/mtl_encoder.h
+index 1dcf73b..45cffa7 100644
+--- a/src/kosmickrisp/bridge/mtl_encoder.h
++++ b/src/kosmickrisp/bridge/mtl_encoder.h
+@@ -28,6 +28,22 @@ void mtl_barrier_after_queue_stages(void *encoder,
+                                     enum mtl_stages after_queue_stages,
+                                     enum mtl_stages before_stages);
+ 
++/* Cidre : barrieres a visibilite explicite (MTL_VISIB_* combinables). */
++#define MTL_VISIB_AUCUNE 0u
++#define MTL_VISIB_DEVICE 1u
++#define MTL_VISIB_ALIAS  2u
++void mtl_barrier_after_queue_stages_vis(void *encoder,
++                                        enum mtl_stages after_queue_stages,
++                                        enum mtl_stages before_stages,
++                                        unsigned visib);
++void mtl_barrier_after_stages_vis(void *encoder, enum mtl_stages after_stages,
++                                  enum mtl_stages before_queue_stages,
++                                  unsigned visib);
++void mtl_barrier_after_encoder_stages_vis(void *encoder,
++                                          enum mtl_stages after_stages,
++                                          enum mtl_stages before_stages,
++                                          unsigned visib);
++
+ void mtl_update_fence(void *encoder, mtl_fence *fence,
+                       enum mtl_stages after_stages);
+ 
+diff --git a/src/kosmickrisp/bridge/mtl_encoder.m b/src/kosmickrisp/bridge/mtl_encoder.m
+index e9befef..308718e 100644
+--- a/src/kosmickrisp/bridge/mtl_encoder.m
++++ b/src/kosmickrisp/bridge/mtl_encoder.m
+@@ -22,6 +22,22 @@
+    }
+ }
+ 
++
++#include <stdlib.h>
++/* Banc xt : CIDRE_VISIB=1 retire MTL4VisibilityOptionResourceAlias des barrieres.
++ * CIDRE_VISIB=2 : pareil, mais la copie des resultats d'occlusion (seul cas que
++ * le TODO amont designe) garde une barriere consommatrice avec alias. */
++static MTL4VisibilityOptions
++kk_visib_alias(void)
++{
++   static int mode = -1;
++   if (mode < 0) {
++      const char *v = getenv("CIDRE_VISIB");
++      mode = (v && (v[0] == '1' || v[0] == '2')) ? 1 : 0;
++   }
++   return mode ? MTL4VisibilityOptionNone : MTL4VisibilityOptionResourceAlias;
++}
++
+ void
+ mtl_barrier_after_stages(void *encoder, enum mtl_stages after_stages,
+                          enum mtl_stages before_queue_stages)
+@@ -31,7 +47,7 @@
+       /* TODO_KOSMICKRISP Expose visibility option since resource alias should only be required
+        * if occlusion queries are used */
+       [enc barrierAfterStages:(MTLStages)after_stages beforeQueueStages:(MTLStages)before_queue_stages
+-           visibilityOptions:MTL4VisibilityOptionResourceAlias];
++           visibilityOptions:kk_visib_alias()];
+    }
+ }
+ 
+@@ -42,7 +58,7 @@
+    @autoreleasepool {
+       id<MTL4CommandEncoder> enc = (id<MTL4CommandEncoder>)encoder;
+       [enc barrierAfterEncoderStages:(MTLStages)after_stages beforeEncoderStages:(MTLStages)before_queue_stages
+-           visibilityOptions:MTL4VisibilityOptionResourceAlias];
++           visibilityOptions:kk_visib_alias()];
+    }
+ }
+ 
+@@ -54,7 +70,7 @@
+    @autoreleasepool {
+       id<MTL4CommandEncoder> enc = (id<MTL4CommandEncoder>)encoder;
+       [enc barrierAfterEncoderStages:(MTLStages)after_stages beforeEncoderStages:(MTLStages)before_stages
+-           visibilityOptions:MTL4VisibilityOptionDevice | MTL4VisibilityOptionResourceAlias];
++           visibilityOptions:MTL4VisibilityOptionDevice | kk_visib_alias()];
+    }
+ }
+ 
+@@ -67,7 +83,55 @@
+       id<MTL4CommandEncoder> enc = (id<MTL4CommandEncoder>)encoder;
+       [enc barrierAfterQueueStages:(MTLStages)after_queue_stages
+                       beforeStages:(MTLStages)before_stages
+-                 visibilityOptions:MTL4VisibilityOptionResourceAlias];
++                 visibilityOptions:kk_visib_alias()];
++   }
++}
++
++static MTL4VisibilityOptions
++kk_visib_options(unsigned visib)
++{
++   MTL4VisibilityOptions o = MTL4VisibilityOptionNone;
++   if (visib & MTL_VISIB_DEVICE)
++      o |= MTL4VisibilityOptionDevice;
++   if (visib & MTL_VISIB_ALIAS)
++      o |= MTL4VisibilityOptionResourceAlias;
++   return o;
++}
++
++void
++mtl_barrier_after_queue_stages_vis(void *encoder,
++                                   enum mtl_stages after_queue_stages,
++                                   enum mtl_stages before_stages, unsigned visib)
++{
++   @autoreleasepool {
++      id<MTL4CommandEncoder> enc = (id<MTL4CommandEncoder>)encoder;
++      [enc barrierAfterQueueStages:(MTLStages)after_queue_stages
++                      beforeStages:(MTLStages)before_stages
++                 visibilityOptions:kk_visib_options(visib)];
++   }
++}
++
++void
++mtl_barrier_after_stages_vis(void *encoder, enum mtl_stages after_stages,
++                             enum mtl_stages before_queue_stages, unsigned visib)
++{
++   @autoreleasepool {
++      id<MTL4CommandEncoder> enc = (id<MTL4CommandEncoder>)encoder;
++      [enc barrierAfterStages:(MTLStages)after_stages
++            beforeQueueStages:(MTLStages)before_queue_stages
++            visibilityOptions:kk_visib_options(visib)];
++   }
++}
++
++void
++mtl_barrier_after_encoder_stages_vis(void *encoder, enum mtl_stages after_stages,
++                                     enum mtl_stages before_stages, unsigned visib)
++{
++   @autoreleasepool {
++      id<MTL4CommandEncoder> enc = (id<MTL4CommandEncoder>)encoder;
++      [enc barrierAfterEncoderStages:(MTLStages)after_stages
++                 beforeEncoderStages:(MTLStages)before_stages
++                   visibilityOptions:kk_visib_options(visib)];
+    }
+ }
+ 
+diff --git a/src/kosmickrisp/bridge/stubs/mtl_encoder.c b/src/kosmickrisp/bridge/stubs/mtl_encoder.c
+index 39b2086..cb916c4 100644
+--- a/src/kosmickrisp/bridge/stubs/mtl_encoder.c
++++ b/src/kosmickrisp/bridge/stubs/mtl_encoder.c
+@@ -38,6 +38,25 @@ mtl_barrier_after_queue_stages(void *encoder,
+ {
+ }
+ 
++void
++mtl_barrier_after_queue_stages_vis(void *encoder,
++                                   enum mtl_stages after_queue_stages,
++                                   enum mtl_stages before_stages, unsigned visib)
++{
++}
++
++void
++mtl_barrier_after_stages_vis(void *encoder, enum mtl_stages after_stages,
++                             enum mtl_stages before_queue_stages, unsigned visib)
++{
++}
++
++void
++mtl_barrier_after_encoder_stages_vis(void *encoder, enum mtl_stages after_stages,
++                                     enum mtl_stages before_stages, unsigned visib)
++{
++}
++
+ void
+ mtl_update_fence(void *encoder, mtl_fence *fence, enum mtl_stages after_stages)
+ {
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.c b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+index 2548f49..16c91d5 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+@@ -775,6 +775,33 @@ kk_pre_reserve(struct kk_cmd_buffer *cmd)
+       &cmd->metal.sealed_cmd_bufs, mtl_command_buffer *);
+ }
+ 
++/*
++ * Cidre : attentes de semaphore resolues par l'ordre de la file
++ * (CIDRE_ATTENTE_FILE=1).
++ *
++ * vkd3d-proton fait passer toutes ses files D3D12 par l'unique VkQueue et
++ * attache a presque chaque soumission une attente sur une chronologie qu'une
++ * soumission precedente de cette meme file a signalee. Chaque attente devenait
++ * un [MTL4CommandQueue waitForEvent:] : le GPU se vide, l'evenement est signale,
++ * puis le micrologiciel debloque la suite -- des centaines de microsecondes de
++ * GPU vide a chaque fois, pour une dependance que l'ordre de la file garantit
++ * deja. kk_queue_submit saute alors l'attente : chaque encodeur se ferme
++ * par une barriere de file productrice tout->tout, donc ce que contient
++ * l'enregistrement suivant passe apres tout le travail deja engage dans la
++ * file, ce qui est exactement la garantie d'une attente de semaphore dont le
++ * signal precede dans la meme file.
++ */
++int
++kk_attente_file_mode(void)
++{
++   static int mode = -1;
++   if (mode < 0) {
++      const char *v = getenv("CIDRE_ATTENTE_FILE");
++      mode = v ? atoi(v) : 0;
++   }
++   return mode;
++}
++
+ void
+ cs_start_render(struct kk_cmd_buffer *cmd)
+ {
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.h b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+index a6a1d73..52f5547 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+@@ -479,6 +479,7 @@ kk_reprise_cause(struct kk_cmd_buffer *cmd, enum kk_reprise_cause c)
+    cmd->metal.reprise_cause = c;
+ }
+ void cs_end(struct kk_cmd_buffer *cmd);
++int kk_attente_file_mode(void);
+ void kk_barrier_stats_print(void);
+ void kk_draw_stats_print(void);
+ void kk_cs_end_render_pass(struct kk_cmd_buffer *cmd);
+diff --git a/src/kosmickrisp/vulkan/kk_device.c b/src/kosmickrisp/vulkan/kk_device.c
+index 73c272f..9de5c7d 100644
+--- a/src/kosmickrisp/vulkan/kk_device.c
++++ b/src/kosmickrisp/vulkan/kk_device.c
+@@ -470,11 +470,30 @@ kk_GetDeviceProcAddr(VkDevice _device, const char *pName)
+    return kk_device_get_proc_addr(device, pName);
+ }
+ 
++/* Cidre (CIDRE_RESIDENCE_PARESSEUSE=1) : l'ensemble de residence n'est
++ * recommis (et sa residence redemandee) que s'il a change depuis la derniere
++ * soumission. Sinon chaque vkQueueSubmit -- plus de 600 par seconde sous
++ * vkd3d-proton -- refaisait [commit] + [requestResidency] sur un ensemble de
++ * milliers d'allocations. Protege par residency_set.mutex. */
++static bool kk_residence_sale = true;
++
++static bool
++kk_residence_paresseuse(void)
++{
++   static int mode = -1;
++   if (mode < 0) {
++      const char *v = getenv("CIDRE_RESIDENCE_PARESSEUSE");
++      mode = v ? atoi(v) : 0;
++   }
++   return mode;
++}
++
+ void
+ kk_device_add_heap_to_residency_set(struct kk_device *dev, mtl_heap *heap)
+ {
+    simple_mtx_lock(&dev->residency_set.mutex);
+    mtl_residency_set_add_allocation(dev->residency_set.handle, heap);
++   kk_residence_sale = true;
+    simple_mtx_unlock(&dev->residency_set.mutex);
+ }
+ 
+@@ -483,6 +502,7 @@ kk_device_remove_heap_from_residency_set(struct kk_device *dev, mtl_heap *heap)
+ {
+    simple_mtx_lock(&dev->residency_set.mutex);
+    mtl_residency_set_remove_allocation(dev->residency_set.handle, heap);
++   kk_residence_sale = true;
+    simple_mtx_unlock(&dev->residency_set.mutex);
+ }
+ 
+@@ -491,6 +511,7 @@ kk_device_add_buffer_to_residency_set(struct kk_device *dev, mtl_buffer *buffer)
+ {
+    simple_mtx_lock(&dev->residency_set.mutex);
+    mtl_residency_set_add_allocation(dev->residency_set.handle, buffer);
++   kk_residence_sale = true;
+    simple_mtx_unlock(&dev->residency_set.mutex);
+ }
+ 
+@@ -500,6 +521,7 @@ kk_device_remove_buffer_from_residency_set(struct kk_device *dev,
+ {
+    simple_mtx_lock(&dev->residency_set.mutex);
+    mtl_residency_set_remove_allocation(dev->residency_set.handle, buffer);
++   kk_residence_sale = true;
+    simple_mtx_unlock(&dev->residency_set.mutex);
+ }
+ 
+@@ -507,8 +529,11 @@ void
+ kk_device_make_resources_resident(struct kk_device *dev)
+ {
+    simple_mtx_lock(&dev->residency_set.mutex);
+-   mtl_residency_set_commit(dev->residency_set.handle);
+-   mtl_residency_set_request_residency(dev->residency_set.handle);
++   if (kk_residence_sale || !kk_residence_paresseuse()) {
++      mtl_residency_set_commit(dev->residency_set.handle);
++      mtl_residency_set_request_residency(dev->residency_set.handle);
++      kk_residence_sale = false;
++   }
+    simple_mtx_unlock(&dev->residency_set.mutex);
+ }
+ 
+diff --git a/src/kosmickrisp/vulkan/kk_query_pool.c b/src/kosmickrisp/vulkan/kk_query_pool.c
+index 2248e88..83150ec 100644
+--- a/src/kosmickrisp/vulkan/kk_query_pool.c
++++ b/src/kosmickrisp/vulkan/kk_query_pool.c
+@@ -952,6 +952,18 @@ kk_CmdCopyQueryPoolResultsToMemoryKHR(
+    /* The resolveCounterHeap runs on the blit stage and it needs to be available
+     * for the compute job to copy results to the bo. */
+    mtl_barrier_after_queue_stages(encoder, MTL_STAGE_BLIT, MTL_STAGE_DISPATCH);
++   if (kk_pool_is_oq(pool)) {
++      /* CIDRE_VISIB=2 : les barrieres n'ont plus l'option alias ; les
++       * resultats de visibilite ecrits par les passes de rendu, si. */
++      static int visib2 = -1;
++      if (visib2 < 0) {
++         const char *v = getenv("CIDRE_VISIB");
++         visib2 = v && v[0] == '2';
++      }
++      if (visib2)
++         mtl_barrier_after_queue_stages_vis(encoder, MTL_STAGE_ALL,
++                                            MTL_STAGE_DISPATCH, MTL_VISIB_ALIAS);
++   }
+ 
+    struct kk_bo *results_bo =
+       kk_pool_is_oq(pool) ? dev->occlusion_queries.bo : pool->bo;
+diff --git a/src/kosmickrisp/vulkan/kk_queue.c b/src/kosmickrisp/vulkan/kk_queue.c
+index 7bcb6fb..9df8514 100644
+--- a/src/kosmickrisp/vulkan/kk_queue.c
++++ b/src/kosmickrisp/vulkan/kk_queue.c
+@@ -20,6 +20,7 @@
+ 
+ #include "vk_cmd_queue.h"
+ 
++#include "util/os_time.h"
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -361,6 +362,38 @@ kk_queue_bind_sparse(struct kk_queue *queue, struct vk_queue_submit *submit)
+    }
+ }
+ 
++/* Cidre (CIDRE_SOUM_STATS) : soumissions, attentes (dont sautees par
++ * CIDRE_ATTENTE_FILE), signaux et enregistrements par seconde. */
++static void
++kk_soum_stats(struct kk_queue *queue, const struct vk_queue_submit *submit,
++              uint32_t sautees)
++{
++   static int enabled = -1;
++   static uint64_t t0, n_soum, n_att, n_saut, n_sig, n_cmd;
++   if (enabled < 0)
++      enabled = getenv("CIDRE_SOUM_STATS") != NULL;
++   if (!enabled)
++      return;
++   /* kk_queue_submit est serialise par file ; une seule file. */
++   n_soum++;
++   n_att += submit->wait_count;
++   n_saut += sautees;
++   n_sig += submit->signal_count;
++   n_cmd += submit->command_buffer_count;
++   uint64_t t = os_time_get_nano();
++   if (t0 == 0)
++      t0 = t;
++   if (t - t0 >= 5000000000ull) {
++      double d = (t - t0) / 1e9;
++      fprintf(stderr,
++              "[CIDRE_SOUM] %.0f soum/s, %.0f enreg/s, %.0f attentes/s "
++              "(%.0f sautees/s), %.0f signaux/s\n",
++              n_soum / d, n_cmd / d, n_att / d, n_saut / d, n_sig / d);
++      t0 = t;
++      n_soum = n_att = n_saut = n_sig = n_cmd = 0;
++   }
++}
++
+ static VkResult
+ kk_queue_submit(struct vk_queue *vk_queue, struct vk_queue_submit *submit)
+ {
+@@ -370,13 +403,26 @@ kk_queue_submit(struct vk_queue *vk_queue, struct vk_queue_submit *submit)
+    if (vk_queue_is_lost(&queue->vk))
+       return VK_ERROR_DEVICE_LOST;
+ 
++   const int attente_file = kk_attente_file_mode();
++   uint32_t sautees = 0u;
+    for (struct vk_sync_wait *wait = submit->waits,
+                             *end = submit->waits + submit->wait_count;
+         wait != end; ++wait) {
+       struct kk_sync_timeline *sync =
+          container_of(wait->sync, struct kk_sync_timeline, base);
++      /* CIDRE_ATTENTE_FILE (voir kk_attente_file_mode) : un signal deja mis
++       * dans cette file, ou deja arrive, est garanti par l'ordre de la file et
++       * la barriere d'entree de chaque enregistrement. */
++      if (attente_file &&
++          ((sync->file == queue && sync->valeur_en_file >= wait->wait_value) ||
++           mtl_shared_event_get_signaled_value(sync->mtl_handle) >=
++              wait->wait_value)) {
++         sautees++;
++         continue;
++      }
+       mtl_wait_for_event(queue->mtl_handle, sync->mtl_handle, wait->wait_value);
+    }
++   kk_soum_stats(queue, submit, sautees);
+ 
+    /* Ensure any changes to residency are propagated before we submit any
+     * work. All resources should have been allocated before submission.
+@@ -386,7 +432,55 @@ kk_queue_submit(struct vk_queue *vk_queue, struct vk_queue_submit *submit)
+    if (submit->image_bind_count || submit->image_opaque_bind_count)
+       kk_queue_bind_sparse(queue, submit);
+ 
+-   for (uint32_t i = 0; i < submit->command_buffer_count; ++i) {
++   uint32_t submit_debut = 0;
++
++   /* Cidre (CIDRE_COMMIT_GROUPE=1) : tous les enregistrements de la
++    * soumission partent en un seul commit Metal (dans l'ordre), au lieu d'un
++    * commit par enregistrement. Seuls les enregistrements jamais soumis s'y
++    * pretent (les autres sont reenregistres) ; le premier reenregistre ou le
++    * premier porteur d'un drawable ferme le groupe en cours. */
++   static int commit_groupe = -1;
++   if (commit_groupe < 0) {
++      const char *v = getenv("CIDRE_COMMIT_GROUPE");
++      commit_groupe = v ? atoi(v) : 0;
++   }
++   if (commit_groupe && submit->command_buffer_count > 1) {
++      uint32_t total = 0;
++      for (uint32_t i = 0; i < submit->command_buffer_count; ++i) {
++         struct kk_cmd_buffer *c =
++            container_of(submit->command_buffers[i], struct kk_cmd_buffer, vk);
++         total += 1u + util_dynarray_num_elements(&c->metal.sealed_cmd_bufs,
++                                                  mtl_command_buffer *);
++      }
++      mtl_command_buffer **grp = vk_alloc(&dev->vk.alloc, total * sizeof(*grp),
++                                          8, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
++      uint32_t n = 0, i = 0;
++      if (grp) {
++         for (; i < submit->command_buffer_count; ++i) {
++            struct kk_cmd_buffer *c = container_of(submit->command_buffers[i],
++                                                   struct kk_cmd_buffer, vk);
++            if (c->submitted || c->drawable || !kk_cmd_buffer_has_work(c))
++               break;
++            util_dynarray_foreach(&c->metal.sealed_cmd_bufs,
++                                  mtl_command_buffer *, b)
++               grp[n++] = *b;
++            grp[n++] = c->metal.cmd_buf;
++            c->submitted = true;
++         }
++         if (n) {
++            mtl_commit_options *options = mtl_new_commit_options();
++            mtl_commit_options_add_feedback_handler(options, commit_callback,
++                                                    dev);
++            mtl_command_queue_commit(queue->mtl_handle, grp, n, options);
++            mtl_release(options);
++         }
++         vk_free(&dev->vk.alloc, grp);
++      }
++      /* La suite (s'il en reste) par le chemin ordinaire. */
++      submit_debut = i;
++   }
++
++   for (uint32_t i = submit_debut; i < submit->command_buffer_count; ++i) {
+       struct kk_cmd_buffer *cmd_buffer =
+          container_of(submit->command_buffers[i], struct kk_cmd_buffer, vk);
+ 
+@@ -421,6 +515,10 @@ kk_queue_submit(struct vk_queue *vk_queue, struct vk_queue_submit *submit)
+          container_of(signal->sync, struct kk_sync_timeline, base);
+       mtl_signal_event(queue->mtl_handle, sync->mtl_handle,
+                        signal->signal_value);
++      if (sync->file != queue || signal->signal_value > sync->valeur_en_file) {
++         sync->file = queue;
++         sync->valeur_en_file = signal->signal_value;
++      }
+    }
+ 
+    return VK_SUCCESS;
+diff --git a/src/kosmickrisp/vulkan/kk_sync.c b/src/kosmickrisp/vulkan/kk_sync.c
+index f44200c..97e91d5 100644
+--- a/src/kosmickrisp/vulkan/kk_sync.c
++++ b/src/kosmickrisp/vulkan/kk_sync.c
+@@ -20,6 +20,8 @@ kk_timeline_init(struct vk_device *device, struct vk_sync *sync,
+    struct kk_device *dev = container_of(device, struct kk_device, vk);
+    timeline->mtl_handle = mtl_new_shared_event(dev->mtl_handle);
+    mtl_shared_event_set_signaled_value(timeline->mtl_handle, initial_value);
++   timeline->valeur_en_file = 0u;
++   timeline->file = NULL;
+ 
+    return VK_SUCCESS;
+ }
+diff --git a/src/kosmickrisp/vulkan/kk_sync.h b/src/kosmickrisp/vulkan/kk_sync.h
+index da4f149..7054dda 100644
+--- a/src/kosmickrisp/vulkan/kk_sync.h
++++ b/src/kosmickrisp/vulkan/kk_sync.h
+@@ -16,6 +16,10 @@ struct kk_queue;
+ struct kk_sync_timeline {
+    struct vk_sync base;
+    mtl_shared_event *mtl_handle;
++   /* Cidre (CIDRE_ATTENTE_FILE) : plus grande valeur dont le signal a deja
++    * ete mis dans la file Metal par kk_queue_submit, et cette file. */
++   uint64_t valeur_en_file;
++   struct kk_queue *file;
+ };
+ 
+ extern const struct vk_sync_type kk_sync_type;

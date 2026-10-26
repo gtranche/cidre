@@ -1,0 +1,460 @@
+Generated-by: LLM
+
+KosmicKrisp : compression sans perte des textures gardee quand les vues le permettent (CIDRE_TEX_COMPRESSION, CIDRE_TEX_STATS)
+
+Metal coupe la compression sans perte (AGX) d'une texture qui porte
+MTLTextureUsagePixelFormatView ou MTLTextureUsageShaderWrite (mesure par
+-[IOGPUMetalTexture isCompressed] sur M1 Max et M4 ; le stockage partage des
+tas de KK ne la coupe pas ; les formats BC ne sont jamais compresses).
+KK posait PixelFormatView sur toute image VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT.
+vkd3d-proton pose ce MUTABLE nu (sans VkImageFormatListCreateInfo) sur toutes
+les ressources D3D12 sans RTV ni DSV, pour couper la compression ; avec liste
+pour les typeless.
+
+Demonologist (menu, M1, 180 s, niveau 0) : 3 638 textures, 3 285 Mo ;
+compressees 48 (306 Mo) ; ShaderWrite 200 (1 773 Mo, intouchable) ;
+PixelFormatView seul 3 389 (1 206 Mo, dont ~290 Mo de BC sans objet).
+
+kk_image_vue_classe (kk_image.c) classe la liste : fixe, srgb (le format ou sa
+variante sRGB), disposition (memes canaux et tailles, type autre), autre,
+sans_liste. kk_image_layout_init retire PixelFormatView avant le calcul de
+taille (la taille suit l'usage : +metadonnees) selon CIDRE_TEX_COMPRESSION :
+ 1 : srgb (vues acceptees par la validation Metal sans le drapeau) ;
+ 2 : + disposition ;
+ 3 : + sans_liste non ecrite en shader, format PLAIN hors profondeur.
+Les vues de meme disposition sur une texture compressee sans le drapeau se
+lisent et s'ecrivent bit a bit comme avec (sonde justesse.m : rendu, lecture
+calcul et blit, motifs plats/bruit/NaN, 9 couples) ; les vues d'une autre
+disposition (rgba8->r32, rgba16f->rg32, rg11b10->r32) sont fausses en lecture :
+jamais permises. kk_image_view.c dit les 8 premieres vues hors drapeau
+(« de meme disposition » attendue, « INATTENDUE » sinon).
+CIDRE_TEX_STATS=1 : bilan [CIDRE_TEX] toutes les 20 s de creation (classe,
+ecriture, vue, cible, compression effective, Mo, formats bloques).
+
+Niveau 3, Demonologist : compressees 362 textures (811 Mo) ; une seule vue hors
+drapeau (r16_uint -> r16_unorm, meme disposition), seule nouvelle erreur de
+MTL_DEBUG_LAYER (mode nslog) par rapport au niveau 0. A/B menu M1 (img/s
+reelles) : 0 = 52,9 / 53,8 (31,6 ecartee, passe perturbee) ; 3 = 55,2 / 53,3 /
+55,5 / 53,9 : +2 %, dans le bruit ; mediane ponderee 22 des deux cotes.
+Defaut : 0 (inchange). Risque niveau 3 : alias de ressources placees sans
+initialisation (la raison du MUTABLE nu de vkd3d), vue d'une autre disposition
+non prevue (dite au journal). kk_image_layout.c/h entrent dans l'empreinte
+0208 : changer ces fichiers change la cle des caches de nuanceurs.
+
+diff --git a/src/kosmickrisp/bridge/mtl_texture.h b/src/kosmickrisp/bridge/mtl_texture.h
+index b32170b..4eb8818 100644
+--- a/src/kosmickrisp/bridge/mtl_texture.h
++++ b/src/kosmickrisp/bridge/mtl_texture.h
+@@ -18,6 +18,9 @@ struct kk_view_layout;
+ uint64_t mtl_texture_get_gpu_resource_id(mtl_texture *texture);
+ 
+ /* Texture view creation */
++/* Cidre : -[IOGPUMetalTexture isCompressed] (prive), 0 si absent. */
++int mtl_texture_is_compressed(mtl_texture *texture);
++
+ mtl_texture *mtl_new_texture_view_with(mtl_texture *texture,
+                                        const struct kk_view_layout *layout);
+ mtl_texture *
+diff --git a/src/kosmickrisp/bridge/mtl_texture.m b/src/kosmickrisp/bridge/mtl_texture.m
+index 496ce14..3389125 100644
+--- a/src/kosmickrisp/bridge/mtl_texture.m
++++ b/src/kosmickrisp/bridge/mtl_texture.m
+@@ -23,6 +23,18 @@
+    }
+ }
+ 
++int
++mtl_texture_is_compressed(mtl_texture *texture)
++{
++   @autoreleasepool {
++      id tex = (id)texture;
++      SEL sel = NSSelectorFromString(@"isCompressed");
++      if (![tex respondsToSelector:sel])
++         return 0;
++      return ((BOOL(*)(id, SEL))[tex methodForSelector:sel])(tex, sel) ? 1 : 0;
++   }
++}
++
+ /* TODO_KOSMICKRISP This should be part of the mapping */
+ static uint32_t
+ mtl_texture_view_type(uint32_t type, uint8_t sample_count)
+diff --git a/src/kosmickrisp/bridge/stubs/mtl_texture.c b/src/kosmickrisp/bridge/stubs/mtl_texture.c
+index f71db0c..70862e8 100644
+--- a/src/kosmickrisp/bridge/stubs/mtl_texture.c
++++ b/src/kosmickrisp/bridge/stubs/mtl_texture.c
+@@ -39,3 +39,9 @@ mtl_texture_replace_region(mtl_texture *texture, const void *host_ptr,
+                            struct mtl_texture_memory_copy *data)
+ {
+ }
++
++int
++mtl_texture_is_compressed(mtl_texture *texture)
++{
++   return 0;
++}
+diff --git a/src/kosmickrisp/vulkan/kk_image.c b/src/kosmickrisp/vulkan/kk_image.c
+index d425d5d..3ce2df2 100644
+--- a/src/kosmickrisp/vulkan/kk_image.c
++++ b/src/kosmickrisp/vulkan/kk_image.c
+@@ -7,6 +7,10 @@
+ 
+ #include "kk_image.h"
+ 
++#include <inttypes.h>
++#include "util/os_time.h"
++#include "util/simple_mtx.h"
++
+ #include "kk_debug.h"
+ #include "kk_device.h"
+ #include "kk_device_memory.h"
+@@ -600,6 +604,62 @@ kk_image_wants_atomic64_linear(struct kk_device *dev,
+    return true;
+ }
+ 
++/* Cidre : la disposition des bits d'un format (nombre de canaux, taille de
++ * chacun, taille du bloc), sans le type ni l'espace de couleur. */
++bool
++kk_vue_meme_disposition(enum pipe_format a, enum pipe_format b)
++{
++   const struct util_format_description *da = util_format_description(a);
++   const struct util_format_description *db = util_format_description(b);
++   if (!da || !db)
++      return false;
++   if (da->layout != UTIL_FORMAT_LAYOUT_PLAIN ||
++       db->layout != UTIL_FORMAT_LAYOUT_PLAIN)
++      return false;
++   if (util_format_is_depth_or_stencil(a) || util_format_is_depth_or_stencil(b))
++      return false;
++   if (da->block.bits != db->block.bits ||
++       da->nr_channels != db->nr_channels)
++      return false;
++   for (unsigned c = 0; c < da->nr_channels; c++) {
++      if (da->channel[c].size != db->channel[c].size)
++         return false;
++   }
++   return true;
++}
++
++static uint8_t
++kk_image_vue_classe(const VkImageCreateInfo *info)
++{
++   if (!(info->flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT))
++      return KK_VUE_FIXE;
++   if (vk_format_get_plane_count(info->format) > 1 ||
++       (info->flags & VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT))
++      return KK_VUE_AUTRE;
++
++   const VkImageFormatListCreateInfo *list =
++      vk_find_struct_const(info->pNext, IMAGE_FORMAT_LIST_CREATE_INFO);
++   if (!list || list->viewFormatCount == 0)
++      return KK_VUE_SANS_LISTE;
++
++   enum pipe_format base = vk_format_to_pipe_format(info->format);
++   const struct kk_va_format *vb = kk_get_va_format(base);
++   uint8_t classe = KK_VUE_SRGB;
++   for (uint32_t i = 0; i < list->viewFormatCount; i++) {
++      enum pipe_format f = vk_format_to_pipe_format(list->pViewFormats[i]);
++      const struct kk_va_format *vf = kk_get_va_format(f);
++      if (f == base || util_format_linear(f) == util_format_linear(base) ||
++          (vb && vf && vb->mtl_pixel_format == vf->mtl_pixel_format))
++         continue;
++      if (kk_vue_meme_disposition(base, f)) {
++         classe = KK_VUE_DISPOSITION;
++         continue;
++      }
++      return KK_VUE_AUTRE;
++   }
++   return classe;
++}
++
+ static VkResult
+ kk_image_init(struct kk_device *dev, struct kk_image *image,
+               const VkImageCreateInfo *pCreateInfo)
+@@ -630,6 +690,7 @@ kk_image_init(struct kk_device *dev, struct kk_image *image,
+                      (pCreateInfo->flags & VK_IMAGE_CREATE_DISJOINT_BIT);
+    image->atomic64_linear = kk_image_wants_atomic64_linear(dev, pCreateInfo);
+ 
++   const uint8_t vue_classe = kk_image_vue_classe(pCreateInfo);
+    const struct vk_format_ycbcr_info *ycbcr_info =
+       vk_format_get_ycbcr_info(pCreateInfo->format);
+    for (uint8_t plane = 0; plane < image->plane_count; plane++) {
+@@ -641,6 +702,7 @@ kk_image_init(struct kk_device *dev, struct kk_image *image,
+          ycbcr_info ? ycbcr_info->planes[plane].denominator_scales[1] : 1;
+       kk_image_layout_init(dev, &image->vk, vk_format_to_pipe_format(format),
+                            width_scale, height_scale,
++                           image->plane_count > 1 ? KK_VUE_AUTRE : vue_classe,
+                            &image->planes[plane].layout);
+       if (image->atomic64_linear)
+          kk_image_layout_force_linear(dev, &image->planes[plane].layout);
+@@ -1003,6 +1065,105 @@ kk_image_plane_create_texture(struct kk_image_plane *plane,
+       mem_offset_B + plane->mem->bo->heap_offset_B);
+ }
+ 
++/* CIDRE_TEX_STATS : textures creees par classe de vue, ecriture shader,
++ * PixelFormatView, cible de rendu, et compression sans perte effective. */
++static struct {
++   uint64_t n, octets;
++} kk_tex_compte[KK_VUE_CLASSES][2][2][2][2];
++static uint64_t kk_tex_total, kk_tex_dernier_ns;
++static simple_mtx_t kk_tex_mtx = SIMPLE_MTX_INITIALIZER;
++static const char *kk_vue_nom[KK_VUE_CLASSES] = {"fixe", "srgb", "disposition",
++                                                 "autre", "sans_liste"};
++#define KK_TEX_FMT_MAX 24
++static struct {
++   enum pipe_format f;
++   uint8_t classe;
++   uint64_t n, octets;
++} kk_tex_fmt_v[KK_TEX_FMT_MAX];
++
++static void
++kk_tex_stats_dump_locked(void)
++{
++   uint64_t comp_o = 0, tot_o = 0, w_o = 0, v_o = 0, wv_o = 0, autre_o = 0;
++   uint64_t comp_n = 0, w_n = 0, v_n = 0, autre_n = 0;
++   for (int c = 0; c < KK_VUE_CLASSES; c++)
++      for (int w = 0; w < 2; w++)
++         for (int v = 0; v < 2; v++)
++            for (int r = 0; r < 2; r++)
++               for (int k = 0; k < 2; k++) {
++                  uint64_t n = kk_tex_compte[c][w][v][r][k].n;
++                  uint64_t o = kk_tex_compte[c][w][v][r][k].octets;
++                  if (!n)
++                     continue;
++                  tot_o += o;
++                  if (k) {
++                     comp_o += o; comp_n += n;
++                  } else if (w) {
++                     w_o += o; w_n += n;
++                     if (v) wv_o += o;
++                  } else if (v) {
++                     v_o += o; v_n += n;
++                  } else {
++                     autre_o += o; autre_n += n;
++                  }
++                  fprintf(stderr,
++                          "[CIDRE_TEX] classe=%s ecrit=%d vue=%d rt=%d "
++                          "compressee=%d : %" PRIu64 " textures, %.1f Mo\n",
++                          kk_vue_nom[c], w, v, r, k, n, o / 1048576.0);
++               }
++   fprintf(stderr,
++           "[CIDRE_TEX] bilan %" PRIu64 " textures %.0f Mo : compressees %" PRIu64
++           " (%.0f Mo) ; non compressees par ShaderWrite %" PRIu64
++           " (%.0f Mo, dont %.0f Mo avec PixelFormatView aussi), par "
++           "PixelFormatView seul %" PRIu64 " (%.0f Mo), autres %" PRIu64
++           " (%.0f Mo) ; niveau CIDRE_TEX_COMPRESSION=%u\n",
++           kk_tex_total, tot_o / 1048576.0, comp_n, comp_o / 1048576.0, w_n,
++           w_o / 1048576.0, wv_o / 1048576.0, v_n, v_o / 1048576.0, autre_n,
++           autre_o / 1048576.0, kk_tex_compression_niveau());
++   for (int i = 0; i < KK_TEX_FMT_MAX && kk_tex_fmt_v[i].n; i++)
++      fprintf(stderr,
++              "[CIDRE_TEX] PixelFormatView seul : %s classe=%s %" PRIu64
++              " textures %.1f Mo\n",
++              util_format_short_name(kk_tex_fmt_v[i].f),
++              kk_vue_nom[kk_tex_fmt_v[i].classe], kk_tex_fmt_v[i].n,
++              kk_tex_fmt_v[i].octets / 1048576.0);
++}
++
++static void
++kk_tex_stats_note(const struct kk_image_layout *layout, mtl_texture *tex)
++{
++   if (!tex)
++      return;
++   int c = MIN2(layout->vue_classe, KK_VUE_CLASSES - 1);
++   int w = !!(layout->usage & MTL_TEXTURE_USAGE_SHADER_WRITE);
++   int v = !!(layout->usage & MTL_TEXTURE_USAGE_PIXEL_FORMAT_VIEW);
++   int r = !!(layout->usage & MTL_TEXTURE_USAGE_RENDER_TARGET);
++   int k = mtl_texture_is_compressed(tex);
++   simple_mtx_lock(&kk_tex_mtx);
++   kk_tex_compte[c][w][v][r][k].n++;
++   kk_tex_compte[c][w][v][r][k].octets += layout->size_B;
++   kk_tex_total++;
++   if (!k && v && !w) {
++      for (int i = 0; i < KK_TEX_FMT_MAX; i++) {
++         if (!kk_tex_fmt_v[i].n ||
++             (kk_tex_fmt_v[i].f == layout->format.pipe &&
++              kk_tex_fmt_v[i].classe == c)) {
++            kk_tex_fmt_v[i].f = layout->format.pipe;
++            kk_tex_fmt_v[i].classe = c;
++            kk_tex_fmt_v[i].n++;
++            kk_tex_fmt_v[i].octets += layout->size_B;
++            break;
++         }
++      }
++   }
++   uint64_t now = os_time_get_nano();
++   if (now - kk_tex_dernier_ns > 20ull * 1000000000ull) {
++      kk_tex_dernier_ns = now;
++      kk_tex_stats_dump_locked();
++   }
++   simple_mtx_unlock(&kk_tex_mtx);
++}
++
+ static VkResult
+ kk_image_plane_bind(struct kk_device *dev, struct kk_image *image,
+                     struct kk_image_plane *plane, struct kk_device_memory *mem,
+@@ -1019,6 +1180,8 @@ kk_image_plane_bind(struct kk_device *dev, struct kk_image *image,
+    plane->mem = mem;
+    plane->mem_offset_B = *offset_B;
+    plane->mtl_handle = kk_image_plane_create_texture(plane, &plane->layout, 0u);
++   if (kk_tex_stats_actives())
++      kk_tex_stats_note(&plane->layout, plane->mtl_handle);
+    if (image->vk.base.object_name)
+       mtl_resource_set_label(plane->mtl_handle, image->vk.base.object_name);
+ 
+diff --git a/src/kosmickrisp/vulkan/kk_image_layout.c b/src/kosmickrisp/vulkan/kk_image_layout.c
+index 8ebdb3a..fce2433 100644
+--- a/src/kosmickrisp/vulkan/kk_image_layout.c
++++ b/src/kosmickrisp/vulkan/kk_image_layout.c
+@@ -6,6 +6,8 @@
+ 
+ #include "kk_image_layout.h"
+ 
++#include <stdlib.h>
++
+ #include "kk_debug.h"
+ 
+ #include "util/u_atomic.h"
+@@ -234,10 +236,33 @@ kk_image_layout_calc_tiled(const struct kk_device *dev,
+    assert(layout->level_offsets_B[layout->levels] <= layout->layer_stride_B);
+ }
+ 
++unsigned
++kk_tex_compression_niveau(void)
++{
++   static int niveau = -1;
++   if (niveau < 0) {
++      const char *e = getenv("CIDRE_TEX_COMPRESSION");
++      niveau = e ? atoi(e) : 0;
++   }
++   return niveau;
++}
++
++bool
++kk_tex_stats_actives(void)
++{
++   static int actives = -1;
++   if (actives < 0) {
++      const char *e = getenv("CIDRE_TEX_STATS");
++      actives = e && *e && *e != '0';
++   }
++   return actives;
++}
++
+ void
+ kk_image_layout_init(const struct kk_device *dev, const struct vk_image *image,
+                      enum pipe_format format, const uint8_t width_scale,
+-                     const uint8_t height_scale, struct kk_image_layout *layout)
++                     const uint8_t height_scale, uint8_t vue_classe,
++                     struct kk_image_layout *layout)
+ {
+    const struct kk_physical_device *pdev = kk_device_physical(dev);
+    const struct kk_va_format *supported_format = kk_get_va_format(format);
+@@ -262,6 +287,31 @@ kk_image_layout_init(const struct kk_device *dev, const struct vk_image *image,
+       atomics = true;
+    layout->usage = vk_image_usage_flags_to_mtl_texture_usage(
+       image->usage, image->create_flags, atomics);
++   layout->vue_classe = vue_classe;
++   /* Metal garde la compression sans perte d'une texture sans PixelFormatView
++    * et accepte d'elle, sans ce drapeau, les vues sRGB/lineaire du meme
++    * format (valide par MTL_DEBUG_LAYER). Les vues de meme disposition (memes
++    * canaux, memes tailles : UNORM/UINT/SNORM/FLOAT) se lisent et s'ecrivent
++    * a l'identique sur Apple7 et Apple9 mais sortent de la validation : niveau
++    * 2 seulement. */
++   /* Niveau 3 : aussi les images MUTABLE_FORMAT sans liste qui ne sont pas
++    * ecrites en shader. vkd3d-proton pose ce MUTABLE nu sur les ressources
++    * D3D12 sans RTV ni DSV pour couper la compression (les regles d'alias des
++    * ressources placees n'y imposent pas d'initialisation) ; leurs vues sont
++    * celles de la famille typeless D3D12, de meme disposition. Les formats
++    * compresses par blocs et de profondeur gardent PixelFormatView. */
++   const struct util_format_description *desc = util_format_description(format);
++   bool sans_liste_ok =
++      vue_classe == KK_VUE_SANS_LISTE && kk_tex_compression_niveau() >= 3 &&
++      !(layout->usage & MTL_TEXTURE_USAGE_SHADER_WRITE) && desc &&
++      desc->layout == UTIL_FORMAT_LAYOUT_PLAIN &&
++      !util_format_is_depth_or_stencil(format);
++   if ((layout->usage & MTL_TEXTURE_USAGE_PIXEL_FORMAT_VIEW) &&
++       kk_tex_compression_niveau() >= 1 &&
++       (vue_classe == KK_VUE_SRGB ||
++        (vue_classe == KK_VUE_DISPOSITION && kk_tex_compression_niveau() >= 2) ||
++        sans_liste_ok))
++      layout->usage &= ~MTL_TEXTURE_USAGE_PIXEL_FORMAT_VIEW;
+    layout->create_flags = image->create_flags;
+    layout->format.pipe = format;
+    layout->format.mtl = supported_format->mtl_pixel_format;
+diff --git a/src/kosmickrisp/vulkan/kk_image_layout.h b/src/kosmickrisp/vulkan/kk_image_layout.h
+index e179d17..76fd260 100644
+--- a/src/kosmickrisp/vulkan/kk_image_layout.h
++++ b/src/kosmickrisp/vulkan/kk_image_layout.h
+@@ -44,6 +44,9 @@ struct kk_image_layout {
+ 
+    enum mtl_texture_usage usage;
+ 
++   /* enum kk_vue_classe */
++   uint8_t vue_classe;
++
+    VkImageCreateFlags create_flags;
+ 
+    /** Texture format */
+@@ -219,7 +222,25 @@ bool kk_image_layout_can_optimize(const struct kk_physical_device *pdev,
+ void kk_image_layout_init(const struct kk_device *dev,
+                           const struct vk_image *image, enum pipe_format format,
+                           const uint8_t width_scale, const uint8_t height_scale,
+-                          struct kk_image_layout *layout);
++                          uint8_t vue_classe, struct kk_image_layout *layout);
++
++/* Cidre : formats de vue d'une image MUTABLE_FORMAT, d'apres sa
++ * VkImageFormatListCreateInfo. Metal coupe la compression sans perte des
++ * textures qui portent MTLTextureUsagePixelFormatView. */
++enum kk_vue_classe {
++   KK_VUE_FIXE = 0,        /* pas MUTABLE_FORMAT */
++   KK_VUE_SRGB = 1,        /* liste : le format lui-meme ou sa variante sRGB */
++   KK_VUE_DISPOSITION = 2, /* liste : memes canaux, memes tailles, type autre */
++   KK_VUE_AUTRE = 3,       /* liste : une autre disposition des bits */
++   KK_VUE_SANS_LISTE = 4,  /* MUTABLE_FORMAT sans liste */
++   KK_VUE_CLASSES
++};
++
++/* CIDRE_TEX_COMPRESSION : 0 (defaut) inchange ; 1 retire PixelFormatView des
++ * KK_VUE_SRGB ; 2 aussi des KK_VUE_DISPOSITION. */
++unsigned kk_tex_compression_niveau(void);
++bool kk_vue_meme_disposition(enum pipe_format a, enum pipe_format b);
++bool kk_tex_stats_actives(void);
+ 
+ void kk_image_layout_force_linear(const struct kk_device *dev,
+                                   struct kk_image_layout *layout);
+diff --git a/src/kosmickrisp/vulkan/kk_image_view.c b/src/kosmickrisp/vulkan/kk_image_view.c
+index 33e0581..310c762 100644
+--- a/src/kosmickrisp/vulkan/kk_image_view.c
++++ b/src/kosmickrisp/vulkan/kk_image_view.c
+@@ -160,6 +160,31 @@ kk_image_view_init(struct kk_device *dev, struct kk_image_view *view,
+             view_layout.swizzle.alpha = PIPE_SWIZZLE_0;
+       }
+ 
++      /* Cidre : vue d'un autre format sur une texture gardee compressee sans
++       * PixelFormatView (CIDRE_TEX_COMPRESSION) ; dit les premieres. */
++      if (!(plane->layout.usage & MTL_TEXTURE_USAGE_PIXEL_FORMAT_VIEW) &&
++          view_layout.format.mtl != plane->layout.format.mtl &&
++          util_format_linear(view_layout.format.pipe) !=
++             util_format_linear(plane->layout.format.pipe) &&
++          !util_format_is_depth_or_stencil(plane->layout.format.pipe) &&
++          !(util_format_is_compressed(plane->layout.format.pipe) &&
++            !util_format_is_compressed(view_layout.format.pipe))) {
++         static unsigned dites[2];
++         bool attendue =
++            (plane->layout.vue_classe == KK_VUE_DISPOSITION ||
++             plane->layout.vue_classe == KK_VUE_SANS_LISTE) &&
++            kk_vue_meme_disposition(plane->layout.format.pipe,
++                                    view_layout.format.pipe);
++         if (dites[attendue] < 8) {
++            dites[attendue]++;
++            fprintf(stderr,
++                    "[CIDRE_TEX] vue %s sans PixelFormatView : %s -> %s\n",
++                    attendue ? "de meme disposition" : "INATTENDUE",
++                    util_format_short_name(plane->layout.format.pipe),
++                    util_format_short_name(view_layout.format.pipe));
++         }
++      }
++
+       mtl_texture *mtl_handle = image->planes[image_plane].mtl_handle;
+       if (image->vk.image_type == VK_IMAGE_TYPE_3D &&
+           view->vk.view_type != VK_IMAGE_VIEW_TYPE_3D)

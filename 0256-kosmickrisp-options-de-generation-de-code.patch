@@ -1,0 +1,347 @@
+Generated-by: LLM
+
+KosmicKrisp : options de generation de code Cidre (coupees par defaut, dans la cle pipelineCacheUUID)
+
+CIDRE_DEROULER, CIDRE_DESCRIPTEURS_CONSTANT, CIDRE_SSBO_NUL_PUITS, CIDRE_REDUCTIONS_SIMD,
+CIDRE_LECTURES_VECTORISEES. Une option est posee des que la variable existe
+(meme a 0), comme les options 0156-0159 : le lanceur ne doit poser que celles
+qu'il veut.
+
+  CIDRE_SSBO_NUL_PUITS (avec CIDRE_SSBO_SANS_BORNES, 0159) : un descripteur de
+    tampon nul pointe sur un puits de 32 Mio a zero au lieu de l'adresse 0 ;
+    SSBO_SANS_BORNES seul faisait fauter UE5 (Demonologist) au demarrage.
+  CIDRE_REDUCTIONS_SIMD : reductions de sous-groupe en simd_sum/simd_max...
+    au lieu du deroulage de lower_reduce (ConvertToIrradiance x9 chez KK contre
+    D3DMetal).
+  CIDRE_DEROULER (max_unroll_iterations) : -2-3 % en jeu, a laisser coupe.
+  CIDRE_DESCRIPTEURS_CONSTANT (lectures de descripteurs en espace constant) :
+    gel, a laisser coupe.
+  CIDRE_LECTURES_VECTORISEES : ~0.
+
+Mesures (M1, Demonologist menu) : SSBO_SANS_BORNES + SSBO_NUL_PUITS +
+REDUCTIONS_SIMD 21,7 -> 22,85 img/s (+5 %) ; M4 +2,7 %. Les gardes NaN (W17)
+restent : sans elles, GPU bloque.
+Local Cidre, jamais en amont.
+
+diff --git a/src/kosmickrisp/compiler/msl_nir_algebraic.py b/src/kosmickrisp/compiler/msl_nir_algebraic.py
+index cf0c096..56de1b2 100644
+--- a/src/kosmickrisp/compiler/msl_nir_algebraic.py
++++ b/src/kosmickrisp/compiler/msl_nir_algebraic.py
+@@ -25,6 +25,10 @@ lower = [
+ ]
+ 
+ 
++adr64 = [
++  (('u2u64', ('iadd', 'a@32', '#b')), ('iadd', ('u2u64', a), ('u2u64', b))),
++]
++
+ 
+ def main():
+     parser = argparse.ArgumentParser()
+@@ -39,6 +43,7 @@ def run():
+     print('#include "msl_private.h"')
+ 
+     print(nir_algebraic.AlgebraicPass("msl_nir_lower_algebraic_late", lower).render())
++    print(nir_algebraic.AlgebraicPass("msl_nir_opt_adr64", adr64).render())
+ 
+ if __name__ == '__main__':
+     main()
+diff --git a/src/kosmickrisp/compiler/msl_nir_lower_subgroups.c b/src/kosmickrisp/compiler/msl_nir_lower_subgroups.c
+index 87a4664..9cfb0dc 100644
+--- a/src/kosmickrisp/compiler/msl_nir_lower_subgroups.c
++++ b/src/kosmickrisp/compiler/msl_nir_lower_subgroups.c
+@@ -5,6 +5,8 @@
+  * SPDX-License-Identifier: MIT
+  */
+ 
++#include <stdlib.h>
++
+ #include "msl_private.h"
+ #include "nir.h"
+ #include "nir_builder.h"
+@@ -51,6 +53,51 @@ lower_bool_ops(nir_builder *b, nir_intrinsic_instr *intrin, void *_unused)
+    return true;
+ }
+ 
++static bool
++kk_reductions_simd_enabled(void)
++{
++   static int enabled = -1;
++   if (enabled < 0)
++      enabled = getenv("CIDRE_REDUCTIONS_SIMD") != NULL;
++   return enabled;
++}
++
++static bool
++kk_reduce_is_native(const nir_intrinsic_instr *intrin)
++{
++   if (intrin->intrinsic != nir_intrinsic_reduce)
++      return false;
++   unsigned cluster = nir_intrinsic_cluster_size(intrin);
++   if (cluster != 0 && cluster < 32)
++      return false;
++   if (intrin->def.bit_size != 32 && intrin->def.bit_size != 16)
++      return false;
++   switch (nir_intrinsic_reduction_op(intrin)) {
++   case nir_op_iadd:
++   case nir_op_fadd:
++   case nir_op_imul:
++   case nir_op_fmul:
++   case nir_op_imin:
++   case nir_op_umin:
++   case nir_op_fmin:
++   case nir_op_imax:
++   case nir_op_umax:
++   case nir_op_fmax:
++   case nir_op_iand:
++   case nir_op_ior:
++   case nir_op_ixor:
++      return true;
++   default:
++      return false;
++   }
++}
++
++static bool
++kk_subgroups_filter(const nir_intrinsic_instr *intrin, const void *data)
++{
++   return !kk_reduce_is_native(intrin);
++}
++
+ void
+ msl_nir_lower_subgroups(nir_shader *nir)
+ {
+@@ -69,6 +116,7 @@ msl_nir_lower_subgroups(nir_shader *nir)
+       .lower_reduce = true,
+       /* Metal rotate operations do not support cluster size */
+       .lower_rotate_clustered_to_shuffle = true,
++      .filter = kk_reductions_simd_enabled() ? kk_subgroups_filter : NULL,
+    };
+    NIR_PASS(_, nir, nir_lower_subgroups, &subgroups_options);
+    NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_bool_ops,
+diff --git a/src/kosmickrisp/compiler/msl_private.h b/src/kosmickrisp/compiler/msl_private.h
+index e860b93..664a469 100644
+--- a/src/kosmickrisp/compiler/msl_private.h
++++ b/src/kosmickrisp/compiler/msl_private.h
+@@ -88,3 +88,4 @@ bool msl_def_is_texture(struct nir_to_msl_ctx *ctx, nir_def *def);
+ void msl_nir_lower_subgroups(nir_shader *nir);
+ 
+ bool msl_nir_lower_algebraic_late(nir_shader *shader);
++bool msl_nir_opt_adr64(nir_shader *shader);
+diff --git a/src/kosmickrisp/compiler/nir_to_msl.c b/src/kosmickrisp/compiler/nir_to_msl.c
+index 7228573..5e656b4 100644
+--- a/src/kosmickrisp/compiler/nir_to_msl.c
++++ b/src/kosmickrisp/compiler/nir_to_msl.c
+@@ -1192,6 +1192,15 @@ kk_cached_readonly_enabled(void)
+    return enabled;
+ }
+ 
++static bool
++kk_descripteurs_constant_enabled(void)
++{
++   static int enabled = -1;
++   if (enabled < 0)
++      enabled = getenv("CIDRE_DESCRIPTEURS_CONSTANT") != NULL;
++   return enabled;
++}
++
+ static const char *
+ global_access_qualifier(struct nir_to_msl_ctx *ctx,
+                         enum gl_access_qualifier access)
+@@ -1570,7 +1579,11 @@ intrinsic_to_msl(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr)
+    case nir_intrinsic_load_global_constant_offset: {
+       enum gl_access_qualifier access = nir_intrinsic_access(instr);
+       const char *type = msl_type_for_def(ctx->types, &instr->def);
+-      const char *qualifier = global_access_qualifier(ctx, access);
++      const char *qualifier =
++         kk_descripteurs_constant_enabled() &&
++               !(access & (ACCESS_ATOMIC | ACCESS_COHERENT | ACCESS_VOLATILE))
++            ? "constant"
++            : global_access_qualifier(ctx, access);
+       if (access & ACCESS_ATOMIC) {
+          assert(instr->num_components == 1u &&
+                 "We can only do single component with atomics");
+@@ -2422,6 +2435,49 @@ kk_scalarize_filter(const nir_instr *instr, const void *data)
+    return true;
+ }
+ 
++static bool
++kk_lectures_vectorisees_enabled(void)
++{
++   static int enabled = -1;
++   if (enabled < 0)
++      enabled = getenv("CIDRE_LECTURES_VECTORISEES") != NULL;
++   return enabled;
++}
++
++static bool
++kk_deroulage_enabled(void)
++{
++   static int enabled = -1;
++   if (enabled < 0)
++      enabled = getenv("CIDRE_DEROULER") != NULL;
++   return enabled;
++}
++
++static void
++kk_derouler_boucles(struct nir_shader *nir)
++{
++   const nir_shader_compiler_options *orig = nir->options;
++   nir_shader_compiler_options opts = *orig;
++   opts.max_unroll_iterations = 32;
++   opts.force_indirect_unrolling = nir_var_function_temp;
++   nir->options = &opts;
++   bool progress;
++   unsigned tours = 0;
++   do {
++      progress = false;
++      NIR_PASS(progress, nir, nir_lower_vars_to_ssa);
++      NIR_PASS(progress, nir, nir_opt_copy_prop);
++      NIR_PASS(progress, nir, nir_opt_dce);
++      NIR_PASS(progress, nir, nir_opt_constant_folding);
++      NIR_PASS(progress, nir, nir_opt_deref);
++      NIR_PASS(progress, nir, nir_opt_dead_cf);
++      NIR_PASS(progress, nir, nir_opt_remove_phis);
++      NIR_PASS(progress, nir, nir_opt_loop_unroll);
++      NIR_PASS(progress, nir, nir_split_array_vars, nir_var_function_temp);
++   } while (progress && ++tours < 8);
++   nir->options = orig;
++}
++
+ void
+ msl_preprocess_nir(struct nir_shader *nir)
+ {
+@@ -2483,6 +2539,9 @@ msl_preprocess_nir(struct nir_shader *nir)
+    NIR_PASS(_, nir, nir_split_var_copies);
+    NIR_PASS(_, nir, nir_lower_memcpy);
+ 
++   if (kk_deroulage_enabled())
++      kk_derouler_boucles(nir);
++
+    NIR_PASS(_, nir, nir_split_array_vars,
+             nir_var_function_temp | nir_var_shader_in | nir_var_shader_out);
+    NIR_PASS(_, nir, nir_lower_alu_to_scalar, kk_scalarize_filter, NULL);
+@@ -2543,6 +2602,10 @@ msl_optimize_nir(struct nir_shader *nir)
+    NIR_PASS(_, nir, msl_nir_hoist_derivatives);
+    NIR_PASS(_, nir, nir_opt_shrink_stores, false);
+    NIR_PASS(_, nir, nir_lower_load_const_to_scalar);
++   if (kk_lectures_vectorisees_enabled()) {
++      NIR_PASS(_, nir, msl_nir_opt_adr64);
++      NIR_PASS(_, nir, nir_opt_constant_folding);
++   }
+    NIR_PASS(_, nir, msl_nir_lower_algebraic_late);
+    NIR_PASS(_, nir, nir_convert_from_ssa, true, false);
+    NIR_PASS(_, nir, nir_trivialize_registers);
+diff --git a/src/kosmickrisp/vulkan/kk_descriptor_buffer.c b/src/kosmickrisp/vulkan/kk_descriptor_buffer.c
+index 49e3165..e9df5b1 100644
+--- a/src/kosmickrisp/vulkan/kk_descriptor_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_descriptor_buffer.c
+@@ -364,7 +364,7 @@ static void
+ kk_get_buffer_address_desc(const VkDescriptorAddressInfoEXT *info, void *dst,
+                            size_t dst_size)
+ {
+-   struct kk_buffer_address desc = {};
++   struct kk_buffer_address desc = {.base_addr = kk_ssbo_puits_addr};
+ 
+    if (info != NULL && info->address != 0u) {
+       desc.base_addr = info->address;
+diff --git a/src/kosmickrisp/vulkan/kk_descriptor_set.c b/src/kosmickrisp/vulkan/kk_descriptor_set.c
+index 6b6e53e..fb7a055 100644
+--- a/src/kosmickrisp/vulkan/kk_descriptor_set.c
++++ b/src/kosmickrisp/vulkan/kk_descriptor_set.c
+@@ -251,7 +251,7 @@ write_buffer_desc(struct kk_descriptor_set *set,
+    assert(addr_range.range <= UINT32_MAX);
+ 
+    const struct kk_buffer_address desc = {
+-      .base_addr = addr_range.addr,
++      .base_addr = addr_range.addr ? addr_range.addr : kk_ssbo_puits_addr,
+       .size = addr_range.range,
+    };
+    write_desc(set, binding, elem, &desc, sizeof(desc));
+@@ -273,7 +273,7 @@ write_dynamic_buffer_desc(struct kk_descriptor_set *set,
+    struct kk_buffer_address *desc =
+       &set->dynamic_buffers[binding_layout->dynamic_buffer_index + elem];
+    *desc = (struct kk_buffer_address){
+-      .base_addr = addr_range.addr,
++      .base_addr = addr_range.addr ? addr_range.addr : kk_ssbo_puits_addr,
+       .size = addr_range.range,
+    };
+ }
+diff --git a/src/kosmickrisp/vulkan/kk_device.c b/src/kosmickrisp/vulkan/kk_device.c
+index f162da3..b24e91c 100644
+--- a/src/kosmickrisp/vulkan/kk_device.c
++++ b/src/kosmickrisp/vulkan/kk_device.c
+@@ -38,6 +38,8 @@ struct kk_mtl_compiler {
+    uint32_t refcount;
+ };
+ 
++uint64_t kk_ssbo_puits_addr;
++
+ static struct hash_table compilers_ht;
+ static simple_mtx_t compilers_ht_lock;
+ static once_flag compilers_ht_once = ONCE_FLAG_INIT;
+@@ -355,6 +357,17 @@ kk_CreateDevice(VkPhysicalDevice physicalDevice,
+       kk_bo_set_label(dev->atomic64_locks, "atomiques 64 bits : verrous");
+    }
+ 
++   if (getenv("CIDRE_SSBO_NUL_PUITS") != NULL &&
++       getenv("CIDRE_SSBO_SANS_BORNES") != NULL) {
++      result = kk_alloc_bo(dev, &dev->vk.base, 32u << 20, 256,
++                           &dev->ssbo_puits);
++      if (result != VK_SUCCESS)
++         goto fail_atomic64_locks;
++      memset(dev->ssbo_puits->cpu, 0, 32u << 20);
++      kk_bo_set_label(dev->ssbo_puits, "ssbo nuls : puits");
++      kk_ssbo_puits_addr = dev->ssbo_puits->gpu;
++   }
++
+    result = kk_device_init_lib(dev);
+    if (result != VK_SUCCESS)
+       goto fail_atomic64_locks;
+@@ -437,6 +450,10 @@ kk_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
+    kk_destroy_sampler_heap(dev, &dev->samplers);
+    if (dev->atomic64_locks)
+       kk_destroy_bo(dev, dev->atomic64_locks);
++   if (dev->ssbo_puits) {
++      kk_ssbo_puits_addr = 0;
++      kk_destroy_bo(dev, dev->ssbo_puits);
++   }
+ 
+    /* Geometry heap */
+    if (dev->heap)
+diff --git a/src/kosmickrisp/vulkan/kk_device.h b/src/kosmickrisp/vulkan/kk_device.h
+index 257702b..1143ef8 100644
+--- a/src/kosmickrisp/vulkan/kk_device.h
++++ b/src/kosmickrisp/vulkan/kk_device.h
+@@ -111,6 +111,8 @@ struct kk_device {
+     * words, zero when free), bound at buffer(3). NULL unless emulated. */
+    struct kk_bo *atomic64_locks;
+ 
++   struct kk_bo *ssbo_puits;
++
+    /* Track all heaps the user allocated so we can set them all as resident when
+     * recording as required by Metal. */
+    struct kk_residency_set residency_set;
+@@ -173,4 +175,6 @@ VkResult kk_sampler_heap_add(struct kk_device *dev,
+                              struct kk_rc_sampler **out);
+ void kk_sampler_heap_remove(struct kk_device *dev, struct kk_rc_sampler *rc);
+ 
++extern uint64_t kk_ssbo_puits_addr;
++
+ #endif // KK_DEVICE_H
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
+index f50ebbd..d193e3a 100644
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -1186,6 +1186,11 @@ kk_physical_device_init_pipeline_cache(struct kk_physical_device *pdev)
+       "CIDRE_CONTRACTION_MALGRE_PRECIS",
+       "CIDRE_IMAGES_NULLES_SANS_BRANCHE",
+       "CIDRE_W10_SANS_COURT_CIRCUIT",
++      "CIDRE_DEROULER",
++      "CIDRE_SSBO_NUL_PUITS",
++      "CIDRE_DESCRIPTEURS_CONSTANT",
++      "CIDRE_REDUCTIONS_SIMD",
++      "CIDRE_LECTURES_VECTORISEES",
+    };
+    for (unsigned i = 0; i < ARRAY_SIZE(options_codegen); i++) {
+       uint8_t pose = getenv(options_codegen[i]) != NULL;

@@ -1,0 +1,253 @@
+Generated-by: LLM
+
+KosmicKrisp (WSI Metal) : VK_PRESENT_MODE_IMMEDIATE_KHR garde displaySyncEnabled (plus de dechirement en affichage direct) ; CIDRE_WSI_VSYNC=0 rend l'ancien comportement
+
+vkd3d-proton choisit IMMEDIATE pour tout Present en SyncInterval 0, avec ou sans
+DXGI_PRESENT_ALLOW_TEARING (UE5 sans bUseVSync). KK coupait alors
+CAMetalLayer.displaySyncEnabled : compose par WindowServer, sans dechirement ;
+mais des que la couche passe en affichage direct (couche opaque, 0193) le
+controleur d'affichage bascule en plein balayage : dechirement (Demonologist
+M4, 26/10). D3DMetal ne coupe la synchro que si SyncInterval 0 *et*
+ALLOW_TEARING. Desormais IMMEDIATE garde displaySync : chaque image s'affiche
+entiere au vblank suivant, nextDrawable n'est jamais bride sous le
+rafraichissement (3 drawables, pas d'attente de presentation : pas de paliers
+60/30/20), le debit est seulement plafonne au rafraichissement.
+CIDRE_WSI_VSYNC=0 : IMMEDIATE sans displaySync comme avant (dechirement,
+debit libre) ; le lanceur le pose pour l'option de fiche vsync = false.
+
+Valide par l'utilisateur (Demonologist M4, 26/10 23:55) : plus de
+dechirement, fluidite egale (journal : FIFO displaySync=1 vblank 1.00).
+
+diff --git a/src/vulkan/wsi/wsi_common_metal.c b/src/vulkan/wsi/wsi_common_metal.c
+index 43ac12a..bc33539 100644
+--- a/src/vulkan/wsi/wsi_common_metal.c
++++ b/src/vulkan/wsi/wsi_common_metal.c
+@@ -20,6 +20,8 @@
+ #include "vulkan/vulkan_core.h"
+ 
+ #include <assert.h>
++#include <math.h>
++#include "c11/threads.h"
+ 
+ struct wsi_metal {
+    struct wsi_interface base;
+@@ -500,6 +502,9 @@ struct wsi_metal_swapchain {
+    struct timespec stats_start, stats_sample;
+    uint32_t stats_frames, stats_samples, stats_direct, stats_last_code;
+ 
++   /* Last present mode asked by the application */
++   bool immediate;
++
+    struct wsi_metal_image images[0];
+ };
+ VK_DEFINE_NONDISP_HANDLE_CASTS(wsi_metal_swapchain, base.base, VkSwapchainKHR,
+@@ -722,6 +727,30 @@ wsi_cmd_blit_image_to_image(const struct wsi_swapchain *chain,
+    return result;
+ }
+ 
++/* CIDRE_WSI_VSYNC (0258): VK_PRESENT_MODE_IMMEDIATE_KHR used to turn
++ * CAMetalLayer.displaySyncEnabled off. Composited by WindowServer that never
++ * tears, but once the layer goes straight to the display (opaque layer, 0193)
++ * the display controller flips mid-scanout: tearing. vkd3d-proton picks
++ * IMMEDIATE for every SyncInterval 0 Present, with or without
++ * DXGI_PRESENT_ALLOW_TEARING (UE5 with its vsync off), while D3DMetal keeps
++ * displaySync on unless SyncInterval == 0 *and* ALLOW_TEARING. KK only has
++ * FIFO and IMMEDIATE, so by default IMMEDIATE now keeps displaySync on: each
++ * frame is shown whole at the next vblank, nextDrawable is never throttled
++ * below the refresh rate (3 drawables, no present wait: no 60/30/20 steps),
++ * the frame rate is only capped at the refresh rate.
++ *   CIDRE_WSI_VSYNC=0 : IMMEDIATE without displaySync again (tearing, uncapped),
++ *                       to pair with the profile option vsync = false. */
++static bool
++wsi_metal_immediate_sync(void)
++{
++   static int enabled = -1;
++   if (enabled < 0) {
++      const char *v = getenv("CIDRE_WSI_VSYNC");
++      enabled = !(v && v[0] == '0');
++   }
++   return enabled;
++}
++
+ static bool
+ wsi_metal_stats_enabled(void)
+ {
+@@ -840,7 +869,9 @@ wsi_metal_swapchain_set_present_mode(struct wsi_swapchain *wsi_chain,
+ {
+    struct wsi_metal_swapchain *chain = (struct wsi_metal_swapchain *)wsi_chain;
+    const bool immediate_mode = mode == VK_PRESENT_MODE_IMMEDIATE_KHR;
+-   wsi_metal_layer_set_immediate(chain->surface->pLayer, immediate_mode);
++   chain->immediate = immediate_mode;
++   wsi_metal_layer_set_immediate(chain->surface->pLayer,
++                                 immediate_mode && !wsi_metal_immediate_sync());
+ }
+ 
+ static void
+@@ -858,6 +889,51 @@ wsi_metal_present_complete(void *present_info_ptr, uint64_t present_id)
+    wsi_metal_release_present_info(present_info);
+ }
+ 
++/* CIDRE_WSI_STATS: presentedTime of every drawable. Shown whole at a vblank,
++ * presentedTime sits at the same phase of the refresh period frame after
++ * frame; flipped mid-scanout (displaySync off, direct to the display) the
++ * phase is anywhere. "vblank" below is the mean resultant length of those
++ * phases: 1 = every frame on the vblank grid, ~0 = random (tearing). Also
++ * counts frames held 1, 2, 3+ refresh periods. Global and locked: presented
++ * handlers can run after the swapchain is gone. */
++static struct {
++   mtx_t mutex;
++   bool init;
++   double period, last;
++   double sum_cos, sum_sin;
++   uint32_t n, dropped, held[4];
++} wsi_metal_pt;
++
++static void
++wsi_metal_pt_init(void)
++{
++   mtx_init(&wsi_metal_pt.mutex, mtx_plain);
++   double hz = wsi_metal_display_refresh_hz();
++   wsi_metal_pt.period = 1.0 / (hz > 1.0 ? hz : 60.0);
++   wsi_metal_pt.init = true;
++}
++
++static void
++wsi_metal_presented_time(void *data, double t)
++{
++   (void)data;
++   mtx_lock(&wsi_metal_pt.mutex);
++   if (t <= 0.0) {
++      wsi_metal_pt.dropped++;
++   } else if (wsi_metal_pt.period > 0.0) {
++      double ph = 2.0 * M_PI * fmod(t, wsi_metal_pt.period) / wsi_metal_pt.period;
++      wsi_metal_pt.sum_cos += cos(ph);
++      wsi_metal_pt.sum_sin += sin(ph);
++      wsi_metal_pt.n++;
++      if (wsi_metal_pt.last > 0.0 && t > wsi_metal_pt.last) {
++         int k = (int)lround((t - wsi_metal_pt.last) / wsi_metal_pt.period);
++         wsi_metal_pt.held[k < 1 ? 0 : k > 3 ? 3 : k]++;
++      }
++      wsi_metal_pt.last = t;
++   }
++   mtx_unlock(&wsi_metal_pt.mutex);
++}
++
+ /* Every 5 s: frames per second and how often the layer went straight to the
+  * display. The detach code (low 32 bits of the layer's compositing status,
+  * what the Metal HUD shows as Direct/Composited) is sampled every 0.5 s:
+@@ -888,6 +964,21 @@ wsi_metal_swapchain_stats(struct wsi_metal_swapchain *chain)
+            chain->upscaler ? " (MetalFX)" : "",
+            chain->vk_format, wsi_metal_layer_is_opaque(chain->surface->pLayer),
+            chain->stats_direct, chain->stats_samples, chain->stats_last_code);
++   mtx_lock(&wsi_metal_pt.mutex);
++   double r = wsi_metal_pt.n ?
++      sqrt(wsi_metal_pt.sum_cos * wsi_metal_pt.sum_cos +
++           wsi_metal_pt.sum_sin * wsi_metal_pt.sum_sin) / wsi_metal_pt.n : 0.0;
++   fprintf(stderr, "[CIDRE_WSI] presentation %s, displaySync=%d, %.0f Hz : %u affichees, "
++           "vblank %.2f, tenues 1/2/3+ periodes %u/%u/%u, %u sautees\n",
++           chain->immediate ? "IMMEDIATE" : "FIFO",
++           wsi_metal_layer_display_sync(chain->surface->pLayer),
++           wsi_metal_pt.period > 0.0 ? 1.0 / wsi_metal_pt.period : 0.0,
++           wsi_metal_pt.n, r, wsi_metal_pt.held[1], wsi_metal_pt.held[2],
++           wsi_metal_pt.held[3], wsi_metal_pt.dropped);
++   wsi_metal_pt.sum_cos = wsi_metal_pt.sum_sin = 0.0;
++   wsi_metal_pt.n = wsi_metal_pt.dropped = 0;
++   memset(wsi_metal_pt.held, 0, sizeof(wsi_metal_pt.held));
++   mtx_unlock(&wsi_metal_pt.mutex);
+    clock_gettime(CLOCK_MONOTONIC, &chain->stats_start);
+    chain->stats_frames = chain->stats_samples = chain->stats_direct = 0;
+ }
+@@ -912,6 +1003,13 @@ wsi_metal_swapchain_queue_present(struct wsi_swapchain *wsi_chain,
+          present_id);
+    }
+ 
++   if (wsi_metal_stats_enabled()) {
++      static once_flag once = ONCE_FLAG_INIT;
++      call_once(&once, wsi_metal_pt_init);
++      wsi_metal_layer_add_presented_time_handler(image->drawable,
++                                                 wsi_metal_presented_time, NULL);
++   }
++
+    if (chain->upscaler) {
+       void *mtl4_queue = NULL;
+       if (wsi_chain->wsi->metal.get_mtl4_command_queue)
+@@ -1154,7 +1252,8 @@ wsi_metal_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+    VkResult result = wsi_metal_layer_configure(metal_surface->pLayer,
+       pCreateInfo->imageExtent.width, pCreateInfo->imageExtent.height,
+       num_images, pCreateInfo->imageFormat, pCreateInfo->imageColorSpace,
+-      layer_opaque, immediate_mode, framebuffer_only);
++      layer_opaque, immediate_mode && !wsi_metal_immediate_sync(),
++      framebuffer_only);
+    if (result != VK_SUCCESS)
+       return result;
+ 
+diff --git a/src/vulkan/wsi/wsi_common_metal_layer.h b/src/vulkan/wsi/wsi_common_metal_layer.h
+index 66c06fb..155bf5b 100644
+--- a/src/vulkan/wsi/wsi_common_metal_layer.h
++++ b/src/vulkan/wsi/wsi_common_metal_layer.h
+@@ -23,6 +23,20 @@ void
+ wsi_metal_layer_set_immediate(const CAMetalLayer *metal_layer,
+                               bool enable_immediate);
+ 
++bool
++wsi_metal_layer_display_sync(const CAMetalLayer *metal_layer);
++
++/* Calls presented(data, presentedTime) when the drawable reaches the screen
++ * (presentedTime = 0 when it was dropped). Diagnostics only. */
++void
++wsi_metal_layer_add_presented_time_handler(CAMetalDrawable *drawable_ptr,
++                                           void (*presented)(void *, double),
++                                           void *data);
++
++/* Refresh rate of the main screen (NSScreen.maximumFramesPerSecond), 0 if unknown. */
++double
++wsi_metal_display_refresh_hz(void);
++
+ /* Private CAMetalLayer status, low 32 bits: 0 when the layer goes straight
+  * to the display, 0xffffffff when unavailable. Diagnostics only. */
+ uint32_t
+diff --git a/src/vulkan/wsi/wsi_common_metal_layer.m b/src/vulkan/wsi/wsi_common_metal_layer.m
+index 364d84c..85de3be 100644
+--- a/src/vulkan/wsi/wsi_common_metal_layer.m
++++ b/src/vulkan/wsi/wsi_common_metal_layer.m
+@@ -144,6 +144,40 @@
+    metal_layer.displaySyncEnabled = !enable_immediate;
+ }
+ 
++bool
++wsi_metal_layer_display_sync(const CAMetalLayer *metal_layer)
++{
++   return metal_layer.displaySyncEnabled;
++}
++
++void
++wsi_metal_layer_add_presented_time_handler(CAMetalDrawable *drawable_ptr,
++                                           void (*presented)(void *, double),
++                                           void *data)
++{
++   @autoreleasepool {
++      id<CAMetalDrawable> drawable = (id<CAMetalDrawable>)drawable_ptr;
++      [drawable addPresentedHandler: ^(id<MTLDrawable> d) {
++         presented(data, d.presentedTime);
++      }];
++   }
++}
++
++double
++wsi_metal_display_refresh_hz(void)
++{
++   @autoreleasepool {
++      Class screen_class = NSClassFromString(@"NSScreen");
++      if (screen_class == nil)
++         return 0.0;
++      id screen = [screen_class valueForKey:@"mainScreen"];
++      if (screen == nil)
++         return 0.0;
++      NSNumber *v = [screen valueForKey:@"maximumFramesPerSecond"];
++      return v != nil ? v.doubleValue : 0.0;
++   }
++}
++
+ @interface CAMetalLayer (CidreCompositingStatus)
+ - (uint64_t)displayCompositingInternalStatus;
+ @end
