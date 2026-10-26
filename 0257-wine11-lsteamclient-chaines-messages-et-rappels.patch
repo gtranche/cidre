@@ -1,0 +1,829 @@
+Generated-by: LLM
+
+wine11 lsteamclient : chaines natives recopiees, messages reseau enveloppes, rappels du jeu tenus cote PE, GetAPICallResult converti (multijoueur Demonologist)
+
+Pont 64 bits (relais vers steamclient.dylib), quatre corrections :
+
+- Chaines : une methode « const char * » (GetPersonaName,
+  GetCurrentGameLanguage, GetIPCountry...) rendait une adresse dans
+  steamclient.dylib, que le jeu lisait directement. La chaine est recopiee
+  dans la memoire du PE (une copie par couple adresse native/contenu, gardee
+  pour la vie du processus, couronne de tampons au-dela de MAX_CHAINES) ;
+  indispensable dans l'ilot, ou seule la memoire de virtual.c est projetee
+  (ELDEN RING, 25/10), sans effet ailleurs.
+- Messages de SteamNetworkingSockets/Messages : m_pfnRelease des
+  SteamNetworkingMessage_t recus pointait du code arm64 natif, appele en
+  ligne par le x86_64 du jeu (faute au premier paquet d'un pair). Remplace
+  par une fonction PE qui appelle la native par l'unixlib ; SendMessages fait
+  le chemin inverse (m_pfnRelease natif rendu, donnees a liberation PE
+  recopiees dans un tampon natif).
+- Fonctions du jeu confiees au client : SetDebugOutputFunction et
+  SetWarningMessageHook recoivent une fonction native qui ecrit au journal
+  (le natif sautait dans du x86_64 : arret net, code 29) ; les rappels de
+  configuration k_ESteamNetworkingConfig_Callback_* sont mis en file par une
+  fonction native et livres au jeu, sur son fil, a la sortie de RunCallbacks
+  ou de Steam_BGetCallback.
+- ISteamUtils::GetAPICallResult (SteamCorePro) passe par convertir_rappel :
+  LobbyCreated_t et consorts convertis du pack 4 au pack 8.
+
+CIDRE_PONT_TRACE : trace des premiers appels par emplacement.
+Valide par l'utilisateur (26/10) : lobby cree, PC Windows qui rejoint,
+connexion P2P, messages recus et liberes, partie multijoueur Demonologist
+(M4 hote + PC Windows) ; ELDEN RING hors ilot inchange (30,6 img/s).
+
+diff --git a/dlls/lsteamclient/main.c b/dlls/lsteamclient/main.c
+index a80d1281..b67b72bb 100644
+--- a/dlls/lsteamclient/main.c
++++ b/dlls/lsteamclient/main.c
+@@ -136,6 +136,12 @@ struct objet_pe
+      * de la version exacte quand elle a ete relevee (retours64.h), sinon celle
+      * de la table i386. Zero si la methode n'en rend pas. */
+     unsigned char tampons[NB_SIGNATURES];
++    /* Chaine native deja signalee pour cet emplacement (CIDRE_PONT_TRACE). */
++    unsigned char chaine_dite[NB_SIGNATURES];
++    /* Methode qui fait passer des SteamNetworkingMessage_t (voir messages_*). */
++    unsigned char genre_msg[NB_SIGNATURES];
++    /* Appels deja traces par emplacement (CIDRE_PONT_TRACE : les 3 premiers). */
++    unsigned char appels_dits[NB_SIGNATURES];
+ #endif
+ };
+ 
+@@ -429,6 +435,376 @@ static BOOL chaine_plausible( UINT64 mot )
+     return !IsBadStringPtrA( (LPCSTR)(ULONG_PTR)mot, 64 );
+ }
+ 
++/*
++ * Les chaines rendues par le client natif, recopiees dans la memoire du PE.
++ *
++ * Une methode « const char * » (GetPersonaName, GetCurrentGameLanguage,
++ * GetIPCountry...) rend une adresse dans steamclient.dylib : sa section de
++ * donnees ou son tas. Le relais 64 bits la donnait telle quelle au jeu, qui la
++ * lisait directement -- possible hors ilot, l'espace d'adressage etant commun.
++ * Dans l'ilot (vCPU Hypervisor.framework), seule la memoire anonyme privee de
++ * virtual.c est projetee : ELDEN RING lisait sa chaine dans le __DATA de
++ * steamclient.dylib et l'ilot arretait le processus (faute de deuxieme etage
++ * 0x120faa543). Le relais 32 bits recopiait deja ses chaines (tampon par fil) ;
++ * le 64 bits fait de meme, avec une duree de vie plus longue que celle que
++ * promet Steamworks : une copie par couple (adresse native, contenu), gardee
++ * pour la vie du processus. Les chaines « constantes » (langue, pays, nom) ne
++ * coutent donc qu'une allocation ; une adresse native dont le contenu change
++ * (tampon tournant du client) en coute une par contenu distinct. Au-dela de
++ * MAX_CHAINES copies, une couronne de tampons prend le relais pour borner la
++ * memoire. La lecture de la chaine native se fait cote hote (lire_chaine).
++ */
++#define NB_SEAUX_CHAINES 256
++#define MAX_CHAINES      16384
++#define NB_COURONNE      64
++
++struct chaine_copiee
++{
++    struct chaine_copiee *suivante;
++    UINT64                natif;
++    UINT32                longueur;
++    char                  texte[1];
++};
++
++static struct chaine_copiee *seaux_chaines[NB_SEAUX_CHAINES];
++static char *couronne[NB_COURONNE];
++static unsigned nb_chaines, rang_couronne;
++static SRWLOCK verrou_chaines = SRWLOCK_INIT;
++
++static BOOL trace_pont(void)
++{
++    static int actif = -1;
++
++    if (actif < 0)
++    {
++        char v[4];
++        actif = GetEnvironmentVariableA( "CIDRE_PONT_TRACE", v, sizeof(v) ) == 1 && v[0] == '1';
++    }
++    return actif;
++}
++
++static const char *chaine_vers_pe( UINT64 natif )
++{
++    char local[512], *texte = local, *copie;
++    struct lire_chaine_params params = { natif, (UINT64)(ULONG_PTR)local, sizeof(local), 0 };
++    struct chaine_copiee *e;
++    UINT32 h = 2166136261u, n;
++    unsigned seau;
++
++    if (WINE_UNIX_CALL( unix_lire_chaine, &params )) return NULL;
++    if (params.longueur >= (INT32)sizeof(local))
++    {
++        if (!(texte = HeapAlloc( GetProcessHeap(), 0, params.longueur + 1 ))) return NULL;
++        params.tampon = (UINT64)(ULONG_PTR)texte;
++        params.capacite = params.longueur + 1;
++        if (WINE_UNIX_CALL( unix_lire_chaine, &params )) { HeapFree( GetProcessHeap(), 0, texte ); return NULL; }
++    }
++    n = strlen( texte );   /* la chaine native a pu changer entre les deux lectures */
++    for (seau = 0; seau < n; seau++) h = (h ^ (unsigned char)texte[seau]) * 16777619u;
++    seau = (h ^ (UINT32)(natif >> 4) ^ (UINT32)(natif >> 20)) % NB_SEAUX_CHAINES;
++
++    AcquireSRWLockExclusive( &verrou_chaines );
++    for (e = seaux_chaines[seau]; e; e = e->suivante)
++        if (e->natif == natif && e->longueur == n && !memcmp( e->texte, texte, n )) break;
++    if (e) copie = e->texte;
++    else if (nb_chaines < MAX_CHAINES &&
++             (e = HeapAlloc( GetProcessHeap(), 0, FIELD_OFFSET( struct chaine_copiee, texte ) + n + 1 )))
++    {
++        e->natif = natif;
++        e->longueur = n;
++        memcpy( e->texte, texte, n + 1 );
++        e->suivante = seaux_chaines[seau];
++        seaux_chaines[seau] = e;
++        nb_chaines++;
++        copie = e->texte;
++    }
++    else
++    {
++        unsigned r = rang_couronne++ % NB_COURONNE;
++
++        HeapFree( GetProcessHeap(), 0, couronne[r] );
++        if ((couronne[r] = HeapAlloc( GetProcessHeap(), 0, n + 1 ))) memcpy( couronne[r], texte, n + 1 );
++        copie = couronne[r];
++    }
++    ReleaseSRWLockExclusive( &verrou_chaines );
++    if (texte != local) HeapFree( GetProcessHeap(), 0, texte );
++    return copie;
++}
++
++
++/*
++ * Les messages de SteamNetworkingSockets / SteamNetworkingMessages.
++ *
++ * ReceiveMessagesOnConnection, ReceiveMessagesOnPollGroup,
++ * ReceiveMessagesOnChannel (et AllocateMessage) rendent des
++ * SteamNetworkingMessage_t alloues par le client natif. Le jeu les libere par
++ * msg->Release(), fonction EN LIGNE des en-tetes Steamworks qui appelle
++ * directement le pointeur m_pfnRelease -- une fonction de steamclient.dylib,
++ * code arm64 macOS. Appelee depuis le code x86_64 du jeu, elle fait une faute
++ * d'acces a sa propre adresse (temoin essai_lobby.exe sockets :
++ * EXCEPTION c0000005 a 0x10f104504 = m_pfnRelease). C'est le premier paquet
++ * recu d'un pair qui tue le jeu : en rejoignant une partie, ou chez l'hote
++ * quand un joueur arrive. Le lsteamclient de Proton enveloppe ces messages ;
++ * ici on remplace m_pfnRelease par une fonction PE qui appelle la native par
++ * l'unixlib, la native etant gardee dans une table (cle : l'adresse du
++ * message). SendMessages fait le chemin inverse : il rend au client natif sa
++ * propre m_pfnRelease, et recopie dans un tampon natif les donnees dont le jeu
++ * a fourni la fonction de liberation (m_pfnFreeData PE, que le client
++ * appellerait sinon depuis le natif).
++ */
++enum { MSG_AUCUN, MSG_RECEVOIR, MSG_ALLOUER, MSG_ENVOYER, MSG_DEBOGAGE, MSG_AVERTISSEMENT, MSG_CONFIG,
++       MSG_OPTIONS_B, MSG_OPTIONS_C, MSG_RUNCALLBACKS, MSG_APICALL };
++
++static int convertir_rappel( int id, unsigned char *tampon, int taille_native, int capacite );
++
++struct message_steam
++{
++    void  *donnees;          /* m_pData */
++    INT32  taille;           /* m_cbSize */
++    UINT32 connexion;        /* m_conn */
++    BYTE   identite[136];    /* m_identityPeer */
++    INT64  donnee_connexion; /* m_nConnUserData */
++    INT64  recu;             /* m_usecTimeReceived */
++    INT64  numero;           /* m_nMessageNumber */
++    UINT64 liberer_donnees;  /* m_pfnFreeData */
++    UINT64 liberer;          /* m_pfnRelease */
++    INT32  canal;
++    INT32  drapeaux;
++    INT64  donnee_utilisateur;
++    USHORT voie;
++    USHORT bourrage;
++};
++C_ASSERT( FIELD_OFFSET( struct message_steam, liberer_donnees ) == 176 );
++C_ASSERT( FIELD_OFFSET( struct message_steam, liberer ) == 184 );
++
++#define NB_SEAUX_MSG 1024
++
++struct message_suivi
++{
++    struct message_suivi *suivant;
++    struct message_steam *message;
++    UINT64                liberer_natif;
++};
++
++static struct message_suivi *seaux_msg[NB_SEAUX_MSG], *libres_msg;
++static SRWLOCK verrou_msg = SRWLOCK_INIT;
++
++static unsigned seau_msg( const void *m ) { return ((ULONG_PTR)m >> 4) % NB_SEAUX_MSG; }
++
++static UINT64 message_retirer( struct message_steam *m )
++{
++    struct message_suivi **e, *trouve = NULL;
++    UINT64 fn = 0;
++
++    AcquireSRWLockExclusive( &verrou_msg );
++    for (e = &seaux_msg[seau_msg( m )]; *e; e = &(*e)->suivant)
++        if ((*e)->message == m) { trouve = *e; *e = trouve->suivant; break; }
++    if (trouve)
++    {
++        fn = trouve->liberer_natif;
++        trouve->suivant = libres_msg;
++        libres_msg = trouve;
++    }
++    ReleaseSRWLockExclusive( &verrou_msg );
++    return fn;
++}
++
++static void CDECL message_liberer_pe( struct message_steam *m )
++{
++    struct appeler_natif1_params params;
++
++    if (!m) return;
++    if (!(params.fonction = message_retirer( m )))
++    {
++        static int dit;
++        if (!dit++) ERR( "message %p : liberation native inconnue, message garde\n", m );
++        return;
++    }
++    params.arg = (UINT64)(ULONG_PTR)m;
++    WINE_UNIX_CALL( unix_appeler_natif1, &params );
++}
++
++static void message_suivre( struct message_steam *m )
++{
++    struct message_suivi *e;
++    UINT64 pe = (UINT64)(ULONG_PTR)message_liberer_pe;
++    static int dit;
++
++    if (!m || !m->liberer || m->liberer == pe) return;
++    AcquireSRWLockExclusive( &verrou_msg );
++    if ((e = libres_msg)) libres_msg = e->suivant;
++    else e = HeapAlloc( GetProcessHeap(), 0, sizeof(*e) );
++    if (e)
++    {
++        e->message = m;
++        e->liberer_natif = m->liberer;
++        e->suivant = seaux_msg[seau_msg( m )];
++        seaux_msg[seau_msg( m )] = e;
++        m->liberer = pe;
++    }
++    ReleaseSRWLockExclusive( &verrou_msg );
++    if (!dit++)
++        MESSAGE( "lsteamclient : messages reseau enveloppes (m_pfnRelease natif %s -> %p)\n",
++                 wine_dbgstr_longlong(e ? e->liberer_natif : 0), message_liberer_pe );
++}
++
++static BOOL adresse_pe( UINT64 adresse )
++{
++    HMODULE module;
++
++    return adresse && GetModuleHandleExW( GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
++                                          GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++                                          (LPCWSTR)(ULONG_PTR)adresse, &module );
++}
++
++/* Avant SendMessages : le client natif prend possession des messages. */
++static void message_preparer_envoi( struct message_steam *m )
++{
++    if (!m) return;
++    if (m->liberer == (UINT64)(ULONG_PTR)message_liberer_pe)
++    {
++        UINT64 fn = message_retirer( m );
++        if (fn) m->liberer = fn;
++    }
++    if (m->liberer_donnees && adresse_pe( m->liberer_donnees ))
++    {
++        void (*liberer_jeu)( struct message_steam * ) = (void *)(ULONG_PTR)m->liberer_donnees;
++        struct copier_message_params params = { (UINT64)(ULONG_PTR)m->donnees, m->donnees ? m->taille : 0 };
++        static int dit;
++
++        if (WINE_UNIX_CALL( unix_copier_message, &params )) return;   /* tant pis : comportement d'avant */
++        liberer_jeu( m );                 /* le jeu libere SES donnees, encore designees par m_pData */
++        m->donnees = (void *)(ULONG_PTR)params.copie;
++        m->liberer_donnees = params.liberer;
++        if (!dit++) MESSAGE( "lsteamclient : SendMessages, donnees a liberation PE recopiees en natif\n" );
++    }
++}
++
++static unsigned char genre_message( const char *version, const struct methode_versionnee *m )
++{
++    if (m && version && !strncmp( version, "SteamUtils", 10 ) && !strcmp( m->methode, "SetWarningMessageHook" ))
++        return MSG_AVERTISSEMENT;
++    /* ISteamUtils::GetAPICallResult( hAppel, pCallback, cubCallback, iCallbackExpected, pbFailed ) :
++     * SteamCorePro (Demonologist) attend ses CallResult par IsAPICallCompleted puis
++     * cette methode, sans passer par Steam_GetAPICallResult : la structure doit etre
++     * convertie ici aussi (disposition native empaquetee a 4, Windows a 8). */
++    if (m && version && !strncmp( version, "SteamUtils", 10 ) && !strcmp( m->methode, "GetAPICallResult" ))
++        return MSG_APICALL;
++    if (!m || !version || !strstr( version, "Networking" )) return MSG_AUCUN;
++    if (!strncmp( m->methode, "ReceiveMessagesOn", 17 )) return MSG_RECEVOIR;
++    if (!strcmp( m->methode, "AllocateMessage" )) return MSG_ALLOUER;
++    if (!strcmp( m->methode, "SendMessages" )) return MSG_ENVOYER;
++    if (!strcmp( m->methode, "SetDebugOutputFunction" )) return MSG_DEBOGAGE;
++    if (!strcmp( m->methode, "SetConfigValue" )) return MSG_CONFIG;
++    /* (nOptions, pOptions) en 2e/3e argument, ou en 3e/4e */
++    if (!strcmp( m->methode, "CreateListenSocketIP" ) || !strcmp( m->methode, "ConnectByIPAddress" ) ||
++        !strcmp( m->methode, "CreateListenSocketP2P" ) || !strcmp( m->methode, "CreateListenSocketP2PFakeIP" ))
++        return MSG_OPTIONS_B;
++    if (!strcmp( m->methode, "ConnectP2P" ) || !strcmp( m->methode, "ConnectToHostedDedicatedServer" ))
++        return MSG_OPTIONS_C;
++    if (!strcmp( m->methode, "RunCallbacks" )) return MSG_RUNCALLBACKS;
++    return MSG_AUCUN;
++}
++
++/*
++ * Les fonctions du jeu confiees au client natif.
++ *
++ * SetDebugOutputFunction (Demonologist : niveau 3, a l'init de
++ * SteamNetworkingSockets) et SetWarningMessageHook donnent au client une
++ * fonction du jeu -- du code x86_64 -- qu'il appelle de ses propres fils
++ * quand il a quelque chose a dire : erreur de connexion, message
++ * « important »... Le natif sauterait alors dans du x86_64 : arret net du
++ * processus, sans rapport de plantage. On lui donne a la place une fonction
++ * native qui ecrit dans le journal de Wine. Les rappels de configuration
++ * (k_ESteamNetworkingConfig_Callback_*, par SetConfigValue ou dans les options
++ * de ConnectP2P / CreateListenSocketP2P...) sont appeles pendant RunCallbacks :
++ * une fonction native les met en file, et le cote PE les livre au jeu, sur son
++ * fil, a la sortie de RunCallbacks ou de Steam_BGetCallback.
++ */
++static struct adresses_rappels_params adresses_natives;
++static UINT64 rappels_jeu[NB_RAPPELS_CONFIG];
++
++static BOOL adresses_pretes(void)
++{
++    static int pretes = -1;
++
++    if (pretes < 0) pretes = !WINE_UNIX_CALL( unix_adresses_rappels, &adresses_natives );
++    return pretes;
++}
++
++/* Une valeur de configuration de type pointeur (k_ESteamNetworkingConfig_Ptr = 5)
++ * qui designe un rappel : rend la fonction native a donner a la place, et note
++ * celle du jeu. 0 : rien a remplacer. */
++static UINT64 rappel_config_natif( INT32 valeur, INT32 type, UINT64 fonction_jeu )
++{
++    UINT64 natif;
++
++    if (valeur < PREMIER_RAPPEL_CONFIG || valeur >= PREMIER_RAPPEL_CONFIG + NB_RAPPELS_CONFIG) return 0;
++    if (type != 5 || !adresses_pretes()) return 0;
++    if (!fonction_jeu) return 0;   /* retrait du rappel : NULL passe tel quel */
++    natif = adresses_natives.config[valeur - PREMIER_RAPPEL_CONFIG];
++    if (!natif)
++    {
++        ERR( "rappel de configuration %d (fonction du jeu %s) non gere : retire\n", valeur, wine_dbgstr_longlong(fonction_jeu) );
++        return 0;
++    }
++    rappels_jeu[valeur - PREMIER_RAPPEL_CONFIG] = fonction_jeu;
++    MESSAGE( "lsteamclient : rappel de configuration %d du jeu (%s) remplace par une file\n", valeur, wine_dbgstr_longlong(fonction_jeu) );
++    return natif;
++}
++
++struct option_reseau { INT32 valeur; INT32 type; UINT64 val; };   /* SteamNetworkingConfigValue_t */
++
++/* Recopie les options si l'une est un rappel ; rend l'adresse a passer au natif. */
++static UINT64 options_pour_natif( INT32 n, UINT64 options, struct option_reseau *copie, INT32 capacite )
++{
++    const struct option_reseau *o = (const struct option_reseau *)(ULONG_PTR)options;
++    INT32 k;
++    BOOL change = FALSE;
++
++    if (n <= 0 || !options || n > capacite) return options;
++    for (k = 0; k < n; k++)
++    {
++        UINT64 natif;
++        copie[k] = o[k];
++        if ((natif = rappel_config_natif( o[k].valeur, o[k].type, o[k].val ))) { copie[k].val = natif; change = TRUE; }
++    }
++    return change ? (UINT64)(ULONG_PTR)copie : options;
++}
++
++static void livrer_rappels_config(void)
++{
++    static unsigned char tampon[TAILLE_RAPPEL_MAX + 16];
++    static LONG en_cours;
++    struct defiler_rappel_params params = { (UINT64)(ULONG_PTR)tampon };
++
++    if (InterlockedCompareExchange( &en_cours, 1, 0 )) return;   /* pas de reentrance */
++    for (;;)
++    {
++        void (*fn)( void * );
++        if (WINE_UNIX_CALL( unix_defiler_rappel, &params ) || !params.valeur) break;
++        if (params.valeur == 201 && params.taille == 704)
++        {
++            /* SteamNetConnectionStatusChangedCallback_t : m_info passe de 4 a 8 */
++            memmove( tampon + 8, tampon + 4, 700 );
++            memset( tampon + 4, 0, 4 );
++        }
++        fn = (void (*)( void * ))(ULONG_PTR)rappels_jeu[params.valeur - PREMIER_RAPPEL_CONFIG];
++        if (fn) fn( tampon );
++    }
++    InterlockedExchange( &en_cours, 0 );
++}
++
++/* L'emplacement d'une sous-interface rend-il un const char * ? La version
++ * exacte le dit (versions32.h) ; sinon les deux langues d'ISteamApps. */
++static BOOL rend_chaine_objet( const struct objet_pe *objet, unsigned emplacement )
++{
++    const struct methode_versionnee *m = emplacement < NB_SIGNATURES ? objet->meth[emplacement] : NULL;
++
++    if (m) return m->rendu == 'c';
++    return rend_chaine( objet->nom, emplacement );
++}
++
+ /*
+  * Neuf arguments, comme le relais natif et comme en 32 bits. On n'en passait
+  * que six : ISteamAppTicket::GetAppOwnershipTicketData en prend sept, et le
+@@ -483,6 +859,7 @@ static UINT64 repartir( unsigned emplacement, void *self,
+     {
+         UINT64 neutre;
+         unsigned tampon;
++        unsigned char genre;
+ 
+         if (voix_non_relayee( objet->nom, emplacement, &neutre )) return neutre;
+         if (deck_simule( objet->nom, emplacement, &neutre )) return neutre;
+@@ -534,9 +911,89 @@ static UINT64 repartir( unsigned emplacement, void *self,
+                    wine_dbgstr_longlong(params.ret) );
+             return a;
+         }
+-        if (WINE_UNIX_CALL( unix_appel_vtable, &params )) return 0;
++        genre = emplacement < NB_SIGNATURES ? objet->genre_msg[emplacement] : MSG_AUCUN;
++        if (genre == MSG_ENVOYER && b)
++        {
++            /* SendMessages( int nMessages, SteamNetworkingMessage_t *const *pMessages, int64 *pOut ) */
++            INT32 n = (INT32)a, k;
++            for (k = 0; k < n; k++) message_preparer_envoi( ((struct message_steam **)(ULONG_PTR)b)[k] );
++        }
++        {
++            struct option_reseau copie_options[32];
++            UINT64 valeur_config;
++
++            if (genre == MSG_DEBOGAGE && b && adresses_pretes())
++            {
++                MESSAGE( "lsteamclient : SetDebugOutputFunction(%d, %s) : sortie native vers le journal\n", (int)a, wine_dbgstr_longlong(b) );
++                params.b = adresses_natives.debogage;
++            }
++            else if (genre == MSG_AVERTISSEMENT && a && adresses_pretes())
++            {
++                MESSAGE( "lsteamclient : SetWarningMessageHook(%s) : crochet natif vers le journal\n", wine_dbgstr_longlong(a) );
++                params.a = adresses_natives.avertissement;
++            }
++            else if (genre == MSG_CONFIG && e && (INT32)d == 5)
++            {
++                /* SetConfigValue( eValue, eScope, scopeObj, eDataType, const void *pArg ) */
++                UINT64 natif = rappel_config_natif( (INT32)a, (INT32)d, *(UINT64 *)(ULONG_PTR)e );
++                if (natif) { valeur_config = natif; params.e = (UINT64)(ULONG_PTR)&valeur_config; }
++            }
++            else if (genre == MSG_OPTIONS_B) params.c = options_pour_natif( (INT32)b, c, copie_options, ARRAY_SIZE(copie_options) );
++            else if (genre == MSG_OPTIONS_C) params.d = options_pour_natif( (INT32)c, d, copie_options, ARRAY_SIZE(copie_options) );
++            if (genre == MSG_APICALL && b && (INT32)c > 0 && (INT32)c <= 4096)
++            {
++                unsigned char local[4096 + 16];
++                int n;
++
++                params.b = (UINT64)(ULONG_PTR)local;
++                if (WINE_UNIX_CALL( unix_appel_vtable, &params )) return 0;
++                if (params.ret & 0xff)
++                {
++                    n = convertir_rappel( (int)d, local, 0, sizeof(local) );
++                    if (n <= 0 || n > (INT32)c) n = (INT32)c;
++                    memcpy( (void *)(ULONG_PTR)b, local, n );
++                }
++            }
++            else if (WINE_UNIX_CALL( unix_appel_vtable, &params )) return 0;
++        }
++        if (genre == MSG_RUNCALLBACKS) livrer_rappels_config();
++        if (genre == MSG_RECEVOIR && b && (INT32)params.ret > 0)
++        {
++            /* ReceiveMessagesOn*( handle, SteamNetworkingMessage_t **ppOut, int nMax ) -> nombre */
++            INT32 n = (INT32)params.ret, k;
++            for (k = 0; k < n && k < (INT32)c; k++) message_suivre( ((struct message_steam **)(ULONG_PTR)b)[k] );
++        }
++        else if (genre == MSG_ALLOUER && params.ret)
++            message_suivre( (struct message_steam *)(ULONG_PTR)params.ret );
++        if (trace_pont() && emplacement < NB_SIGNATURES && objet->appels_dits[emplacement] < 3)
++        {
++            const struct methode_versionnee *m = objet->meth[emplacement];
++
++            objet->appels_dits[emplacement]++;
++            MESSAGE( "lsteamclient : %s emplacement %u %s( %s, %s, %s ) -> %s\n", ou, emplacement,
++                     m ? m->methode : "?", wine_dbgstr_longlong(a), wine_dbgstr_longlong(b),
++                     wine_dbgstr_longlong(c), wine_dbgstr_longlong(params.ret) );
++        }
+         attendre_ticket( objet->nom, emplacement, &params );
+ 
++        /* Chaine native : la rendre en copie PE (voir chaine_vers_pe). Si la
++         * copie echoue, l'adresse native comme avant. */
++        if (params.ret && rend_chaine_objet( objet, emplacement ))
++        {
++            const char *copie = chaine_vers_pe( params.ret );
++
++            if (trace_pont() && emplacement < NB_SIGNATURES && !objet->chaine_dite[emplacement])
++            {
++                const struct methode_versionnee *m = objet->meth[emplacement];
++
++                objet->chaine_dite[emplacement] = 1;
++                MESSAGE( "lsteamclient : %s emplacement %u %s rend la chaine native %s -> copie PE %p %s\n",
++                         ou, emplacement, m ? m->methode : "", wine_dbgstr_longlong(params.ret), copie,
++                         debugstr_a(copie) );
++            }
++            if (copie) return (ULONG_PTR)copie;
++        }
++
+         /*
+          * ISteamApps::BIsDlcInstalled (emplacement 7). Le client Steam de macOS
+          * evalue l'installation DLC par plateforme : il repond 0 pour les DLC
+@@ -903,6 +1360,10 @@ static void *envelopper_version( UINT64 natif, const char *nom, const char *vers
+ 
+     objet->natif = natif;
+     objet->nom[0] = 0;
++#ifdef _WIN64
++    memset( objet->chaine_dite, 0, sizeof(objet->chaine_dite) );
++    memset( objet->appels_dits, 0, sizeof(objet->appels_dits) );
++#endif
+     if (nom) lstrcpynA( objet->nom, nom, sizeof(objet->nom) );
+ 
+     /* Les signatures d'abord : la table de methodes en depend en 32 bits. */
+@@ -915,6 +1376,7 @@ static void *envelopper_version( UINT64 natif, const char *nom, const char *vers
+         objet->sigs[k] = signature( objet->nom[0] ? objet->nom : "SteamClient", k );
+ #ifdef _WIN64
+         objet->tampons[k] = taille_retour64( objet->nom, k, objet->sigs[k], objet->meth[k] );
++        objet->genre_msg[k] = genre_message( version, objet->meth[k] );
+ #endif
+     }
+ 
+@@ -928,6 +1390,11 @@ static void *envelopper_version( UINT64 natif, const char *nom, const char *vers
+         HeapFree( GetProcessHeap(), 0, objet );
+         return NULL;
+     }
++#endif
++#ifdef _WIN64
++    { unsigned g = 0; for (k = 0; k < NB_SIGNATURES; k++) g += objet->genre_msg[k] != 0;
++      TRACE( "%s : %u methode(s) a messages, trace_pont %d, meth[14] %s\n", debugstr_a(version), g, trace_pont(),
++             objet->meth[14] ? objet->meth[14]->methode : "-" ); }
+ #endif
+     TRACE( "interface native %s -> objet PE %p (%s)\n", wine_dbgstr_longlong(natif), objet,
+            objet->meth[0] ? debugstr_a(version) : "table mesuree" );
+@@ -1069,6 +1536,9 @@ BOOL CDECL Steam_BGetCallback( int pipe, CallbackMsg_t *msg, int *call )
+     struct get_callback_params params = { pipe, sizeof(charge), vers_hote( charge ) };
+ 
+     if (!msg) return FALSE;
++#ifdef _WIN64
++    livrer_rappels_config();
++#endif
+     if (WINE_UNIX_CALL( unix_get_callback, &params )) return FALSE;
+     if (!params.ret) return FALSE;
+ 
+diff --git a/dlls/lsteamclient/unix.c b/dlls/lsteamclient/unix.c
+index d53549e3..7c954f0f 100644
+--- a/dlls/lsteamclient/unix.c
++++ b/dlls/lsteamclient/unix.c
+@@ -10,6 +10,7 @@
+ #include "config.h"
+ 
+ #include <dlfcn.h>
++#include <pthread.h>
+ #include <stdarg.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -338,6 +339,141 @@ static NTSTATUS appel_vtable( void *args )
+     return STATUS_SUCCESS;
+ }
+ 
++/*
++ * Recopier une chaine native dans la memoire du PE.
++ *
++ * Le PE 64 bits pouvait lire lui-meme le const char * rendu par le client :
++ * meme espace d'adressage. Mais la chaine vit dans steamclient.dylib (sa
++ * section de donnees, son tas), memoire que l'ilot (vCPU de
++ * Hypervisor.framework) refuse de projeter : ELDEN RING y lisait sa chaine
++ * et l'ilot arretait le processus sur une faute de deuxieme etage. Seul le
++ * cote hote la lit, ici.
++ */
++static NTSTATUS lire_chaine( void *args )
++{
++    struct lire_chaine_params *params = args;
++    const char *src = (const char *)(ULONG_PTR)params->natif;
++    char *dst = (char *)(ULONG_PTR)params->tampon;
++    size_t n, c;
++
++    if (!src || !dst || params->capacite <= 0) return STATUS_INVALID_PARAMETER;
++    n = strlen( src );
++    params->longueur = n > 0x7fffffff ? 0x7fffffff : (INT32)n;
++    c = n < (size_t)params->capacite ? n : (size_t)params->capacite - 1;
++    memcpy( dst, src, c );
++    dst[c] = 0;
++    return STATUS_SUCCESS;
++}
++
++/* Appeler une fonction native a un argument (m_pfnRelease d'un message). */
++static NTSTATUS appeler_natif1( void *args )
++{
++    struct appeler_natif1_params *params = args;
++    void (*fn)( void * ) = (void (*)( void * ))(ULONG_PTR)params->fonction;
++
++    if (!fn) return STATUS_INVALID_PARAMETER;
++    fn( (void *)(ULONG_PTR)params->arg );
++    return STATUS_SUCCESS;
++}
++
++/* m_pfnFreeData natif pour les donnees recopiees par copier_message : le
++ * client l'appelle (System V) quand il a fini d'envoyer. m_pData est le
++ * premier champ de SteamNetworkingMessage_t. */
++static void liberer_donnees_copiees( void *message )
++{
++    void **donnees = message;
++
++    free( *donnees );
++    *donnees = NULL;
++}
++
++static NTSTATUS copier_message( void *args )
++{
++    struct copier_message_params *params = args;
++    void *copie;
++
++    if (params->taille < 0) return STATUS_INVALID_PARAMETER;
++    if (!(copie = malloc( params->taille ? params->taille : 1 ))) return STATUS_NO_MEMORY;
++    if (params->taille) memcpy( copie, (const void *)(ULONG_PTR)params->source, params->taille );
++    params->copie = (UINT64)(ULONG_PTR)copie;
++    params->liberer = (UINT64)(ULONG_PTR)liberer_donnees_copiees;
++    return STATUS_SUCCESS;
++}
++
++/* --- Fonctions rappelees par le client natif (voir adresses_rappels_params) --- */
++static void sortie_debogage_natif( int type, const char *msg )
++{
++    MESSAGE( "lsteamclient : [SteamNetworkingSockets %d] %s\n", type, msg ? msg : "" );
++}
++
++static void avertissement_natif( int gravite, const char *texte )
++{
++    MESSAGE( "lsteamclient : [avertissement Steam %d] %s\n", gravite, texte ? texte : "" );
++}
++
++#define NB_FILE_RAPPELS 256
++static struct { INT32 valeur, taille; unsigned char donnees[TAILLE_RAPPEL_MAX]; } file_rappels[NB_FILE_RAPPELS];
++static unsigned tete_rappels, queue_rappels;
++static pthread_mutex_t verrou_rappels = PTHREAD_MUTEX_INITIALIZER;
++
++static void enfiler_rappel( int valeur, const void *donnees, int taille )
++{
++    pthread_mutex_lock( &verrou_rappels );
++    if (queue_rappels - tete_rappels < NB_FILE_RAPPELS && donnees && taille <= TAILLE_RAPPEL_MAX)
++    {
++        unsigned r = queue_rappels++ % NB_FILE_RAPPELS;
++        file_rappels[r].valeur = valeur;
++        file_rappels[r].taille = taille;
++        memcpy( file_rappels[r].donnees, donnees, taille );
++    }
++    else ERR( "rappel de configuration %d perdu (file pleine ou %d octets)\n", valeur, taille );
++    pthread_mutex_unlock( &verrou_rappels );
++}
++
++/* Tailles natives : SteamNetConnectionStatusChangedCallback_t 704,
++ * SteamNetAuthenticationStatus_t 260, SteamRelayNetworkStatus_t 272,
++ * SteamNetworkingMessagesSessionRequest_t 136, ..SessionFailed_t 696,
++ * (206 : signalisation, non geree), SteamNetworkingFakeIPResult_t 160. */
++static void rappel_201( void *p ) { enfiler_rappel( 201, p, 704 ); }
++static void rappel_202( void *p ) { enfiler_rappel( 202, p, 260 ); }
++static void rappel_203( void *p ) { enfiler_rappel( 203, p, 272 ); }
++static void rappel_204( void *p ) { enfiler_rappel( 204, p, 136 ); }
++static void rappel_205( void *p ) { enfiler_rappel( 205, p, 696 ); }
++static void rappel_207( void *p ) { enfiler_rappel( 207, p, 160 ); }
++
++static NTSTATUS adresses_rappels( void *args )
++{
++    struct adresses_rappels_params *params = args;
++
++    params->debogage = (UINT64)(ULONG_PTR)sortie_debogage_natif;
++    params->avertissement = (UINT64)(ULONG_PTR)avertissement_natif;
++    params->config[0] = (UINT64)(ULONG_PTR)rappel_201;
++    params->config[1] = (UINT64)(ULONG_PTR)rappel_202;
++    params->config[2] = (UINT64)(ULONG_PTR)rappel_203;
++    params->config[3] = (UINT64)(ULONG_PTR)rappel_204;
++    params->config[4] = (UINT64)(ULONG_PTR)rappel_205;
++    params->config[5] = 0;
++    params->config[6] = (UINT64)(ULONG_PTR)rappel_207;
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS defiler_rappel( void *args )
++{
++    struct defiler_rappel_params *params = args;
++
++    params->valeur = params->taille = 0;
++    pthread_mutex_lock( &verrou_rappels );
++    if (tete_rappels != queue_rappels)
++    {
++        unsigned r = tete_rappels++ % NB_FILE_RAPPELS;
++        params->valeur = file_rappels[r].valeur;
++        params->taille = file_rappels[r].taille;
++        memcpy( (void *)(ULONG_PTR)params->tampon, file_rappels[r].donnees, params->taille );
++    }
++    pthread_mutex_unlock( &verrou_rappels );
++    return STATUS_SUCCESS;
++}
++
+ const unixlib_entry_t __wine_unix_call_funcs[] =
+ {
+     attach,
+@@ -350,6 +486,11 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
+     get_generic_interface,
+     appel_vtable,
+     get_api_call_result,
++    lire_chaine,
++    appeler_natif1,
++    copier_message,
++    adresses_rappels,
++    defiler_rappel,
+ };
+ 
+ C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );
+@@ -374,6 +515,11 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
+     get_generic_interface,
+     appel_vtable,
+     get_api_call_result,
++    lire_chaine,
++    appeler_natif1,
++    copier_message,
++    adresses_rappels,
++    defiler_rappel,
+ };
+ 
+ C_ASSERT( ARRAYSIZE(__wine_unix_call_wow64_funcs) == unix_funcs_count );
+diff --git a/dlls/lsteamclient/unixlib.h b/dlls/lsteamclient/unixlib.h
+index 86b1bef2..22038d78 100644
+--- a/dlls/lsteamclient/unixlib.h
++++ b/dlls/lsteamclient/unixlib.h
+@@ -145,6 +145,67 @@ struct get_api_call_result_params
+     INT32  bourrage;
+ };
+ 
++/* Recopier une chaine rendue par le client natif (const char * hote) dans un
++ * tampon fourni par le cote PE. « longueur » rend la longueur complete de la
++ * chaine native (sans le NUL) : si elle atteint « capacite », la copie est
++ * tronquee et l'appelant redemande avec un tampon assez grand. Ajoutee en fin
++ * de table : les PE qui ne la connaissent pas gardent les memes numeros. */
++struct lire_chaine_params
++{
++    UINT64 natif;     /* const char * hote */
++    UINT64 tampon;    /* char * invite */
++    INT32  capacite;
++    INT32  longueur;
++};
++
++/* Messages de SteamNetworkingSockets (SteamNetworkingMessage_t) : leurs
++ * m_pfnRelease / m_pfnFreeData sont des fonctions natives (System V, arm64
++ * macOS) que le jeu appelle lui-meme -- msg->Release() est en ligne dans les
++ * en-tetes Steamworks. Le cote PE les remplace par les siennes et appelle la
++ * native par ici. Ajoutees en fin de table. */
++struct appeler_natif1_params
++{
++    UINT64 fonction;  /* void (*)(void *) native */
++    UINT64 arg;
++};
++
++/* Recopier les donnees d'un message que le jeu envoie avec SA fonction de
++ * liberation (m_pfnFreeData PE, que le client natif ne peut pas appeler) dans
++ * un tampon natif, libere par une fonction native du cote unix. */
++struct copier_message_params
++{
++    UINT64 source;
++    INT32  taille;
++    INT32  bourrage;
++    UINT64 copie;     /* rendu : tampon natif (malloc) */
++    UINT64 liberer;   /* rendu : void (*)(SteamNetworkingMessage_t *) native */
++};
++
++/* Fonctions que le jeu confie au client pour qu'il les rappelle : sortie de
++ * debogage de SteamNetworkingSockets (SetDebugOutputFunction), crochet
++ * d'avertissement (SetWarningMessageHook), rappels de configuration
++ * (k_ESteamNetworkingConfig_Callback_*, 201..207). Le client natif ne peut
++ * pas appeler du code x86_64 : on lui donne des fonctions natives du cote
++ * unix. Les rappels de configuration sont mis en file et livres au jeu par le
++ * cote PE, sur son fil, apres RunCallbacks. */
++#define PREMIER_RAPPEL_CONFIG 201
++#define NB_RAPPELS_CONFIG     7
++#define TAILLE_RAPPEL_MAX     720
++
++struct adresses_rappels_params
++{
++    UINT64 debogage;                      /* void (*)( int type, const char *msg ) */
++    UINT64 avertissement;                 /* void (*)( int gravite, const char *texte ) */
++    UINT64 config[NB_RAPPELS_CONFIG];     /* 201..207 */
++};
++
++struct defiler_rappel_params
++{
++    UINT64 tampon;    /* TAILLE_RAPPEL_MAX octets, cote PE */
++    INT32  valeur;    /* rendu : 201..207, 0 si la file est vide */
++    INT32  taille;    /* rendu : taille native */
++};
++
+ enum lsteamclient_funcs
+ {
+     unix_attach,
+@@ -157,6 +218,11 @@ enum lsteamclient_funcs
+     unix_get_generic_interface,
+     unix_appel_vtable,
+     unix_get_api_call_result,
++    unix_lire_chaine,
++    unix_appeler_natif1,
++    unix_copier_message,
++    unix_adresses_rappels,
++    unix_defiler_rappel,
+     unix_funcs_count
+ };
+ 

@@ -1,0 +1,182 @@
+wine11 : demarrage de l'appli Cocoa sans pile pendante ni echeance de 5 s (0241)
+
+macdrv_start_cocoa_app() posait struct cocoa_app_startup_info (avec son
+NSConditionLock) sur sa pile, programmait run_cocoa_app() sur le run loop du
+fil principal et attendait COCOA_APP_RUNNING 5 s. Quand le fil principal ne
+traitait pas la source a temps (Diablo IV dans l'ilot TSO sature le
+processeur au demarrage, 2026-10-25), l'appelant abandonnait et rendait sa
+pile ; run_cocoa_app() passait plus tard sur une structure pendante :
+-[OS_hv_vcpu_config lock]: unrecognized selector (memoire reutilisee),
+NSException, abort, et le fil principal Cocoa restait mort dans
+abrt_handler/segv_handler : plus aucun NSEvent (souris, clavier, activation)
+pour tout le processus. Journal : manches-d4-ilot/j-d4-1025-093323.txt
+l.29035, pile dans regard-1025-093710.txt l.575.
+
+- La structure est allouee sur le tas avec un compteur de references
+  atomique (2 : l'appelant et la source, comme les evenements de
+  cocoa_event.m) ; le dernier qui la lache libere le verrou et la memoire.
+  run_cocoa_app() qui passe apres l'abandon demarre l'appli comme avant
+  (WineApplication, controleur, [NSApp run]) et le dit sur stderr.
+- L'echeance passe de 5 a 60 s ; CIDRE_COCOA_DELAI_DEMARRAGE=<secondes> la
+  regle.
+
+Temoin hors Wine (cocoa_main.o relie a des classes factices, fil principal
+retenu N s, pile de l'appelant barbouillee apres son retour) : avant,
+retard 7 s -> run_cocoa_app lit tickcount=0x4141414141414141 puis SIGSEGV ;
+apres, retard 7 s -> demarrage normal (60 s), et avec une echeance de 2 s
+et un retard de 4 s -> abandon dit, puis appli demarree proprement.
+
+--- aa/dlls/winemac.drv/cocoa_main.m
++++ bb/dlls/winemac.drv/cocoa_main.m
+@@ -21,6 +21,8 @@
+ #import <AppKit/AppKit.h>
+ #include <mach/mach.h>
+ #include <mach/mach_time.h>
++#include <stdio.h>
++#include <stdlib.h>
+ 
+ #include "macdrv_cocoa.h"
+ #import "cocoa_app.h"
+@@ -37,14 +39,46 @@
+ };
+ 
+ 
++/* Cidre (0241) : la structure vit sur le tas et porte un compteur de
++ * references partage entre macdrv_start_cocoa_app() et run_cocoa_app().
++ * Elle etait sur la pile de l'appelant : quand le fil principal ne traitait
++ * pas la source avant l'echeance (Diablo IV dans l'ilot TSO sature le
++ * processeur au demarrage), l'appelant abandonnait et rendait sa pile ;
++ * run_cocoa_app() lisait ensuite un verrou pendant
++ * (-[OS_hv_vcpu_config lock]: unrecognized selector), levait une
++ * NSException, et le fil principal mourait dans abort : plus aucun NSEvent
++ * (souris, clavier, activation) pour tout le processus. */
+ struct cocoa_app_startup_info {
+     NSConditionLock*    lock;
+     unsigned long long  tickcount;
+     uint64_t            uptime_ns;
+     BOOL                success;
++    int                 refs;       /* 2 au depart : l'appelant et la source */
++    int                 abandoned;  /* l'appelant n'attend plus */
+ };
+ 
+ 
++static void release_startup_info(struct cocoa_app_startup_info* startup_info)
++{
++    if (__atomic_sub_fetch(&startup_info->refs, 1, __ATOMIC_RELEASE) <= 0)
++    {
++        __atomic_thread_fence(__ATOMIC_ACQUIRE);
++        [startup_info->lock release];
++        free(startup_info);
++    }
++}
++
++
++/* Cidre (0241) : echeance de l'attente du fil principal, en secondes
++ * (CIDRE_COCOA_DELAI_DEMARRAGE, 60 par defaut au lieu des 5 de Wine). */
++static NSTimeInterval startup_time_limit(void)
++{
++    const char* v = getenv("CIDRE_COCOA_DELAI_DEMARRAGE");
++    double secs = v ? atof(v) : 0;
++    return secs > 0 ? secs : 60;
++}
++
++
+ /***********************************************************************
+  *              run_cocoa_app
+  *
+@@ -65,6 +99,7 @@
+     struct cocoa_app_startup_info* startup_info = info;
+     NSConditionLock* lock = startup_info->lock;
+     BOOL created_app = FALSE;
++    BOOL success;
+ 
+     @autoreleasepool
+     {
+@@ -93,9 +128,16 @@
+         [lock lock];
+         [lock unlockWithCondition:COCOA_APP_RUNNING];
+         [lock release];
++
++        if (__atomic_load_n(&startup_info->abandoned, __ATOMIC_ACQUIRE))
++            fprintf(stderr, "cidre:cocoa: fil principal en retard, appli Cocoa demarree apres l'abandon de l'appelant (0241)\n");
+     }
+ 
+-    if (created_app && startup_info->success)
++    /* Cidre (0241) : la structure peut etre liberee des cet appel. */
++    success = startup_info->success;
++    release_startup_info(startup_info);
++
++    if (created_app && success)
+     {
+         @autoreleasepool
+         {
+@@ -119,7 +161,7 @@
+ {
+     int ret = -1;
+     CFRunLoopSourceRef source;
+-    struct cocoa_app_startup_info startup_info;
++    struct cocoa_app_startup_info* startup_info;
+     uint64_t uptime_mach = mach_absolute_time();
+     mach_timebase_info_data_t mach_timebase;
+     NSDate* timeLimit;
+@@ -131,35 +173,49 @@
+                              toTarget:[NSThread class]
+                            withObject:nil];
+ 
+-    startup_info.lock = [[NSConditionLock alloc] initWithCondition:COCOA_APP_NOT_RUNNING];
+-    startup_info.tickcount = tickcount;
+-    startup_info.success = FALSE;
++    startup_info = calloc(1, sizeof(*startup_info));
++    if (!startup_info)
++        return ret;
++    startup_info->lock = [[NSConditionLock alloc] initWithCondition:COCOA_APP_NOT_RUNNING];
++    startup_info->tickcount = tickcount;
++    startup_info->success = FALSE;
++    startup_info->refs = 2;
+ 
+     mach_timebase_info(&mach_timebase);
+-    startup_info.uptime_ns = uptime_mach * mach_timebase.numer / mach_timebase.denom;
++    startup_info->uptime_ns = uptime_mach * mach_timebase.numer / mach_timebase.denom;
+ 
+-    timeLimit = [NSDate dateWithTimeIntervalSinceNow:5];
++    timeLimit = [NSDate dateWithTimeIntervalSinceNow:startup_time_limit()];
+ 
+-    source_context.info = &startup_info;
++    source_context.info = startup_info;
+     source_context.perform = run_cocoa_app;
+     source = CFRunLoopSourceCreate(NULL, 0, &source_context);
+ 
+-    if (source && startup_info.lock && timeLimit)
++    if (source && startup_info->lock && timeLimit)
+     {
+         CFRunLoopAddSource(CFRunLoopGetMain(), source, kCFRunLoopCommonModes);
+         CFRunLoopSourceSignal(source);
+         CFRunLoopWakeUp(CFRunLoopGetMain());
+ 
+-        if ([startup_info.lock lockWhenCondition:COCOA_APP_RUNNING beforeDate:timeLimit])
++        if ([startup_info->lock lockWhenCondition:COCOA_APP_RUNNING beforeDate:timeLimit])
+         {
+-            [startup_info.lock unlock];
+-            ret = !startup_info.success;
++            [startup_info->lock unlock];
++            ret = !startup_info->success;
+         }
++        else
++        {
++            /* Cidre (0241) : la source reste programmee ; run_cocoa_app()
++               garde sa reference et liberera la structure s'il passe apres. */
++            __atomic_store_n(&startup_info->abandoned, 1, __ATOMIC_RELEASE);
++            fprintf(stderr, "cidre:cocoa: fil principal muet apres %.0f s, demarrage Cocoa abandonne (0241)\n",
++                    startup_time_limit());
++        }
+     }
++    else
++        release_startup_info(startup_info); /* la source ne passera jamais */
+ 
+     if (source)
+         CFRelease(source);
+-    [startup_info.lock release];
++    release_startup_info(startup_info);
+     return ret;
+ }
+ }
