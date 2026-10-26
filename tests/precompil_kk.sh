@@ -78,25 +78,24 @@ kk() {
    ( . "$R/tests/series.sh"; serie_mesa | while read -r f; do cat "$f"; done ) | shasum -a 256 | cut -c1-12
 }
 # Le dossier de la reserve d'AIR d'un jeu pour ce KosmicKrisp (0171) :
-# air-local/<id>/<kk>. Les dossiers d'une autre cle de code sont retires (leurs
-# bibliotheques ne serviraient plus) ; un dossier d'avant 0208 (12 chiffres
-# hexadecimaux, empreinte de toute la serie mesa) est repris tel quel s'il n'y
-# a pas encore de dossier pour la cle : l'AIR y est range par empreinte de son
-# MSL et de ses options, une bibliotheque qui ne sert plus n'est jamais relue
-# par erreur, et un pilote mis a jour sans changement du code y retrouve tout.
+# air-local/<id>/<kk>. L'AIR y est range par empreinte de son MSL et de ses
+# options (kk_library_key) : une bibliotheque d'une autre cle de code n'est
+# jamais relue par erreur, et celles dont le MSL n'a pas change resservent.
+# Quand la cle change (mise a jour du pilote, options S, arbre de dev), le
+# dossier le plus recent du jeu est donc REPRIS (renomme) au lieu d'etre
+# vide : un aller-retour entre deux cles (runtime et arbre de dev) ne perd
+# rien (avant : rm -rf des autres cles, 5 544 bibliotheques d'ER perdues le
+# 25/10). Rien n'est supprime ici.
 air_local() {
    K=$(kk)
    [ -n "$K" ] && [ "$K" != inconnu ] || return 1
    A="$CIDRE_DIR/air-local/$1"
    if [ ! -d "$A/$K" ]; then
-      ancien=$(ls -t "$A" 2>/dev/null | grep -E '^[0-9a-f]{12}$' | head -1)
-      if [ -n "$ancien" ] && printf '%s' "$K" | grep -qE '^[0-9]+-[0-9a-f]{16}$'; then
+      ancien=$(ls -t "$A" 2>/dev/null | head -1)
+      if [ -n "$ancien" ] && [ -d "$A/$ancien" ]; then
          mv "$A/$ancien" "$A/$K" 2>/dev/null || true
       fi
    fi
-   for d in "$A"/*; do
-      [ -d "$d" ] && [ "$(basename "$d")" != "$K" ] && rm -rf "${d:?}"
-   done
    echo "$A/$K"
 }
 dossier_jeu() { echo "$CIDRE_DIR/precompil/$1"; }
