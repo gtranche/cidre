@@ -159,7 +159,10 @@ bouton « Jouer » de Steam (voir plus bas).
 - **Xcode Command Line Tools** (`xcode-select --install`) — clang, Metal, `file`, etc.
 - **Deux Homebrew** (la pile mélange des outils Intel et arm64) :
   - Homebrew **Intel** sous `/usr/local` (via Rosetta) : `bison` (≥ 3), `mingw-w64`, `zstd`
-  - Homebrew **arm64** sous `/opt/homebrew` : `llvm`, `spirv-tools`, `cmake`, `glslang`, `meson`, `ninja`, `python@3`
+  - Homebrew **arm64** sous `/opt/homebrew` : `llvm`, `llvm@15`, `spirv-tools`, `cmake`, `glslang`, `meson`, `ninja`, `python@3`
+    (`llvm@15` : l'AIR direct de KosmicKrisp, 0260, lie statiquement ses `libLLVM*.a` ; autre préfixe :
+    `meson configure build/mesa -Dkosmickrisp-air-llvm=<préfixe>`, qui doit porter `include/llvm` et `lib/libLLVM*.a`.
+    Rien de LLVM 15 n'est chargé à l'exécution : le runtime n'en dépend pas)
 - **Steam** pour macOS installé et connecté (le pont lsteamclient parle au vrai
   client Steam natif).
 

@@ -29,7 +29,9 @@ verifier_paquets(){
    done
 }
 echo "== paquets Homebrew arm64 (outils de build) =="
-verifier_paquets "$BREW_ARM" llvm spirv-tools cmake glslang
+# llvm@15 : AIR direct de KosmicKrisp (0260), lie statiquement a ses libLLVM*.a
+# (option meson kosmickrisp-air-llvm, defaut /opt/homebrew/opt/llvm@15).
+verifier_paquets "$BREW_ARM" llvm llvm@15 spirv-tools cmake glslang
 echo "== outils de build (commande disponible, source libre : venv toolchain, brew, pip) =="
 export PATH="$(cd "$(dirname "$0")/.." && pwd)/toolchain/bin:$PATH"
 for c in meson ninja; do
