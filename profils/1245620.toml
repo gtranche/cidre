@@ -38,7 +38,11 @@ compile_differee = true
 # soumission, tessellation par phases, bandes sans deroulage : mediane 40,2 -> 47,5
 # img/s, image identique, 0 gel. strip_sans_deroule reste propre a la fiche (un
 # maillage qui utilise vraiment l index 0xffff casserait).
-code_kk = "lectures_cachees w10_sans_court_circuit images_nulles_sans_branche ssbo_sans_bornes contraction_malgre_precis fusion_soumission tess_phases strip_sans_deroule"
+# 0271 cbv_sans_bornes (2026-10-27, 4+4 manches entrelacees) : lectures de CBV sans
+# test de borne ; eclairage differe 2,29 -> 0,70 ms, mediane 46,8 -> 54,0 img/s,
+# image identique au bruit pres. Pas par defaut : un CBV lu au-dela de sa taille
+# lirait la memoire voisine au lieu de 0.
+code_kk = "lectures_cachees w10_sans_court_circuit images_nulles_sans_branche ssbo_sans_bornes contraction_malgre_precis fusion_soumission tess_phases strip_sans_deroule cbv_sans_bornes"
 
 [[reglages_jeu]]
 # Mode fenetre 1280x720, qualite Basse (M1 Max, 2026-10-24) : en plein ecran (et en sans bordure),

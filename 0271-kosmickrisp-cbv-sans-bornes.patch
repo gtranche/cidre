@@ -1,0 +1,101 @@
+Generated-by: LLM
+
+KosmicKrisp : CBV sans bornes (CIDRE_CBV_SANS_BORNES, coupe par defaut).
+
+Meme principe que CIDRE_SSBO_SANS_BORNES, pour les UBO (les CBV de D3D12
+sous vkd3d-proton). Avec robustBufferAccess, chaque lecture d'UBO devient
+« decalage < taille ? lecture : 0 », en scalaires, chacune dans sa branche.
+Avec l'option, les UBO prennent le format d'adresse
+nir_address_format_64bit_global_32bit_offset : plus de test par lecture, et
+les lectures se regroupent en vecteurs. Le convertisseur d'Apple (D3DMetal)
+ne borne pas les CBV. L'option entre dans la cle des caches (pipelineCacheUUID).
+Les indices de descripteurs restent bornes.
+
+Risque : une lecture au-dela d'un CBV lit la memoire suivante au lieu de 0,
+et faute si elle sort de toute allocation. Option par fiche de jeu.
+
+ELDEN RING, M1 Max, pile mDx (serie complete + 0267), xctrace 3 s a T+215,
+medianes par image ; serie entrelacee A/C 4 + 4 (avec un 3e bras 0268) :
+- images/s (moyenne en jeu) : reference 47,0 47,0 46,5 46,7 (moy. 46,8) ;
+  CIDRE_CBV_SANS_BORNES 53,9 55,3 54,0 52,8 (moy. 54,0, +15 %).
+- temps GPU par image : 22,5 -> 18,7 ms ; sommets 5,72 -> 4,42 ms,
+  fragments 7,26 -> 4,76 ms, calcul 3,46 -> 3,24 ms.
+- eclairage differe (plus long kick de fragments, 1280x720, 2 cibles) :
+  2,29 -> 0,70 ms (D3DMetal : 0,55 ms).
+- G-buffer (plus long kick de sommets) : 2,65 -> 1,95 ms (D3DMetal : 0,55 ms).
+Code AGX (archive Metal du MSL capture en jeu, desassembleur de Mesa) :
+- FS de l'eclairage : 5 540 -> 3 179 instructions ; lectures 338 -> 91,
+  branches 283 -> 33, debordements de pile 133 -> 0.
+- VS principaux du G-buffer : 186 -> 80 et 676 -> 472 instructions.
+Aucune faute GPU ni gel sur les 5 manches avec l'option (4 de serie + 1 de
+vidage) ; sauvegardes intactes. Rendu non compare image par image.
+
+--- a/src/kosmickrisp/vulkan/kk_shader.h
++++ b/src/kosmickrisp/vulkan/kk_shader.h
+@@ -356,6 +356,25 @@
+    return kk_buffer_addr_format(robustness);
+ }
+ 
++/* CIDRE_CBV_SANS_BORNES : meme chose pour les UBO (CBV de D3D12 sous vkd3d).
++ * Avec robustBufferAccess, chaque lecture de CBV devenait
++ * « off < taille ? lecture : 0 », en scalaires, chacune dans sa branche ;
++ * l'eclairage differe d'ELDEN RING en compte 390 (code AGX : 5 540
++ * instructions, 3 767 sans ces bornes). Le convertisseur d'Apple ne borne pas
++ * les CBV. Risque : faute GPU si le jeu lit au-dela d'un CBV ; option par
++ * fiche. Les indices de descripteurs restent bornes.
++ */
++static inline nir_address_format
++kk_ubo_addr_format(VkPipelineRobustnessBufferBehaviorEXT robustness)
++{
++   static int sans_bornes = -1;
++   if (sans_bornes < 0)
++      sans_bornes = getenv("CIDRE_CBV_SANS_BORNES") != NULL;
++   if (sans_bornes)
++      return nir_address_format_64bit_global_32bit_offset;
++   return kk_buffer_addr_format(robustness);
++}
++
+ struct kk_root_layout;
+ 
+ bool
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -67,7 +67,7 @@
+       .environment = NIR_SPIRV_VULKAN,
+       .ssbo_addr_format = kk_ssbo_addr_format(rs->storage_buffers),
+       .phys_ssbo_addr_format = nir_address_format_64bit_global,
+-      .ubo_addr_format = kk_buffer_addr_format(rs->uniform_buffers),
++      .ubo_addr_format = kk_ubo_addr_format(rs->uniform_buffers),
+       .shared_addr_format = nir_address_format_32bit_offset,
+       .min_ssbo_alignment = KK_MIN_SSBO_ALIGNMENT,
+       .min_ubo_alignment = KK_MIN_UBO_ALIGNMENT,
+@@ -1138,7 +1138,7 @@
+    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ssbo,
+             kk_ssbo_addr_format(rs->storage_buffers));
+    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ubo,
+-            kk_buffer_addr_format(rs->uniform_buffers));
++            kk_ubo_addr_format(rs->uniform_buffers));
+ 
+    if (kk_atomic64_native(pdev))
+       NIR_PASS(_, nir, kk_nir_split_atomic64);
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
+@@ -1207,7 +1207,7 @@
+             VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED ||
+          rs->images != VK_PIPELINE_ROBUSTNESS_IMAGE_BEHAVIOR_DISABLED,
+       .ssbo_addr_format = kk_ssbo_addr_format(rs->storage_buffers),
+-      .ubo_addr_format = kk_buffer_addr_format(rs->uniform_buffers),
++      .ubo_addr_format = kk_ubo_addr_format(rs->uniform_buffers),
+    };
+ 
+    assert(set_layout_count <= KK_MAX_SETS);
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -1191,6 +1191,7 @@
+       "CIDRE_DERIVEES_CALCUL",
+       "CIDRE_CACHE_BRUT",
+       "CIDRE_SSBO_SANS_BORNES",
++      "CIDRE_CBV_SANS_BORNES",
+       "CIDRE_CONTRACTION_MALGRE_PRECIS",
+       "CIDRE_IMAGES_NULLES_SANS_BRANCHE",
+       "CIDRE_W10_SANS_COURT_CIRCUIT",
