@@ -1,0 +1,77 @@
+Generated-by: LLM
+
+KosmicKrisp : pas de garde de LOD minimale sur les lectures de texels (CIDRE_MIN_LOD_TXF_LIBRE, coupe par defaut)
+
+Comparaison du code machine AGX des memes nuanceurs, D3DMetal contre KK
+(Demonologist, 21 nuanceurs de calcul les plus chers apparies par nom et
+structure, ~/Dev/cidre-kk-agx). Avec MESA_KK_EXPERIMENTAL=image_view_min_lod
+(pose par le lanceur pour vkd3d-proton), kk_nir_lower_image_view_min_lod
+ajoute a chaque txf la lecture du uint16 de LOD minimale du descripteur et une
+selection a zero composante par composante : jusqu'a 143 selections MSL par
+nuanceur Lumen (ScreenProbeIntegrateCS), aucune chez D3DMetal. En D3D12,
+ResourceMinLODClamp ne borne que l'echantillonnage ; Load() n'y est pas soumis.
+
+CIDRE_MIN_LOD_TXF_LIBRE=1 : txf n'est plus garde (l'echantillonnage et tg4
+gardent la borne). L'option entre dans pipelineCacheUUID. Banc statique (MSL
+reels du chrono A2, compiles par Metal sur M1, selections retirees) : -1 a
+-8 % d'instructions AGX sur les nuanceurs concernes, ~0,46 ms/image ponderee
+par le temps (calcul). Non mesure en jeu.
+
+diff --git a/src/kosmickrisp/vulkan/kk_nir_lower_image_view_min_lod.c b/src/kosmickrisp/vulkan/kk_nir_lower_image_view_min_lod.c
+index 5a4f18b..c12ef2d 100644
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_image_view_min_lod.c
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_image_view_min_lod.c
+@@ -17,6 +17,7 @@
+ #include "nir_builtin_builder.h"
+ 
+ #include <stdbool.h>
++#include <stdlib.h>
+ 
+ static nir_def *
+ query_min_lod(nir_builder *b, nir_tex_instr *tex, bool int_min_lod)
+@@ -26,12 +27,33 @@ query_min_lod(nir_builder *b, nir_tex_instr *tex, bool int_min_lod)
+                                   false, false);
+ }
+ 
++/* Cidre CIDRE_MIN_LOD_TXF_LIBRE : pas de garde de LOD minimale sur les lectures
++ * de texels (txf). En D3D12, ResourceMinLODClamp ne borne que l'echantillonnage
++ * (« no individual sample accesses a mip level less than » la borne) : Load()
++ * ne la voit pas, et D3DMetal n'emet aucune garde. vkd3d-proton ne pose
++ * minLod que pour une borne au-dessus du premier niveau de la vue. Sans
++ * l'option, chaque txf lit le uint16 de LOD minimale du descripteur et
++ * selectionne 0 composante par composante (Demonologist : jusqu'a 140 selections
++ * par nuanceur Lumen, -1 a -8 % d'instructions AGX une fois retirees).
++ * L'echantillonnage (txl, tex, txb, txd) et tg4 gardent la borne. */
++static bool
++kk_min_lod_txf_libre(void)
++{
++   static int on = -1;
++   if (on < 0)
++      on = getenv("CIDRE_MIN_LOD_TXF_LIBRE") != NULL;
++   return on;
++}
++
+ static bool
+ lower_min_lod(nir_builder *b, nir_tex_instr *tex, UNUSED void *data)
+ {
+    if (nir_tex_instr_is_query(tex))
+       return false;
+ 
++   if (tex->op == nir_texop_txf && kk_min_lod_txf_libre())
++      return false;
++
+    /* Buffer textures don't have levels-of-detail */
+    if (tex->sampler_dim == GLSL_SAMPLER_DIM_BUF)
+       return false;
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
+index 0b64c4a..386ba00 100644
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -1200,6 +1200,7 @@ kk_physical_device_init_pipeline_cache(struct kk_physical_device *pdev)
+       "CIDRE_REDUCTIONS_SIMD",
+       "CIDRE_LECTURES_VECTORISEES",
+       "CIDRE_DEMI_PRECISION",
++      "CIDRE_MIN_LOD_TXF_LIBRE",
+    };
+    for (unsigned i = 0; i < ARRAY_SIZE(options_codegen); i++) {
+       uint8_t pose = getenv(options_codegen[i]) != NULL;

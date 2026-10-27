@@ -50,7 +50,12 @@ plateformes_steam = "steam 2026-10-11"
 # Code KosmicKrisp des nuanceurs (26/10) : seule combinaison gagnante au banc,
 # +5 % au menu sur M1 (21,7 -> 22,85) ; sur M4, les reductions SIMD ramenent la
 # passe Lumen ConvertToIrradiance de x13 a x5,5 du temps D3DMetal.
-code_kk = "ssbo_sans_bornes ssbo_nul_puits reductions_simd"
+# 0269 min_lod_txf_libre (pas de garde de LOD minimale sur les lectures de texels) et
+# 0270 sans_attachement_borne (passes sans cible bornees aux ciseaux au lieu des
+# 16384x16384 donnes par vkd3d : 268 -> ~1 Mpx) (2026-10-27, M4, 5+5 manches
+# entrelacees) : mediane 29,5 -> 31,2 img/s, image controlee (etats de menu X/Y/Z
+# vus aussi sans les options).
+code_kk = "ssbo_sans_bornes ssbo_nul_puits reductions_simd min_lod_txf_libre sans_attachement_borne"
 
 [[machine]]
 si = "famille_gpu <= 7"

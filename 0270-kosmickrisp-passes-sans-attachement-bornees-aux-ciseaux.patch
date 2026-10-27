@@ -1,0 +1,193 @@
+Generated-by: LLM
+
+KosmicKrisp : etendue des passes sans attachement bornee aux ciseaux (CIDRE_SANS_ATTACHEMENT_BORNE, coupe par defaut)
+
+Sans RTV ni DSV, vkd3d-proton donne pour zone de rendu maxFramebufferWidth/
+Height : 16384x16384 chez KK. Demonologist (M4, chrono A2) : une passe
+rp-16384x16384-c0 a 1,6 ms/image (ombres virtuelles d'Unreal 5 probables).
+Metal parcourt toutes les tuiles de la cible : banc ~/Dev/cidre-kk-agx/banc/
+sansatt (M1, Metal, passe sans attachement, triangles de 16 px, pixels couverts
+egaux) : 20 triangles 0,03 ms a 1024x1024 contre 0,69 ms a 16384x16384 ;
+2000 triangles 0,16 ms contre 0,73 ms.
+
+CIDRE_SANS_ATTACHEMENT_BORNE=1 : a l'ouverture d'une passe sans attachement,
+renderTargetWidth/Height = union des ciseaux du dessin (bornee par la zone) ;
+si un dessin suivant a des ciseaux plus grands, la passe est relancee a la
+nouvelle etendue (cs_end, comme les autres relances de passe). Les fragments
+hors ciseaux ne sont jamais produits. CIDRE_SANS_ATTACHEMENT_STATS=1 : passes
+par seconde, zone moyenne de vkd3d et etendue retenue (Mpx), toutes les 5 s.
+Gain nul si Unreal pose des ciseaux de 16384 : a verifier en jeu par les
+statistiques. Non mesure en jeu.
+
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.c b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+index cd19e98..ede336f 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+@@ -1217,6 +1217,37 @@ kk_chv_ecritures_rendu(struct kk_cmd_buffer *cmd)
+    util_dynarray_fini(&imgs);
+ }
+ 
++/* CIDRE_SANS_ATTACHEMENT_STATS : passes sans attachement par seconde, zone
++ * moyenne donnee par vkd3d et etendue retenue (en megapixels). */
++static void
++kk_sans_att_stat(struct kk_cmd_buffer *cmd, uint32_t w, uint32_t h)
++{
++   static int on = -1;
++   static uint64_t n, t0;
++   static double zone, retenu;
++   static simple_mtx_t lock = SIMPLE_MTX_INITIALIZER;
++   if (on < 0)
++      on = getenv("CIDRE_SANS_ATTACHEMENT_STATS") != NULL;
++   if (!on)
++      return;
++   const VkRect2D *a = &cmd->state.gfx.render.area;
++   simple_mtx_lock(&lock);
++   n++;
++   zone += (double)a->extent.width * a->extent.height / 1e6;
++   retenu += (double)w * h / 1e6;
++   uint64_t t = os_time_get_nano();
++   if (!t0)
++      t0 = t;
++   if (t - t0 >= 5000000000ull) {
++      double dt = (t - t0) / 1e9;
++      fprintf(stderr, "[CIDRE_SANS_ATT] %.0f ouvertures/s, zone moy %.1f Mpx, "
++              "retenue moy %.2f Mpx (derniere %ux%u)\n",
++              n / dt, zone / n, retenu / n, w, h);
++      n = 0; zone = retenu = 0; t0 = t;
++   }
++   simple_mtx_unlock(&lock);
++}
++
+ void
+ cs_start_render(struct kk_cmd_buffer *cmd)
+ {
+@@ -1259,6 +1290,19 @@ cs_start_render(struct kk_cmd_buffer *cmd)
+    if (kk_enc_stats_enabled())
+       kk_enc_stat(KK_ENCS_OUV_RENDU, __builtin_return_address(0));
+    kk_sig(cmd, 'R');
++   if (state->render.sans_attachement && kk_sans_att_borne()) {
++      uint32_t w, h;
++      kk_sans_att_etendue(cmd, &w, &h);
++      w = MAX2(w, state->render.borne_w);
++      h = MAX2(h, state->render.borne_h);
++      state->render.borne_w = w;
++      state->render.borne_h = h;
++      mtl_render_pass_descriptor_set_render_target_width(
++         state->render_pass_descriptor, w);
++      mtl_render_pass_descriptor_set_render_target_height(
++         state->render_pass_descriptor, h);
++      kk_sans_att_stat(cmd, w, h);
++   }
+    cmd->metal.render = mtl_new_render_command_encoder_with_descriptor(
+       cmd->metal.cmd_buf, state->render_pass_descriptor);
+ 
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.h b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+index 6fcb8d5..c30f5e9 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+@@ -166,6 +166,10 @@ struct kk_rendering_state {
+    VkSampleLocationEXT sample_locations[KK_MAX_SAMPLES];
+    bool force_attachment_store;
+    bool rendering_to_whole_framebuffer;
++   /* Cidre CIDRE_SANS_ATTACHEMENT_BORNE : passe sans attachement, et etendue
++    * (renderTargetWidth/Height) deja donnee a l'encodeur ouvert. */
++   bool sans_attachement;
++   uint32_t borne_w, borne_h;
+ };
+ 
+ /* Dirty tracking bits for state not tracked by vk_dynamic_graphics_state or
+@@ -493,6 +497,8 @@ kk_get_descriptors_state(struct kk_cmd_buffer *cmd,
+ };
+ 
+ void cs_start_render(struct kk_cmd_buffer *cmd);
++bool kk_sans_att_borne(void);
++void kk_sans_att_etendue(struct kk_cmd_buffer *cmd, uint32_t *w, uint32_t *h);
+ mtl_render_encoder *cs_get_render(struct kk_cmd_buffer *cmd);
+ mtl_compute_encoder *cs_get_compute(struct kk_cmd_buffer *cmd);
+ 
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_draw.c b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+index e485aca..930b9d5 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -353,6 +353,8 @@ kk_CmdBeginRendering(VkCommandBuffer commandBuffer,
+     * bound pipeline's sample count. */
+    bool no_framebuffer =
+       framebuffer_extent.width == 0u && framebuffer_extent.height == 0u;
++   render->sans_attachement = no_framebuffer;
++   render->borne_w = render->borne_h = 0u;
+    if (no_framebuffer) {
+       framebuffer_extent.width = render->area.extent.width;
+       framebuffer_extent.height = render->area.extent.height;
+@@ -790,6 +792,50 @@ kk_CmdBindVertexBuffers3KHR(VkCommandBuffer commandBuffer,
+    }
+ }
+ 
++/*
++ * Cidre CIDRE_SANS_ATTACHEMENT_BORNE : sans RTV ni DSV, vkd3d-proton donne
++ * pour zone de rendu maxFramebufferWidth/Height, soit 16384x16384 chez KK
++ * (Unreal 5 : ombres virtuelles, rasterisation vers des UAV). Metal parcourt
++ * alors toutes les tuiles de la cible : banc sansatt (M1, 20 petits
++ * triangles) 0,03 ms a 1024x1024 contre 0,69 ms a 16384x16384, a pixels
++ * couverts egaux. Avec l'option, l'etendue de la passe est l'union des
++ * ciseaux (bornee par la zone) des dessins ; un dessin dont les ciseaux
++ * depassent relance la passe plus grande. Les fragments hors ciseaux ne
++ * sont jamais produits : rien ne change pour le nuanceur.
++ */
++bool
++kk_sans_att_borne(void)
++{
++   static int on = -1;
++   if (on < 0)
++      on = getenv("CIDRE_SANS_ATTACHEMENT_BORNE") != NULL;
++   return on;
++}
++
++void
++kk_sans_att_etendue(struct kk_cmd_buffer *cmd, uint32_t *w, uint32_t *h)
++{
++   const struct vk_dynamic_graphics_state *dyn =
++      &cmd->vk.dynamic_graphics_state;
++   const VkRect2D *area = &cmd->state.gfx.render.area;
++   int64_t ex = (int64_t)area->offset.x + area->extent.width;
++   int64_t ey = (int64_t)area->offset.y + area->extent.height;
++   int64_t mx = 1, my = 1;
++   for (uint32_t i = 0; i < dyn->vp.scissor_count; i++) {
++      const VkRect2D *r = &dyn->vp.scissors[i];
++      if (r->extent.width == 0u || r->extent.height == 0u)
++         continue;
++      mx = MAX2(mx, MIN2((int64_t)r->offset.x + r->extent.width, ex));
++      my = MAX2(my, MIN2((int64_t)r->offset.y + r->extent.height, ey));
++   }
++   if (dyn->vp.scissor_count == 0u) {
++      mx = ex;
++      my = ey;
++   }
++   *w = (uint32_t)MAX2(mx, 1);
++   *h = (uint32_t)MAX2(my, 1);
++}
++
+ static void
+ kk_flush_vp_state(struct kk_cmd_buffer *cmd)
+ {
+@@ -824,6 +870,21 @@ kk_flush_vp_state(struct kk_cmd_buffer *cmd)
+       rects[i].height = maxy - miny;
+    }
+ 
++   struct kk_rendering_state *rs = &cmd->state.gfx.render;
++   if (rs->sans_attachement && kk_sans_att_borne() && cmd->metal.render &&
++       !cmd->state.gfx.need_to_start_render_pass) {
++      uint32_t w, h;
++      kk_sans_att_etendue(cmd, &w, &h);
++      if (w > rs->borne_w || h > rs->borne_h) {
++         /* Passe trop petite pour ces ciseaux : relance plus grande. */
++         rs->borne_w = MAX2(rs->borne_w, w);
++         rs->borne_h = MAX2(rs->borne_h, h);
++         cs_end(cmd);
++         kk_cmd_buffer_dirty_all_gfx(cmd);
++         cmd->state.gfx.need_to_start_render_pass = true;
++      }
++   }
++
+    mtl_render_encoder *encoder = cs_get_render(cmd);
+    mtl_set_scissor_rects(encoder, rects, count);
+ 

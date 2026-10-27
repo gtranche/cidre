@@ -345,7 +345,8 @@ fi
 #   compile_differee = true     compilation Metal sur une file de fils (0237)
 #   code_kk = "nom ..."         options de generation de code (0156-0159, 0132,
 #                               0256, 0263 : fusion_soumission, tess_phases,
-#                               strip_sans_deroule ; 0271 : cbv_sans_bornes), noms en minuscules sans CIDRE_ : la plupart
+#                               strip_sans_deroule ; 0271 : cbv_sans_bornes ; 0269 : min_lod_txf_libre ;
+#                               0270 : sans_attachement_borne), noms en minuscules sans CIDRE_ : la plupart
 #                               plantent ou ralentissent ailleurs (SSBO_SANS_BORNES
 #                               seul : Unreal 5 faute au demarrage).
 # Elles changent la cle du cache de pipelines. CIDRE_<option>=0 en retire une.
@@ -353,7 +354,7 @@ fi
 [ "$(opt compile_differee CIDRE_COMPILE_DIFFEREE)" = true ] && kk_defaut CIDRE_COMPILE_DIFFEREE 1
 for o in $(profil code_kk | tr -d '"'); do
    case $o in
-      lectures_cachees|w10_sans_court_circuit|images_nulles_sans_branche|ssbo_sans_bornes|ssbo_nul_puits|contraction_malgre_precis|reductions_simd|minmax_zero_entier|textures_nulles_sans_branche|fusion_soumission|tess_phases|strip_sans_deroule|cbv_sans_bornes)
+      lectures_cachees|w10_sans_court_circuit|images_nulles_sans_branche|ssbo_sans_bornes|ssbo_nul_puits|contraction_malgre_precis|reductions_simd|minmax_zero_entier|textures_nulles_sans_branche|fusion_soumission|tess_phases|strip_sans_deroule|cbv_sans_bornes|min_lod_txf_libre|sans_attachement_borne)
          kk_defaut "CIDRE_$(printf '%s' "$o" | tr '[:lower:]' '[:upper:]')" 1 ;;
       *) echo "code_kk : option inconnue ignoree : $o" >&2 ;;
    esac
