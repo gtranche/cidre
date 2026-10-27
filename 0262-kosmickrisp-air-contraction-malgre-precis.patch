@@ -1,0 +1,28 @@
+Generated-by: LLM
+
+KosmicKrisp : l'AIR direct honore CIDRE_CONTRACTION_MALGRE_PRECIS (0158)
+
+nir_to_air ignorait l'option : avec CIDRE_AIR_DIRECT=1, les operations
+NoContraction de vkd3d restaient en math_mode(safe) (fdiv IEEE, sans fma),
+alors que le chemin MSL (0158) les relache. D3DMetal relache tout sauf les
+vrais precise (LightScattering de Demonologist : 46 fdiv stricts chez nous,
+0 chez D3DMetal). Banc en place sur donnees reelles (M1, 27/10) :
+LightScattering 996 -> 470 us par dispatch. Les fiches qui demandent deja
+contraction_malgre_precis (ELDEN RING) en profitent en AIR direct.
+
+--- a/src/kosmickrisp/compiler/nir_to_air_emit.inc	2026-10-26 13:29:11
++++ b/src/kosmickrisp/compiler/nir_to_air_emit.inc	2026-10-26 23:23:11
+@@ -304,7 +304,12 @@
+       if (mm || nir_alu_instr_is_comparison(alu))
+          return FP_SAFE;
+    }
+-   if (ctrl & (nir_fp_no_contract | nir_fp_no_reassoc))
++   /* CIDRE_CONTRACTION_MALGRE_PRECIS (comme nir_to_msl) : NoContraction de
++    * vkd3d ignore, l'operation garde les drapeaux relaches/rapides. */
++   static int malgre = -1;
++   if (malgre < 0)
++      malgre = getenv("CIDRE_CONTRACTION_MALGRE_PRECIS") != NULL;
++   if ((ctrl & (nir_fp_no_contract | nir_fp_no_reassoc)) && !malgre)
+       return FP_SAFE;
+    if (ctrl & (nir_fp_preserve_inf | nir_fp_preserve_nan | nir_fp_preserve_signed_zero))
+       return FP_RELAXED;
