@@ -1,0 +1,37 @@
+Generated-by: LLM
+
+KosmicKrisp : nir_to_air, tampon de type_name par fil (gel au 1er lancement)
+
+type_name() rendait un tampon statique partage. nir_to_air tourne en
+parallele sur les fils de compilation differee : entre l'appel et l'emploi du
+nom, un autre fil pouvait le reecrire. Une entree de nuanceur fragment float4
+etait ainsi declaree « uint » dans les metadonnees AIR alors que son argument
+LLVM est <4 x float> (Demonologist, fs-2575ccee6e8e4f2a, une incoherence sur
+1935 FS dans le vidage du 27/10). MTLCompilerService plante alors a la
+compilation du programme fragment (M4 : SIGSEGV dans
+TargetRegisterInfo::getRegSizeInBits ; M1 : « cannot select ») ; le fil kkcomp
+attend sans fin ou prend un SIGSEGV dans la reponse d'archive, et le jeu se
+fige a la bascule vers le menu 3D. Le tirage etant aleatoire, environ une
+manche sur trois gelait en AIR direct a froid.
+
+Verification hors ligne (M4, outils/fs_formats : 130 pipelines par FS,
+formats et melange varies) : FS d'origine 16 plantages, meme FS avec la
+metadonnee corrigee 0 ; outils/verif_types.py compare types LLVM et
+metadonnees de tout un vidage CIDRE_AIR_DUMP.
+--- a/src/kosmickrisp/compiler/nir_to_air_main.inc	2026-10-26 13:58:09
++++ b/src/kosmickrisp/compiler/nir_to_air_main.inc	2026-10-27 10:26:57
+@@ -230,7 +230,13 @@
+ static const char *
+ type_name(nir_alu_type t, unsigned n)
+ {
+-   static char buf[32];
++   /* Cidre : tampon PAR FIL. nir_to_air tourne sur les fils de compilation
++    * differee en parallele ; un tampon statique partage se faisait reecrire
++    * entre type_name() et son emploi : une entree de nuanceur fragment
++    * float4 declaree « uint » dans les metadonnees AIR (fs-2575ccee6e8e4f2a,
++    * Demonologist) fait planter MTLCompilerService (SIGSEGV getRegSizeInBits /
++    * « cannot select ») et figer le jeu au premier lancement. */
++   static thread_local char buf[32];
+    const char *b;
+    switch (t) {
+    case nir_type_uint8: b = "uchar"; break;

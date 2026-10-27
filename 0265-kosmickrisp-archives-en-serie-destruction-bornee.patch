@@ -1,0 +1,120 @@
+Generated-by: LLM
+
+KosmicKrisp : recherches d'archive MTL4 en serie, destruction de nuanceur bornee
+
+Gel de Demonologist au M4 avec l'AIR direct (et au M1 avec une nouvelle
+generation de code), a la bascule vers le menu 3D : GPU a 0 %, Shivers a
+100 % de CPU, plus aucune soumission. Echantillons (27/10) : un fil de
+compilation differee (kkcomp) a pris un SIGSEGV dans
+MTL4ArchiveImpl::newArchiveReplyForKey (recherche d'un pipeline de rendu
+variante dans les archives, sous le verrou de compilation en lecture, donc en
+concurrence avec d'autres fils) ; le gestionnaire de Wine le fait tourner en
+rond. RHIThread attend alors sans fin dans kk_shader_destroy (prewarm_refs /
+compile_ready) et tout le jeu s'arrete. Le cas se produit quand beaucoup de
+pipelines manquent aux archives (AIR direct sans reserve MSL, codegen neuf).
+
+- Toute recherche dans kk_compiler_archives() passe par un mutex
+  (KK_ARCHIVE_LOCK/UNLOCK). Actif par defaut ;
+  CIDRE_ARCHIVE_LECTURE_CONCURRENTE=1 rend l'ancien comportement. 0264
+  (relais) doit entourer ses deux boucles d'archives des memes macros.
+- kk_shader_destroy n'attend plus que 10 s la compilation differee et le
+  prechauffage ; au-dela, journal « [CIDRE] kk_shader_destroy : ... nuanceur
+  abandonne » et fuite volontaire du nuanceur au lieu de figer le jeu.
+--- a/src/kosmickrisp/bridge/mtl_compiler.m	2026-10-27 09:34:13
++++ b/src/kosmickrisp/bridge/mtl_compiler.m	2026-10-27 09:34:13
+@@ -209,6 +209,31 @@
+ }
+ 
+ static pthread_rwlock_t kk_compile_rwlock = PTHREAD_RWLOCK_INITIALIZER;
++/* Cidre : une seule recherche d'archive MTL4 a la fois. Gel de Demonologist
++ * (M4, AIR direct) : SIGSEGV dans MTL4ArchiveImpl::newArchiveReplyForKey sur un
++ * fil de compilation differee, pendant des recherches concurrentes (elles se
++ * font sous le verrou de compilation en lecture). Toute boucle sur
++ * kk_compiler_archives() passe par KK_ARCHIVE_LOCK/UNLOCK.
++ * CIDRE_ARCHIVE_LECTURE_CONCURRENTE=1 : ancien comportement. */
++static pthread_mutex_t kk_archive_mutex = PTHREAD_MUTEX_INITIALIZER;
++static bool
++kk_archive_serie(void)
++{
++   static int v = -1;
++   if (v < 0) {
++      const char *e = getenv("CIDRE_ARCHIVE_LECTURE_CONCURRENTE");
++      v = !(e && e[0] && e[0] != '0');
++   }
++   return v;
++}
++#define KK_ARCHIVE_LOCK()                                                      \
++   bool kk_archive_verrou_ = kk_archive_serie();                               \
++   if (kk_archive_verrou_)                                                     \
++      pthread_mutex_lock(&kk_archive_mutex)
++#define KK_ARCHIVE_UNLOCK()                                                    \
++   if (kk_archive_verrou_)                                                     \
++      pthread_mutex_unlock(&kk_archive_mutex)
++
+ static id<MTL4Compiler> kk_flush_compiler;
+ static char kk_flush_dir[2048];
+ static _Atomic uint32_t kk_flush_seq;
+@@ -754,11 +779,13 @@
+       uint64_t t0 = stats ? kk_now_ns() : 0;
+       kk_compile_lock();
+       id<MTLComputePipelineState> pipeline = nil;
++      KK_ARCHIVE_LOCK();
+       for (id<MTL4Archive> archive in kk_compiler_archives(comp)) {
+          pipeline = [archive newComputePipelineStateWithDescriptor:desc error:NULL];
+          if (pipeline != nil)
+             break;
+       }
++      KK_ARCHIVE_UNLOCK();
+       bool cached = pipeline != nil;
+       if (!cached)
+          pipeline = [comp newComputePipelineStateWithDescriptor:desc compilerTaskOptions:nil
+@@ -934,11 +961,13 @@
+       uint64_t t0 = stats ? kk_now_ns() : 0;
+       kk_compile_lock();
+       id<MTLRenderPipelineState> pipeline = nil;
++      KK_ARCHIVE_LOCK();
+       for (id<MTL4Archive> archive in kk_compiler_archives(comp)) {
+          pipeline = [archive newRenderPipelineStateWithDescriptor:desc error:NULL];
+          if (pipeline != nil)
+             break;
+       }
++      KK_ARCHIVE_UNLOCK();
+       bool cached = pipeline != nil;
+       if (!cached)
+          pipeline = [comp newRenderPipelineStateWithDescriptor:desc compilerTaskOptions:nil
+--- a/src/kosmickrisp/vulkan/kk_shader.c	2026-10-27 09:34:13
++++ b/src/kosmickrisp/vulkan/kk_shader.c	2026-10-27 09:34:13
+@@ -1266,15 +1266,31 @@
+    struct kk_device *dev = container_of(vk_dev, struct kk_device, vk);
+ 
+    /* Cidre : un pipeline detruit avant la fin de sa compilation differee. */
++   /* Cidre : attente bornee (10 s). Un fil de compilation mort (SIGSEGV dans
++    * Metal, rattrape par Wine qui le fait tourner en rond) ne rendrait jamais
++    * la main : on abandonne alors le nuanceur (fuite volontaire, le travail en
++    * vol peut encore le lire) au lieu de figer le fil du jeu. */
++   const int64_t borne_ns = 10ll * 1000 * 1000 * 1000;
+    if (shader->compile_async) {
+-      util_queue_fence_wait(&shader->compile_ready);
++      if (!util_queue_fence_wait_timeout(&shader->compile_ready,
++                                         os_time_get_absolute_timeout(borne_ns))) {
++         fprintf(stderr, "[CIDRE] kk_shader_destroy : compilation differee "
++                         "toujours en cours apres 10 s, nuanceur abandonne\n");
++         return;
++      }
+       util_queue_fence_destroy(&shader->compile_ready);
+       shader->compile_async = false;
+    }
+    /* Prechauffage d'un FS qui lit encore la fonction de ce VS (VS partage par
+     * le cache de pipelines, FS d'un autre pipeline encore en file). */
+-   while (atomic_load(&shader->prewarm_refs) != 0)
++   for (unsigned n = 0; atomic_load(&shader->prewarm_refs) != 0; n++) {
++      if (n == 100000) {
++         fprintf(stderr, "[CIDRE] kk_shader_destroy : prechauffage toujours en "
++                         "cours apres 10 s, nuanceur abandonne\n");
++         return;
++      }
+       usleep(100);
++   }
+    free(shader->prewarm_key);
+    shader->prewarm_key = NULL;
+ 
