@@ -55,7 +55,11 @@ plateformes_steam = "steam 2026-10-11"
 # 16384x16384 donnes par vkd3d : 268 -> ~1 Mpx) (2026-10-27, M4, 5+5 manches
 # entrelacees) : mediane 29,5 -> 31,2 img/s, image controlee (etats de menu X/Y/Z
 # vus aussi sans les options).
-code_kk = "ssbo_sans_bornes ssbo_nul_puits reductions_simd min_lod_txf_libre sans_attachement_borne"
+# 0272 horodatages_cpu (2026-10-27) : requetes d horodatage jouees cote CPU depuis
+# GPUStartTime/GPUEndTime au retour de commit, sans travail GPU (UE en pose ~1400/s) :
+# M4 28,4 -> 33,4 img/s (2 paires, dylib de la serie), M1 28,3 -> ~31 ; 0 gel, 0 faute.
+# Statistiques GPU d UE / resolution dynamique a confirmer dans une vraie partie.
+code_kk = "ssbo_sans_bornes ssbo_nul_puits reductions_simd min_lod_txf_libre sans_attachement_borne horodatages_cpu"
 
 [[machine]]
 si = "famille_gpu <= 7"

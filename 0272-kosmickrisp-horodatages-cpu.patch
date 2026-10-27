@@ -1,0 +1,653 @@
+Generated-by: LLM
+
+KosmicKrisp : horodatages sans travail GPU (CIDRE_HORODATAGES_CPU=1)
+
+Sous Unreal/vkd3d-proton (Demonologist, Lumen), les requetes d'horodatage
+(~1 400 ecritures/s, remise a zero avant chaque ecriture, une copie par
+requete) coutaient environ 15 % d'images au M4 : encodeurs de calcul,
+dispatch declencheur, resolutions du tas de compteurs, barrieres de file.
+Aucune optimisation partielle ne le recuperait.
+
+Avec CIDRE_HORODATAGES_CPU=1, remises a zero, ecritures et copies (pools
+d'horodatage) sont seulement notees dans l'enregistrement. Chaque commit
+Metal de la soumission rend ses temps GPU (MTL4CommitFeedback GPUStartTime /
+GPUEndTime, temps hote) ; quand tous sont revenus, les operations sont jouees
+cote CPU dans l'ordre : l'ecriture prend le temps du commit qui la porte,
+interpole par rang d'ecriture, converti dans le domaine de timestampPeriod
+(cale sur sampleTimestamps toutes les 2 s) et rendu croissant par file ; la
+copie ecrit la destination (adresse CPU retrouvee par le registre
+d'adresses). Les signaux de la soumission sont alors donnes par le CPU, apres
+les copies. Une soumission dont les derniers enregistrements n'ont rien a
+commiter part sur un tampon vide. 2 : bilan toutes les 5 s ([CIDRE_HCPU]).
+Rien ne change sans la variable ; la reserve de tas (0238) reste en place.
+
+Demonologist, menu principal, FILES=4, series entrelacees :
+M4 29,7 / 29,9 / 29,9 -> 34,6 / 34,8 / 33,3 img/s (+15,7 %, neutralisation
+totale 33,0) ; M1 28,3 (reference valide) -> 31,3 / 31,4 / 30,3 / 30,2.
+Ouvertures d'encodeur de calcul 3 870 -> 1 640/s (M4). Ni gel ni faute en
+7 manches ; copies sur requete indisponible : 0 ; commits portant des
+ecritures : 0,33 ms en moyenne, 11,7 ms au plus.
+
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c	2026-10-27 22:07:02
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c	2026-10-27 22:07:02
+@@ -211,6 +211,7 @@
+    util_dynarray_clear(&cmd->ts_written);
+    cmd->ts_cur = false;
+    util_dynarray_clear(&cmd->ts_stage_map);
++   util_dynarray_clear(&cmd->ts_cpu_ops);
+ }
+ 
+ /* Ends Metal command buffer recording and returns allocator to pool for reuse */
+@@ -323,6 +324,7 @@
+    util_dynarray_fini(&cmd->ts_zeros);
+    util_dynarray_fini(&cmd->ts_written);
+    util_dynarray_fini(&cmd->ts_stage_map);
++   util_dynarray_fini(&cmd->ts_cpu_ops);
+ 
+    vk_free(&pool->vk.alloc, cmd);
+ }
+@@ -357,6 +359,7 @@
+    cmd->ts_zeros = UTIL_DYNARRAY_INIT;
+    cmd->ts_written = UTIL_DYNARRAY_INIT;
+    cmd->ts_stage_map = UTIL_DYNARRAY_INIT;
++   cmd->ts_cpu_ops = UTIL_DYNARRAY_INIT;
+    cmd->post_render_writes = UTIL_DYNARRAY_INIT;
+    cmd->tess_ops = UTIL_DYNARRAY_INIT;
+    cmd->tess_rec_phase = -1;
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h	2026-10-27 22:07:02
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h	2026-10-27 22:07:02
+@@ -314,6 +314,24 @@
+    bool copie;
+ };
+ 
++/* Cidre CIDRE_HORODATAGES_CPU=1 : horodatages sans travail GPU. Remises a
++ * zero, ecritures et copies sont notees dans l'ordre et jouees cote CPU a la
++ * completion de la soumission (temps GPU de debut/fin du commit, interpoles
++ * par rang d'ecriture). */
++enum kk_ts_cpu_type { KK_TS_CPU_RESET, KK_TS_CPU_WRITE, KK_TS_CPU_COPY };
++struct kk_ts_cpu_op {
++   struct kk_query_pool *pool;
++   uint8_t type;
++   uint32_t first, count;
++   uint32_t flags;
++   uint64_t stride;
++   void *dst; /* copie : adresse CPU de destination */
++};
++int kk_horodatages_cpu(void);
++struct kk_device;
++void kk_ts_cpu_appliquer(struct kk_device *dev, const struct kk_ts_cpu_op *ops,
++                         uint32_t n, double t0, double t1, uint64_t *dernier);
++
+ struct kk_ts_zero {
+    struct kk_query_pool *pool;
+    uint32_t first;
+@@ -396,6 +414,8 @@
+    /* Timestamps already sampled by the current render encoder. (struct
+     * kk_ts_stage_entry). */
+    struct util_dynarray ts_stage_map;
++   /* CIDRE_HORODATAGES_CPU (struct kk_ts_cpu_op) */
++   struct util_dynarray ts_cpu_ops;
+    /* Deferred writes due to being mid render encoder */
+    struct util_dynarray post_render_writes;
+    /* Cidre CIDRE_TESS_PHASES : dispatchs de la tessellation emulee mis en
+--- a/src/kosmickrisp/vulkan/kk_query_pool.c	2026-10-27 22:07:02
++++ b/src/kosmickrisp/vulkan/kk_query_pool.c	2026-10-27 22:07:02
+@@ -24,9 +24,15 @@
+ #include "util/u_atomic.h"
+ 
+ #include <inttypes.h>
++#include <mach/mach_time.h>
++#include "util/os_time.h"
++#include "util/simple_mtx.h"
+ #include <stdio.h>
+ #include <stdlib.h>
+ 
++static void cpu_write_query_result(void *dst, uint32_t idx, VkQueryResultFlags flags,
++                                   uint64_t result);
++
+ struct kk_query_report {
+    uint64_t value;
+ };
+@@ -474,6 +480,161 @@
+    libkk_reset_query_struct(cmd, kk_grid_1d(num_queries), false, info);
+ }
+ 
++/* Cidre (CIDRE_HORODATAGES_CPU=1, 2 = bilan toutes les 5 s) : horodatages
++ * sans aucun travail GPU (voir struct kk_ts_cpu_op). Les valeurs viennent des
++ * temps GPU de debut et de fin du commit (retour MTL4CommitFeedback, en
++ * secondes du temps hote), interpoles par rang d'ecriture et convertis dans
++ * le domaine de timestampPeriod (celui de kk_get_timestamp). */
++int
++kk_horodatages_cpu(void)
++{
++   static int mode = -1;
++   if (mode < 0) {
++      const char *v = getenv("CIDRE_HORODATAGES_CPU");
++      mode = v ? atoi(v) : 0;
++   }
++   return mode;
++}
++
++static double
++kk_ts_cpu_hote_s(void)
++{
++   static mach_timebase_info_data_t tb;
++   if (tb.denom == 0)
++      mach_timebase_info(&tb);
++   return (double)mach_absolute_time() * tb.numer / tb.denom / 1e9;
++}
++
++static uint64_t
++kk_ts_cpu_ticks(struct kk_device *dev, double t)
++{
++   static simple_mtx_t lock = SIMPLE_MTX_INITIALIZER;
++   static double hote0, gpu0_ns, freq;
++   static uint64_t dernier_cal;
++   uint64_t maintenant = os_time_get_nano();
++   simple_mtx_lock(&lock);
++   /* Recalage toutes les 2 s : le temps GPU et le temps hote n'ont pas
++    * forcement la meme derive. */
++   if (freq == 0.0 || maintenant - dernier_cal > 2000000000ull) {
++      double h0 = kk_ts_cpu_hote_s();
++      uint64_t g = mtl_device_get_gpu_timestamp(dev->mtl_handle);
++      double h1 = kk_ts_cpu_hote_s();
++      if (freq == 0.0)
++         freq = (double)mtl_device_timestamp_frequency(dev->mtl_handle);
++      hote0 = (h0 + h1) * 0.5;
++      gpu0_ns = (double)g;
++      if (dernier_cal == 0 && kk_horodatages_cpu() >= 2)
++         fprintf(stderr, "[CIDRE_HCPU] calage : hote %.6f s, gpu %.0f ns, frequence %.0f\n",
++                 hote0, gpu0_ns, freq);
++      dernier_cal = maintenant;
++   }
++   double ns = gpu0_ns + (t - hote0) * 1e9;
++   double f = freq;
++   simple_mtx_unlock(&lock);
++   if (ns < 0.0)
++      ns = 0.0;
++   return (uint64_t)(ns * f / 1e9);
++}
++
++void
++kk_ts_cpu_appliquer(struct kk_device *dev, const struct kk_ts_cpu_op *ops,
++                    uint32_t n, double t0, double t1, uint64_t *dernier)
++{
++   static uint64_t n_ecr, n_cop, n_cop_indispo, n_groupes, n_sans_temps;
++   static uint64_t t_der;
++   static double span_ms;
++   if (!(t1 >= t0 && t0 > 0.0)) {
++      t0 = t1 = kk_ts_cpu_hote_s();
++      p_atomic_inc(&n_sans_temps);
++   }
++   uint32_t nw = 0;
++   for (uint32_t i = 0; i < n; i++)
++      nw += ops[i].type == KK_TS_CPU_WRITE;
++   static uint64_t n_gw, n_recul, dernier_ticks, n_corr;
++   static double somme_span_ms, max_span_ms;
++   if (nw) {
++      double sp = (t1 - t0) * 1e3;
++      p_atomic_inc(&n_gw);
++      somme_span_ms += sp;
++      if (sp > max_span_ms)
++         max_span_ms = sp;
++   }
++   uint32_t rang = 0;
++   for (uint32_t i = 0; i < n; i++) {
++      const struct kk_ts_cpu_op *o = &ops[i];
++      uint64_t *v = (uint64_t *)((uint8_t *)o->pool->bo->cpu + o->pool->query_start);
++      switch (o->type) {
++      case KK_TS_CPU_RESET:
++         for (uint32_t q = 0; q < o->count; q++)
++            p_atomic_set(&v[o->first + q], LIBKK_QUERY_UNAVAILABLE);
++         break;
++      case KK_TS_CPU_WRITE: {
++         double t = nw > 1 ? t0 + (t1 - t0) * rang / (nw - 1) : t1;
++         uint64_t ticks = kk_ts_cpu_ticks(dev, t);
++         /* croissance par file : un commit peut commencer avant la fin du
++          * precedent sur la meme file */
++         if (dernier) {
++            if (ticks <= *dernier) {
++               ticks = *dernier + 1;
++               p_atomic_inc(&n_corr);
++            }
++            *dernier = ticks;
++         }
++         if (ticks == LIBKK_QUERY_UNAVAILABLE)
++            ticks--;
++         for (uint32_t q = 0; q < o->count; q++)
++            p_atomic_set(&v[o->first + q], ticks);
++         if (ticks < dernier_ticks)
++            n_recul++;
++         dernier_ticks = ticks;
++         rang++;
++         p_atomic_inc(&n_ecr);
++         break;
++      }
++      case KK_TS_CPU_COPY:
++         for (uint32_t q = 0; q < o->count; q++) {
++            uint64_t val = p_atomic_read(&v[o->first + q]);
++            bool dispo = val != LIBKK_QUERY_UNAVAILABLE;
++            uint8_t *d = (uint8_t *)o->dst + q * o->stride;
++            if (!dispo)
++               p_atomic_inc(&n_cop_indispo);
++            if (dispo || (o->flags & VK_QUERY_RESULT_PARTIAL_BIT))
++               cpu_write_query_result(d, 0, o->flags, dispo ? val : 0);
++            if (o->flags & VK_QUERY_RESULT_WITH_AVAILABILITY_BIT)
++               cpu_write_query_result(d, 1, o->flags, dispo);
++         }
++         p_atomic_inc(&n_cop);
++         break;
++      }
++   }
++   p_atomic_inc(&n_groupes);
++   if (kk_horodatages_cpu() >= 2) {
++      span_ms = (t1 - t0) * 1e3;
++      uint64_t now = os_time_get_nano();
++      if (now - t_der > 5000000000ull) {
++         t_der = now;
++         fprintf(stderr, "[CIDRE_HCPU] groupes %llu (sans temps %llu, avec ecritures %llu : "
++                 "duree moyenne %.3f ms, max %.3f ms), ecritures %llu (reculs toutes files %llu, rehausses sur la file %llu), copies %llu "
++                 "(requetes indisponibles %llu), valeur %llu\n",
++                 (unsigned long long)n_groupes, (unsigned long long)n_sans_temps,
++                 (unsigned long long)n_gw, n_gw ? somme_span_ms / n_gw : 0.0, max_span_ms,
++                 (unsigned long long)n_ecr, (unsigned long long)n_recul, (unsigned long long)n_corr,
++                 (unsigned long long)n_cop, (unsigned long long)n_cop_indispo,
++                 (unsigned long long)kk_ts_cpu_ticks(dev, t1));
++         n_gw = 0; somme_span_ms = 0.0; max_span_ms = 0.0; (void)span_ms;
++      }
++   }
++}
++
++static void
++kk_ts_cpu_noter(struct kk_cmd_buffer *cmd, uint8_t type,
++                struct kk_query_pool *pool, uint32_t first, uint32_t count)
++{
++   struct kk_ts_cpu_op o = {.pool = pool, .type = type, .first = first,
++                            .count = count};
++   util_dynarray_append(&cmd->ts_cpu_ops, o);
++}
++
+ static uint32_t
+ kk_mv_query_count(struct kk_cmd_buffer *cmd)
+ {
+@@ -600,6 +761,10 @@
+    VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
+    VK_FROM_HANDLE(kk_query_pool, pool, queryPool);
+    kk_sig(cmd, 'z');
++   if (kk_horodatages_cpu() && kk_pool_is_ts(pool)) {
++      kk_ts_cpu_noter(cmd, KK_TS_CPU_RESET, pool, firstQuery, queryCount);
++      return;
++   }
+ 
+    assert(cmd->metal.render == NULL);
+ 
+@@ -720,6 +885,10 @@
+    VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
+    VK_FROM_HANDLE(kk_query_pool, pool, queryPool);
+    kk_sig(cmd, 't');
++   if (kk_horodatages_cpu()) {
++      kk_ts_cpu_noter(cmd, KK_TS_CPU_WRITE, pool, query, kk_mv_query_count(cmd));
++      return;
++   }
+    struct kk_device *dev = kk_cmd_buffer_device(cmd);
+    assert(kk_pool_is_ts(pool) && pool->ts.segs);
+ 
+@@ -1093,6 +1262,26 @@
+    VK_FROM_HANDLE(kk_query_pool, pool, queryPool);
+    kk_sig(cmd, 'q');
+    struct kk_device *dev = kk_cmd_buffer_device(cmd);
++
++   if (kk_horodatages_cpu() && kk_pool_is_ts(pool)) {
++      uint64_t off = 0;
++      struct kk_bo *bo = kk_address_registry_lookup(&dev->addresses,
++                                                    pDstRange->address, &off);
++      if (bo && bo->cpu) {
++         struct kk_ts_cpu_op o = {.pool = pool, .type = KK_TS_CPU_COPY,
++                                  .first = firstQuery, .count = queryCount,
++                                  .flags = flags, .stride = pDstRange->stride,
++                                  .dst = (uint8_t *)bo->cpu + off};
++         util_dynarray_append(&cmd->ts_cpu_ops, o);
++      } else {
++         static bool dit;
++         if (!dit) {
++            dit = true;
++            fprintf(stderr, "[CIDRE_HCPU] copie vers une memoire sans adresse CPU : ignoree\n");
++         }
++      }
++      return;
++   }
+ 
+    kk_ts_need_record(cmd, pool, firstQuery, queryCount, true);
+ 
+--- a/src/kosmickrisp/vulkan/kk_queue.c	2026-10-27 22:07:02
++++ b/src/kosmickrisp/vulkan/kk_queue.c	2026-10-27 22:07:02
+@@ -24,6 +24,7 @@
+ 
+ #include "util/os_time.h"
+ #include "util/u_atomic.h"
++#include "util/simple_mtx.h"
+ #include <alloca.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -171,7 +172,143 @@
+    return cmd->metal.cmd_buf;
+ }
+ 
++/* Cidre CIDRE_HORODATAGES_CPU : une soumission qui porte des operations
++ * d'horodatage CPU (struct kk_ts_cpu_op). Chaque commit de la soumission tient
++ * une reference et note ses temps GPU ; quand tous sont revenus, les
++ * operations sont jouees dans l'ordre (chacune avec les temps du commit qui
++ * l'a portee), puis les signaux de la soumission sont donnes par le CPU : un
++ * lecteur qui attend la barriere voit les copies faites. */
++struct kk_ts_cpu_groupe {
++   uint32_t fin; /* ops [debut du suivant .. fin[ */
++   double t0, t1;
++};
++struct kk_ts_cpu_signal {
++   mtl_shared_event *ev;
++   uint64_t valeur;
++};
++struct kk_ts_cpu_soum {
++   struct kk_device *dev;
++   struct kk_queue *queue;
++   int ref;
++   simple_mtx_t lock;
++   struct util_dynarray ops;     /* struct kk_ts_cpu_op */
++   struct util_dynarray groupes; /* struct kk_ts_cpu_groupe */
++   struct util_dynarray signaux; /* struct kk_ts_cpu_signal */
++};
++struct kk_ts_cpu_retour {
++   struct kk_ts_cpu_soum *soum;
++   uint32_t groupe;
++};
++static __thread struct kk_ts_cpu_soum *kk_ts_cpu_courante;
++
+ static void
++kk_ts_cpu_unref(struct kk_ts_cpu_soum *soum)
++{
++   if (p_atomic_dec_return(&soum->ref) != 0)
++      return;
++   uint32_t debut = 0;
++   const struct kk_ts_cpu_op *ops = soum->ops.data;
++   util_dynarray_foreach(&soum->groupes, struct kk_ts_cpu_groupe, g) {
++      if (g->fin > debut)
++         kk_ts_cpu_appliquer(soum->dev, ops + debut, g->fin - debut, g->t0, g->t1,
++                             &soum->queue->ts_cpu_dernier);
++      debut = g->fin;
++   }
++   uint32_t n = util_dynarray_num_elements(&soum->ops, struct kk_ts_cpu_op);
++   if (n > debut) /* ne devrait pas arriver : porteur vide en fin de soumission */
++      kk_ts_cpu_appliquer(soum->dev, ops + debut, n - debut, 0.0, 0.0,
++                          &soum->queue->ts_cpu_dernier);
++   util_dynarray_foreach(&soum->signaux, struct kk_ts_cpu_signal, sg) {
++      if (mtl_shared_event_get_signaled_value(sg->ev) < sg->valeur)
++         mtl_shared_event_set_signaled_value(sg->ev, sg->valeur);
++      mtl_release(sg->ev);
++   }
++   util_dynarray_fini(&soum->ops);
++   util_dynarray_fini(&soum->groupes);
++   util_dynarray_fini(&soum->signaux);
++   free(soum);
++}
++
++static void
++kk_ts_cpu_feedback(struct mtl_feedback_data *data)
++{
++   struct kk_ts_cpu_retour *r = data->user_data;
++   struct kk_ts_cpu_groupe *g =
++      util_dynarray_element(&r->soum->groupes, struct kk_ts_cpu_groupe, r->groupe);
++   g->t0 = data->gpu_start;
++   g->t1 = data->gpu_end;
++   struct kk_ts_cpu_soum *soum = r->soum;
++   free(r);
++   kk_ts_cpu_unref(soum);
++}
++
++/* Note les operations de cmd dans la soumission courante (avant son commit). */
++static void
++kk_ts_cpu_pousser(struct kk_queue *queue, struct kk_cmd_buffer *cmd)
++{
++   uint32_t n = util_dynarray_num_elements(&cmd->ts_cpu_ops, struct kk_ts_cpu_op);
++   if (n == 0)
++      return;
++   struct kk_ts_cpu_soum *soum = kk_ts_cpu_courante;
++   if (!soum) {
++      soum = calloc(1, sizeof(*soum));
++      if (!soum)
++         return;
++      soum->dev = kk_queue_device(queue);
++      soum->queue = queue;
++      soum->ref = 1; /* celle de la soumission */
++      simple_mtx_init(&soum->lock, mtx_plain);
++      soum->ops = UTIL_DYNARRAY_INIT;
++      soum->groupes = UTIL_DYNARRAY_INIT;
++      soum->signaux = UTIL_DYNARRAY_INIT;
++      if (!util_dynarray_ensure_cap(&soum->groupes,
++                                    256 * sizeof(struct kk_ts_cpu_groupe))) {
++         free(soum);
++         return;
++      }
++      kk_ts_cpu_courante = soum;
++   }
++   util_dynarray_append_array(&soum->ops, struct kk_ts_cpu_op,
++                              cmd->ts_cpu_ops.data, n);
++}
++
++/* Chaque commit de la soumission courante tient une reference et ferme un
++ * groupe d'operations. Un retour peut arriver pendant qu'on ajoute un groupe :
++ * le tableau des groupes est reserve (256) a la creation, jamais realloue. */
++static void
++kk_ts_cpu_attacher(mtl_commit_options *options)
++{
++   struct kk_ts_cpu_soum *soum = kk_ts_cpu_courante;
++   if (!soum)
++      return;
++   struct kk_ts_cpu_retour *r = malloc(sizeof(*r));
++   if (!r)
++      return;
++   uint32_t ng = util_dynarray_num_elements(&soum->groupes, struct kk_ts_cpu_groupe);
++   if (ng >= 256) {
++      free(r);
++      return; /* les operations suivantes iront au groupe suivant ou au porteur */
++   }
++   struct kk_ts_cpu_groupe g = {
++      .fin = util_dynarray_num_elements(&soum->ops, struct kk_ts_cpu_op)};
++   util_dynarray_append(&soum->groupes, g);
++   r->soum = soum;
++   r->groupe = ng;
++   p_atomic_inc(&soum->ref);
++   mtl_commit_options_add_feedback_handler(options, kk_ts_cpu_feedback, r);
++}
++
++/* Commit Metal qui porte, s'il y a lieu, la reference de la soumission
++ * CIDRE_HORODATAGES_CPU courante. */
++static void
++kk_hcpu_commit(mtl_command_queue *q, mtl_command_buffer **cbs, uint32_t n,
++               mtl_commit_options *options)
++{
++   kk_ts_cpu_attacher(options);
++   mtl_command_queue_commit(q, cbs, n, options);
++}
++
++static void
+ kk_queue_commit_inner(struct kk_queue *queue, struct kk_cmd_buffer *cmd,
+                       mtl_feedback_handler_callback callback, void *user_data)
+ {
+@@ -188,7 +325,7 @@
+ 
+    if (sealed_count == 0u) {
+       if (kk_enc_stats_enabled()) kk_enc_stat(KK_ENCS_COMMIT, NULL);
+-      mtl_command_queue_commit(queue->mtl_handle, &cmd->metal.cmd_buf, 1u,
++      kk_hcpu_commit(queue->mtl_handle, &cmd->metal.cmd_buf, 1u,
+                                options);
+    } else {
+       struct kk_device *dev = kk_queue_device(queue);
+@@ -204,7 +341,7 @@
+ 
+          if (kk_enc_stats_enabled()) kk_enc_stat(KK_ENCS_COMMIT, NULL);
+ 
+-         mtl_command_queue_commit(queue->mtl_handle, buffers, count, options);
++         kk_hcpu_commit(queue->mtl_handle, buffers, count, options);
+          vk_free(&dev->vk.alloc, buffers);
+       } else {
+          /* Without the array the pieces can still go one after another; the
+@@ -214,11 +351,11 @@
+                                mtl_command_buffer *, cmd_buf) {
+             mtl_commit_options *bare = mtl_new_commit_options();
+             if (kk_enc_stats_enabled()) kk_enc_stat(KK_ENCS_COMMIT, NULL);
+-            mtl_command_queue_commit(queue->mtl_handle, cmd_buf, 1u, bare);
++            kk_hcpu_commit(queue->mtl_handle, cmd_buf, 1u, bare);
+             mtl_release(bare);
+          }
+          if (kk_enc_stats_enabled()) kk_enc_stat(KK_ENCS_COMMIT, NULL);
+-         mtl_command_queue_commit(queue->mtl_handle, &cmd->metal.cmd_buf, 1u,
++         kk_hcpu_commit(queue->mtl_handle, &cmd->metal.cmd_buf, 1u,
+                                   options);
+       }
+    }
+@@ -390,6 +527,8 @@
+ static void
+ kk_queue_ts_before_commit(struct kk_queue *queue, struct kk_cmd_buffer *cmd)
+ {
++   if (kk_horodatages_cpu())
++      kk_ts_cpu_pousser(queue, cmd);
+    if (kk_resolve_groupe() < 2 ||
+        !util_dynarray_num_elements(&cmd->ts_needs, struct kk_ts_need))
+       return;
+@@ -502,8 +641,11 @@
+    if (result != VK_SUCCESS)
+       goto release;
+ 
+-   if (!kk_cmd_buffer_has_work(rerecord))
++   if (!kk_cmd_buffer_has_work(rerecord)) {
++      if (kk_horodatages_cpu())
++         kk_ts_cpu_pousser(queue, rerecord);
+       goto release;
++   }
+ 
+    struct kk_commit_data *commit = vk_alloc(&dev->vk.alloc, sizeof(*commit), 8,
+                                             VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
+@@ -1166,6 +1308,60 @@
+    return result;
+ }
+ 
++struct kk_ts_cpu_porteur {
++   mtl_command_allocator *alloc;
++   mtl_command_buffer *cb;
++};
++
++static void
++kk_ts_cpu_porteur_fini(struct mtl_feedback_data *data)
++{
++   struct kk_ts_cpu_porteur *p = data->user_data;
++   mtl_release(p->cb);
++   mtl_release(p->alloc);
++   free(p);
++}
++
++/* Fin de soumission (CIDRE_HORODATAGES_CPU) : les operations notees apres le
++ * dernier commit partent sur un tampon vide ; les signaux de la soumission
++ * passent au CPU (donnes apres les operations). Rend vrai si les signaux sont
++ * pris en charge. */
++static bool
++kk_ts_cpu_fin_soumission(struct kk_queue *queue, struct vk_queue_submit *submit)
++{
++   struct kk_ts_cpu_soum *soum = kk_ts_cpu_courante;
++   if (!soum)
++      return false;
++   struct kk_device *dev = kk_queue_device(queue);
++   uint32_t n = util_dynarray_num_elements(&soum->ops, struct kk_ts_cpu_op);
++   uint32_t ng = util_dynarray_num_elements(&soum->groupes, struct kk_ts_cpu_groupe);
++   uint32_t fin = ng ? util_dynarray_element(&soum->groupes, struct kk_ts_cpu_groupe,
++                                             ng - 1)->fin : 0;
++   if (n > fin) {
++      struct kk_ts_cpu_porteur *p = calloc(1, sizeof(*p));
++      if (p) {
++         p->alloc = mtl_new_command_allocator(dev->mtl_handle);
++         p->cb = mtl_new_command_buffer(dev->mtl_handle);
++         mtl_begin_command_buffer(p->cb, p->alloc);
++         mtl_end_command_buffer(p->cb);
++         mtl_commit_options *options = mtl_new_commit_options();
++         mtl_commit_options_add_feedback_handler(options, kk_ts_cpu_porteur_fini, p);
++         kk_hcpu_commit(queue->mtl_handle, &p->cb, 1u, options);
++         mtl_release(options);
++      }
++   }
++   for (uint32_t i = 0u; i < submit->signal_count; ++i) {
++      struct kk_sync_timeline *sync =
++         container_of(submit->signals[i].sync, struct kk_sync_timeline, base);
++      struct kk_ts_cpu_signal sg = {.ev = mtl_retain(sync->mtl_handle),
++                                    .valeur = submit->signals[i].signal_value};
++      util_dynarray_append(&soum->signaux, sg);
++   }
++   kk_ts_cpu_courante = NULL;
++   kk_ts_cpu_unref(soum);
++   return true;
++}
++
+ static VkResult
+ kk_queue_submit(struct vk_queue *vk_queue, struct vk_queue_submit *submit)
+ {
+@@ -1175,6 +1371,12 @@
+    if (vk_queue_is_lost(&queue->vk))
+       return VK_ERROR_DEVICE_LOST;
+ 
++   if (kk_ts_cpu_courante) { /* reste d'une soumission sortie en erreur */
++      struct kk_ts_cpu_soum *reste = kk_ts_cpu_courante;
++      kk_ts_cpu_courante = NULL;
++      kk_ts_cpu_unref(reste);
++   }
++
+    const int attente_file = kk_attente_file_mode();
+    uint32_t sautees = 0u;
+    for (struct vk_sync_wait *wait = submit->waits,
+@@ -1233,6 +1435,8 @@
+                                                    struct kk_cmd_buffer, vk);
+             if (c->submitted || c->drawable || !kk_cmd_buffer_has_work(c))
+                break;
++            if (kk_horodatages_cpu())
++               kk_ts_cpu_pousser(queue, c);
+             util_dynarray_foreach(&c->metal.sealed_cmd_bufs,
+                                   mtl_command_buffer *, b)
+                grp[n++] = *b;
+@@ -1244,7 +1448,7 @@
+             mtl_commit_options_add_feedback_handler(options, commit_callback,
+                                                     dev);
+             if (kk_enc_stats_enabled()) kk_enc_stat(KK_ENCS_COMMIT, NULL);
+-            mtl_command_queue_commit(queue->mtl_handle, grp, n, options);
++            kk_hcpu_commit(queue->mtl_handle, grp, n, options);
+             mtl_release(options);
+          }
+          vk_free(&dev->vk.alloc, grp);
+@@ -1351,6 +1555,9 @@
+          } else {
+             kk_queue_commit(queue, cmd_buffer, commit_callback, dev);
+          }
++      } else if (kk_horodatages_cpu()) {
++         /* rien a commiter : les horodatages partent au commit suivant */
++         kk_ts_cpu_pousser(queue, cmd_buffer);
+       }
+ 
+       cmd_buffer->submitted = true;
+@@ -1370,7 +1577,9 @@
+    if (kk_fusion_mode())
+       kk_fusion_stats();
+ 
+-   for (uint32_t i = 0u; i < submit->signal_count; ++i) {
++   const bool signaux_cpu = kk_horodatages_cpu() &&
++                            kk_ts_cpu_fin_soumission(queue, submit);
++   for (uint32_t i = 0u; i < submit->signal_count && !signaux_cpu; ++i) {
+       struct vk_sync_signal *signal = &submit->signals[i];
+       struct kk_sync_timeline *sync =
+          container_of(signal->sync, struct kk_sync_timeline, base);
+--- a/src/kosmickrisp/vulkan/kk_queue.h	2026-10-27 22:07:02
++++ b/src/kosmickrisp/vulkan/kk_queue.h	2026-10-27 22:07:02
+@@ -21,6 +21,8 @@
+ #include "c11/threads.h"
+ 
+ struct kk_queue {
++   /* CIDRE_HORODATAGES_CPU : dernier horodatage pose sur cette file (croissance par file) */
++   uint64_t ts_cpu_dernier;
+    struct vk_queue vk;
+    struct mtl_command_queue *mtl_handle;
+ 
