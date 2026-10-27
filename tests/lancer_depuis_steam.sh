@@ -344,7 +344,8 @@ fi
 #                               rendu (0242) : ELDEN RING M1 mediane +18 %
 #   compile_differee = true     compilation Metal sur une file de fils (0237)
 #   code_kk = "nom ..."         options de generation de code (0156-0159, 0132,
-#                               0256), noms en minuscules sans CIDRE_ : la plupart
+#                               0256, 0263 : fusion_soumission, tess_phases,
+#                               strip_sans_deroule), noms en minuscules sans CIDRE_ : la plupart
 #                               plantent ou ralentissent ailleurs (SSBO_SANS_BORNES
 #                               seul : Unreal 5 faute au demarrage).
 # Elles changent la cle du cache de pipelines. CIDRE_<option>=0 en retire une.
@@ -352,7 +353,7 @@ fi
 [ "$(opt compile_differee CIDRE_COMPILE_DIFFEREE)" = true ] && kk_defaut CIDRE_COMPILE_DIFFEREE 1
 for o in $(profil code_kk | tr -d '"'); do
    case $o in
-      lectures_cachees|w10_sans_court_circuit|images_nulles_sans_branche|ssbo_sans_bornes|ssbo_nul_puits|contraction_malgre_precis|reductions_simd|minmax_zero_entier|textures_nulles_sans_branche)
+      lectures_cachees|w10_sans_court_circuit|images_nulles_sans_branche|ssbo_sans_bornes|ssbo_nul_puits|contraction_malgre_precis|reductions_simd|minmax_zero_entier|textures_nulles_sans_branche|fusion_soumission|tess_phases|strip_sans_deroule)
          kk_defaut "CIDRE_$(printf '%s' "$o" | tr '[:lower:]' '[:upper:]')" 1 ;;
       *) echo "code_kk : option inconnue ignoree : $o" >&2 ;;
    esac

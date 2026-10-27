@@ -34,7 +34,11 @@ exe_sans_anticheat = "eldenring.exe"
 # 0 gel, chargement a froid ~31 s. DEMI_PRECISION neutre (pas de SM 6.6 ici).
 calcul_avant_passe = true
 compile_differee = true
-code_kk = "lectures_cachees w10_sans_court_circuit images_nulles_sans_branche ssbo_sans_bornes contraction_malgre_precis"
+# 0263 (2026-10-27, ecran actif, 5+5 manches entrelacees) : passes fusionnees a la
+# soumission, tessellation par phases, bandes sans deroulage : mediane 40,2 -> 47,5
+# img/s, image identique, 0 gel. strip_sans_deroule reste propre a la fiche (un
+# maillage qui utilise vraiment l index 0xffff casserait).
+code_kk = "lectures_cachees w10_sans_court_circuit images_nulles_sans_branche ssbo_sans_bornes contraction_malgre_precis fusion_soumission tess_phases strip_sans_deroule"
 
 [[reglages_jeu]]
 # Mode fenetre 1280x720, qualite Basse (M1 Max, 2026-10-24) : en plein ecran (et en sans bordure),

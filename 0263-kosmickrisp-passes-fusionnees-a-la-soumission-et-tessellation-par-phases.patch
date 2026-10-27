@@ -1,0 +1,995 @@
+Generated-by: LLM
+
+KosmicKrisp : passes de rendu fusionnees a la soumission, bandes sans
+deroulage, tessellation emulee emise par phases (trois options, coupees par
+defaut).
+
+- CIDRE_FUSION_SOUMISSION=1 : les jeux D3D12 enregistrent une meme passe dans
+  plusieurs listes en parallele (Elden Ring : G-buffer en 15 listes, ombres en
+  8) ; vkd3d en fait autant de Begin/EndRendering sur les memes attachements et
+  KK autant d'encodeurs Metal (load/store complet du G-buffer a chaque coupure).
+  A la soumission, une suite d'enregistrements consecutifs dont la derniere
+  passe de l'un et la premiere du suivant portent les memes attachements (memes
+  vues, mises en page, magasin ; pas d'effacement), sans rien entre elles que
+  liaisons, etats dynamiques et barrieres sans ecriture hors attachements
+  (celle de fin de liste de vkd3d), est rejouee (liste enfilee, comme le
+  re-enregistrement) dans un seul tampon Metal en sautant ce End/Begin : une
+  passe Metal. Sans options Suspending/Resuming de Metal 4. Les enregistrements
+  a usage unique sont alors enfiles aussi. CIDRE_FUSION_STATS=1 : bilan.
+  CIDRE_FUSION_ZONES=1 (zones de rendu differentes, union) : sans effet sur
+  Elden Ring.
+- CIDRE_STRIP_SANS_DEROULE=1 : une bande (triangle/ligne) sans redemarrage n'est
+  plus deroulee en calcul (Metal redemarre toujours sur l'index maximal ; seul
+  ecart : un maillage qui utilise vraiment 0xffff/0xffffffff comme sommet).
+- CIDRE_TESS_PHASES=1 : dans le calcul hisse de la passe (0242), les 5 a 6
+  dispatchs de chaque dessin tessellé (VS, TCS, comptes, somme prefixe,
+  tessellation) sont mis en file et emis phase par phase, sans barriere entre
+  dessins (memoire par dessin, tas a allocation atomique), une barriere par
+  phase au lieu d'environ 5 par dessin.
+
+Base : serie integree jusqu a 0266 (sans le diagnostic CIDRE_SUSPENSION).
+
+Analyse (traces xctrace M1, Elden Ring, meme scene, 27/10) : D3DMetal G-buffer
++ ombres 2,3 ms en 4 passes contre 6,8 ms en 23 passes chez nous ; apres
+correctif (trace d4) ombres et G-buffer en une passe chacun, sommets 7,2 -> 6,2,
+fragments 8,4 -> 7,3, calcul 5,0 -> 3,6 ms par image. Mesures : voir etat.md
+(les series du 27/10 nuit, ecran verrouille, sont invalides ; serie du matin).
+
+--- a/src/kosmickrisp/vulkan/kk_queue.c
++++ b/src/kosmickrisp/vulkan/kk_queue.c
+@@ -24,6 +24,7 @@
+ 
+ #include "util/os_time.h"
+ #include "util/u_atomic.h"
++#include <alloca.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -634,9 +635,537 @@
+               n_soum / d, n_cmd / d, n_att / d, n_saut / d, n_sig / d);
+       t0 = t;
+       n_soum = n_att = n_saut = n_sig = n_cmd = 0;
++   }
++}
++
++/* ===== Cidre CIDRE_FUSION_SOUMISSION=1 (chantier ER, agent passes) =====
++ * Les jeux D3D12 enregistrent une meme passe de rendu dans plusieurs listes de
++ * commandes en parallele (G-buffer d'Elden Ring : 15 listes, cascades
++ * d'ombres : 8). vkd3d en fait autant d'enregistrements Vulkan, chacun avec sa
++ * passe Begin/EndRendering sur les MEMES attachements, et KosmicKrisp autant
++ * d'encodeurs Metal : chaque coupure stocke puis recharge tout le G-buffer en
++ * memoire (GPU a tuiles). D3DMetal les reunit en une passe.
++ * Ici, a la soumission, une suite d'enregistrements consecutifs dont la
++ * derniere passe de l'un et la premiere passe du suivant portent les memes
++ * attachements (memes vues, mises en page, magasin ; le suivant ne s'efface
++ * pas et charge), sans rien d'autre entre elles que des liaisons et des etats
++ * dynamiques, est REJOUEE (liste enfilee, comme le re-enregistrement) dans un
++ * seul tampon Metal en sautant ce EndRendering et ce BeginRendering : une seule
++ * passe Metal. Les tampons Metal enregistres au depart ne sont pas commites.
++ * Cout : double encodage CPU des enregistrements fusionnes, enfilement de
++ * tous les enregistrements (option coupee par defaut).
++ * CIDRE_FUSION_STATS=1 : bilan toutes les 5 s (fusions, refus et leurs causes).
++ */
++int
++kk_fusion_mode(void)
++{
++   static int mode = -1;
++   if (mode < 0) {
++      const char *v = getenv("CIDRE_FUSION_SOUMISSION");
++      mode = v ? atoi(v) : 0;
++   }
++   return mode;
++}
++
++static bool
++kk_fusion_cmd_neutre(enum vk_cmd_type t)
++{
++   switch (t) {
++   case VK_CMD_BIND_PIPELINE:
++   case VK_CMD_BIND_DESCRIPTOR_SETS:
++   case VK_CMD_BIND_DESCRIPTOR_SETS2:
++   case VK_CMD_BIND_DESCRIPTOR_BUFFERS_EXT:
++   case VK_CMD_SET_DESCRIPTOR_BUFFER_OFFSETS_EXT:
++   case VK_CMD_SET_DESCRIPTOR_BUFFER_OFFSETS2_EXT:
++   case VK_CMD_BIND_DESCRIPTOR_BUFFER_EMBEDDED_SAMPLERS_EXT:
++   case VK_CMD_BIND_DESCRIPTOR_BUFFER_EMBEDDED_SAMPLERS2_EXT:
++   case VK_CMD_PUSH_CONSTANTS:
++   case VK_CMD_PUSH_CONSTANTS2:
++   case VK_CMD_PUSH_DESCRIPTOR_SET:
++   case VK_CMD_PUSH_DESCRIPTOR_SET2:
++   case VK_CMD_BIND_VERTEX_BUFFERS:
++   case VK_CMD_BIND_VERTEX_BUFFERS2:
++   case VK_CMD_BIND_INDEX_BUFFER:
++   case VK_CMD_BIND_INDEX_BUFFER2:
++   case VK_CMD_BEGIN_DEBUG_UTILS_LABEL_EXT:
++   case VK_CMD_END_DEBUG_UTILS_LABEL_EXT:
++   case VK_CMD_INSERT_DEBUG_UTILS_LABEL_EXT:
++   case VK_CMD_SET_VIEWPORT:
++   case VK_CMD_SET_VIEWPORT_WITH_COUNT:
++   case VK_CMD_SET_SCISSOR:
++   case VK_CMD_SET_SCISSOR_WITH_COUNT:
++   case VK_CMD_SET_LINE_WIDTH:
++   case VK_CMD_SET_DEPTH_BIAS:
++   case VK_CMD_SET_DEPTH_BIAS_ENABLE:
++   case VK_CMD_SET_BLEND_CONSTANTS:
++   case VK_CMD_SET_DEPTH_BOUNDS:
++   case VK_CMD_SET_DEPTH_BOUNDS_TEST_ENABLE:
++   case VK_CMD_SET_STENCIL_COMPARE_MASK:
++   case VK_CMD_SET_STENCIL_WRITE_MASK:
++   case VK_CMD_SET_STENCIL_REFERENCE:
++   case VK_CMD_SET_STENCIL_TEST_ENABLE:
++   case VK_CMD_SET_STENCIL_OP:
++   case VK_CMD_SET_CULL_MODE:
++   case VK_CMD_SET_FRONT_FACE:
++   case VK_CMD_SET_PRIMITIVE_TOPOLOGY:
++   case VK_CMD_SET_PRIMITIVE_RESTART_ENABLE:
++   case VK_CMD_SET_RASTERIZER_DISCARD_ENABLE:
++   case VK_CMD_SET_DEPTH_TEST_ENABLE:
++   case VK_CMD_SET_DEPTH_WRITE_ENABLE:
++   case VK_CMD_SET_DEPTH_COMPARE_OP:
++   case VK_CMD_SET_VERTEX_INPUT_EXT:
++   case VK_CMD_SET_FRAGMENT_SHADING_RATE_KHR:
++   case VK_CMD_SET_PATCH_CONTROL_POINTS_EXT:
++      return true;
++   default:
++      return false;
++   }
++}
++
++struct kk_fusion_info {
++   struct vk_cmd_queue_entry *first_begin, *last_begin, *last_end;
++   bool head_ok, tail_ok;
++   bool head_coupe, tail_coupe; /* une barriere qui couperait la passe */
++   /* barrieres « d'attachements seuls » a sauter au rejeu (voir
++    * kk_fusion_barriere_attachements) */
++#define KK_FUS_MAX_SAUTS 8
++   struct vk_cmd_queue_entry *head_saut[KK_FUS_MAX_SAUTS], *tail_saut[KK_FUS_MAX_SAUTS];
++   uint32_t n_head_saut, n_tail_saut;
++   enum vk_cmd_type head_bloque, tail_bloque;
++};
++
++/* Barriere dont toutes les sources sont des acces d'attachement (ecriture /
++ * lecture couleur ou profondeur) : entre deux passes fusionnees sur les MEMES
++ * attachements, elle ne peut rien ordonner (une image liee comme attachement
++ * ne peut pas etre lue comme texture dans la passe, D3D12 l'interdit, et ces
++ * ecritures-la restent en tuile) ; tout ce qui suit la passe fusionnee est
++ * ordonne par la barriere de fin d'encodeur. vkd3d en pose une a la fin de
++ * chaque liste (COLOR_ATTACHMENT_WRITE -> SHADER_READ). Sautee au rejeu. */
++static bool
++kk_fusion_barriere_attachements(const VkDependencyInfo *dep)
++{
++   const VkAccessFlags2 att =
++      VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
++      VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
++      VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
++      VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
++   static int off = -1;
++   if (off < 0)
++      off = getenv("CIDRE_FUSION_SANS_SAUT") != NULL;
++   if (off || dep == NULL)
++      return false;
++   /* Sources permises : acces d'attachement et lectures (dependance
++    * ecriture-apres-lecture : la passe suivante n'ecrit que ses attachements,
++    * deja attachements de la precedente). Toute autre ecriture refuse. */
++   const VkAccessFlags2 ecritures =
++      VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
++      VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_HOST_WRITE_BIT |
++      VK_ACCESS_2_MEMORY_WRITE_BIT |
++      VK_ACCESS_2_TRANSFORM_FEEDBACK_WRITE_BIT_EXT |
++      VK_ACCESS_2_TRANSFORM_FEEDBACK_COUNTER_WRITE_BIT_EXT |
++      VK_ACCESS_2_COMMAND_PREPROCESS_WRITE_BIT_EXT |
++      VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
++   (void)att;
++   for (uint32_t i = 0; i < dep->memoryBarrierCount; i++)
++      if (dep->pMemoryBarriers[i].srcAccessMask & ecritures)
++         return false;
++   for (uint32_t i = 0; i < dep->bufferMemoryBarrierCount; i++)
++      if (dep->pBufferMemoryBarriers[i].srcAccessMask & ecritures)
++         return false;
++   for (uint32_t i = 0; i < dep->imageMemoryBarrierCount; i++)
++      if (dep->pImageMemoryBarriers[i].srcAccessMask & ecritures)
++         return false;
++   return true;
++}
++
++/* Meme regle que kk_barrier_requires_encoder_split : une barriere entre deux
++ * passes fusionnees est rejouee dans l'encodeur ouvert ; si elle coupe, la
++ * fusion n'apporte rien. */
++static uint64_t kk_fus_src_vu, kk_fus_dst_vu;
++static bool
++kk_fusion_barriere_coupe(const VkDependencyInfo *dep)
++{
++   const VkAccessFlags2 tex_read =
++      VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT |
++      VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_MEMORY_READ_BIT;
++   const VkAccessFlags2 any_write =
++      VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
++      VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
++      VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
++      VK_ACCESS_2_MEMORY_WRITE_BIT;
++   if (dep == NULL)
++      return true;
++   VkAccessFlags2 src = 0, dst = 0;
++   for (uint32_t i = 0; i < dep->memoryBarrierCount; i++) {
++      src |= dep->pMemoryBarriers[i].srcAccessMask;
++      dst |= dep->pMemoryBarriers[i].dstAccessMask;
+    }
++   for (uint32_t i = 0; i < dep->bufferMemoryBarrierCount; i++) {
++      src |= dep->pBufferMemoryBarriers[i].srcAccessMask;
++      dst |= dep->pBufferMemoryBarriers[i].dstAccessMask;
++   }
++   for (uint32_t i = 0; i < dep->imageMemoryBarrierCount; i++) {
++      src |= dep->pImageMemoryBarriers[i].srcAccessMask;
++      dst |= dep->pImageMemoryBarriers[i].dstAccessMask;
++   }
++   bool coupe = ((src & any_write) && (dst & tex_read)) ||
++                ((src & any_write) && (dst & VK_ACCESS_2_INPUT_ATTACHMENT_READ_BIT));
++   if (coupe) {
++      kk_fus_src_vu = src;
++      kk_fus_dst_vu = dst;
++   }
++   return coupe;
+ }
+ 
++static void
++kk_fusion_analyser(struct kk_cmd_buffer *c, struct kk_fusion_info *f)
++{
++   memset(f, 0, sizeof(*f));
++   f->head_ok = true;
++   f->head_bloque = f->tail_bloque = VK_CMD_TYPE_COUNT;
++   list_for_each_entry(struct vk_cmd_queue_entry, e, &c->vk.cmd_queue.cmds,
++                       cmd_link) {
++      if (e->type == VK_CMD_BEGIN_RENDERING) {
++         if (!f->first_begin)
++            f->first_begin = e;
++         f->last_begin = e;
++         f->last_end = NULL;
++         f->tail_ok = false;
++         f->n_tail_saut = 0;
++         continue;
++      }
++      if (e->type == VK_CMD_END_RENDERING ||
++          e->type == VK_CMD_END_RENDERING2_KHR) {
++         f->last_end = e;
++         f->tail_ok = true;
++         f->tail_coupe = false;
++         f->n_tail_saut = 0;
++         f->tail_bloque = VK_CMD_TYPE_COUNT;
++         continue;
++      }
++      bool neutre = kk_fusion_cmd_neutre(e->type);
++      if (e->type == VK_CMD_PIPELINE_BARRIER2) {
++         neutre = true;
++         const VkDependencyInfo *dep = e->u.pipeline_barrier2.dependency_info;
++         bool saut = kk_fusion_barriere_attachements(dep);
++         bool coupe = !saut && kk_fusion_barriere_coupe(dep);
++         if (!f->first_begin) {
++            if (saut && f->n_head_saut < KK_FUS_MAX_SAUTS)
++               f->head_saut[f->n_head_saut++] = e;
++            else
++               f->head_coupe |= coupe || saut;
++         }
++         if (f->last_end) {
++            if (saut && f->n_tail_saut < KK_FUS_MAX_SAUTS)
++               f->tail_saut[f->n_tail_saut++] = e;
++            else
++               f->tail_coupe |= coupe || saut;
++         }
++      }
++      if (!f->first_begin && !neutre && f->head_ok) {
++         f->head_ok = false;
++         f->head_bloque = e->type;
++      }
++      if (f->last_end && !neutre && f->tail_ok) {
++         f->tail_ok = false;
++         f->tail_bloque = e->type;
++      }
++   }
++   if (!f->first_begin)
++      f->head_ok = false;
++}
++
++static bool
++kk_fusion_att_eq(const VkRenderingAttachmentInfo *a,
++                 const VkRenderingAttachmentInfo *b)
++{
++   VkImageView va = a ? a->imageView : VK_NULL_HANDLE;
++   VkImageView vb = b ? b->imageView : VK_NULL_HANDLE;
++   if (va != vb)
++      return false;
++   if (va == VK_NULL_HANDLE)
++      return true;
++   if (a->resolveMode != VK_RESOLVE_MODE_NONE ||
++       b->resolveMode != VK_RESOLVE_MODE_NONE)
++      return false;
++   if (b->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR)
++      return false;
++   if (a->storeOp != b->storeOp || a->imageLayout != b->imageLayout)
++      return false;
++   return true;
++}
++
++static uint64_t kk_fus_zones_ext, kk_fus_zones_refus;
++static uint64_t kk_fus_raison[4]; /* drapeaux/pNext, zone/nombre, attachements, aucun */
++/* CIDRE_FUSION_ZONES=1 : passes aux zones de rendu differentes (cascades
++ * d'ombres dans un atlas) fusionnables : la passe de tete de chaine prend
++ * l'union des zones si elle charge tous ses attachements (sinon pas de
++ * fusion dans la chaine), voir kk_fusion_commit. */
++static int
++kk_fusion_zones(void)
++{
++   static int z = -1;
++   if (z < 0)
++      z = getenv("CIDRE_FUSION_ZONES") != NULL;
++   return z;
++}
++
++/* 0 incompatible, 1 compatible, 2 compatible sauf la zone de rendu */
++static int
++kk_fusion_compatible(const VkRenderingInfo *a, const VkRenderingInfo *b)
++{
++   if (!a || !b || a->flags || b->flags || a->pNext || b->pNext) {
++      kk_fus_raison[0]++;
++      return 0;
++   }
++   if (a->layerCount != b->layerCount || a->viewMask != b->viewMask ||
++       a->colorAttachmentCount != b->colorAttachmentCount) {
++      kk_fus_raison[1]++;
++      return 0;
++   }
++   int zone = 1;
++   if (memcmp(&a->renderArea, &b->renderArea, sizeof(a->renderArea))) {
++      if (!kk_fusion_zones()) {
++         kk_fus_raison[1]++;
++         return 0;
++      }
++      zone = 2;
++   }
++   bool any = false;
++   for (uint32_t i = 0; i < a->colorAttachmentCount; i++) {
++      if (!kk_fusion_att_eq(&a->pColorAttachments[i], &b->pColorAttachments[i])) {
++         kk_fus_raison[2]++;
++         return 0;
++      }
++      any |= a->pColorAttachments[i].imageView != VK_NULL_HANDLE;
++   }
++   if (!kk_fusion_att_eq(a->pDepthAttachment, b->pDepthAttachment) ||
++       !kk_fusion_att_eq(a->pStencilAttachment, b->pStencilAttachment)) {
++      kk_fus_raison[2]++;
++      return 0;
++   }
++   any |= a->pDepthAttachment && a->pDepthAttachment->imageView;
++   any |= a->pStencilAttachment && a->pStencilAttachment->imageView;
++   if (!any) {
++      kk_fus_raison[3]++;
++      return 0; /* pas de passe sans attachement (depart differe) */
++   }
++   return zone;
++}
++
++static bool
++kk_fusion_tout_charge(const VkRenderingInfo *r)
++{
++   for (uint32_t i = 0; i < r->colorAttachmentCount; i++)
++      if (r->pColorAttachments[i].imageView &&
++          r->pColorAttachments[i].loadOp != VK_ATTACHMENT_LOAD_OP_LOAD)
++         return false;
++   if (r->pDepthAttachment && r->pDepthAttachment->imageView &&
++       r->pDepthAttachment->loadOp != VK_ATTACHMENT_LOAD_OP_LOAD)
++      return false;
++   if (r->pStencilAttachment && r->pStencilAttachment->imageView &&
++       r->pStencilAttachment->loadOp != VK_ATTACHMENT_LOAD_OP_LOAD)
++      return false;
++   return true;
++}
++
++static VkRect2D
++kk_fusion_union(VkRect2D a, VkRect2D b)
++{
++   int32_t x0 = MIN2(a.offset.x, b.offset.x), y0 = MIN2(a.offset.y, b.offset.y);
++   int32_t x1 = MAX2(a.offset.x + (int32_t)a.extent.width, b.offset.x + (int32_t)b.extent.width);
++   int32_t y1 = MAX2(a.offset.y + (int32_t)a.extent.height, b.offset.y + (int32_t)b.extent.height);
++   return (VkRect2D){{x0, y0}, {(uint32_t)(x1 - x0), (uint32_t)(y1 - y0)}};
++}
++
++static struct {
++   uint64_t soum, paires, inelig, tete, queue, incompat, coupe, fusions, cbs_fus;
++   uint64_t t0;
++   uint32_t tete_t[VK_CMD_TYPE_COUNT + 1], queue_t[VK_CMD_TYPE_COUNT + 1];
++} kk_fus;
++
++static void
++kk_fusion_stats(void)
++{
++   static int on = -1;
++   if (on < 0)
++      on = getenv("CIDRE_FUSION_STATS") != NULL;
++   if (!on)
++      return;
++   uint64_t t = os_time_get_nano();
++   if (kk_fus.t0 == 0)
++      kk_fus.t0 = t;
++   if (t - kk_fus.t0 < 5000000000ull)
++      return;
++   double d = (t - kk_fus.t0) / 1e9;
++   fprintf(stderr,
++           "[CIDRE_FUSION] %.0f soum>=2/s, paires %.0f/s : fusionnees %.0f/s (en "
++           "%.0f passes/s), inelig %.0f, tete %.0f, queue %.0f, incompat %.0f, "
++           "coupe %.0f (src %llx dst %llx) /s",
++           kk_fus.soum / d, kk_fus.paires / d, (kk_fus.cbs_fus - kk_fus.fusions) / d,
++           kk_fus.fusions / d, kk_fus.inelig / d, kk_fus.tete / d,
++           kk_fus.queue / d, kk_fus.incompat / d, kk_fus.coupe / d,
++           (unsigned long long)kk_fus_src_vu, (unsigned long long)kk_fus_dst_vu);
++   for (int w = 0; w < 2; w++) {
++      uint32_t *tab = w ? kk_fus.queue_t : kk_fus.tete_t;
++      for (int r = 0; r < 3; r++) {
++         uint32_t best = 0, bi = 0;
++         for (uint32_t k = 0; k < VK_CMD_TYPE_COUNT; k++)
++            if (tab[k] > best) {
++               best = tab[k];
++               bi = k;
++            }
++         if (!best)
++            break;
++         fprintf(stderr, " %s:%s=%.0f", w ? "q" : "t",
++                 vk_cmd_queue_type_names[bi], best / d);
++         tab[bi] = 0;
++      }
++   }
++   fprintf(stderr, " incompat[drap %.0f zone %.0f att %.0f vide %.0f] zones etendues %.0f refusees %.0f /s\n",
++           kk_fus_raison[0] / d, kk_fus_raison[1] / d, kk_fus_raison[2] / d,
++           kk_fus_raison[3] / d, kk_fus_zones_ext / d, kk_fus_zones_refus / d);
++   kk_fus_zones_ext = kk_fus_zones_refus = 0;
++   memset(kk_fus_raison, 0, sizeof(kk_fus_raison));
++   uint64_t keep_t0 = t;
++   memset(&kk_fus, 0, sizeof(kk_fus));
++   kk_fus.t0 = keep_t0;
++}
++
++/* Rejoue cbs[i..j] dans un seul enregistrement et le commite (cf.
++ * rerecord_and_commit_cmd_buffer). */
++static VkResult
++kk_fusion_commit(struct kk_queue *queue, struct kk_cmd_buffer **cbs,
++                 struct kk_fusion_info *info, const bool *zdiff, uint32_t i,
++                 uint32_t j)
++{
++   struct kk_device *dev = kk_queue_device(queue);
++   /* Chaines de passes fusionnees et zones (CIDRE_FUSION_ZONES) */
++   bool *join = (bool *)alloca((j + 1) * sizeof(bool));
++   VkRenderingInfo **mod_ri = (VkRenderingInfo **)alloca((j + 1) * sizeof(*mod_ri));
++   VkRect2D *mod_old = (VkRect2D *)alloca((j + 1) * sizeof(VkRect2D));
++   uint32_t nmod = 0;
++   for (uint32_t k = i; k < j; k++)
++      join[k] = true;
++   {
++      VkRenderingInfo *S = info[i].last_begin->u.begin_rendering.rendering_info;
++      VkRect2D U = S->renderArea;
++      uint32_t c0 = i;
++      bool diff = false;
++      for (uint32_t k = i; k < j; k++) {
++         const VkRenderingInfo *n =
++            info[k + 1].first_begin->u.begin_rendering.rendering_info;
++         diff |= zdiff[k];
++         U = kk_fusion_union(U, n->renderArea);
++         bool fin = k + 1 == j || info[k + 1].first_begin != info[k + 1].last_begin;
++         if (fin) {
++            if (diff) {
++               if (kk_fusion_tout_charge(S)) {
++                  mod_ri[nmod] = S;
++                  mod_old[nmod] = S->renderArea;
++                  nmod++;
++                  S->renderArea = U;
++                  kk_fus_zones_ext++;
++               } else {
++                  for (uint32_t m = c0; m <= k; m++)
++                     join[m] = false;
++                  kk_fus_zones_refus++;
++               }
++            }
++            if (k + 1 < j) {
++               S = info[k + 1].last_begin->u.begin_rendering.rendering_info;
++               U = S->renderArea;
++               c0 = k + 1;
++               diff = false;
++            }
++         }
++      }
++   }
++   struct vk_command_buffer *vk_cmd = NULL;
++   VkResult result = VK_SUCCESS;
++
++   mtx_lock(&queue->mutex);
++   if (util_dynarray_num_elements(&queue->free_cmd_buffers,
++                                  struct vk_command_buffer *) > 0u) {
++      vk_cmd = util_dynarray_pop(&queue->free_cmd_buffers,
++                                 struct vk_command_buffer *);
++   } else {
++      result = kk_cmd_buffer_ops.create(
++         &queue->cmd_pool->vk, VK_COMMAND_BUFFER_LEVEL_PRIMARY, &vk_cmd);
++      if (result != VK_SUCCESS)
++         goto unlock;
++   }
++   struct kk_cmd_buffer *rr = container_of(vk_cmd, struct kk_cmd_buffer, vk);
++   VkCommandBuffer h = kk_cmd_buffer_to_handle(rr);
++   const VkCommandBufferBeginInfo begin_info = {
++      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
++      .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
++   };
++   result = kk_BeginCommandBuffer(h, &begin_info);
++   if (result != VK_SUCCESS)
++      goto release;
++   rr->fusion_enfile = false;
++
++   for (uint32_t k = i; k <= j; k++) {
++      struct vk_cmd_queue_entry *skip[2 + 2 * KK_FUS_MAX_SAUTS];
++      struct list_head *prev[2 + 2 * KK_FUS_MAX_SAUTS];
++      int ns = 0;
++#define KK_FUS_SAUTER(ent)                                                     \
++   do {                                                                        \
++      skip[ns] = (ent);                                                        \
++      prev[ns] = skip[ns]->cmd_link.prev;                                      \
++      list_del(&skip[ns]->cmd_link);                                           \
++      ns++;                                                                    \
++   } while (0)
++      /* ordre de la liste : tete (barrieres, Begin), ..., queue (End, barrieres) */
++      if (k > i && join[k - 1]) {
++         for (uint32_t b = 0; b < info[k].n_head_saut; b++)
++            KK_FUS_SAUTER(info[k].head_saut[b]);
++         KK_FUS_SAUTER(info[k].first_begin);
++      }
++      if (k < j && join[k]) {
++         KK_FUS_SAUTER(info[k].last_end);
++         for (uint32_t b = 0; b < info[k].n_tail_saut; b++)
++            KK_FUS_SAUTER(info[k].tail_saut[b]);
++      }
++#undef KK_FUS_SAUTER
++      vk_cmd_queue_execute(&cbs[k]->vk.cmd_queue, h, &dev->vk.dispatch_table);
++      for (int s = ns - 1; s >= 0; s--)
++         list_add(&skip[s]->cmd_link, prev[s]);
++   }
++   for (uint32_t m = 0; m < nmod; m++)
++      mod_ri[m]->renderArea = mod_old[m];
++   nmod = 0;
++
++   result = kk_EndCommandBuffer(h);
++   if (result != VK_SUCCESS)
++      goto release;
++   if (!kk_cmd_buffer_has_work(rr))
++      goto release;
++
++   struct kk_commit_data *commit = vk_alloc(&dev->vk.alloc, sizeof(*commit), 8,
++                                            VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
++   if (commit == NULL) {
++      result = vk_error(queue, VK_ERROR_OUT_OF_HOST_MEMORY);
++      goto release;
++   }
++   commit->queue = queue;
++   commit->cmd = rr;
++   kk_device_make_resources_resident(dev);
++   queue->commits_in_flight++;
++   kk_queue_commit(queue, rr, rerecord_commit_callback, commit);
++   mtx_unlock(&queue->mutex);
++   return VK_SUCCESS;
++
++release:
++   kk_queue_release_cmd_buffer_locked(queue, rr);
++unlock:
++   for (uint32_t m = 0; m < nmod; m++)
++      mod_ri[m]->renderArea = mod_old[m];
++   mtx_unlock(&queue->mutex);
++   return result;
++}
++
+ static VkResult
+ kk_queue_submit(struct vk_queue *vk_queue, struct vk_queue_submit *submit)
+ {
+@@ -724,10 +1253,83 @@
+       submit_debut = i;
+    }
+ 
++   /* Cidre CIDRE_FUSION_SOUMISSION : suites d'enregistrements a rejouer en
++    * une passe (voir kk_fusion_commit). fus[i] : i se fusionne avec i+1. */
++   const uint32_t ncb = submit->command_buffer_count;
++   struct kk_fusion_info *fus_info = NULL;
++   bool *fus = NULL, *fus_zdiff = NULL;
++   if (kk_fusion_mode() && ncb - submit_debut >= 2) {
++      fus_info = vk_alloc(&dev->vk.alloc, ncb * sizeof(*fus_info), 8,
++                          VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
++      fus = vk_zalloc(&dev->vk.alloc, 2 * ncb * sizeof(*fus), 8,
++                      VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
++      fus_zdiff = fus ? fus + ncb : NULL;
++      if (fus_info && fus) {
++         kk_fus.soum++;
++         bool *elig = (bool *)alloca(ncb * sizeof(bool));
++         for (uint32_t i = submit_debut; i < ncb; ++i) {
++            struct kk_cmd_buffer *c =
++               container_of(submit->command_buffers[i], struct kk_cmd_buffer, vk);
++            elig[i] = (!c->one_time_submit || c->fusion_enfile) && !c->submitted && !c->drawable &&
++                      !vk_command_buffer_has_error(&c->vk);
++            if (elig[i])
++               kk_fusion_analyser(c, &fus_info[i]);
++         }
++         for (uint32_t i = submit_debut; i + 1 < ncb; ++i) {
++            kk_fus.paires++;
++            if (!elig[i] || !elig[i + 1]) {
++               kk_fus.inelig++;
++            } else if (!fus_info[i].tail_ok || !fus_info[i].last_end) {
++               kk_fus.queue++;
++               kk_fus.queue_t[fus_info[i].tail_bloque]++;
++            } else if (!fus_info[i + 1].head_ok) {
++               kk_fus.tete++;
++               kk_fus.tete_t[fus_info[i + 1].head_bloque]++;
++            } else if (fus_info[i].tail_coupe || fus_info[i + 1].head_coupe) {
++               kk_fus.coupe++;
++            } else {
++               int cpt = kk_fusion_compatible(
++                  fus_info[i].last_begin->u.begin_rendering.rendering_info,
++                  fus_info[i + 1].first_begin->u.begin_rendering.rendering_info);
++               if (cpt == 2 &&
++                   fus_info[i + 1].first_begin != fus_info[i + 1].last_begin)
++                  cpt = 0;
++               if (cpt == 0) {
++                  kk_fus.incompat++;
++               } else {
++                  fus[i] = true;
++                  fus_zdiff[i] = cpt == 2;
++               }
++            }
++         }
++      }
++   }
++
+    for (uint32_t i = submit_debut; i < submit->command_buffer_count; ++i) {
+       struct kk_cmd_buffer *cmd_buffer =
+          container_of(submit->command_buffers[i], struct kk_cmd_buffer, vk);
+ 
++      if (fus && fus_info && fus[i]) {
++         uint32_t j = i;
++         while (j + 1 < ncb && fus[j])
++            j++;
++         struct kk_cmd_buffer **cbs = (struct kk_cmd_buffer **)alloca(ncb * sizeof(*cbs));
++         for (uint32_t k = i; k <= j; k++)
++            cbs[k] = container_of(submit->command_buffers[k], struct kk_cmd_buffer, vk);
++         VkResult r = kk_fusion_commit(queue, cbs, fus_info, fus_zdiff, i, j);
++         if (r != VK_SUCCESS) {
++            vk_free(&dev->vk.alloc, fus_info);
++            vk_free(&dev->vk.alloc, fus);
++            return r;
++         }
++         kk_fus.fusions++;
++         kk_fus.cbs_fus += j - i + 1;
++         for (uint32_t k = i; k <= j; k++)
++            cbs[k]->submitted = true;
++         i = j;
++         continue;
++      }
++
+       if (cmd_buffer->drawable) {
+          mtl_command_queue_wait_for_drawable(queue->mtl_handle,
+                                              cmd_buffer->drawable);
+@@ -761,6 +1363,13 @@
+       }
+    }
+ 
++   if (fus_info)
++      vk_free(&dev->vk.alloc, fus_info);
++   if (fus)
++      vk_free(&dev->vk.alloc, fus);
++   if (kk_fusion_mode())
++      kk_fusion_stats();
++
+    for (uint32_t i = 0u; i < submit->signal_count; ++i) {
+       struct vk_sync_signal *signal = &submit->signals[i];
+       struct kk_sync_timeline *sync =
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+@@ -203,6 +203,8 @@
+    }
+    util_dynarray_clear(&cmd->large_bos);
+    util_dynarray_clear(&cmd->post_render_writes);
++   util_dynarray_clear(&cmd->tess_ops);
++   cmd->tess_rec_phase = -1;
+    util_dynarray_clear(&cmd->ts_resolves);
+    util_dynarray_clear(&cmd->ts_needs);
+    util_dynarray_clear(&cmd->ts_zeros);
+@@ -312,6 +314,7 @@
+    util_dynarray_fini(&cmd->large_bos);
+    util_dynarray_fini(&cmd->metal.sealed_cmd_bufs);
+    util_dynarray_fini(&cmd->post_render_writes);
++   util_dynarray_fini(&cmd->tess_ops);
+    util_dynarray_fini(&cmd->closing_writes);
+    util_dynarray_fini(&cmd->unordered_writes);
+    util_dynarray_fini(&cmd->opening_reads);
+@@ -355,6 +358,8 @@
+    cmd->ts_written = UTIL_DYNARRAY_INIT;
+    cmd->ts_stage_map = UTIL_DYNARRAY_INIT;
+    cmd->post_render_writes = UTIL_DYNARRAY_INIT;
++   cmd->tess_ops = UTIL_DYNARRAY_INIT;
++   cmd->tess_rec_phase = -1;
+    cmd->closing_writes = UTIL_DYNARRAY_INIT;
+    cmd->unordered_writes = UTIL_DYNARRAY_INIT;
+    cmd->opening_reads = UTIL_DYNARRAY_INIT;
+@@ -457,6 +462,8 @@
+    vk_command_buffer_begin(&cmd->vk, pBeginInfo);
+    cmd->one_time_submit =
+       pBeginInfo->flags & VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
++   cmd->fusion_enfile = cmd->one_time_submit && kk_fusion_mode() &&
++                        cmd->vk.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+ 
+    /* vk_command_buffer_begin will reset the command buffer meaning the
+     * allocator may be returned to the pool. Request a new one. */
+@@ -756,9 +763,62 @@
+ 
+ /* Ferme le tampon de calcul hisse de la passe courante, s'il existe. La passe
+  * (et tout ce qui suit dans la file) attend la fin de ses dispatchs. */
++int
++kk_tess_phases_enabled(void)
++{
++   static int on = -1;
++   if (on < 0)
++      on = getenv("CIDRE_TESS_PHASES") != NULL;
++   return on;
++}
++
++/* Cidre CIDRE_TESS_PHASES : chaque dessin tessellé de la passe enchainait
++ * 5 a 6 dispatchs (VS, TCS, comptes, somme prefixe, tessellation) separes par
++ * des barrieres : ~30 dessins = ~150 vidanges du GPU par passe. Les dessins
++ * sont independants (memoire par dessin, tas a allocation atomique) : on emet
++ * ici phase par phase, tous les dessins d'une phase sans barriere entre eux,
++ * une barriere entre phases. */
++static void
++kk_tess_ops_flush(struct kk_cmd_buffer *cmd, mtl_compute_encoder *enc)
++{
++   uint32_t n = util_dynarray_num_elements(&cmd->tess_ops, struct kk_tess_op);
++   if (n == 0)
++      return;
++   struct kk_tess_op *ops = cmd->tess_ops.data;
++   for (uint8_t ph = 0; ph < 6; ph++) {
++      bool any = false;
++      for (uint32_t i = 0; i < n; i++) {
++         const struct kk_tess_op *o = &ops[i];
++         if (o->phase != ph)
++            continue;
++         if (!any)
++            mtl_barrier_after_encoder_stages(enc, MTL_STAGE_DISPATCH,
++                                             MTL_STAGE_DISPATCH);
++         any = true;
++         mtl_set_address(cmd->argument_table, o->a0, 0u);
++         mtl_set_address(cmd->argument_table, o->a2, 2u);
++         mtl_compute_set_pipeline_state(enc, o->pipeline);
++         if (o->grid.mode == KK_GRID_DIRECT)
++            mtl_dispatch_threads(enc, o->grid.size, o->local);
++         else
++            mtl_dispatch_threadgroups_with_indirect_buffer(enc, o->grid.addr,
++                                                           o->local);
++      }
++   }
++   mtl_barrier_after_encoder_stages(enc, MTL_STAGE_DISPATCH, MTL_STAGE_DISPATCH);
++   util_dynarray_clear(&cmd->tess_ops);
++   mtl_set_address(cmd->argument_table, cmd->state.root_addr, 0u);
++   mtl_set_address(cmd->argument_table, cmd->perdraw_addr, 2u);
++   cmd->state.argtable_addr0 = cmd->state.root_addr;
++}
++
+ static void
+ kk_pre_finish(struct kk_cmd_buffer *cmd)
+ {
++   if (cmd->metal.pre_compute)
++      kk_tess_ops_flush(cmd, cmd->metal.pre_compute);
++   else
++      util_dynarray_clear(&cmd->tess_ops);
+    if (cmd->metal.pre_compute) {
+       mtl_barrier_after_stages(cmd->metal.pre_compute, MTL_STAGE_DISPATCH,
+                                MTL_STAGE_ALL);
+@@ -2324,6 +2384,24 @@
+ {
+    struct kk_device *dev = kk_cmd_buffer_device(cmd);
+    struct kk_precompiled_shader *prog = &dev->precompiled_cache.shaders[idx];
++
++   if (cmd->tess_rec_phase >= 0) {
++      struct kk_ptr d = kk_pool_upload(cmd, data, data_size, 8u);
++      if (unlikely(!d.gpu))
++         return;
++      struct kk_tess_op op = {
++         .phase = (uint8_t)cmd->tess_rec_phase,
++         .precomp = 1,
++         .pipeline = prog->pipeline,
++         .a0 = d.gpu,
++         .a2 = cmd->perdraw_addr,
++         .grid = grid,
++         .local = {prog->info.workgroup_size[0], prog->info.workgroup_size[1],
++                   prog->info.workgroup_size[2]},
++      };
++      util_dynarray_append(&cmd->tess_ops, op);
++      return;
++   }
+ 
+    mtl_compute_encoder *encoder = cs_get_compute(cmd);
+    mtl_barrier_after_encoder_stages(encoder, MTL_STAGE_DISPATCH,
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+@@ -398,6 +398,12 @@
+    struct util_dynarray ts_stage_map;
+    /* Deferred writes due to being mid render encoder */
+    struct util_dynarray post_render_writes;
++   /* Cidre CIDRE_TESS_PHASES : dispatchs de la tessellation emulee mis en
++    * file par phase pour le calcul hisse de la passe (struct kk_tess_op),
++    * emis a kk_pre_finish ; tess_rec_phase >= 0 pendant l'enregistrement. */
++   struct util_dynarray tess_ops;
++   int tess_rec_phase;
++   uint64_t perdraw_addr;
+    struct util_dynarray closing_writes;
+    struct util_dynarray unordered_writes;
+    struct util_dynarray opening_reads;
+@@ -430,6 +436,9 @@
+    /* Set at vkBeginCommandBuffer. One-time-submit buffers skip command
+     * enqueueing in the trampolines since they can never be replayed. */
+    bool one_time_submit;
++   /* Cidre CIDRE_FUSION_SOUMISSION : enfiler meme un enregistrement a usage
++    * unique, pour pouvoir le fusionner a la soumission (kk_queue.c). */
++   bool fusion_enfile;
+    /* Metal command buffers are single-shot: a resubmission must re-record
+     * by replaying the enqueued commands (see rerecord_cmd_buffer). */
+    bool submitted;
+@@ -639,6 +648,17 @@
+ void kk_dispatch_precomp(struct kk_cmd_buffer *cmd, struct kk_grid grid,
+                          bool pre_gfx, enum libkk_program idx, void *data,
+                          size_t data_size);
++
++/* Cidre CIDRE_FUSION_SOUMISSION (kk_queue.c), CIDRE_TESS_PHASES */
++int kk_fusion_mode(void);
++int kk_tess_phases_enabled(void);
++struct kk_tess_op {
++   uint8_t phase, precomp;
++   void *pipeline;
++   uint64_t a0, a2;
++   struct kk_grid grid;
++   struct mtl_size local;
++};
+ 
+ #define MESA_DISPATCH_PRECOMP kk_dispatch_precomp
+ 
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -2033,9 +2033,22 @@
+    if (data->index_buffer_el_size_B == sizeof(uint8_t))
+       return true;
+ 
++   /* Cidre CIDRE_STRIP_SANS_DEROULE=1 : Metal redemarre toujours les bandes
++    * sur l'index maximal (0xffff / 0xffffffff). Une bande sans redemarrage
++    * demande par l'application n'est differente que si elle utilise vraiment
++    * cet index comme sommet (maillage de 65 536 sommets en 16 bits) : on la
++    * dessine telle quelle au lieu de derouler l'index (calcul + perte de la
++    * reutilisation des sommets). Elden Ring : ~55 dessins par image. */
++   static int strip_sans_deroule = -1;
++   if (strip_sans_deroule < 0)
++      strip_sans_deroule = getenv("CIDRE_STRIP_SANS_DEROULE") != NULL;
++
+    switch (data->prim) {
+    case MESA_PRIM_LINE_STRIP:
+    case MESA_PRIM_TRIANGLE_STRIP:
++      if (strip_sans_deroule)
++         return false;
++      return !data->restart;
+    case MESA_PRIM_TRIANGLE_FAN:
+       return !data->restart;
+    default:
+@@ -2257,6 +2270,7 @@
+       return;
+ 
+    mtl_set_address(cmd->argument_table, shader_data_gpu.gpu, 2u);
++   cmd->perdraw_addr = shader_data_gpu.gpu;
+ }
+ 
+ static void
+@@ -2431,6 +2445,18 @@
+    uint64_t state = gfx->per_draw_data.tess_params;
+    struct kk_tess_info info = gfx->tess.info;
+ 
++   /* Cidre CIDRE_TESS_PHASES : dans le calcul hisse, mise en file par phase
++    * (voir kk_tess_ops_flush). */
++   struct kk_shader *tes0 = cmd->state.shaders[MESA_SHADER_TESS_EVAL];
++   bool rec = false;
++   if (kk_tess_phases_enabled() && gfx->xfb.tess_snapshot.gpu == 0u &&
++       !tes0->info.tess.has_xfb) {
++      mtl_compute_encoder *e0 = cs_get_compute(cmd);
++      rec = e0 != NULL && e0 == cmd->metal.pre_compute;
++   }
++#define KK_TESS_PHASE(n) (cmd->tess_rec_phase = rec ? (n) : -1)
++   KK_TESS_PHASE(0);
++
+    /* Setup grids */
+    if (kk_grid_is_indirect(draw.grid)) {
+       struct libkk_tess_setup_indirect_args args = {
+@@ -2472,29 +2498,50 @@
+       mtl_compute_pipeline_state *pipeline =
+          kk_get_emu_vs_pipeline(dev, vs, dyn->vi);
+       struct mtl_size local_size = {64, 1, 1};
+-      mtl_barrier_after_encoder_stages(enc, MTL_STAGE_DISPATCH,
+-                                       MTL_STAGE_DISPATCH);
+-      mtl_compute_set_pipeline_state(enc, pipeline);
+-      kk_dispatch_compute(enc, grid_vs, local_size);
++      if (rec) {
++         struct kk_tess_op op = {.phase = 1, .pipeline = pipeline,
++                                 .a0 = cmd->state.root_addr,
++                                 .a2 = cmd->perdraw_addr, .grid = grid_vs,
++                                 .local = local_size};
++         util_dynarray_append(&cmd->tess_ops, op);
++      } else {
++         mtl_barrier_after_encoder_stages(enc, MTL_STAGE_DISPATCH,
++                                          MTL_STAGE_DISPATCH);
++         mtl_compute_set_pipeline_state(enc, pipeline);
++         kk_dispatch_compute(enc, grid_vs, local_size);
++      }
+    }
+    {
+       mtl_compute_pipeline_state *pipeline = vs->pipeline.gfx.pre_render[1];
+       struct mtl_size local_size = {tcs->info.tess.tcs_output_patch_size, 1, 1};
+       /* Avoid Metal validation error by trying to launch empty compute. Return
+        * empty data. We set restart to true to avoid unroll. */
+-      if (grid_tcs.mode == KK_GRID_DIRECT && grid_tcs.size.x == 0u)
++      if (grid_tcs.mode == KK_GRID_DIRECT && grid_tcs.size.x == 0u) {
++         cmd->tess_rec_phase = -1;
+          return (struct kk_draw_data){.grid = kk_grid_1d(0u)};
+-      mtl_barrier_after_encoder_stages(enc, MTL_STAGE_DISPATCH,
+-                                       MTL_STAGE_DISPATCH);
+-      mtl_compute_set_pipeline_state(enc, pipeline);
+-      kk_dispatch_compute(enc, grid_tcs, local_size);
++      }
++      if (rec) {
++         struct kk_tess_op op = {.phase = 2, .pipeline = pipeline,
++                                 .a0 = cmd->state.root_addr,
++                                 .a2 = cmd->perdraw_addr, .grid = grid_tcs,
++                                 .local = local_size};
++         util_dynarray_append(&cmd->tess_ops, op);
++      } else {
++         mtl_barrier_after_encoder_stages(enc, MTL_STAGE_DISPATCH,
++                                          MTL_STAGE_DISPATCH);
++         mtl_compute_set_pipeline_state(enc, pipeline);
++         kk_dispatch_compute(enc, grid_tcs, local_size);
++      }
+    }
+ 
+    /* First generate counts, then prefix sum them, and then tessellate. */
++   KK_TESS_PHASE(3);
+    libkk_tessellate(cmd, grid_tess, true, info.mode, POLY_TESS_MODE_COUNT,
+                     state);
+ 
++   KK_TESS_PHASE(4);
+    libkk_prefix_sum_tess(cmd, kk_grid_1d(1024u), true, state);
++   cmd->tess_rec_phase = -1;
+ 
+    if (gfx->xfb.tess_snapshot.gpu != 0u) {
+       const struct kk_shader *capture = cmd->state.shaders[MESA_SHADER_VERTEX];
+@@ -2514,8 +2561,11 @@
+          size[3]);
+    }
+ 
++   KK_TESS_PHASE(5);
+    libkk_tessellate(cmd, grid_tess, true, info.mode, POLY_TESS_MODE_WITH_COUNTS,
+                     state);
++   cmd->tess_rec_phase = -1;
++#undef KK_TESS_PHASE
+ 
+    struct kk_shader *tes = cmd->state.shaders[MESA_SHADER_TESS_EVAL];
+ 
+--- a/src/kosmickrisp/util/kk_dispatch_cmd_gen.py
++++ b/src/kosmickrisp/util/kk_dispatch_cmd_gen.py
+@@ -84,7 +84,7 @@
+     }
+ 
+     dev->vk.dispatch_table.${e.name}(${e.call_params()});
+-    if (!cmd->one_time_submit) {
++    if (!cmd->one_time_submit || cmd->fusion_enfile) {
+       vk_cmd_enqueue_device_entrypoints.${e.name}(${e.call_params()});
+     }
+     % else:
+@@ -96,7 +96,7 @@
+     if (result != VK_SUCCESS)
+       return result;
+ 
+-    if (!cmd->one_time_submit) {
++    if (!cmd->one_time_submit || cmd->fusion_enfile) {
+       result = vk_cmd_enqueue_device_entrypoints.${e.name}(${e.call_params()});
+     }
+     return result;
