@@ -1,0 +1,437 @@
+Generated-by: LLM
+
+fex : lectures TSO voisines appariees (CIDRE_TSO_PAIRES, actif ; =0 rend une lecture ordonnee par acces). Sous TSO chaque lecture GPR est un ldar et des ldar successifs se serialisent. Nouvelle passe IR CidreTSOPaires, avant l'allocation des registres : deux LoadMemTSO GPR de meme taille (4 ou 8 octets) du meme bloc, a Addr et Addr + taille (formes base + index << decalage + constante, registres invites suivis par version, adresses relatives a RIP comprises), sans acces a la memoire de l'invite, barriere, atomique, saut ou appel entre elles (operations de drapeaux, selections et etat du fil admises, liste de 0226), deviennent une seule lecture : CidreLoadMemTSOPaire (4+4 : ldar de 8 octets si Addr est aligne sur 8) ou CidreLoadMemTSOPaire8 (8+8 : ldp alignee sur 16, atomique en copie unique avec FEAT_LSE2, puis dmb ishld). La lecture large est atomique : les deux valeurs viennent du meme instant, execution TSO valide, ordonnee avant la suite comme deux lectures ordonnees. Adresse non alignee : ldr ; dmb ishld par lecture (forme a demi-barriere de FEX, sans faute). Tests d'alignement par and + cbnz (NZCV intact). Eteinte si CIDRE_TSO_DEP=1 ou sans TSO. CIDRE_DIAG_TSO_PAIRES=1 compte les paires (FEX_SILENTLOG=0). Banc (M1 Max, 7 passages, sommes justes) : gather_sse4 23,7 -> 13,2 ms (26 -> 46 % de Rosetta), st_champs 296 -> 264 ms (31 -> 35 %), un_lect 164 -> 154 ms ; categorie champs 49 -> 52 %. Temoin paires (ecrivain t[k+1] puis t[k], lecteur t[k] puis t[k+1] ; 4 octets alignes, decales, indexes ; 8 octets alignes sur 16 et decales, avec une comparaison entre les deux lectures ; 30 M tours) : 0 inversion, contre 35 000 a 720 000 sans TSO ; litmus, smc_retour, suspension, tflags, feuilles, crit, gathertest : verts.
+
+diff --git a/FEXCore/Source/CMakeLists.txt b/FEXCore/Source/CMakeLists.txt
+index e770396..715e8e9 100644
+--- a/FEXCore/Source/CMakeLists.txt
++++ b/FEXCore/Source/CMakeLists.txt
+@@ -66,6 +66,7 @@ set(SRCS
+   Interface/IR/Passes/IRDumperPass.cpp
+   Interface/IR/Passes/IRValidation.cpp
+   Interface/IR/Passes/CidreHautNul.cpp
++  Interface/IR/Passes/CidreTSOPaires.cpp
+   Interface/IR/Passes/RedundantFlagCalculationElimination.cpp
+   Interface/IR/Passes/RegisterAllocationPass.cpp
+   Interface/IR/Passes/x87StackOptimizationPass.cpp
+diff --git a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+index 1b6eb5b..cdba668 100644
+--- a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+@@ -858,6 +858,56 @@ DEF_OP(LoadMemPair) {
+   }
+ }
+ 
++// Cidre 0287 : paire de lectures TSO voisines (passe CidreTSOPaires). Une lecture de 8 octets alignee est atomique
++// (copie unique) : les deux valeurs viennent du meme instant, execution TSO valide (L1 puis L2 sans evenement entre
++// les deux) ; ldar l'ordonne avant tout acces ulterieur comme deux ldar. Adresse non alignee sur 8 : ldr ; dmb ishld
++// par lecture.
++// Sans toucher NZCV (FEX y garde les drapeaux x86) : and + cbnz.
++DEF_OP(CidreLoadMemTSOPaire) {
++  const auto Op = IROp->C<IR::IROp_CidreLoadMemTSOPaire>();
++  const auto Addr = RebaseGuestLow(GetReg(Op->Addr));
++  const auto Dst = GetReg(Node);
++  ARMEmitter::ForwardLabel Lent {}, Fini {};
++  and_(ARMEmitter::Size::i64Bit, TMP1, Addr, 7);
++  (void)cbnz(ARMEmitter::Size::i64Bit, TMP1, &Lent);
++  ldar(Dst.X(), Addr);
++  (void)b(&Fini);
++  (void)Bind(&Lent);
++  // Non aligne : ldr ; dmb ishld par lecture (la forme a demi-barriere de FEX pour une lecture TSO desalignee ; un ldar
++  // a cheval sur 16 octets fauterait, et le gestionnaire de FEX ne reconnaitrait pas cette sequence)
++  ldr(TMP1.W(), Addr, 0);
++  dmb(ARMEmitter::BarrierScope::ISHLD);
++  ldr(TMP2.W(), Addr, 4);
++  dmb(ARMEmitter::BarrierScope::ISHLD);
++  orr(ARMEmitter::Size::i64Bit, Dst, TMP1, TMP2, ARMEmitter::ShiftType::LSL, 32);
++  (void)Bind(&Fini);
++}
++
++// Cidre 0287 : paire de lectures TSO de 8 octets. LDP de deux X alignee sur 16 : atomique en copie unique (FEAT_LSE2,
++// present sur tout Apple Silicon), puis dmb ishld (ordonnee avant tout acces ulterieur, comme un ldar). Sinon ldr ;
++// dmb ishld par lecture.
++DEF_OP(CidreLoadMemTSOPaire8) {
++  const auto Op = IROp->C<IR::IROp_CidreLoadMemTSOPaire8>();
++  const auto Addr = RebaseGuestLow(GetReg(Op->Addr));
++  const auto Dst1 = GetReg(Op->OutValue1);
++  const auto Dst2 = GetReg(Op->OutValue2);
++  ARMEmitter::ForwardLabel Lent {}, Fini {};
++  and_(ARMEmitter::Size::i64Bit, TMP1, Addr, 15);
++  (void)cbnz(ARMEmitter::Size::i64Bit, TMP1, &Lent);
++  ldp<ARMEmitter::IndexType::OFFSET>(TMP1, TMP2, Addr, 0);
++  dmb(ARMEmitter::BarrierScope::ISHLD);
++  (void)b(&Fini);
++  (void)Bind(&Lent);
++  // Non aligne sur 16 : ldr ; dmb ishld par lecture (forme a demi-barriere de FEX, sans faute possible)
++  ldr(TMP1, Addr, 0);
++  dmb(ARMEmitter::BarrierScope::ISHLD);
++  ldr(TMP2, Addr, 8);
++  dmb(ARMEmitter::BarrierScope::ISHLD);
++  (void)Bind(&Fini);
++  mov(ARMEmitter::Size::i64Bit, Dst1, TMP1);
++  mov(ARMEmitter::Size::i64Bit, Dst2, TMP2);
++}
++
+ DEF_OP(LoadMemTSO) {
+   const auto Op = IROp->C<IR::IROp_LoadMemTSO>();
+   const auto OpSize = IROp->Size;
+diff --git a/FEXCore/Source/Interface/IR/IR.json b/FEXCore/Source/Interface/IR/IR.json
+index adf35ef..4416820 100644
+--- a/FEXCore/Source/Interface/IR/IR.json
++++ b/FEXCore/Source/Interface/IR/IR.json
+@@ -581,6 +581,21 @@
+         "DestSize": "Size"
+       },
+ 
++      "GPR = CidreLoadMemTSOPaire OpSize:#Size, GPR:$Addr": {
++        "Desc": ["Cidre 0287 : deux lectures TSO GPR de 4 octets voisines (Addr, Addr + 4) en une lecture de 8 octets",
++                 "ordonnee (ldar 64 bits si Addr est aligne sur 8, sinon ldr ; dmb ishld par lecture). Bits 0-31 : la premiere, 32-63 : la seconde."
++                ],
++        "DestSize": "Size"
++      },
++
++      "SSA:$Value1, SSA:$Value2 = CidreLoadMemTSOPaire8 OpSize:#Size, GPR:$Addr": {
++        "Desc": ["Cidre 0287 : deux lectures TSO GPR de 8 octets voisines (Addr, Addr + 8) : ldp + dmb ishld si Addr est aligne",
++                 "sur 16 (atomique en copie unique avec LSE2), sinon ldr ; dmb ishld par lecture."
++                ],
++        "HasSideEffects": true,
++        "DestSize": "Size"
++      },
++
+       "StoreMemTSO RegisterClass:$Class, OpSize:#Size, SSA:$Value, GPR:$Addr, GPR:$Offset, OpSize:$Align, MemOffsetType:$OffsetType, u8:$OffsetScale": {
+         "Desc": ["Does a x86 TSO compatible store to memory. Offset must be Invalid()."
+                 ],
+diff --git a/FEXCore/Source/Interface/IR/PassManager.cpp b/FEXCore/Source/Interface/IR/PassManager.cpp
+index b4a1b5b..9ff8504 100644
+--- a/FEXCore/Source/Interface/IR/PassManager.cpp
++++ b/FEXCore/Source/Interface/IR/PassManager.cpp
+@@ -79,6 +79,7 @@ void PassManager::AddDefaultPasses(Context::ContextImpl* ctx) {
+ 
+   // Cidre : analyse sur le SSA, avant que l'allocation ne remplace les arguments par des registres.
+   InsertPass(CreateCidreHautNulPass(ctx->HostFeatures));
++  InsertPass(CreateCidreTSOPairesPass(ctx->Config.TSOEnabled()));
+   InsertPass(IR::CreateRegisterAllocationPass(&ctx->CPUID), "RA");
+ 
+ #if defined(ASSERTIONS_ENABLED) && ASSERTIONS_ENABLED
+diff --git a/FEXCore/Source/Interface/IR/Passes/CidreTSOPaires.cpp b/FEXCore/Source/Interface/IR/Passes/CidreTSOPaires.cpp
+new file mode 100644
+index 0000000..a9051f4
+--- /dev/null
++++ b/FEXCore/Source/Interface/IR/Passes/CidreTSOPaires.cpp
+@@ -0,0 +1,304 @@
++// SPDX-License-Identifier: MIT
++/*
++$info$
++tags: ir|opts
++desc: Cidre 0287 : deux lectures TSO GPR voisines (4 ou 8 octets), sans rien entre elles qui touche la memoire, en une seule
++$end_info$
++*/
++
++// Sous TSO, chaque lecture GPR est un ldar, et quatre ldar de suite se serialisent (sur M1, ~3 cycles de plus chacun) :
++// lire un tableau d'indices (gather SSE, table de correspondance) coutait 4x Rosetta. Deux lectures de 4 octets a
++// Addr et Addr + 4, dans le meme bloc, sans acces memoire, barriere, atomique, saut ou appel entre elles, deviennent
++// CidreLoadMemTSOPaire (une lecture de 8 octets alignee : atomique en copie unique, puis ordonnee comme un ldar). Les deux
++// valeurs viennent du meme instant : c'est l'execution TSO ou L2 suit L1 sans evenement entre les deux, donc rien n'est
++// relache. Adresses comparees sous forme base + index << decalage + constante, les registres invites suivis par version
++// (un StoreRegister en change la version). CIDRE_TSO_PAIRES=0 coupe la passe ; elle ne tourne qu'avec le TSO.
++
++#include "Interface/IR/IR.h"
++#include "Interface/IR/IREmitter.h"
++#include "Interface/IR/PassManager.h"
++#include "Interface/IR/Passes.h"
++#include "Interface/IR/RegisterAllocationData.h"
++
++#include <FEXCore/IR/IR.h>
++#include <FEXCore/Utils/LogManager.h>
++#include <FEXCore/Utils/Profiler.h>
++#include <FEXCore/fextl/vector.h>
++
++#include <array>
++#include <cstdlib>
++
++namespace FEXCore::IR {
++namespace {
++  // Forme symbolique d'une adresse : Base (+ Index << Decalage) + Const. Base/Index : 0 = absent,
++  // (1 << 40) | (reg << 20) | version pour un registre invite, (2 << 40) | id pour un autre noeud SSA.
++  struct Sym {
++    uint64_t Base {}, Index {};
++    uint8_t Decalage {};
++    int64_t Const {};
++    bool Ok {};
++  };
++
++  class CidreTSOPairesPass final : public Pass {
++  public:
++    explicit CidreTSOPairesPass(bool TSOEnabled) {
++      const char* E = getenv("CIDRE_TSO_PAIRES");
++      const char* D = getenv("CIDRE_TSO_DEP");
++      Actif = TSOEnabled && !(E && *E == '0') && !(D && *D == '1');
++      Diag = getenv("CIDRE_DIAG_TSO_PAIRES") != nullptr;
++    }
++    void Run(IREmitter* IREmit) override;
++
++  private:
++    bool Actif {};
++    bool Diag {};
++    IRListView* IR {};
++    fextl::vector<Sym> Formes;
++    std::array<uint32_t, 32> Version {};
++
++    Sym Forme(OrderedNodeWrapper A, int Prof = 0);
++  };
++
++  Sym CidreTSOPairesPass::Forme(OrderedNodeWrapper A, int Prof) {
++    const uint32_t ID = A.ID().Value;
++    if (ID < Formes.size() && Formes[ID].Ok) {
++      return Formes[ID];
++    }
++    Sym R {};
++    R.Ok = true;
++    auto Noeud = IR->GetNode(A);
++    const auto* H = IR->GetOp<IROp_Header>(Noeud);
++    const auto Feuille = [&]() {
++      Sym F {};
++      F.Ok = true;
++      F.Base = (2ULL << 40) | ID;
++      return F;
++    };
++    if (Prof > 6) {
++      return Feuille();
++    }
++    switch (H->Op) {
++    case OP_CONSTANT: R.Const = static_cast<int64_t>(H->C<IROp_Constant>()->Constant); break;
++    case OP_INLINECONSTANT: R.Const = static_cast<int64_t>(H->C<IROp_InlineConstant>()->Constant); break;
++    case OP_ENTRYPOINTOFFSET: // adresse relative a RIP : entree du bloc + decalage
++      if (H->Size != OpSize::i64Bit) {
++        R = Feuille();
++        break;
++      }
++      R.Base = 3ULL << 40;
++      R.Const = H->C<IROp_EntrypointOffset>()->Offset;
++      break;
++    case OP_LOADREGISTER: {
++      const auto* Op = H->C<IROp_LoadRegister>();
++      if (Op->Class != RegClass::GPR || Op->Reg >= 32) {
++        R = Feuille();
++      } else {
++        R.Base = (1ULL << 40) | (uint64_t(Op->Reg) << 20) | Version[Op->Reg];
++      }
++      break;
++    }
++    case OP_ADD: {
++      if (H->Size != OpSize::i64Bit) {
++        R = Feuille();
++        break;
++      }
++      const auto* Op = H->C<IROp_Add>();
++      Sym X = Forme(Op->Src1, Prof + 1), Y = Forme(Op->Src2, Prof + 1);
++      if (!Y.Base && !Y.Index) {
++        R = X;
++        R.Const += Y.Const;
++      } else if (!X.Base && !X.Index) {
++        R = Y;
++        R.Const += X.Const;
++      } else if (!X.Index && !Y.Index && Y.Base && !Y.Const) {
++        R = X;
++        R.Index = Y.Base;
++      } else if (!X.Index && !Y.Index && X.Base && !X.Const) {
++        R = Y;
++        R.Index = X.Base;
++      } else {
++        R = Feuille();
++      }
++      break;
++    }
++    case OP_ADDSHIFT: {
++      const auto* Op = H->C<IROp_AddShift>();
++      if (H->Size != OpSize::i64Bit || Op->Shift != ShiftType::LSL) {
++        R = Feuille();
++        break;
++      }
++      Sym X = Forme(Op->Src1, Prof + 1), Y = Forme(Op->Src2, Prof + 1);
++      if (!X.Index && Y.Base && !Y.Index && !Y.Const) {
++        R = X;
++        R.Index = Y.Base;
++        R.Decalage = Op->ShiftAmount;
++      } else {
++        R = Feuille();
++      }
++      break;
++    }
++    default: R = Feuille(); break;
++    }
++    if (ID < Formes.size()) {
++      Formes[ID] = R;
++    }
++    return R;
++  }
++
++  void CidreTSOPairesPass::Run(IREmitter* IREmit) {
++    if (!Actif) {
++      return;
++    }
++    FEXCORE_PROFILE_SCOPED("PassManager::CidreTSOPaires");
++    auto CurrentIR = IREmit->ViewIR();
++    IR = &CurrentIR;
++    Formes.assign(IR->GetSSACount() + 1, Sym {});
++
++    struct Paire {
++      Ref L1, L2;
++    };
++    fextl::vector<Paire> Paires;
++
++    for (auto [BlockNode, BlockHeader] : IR->GetBlocks()) {
++      Version.fill(0);
++      Ref Attente = nullptr;
++      Sym FormeAttente {};
++      OpSize TailleAttente {};
++      for (auto [CodeNode, IROp] : IR->GetCode(BlockNode)) {
++        switch (IROp->Op) {
++        case OP_LOADMEMTSO: {
++          const auto* L = IROp->C<IROp_LoadMemTSO>();
++          const bool Candidat = L->Class == RegClass::GPR && (IROp->Size == OpSize::i32Bit || IROp->Size == OpSize::i64Bit) &&
++                                L->Offset.IsInvalid();
++          if (Diag && getenv("CIDRE_DIAG_TSO_PAIRES")[0] == '2') {
++            Sym F = Forme(L->Addr);
++            const auto* AH = IR->GetOp<IROp_Header>(IR->GetNode(L->Addr));
++            LogMan::Msg::IFmt("cidre tso paires : lecture taille {} classe {} offset {} adr op {} base {:x} index {:x} dec {} const {} attente {}",
++                              (int)IROp->Size, static_cast<int>(L->Class), L->Offset.IsInvalid() ? 0 : 1, GetName(AH->Op), F.Base, F.Index, F.Decalage,
++                              F.Const, Attente ? 1 : 0);
++          }
++          if (Candidat && Attente) {
++            Sym F = Forme(L->Addr);
++            if (IROp->Size == TailleAttente && F.Base == FormeAttente.Base && F.Index == FormeAttente.Index &&
++                F.Decalage == FormeAttente.Decalage && F.Const == FormeAttente.Const + static_cast<int64_t>(IR::OpSizeToSize(IROp->Size))) {
++              Paires.push_back({Attente, CodeNode});
++              Attente = nullptr;
++              break;
++            }
++          }
++          Attente = Candidat ? CodeNode : nullptr;
++          if (Attente) {
++            FormeAttente = Forme(L->Addr);
++            TailleAttente = IROp->Size;
++          }
++          break;
++        }
++        case OP_STOREREGISTER: {
++          const auto Reg = PhysicalRegister(CodeNode);
++          if (Reg.AsRegClass() == RegClass::GPRFixed && Reg.Reg < 32) {
++            ++Version[Reg.Reg];
++          }
++          break;
++        }
++        // Ni memoire de l'invite, ni barriere, ni flot de controle
++        case OP_LOADREGISTER:
++          // forme figee a sa position : la version du registre est celle de ce point (un StoreRegister plus loin
++          // en fait une autre valeur)
++          (void)Forme(IR->WrapNode(CodeNode));
++          break;
++        case OP_COPY:
++        case OP_ADD:
++        case OP_SUB:
++        case OP_ADDSHIFT:
++        case OP_SUBSHIFT:
++        case OP_OR:
++        case OP_XOR:
++        case OP_AND:
++        case OP_ANDN:
++        case OP_LSHL:
++        case OP_LSHR:
++        case OP_ASHR:
++        case OP_BFE:
++        case OP_SBFE:
++        case OP_CONSTANT:
++        case OP_INLINECONSTANT:
++        case OP_GUESTOPCODE:
++        case OP_INVALIDATEFLAGS:
++        // drapeaux, selections, etat du fil : ni memoire de l'invite ni flot de controle (liste de 0226)
++        case OP_ADDWITHFLAGS:
++        case OP_SUBWITHFLAGS:
++        case OP_LOADPF:
++        case OP_LOADAF:
++        case OP_LOADCONTEXT:
++        case OP_STORECONTEXT:
++        case OP_LOADNZCV:
++        case OP_STORENZCV:
++        case OP_LOADDF:
++        case OP_ENTRYPOINTOFFSET:
++        case OP_INLINEENTRYPOINTOFFSET:
++        case OP_NEG:
++        case OP_NOT:
++        case OP_ADC:
++        case OP_SBB:
++        case OP_ADDNZCV:
++        case OP_SUBNZCV:
++        case OP_ADCNZCV:
++        case OP_SBBNZCV:
++        case OP_ADCWITHFLAGS:
++        case OP_SBBWITHFLAGS:
++        case OP_ANDWITHFLAGS:
++        case OP_TESTNZ:
++        case OP_TESTZ:
++        case OP_SETSMALLNZV:
++        case OP_CARRYINVERT:
++        case OP_SHIFTFLAGS:
++        case OP_ROR:
++        case OP_MUL:
++        case OP_UMUL:
++        case OP_BFI:
++        case OP_BFXIL:
++        case OP_SELECT:
++        case OP_NZCVSELECT:
++        case OP_NZCVSELECTINCREMENT: break;
++        default:
++          if (Diag && Attente && getenv("CIDRE_DIAG_TSO_PAIRES")[0] == '2') {
++            LogMan::Msg::IFmt("cidre tso paires : coupe par op {}", GetName(IROp->Op));
++          }
++          Attente = nullptr;
++          break;
++        }
++      }
++    }
++
++    if (Diag && !Paires.empty()) {
++      LogMan::Msg::IFmt("cidre tso paires : {} paire(s)", Paires.size());
++    }
++    for (auto& P : Paires) {
++      const auto* L1 = IR->GetOp<IROp_LoadMemTSO>(P.L1);
++      Ref Addr = IR->GetNode(L1->Addr);
++      IREmit->SetWriteCursor(P.L1);
++      if (IR->GetOp<IROp_Header>(P.L1)->Size == OpSize::i64Bit) {
++        Ref Bas = IREmit->_AllocateGPR(false);
++        Ref Haut = IREmit->_AllocateGPR(false);
++        Ref Paire8 = IREmit->_CidreLoadMemTSOPaire8(OpSize::i64Bit, Addr, Bas, Haut);
++        IREmit->ReplaceUsesWithAfter(P.L1, Bas, Paire8);
++        IREmit->ReplaceUsesWithAfter(P.L2, Haut, P.L2);
++        IREmit->Remove(P.L1);
++        IREmit->Remove(P.L2);
++        continue;
++      }
++      Ref V = IREmit->_CidreLoadMemTSOPaire(OpSize::i64Bit, Addr);
++      Ref B1 = IREmit->_Bfe(OpSize::i64Bit, 32, 0, V);
++      Ref B2 = IREmit->_Bfe(OpSize::i64Bit, 32, 32, V);
++      IREmit->ReplaceUsesWithAfter(P.L1, B1, B2);
++      IREmit->ReplaceUsesWithAfter(P.L2, B2, P.L2);
++      IREmit->Remove(P.L1);
++      IREmit->Remove(P.L2);
++    }
++  }
++} // namespace
++
++fextl::unique_ptr<Pass> CreateCidreTSOPairesPass(bool TSOEnabled) {
++  return fextl::make_unique<CidreTSOPairesPass>(TSOEnabled);
++}
++} // namespace FEXCore::IR
+diff --git a/FEXCore/Source/Interface/IR/Passes.h b/FEXCore/Source/Interface/IR/Passes.h
+index 7a89512..7e90ff6 100644
+--- a/FEXCore/Source/Interface/IR/Passes.h
++++ b/FEXCore/Source/Interface/IR/Passes.h
+@@ -13,6 +13,7 @@ class Pass;
+ 
+ fextl::unique_ptr<Pass> CreateDeadFlagCalculationEliminination();
+ fextl::unique_ptr<Pass> CreateCidreHautNulPass(const HostFeatures& Features);
++fextl::unique_ptr<Pass> CreateCidreTSOPairesPass(bool TSOEnabled);
+ fextl::unique_ptr<Pass> CreateRegisterAllocationPass(const CPUIDEmu* CPUID);
+ fextl::unique_ptr<Pass> CreateX87StackOptimizationPass(const HostFeatures&, OpSize GPROpSize);
+ 

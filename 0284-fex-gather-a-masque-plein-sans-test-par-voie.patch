@@ -1,0 +1,80 @@
+Generated-by: LLM
+
+fex : gather AVX2 a masque entierement actif sans test par voie (CIDRE_GATHER_RAPIDE, actif ; =0 rend la boucle amont). Emulate128BitGather (hotes sans SVE) extrayait et testait le bit de signe du masque voie par voie (umov + tbz avant chaque chargement). Le masque est d'abord teste une fois pour tout le registre (cmlt + uminv + cbz) ; s'il est plein (le cas courant : vpcmpeqd x, x, x juste avant le vgather), les voies sont chargees sans extraction ni branche ; sinon, boucle d'origine. Elements de 32 et 64 bits, registre de donnees complet. Banc (avxsse, M1 Max) : gather_avx2 11,1 -> 8,3 ms. Temoin gathertest (vgatherdps, vpgatherdd, 128 et 256 bits, vgatherqpd, vpgatherdq ; masques pleins, partiels, nuls ; 200 000 tours) : 0 erreur.
+
+diff --git a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+index f41ba43..1b6eb5b 100644
+--- a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+@@ -1165,6 +1165,16 @@ DEF_OP(VStoreVectorMasked) {
+   }
+ }
+ 
++// Cidre 0284 : CIDRE_GATHER_RAPIDE=0 rend la boucle de gather amont (masque teste voie par voie).
++static bool CidreGatherRapide() {
++  static int8_t V = -1;
++  if (V < 0) {
++    const char* E = getenv("CIDRE_GATHER_RAPIDE");
++    V = !(E && *E == '0');
++  }
++  return V;
++}
++
+ void Arm64JITCore::Emulate128BitGather(IR::OpSize Size, IR::OpSize ElementSize, ARMEmitter::VRegister Dst,
+                                        ARMEmitter::VRegister IncomingDst, std::optional<ARMEmitter::Register> BaseAddr,
+                                        ARMEmitter::VRegister VectorIndexLow, std::optional<ARMEmitter::VRegister> VectorIndexHigh,
+@@ -1225,13 +1235,15 @@ void Arm64JITCore::Emulate128BitGather(IR::OpSize Size, IR::OpSize ElementSize,
+     mov(ResultReg.Q(), IncomingDst.Q());
+   }
+ 
+-  for (size_t i = DataElementOffsetStart, IndexElement = IndexElementOffsetStart; i < NumDataElements; ++i, ++IndexElement) {
++  const auto Voie = [&](size_t i, size_t IndexElement, bool Masque) {
+     ARMEmitter::ForwardLabel Skip {};
+-    // Extract mask element
+-    PerformMove(ElementSize, WorkingReg, MaskReg, i);
++    if (Masque) {
++      // Extract mask element
++      PerformMove(ElementSize, WorkingReg, MaskReg, i);
+ 
+-    // Skip if the mask's sign bit isn't set
+-    (void)tbz(WorkingReg, ElementSizeInBits - 1, &Skip);
++      // Skip if the mask's sign bit isn't set
++      (void)tbz(WorkingReg, ElementSizeInBits - 1, &Skip);
++    }
+ 
+     // Extract Index Element
+     if ((IndexElement * IR::OpSizeToSize(VectorIndexSize)) >= 16) {
+@@ -1270,6 +1282,33 @@ void Arm64JITCore::Emulate128BitGather(IR::OpSize Size, IR::OpSize ElementSize,
+     }
+ 
+     (void)Bind(&Skip);
++  };
++
++  // Cidre 0284 : masque entierement actif (le cas courant : vpcmpeqd x, x, x juste avant le vgather) teste une fois
++  // pour tout le registre (cmlt + uminv), puis chargements de voie sans tbz ni extraction du masque par voie.
++  // CIDRE_GATHER_RAPIDE=0 rend la boucle amont.
++  const bool CidreRapide = CidreGatherRapide() && DataElementOffsetStart == 0 && IndexElementOffsetStart == 0 &&
++                           (ElementSize == IR::OpSize::i32Bit || ElementSize == IR::OpSize::i64Bit) &&
++                           NumDataElements == 16 / IR::OpSizeToSize(ElementSize) && NumDataElements >= 2;
++  if (CidreRapide) {
++    ARMEmitter::ForwardLabel Lent {}, Fini {};
++    cmlt(ElementSize == IR::OpSize::i32Bit ? ARMEmitter::SubRegSize::i32Bit : ARMEmitter::SubRegSize::i64Bit, VTMP2.Q(), MaskReg.Q());
++    uminv(ARMEmitter::SubRegSize::i32Bit, VTMP2.Q(), VTMP2.Q());
++    umov<ARMEmitter::SubRegSize::i32Bit>(WorkingReg, VTMP2, 0);
++    (void)cbz(ARMEmitter::Size::i32Bit, WorkingReg, &Lent);
++    for (size_t i = 0, IndexElement = 0; i < NumDataElements; ++i, ++IndexElement) {
++      Voie(i, IndexElement, false);
++    }
++    (void)b(&Fini);
++    (void)Bind(&Lent);
++    for (size_t i = 0, IndexElement = 0; i < NumDataElements; ++i, ++IndexElement) {
++      Voie(i, IndexElement, true);
++    }
++    (void)Bind(&Fini);
++  } else {
++    for (size_t i = DataElementOffsetStart, IndexElement = IndexElementOffsetStart; i < NumDataElements; ++i, ++IndexElement) {
++      Voie(i, IndexElement, true);
++    }
+   }
+ 
+   if (NeedsDestTmp) {
