@@ -1,0 +1,108 @@
+Generated-by: LLM
+
+fex : sonnette de suspension hors ligne (CIDRE_SONNETTE_FROIDE, active ; =0 rend la forme en ligne). EmitSuspendInterruptCheck emettait « ldr ; cbz par-dessus ; brk #0xCAFE » a chaque entree de bloc et a chaque arete arriere : un saut pris a chaque tour de boucle. Desormais « ldr ; cbnz vers un talon » : le talon, en fin de bloc, porte brk #0xCAFD suivi du decalage signe (32 bits) vers le cbnz ; ResetToConsistentStateImpl (Module.cpp) ramene le Pc au site, ou l'etat invite est celui du controle en ligne, puis suit le chemin de suspension habituel. Banc : indirect/appels 92 -> 97 % de Rosetta (ind_switch +16 %, ind_fib +12 %). Temoin suspension (SuspendThread/GetThreadContext/ResumeThread sur un fil en boucle serree) : 2000/2000, RIP dans la boucle.
+
+diff --git a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+index 949d2e2..aba1710 100644
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -858,10 +858,18 @@ void Arm64JITCore::EmitSuspendInterruptCheck() {
+   static constexpr uint16_t SuspendMagic {0xCAFE};
+ 
+   ldr(TMP2.W(), STATE_PTR(CpuStateFrame, SuspendDoorbell));
+-  ARMEmitter::ForwardLabel l_NoSuspend;
+-  (void)cbz(ARMEmitter::Size::i32Bit, TMP2, &l_NoSuspend);
+-  brk(SuspendMagic);
+-  (void)Bind(&l_NoSuspend);
++  if (CidreSonnetteFroide > 0) {
++    // Cidre 0281 : cbnz vers un talon en fin de bloc ; en regime, une branche non prise au lieu d'un saut pris par-dessus
++    // le brk (une arete arriere de boucle en payait un a chaque tour).
++    auto& S = CidreSonnettes.emplace_back();
++    S.Site = GetCursorAddress<uint64_t>();
++    (void)cbnz(ARMEmitter::Size::i32Bit, TMP2, &S.Label);
++  } else {
++    ARMEmitter::ForwardLabel l_NoSuspend;
++    (void)cbz(ARMEmitter::Size::i32Bit, TMP2, &l_NoSuspend);
++    brk(SuspendMagic);
++    (void)Bind(&l_NoSuspend);
++  }
+ #endif
+ }
+ 
+@@ -1113,6 +1121,11 @@ CPUBackend::CompiledCode Arm64JITCore::CompileCode(uint64_t Entry, uint64_t Size
+   JumpTargets.clear();
+   CallReturnTargets.clear();
+   PendingJumpThunks.clear();
++  CidreSonnettes.clear();
++  if (CidreSonnetteFroide < 0) {
++    const char* E = getenv("CIDRE_SONNETTE_FROIDE");
++    CidreSonnetteFroide = !(E && *E == '0');
++  }
+   JumpTargets.resize(IR->GetHeader()->BlockCount, {});
+   Relocations.resize(PrevNumAllocations, FEXCore::CPU::Relocation::Default()); // Discard any relocations generated from a previous attempt
+ 
+@@ -1252,6 +1265,15 @@ CPUBackend::CompiledCode Arm64JITCore::CompileCode(uint64_t Entry, uint64_t Size
+   }
+   PendingTargetLabel = nullptr;
+ 
++  // Cidre 0281 : talons des sonnettes hors ligne : brk #0xCAFD, puis decalage vers le cbnz (Module.cpp le lit)
++  for (auto& S : CidreSonnettes) {
++    BindOrRestart(&S.Label);
++    const uint64_t Talon = GetCursorAddress<uint64_t>();
++    brk(0xCAFD);
++    dc32(static_cast<uint32_t>(static_cast<int32_t>(static_cast<int64_t>(S.Site) - static_cast<int64_t>(Talon))));
++  }
++  CidreSonnettes.clear();
++
+   ARMEmitter::ForwardLabel l_ExitLink;
+   for (auto& PendingJumpThunk : PendingJumpThunks) {
+     // Align as 64-bit atomics are used on the HostCode field.
+diff --git a/FEXCore/Source/Interface/Core/JIT/JITClass.h b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+index cbd2936..e83299b 100644
+--- a/FEXCore/Source/Interface/Core/JIT/JITClass.h
++++ b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+@@ -19,6 +19,7 @@ $end_info$
+ #include <FEXCore/Core/CoreState.h>
+ #include <FEXCore/IR/IR.h>
+ #include <FEXCore/Utils/LogManager.h>
++#include <FEXCore/fextl/deque.h>
+ #include <FEXCore/fextl/map.h>
+ #include <FEXCore/fextl/memory.h>
+ #include <FEXCore/fextl/string.h>
+@@ -109,6 +110,13 @@ private:
+     uint8_t PatchSiteSize = 0;
+   };
+   fextl::vector<PendingJumpThunk> PendingJumpThunks;
++  // Cidre 0281 : talons des sonnettes hors ligne du bloc en cours (adresse du cbnz, etiquette du talon)
++  struct CidreSonnette {
++    uint64_t Site;
++    ARMEmitter::ForwardLabel Label;
++  };
++  fextl::deque<CidreSonnette> CidreSonnettes;
++  int8_t CidreSonnetteFroide {-1};
+ 
+   Utils::PoolBufferWithTimedRetirement<uint8_t*, 5000, 500> TempCodeBufferAllocator;
+ 
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+index 1a17b59..1f7a0d2 100644
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -829,6 +829,18 @@ bool ResetToConsistentStateImpl(const ThreadCPUArea CPUArea, EXCEPTION_RECORD* E
+ 
+   // The JIT (in CompileBlock) emits code to check the suspend doorbell at the start of every block, and run the following instruction if it is set:
+   static constexpr uint32_t SuspendTrapMagic {0xD4395FC0}; // brk #0xCAFE
++  // Cidre 0281 : sonnette hors ligne (talon en fin de bloc : brk #0xCAFD puis le decalage signe, sur 32 bits, vers le
++  // cbnz du controle). Le Pc est ramene au site, ou l'etat invite est celui du controle en ligne, puis meme chemin.
++  static constexpr uint32_t SuspendTrapFroid {0xD4395FA0}; // brk #0xCAFD
++  if (Exception->ExceptionCode == EXCEPTION_ILLEGAL_INSTRUCTION && *reinterpret_cast<uint32_t*>(NativeContext->Pc) == SuspendTrapFroid) {
++    NativeContext->Pc += static_cast<int64_t>(*reinterpret_cast<int32_t*>(NativeContext->Pc + 4));
++    Exception::ReconstructThreadState(Thread, *NativeContext);
++    *NativeContext = Exception::StoreStateToPackedECContext(Thread, NativeContext->Fpcr, NativeContext->Fpsr);
++    LogMan::Msg::DFmt("Suspending (sonnette froide): RIP: {:X} SP: {:X}", NativeContext->Pc, NativeContext->Sp);
++    CPUArea.Area->InSimulation = 0;
++    *CPUArea.Area->SuspendDoorbell = 0;
++    return true;
++  }
+   if (Exception->ExceptionCode == EXCEPTION_ILLEGAL_INSTRUCTION && *reinterpret_cast<uint32_t*>(NativeContext->Pc) == SuspendTrapMagic) {
+     Exception::ReconstructThreadState(Thread, *NativeContext);
+     *NativeContext = Exception::StoreStateToPackedECContext(Thread, NativeContext->Fpcr, NativeContext->Fpsr);

@@ -1,0 +1,236 @@
+Generated-by: LLM
+
+fex : cle d'epoque de la pile d'appels de retour (CIDRE_PILE_CLE=1 ; eteint par defaut). Chaque entree poussee garde (RIP de retour XOR cle), le retour compare (entree XOR cle) au RIP reel, et l'entree du dispatcher EC fait de meme. Invalider le code n'efface plus la pile de 4 Mio (environ un tiers d'une faute SMC) : la cle du fil avance de 1 << 48 (champ callret_cle, ancien _pad1 de CPUState), si bien qu'une entree d'une autre epoque ne vaut plus aucun RIP canonique ; au bouclage (65 536 epoques), la pile est videe comme avant. Les deux instructions de la cle sont emises avant l'adr pour garder le motif « adr TMP1, 0xC ; stp ; bl » que reconnait ExitFunctionLink. Banc : SMC 47 -> 76 % de Rosetta (jit_mixte 306 -> 191 ms) ; cout : appels purs (ind_fib) -2 a -8 %. Temoin smc_retour : 0 erreur, 20 000 avec CIDRE_PILE_TEMOIN_SANS=1 (variante de controle qui ne vide rien, a ne jamais utiliser hors temoin).
+
+diff --git a/FEXCore/Source/Interface/Core/CidrePileCle.h b/FEXCore/Source/Interface/Core/CidrePileCle.h
+new file mode 100644
+index 0000000..22ebd91
+--- /dev/null
++++ b/FEXCore/Source/Interface/Core/CidrePileCle.h
+@@ -0,0 +1,20 @@
++// SPDX-License-Identifier: MIT
++#pragma once
++// Cidre 0279 (prototype banc) : cle d'epoque de la pile d'appels de retour (CIDRE_PILE_CLE=1).
++// Chaque entree poussee garde (RIP de retour XOR cle) ; le retour compare (entree XOR cle) au RIP reel. Invalider le
++// code ne vide plus la pile (decommission de 4 Mio : NtQuery + NtFree + NtAllocate, ~1/3 d'une faute SMC) : la cle
++// avance de 1 << 48, si bien qu'une entree d'une autre epoque ne peut plus valoir un RIP canonique (< 2^47). Au
++// retour a zero (65 536 epoques), la pile est videe comme avant.
++#include <cstdint>
++#include <cstdlib>
++namespace FEXCore::CPU {
++inline bool CidrePileCle() {
++  static int8_t V = -1;
++  if (V < 0) {
++    const char* E = getenv("CIDRE_PILE_CLE");
++    V = E && *E == '1';
++  }
++  return V;
++}
++constexpr uint64_t CIDRE_PILE_CLE_PAS = 1ULL << 48;
++} // namespace FEXCore::CPU
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+index f09f7f6..fdfb6ce 100644
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -8,6 +8,7 @@ desc: Glues Frontend, OpDispatcher and IR Opts & Compilation, LookupCache, Dispa
+ $end_info$
+ */
+ 
++#include "Interface/Core/CidrePileCle.h"
+ #include <cstdint>
+ #ifdef ZYDIS_DISASSEMBLER
+ #include <Zydis/Zydis.h>
+@@ -81,6 +82,29 @@ $end_info$
+ 
+ namespace FEXCore::Context {
+ // Cidre 0278 : la pile d'appels de retour est toujours engagee en lecture-ecriture ; CIDRE_SMC_RAPIDE=0 rend l'amont.
++static inline void CidreViderPileAppels(void* Base);
++// Cidre 0279 : avancer la cle d'epoque au lieu de vider la pile (CIDRE_PILE_CLE=1) ; videe au retour a zero.
++static inline void CidreInvaliderPileAppels(FEXCore::Core::InternalThreadState* T) {
++  {
++    static int8_t SansVidage = -1; // temoin de sensibilite seulement : CIDRE_PILE_TEMOIN_SANS=1 ne vide rien (FAUX)
++    if (SansVidage < 0) {
++      const char* E = getenv("CIDRE_PILE_TEMOIN_SANS");
++      SansVidage = E && *E == '1';
++    }
++    if (SansVidage) {
++      return;
++    }
++  }
++  if (FEXCore::CPU::CidrePileCle()) {
++    auto& Cle = T->CurrentFrame->State.callret_cle;
++    const uint64_t Nouvelle = __atomic_load_n(&Cle, __ATOMIC_RELAXED) + FEXCore::CPU::CIDRE_PILE_CLE_PAS;
++    __atomic_store_n(&Cle, Nouvelle, __ATOMIC_RELEASE);
++    if (Nouvelle != 0) {
++      return;
++    }
++  }
++  CidreViderPileAppels(T->CallRetStackBase);
++}
+ static inline void CidreViderPileAppels(void* Base) {
+   static int8_t V = -1;
+   if (V < 0) {
+@@ -525,7 +549,7 @@ void ContextImpl::ClearCodeCache(FEXCore::Core::InternalThreadState* Thread, boo
+     auto lk = Thread->LookupCache->AcquireWriteLock();
+     Thread->LookupCache->ClearCache(lk);
+   }
+-  CidreViderPileAppels(Thread->CallRetStackBase);
++  CidreInvaliderPileAppels(Thread);
+ }
+ 
+ static void IRDumper(FEXCore::Core::InternalThreadState* Thread, IR::IREmitter* IREmitter, uint64_t GuestRIP) {
+@@ -1105,7 +1129,7 @@ void ContextImpl::InvalidateThreadCachedCodeRange(FEXCore::Core::InternalThreadS
+     FEXCORE_PROFILE_SCOPED("InvalidateCallRet");
+ 
+     // This may cause access violations in the thread on Windows as zeroing is not atomic, this is handled by the frontend
+-    CidreViderPileAppels(Thread->CallRetStackBase);
++    CidreInvaliderPileAppels(Thread);
+   }
+ }
+ 
+diff --git a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+index c53cd90..0e0a638 100644
+--- a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+@@ -1,5 +1,6 @@
+ // SPDX-License-Identifier: MIT
+ 
++#include "Interface/Core/CidrePileCle.h"
+ #include "Common/VectorRegType.h"
+ #include "Interface/Context/Context.h"
+ #include "Interface/Core/CPUBackend.h"
+@@ -126,6 +127,10 @@ void Dispatcher::EmitDispatcher() {
+   // As ARM64EC uses this as an entrypoint for both guest calls and host returns, opportunistically try to return
+   // using the call-ret stack to avoid unbalancing it.
+   ldp<ARMEmitter::IndexType::OFFSET>(TMP1, TMP2, REG_CALLRET_SP);
++  if (CidrePileCle()) {
++    ldr(TMP3, STATE_PTR(CpuStateFrame, State.callret_cle));
++    eor(ARMEmitter::Size::i64Bit, TMP1, TMP1, TMP3);
++  }
+   // EC_CALL_CHECKER_PC_REG is REG_PF which isn't touched by any of the above
+   sub(ARMEmitter::Size::i64Bit, TMP1, EC_CALL_CHECKER_PC_REG, TMP1);
+   (void)cbnz(ARMEmitter::Size::i64Bit, TMP1, &LoopTop);
+diff --git a/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp b/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
+index 722b2fd..241a3de 100644
+--- a/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
+@@ -5,6 +5,7 @@ tags: backend|arm64
+ $end_info$
+ */
+ 
++#include "Interface/Core/CidrePileCle.h"
+ #include "Interface/Context/Context.h"
+ #include "FEXCore/IR/IR.h"
+ #include "Interface/Core/LookupCache.h"
+@@ -169,8 +170,16 @@ DEF_OP(ExitFunction) {
+         if (!Op->CallReturnBlock.IsInvalid()) {
+           auto CallReturnAddressReg = GetReg(Op->CallReturnAddress).X();
+           PendingCallReturnTargetLabel = &CallReturnTargets.try_emplace(Op->CallReturnBlock.ID()).first->second;
+-          (void)adr(TMP1, &l_CallReturn);
+-          stp<ARMEmitter::IndexType::PRE>(CallReturnAddressReg, TMP1, REG_CALLRET_SP, -0x10);
++          if (CidrePileCle()) {
++            // Avant l'adr : le lieur reconnait un appel a « adr TMP1, 0xC ; stp ; bl » (ExitFunctionLink).
++            ldr(TMP3, STATE_PTR(CpuStateFrame, State.callret_cle));
++            eor(ARMEmitter::Size::i64Bit, TMP3, CallReturnAddressReg, TMP3);
++            (void)adr(TMP1, &l_CallReturn);
++            stp<ARMEmitter::IndexType::PRE>(TMP3, TMP1, REG_CALLRET_SP, -0x10);
++          } else {
++            (void)adr(TMP1, &l_CallReturn);
++            stp<ARMEmitter::IndexType::PRE>(CallReturnAddressReg, TMP1, REG_CALLRET_SP, -0x10);
++          }
+         } else {
+           stp<ARMEmitter::IndexType::PRE>(ARMEmitter::XReg::zr, ARMEmitter::XReg::zr, REG_CALLRET_SP, -0x10);
+         }
+@@ -198,6 +207,10 @@ DEF_OP(ExitFunction) {
+     if (Op->Hint == IR::BranchHint::Return) {
+       // First try to pop from the call-ret stack, otherwise follow the normal path (but ending in a ret)
+       ldp<ARMEmitter::IndexType::POST>(TMP1, TMP2, REG_CALLRET_SP, 0x10);
++      if (CidrePileCle()) {
++        ldr(TMP3, STATE_PTR(CpuStateFrame, State.callret_cle));
++        eor(ARMEmitter::Size::i64Bit, TMP1, TMP1, TMP3);
++      }
+       sub(TMP1, TMP1, RipReg.X());
+       (void)cbz(ARMEmitter::Size::i64Bit, TMP1, &SkipFullLookup);
+     }
+@@ -224,8 +237,15 @@ DEF_OP(ExitFunction) {
+       if (!Op->CallReturnBlock.IsInvalid()) {
+         auto CallReturnAddressReg = GetReg(Op->CallReturnAddress).X();
+         PendingCallReturnTargetLabel = &CallReturnTargets.try_emplace(Op->CallReturnBlock.ID()).first->second;
+-        (void)adr(TMP1, &l_CallReturn);
+-        stp<ARMEmitter::IndexType::PRE>(CallReturnAddressReg, TMP1, REG_CALLRET_SP, -0x10);
++        if (CidrePileCle()) {
++          ldr(TMP3, STATE_PTR(CpuStateFrame, State.callret_cle));
++          eor(ARMEmitter::Size::i64Bit, TMP3, CallReturnAddressReg, TMP3);
++          (void)adr(TMP1, &l_CallReturn);
++          stp<ARMEmitter::IndexType::PRE>(TMP3, TMP1, REG_CALLRET_SP, -0x10);
++        } else {
++          (void)adr(TMP1, &l_CallReturn);
++          stp<ARMEmitter::IndexType::PRE>(CallReturnAddressReg, TMP1, REG_CALLRET_SP, -0x10);
++        }
+       } else {
+         stp<ARMEmitter::IndexType::PRE>(ARMEmitter::XReg::zr, ARMEmitter::XReg::zr, REG_CALLRET_SP, -0x10);
+       }
+diff --git a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+index 522467c..949d2e2 100644
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -11,6 +11,7 @@ desc: Main glue logic of the arm64 splatter backend
+ $end_info$
+ */
+ 
++#include "Interface/Core/CidrePileCle.h"
+ #include "Interface/Context/Context.h"
+ #include "Interface/Core/LookupCache.h"
+ #include "Interface/Core/Dispatcher/Dispatcher.h"
+@@ -116,6 +117,29 @@ static void PrintVectorValue(uint64_t Value, uint64_t ValueUpper) {
+ 
+ namespace FEXCore::CPU {
+ // Cidre 0278 : la pile d'appels de retour est toujours engagee en lecture-ecriture ; CIDRE_SMC_RAPIDE=0 rend l'amont.
++static inline void CidreViderPileAppels(void* Base);
++// Cidre 0279 : avancer la cle d'epoque au lieu de vider la pile (CIDRE_PILE_CLE=1) ; videe au retour a zero.
++static inline void CidreInvaliderPileAppels(FEXCore::Core::InternalThreadState* T) {
++  {
++    static int8_t SansVidage = -1; // temoin de sensibilite seulement : CIDRE_PILE_TEMOIN_SANS=1 ne vide rien (FAUX)
++    if (SansVidage < 0) {
++      const char* E = getenv("CIDRE_PILE_TEMOIN_SANS");
++      SansVidage = E && *E == '1';
++    }
++    if (SansVidage) {
++      return;
++    }
++  }
++  if (FEXCore::CPU::CidrePileCle()) {
++    auto& Cle = T->CurrentFrame->State.callret_cle;
++    const uint64_t Nouvelle = __atomic_load_n(&Cle, __ATOMIC_RELAXED) + FEXCore::CPU::CIDRE_PILE_CLE_PAS;
++    __atomic_store_n(&Cle, Nouvelle, __ATOMIC_RELEASE);
++    if (Nouvelle != 0) {
++      return;
++    }
++  }
++  CidreViderPileAppels(T->CallRetStackBase);
++}
+ static inline void CidreViderPileAppels(void* Base) {
+   static int8_t V = -1;
+   if (V < 0) {
+@@ -1019,7 +1043,7 @@ CodeBuffer::CodeBufferAllocation Arm64JITCore::AllocateCodeBufferInSharedCache(s
+                                                                                                "doesn't match up!\n");
+   // Bring CodeBuffer up to date
+   if (auto Prev = CheckCodeBufferUpdate()) {
+-    CidreViderPileAppels(ThreadState->CallRetStackBase);
++    CidreInvaliderPileAppels(ThreadState);
+     auto lk = ThreadState->LookupCache->AcquireWriteLock();
+     ThreadState->LookupCache->ChangeGuestToHostMapping(*Prev, *CurrentCodeBuffer->LookupCache, lk);
+   }
+diff --git a/FEXCore/include/FEXCore/Core/CoreState.h b/FEXCore/include/FEXCore/Core/CoreState.h
+index 80514bf..6180633 100644
+--- a/FEXCore/include/FEXCore/Core/CoreState.h
++++ b/FEXCore/include/FEXCore/Core/CoreState.h
+@@ -107,7 +107,7 @@ struct alignas(64) CPUState {
+   uint64_t L1Pointer {};
+   uint64_t L1Mask {};
+   uint64_t callret_sp {};
+-  uint64_t _pad1 {};
++  uint64_t callret_cle {}; // Cidre 0279 : cle d'epoque de la pile d'appels (ancien _pad1)
+ 
+   // Cacheline: 1,2,3,4
+   // The high 128-bits of AVX registers when not being emulated by SVE256.

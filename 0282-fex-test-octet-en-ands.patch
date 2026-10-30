@@ -1,0 +1,37 @@
+Generated-by: LLM
+
+fex : TEST 8/16 bits a masque constant sans bit de signe en un seul ands 32 bits (CIDRE_TEST_ANDS, actif ; =0 rend and + cmp #0). Le masque efface les bits hauts sales ; ANDS donne NZ, C=0 et V=0 comme TEST, PF calcule sur le meme resultat. Banc : br_collatz 89 -> 100 % de Rosetta. Temoin tflags (drapeaux par pushf, setcc, cmov apres testb/testw) : somme identique a Rosetta.
+
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+index 1e0d7a5..ab9d23f 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+@@ -965,6 +965,16 @@ void OpDispatchBuilder::RETFARIndirectOp(OpcodeArgs) {
+   BlockSetRIP = true;
+ }
+ 
++// Cidre 0282 : CIDRE_TEST_ANDS=0 rend la forme amont (and + cmp #0).
++static bool CidreTestAnds() {
++  static int8_t V = -1;
++  if (V < 0) {
++    const char* E = getenv("CIDRE_TEST_ANDS");
++    V = !(E && *E == '0');
++  }
++  return V;
++}
++
+ void OpDispatchBuilder::TESTOp(OpcodeArgs, uint32_t SrcIndex, bool DestRAX) {
+   // TEST is an instruction that does an AND between the sources
+   // Result isn't stored in result, only writes to flags
+@@ -994,6 +1004,11 @@ void OpDispatchBuilder::TESTOp(OpcodeArgs, uint32_t SrcIndex, bool DestRAX) {
+   if (Dest == Src) {
+     // Optimize out the AND.
+     SetNZP_ZeroCV(Size, Src);
++  } else if (Size < OpSize::i32Bit && AlwaysNonnegative && CidreTestAnds()) {
++    // Cidre 0282 : masque constant sans bit de signe (il efface les bits hauts sales) : un seul ands 32 bits donne NZ,
++    // C=0 et V=0 comme TEST, au lieu de and puis cmp #0 (une instruction de plus a chaque test d'octet).
++    HandleNZ00Write();
++    CalculatePF(_AndWithFlags(OpSize::i32Bit, Dest, Src));
+   } else if (Size < OpSize::i32Bit && AlwaysNonnegative) {
+     // If we know the result is always nonnegative, we can use a 32-bit test.
+     auto Res = _And(OpSize::i32Bit, Dest, Src);

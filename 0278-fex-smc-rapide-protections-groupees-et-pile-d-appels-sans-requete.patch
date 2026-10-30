@@ -1,0 +1,176 @@
+Generated-by: LLM
+
+fex : faute SMC moins chere (CIDRE_SMC_RAPIDE, actif ; =0 rend l'amont). Deux couts par faute d'ecriture sur une page de code piegee : (1) InvalidationTracker::HandleRWXAccessViolation liberait les 4 pages de 4 Kio de la page d'hote de 16 Kio par 4 NtProtectVirtualMemory ; les pages voisines de meme protection le sont desormais en un seul appel. (2) Le vidage de la pile d'appels de retour (4 Mio, a chaque invalidation qui touche le cache de recherche) passait par VirtualDontNeed, soit NtQueryVirtualMemory + MEM_DECOMMIT + MEM_COMMIT ; la pile est toujours engagee en lecture-ecriture, la requete est retiree (VirtualDontNeedRW). Banc (M1 Max, banc_moteur de cidre-fex-banc, 7 passages) : SMC 36 -> 47 % de Rosetta (jit_mixte 431 -> 306 ms, jit_patch 130 -> 93 ms). Temoin smc_retour (site de retour reecrit par l'appele) : 0 erreur.
+
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+index 3531e09..f09f7f6 100644
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -80,6 +80,20 @@ $end_info$
+ #include "Interface/Core/Addressing.h"
+ 
+ namespace FEXCore::Context {
++// Cidre 0278 : la pile d'appels de retour est toujours engagee en lecture-ecriture ; CIDRE_SMC_RAPIDE=0 rend l'amont.
++static inline void CidreViderPileAppels(void* Base) {
++  static int8_t V = -1;
++  if (V < 0) {
++    const char* E = getenv("CIDRE_SMC_RAPIDE");
++    V = !(E && *E == '0');
++  }
++  if (V) {
++    FEXCore::Allocator::VirtualDontNeedRW(Base, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE);
++  } else {
++    FEXCore::Allocator::VirtualDontNeed(Base, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE);
++  }
++}
++
+ 
+ /* La lecture du code de l'invite est un chemin a part : les adresses de donnees
+  * sont rebasees dans l'emetteur d'IR, mais le RIP sert ici de pointeur hote pour
+@@ -511,7 +525,7 @@ void ContextImpl::ClearCodeCache(FEXCore::Core::InternalThreadState* Thread, boo
+     auto lk = Thread->LookupCache->AcquireWriteLock();
+     Thread->LookupCache->ClearCache(lk);
+   }
+-  Allocator::VirtualDontNeed(Thread->CallRetStackBase, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE);
++  CidreViderPileAppels(Thread->CallRetStackBase);
+ }
+ 
+ static void IRDumper(FEXCore::Core::InternalThreadState* Thread, IR::IREmitter* IREmitter, uint64_t GuestRIP) {
+@@ -1091,7 +1105,7 @@ void ContextImpl::InvalidateThreadCachedCodeRange(FEXCore::Core::InternalThreadS
+     FEXCORE_PROFILE_SCOPED("InvalidateCallRet");
+ 
+     // This may cause access violations in the thread on Windows as zeroing is not atomic, this is handled by the frontend
+-    Allocator::VirtualDontNeed(Thread->CallRetStackBase, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE);
++    CidreViderPileAppels(Thread->CallRetStackBase);
+   }
+ }
+ 
+diff --git a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+index a8860d9..522467c 100644
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -115,6 +115,20 @@ static void PrintVectorValue(uint64_t Value, uint64_t ValueUpper) {
+ } // namespace
+ 
+ namespace FEXCore::CPU {
++// Cidre 0278 : la pile d'appels de retour est toujours engagee en lecture-ecriture ; CIDRE_SMC_RAPIDE=0 rend l'amont.
++static inline void CidreViderPileAppels(void* Base) {
++  static int8_t V = -1;
++  if (V < 0) {
++    const char* E = getenv("CIDRE_SMC_RAPIDE");
++    V = !(E && *E == '0');
++  }
++  if (V) {
++    FEXCore::Allocator::VirtualDontNeedRW(Base, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE);
++  } else {
++    FEXCore::Allocator::VirtualDontNeed(Base, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE);
++  }
++}
++
+ 
+ void Arm64JITCore::Op_Unhandled(const IR::IROp_Header* IROp, IR::Ref Node) {
+   FallbackInfo Info;
+@@ -1005,7 +1019,7 @@ CodeBuffer::CodeBufferAllocation Arm64JITCore::AllocateCodeBufferInSharedCache(s
+                                                                                                "doesn't match up!\n");
+   // Bring CodeBuffer up to date
+   if (auto Prev = CheckCodeBufferUpdate()) {
+-    Allocator::VirtualDontNeed(ThreadState->CallRetStackBase, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE);
++    CidreViderPileAppels(ThreadState->CallRetStackBase);
+     auto lk = ThreadState->LookupCache->AcquireWriteLock();
+     ThreadState->LookupCache->ChangeGuestToHostMapping(*Prev, *CurrentCodeBuffer->LookupCache, lk);
+   }
+diff --git a/FEXCore/include/FEXCore/Utils/AllocatorHooks.h b/FEXCore/include/FEXCore/Utils/AllocatorHooks.h
+index c4cadf4..68fbe64 100644
+--- a/FEXCore/include/FEXCore/Utils/AllocatorHooks.h
++++ b/FEXCore/include/FEXCore/Utils/AllocatorHooks.h
+@@ -70,6 +70,12 @@ inline void VirtualFree(void* Ptr, size_t Size) {
+   ::VirtualFree(Ptr, 0, MEM_RELEASE);
+ }
+ 
++// Cidre 0278 : zero d'une plage deja engagee en lecture-ecriture (pile d'appels de retour) sans VirtualQuery prealable.
++inline void VirtualDontNeedRW(void* Ptr, size_t Size) {
++  ::VirtualFree(Ptr, Size, MEM_DECOMMIT);
++  ::VirtualAlloc(Ptr, Size, MEM_COMMIT, PAGE_READWRITE);
++}
++
+ inline void VirtualDontNeed(void* Ptr, size_t Size, bool Recommit = true) {
+   // Zero the page-aligned region, preserving permissions.
+   MEMORY_BASIC_INFORMATION Info;
+@@ -127,6 +133,9 @@ inline void VirtualFree(void* Ptr, size_t Size) {
+ inline void VirtualDontNeed(void* Ptr, size_t Size, bool Recommit = true) {
+   ::madvise(reinterpret_cast<void*>(Ptr), Size, MADV_DONTNEED);
+ }
++inline void VirtualDontNeedRW(void* Ptr, size_t Size) {
++  ::madvise(reinterpret_cast<void*>(Ptr), Size, MADV_DONTNEED);
++}
+ inline bool VirtualProtect(void* Ptr, size_t Size, ProtectOptions options) {
+   int prot {PROT_NONE};
+   if ((options & ProtectOptions::Read) == ProtectOptions::Read) {
+diff --git a/Source/Windows/Common/InvalidationTracker.cpp b/Source/Windows/Common/InvalidationTracker.cpp
+index eb23394..2bbd203 100644
+--- a/Source/Windows/Common/InvalidationTracker.cpp
++++ b/Source/Windows/Common/InvalidationTracker.cpp
+@@ -9,6 +9,7 @@
+ #include "Guest32.h"
+ #include "InvalidationTracker.h"
+ #include <limits>
++#include <cstdlib>
+ #include <windef.h>
+ #include <winternl.h>
+ 
+@@ -299,6 +300,15 @@ void InvalidationTracker::ReprotectRWXIntervals(uint64_t Address, uint64_t Size)
+   ProtectRWXIntervalsInternal(Address, Size, false);
+ }
+ 
++static bool CidreFusionProtect() {
++  static int8_t V = -1;
++  if (V < 0) {
++    const char* E = getenv("CIDRE_SMC_RAPIDE");
++    V = !(E && *E == '0');
++  }
++  return V;
++}
++
+ bool InvalidationTracker::HandleRWXAccessViolation(FEXCore::Core::InternalThreadState* Thread, uint64_t HostPc, uint64_t FaultAddress) {
+   /* L'adresse fautive sort d'une exception de l'hote ; les intervalles sont
+    * indexes par l'invite. Hors de la fenetre, ce n'est pas notre affaire. */
+@@ -327,15 +337,35 @@ bool InvalidationTracker::HandleRWXAccessViolation(FEXCore::Core::InternalThread
+       // Toutes les pages RWX de la page d'hote : liberer la seule page fautive
+       // laisserait les autres piegees, donc la page d'hote non inscriptible.
+       std::shared_lock IntervalsReadLock(IntervalsLock);
++      // Cidre 0278 : pages voisines de meme protection liberees en un seul NtProtectVirtualMemory (un appel systeme
++      // Wine coute ~4 us ; une page d'hote de 16 Kio en avait 4 de 4 Kio a chaque faute SMC).
++      uint64_t RunStart = 0, RunEnd = 0;
++      ULONG RunProt = 0;
++      const auto Flush = [&]() {
++        if (RunEnd > RunStart) {
++          ULONG TmpProt;
++          void* TmpAddress = HostPtr32(RunStart);
++          SIZE_T TmpSize = RunEnd - RunStart;
++          NtProtectVirtualMemory(NtCurrentProcess(), &TmpAddress, &TmpSize, RunProt, &TmpProt);
++        }
++        RunStart = RunEnd = 0;
++      };
+       for (uint64_t Page = Granule; Page < Granule + TRAP_GRANULE; Page += FEXCore::Utils::FEX_PAGE_SIZE) {
+         if (!RWXIntervals.Query(Page).Enclosed) {
++          Flush();
+           continue;
+         }
+-        ULONG TmpProt;
+-        void* TmpAddress = HostPtr32(Page);
+-        SIZE_T TmpSize = FEXCore::Utils::FEX_PAGE_SIZE;
+-        NtProtectVirtualMemory(NtCurrentProcess(), &TmpAddress, &TmpSize, Page == (FaultAddress & FEXCore::Utils::FEX_PAGE_MASK) ? UntrapProt : GetUntrapProt(Page), &TmpProt);
++        const ULONG Prot = Page == (FaultAddress & FEXCore::Utils::FEX_PAGE_MASK) ? UntrapProt : GetUntrapProt(Page);
++        if (RunEnd == Page && Prot == RunProt && CidreFusionProtect()) {
++          RunEnd += FEXCore::Utils::FEX_PAGE_SIZE;
++        } else {
++          Flush();
++          RunStart = Page;
++          RunEnd = Page + FEXCore::Utils::FEX_PAGE_SIZE;
++          RunProt = Prot;
++        }
+       }
++      Flush();
+     }
+     DetectMonoBackpatcherBlock(Thread, HostPc);
+     return true;

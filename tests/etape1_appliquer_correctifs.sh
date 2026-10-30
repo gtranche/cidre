@@ -140,6 +140,10 @@ if [ -d "$R/third_party/FEX" ]; then
          0234-*) temoin="const bool CidreEcriture = Exception->NumberParameters >= 1"; ou=Source/Windows/ARM64EC/Module.cpp ;;
          0235-*) temoin="Data->CidreRetireStart = Data->CidreRetireSize = 0;"; ou=Source/Windows/ARM64EC/Module.cpp ;;
          0236-*) temoin="static void CidreViderEngage(void* Ptr, size_t Size) {"; ou=FEXCore/Source/Interface/Core/LookupCache.cpp ;;
+         0278-*) temoin="Cidre 0278 : pages voisines de meme protection"; ou=Source/Windows/Common/InvalidationTracker.cpp ;;
+         0279-*) temoin="CIDRE_PILE_CLE_PAS = 1ULL << 48;"; ou=FEXCore/Source/Interface/Core/CidrePileCle.h ;;
+         0281-*) temoin="Cidre 0281 : talons des sonnettes hors ligne"; ou=FEXCore/Source/Interface/Core/JIT/JIT.cpp ;;
+         0282-*) temoin="Cidre 0282 : CIDRE_TEST_ANDS=0"; ou=FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp ;;
          *) echo "   correctif FEX sans temoin : $(basename "$f")" >&2; exit 1 ;;
       esac
       # -F : texte litteral (les temoins contiennent . ( * &).
