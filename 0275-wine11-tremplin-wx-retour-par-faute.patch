@@ -1,0 +1,172 @@
+Generated-by: LLM
+
+wine11 : le tremplin W^X (0083) rend la main par une faute sur une page de garde, plus par un brk
+
+Gel a froid de Demonologist sur M4 (macOS 27), environ une premiere partie
+sur deux, caches de nuanceurs vides, avec ou sans les options de KosmicKrisp :
+pas une image, 4 a 5 fils (RenderThread, PSOPrecompilePool, threadpool...) a
+100 % de temps SYSTEME, tous arretes sur le brk de wx_tremplin (sample x2 a
+20 s, ps -M). Les fils de compilation de KK sont au repos : la compilation n'y
+est pour rien.
+
+Cause, mesuree par CIDRE_WX_DIAG=1 (ci-dessous) : vers 11-13 s de jeu, le
+gestionnaire de SIGTRAP devient SIG_IGN (drapeaux SA_RESTART : un
+signal( SIGTRAP, SIG_IGN )). L'appel vient du crashhandler.dylib du client
+Steam macOS (charge dans le jeu par lsteamclient) : signal(5, SIG_IGN) puis
+signal(14, SIG_IGN) juste apres un test « debogueur present » (sysctl
+P_TRACED). Un fil qui atteint le brk pendant cette fenetre n'a plus de
+signal : le noyau ignore SIGTRAP et le reprend sur le brk, sans fin. Quand le
+fil qui doit tout remettre attend un verrou tenu par l'un d'eux, le gel est
+definitif.
+
+Le tremplin lit desormais wx_garde, une page PROT_NONE allouee a la premiere
+faute d'execution : SIGBUS/SIGSEGV, ceux de toute faute W^X, que segv_handler
+reconnait avant tout le reste (PC = tremplin+4 et magie du cadre). Le brk
+reste derriere, inatteignable sauf CIDRE_WX_RETOUR_BRK=1 (ancien retour, pour
+comparer). CIDRE_WX_DIAG=1 journalise tout changement des gestionnaires de
+SIGTRAP/SIGSEGV/SIGBUS vu a l'entree du tremplin (« [CIDRE_WX] »).
+
+Mesure (M4, 28/10, Demonologist a froid, caches prives vides, ntdll.so par
+arbre fantome + DYLD_LIBRARY_PATH, construit depuis la serie de la v1.5.19 :
+.text de la base identique octet pour octet au ntdll.so installe) :
+  retour par faute (defaut)      0 gel / 6, SIG_IGN vu dans 3 de ces manches
+  retour par brk (ancien)        1 gel / 4
+  runtime installe (brk), meme soir : 5 gels / 8 manches froides menees au bout
+Preuve sans jeu (M4, 30/10, meme ntdll.so d'essai, prefixe jetable) : wxfils.exe
+(invite x86-64, 8 fils qui ecrivent du code neuf et l'executent en boucle) et
+sigign.dylib injectee (DYLD_INSERT_LIBRARIES) qui fait signal( SIGTRAP, SIG_IGN )
+cote hote a 1,5 s, comme le crashhandler de Steam ; delai dur 40 s :
+  SIGTRAP ignore pour de bon : retour par brk  50 gels / 50 (fils sur wx_tremplin)
+                               retour par faute 0 gel / 50
+  fenetres de 100 ms ignorees : 0 gel des deux cotes, mais 91 280 appels par
+                               passe par brk contre 163 854 par faute (20 + 20)
+  sans SIG_IGN : 0 gel, debit identique (112 643 appels en 4 s)
+Temoins W^X ordinaires, identiques avec les deux retours : hello64, banc_x64,
+h32temps, h32smc (i386), a64rwx_voisine (arm64), wxfils ; h64smc garde son
+echec du cas B (page RWX a voisine RW), deja present avec le ntdll.so installe.
+Sources du test : wxfils.c, sigign.c (hors serie).
+Ne reconstruire que ntdll.so (build/wine11-arm64-ec).
+--- a/dlls/ntdll/unix/signal_arm64.c	2026-10-30 11:55:48
++++ b/dlls/ntdll/unix/signal_arm64.c	2026-10-30 11:55:48
+@@ -35,6 +35,7 @@
+ #include <stdio.h>
+ #include <sys/types.h>
+ #include <unistd.h>
++#include <sys/mman.h>
+ #ifdef HAVE_SYS_PARAM_H
+ # include <sys/param.h>
+ #endif
+@@ -2101,13 +2102,63 @@
+ };
+ #define WX_MAGIE 0x7872656c61697377ull
+ 
++/*
++ * Le retour du tremplin ne passe plus par SIGTRAP (brk) mais par une lecture
++ * de wx_garde, une page sans aucun droit : SIGBUS/SIGSEGV, que segv_handler
++ * reconnait en premier. Avec le point d'arret, une premiere partie a froid
++ * de Demonologist (M4, macOS 27) se figeait environ une fois sur deux : 4 a 5
++ * fils a 100 % de temps systeme, tous arretes sur le brk du tremplin. Cause :
++ * vers 12 s de jeu, le crashhandler.dylib du client Steam (charge par
++ * lsteamclient) fait signal( SIGTRAP, SIG_IGN ) ; un fil qui atteint le brk
++ * pendant cette fenetre n'a plus de signal, le noyau le reprend sur le brk,
++ * indefiniment. SIGSEGV/SIGBUS sont ceux de toute faute W^X : si eux
++ * n'arrivaient plus, rien ne marcherait de toute facon.
++ * CIDRE_WX_RETOUR_BRK=1 rend l'ancien retour (brk), CIDRE_WX_DIAG=1 journalise
++ * tout changement des gestionnaires de SIGTRAP/SIGSEGV/SIGBUS vu a l'entree
++ * du tremplin.
++ */
+ extern void wx_tremplin(void);
+ __ASM_GLOBAL_FUNC( wx_tremplin,
+                    "bl " __ASM_NAME("pthread_jit_write_protect_np") "\n\t"
++                   "ldr x16, [x19]\n\t"
+                    "brk #0x57e" )
+-/* le point d'arret : la deuxieme instruction du tremplin */
+-#define WX_TREMPLIN_ARRET ((ULONG_PTR)wx_tremplin + 4)
++extern void wx_tremplin_brk(void);
++__ASM_GLOBAL_FUNC( wx_tremplin_brk,
++                   "bl " __ASM_NAME("pthread_jit_write_protect_np") "\n\t"
++                   "brk #0x57e" )
++/* l'arret : la deuxieme instruction du tremplin */
++#define WX_TREMPLIN_ARRET     ((ULONG_PTR)wx_tremplin + 4)
++#define WX_TREMPLIN_BRK_ARRET ((ULONG_PTR)wx_tremplin_brk + 4)
++
++static void *wx_garde;       /* page PROT_NONE lue par le tremplin */
++static int wx_retour_brk = -1;
++static int wx_diag = -1;
++
++static void trap_handler( int signal, siginfo_t *siginfo, void *_sigcontext );
++static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext );
++
++static void wx_diag_signal( int sig, void *attendu )
++{
++    static void *vu[32];
++    static int drap[32];
++    struct sigaction sa;
++    void *h;
++    char buf[256];
++    Dl_info di;
++    int n;
+ 
++    if (sigaction( sig, NULL, &sa ) == -1) return;
++    h = (sa.sa_flags & SA_SIGINFO) ? (void *)sa.sa_sigaction : (void *)sa.sa_handler;
++    if (h == vu[sig] && sa.sa_flags == drap[sig]) return;
++    vu[sig] = h;
++    drap[sig] = sa.sa_flags;
++    if (h == attendu && (sa.sa_flags & SA_SIGINFO)) return;
++    if (!dladdr( h, &di ) || !di.dli_fname) di.dli_fname = "?";
++    n = snprintf( buf, sizeof(buf), "[CIDRE_WX] signal %d : gestionnaire %p (%s) drapeaux 0x%x, attendu %p\n",
++                  sig, h, di.dli_fname, sa.sa_flags, attendu );
++    if (n > 0) write( 2, buf, n < (int)sizeof(buf) ? n : (int)sizeof(buf) - 1 );
++}
++
+ static void wx_reprendre_hors_signal( ucontext_t *sigcontext )
+ {
+     /* sous la pile interrompue, zone rouge passee */
+@@ -2119,9 +2170,28 @@
+     cadre->ss     = sigcontext->uc_mcontext->__ss;
+     cadre->ns     = sigcontext->uc_mcontext->__ns;
+     cadre->masque = sigcontext->uc_sigmask;
+-    PC_sig(sigcontext) = (ULONG_PTR)wx_tremplin;
++    if (wx_retour_brk < 0)
++    {
++        /* premiere faute d'execution : choix et page de garde (une seule fois
++         * suffit ; deux fils qui s'y croisent ne font que la poser deux fois) */
++        const char *e = getenv( "CIDRE_WX_RETOUR_BRK" );
++        void *g = mmap( NULL, get_host_page_size(), PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0 );
++        wx_diag = getenv( "CIDRE_WX_DIAG" ) != NULL;
++        if (g == MAP_FAILED) g = NULL;
++        if (!__sync_bool_compare_and_swap( &wx_garde, NULL, g ) && g) munmap( g, get_host_page_size() );
++        __sync_synchronize();
++        wx_retour_brk = (e && e[0] == '1') || !wx_garde;
++    }
++    if (wx_diag)
++    {
++        wx_diag_signal( SIGTRAP, (void *)trap_handler );
++        wx_diag_signal( SIGSEGV, (void *)segv_handler );
++        wx_diag_signal( SIGBUS, (void *)segv_handler );
++    }
++    PC_sig(sigcontext) = wx_retour_brk ? (ULONG_PTR)wx_tremplin_brk : (ULONG_PTR)wx_tremplin;
+     SP_sig(sigcontext) = (ULONG_PTR)cadre;
+     REGn_sig(0, sigcontext) = 1;  /* pthread_jit_write_protect_np( 1 ) : executer */
++    REGn_sig(19, sigcontext) = (ULONG_PTR)wx_garde;  /* lue par le tremplin, apres l'appel */
+     /* Rien ne doit s'intercaler dans le tremplin (une suspension y lirait un
+      * contexte qui n'est pas celui du fil), sauf ce qu'il provoque lui-meme. */
+     sigfillset( &sigcontext->uc_sigmask );
+@@ -2136,7 +2206,7 @@
+ {
+     struct wx_cadre *cadre;
+ 
+-    if (PC_sig(sigcontext) != WX_TREMPLIN_ARRET) return FALSE;
++    if (PC_sig(sigcontext) != WX_TREMPLIN_ARRET && PC_sig(sigcontext) != WX_TREMPLIN_BRK_ARRET) return FALSE;
+     cadre = (struct wx_cadre *)SP_sig(sigcontext);
+     if (cadre->magie != WX_MAGIE) return FALSE;
+     cadre->magie = 0;
+@@ -2156,6 +2226,8 @@
+     DWORD64 esr = get_fault_esr( sigcontext );
+ 
+ #ifdef __APPLE__
++    /* retour du tremplin W^X (lecture de wx_garde) : avant tout le reste */
++    if (wx_fin_de_tremplin( sigcontext )) return;
+     /* Fenetre basse LuaJIT : un acces de donnee du code hote a un pointeur
+      * invite sous 4 Gio touche le miroir hote, pas l'adresse crue. On le
+      * redirige et on reprend sans lever d'exception invite. */
