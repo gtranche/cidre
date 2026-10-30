@@ -144,6 +144,7 @@ if [ -d "$R/third_party/FEX" ]; then
          0279-*) temoin="CIDRE_PILE_CLE_PAS = 1ULL << 48;"; ou=FEXCore/Source/Interface/Core/CidrePileCle.h ;;
          0281-*) temoin="Cidre 0281 : talons des sonnettes hors ligne"; ou=FEXCore/Source/Interface/Core/JIT/JIT.cpp ;;
          0282-*) temoin="Cidre 0282 : CIDRE_TEST_ANDS=0"; ou=FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp ;;
+         0283-*) temoin="Cidre 0283 : call [rip+d] (case d'IAT)"; ou=FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp ;;
          *) echo "   correctif FEX sans temoin : $(basename "$f")" >&2; exit 1 ;;
       esac
       # -F : texte litteral (les temoins contiennent . ( * &).

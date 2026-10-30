@@ -1,0 +1,310 @@
+Generated-by: LLM
+
+fex : fonctions feuilles de kernel32/kernelbase/ntdll appelees par l'IAT traduites en ligne (CIDRE_FEUILLES, actif ; =0 rend l'appel normal). Un call [rip+d] dont la case d'IAT pointe, a la compilation, vers GetCurrentThreadId, GetCurrentProcessId, GetLastError, SetLastError, TlsGetValue (indice < 64), RtlEnterCriticalSection (section libre) ou RtlLeaveCriticalSection (RecursionCount 1, sans attendant) est remplace par sa semantique sur le TEB ou la section (CAS LockCount -1 -> 0 et 0 -> -1, comme RtlTryEnterCriticalSection), sans la frontiere ARM64EC (~16-19 ns par appel). La case est relue a chaque execution et comparee a la cible vue a la compilation : un crochet pose depuis donne l'appel normal ; tout autre cas (indice >= 64, section prise ou recursive, attendant arrive pendant la sortie : etat remis puis appel normal qui reveille) aussi. Les adresses sont relevees dans les tables d'exportation a la projection des images (sans verrou du chargeur) ; la case doit etre engagee et lisible (VirtualQuery a la compilation). CIDRE_DIAG_FEUILLES=1 journalise (FEX_SILENTLOG=0). Banc (M1 Max, 7 passages, forme MSVC call [__imp_X]) : TlsGetValue + GetCurrentThreadId + GetLastError 296 -> 18 ms (21 -> 340 % de Rosetta), Enter/LeaveCriticalSection 195 -> 50 ms (35 -> 136 %) ; global 94 -> 106 %. Les appels par registre (cible gardee en registre par le compilateur) ne sont pas touches. Temoins : feuilles (TEB, TlsGetValue < et >= 64, LastError, crochet d'IAT), crit (recursion, 4 fils en contention avec TryEnter, 25 passes : compteur exact), litmus, smc_retour, suspension, tflags.
+
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+index ab9d23f..d3657b8 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+@@ -500,10 +500,147 @@ void OpDispatchBuilder::CALLOp(OpcodeArgs) {
+   }
+ }
+ 
++// Cidre 0283 : CIDRE_FEUILLES=0 rend l'appel normal de toutes les fonctions feuilles.
++static bool CidreFeuillesActives() {
++  static int8_t V = -1;
++  if (V < 0) {
++    const char* E = getenv("CIDRE_FEUILLES");
++    V = !(E && *E == '0');
++  }
++  return V;
++}
++
+ void OpDispatchBuilder::CALLAbsoluteOp(OpcodeArgs) {
+   BlockSetRIP = true;
+ 
+   const auto Size = OpSizeFromSrc(Op);
++
++  // Cidre 0283 : call [rip+d] (case d'IAT) vers une fonction feuille triviale de kernel32/kernelbase (lecture ou ecriture
++  // du TEB) : traduite en ligne, sans la frontiere ARM64EC (sortie du JIT, thunk d'entree, retour par le dispatcher :
++  // ~16 ns par appel). La case est relue a l'execution : si elle ne vaut plus la cible vue a la compilation (crochet
++  // pose depuis), appel normal.
++  uint32_t Feuille = 0;
++  uint64_t Cible = 0;
++  if (Size == OpSize::i64Bit && Op->Src[0].IsRIPRelative() && !Op->Src[0].Data.RIPLiteral.PatchableDisp && CidreFeuillesActives() &&
++      CTX->SyscallHandler) {
++    const uint64_t Case = Op->PC + Op->InstSize + static_cast<int32_t>(Op->Src[0].Data.RIPLiteral.Value);
++    Feuille = CTX->SyscallHandler->CidreFeuille(Case, &Cible);
++  }
++  if (Feuille) {
++    CalculateDeferredFlags();
++    const uint64_t NextRIP = Op->PC + Op->InstSize;
++    Ref Vue = LoadSourceGPR(Op, Op->Src[0], Op->Flags);
++    auto CurrentBlock = GetCurrentBlock();
++    auto Saut = CondJump(_Sub(OpSize::i64Bit, Vue, Constant(Cible)), CondClass::EQ);
++    auto Appel = CreateNewCodeBlockAfter(CurrentBlock);
++    auto EnLigne = CreateNewCodeBlockAtEnd();
++    SetTrueJumpTarget(Saut, EnLigne);
++    SetFalseJumpTarget(Saut, Appel);
++
++    SetCurrentCodeBlock(EnLigne);
++    StartNewBlock();
++    Ref Teb = _LoadContextGPR(OpSize::i64Bit, offsetof(FEXCore::Core::CPUState, gs_cached));
++    const auto Continuer = [&]() {
++      auto Suite = JumpTargets.find(NextRIP);
++      if (Suite != JumpTargets.end()) {
++        Jump(Suite->second.BlockEntry);
++      } else {
++        ExitRelocatedPC(Op);
++      }
++    };
++    switch (Feuille) {
++    case 1: // GetCurrentThreadId : TEB->ClientId.UniqueThread
++      StoreGPRRegister(X86State::REG_RAX, _LoadMemGPR(OpSize::i32Bit, _Add(OpSize::i64Bit, Teb, Constant(0x48)), OpSize::i32Bit),
++                       OpSize::i32Bit);
++      break;
++    case 2: // GetCurrentProcessId : TEB->ClientId.UniqueProcess
++      StoreGPRRegister(X86State::REG_RAX, _LoadMemGPR(OpSize::i32Bit, _Add(OpSize::i64Bit, Teb, Constant(0x40)), OpSize::i32Bit),
++                       OpSize::i32Bit);
++      break;
++    case 3: // GetLastError : TEB->LastErrorValue
++      StoreGPRRegister(X86State::REG_RAX, _LoadMemGPR(OpSize::i32Bit, _Add(OpSize::i64Bit, Teb, Constant(0x68)), OpSize::i32Bit),
++                       OpSize::i32Bit);
++      break;
++    case 4: // SetLastError(ecx)
++      _StoreMemGPR(OpSize::i32Bit, _Add(OpSize::i64Bit, Teb, Constant(0x68)), LoadGPRRegister(X86State::REG_RCX, OpSize::i32Bit),
++                   OpSize::i32Bit);
++      break;
++    case 5: { // TlsGetValue(ecx) : indice < 64 -> TEB->TlsSlots[ecx], LastErrorValue = 0 ; sinon appel normal
++      Ref Indice = LoadGPRRegister(X86State::REG_RCX, OpSize::i32Bit);
++      auto Grand = CondJump(_Lshr(OpSize::i32Bit, Indice, Constant(6)), CondClass::NEQ);
++      auto Rapide = CreateNewCodeBlockAfter(EnLigne);
++      SetTrueJumpTarget(Grand, Appel);
++      SetFalseJumpTarget(Grand, Rapide);
++      SetCurrentCodeBlock(Rapide);
++      StartNewBlock();
++      Ref Teb2 = _LoadContextGPR(OpSize::i64Bit, offsetof(FEXCore::Core::CPUState, gs_cached));
++      Ref Indice2 = LoadGPRRegister(X86State::REG_RCX, OpSize::i32Bit);
++      Ref Case = _Add(OpSize::i64Bit, _Add(OpSize::i64Bit, Teb2, Constant(0x1480)), _Lshl(OpSize::i64Bit, Indice2, Constant(3)));
++      StoreGPRRegister(X86State::REG_RAX, _LoadMemGPR(OpSize::i64Bit, Case, OpSize::i64Bit), OpSize::i64Bit);
++      _StoreMemGPR(OpSize::i32Bit, _Add(OpSize::i64Bit, Teb2, Constant(0x68)), Constant(0), OpSize::i32Bit);
++      break;
++    }
++    case 6: { // EnterCriticalSection(rcx) libre : LockCount -1 -> 0 par CAS (comme RtlTryEnterCriticalSection), puis
++              // OwningThread = fil, RecursionCount = 1 ; pris (y compris par soi : recursion) -> appel normal
++      Ref Crit = LoadGPRRegister(X86State::REG_RCX, OpSize::i64Bit);
++      Ref Ancien = _CAS(OpSize::i32Bit, Constant(0xFFFFFFFF), Constant(0), _Add(OpSize::i64Bit, Crit, Constant(8)));
++      auto Pris = CondJump(_Sub(OpSize::i32Bit, Ancien, Constant(0xFFFFFFFF)), CondClass::NEQ);
++      auto Libre = CreateNewCodeBlockAfter(EnLigne);
++      SetTrueJumpTarget(Pris, Appel);
++      SetFalseJumpTarget(Pris, Libre);
++      SetCurrentCodeBlock(Libre);
++      StartNewBlock();
++      Ref Teb2 = _LoadContextGPR(OpSize::i64Bit, offsetof(FEXCore::Core::CPUState, gs_cached));
++      Ref Crit2 = LoadGPRRegister(X86State::REG_RCX, OpSize::i64Bit);
++      Ref Fil = _LoadMemGPR(OpSize::i32Bit, _Add(OpSize::i64Bit, Teb2, Constant(0x48)), OpSize::i32Bit);
++      _StoreMemGPR(OpSize::i64Bit, _Add(OpSize::i64Bit, Crit2, Constant(16)), Fil, OpSize::i64Bit);
++      _StoreMemGPR(OpSize::i32Bit, _Add(OpSize::i64Bit, Crit2, Constant(12)), Constant(1), OpSize::i32Bit);
++      StoreGPRRegister(X86State::REG_RAX, Constant(0), OpSize::i64Bit);
++      break;
++    }
++    case 7: { // LeaveCriticalSection(rcx), RecursionCount == 1 : OwningThread = 0, RecursionCount = 0, puis LockCount 0 -> -1
++              // par CAS ; un attendant est arrive (CAS rate) -> etat remis et appel normal (qui reveille) ; recursion -> appel
++      Ref Crit = LoadGPRRegister(X86State::REG_RCX, OpSize::i64Bit);
++      Ref Rec = _LoadMemGPR(OpSize::i32Bit, _Add(OpSize::i64Bit, Crit, Constant(12)), OpSize::i32Bit);
++      auto Recursif = CondJump(_Sub(OpSize::i32Bit, Rec, Constant(1)), CondClass::NEQ);
++      auto Seul = CreateNewCodeBlockAfter(EnLigne);
++      SetTrueJumpTarget(Recursif, Appel);
++      SetFalseJumpTarget(Recursif, Seul);
++      SetCurrentCodeBlock(Seul);
++      StartNewBlock();
++      Ref Crit2 = LoadGPRRegister(X86State::REG_RCX, OpSize::i64Bit);
++      _StoreMemGPR(OpSize::i64Bit, _Add(OpSize::i64Bit, Crit2, Constant(16)), Constant(0), OpSize::i64Bit);
++      _StoreMemGPR(OpSize::i32Bit, _Add(OpSize::i64Bit, Crit2, Constant(12)), Constant(0), OpSize::i32Bit);
++      Ref Ancien = _CAS(OpSize::i32Bit, Constant(0), Constant(0xFFFFFFFF), _Add(OpSize::i64Bit, Crit2, Constant(8)));
++      auto Attendants = CondJump(Ancien, CondClass::NEQ);
++      auto Remettre = CreateNewCodeBlockAfter(Seul);
++      auto Fait = CreateNewCodeBlockAfter(Seul);
++      SetTrueJumpTarget(Attendants, Remettre);
++      SetFalseJumpTarget(Attendants, Fait);
++      SetCurrentCodeBlock(Remettre);
++      StartNewBlock();
++      {
++        // pas de valeur SSA d'un autre bloc : le proprietaire d'une section a RecursionCount 1 est ce fil
++        Ref Crit3 = LoadGPRRegister(X86State::REG_RCX, OpSize::i64Bit);
++        Ref Teb3 = _LoadContextGPR(OpSize::i64Bit, offsetof(FEXCore::Core::CPUState, gs_cached));
++        _StoreMemGPR(OpSize::i32Bit, _Add(OpSize::i64Bit, Crit3, Constant(12)), Constant(1), OpSize::i32Bit);
++        _StoreMemGPR(OpSize::i64Bit, _Add(OpSize::i64Bit, Crit3, Constant(16)),
++                     _LoadMemGPR(OpSize::i32Bit, _Add(OpSize::i64Bit, Teb3, Constant(0x48)), OpSize::i32Bit), OpSize::i64Bit);
++        Jump(Appel);
++      }
++      SetCurrentCodeBlock(Fait);
++      StartNewBlock();
++      StoreGPRRegister(X86State::REG_RAX, Constant(0), OpSize::i64Bit);
++      break;
++    }
++    default: break;
++    }
++    Continuer();
++
++    SetCurrentCodeBlock(Appel);
++    StartNewBlock();
++  }
++
+   Ref JMPPCOffset = LoadSourceGPR(Op, Op->Src[0], Op->Flags);
+ 
+   // Push the return address.
+diff --git a/FEXCore/include/FEXCore/HLE/SyscallHandler.h b/FEXCore/include/FEXCore/HLE/SyscallHandler.h
+index 97a9d87..49552d0 100644
+--- a/FEXCore/include/FEXCore/HLE/SyscallHandler.h
++++ b/FEXCore/include/FEXCore/HLE/SyscallHandler.h
+@@ -45,6 +45,13 @@ public:
+ 
+   virtual void PreCompile() {}
+ 
++  // Cidre 0283 : genre de la fonction feuille triviale pointee par le mot invite a cette adresse (case d'IAT), 0 sinon.
++  // 1 GetCurrentThreadId, 2 GetCurrentProcessId, 3 GetLastError, 4 SetLastError, 5 TlsGetValue, 6 RtlEnterCriticalSection,
++  // 7 RtlLeaveCriticalSection (chemins sans attente seulement). Appele a la compilation.
++  virtual uint32_t CidreFeuille(uint64_t CaseIAT, uint64_t* Cible) {
++    return 0;
++  }
++
+   virtual SourcecodeResolver* GetSourcecodeResolver() {
+     return nullptr;
+   }
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+index 1f7a0d2..1efb456 100644
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -296,11 +296,90 @@ void InitSyscalls() {
+   PatchCallChecker();
+ }
+ 
++// Cidre 0283 : adresses des fonctions feuilles triviales de kernel32/kernelbase, relevees dans leur table d'exportation a
++// la projection de l'image (sans verrou du chargeur). Genres : voir FEXCore::HLE::SyscallHandler::CidreFeuille.
++namespace CidreFeuilles {
++struct Nom {
++  const char* Texte;
++  uint32_t Genre;
++};
++constexpr Nom Noms[] = {{"GetCurrentThreadId", 1},      {"GetCurrentProcessId", 2},     {"GetLastError", 3},
++                        {"SetLastError", 4},            {"TlsGetValue", 5},             {"RtlEnterCriticalSection", 6},
++                        {"RtlLeaveCriticalSection", 7}};
++constexpr size_t NB = sizeof(Noms) / sizeof(Noms[0]);
++bool Diag() { // CIDRE_DIAG_FEUILLES=1 : journal des adresses relevees et des cases d'IAT examinees (FEX_SILENTLOG=0)
++  static int8_t V = -1;
++  if (V < 0) {
++    V = getenv("CIDRE_DIAG_FEUILLES") != nullptr;
++  }
++  return V;
++}
++std::atomic<uint64_t> Adresses[3][NB] {};
++
++void Noter(const fextl::string& Module, uint64_t Base) {
++  int M = -1;
++  if (CidreFeuilles::Diag()) {
++    LogMan::Msg::IFmt("cidre feuilles : image {} {:x}", Module, Base);
++  }
++  if (_stricmp(Module.c_str(), "kernel32.dll") == 0) {
++    M = 0;
++  } else if (_stricmp(Module.c_str(), "kernelbase.dll") == 0) {
++    M = 1;
++  } else if (_stricmp(Module.c_str(), "ntdll.dll") == 0) {
++    M = 2;
++  }
++  if (M < 0) {
++    return;
++  }
++  const auto* Dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(Base);
++  if (Dos->e_magic != IMAGE_DOS_SIGNATURE) {
++    return;
++  }
++  const auto* Nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(Base + Dos->e_lfanew);
++  const auto& Dir = Nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
++  if (!Dir.VirtualAddress || !Dir.Size) {
++    return;
++  }
++  const auto* Exp = reinterpret_cast<const IMAGE_EXPORT_DIRECTORY*>(Base + Dir.VirtualAddress);
++  const auto* NomsRva = reinterpret_cast<const DWORD*>(Base + Exp->AddressOfNames);
++  const auto* Ordinaux = reinterpret_cast<const WORD*>(Base + Exp->AddressOfNameOrdinals);
++  const auto* Fonctions = reinterpret_cast<const DWORD*>(Base + Exp->AddressOfFunctions);
++  for (DWORD i = 0; i < Exp->NumberOfNames; ++i) {
++    const char* N = reinterpret_cast<const char*>(Base + NomsRva[i]);
++    for (size_t k = 0; k < NB; ++k) {
++      if (strcmp(N, Noms[k].Texte) != 0) {
++        continue;
++      }
++      const DWORD Rva = Fonctions[Ordinaux[i]];
++      if (Rva >= Dir.VirtualAddress && Rva < Dir.VirtualAddress + Dir.Size) {
++        continue; // renvoi vers une autre DLL : sa vraie adresse sera relevee dans celle-ci
++      }
++      Adresses[M][k].store(Base + Rva, std::memory_order_release);
++      if (CidreFeuilles::Diag()) {
++        LogMan::Msg::IFmt("cidre feuilles : {} {} = {:x}", Module, N, Base + Rva);
++      }
++    }
++  }
++}
++
++uint32_t Genre(uint64_t Cible) {
++  for (size_t M = 0; M < 3; ++M) {
++    for (size_t k = 0; k < NB; ++k) {
++      if (Cible && Adresses[M][k].load(std::memory_order_acquire) == Cible) {
++        return Noms[k].Genre;
++      }
++    }
++  }
++  return 0;
++}
++} // namespace CidreFeuilles
++
+ void HandleImageMap(uint64_t Address, bool MainImage = false) {
+   fextl::string ModulePath = FEX::Windows::GetSectionFilePath(Address);
+   fextl::string ModuleName = fextl::string {FEX::Windows::BaseName(ModulePath)};
+   InvalidationTracker->HandleImageMap(ModuleName, Address);
+   ImageTracker->HandleImageMap(ModulePath, Address, MainImage);
++  CidreFeuilles::Noter(ModuleName, Address);
+ }
+ 
+ void HandleImageUnmap(uint64_t Address, uint64_t Size) {
+@@ -590,6 +669,26 @@ public:
+   void PreCompile() override {
+     ProcessPendingCrossProcessEmulatorWork();
+   }
++
++  uint32_t CidreFeuille(uint64_t CaseIAT, uint64_t* Cible) override {
++    // La case doit etre engagee et lisible (une adresse invitee quelconque ne doit pas faire fauter le compilateur).
++    MEMORY_BASIC_INFORMATION Info;
++    if (!VirtualQuery(reinterpret_cast<void*>(CaseIAT), &Info, sizeof(Info)) || Info.State != MEM_COMMIT ||
++        (Info.Protect & (PAGE_GUARD | PAGE_NOACCESS)) ||
++        !(Info.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) ||
++        CaseIAT + 8 > reinterpret_cast<uint64_t>(Info.BaseAddress) + Info.RegionSize) {
++      return 0;
++    }
++    const uint64_t V = *reinterpret_cast<const uint64_t*>(CaseIAT);
++    const uint32_t G = CidreFeuilles::Genre(V);
++    if (CidreFeuilles::Diag()) {
++      LogMan::Msg::IFmt("cidre feuilles : case {:x} -> {:x} genre {}", CaseIAT, V, G);
++    }
++    if (G) {
++      *Cible = V;
++    }
++    return G;
++  }
+ };
+ } // namespace Exception
+ 
+@@ -703,6 +802,13 @@ NTSTATUS ProcessInit() {
+   HandleImageMap(reinterpret_cast<uint64_t>(MainModule), true);
+ 
+   HandleImageMap(NtDllBase);
++  // Cidre 0283 : kernel32/kernelbase deja projetees avant FEX (sinon releves a leur projection)
++  for (const auto* Nom : {L"kernel32.dll", L"kernelbase.dll"}) {
++    if (const auto H = GetModuleHandleW(Nom)) {
++      CidreFeuilles::Noter(fextl::string {FEX::Windows::BaseName(FEX::Windows::GetSectionFilePath(reinterpret_cast<uint64_t>(H)))},
++                           reinterpret_cast<uint64_t>(H));
++    }
++  }
+ 
+   CPUFeatures.emplace(*CTX);
+ 
