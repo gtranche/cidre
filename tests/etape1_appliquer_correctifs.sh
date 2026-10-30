@@ -147,6 +147,7 @@ if [ -d "$R/third_party/FEX" ]; then
          0283-*) temoin="Cidre 0283 : call [rip+d] (case d'IAT)"; ou=FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp ;;
          0284-*) temoin="Cidre 0284 : masque entierement actif"; ou=FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp ;;
          0287-*) temoin="Cidre 0287 : paire de lectures TSO voisines"; ou=FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp ;;
+         0288-*) temoin="Cidre 0288 (ilot) : dans l'ilot, FEX tourne sans TSO logiciel"; ou=FEXCore/Source/Interface/Core/JIT/JIT.cpp ;;
          *) echo "   correctif FEX sans temoin : $(basename "$f")" >&2; exit 1 ;;
       esac
       # -F : texte litteral (les temoins contiennent . ( * &).

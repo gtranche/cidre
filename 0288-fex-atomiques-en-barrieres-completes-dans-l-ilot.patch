@@ -1,0 +1,67 @@
+Generated-by: LLM
+
+fex : dans l'ilot, atomiques x86 en barrieres completes (actif quand CIDRE_ILOT=1 et FEX_TSOENABLED=0 ; CIDRE_ILOT_ATOMIQUES=0 le retire ; sans effet hors ilot). Dans l'ilot, FEX tourne sans TSO logiciel et le vCPU fournit l'ordre TSO. Mais un lock x86 (xchg, lock add, cmpxchg...) est une barriere complete, plus forte que TSO : une lecture qui suit ne peut pas passer devant l'ecriture verrouillee (Dekker par xchg). LL/SC (ldaxr/stlxr) ne le garantit pas, meme sous TSO materiel : temoin litmus dans l'ilot DXCHG 63 533 et DLOCK 51 471 inversions sur 200 000 tours. dmb ish avant et apres chaque atomique (CAS, CASPair, AtomicSwap, AtomicFetch*) : 0 inversion, crit et paires verts dans l'ilot, cout invisible au banc (at_xadd, at_cas, at_conflit inchanges). D2R dans l'ilot : 3 manches de 300 s sans incident, puis pose dans pfx-d2r-ilot (charge verifie au journal).
+
+diff --git a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+index aba1710..e96f923 100644
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -116,6 +116,37 @@ static void PrintVectorValue(uint64_t Value, uint64_t ValueUpper) {
+ } // namespace
+ 
+ namespace FEXCore::CPU {
++// Cidre 0288 (ilot) : dans l'ilot, FEX tourne sans TSO logiciel (FEX_TSOENABLED=0), le vCPU fournit l'ordre TSO. Mais
++// un lock x86 (xchg, lock add, cmpxchg...) est une barriere complete, plus forte que TSO : une lecture qui suit ne peut
++// pas passer devant l'ecriture verrouillee (Dekker par xchg). LL/SC (ldaxr/stlxr) ne le garantit pas, meme sous TSO
++// materiel (temoin litmus DXCHG/DLOCK : ~60 000 inversions sur 200 000). dmb ish avant et apres chaque atomique quand
++// CIDRE_ILOT=1 et le TSO logiciel est coupe ; CIDRE_ILOT_ATOMIQUES=0 le retire.
++static bool CidreIlotAtomiques() {
++  static int8_t V = -1;
++  if (V < 0) {
++    const char* I = getenv("CIDRE_ILOT");
++    const char* T = getenv("FEX_TSOENABLED");
++    const char* A = getenv("CIDRE_ILOT_ATOMIQUES");
++    V = I && *I == '1' && T && *T == '0' && !(A && *A == '0');
++  }
++  return V;
++}
++static bool CidreEstAtomiqueIlot(IR::IROps Op) {
++  switch (Op) {
++  case IR::OP_CASPAIR:
++  case IR::OP_CAS:
++  case IR::OP_ATOMICSWAP:
++  case IR::OP_ATOMICFETCHADD:
++  case IR::OP_ATOMICFETCHSUB:
++  case IR::OP_ATOMICFETCHAND:
++  case IR::OP_ATOMICFETCHCLR:
++  case IR::OP_ATOMICFETCHOR:
++  case IR::OP_ATOMICFETCHXOR:
++  case IR::OP_ATOMICFETCHNEG: return true;
++  default: return false;
++  }
++}
++
+ // Cidre 0278 : la pile d'appels de retour est toujours engagee en lecture-ecriture ; CIDRE_SMC_RAPIDE=0 rend l'amont.
+ static inline void CidreViderPileAppels(void* Base);
+ // Cidre 0279 : avancer la cle d'epoque au lieu de vider la pile (CIDRE_PILE_CLE=1) ; videe au retour a zero.
+@@ -1240,6 +1271,10 @@ CPUBackend::CompiledCode Arm64JITCore::CompileCode(uint64_t Entry, uint64_t Size
+     }
+ 
+     for (auto [CodeNode, IROp] : IR->GetCode(BlockNode)) {
++      const bool CidreAtomiqueIlot = CidreIlotAtomiques() && CidreEstAtomiqueIlot(IROp->Op);
++      if (CidreAtomiqueIlot) {
++        dmb(ARMEmitter::BarrierScope::ISH);
++      }
+       switch (IROp->Op) {
+ #define REGISTER_OP(op, x) \
+   case FEXCore::IR::IROps::OP_##op: Op_##x(IROp, CodeNode); break
+@@ -1250,6 +1285,9 @@ CPUBackend::CompiledCode Arm64JITCore::CompileCode(uint64_t Entry, uint64_t Size
+ 
+       default: Op_Unhandled(IROp, CodeNode); break;
+       }
++      if (CidreAtomiqueIlot) {
++        dmb(ARMEmitter::BarrierScope::ISH);
++      }
+     }
+ 
+     DebugData->Subblocks.push_back({static_cast<uint32_t>(BlockStartHostCode - CodeData.BlockBegin),
