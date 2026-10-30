@@ -1,0 +1,249 @@
+diff --color -ru a/CodeEmitter/CodeEmitter/Emitter.h b/CodeEmitter/CodeEmitter/Emitter.h
+--- a/CodeEmitter/CodeEmitter/Emitter.h	2026-10-30 22:42:03
++++ b/CodeEmitter/CodeEmitter/Emitter.h	2026-10-30 22:42:20
+@@ -638,6 +638,12 @@
+ // Choices:
+ // - Size of ops passed as an argument rather than template to let the compiler use csel instead of branching.
+ // - Registers are unsized so they can be passed in a GPR and not need conversion operations
++// Cidre (ilot TSO) : sous le TSO materiel d'un vCPU (ACTLR_EL1.EnTSO), les lectures de paires de registres Q (ldp q) et
++// les ld1 a plusieurs registres sont 11 a 14 fois plus lentes (sonde native dans le vCPU, M1 Max, 30/10), les ldr q
++// isoles non. Vrai : ces lectures sont emises en ldr q successifs (meme resultat ; pas d'atomicite a garder, x86 ne
++// garantit rien au-dela de 16 octets). Pose par FEX avant toute emission (ARM64EC, CIDRE_ILOT=1 sans TSO logiciel).
++inline bool CidreSansLdpQ = false;
++
+ class Emitter : public ARMEmitter::Buffer {
+ public:
+   Emitter() = default;
+diff --color -ru a/CodeEmitter/CodeEmitter/LoadstoreOps.inl b/CodeEmitter/CodeEmitter/LoadstoreOps.inl
+--- a/CodeEmitter/CodeEmitter/LoadstoreOps.inl	2026-10-30 22:42:03
++++ b/CodeEmitter/CodeEmitter/LoadstoreOps.inl	2026-10-30 22:42:20
+@@ -60,6 +60,13 @@
+   void ld1(T rt, T rt2, Register rn) {
+     LOGMAN_THROW_A_FMT(AreVectorsSequential(rt, rt2), "rt and rt2 must be sequential");
+     constexpr uint32_t Op = 0b0000'1100'000 << 21;
++    if constexpr (std::is_same_v<T, QRegister>) {
++      if (CidreSansLdpQ) {
++        ldr(rt, rn, 0U);
++        ldr(rt2, rn, 16U);
++        return;
++      }
++    }
+     constexpr uint32_t Opcode = 0b1010 << 12;
+     ASIMDLoadStoreMultipleStructure<size, true>(Op, Opcode, rt, rn, Reg::r0);
+   }
+@@ -67,6 +74,14 @@
+   void ld1(T rt, T rt2, T rt3, Register rn) {
+     LOGMAN_THROW_A_FMT(AreVectorsSequential(rt, rt2, rt3), "rt, rt2, and rt3 must be sequential");
+     constexpr uint32_t Op = 0b0000'1100'000 << 21;
++    if constexpr (std::is_same_v<T, QRegister>) {
++      if (CidreSansLdpQ) {
++        ldr(rt, rn, 0U);
++        ldr(rt2, rn, 16U);
++        ldr(rt3, rn, 32U);
++        return;
++      }
++    }
+     constexpr uint32_t Opcode = 0b0110 << 12;
+     ASIMDLoadStoreMultipleStructure<size, true>(Op, Opcode, rt, rn, Reg::r0);
+   }
+@@ -74,6 +89,15 @@
+   void ld1(T rt, T rt2, T rt3, T rt4, Register rn) {
+     LOGMAN_THROW_A_FMT(AreVectorsSequential(rt, rt2, rt3, rt4), "rt, rt2, rt3, and rt4 must be sequential");
+     constexpr uint32_t Op = 0b0000'1100'000 << 21;
++    if constexpr (std::is_same_v<T, QRegister>) {
++      if (CidreSansLdpQ) {
++        ldr(rt, rn, 0U);
++        ldr(rt2, rn, 16U);
++        ldr(rt3, rn, 32U);
++        ldr(rt4, rn, 48U);
++        return;
++      }
++    }
+     constexpr uint32_t Opcode = 0b0010 << 12;
+     ASIMDLoadStoreMultipleStructure<size, true>(Op, Opcode, rt, rn, Reg::r0);
+   }
+@@ -173,6 +197,14 @@
+     LOGMAN_THROW_A_FMT((std::is_same_v<QRegister, T> && (PostOffset == 32)) || (std::is_same_v<DRegister, T> && (PostOffset == 16)),
+                        "Post-index offset needs to match number of elements times their size");
+ 
++    if constexpr (std::is_same_v<T, QRegister>) {
++      if (CidreSansLdpQ) {
++        ldr(rt, rn, 0U);
++        ldr(rt2, rn, 16U);
++        add(ARMEmitter::Size::i64Bit, rn, rn, PostOffset);
++        return;
++      }
++    }
+     constexpr uint32_t Opcode = 0b1010 << 12;
+     ASIMDLoadStoreMultipleStructure<size, true>(ASIMDLoadstoreMultiplePost_Op, Opcode, rt, rn, Reg::r31);
+   }
+@@ -188,6 +220,15 @@
+     LOGMAN_THROW_A_FMT((std::is_same_v<QRegister, T> && (PostOffset == 48)) || (std::is_same_v<DRegister, T> && (PostOffset == 24)),
+                        "Post-index offset needs to match number of elements times their size");
+ 
++    if constexpr (std::is_same_v<T, QRegister>) {
++      if (CidreSansLdpQ) {
++        ldr(rt, rn, 0U);
++        ldr(rt2, rn, 16U);
++        ldr(rt3, rn, 32U);
++        add(ARMEmitter::Size::i64Bit, rn, rn, PostOffset);
++        return;
++      }
++    }
+     constexpr uint32_t Opcode = 0b0110 << 12;
+     ASIMDLoadStoreMultipleStructure<size, true>(ASIMDLoadstoreMultiplePost_Op, Opcode, rt, rn, Reg::r31);
+   }
+@@ -203,6 +244,16 @@
+     LOGMAN_THROW_A_FMT((std::is_same_v<QRegister, T> && (PostOffset == 64)) || (std::is_same_v<DRegister, T> && (PostOffset == 32)),
+                        "Post-index offset needs to match number of elements times their size");
+ 
++    if constexpr (std::is_same_v<T, QRegister>) {
++      if (CidreSansLdpQ) {
++        ldr(rt, rn, 0U);
++        ldr(rt2, rn, 16U);
++        ldr(rt3, rn, 32U);
++        ldr(rt4, rn, 48U);
++        add(ARMEmitter::Size::i64Bit, rn, rn, PostOffset);
++        return;
++      }
++    }
+     constexpr uint32_t Opcode = 0b0010 << 12;
+     ASIMDLoadStoreMultipleStructure<size, true>(ASIMDLoadstoreMultiplePost_Op, Opcode, rt, rn, Reg::r31);
+   }
+@@ -4509,6 +4560,39 @@
+   template<IndexType Index>
+   void ldp_q(ARMEmitter::VRegister rt, ARMEmitter::VRegister rt2, ARMEmitter::Register rn, int32_t Imm) {
+     LOGMAN_THROW_A_FMT(Imm >= -1024 && Imm <= 1008 && ((Imm & 0b1111) == 0), "Unscaled offset too large");
++    if (CidreSansLdpQ) {
++      // Cidre (ilot TSO) : deux ldr q (voir CidreSansLdpQ).
++      if constexpr (Index == IndexType::OFFSET) {
++        if (Imm >= 0) {
++          ldr(rt.Q(), rn, static_cast<uint32_t>(Imm));
++          ldr(rt2.Q(), rn, static_cast<uint32_t>(Imm + 16));
++          return;
++        }
++        if (Imm >= -256) {
++          ldur(rt.Q(), rn, Imm);
++          ldur(rt2.Q(), rn, Imm + 16);
++          return;
++        }
++      } else if constexpr (Index == IndexType::POST) {
++        ldr(rt.Q(), rn, 0U);
++        ldr(rt2.Q(), rn, 16U);
++        if (Imm >= 0) {
++          add(ARMEmitter::Size::i64Bit, rn, rn, static_cast<uint32_t>(Imm));
++        } else {
++          sub(ARMEmitter::Size::i64Bit, rn, rn, static_cast<uint32_t>(-Imm));
++        }
++        return;
++      } else if constexpr (Index == IndexType::PRE) {
++        if (Imm >= 0) {
++          add(ARMEmitter::Size::i64Bit, rn, rn, static_cast<uint32_t>(Imm));
++        } else {
++          sub(ARMEmitter::Size::i64Bit, rn, rn, static_cast<uint32_t>(-Imm));
++        }
++        ldr(rt.Q(), rn, 0U);
++        ldr(rt2.Q(), rn, 16U);
++        return;
++      }
++    }
+     constexpr uint32_t Op = (0b1010'1100'01 << 22) | (Index == IndexType::POST   ? (0b01 << 23) :
+                                                       Index == IndexType::PRE    ? (0b11 << 23) :
+                                                       Index == IndexType::OFFSET ? (0b10 << 23) :
+diff --color -ru a/Source/Windows/ARM64EC/Module.S b/Source/Windows/ARM64EC/Module.S
+--- a/Source/Windows/ARM64EC/Module.S	2026-10-30 22:42:03
++++ b/Source/Windows/ARM64EC/Module.S	2026-10-30 22:42:20
+@@ -182,7 +182,8 @@
+   mov sp, x1
+   br x0
+ 
+-// Cidre, sous-pages (SousPages.cpp) : appele par un talon avec x16 = Site*,
++// Cidre, sous-pages (SousPages.cpp) : appele par un talon (restauration des q en ldr q : un ldp q coute 11 a 14
++// fois plus sous le TSO materiel de l'ilot, voir CidreSansLdpQ) avec x16 = Site*,
+ // x30 = retour au talon, [sp] = { x16, x30 } d'origine. Sauve tout l'etat de
+ // l'invite, appelle SousPagesAide(Site, trame), qui peut rebaser un registre
+ // dans la trame, et restaure tout. Au retour : [sp] = decalage, [sp+8] = x30 a
+@@ -240,22 +241,38 @@
+   ldr x1, [sp, #0xf0]
+   add x2, sp, #0x320
+   stp x0, x1, [x2]
+-  ldp q0, q1, [sp, #0x120]
+-  ldp q2, q3, [sp, #0x140]
+-  ldp q4, q5, [sp, #0x160]
+-  ldp q6, q7, [sp, #0x180]
+-  ldp q8, q9, [sp, #0x1a0]
+-  ldp q10, q11, [sp, #0x1c0]
+-  ldp q12, q13, [sp, #0x1e0]
+-  ldp q14, q15, [sp, #0x200]
+-  ldp q16, q17, [sp, #0x220]
+-  ldp q18, q19, [sp, #0x240]
+-  ldp q20, q21, [sp, #0x260]
+-  ldp q22, q23, [sp, #0x280]
+-  ldp q24, q25, [sp, #0x2a0]
+-  ldp q26, q27, [sp, #0x2c0]
+-  ldp q28, q29, [sp, #0x2e0]
+-  ldp q30, q31, [sp, #0x300]
++  ldr q0, [sp, #0x120]
++  ldr q1, [sp, #0x130]
++  ldr q2, [sp, #0x140]
++  ldr q3, [sp, #0x150]
++  ldr q4, [sp, #0x160]
++  ldr q5, [sp, #0x170]
++  ldr q6, [sp, #0x180]
++  ldr q7, [sp, #0x190]
++  ldr q8, [sp, #0x1a0]
++  ldr q9, [sp, #0x1b0]
++  ldr q10, [sp, #0x1c0]
++  ldr q11, [sp, #0x1d0]
++  ldr q12, [sp, #0x1e0]
++  ldr q13, [sp, #0x1f0]
++  ldr q14, [sp, #0x200]
++  ldr q15, [sp, #0x210]
++  ldr q16, [sp, #0x220]
++  ldr q17, [sp, #0x230]
++  ldr q18, [sp, #0x240]
++  ldr q19, [sp, #0x250]
++  ldr q20, [sp, #0x260]
++  ldr q21, [sp, #0x270]
++  ldr q22, [sp, #0x280]
++  ldr q23, [sp, #0x290]
++  ldr q24, [sp, #0x2a0]
++  ldr q25, [sp, #0x2b0]
++  ldr q26, [sp, #0x2c0]
++  ldr q27, [sp, #0x2d0]
++  ldr q28, [sp, #0x2e0]
++  ldr q29, [sp, #0x2f0]
++  ldr q30, [sp, #0x300]
++  ldr q31, [sp, #0x310]
+   ldr x0, [sp, #0x100]
+   msr nzcv, x0
+   ldp x0, x1, [sp, #0x00]
+diff --color -ru a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+--- a/Source/Windows/ARM64EC/Module.cpp	2026-10-30 22:42:03
++++ b/Source/Windows/ARM64EC/Module.cpp	2026-10-30 22:42:20
+@@ -6,6 +6,7 @@
+ $end_info$
+ */
+ 
++#include <CodeEmitter/Emitter.h>
+ #include <FEXCore/fextl/fmt.h>
+ #include <FEXCore/Core/X86Enums.h>
+ #include <FEXCore/Core/SignalDelegator.h>
+@@ -753,6 +754,17 @@
+   const auto ExecutablePath = FEX::Windows::GetExecutableFilePath();
+   AppConfigName = FEX::Windows::BaseName(ExecutablePath);
+   FEX::Config::LoadConfig(AppConfigName, _environ, FEX::ReadPortabilityInformation());
++  {
++    // Cidre (ilot TSO) : pas de ldp q ni de ld1 a plusieurs registres sous le TSO materiel (CodeEmitter/Emitter.h).
++    // CIDRE_ILOT_LDPQ=1 les garde (pour comparer).
++    const char* I = getenv("CIDRE_ILOT");
++    const char* T = getenv("FEX_TSOENABLED");
++    const char* L = getenv("CIDRE_ILOT_LDPQ");
++    ARMEmitter::CidreSansLdpQ = I && *I == '1' && T && *T == '0' && !(L && *L == '1');
++    if (ARMEmitter::CidreSansLdpQ) {
++      LogMan::Msg::IFmt("ilot : ldp q et ld1 multiples emis en ldr q");
++    }
++  }
+   FEXCore::Config::ReloadMetaLayer();
+   FEX::Windows::Logging::Init();
+   FEXCore::Config::Set(FEXCore::Config::CONFIG_APP_FILENAME, ExecutablePath);
