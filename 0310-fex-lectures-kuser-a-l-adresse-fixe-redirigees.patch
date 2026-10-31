@@ -1,0 +1,86 @@
+Generated-by: LLM
+
+fex : lectures absolues de KUSER_SHARED_DATA a l'adresse fixe 0x7ffe0000 redirigees a la traduction vers la page de Wine (0x17ffe0000, wine11 0048). Sur macOS arm64, aucune adresse sous 4 Gio : chaque lecture du code x86-64 a 0x7ffe0000 faisait faute, rejouee par segv_handler (0093, ~2,3 us). Les routines systeme x64 de ntdll en font une a chaque appel (test byte ptr [7FFE0308h], 1 avant syscall) : NtQuerySystemTime appele depuis du code x64 coutait 2,59 us (0,05 us sous Rosetta), dont l'essentiel en faute. Une adresse absolue (ni base, ni index, ni segment) dans la page est connue a la traduction : DecodeAddress remplace l'adresse par celle de la page de Wine, pour les lectures seulement (une ecriture fait faute comme avant). Pose par le frontal ARM64EC avant InitCore, si la page de Wine est engagee, lisible et reconnue (TickCountMultiplier = 1 << 24 a +0x004) ; jamais dans l'ilot (KUSER y est un alias a 0x7ffe0000) ; CIDRE_KUSER_FEX=0 coupe ; WOW64 non concerne. Journal : « cidre kuser : lectures a 0x7ffe0000 redirigees ». Temoins (runtime 1.5.20, M1 Max) : NtQuerySystemTime depuis x64 2,59 -> 0,28 us (qst_boucle) ; kuser_lecture (TickCount et SystemTime lus a 0x7ffe0000 contre GetTickCount et GetSystemTimeAsFileTime) 4,58 -> 0,001 us par paire, coherent ; h64kuser (lectures x86-64 de KUSER) vert ; avec CIDRE_KUSER_FEX=0, chiffres d'avant ; GetSystemTimeAsFileTime, GetSystemTimePreciseAsFileTime, QueryPerformanceCounter, GetTickCount inchanges (0,047 / 0,041 / 0,042 / 0,009 us ; ils ne passaient pas par la faute) ; suspension 2000/2000, smc_retour, int3_temoin 1000/1000, exceptions_cpp 20000/20000, litmus, feuilles, crit, tflags.
+
+diff -uN a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+@@ -6,6 +6,7 @@
+ $end_info$
+ */
+ 
++#include <FEXCore/Utils/CidreKuser.h>
+ #include "FEXCore/Core/HostFeatures.h"
+ #include "FEXCore/Utils/Telemetry.h"
+ #include "Interface/Context/Context.h"
+@@ -4592,6 +4593,13 @@
+                                  static_cast<uint64_t>(Operand.Data.LiteralPatchable.Width));
+   } else {
+     LOGMAN_MSG_A_FMT("Unknown Src Type: {}\n", Operand.Type);
++  }
++
++  // Cidre 0310 : lecture absolue dans KUSER_SHARED_DATA (0x7ffe0000) : directement dans la page de Wine (voir
++  // FEXCore/Utils/CidreKuser.h). Lectures seulement ; une ecriture fait faute comme avant.
++  if (IsLoad && FEXCore::CidreKuser::Hote && !Guest64LowBase && !A.Base && !A.Index && A.Segment == nullptr &&
++      static_cast<uint64_t>(A.Offset) - FEXCore::CidreKuser::FIXE < FEXCore::CidreKuser::TAILLE) {
++    A.Offset = static_cast<int64_t>(FEXCore::CidreKuser::Hote + (static_cast<uint64_t>(A.Offset) - FEXCore::CidreKuser::FIXE));
+   }
+ 
+   return A;
+diff -uN a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -35,6 +35,7 @@
+ #include "Common/CallRetStack.h"
+ #include <FEXCore/Utils/CidreWX.h>
+ #include <FEXCore/Utils/CidreSonnetteFaute.h>
++#include <FEXCore/Utils/CidreKuser.h>
+ #include "Common/JITGuardPage.h"
+ #include "Common/Config.h"
+ #include "Common/Exception.h"
+@@ -875,6 +876,23 @@
+       CidreSonnettePageEC = reinterpret_cast<uint64_t>(P);
+     }
+     LogMan::Msg::IFmt("cidre sonnette : par faute {}", FEXCore::CidreSonnetteFaute::Page ? "oui" : "non");
++  }
++
++  {
++    // Cidre 0310 : page KUSER_SHARED_DATA de Wine (0x17ffe0000, wine11 0048) pour les lectures absolues a 0x7ffe0000.
++    // Reconnue a TickCountMultiplier (+0x004 = 1 << 24, pose par virtual_init_user_shared_data) ; jamais dans l'ilot (alias a 0x7ffe0000) ; CIDRE_KUSER_FEX=0 coupe.
++    const char* E = getenv("CIDRE_KUSER_FEX");
++    const char* Ilot = getenv("CIDRE_ILOT");
++    const bool DansIlot = Ilot && *Ilot && *Ilot != '0';
++    MEMORY_BASIC_INFORMATION Info {};
++    const uint64_t Page = 0x17ffe0000ULL;
++    if (!(E && *E == '0') && !DansIlot &&
++        VirtualQuery(reinterpret_cast<void*>(Page), &Info, sizeof(Info)) && Info.State == MEM_COMMIT &&
++        (Info.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) &&
++        *reinterpret_cast<const volatile uint32_t*>(Page + 0x4) == (1u << 24)) {
++      FEXCore::CidreKuser::Hote = Page;
++    }
++    LogMan::Msg::IFmt("cidre kuser : lectures a 0x7ffe0000 {}", FEXCore::CidreKuser::Hote ? "redirigees" : "non redirigees");
+   }
+ 
+   CTX->SetSignalDelegator(SignalDelegator.get());
+diff -uN a/FEXCore/include/FEXCore/Utils/CidreKuser.h b/FEXCore/include/FEXCore/Utils/CidreKuser.h
+--- a/FEXCore/include/FEXCore/Utils/CidreKuser.h
++++ b/FEXCore/include/FEXCore/Utils/CidreKuser.h
+@@ -0,0 +1,18 @@
++// SPDX-License-Identifier: MIT
++#pragma once
++// Cidre 0310 : lectures de KUSER_SHARED_DATA a son adresse fixe redirigees a la traduction.
++//
++// macOS interdit toute adresse sous 4 Gio a un processus arm64 : Wine y place KUSER_SHARED_DATA plus haut (wine11 0048,
++// 0x17ffe0000), et chaque lecture par le code x86-64 a l'adresse fixe 0x7ffe0000 fait faute, rejouee par segv_handler
++// (0093, emuler_acces_vers, ~2 us). Les routines systeme x64 de ntdll en font une a chaque appel
++// (« test byte ptr [7FFE0308h], 1 » avant syscall), les CRT et les jeux lisent ainsi l'heure et les ticks. Une adresse
++// absolue (sans base ni index) dans cette page est connue a la traduction : FEX lit directement la page de Wine.
++//
++// Pose par le frontal ARM64EC (page lisible et reconnue), jamais dans l'ilot (KUSER y est un alias a 0x7ffe0000).
++#include <cstdint>
++
++namespace FEXCore::CidreKuser {
++inline uint64_t Hote {};                      // adresse de la page de Wine, 0 : inactif
++constexpr uint64_t FIXE = 0x7ffe0000ULL;      // adresse Windows
++constexpr uint64_t TAILLE = 0x1000;
++} // namespace FEXCore::CidreKuser
