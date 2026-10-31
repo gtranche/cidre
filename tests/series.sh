@@ -64,6 +64,7 @@ serie_wine11() {
    ls "$R"/0241-wine11-*.patch 2>/dev/null
    ls "$R"/0257-wine11-*.patch 2>/dev/null
    ls "$R"/0275-wine11-*.patch 2>/dev/null
+   ls "$R"/0297-wine11-*.patch 2>/dev/null
 }
 
 serie_vkd3d_proton() {
@@ -84,5 +85,5 @@ serie_dxmt() {
 # FEX vit dans third_party/FEX, pas dans src/ : etape1 et la verification le
 # traitent a part.
 serie_fex() {
-   ls "$R"/0070-fex-*.patch "$R"/0118-fex-*.patch "$R"/0161-fex-*.patch "$R"/0179-fex-*.patch "$R"/0194-fex-*.patch "$R"/0197-fex-*.patch "$R"/0198-fex-*.patch "$R"/0199-fex-*.patch "$R"/0200-fex-*.patch "$R"/0203-fex-*.patch "$R"/0211-fex-*.patch "$R"/0217-fex-*.patch "$R"/0219-fex-*.patch "$R"/0224-fex-*.patch "$R"/0226-fex-*.patch "$R"/0225-fex-*.patch "$R"/0229-fex-*.patch "$R"/0230-fex-*.patch "$R"/0233-fex-*.patch "$R"/0234-fex-*.patch "$R"/0235-fex-*.patch "$R"/0236-fex-*.patch "$R"/0278-fex-*.patch "$R"/0279-fex-*.patch "$R"/0281-fex-*.patch "$R"/0282-fex-*.patch "$R"/0283-fex-*.patch "$R"/0284-fex-*.patch "$R"/0287-fex-*.patch "$R"/0288-fex-*.patch "$R"/0289-fex-*.patch 2>/dev/null
+   ls "$R"/0070-fex-*.patch "$R"/0118-fex-*.patch "$R"/0161-fex-*.patch "$R"/0179-fex-*.patch "$R"/0194-fex-*.patch "$R"/0197-fex-*.patch "$R"/0198-fex-*.patch "$R"/0199-fex-*.patch "$R"/0200-fex-*.patch "$R"/0203-fex-*.patch "$R"/0211-fex-*.patch "$R"/0217-fex-*.patch "$R"/0219-fex-*.patch "$R"/0224-fex-*.patch "$R"/0226-fex-*.patch "$R"/0225-fex-*.patch "$R"/0229-fex-*.patch "$R"/0230-fex-*.patch "$R"/0233-fex-*.patch "$R"/0234-fex-*.patch "$R"/0235-fex-*.patch "$R"/0236-fex-*.patch "$R"/0278-fex-*.patch "$R"/0279-fex-*.patch "$R"/0281-fex-*.patch "$R"/0282-fex-*.patch "$R"/0283-fex-*.patch "$R"/0284-fex-*.patch "$R"/0287-fex-*.patch "$R"/0288-fex-*.patch "$R"/0289-fex-*.patch "$R"/0296-fex-*.patch "$R"/0298-fex-*.patch "$R"/0299-fex-*.patch "$R"/0300-fex-*.patch "$R"/0306-fex-*.patch "$R"/0307-fex-*.patch 2>/dev/null
 }

@@ -1,0 +1,187 @@
+wine11 : memmove et memset de msvcrt/ucrtbase en NEON sur ARM64 et ARM64EC (0297)
+
+Generated-by: LLM
+
+memcpy de msvcrt, d'ucrtbase et donc de vcruntime140 (renvoi vers ucrtbase.memcpy) :
+c'est le memcpy des jeux x86-64 sous Cidre, appele depuis le code traduit. Sur ARM64EC,
+la boucle generique copiait 8 octets par tour et recollait par decalages (MERGE) des que
+la source n'etait pas alignee comme la destination. Ici : lectures de 16 octets non
+alignees, 64 octets par tour, destination alignee sur 16, tete et queue lues avant toute
+ecriture (recouvrement correct dans les deux sens) ; petites tailles par lectures
+chevauchantes sans boucle. memset_aligned_32 : 64 octets par tour en q. i386 et x86-64
+inchanges (sse2_memmove). Ecrit avec vld1q/vst1q : les DLL de l'ilot, construites sans
+appariement (-aarch64-enable-ldst-opt=false), n'y recoivent pas de ldp q.
+
+Banc (M1 Max, banc_moteur, ucrtbase reconstruite seule, 9 passes entrelacees, medianes,
+en % de Rosetta) : memcpy 8 a 256 octets 82 -> 166 % ; memcpy + memset 1 Mio 70 -> 114 % ;
+le meme ucrtbase reconstruit sans le correctif ne bouge pas (82 / 70 %). Sommes de controle
+identiques a Rosetta. Justesse : 2 000 000 de copies aleatoires (tailles 0 a 3000,
+recouvrements avant et arriere a +-65 octets) comparees octet a octet a memmove natif ;
+1 000 000 de memset aleatoires (tailles 0 a 5000, 64 decalages) compares a memset natif.
+
+--- a/dlls/msvcrt/string.c
++++ b/dlls/msvcrt/string.c
+@@ -3076,10 +3076,124 @@
+ # define MERGE(w1, sh1, w2, sh2) ((w1 << sh1) | (w2 >> sh2))
+ #else
+ # define MERGE(w1, sh1, w2, sh2) ((w1 >> sh1) | (w2 << sh2))
++#endif
++#if defined(__aarch64__) || defined(__arm64ec__)
++#include <arm_neon.h>
++/* Cidre : memmove ARM64/ARM64EC en NEON. La boucle generique copie 8 octets par tour et recolle par decalages quand la
++ * source n'est pas alignee comme la destination ; ici, des lectures de 16 octets non alignees, 64 octets par tour,
++ * destination alignee sur 16, tete et queue lues avant toute ecriture (recouvrement dans les deux sens). C'est le
++ * memcpy de msvcrt, d'ucrtbase et donc de vcruntime140 (renvoi), appele par le code x86-64 des jeux. */
++static __attribute__((no_builtin)) void * __cdecl neon_memmove(void *dst, const void *src, size_t n)
++{
++    typedef uint64_t DECLSPEC_ALIGN(1) unaligned_ui64;
++    typedef uint32_t DECLSPEC_ALIGN(1) unaligned_ui32;
++    typedef uint16_t DECLSPEC_ALIGN(1) unaligned_ui16;
++    unsigned char *d = dst;
++    const unsigned char *s = src;
++
++    if (n <= 16)
++    {
++        if (n >= 8)
++        {
++            uint64_t a = *(const unaligned_ui64 *)s, b = *(const unaligned_ui64 *)(s + n - 8);
++            *(unaligned_ui64 *)d = a;
++            *(unaligned_ui64 *)(d + n - 8) = b;
++        }
++        else if (n >= 4)
++        {
++            uint32_t a = *(const unaligned_ui32 *)s, b = *(const unaligned_ui32 *)(s + n - 4);
++            *(unaligned_ui32 *)d = a;
++            *(unaligned_ui32 *)(d + n - 4) = b;
++        }
++        else if (n >= 2)
++        {
++            uint16_t a = *(const unaligned_ui16 *)s, b = *(const unaligned_ui16 *)(s + n - 2);
++            *(unaligned_ui16 *)d = a;
++            *(unaligned_ui16 *)(d + n - 2) = b;
++        }
++        else if (n) *d = *s;
++        return dst;
++    }
++    if (n <= 32)
++    {
++        uint8x16_t a = vld1q_u8(s), b = vld1q_u8(s + n - 16);
++        vst1q_u8(d, a);
++        vst1q_u8(d + n - 16, b);
++        return dst;
++    }
++    if (n <= 64)
++    {
++        uint8x16_t a = vld1q_u8(s), b = vld1q_u8(s + 16), c = vld1q_u8(s + n - 32), e = vld1q_u8(s + n - 16);
++        vst1q_u8(d, a);
++        vst1q_u8(d + 16, b);
++        vst1q_u8(d + n - 32, c);
++        vst1q_u8(d + n - 16, e);
++        return dst;
++    }
++    if ((size_t)d - (size_t)s >= n)
++    {
++        /* vers l'avant (destination avant la source, ou sans recouvrement) : chaque tour lit avant d'ecrire plus bas */
++        uint8x16_t h = vld1q_u8(s);
++        uint8x16_t t0 = vld1q_u8(s + n - 64), t1 = vld1q_u8(s + n - 48), t2 = vld1q_u8(s + n - 32), t3 = vld1q_u8(s + n - 16);
++        size_t skip = 16 - ((size_t)d & 15), left = n - skip;
++        unsigned char *dd = d + skip;
++        const unsigned char *ss = s + skip;
++        while (left > 64)
++        {
++            uint8x16_t x0 = vld1q_u8(ss), x1 = vld1q_u8(ss + 16), x2 = vld1q_u8(ss + 32), x3 = vld1q_u8(ss + 48);
++            vst1q_u8(dd, x0);
++            vst1q_u8(dd + 16, x1);
++            vst1q_u8(dd + 32, x2);
++            vst1q_u8(dd + 48, x3);
++            dd += 64;
++            ss += 64;
++            left -= 64;
++        }
++        vst1q_u8(d + n - 64, t0);
++        vst1q_u8(d + n - 48, t1);
++        vst1q_u8(d + n - 32, t2);
++        vst1q_u8(d + n - 16, t3);
++        vst1q_u8(d, h);
++    }
++    else
++    {
++        /* vers l'arriere (destination apres la source, recouvrement) : chaque tour lit avant d'ecrire plus haut */
++        uint8x16_t h0 = vld1q_u8(s), h1 = vld1q_u8(s + 16), h2 = vld1q_u8(s + 32), h3 = vld1q_u8(s + 48);
++        uint8x16_t t = vld1q_u8(s + n - 16);
++        size_t skip = (size_t)(d + n) & 15, left;
++        unsigned char *de;
++        const unsigned char *se;
++        if (!skip) skip = 16;
++        left = n - skip;
++        de = d + left;
++        se = s + left;
++        while (left > 64)
++        {
++            uint8x16_t x0, x1, x2, x3;
++            de -= 64;
++            se -= 64;
++            x0 = vld1q_u8(se); x1 = vld1q_u8(se + 16); x2 = vld1q_u8(se + 32); x3 = vld1q_u8(se + 48);
++            vst1q_u8(de, x0);
++            vst1q_u8(de + 16, x1);
++            vst1q_u8(de + 32, x2);
++            vst1q_u8(de + 48, x3);
++            left -= 64;
++        }
++        vst1q_u8(d + n - 16, t);
++        vst1q_u8(d, h0);
++        vst1q_u8(d + 16, h1);
++        vst1q_u8(d + 32, h2);
++        vst1q_u8(d + 48, h3);
++    }
++    return dst;
++}
+ #endif
++
+ static __attribute__((no_builtin)) void * __cdecl fb_impl_memmove(void *dst, const void *src, size_t n)
+ {
+-#if defined(__x86_64__) && !defined(__arm64ec__)
++#if defined(__aarch64__) || defined(__arm64ec__)
++    return neon_memmove(dst, src, n);
++#elif defined(__x86_64__) && !defined(__arm64ec__)
+     return sse2_memmove(dst, src, n);
+ #else
+     unsigned char *d = dst;
+@@ -3202,8 +3316,29 @@
+ }
+ 
+ 
++#if defined(__aarch64__) || defined(__arm64ec__)
++/* Cidre : 64 octets par tour en NEON (n multiple de 32, d aligne sur 32) */
+ static inline void memset_aligned_32(unsigned char *d, uint64_t v, size_t n)
+ {
++    uint8x16_t q = vreinterpretq_u8_u64(vdupq_n_u64(v));
++    while (n >= 64)
++    {
++        vst1q_u8(d, q);
++        vst1q_u8(d + 16, q);
++        vst1q_u8(d + 32, q);
++        vst1q_u8(d + 48, q);
++        d += 64;
++        n -= 64;
++    }
++    if (n)
++    {
++        vst1q_u8(d, q);
++        vst1q_u8(d + 16, q);
++    }
++}
++#else
++static inline void memset_aligned_32(unsigned char *d, uint64_t v, size_t n)
++{
+     unsigned char *end = d + n;
+     while (d < end)
+     {
+@@ -3214,6 +3349,7 @@
+         d += 32;
+     }
+ }
++#endif
+ 
+ /*********************************************************************
+  *		    memset (MSVCRT.@)

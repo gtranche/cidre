@@ -1,0 +1,201 @@
+Generated-by: LLM
+
+fex : bascule W^X explicite autour des ecritures de code (macOS, tampon de code MAP_JIT ; CIDRE_WX_DIRECT=0 la retire). Le materiel ne laisse a chaque fil que l'ecriture OU l'execution des pages MAP_JIT : sans bascule, chaque compilation coutait deux fautes (premiere ecriture : virtual_handle_fault passe le fil en ecriture ; premiere execution : wx_tremplin le repasse en execution), quelques microsecondes chacune. FEX bascule lui-meme le fil comme pthread_jit_write_protect_np : valeurs lues dans la page commune de macOS (genre 0xfffffc10c, ecriture 0xfffffc110, execution 0xfffffc118), msr S3_6_C15_C1_5 (SPRR, genres 2 et 3) ou S3_4_C15_C2_7 (APRR, genre 1), isb. Zones encadrees (compteur d'imbrication par fil) : CompileBlock, ExitFunctionLink (liaison des blocs), et dans le frontal les invalidations qui delient (faute SMC, notifications de protection, d'allocation, de liberation) ; tout autre ecriture se rattrape par les fautes, comme avant. Active seulement sous Wine sur Darwin, page commune reconnue, et jamais dans l'ilot (CIDRE_ILOT ou horloge de l'ilot dans le TEB : ni page commune ni registre de l'hote dans un vCPU). Banc (M1 Max, 7 passes entrelacees, avec 0296) : JIT/SMC 71 -> 114 % de Rosetta (jit_wx 49 -> 90 %, jit_neuf 82 -> 127 %, jit_mixte 76 -> 112 %). Temoins : smc_retour, pile_mesure, litmus, suspension, tflags, feuilles, crit, gathertest, paires.
+
+diff -uN a/FEXCore/include/FEXCore/Debug/InternalThreadState.h b/FEXCore/include/FEXCore/Debug/InternalThreadState.h
+--- a/FEXCore/include/FEXCore/Debug/InternalThreadState.h
++++ b/FEXCore/include/FEXCore/Debug/InternalThreadState.h
+@@ -138,6 +138,9 @@
+   // engagee d'office ; 0 = rien au-dela. Tenu par le fil lui-meme (sa faute), remis a 0 quand cette partie est decommise.
+   uint64_t CidrePileHaut {};
+ 
++  // Cidre 0300 : imbrication des zones d'ecriture de code (FEXCore::CidreWX::Ecriture).
++  uint32_t CidreWXProfondeur {};
++
+   uintptr_t JITGuardPage {};
+   uint64_t JITGuardOverflowArgument {};
+   FEXCore::UncheckedLongJump::JumpBuf RestartJump;
+diff -uN a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -9,6 +9,7 @@
+ */
+ 
+ #include "Interface/Core/CidrePileCle.h"
++#include <FEXCore/Utils/CidreWX.h>
+ #include <cstring>
+ #include <cstdint>
+ #ifdef ZYDIS_DISASSEMBLER
+@@ -945,6 +946,8 @@
+   }
+ 
+   auto Thread = Frame->Thread;
++  // Cidre 0300 : le fil ecrit du code jusqu'au retour (compilation, ajout au cache) ; execution ensuite.
++  FEXCore::CidreWX::Ecriture CidreWX(&Thread->CidreWXProfondeur);
+   FEXCORE_PROFILE_SCOPED("CompileBlock");
+   FEXCORE_PROFILE_ACCUMULATION(Thread, AccumulatedJITTime);
+ 
+diff -uN a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -37,6 +37,7 @@
+ 
+ #include <cstdio>
+ #include <cstring>
++#include <FEXCore/Utils/CidreWX.h>
+ #include <optional>
+ #include <type_traits>
+ #include <unistd.h>
+@@ -662,6 +663,8 @@
+ 
+ uint64_t Arm64JITCore::ExitFunctionLink(FEXCore::Core::CpuStateFrame* Frame, FEXCore::Context::ExitFunctionLinkData* Record) {
+   auto Thread = Frame->Thread;
++  // Cidre 0300 : la liaison reecrit le site d'appel (et peut compiler) ; execution au retour.
++  FEXCore::CidreWX::Ecriture CidreWX(&Thread->CidreWXProfondeur);
+   bool TFSet = Thread->CurrentFrame->State.flags[X86State::RFLAG_TF_RAW_LOC];
+   uintptr_t HostCode {};
+   auto GuestRip = Record->GuestRIP;
+diff -uN a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -33,6 +33,7 @@
+ #include "Windows/Common/EnvironmentVariablesHandling.h"
+ #include "Windows/Common/FEXUnixLib.h"
+ #include "Common/CallRetStack.h"
++#include <FEXCore/Utils/CidreWX.h>
+ #include "Common/JITGuardPage.h"
+ #include "Common/Config.h"
+ #include "Common/Exception.h"
+@@ -829,6 +830,37 @@
+     CTX->SetGuestCodeAlias(&FEX::Windows::SousPages::DecalageCode);
+   }
+ 
++  {
++    // Cidre 0300 : bascule W^X explicite autour des ecritures de code (voir FEXCore/Utils/CidreWX.h). Seulement sous
++    // Wine sur Darwin, page commune reconnue (genre 1 a 3, valeurs non nulles et distinctes), CIDRE_WX_DIRECT != 0.
++    using host_version_t = void(CDECL*)(const char**, const char**);
++    const auto HostVersion = reinterpret_cast<host_version_t>(GetProcAddress(NtDll, "wine_get_host_version"));
++    const char* Systeme = nullptr;
++    const char* Version = nullptr;
++    if (HostVersion) {
++      HostVersion(&Systeme, &Version);
++    }
++    const char* E = getenv("CIDRE_WX_DIRECT");
++    // Jamais dans l'ilot (vCPU) : ni page commune projetee, ni registre de permissions de l'hote ; le msr y serait une
++    // instruction indefinie. Ilot annonce par CIDRE_ILOT, ou par son horloge deja publiee dans le TEB.
++    const char* Ilot = getenv("CIDRE_ILOT");
++    struct CidreHorloge {
++      uint64_t Magie;
++    };
++    const auto* Horloge = reinterpret_cast<const CidreHorloge*>(reinterpret_cast<__TEB*>(NtCurrentTeb())->Instrumentation[10]);
++    const bool DansIlot = (Ilot && *Ilot && *Ilot != '0') || (Horloge && Horloge->Magie == 0x4c524f4845524449ULL);
++    if (IsWine && !DansIlot && Systeme && !strcmp(Systeme, "Darwin") && !(E && *E == '0')) {
++      const uint8_t Genre = *reinterpret_cast<const volatile uint8_t*>(0xFFFFFC10CULL);
++      const uint64_t Ecr = *reinterpret_cast<const volatile uint64_t*>(0xFFFFFC110ULL);
++      const uint64_t Exe = *reinterpret_cast<const volatile uint64_t*>(0xFFFFFC118ULL);
++      if (Genre >= 1 && Genre <= 3 && Ecr && Exe && Ecr != Exe) {
++        FEXCore::CidreWX::Global = {Genre, Ecr, Exe};
++      }
++    }
++    LogMan::Msg::IFmt("cidre wx : bascule explicite {} (genre {}, ilot {})", FEXCore::CidreWX::Global.Genre ? "active" : "inactive",
++                      FEXCore::CidreWX::Global.Genre, DansIlot ? "oui" : "non");
++  }
++
+   CTX->SetSignalDelegator(SignalDelegator.get());
+   CTX->SetSyscallHandler(SyscallHandler.get());
+   CTX->InitCore();
+@@ -947,6 +979,10 @@
+                   CidrePileVivante::HorsJIT(CPUArea);
+     }
+     CidrePileVivante CidrePile(CidreEcriture ? Thread : nullptr, CidreSp);
++    std::optional<FEXCore::CidreWX::Ecriture> CidreWXE; // Cidre 0300 : l'invalidation delie des blocs (ecritures de code)
++    if (CidreEcriture) {
++      CidreWXE.emplace(&Thread->CidreWXProfondeur);
++    }
+     if (CidreEcriture && InvalidationTracker && InvalidationTracker->HandleRWXAccessViolation(Thread, NativeContext->Pc, FaultAddress)) {
+       FEXCORE_PROFILE_INSTANT_INCREMENT(Thread, AccumulatedSMCCount, 1);
+       if (CTX->IsAddressInCodeBuffer(Thread, NativeContext->Pc) && !CTX->IsCurrentBlockSingleInst(CPUArea.ThreadState()) &&
+@@ -1074,6 +1110,7 @@
+   if (After) {
+     std::scoped_lock Lock(ThreadCreationMutex);
+     CidrePileVivante Pile(GetCPUArea().ThreadState(), CidrePileVivante::HorsJIT(GetCPUArea()));
++    FEXCore::CidreWX::Ecriture CidreWXE(&GetCPUArea().ThreadState()->CidreWXProfondeur); // Cidre 0300 : delinkage
+     // MEM_RESET(_UNDO) ignores the passed permissions
+     if (!Status && !(Type & (MEM_RESET | MEM_RESET_UNDO))) {
+       InvalidationTracker->HandleMemoryProtectionNotification(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), Prot);
+@@ -1145,6 +1182,7 @@
+   if (After && !Status) {
+     std::scoped_lock Lock(ThreadCreationMutex);
+     CidrePileVivante Pile(GetCPUArea().ThreadState(), CidrePileVivante::HorsJIT(GetCPUArea()));
++    FEXCore::CidreWX::Ecriture CidreWXE(&GetCPUArea().ThreadState()->CidreWXProfondeur); // Cidre 0300 : delinkage
+     // Cidre 0225 : entre la liberation et cette notification, un autre fil a pu reallouer la meme adresse, et sa
+     // notification d'allocation (traitee elle aussi au retour) a pu passer avant celle-ci. Retirer alors les
+     // intervalles executables effacerait ceux de la nouvelle allocation : FEX la croirait non executable et
+@@ -1188,6 +1226,7 @@
+   if (After && !Status) {
+     std::scoped_lock Lock(ThreadCreationMutex);
+     CidrePileVivante Pile(GetCPUArea().ThreadState(), CidrePileVivante::HorsJIT(GetCPUArea()));
++    FEXCore::CidreWX::Ecriture CidreWXE(&GetCPUArea().ThreadState()->CidreWXProfondeur); // Cidre 0300 : delinkage
+     InvalidationTracker->HandleMemoryProtectionNotification(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), NewProt);
+   }
+ }
+diff -uN a/FEXCore/include/FEXCore/Utils/CidreWX.h b/FEXCore/include/FEXCore/Utils/CidreWX.h
+--- a/FEXCore/include/FEXCore/Utils/CidreWX.h
++++ b/FEXCore/include/FEXCore/Utils/CidreWX.h
+@@ -0,0 +1,56 @@
++// SPDX-License-Identifier: MIT
++#pragma once
++// Cidre 0300 : bascule W^X explicite du fil autour des ecritures de code (macOS, pages MAP_JIT).
++//
++// Le tampon de code de FEX est une projection MAP_JIT : le materiel (APRR/SPRR) n'y laisse a chaque fil que l'ecriture
++// OU l'execution. Sans bascule explicite, chaque compilation coute deux fautes : la premiere ecriture (fil en mode
++// execution) fait faute et Wine passe le fil en ecriture (virtual_handle_fault), puis la premiere execution du code fait
++// faute et Wine le repasse en execution par son tremplin (wx_tremplin) -- quelques microsecondes chacune, plus que la
++// compilation d'un petit bloc. Ici, FEX bascule lui-meme le fil comme pthread_jit_write_protect_np : valeur lue dans la
++// page commune de macOS, ecrite dans le registre de permissions du fil (instruction de l'EL0, comme le fait la libc),
++// puis isb. Les fautes restent le filet : une ecriture ou une execution hors des zones encadrees se rattrape comme avant.
++//
++// Activation par le frontal (Windows sous Wine, hote Darwin, page commune reconnue, CIDRE_WX_DIRECT different de 0).
++#include <cstdint>
++
++namespace FEXCore::CidreWX {
++struct Etat {
++  uint8_t Genre {};       // 0 : inactif ; 1 : APRR (S3_4_C15_C2_7) ; 2, 3 : SPRR (S3_6_C15_C1_5)
++  uint64_t Ecriture {};   // valeur du registre pour ecrire le code
++  uint64_t Execution {};  // valeur du registre pour l'executer
++};
++inline Etat Global {};
++
++inline void Poser(uint64_t V) {
++#if defined(__aarch64__) || defined(_M_ARM64) || defined(_M_ARM64EC) || defined(__arm64ec__)
++  if (Global.Genre == 1) {
++    __asm__ volatile("msr S3_4_C15_C2_7, %0\n\tisb" ::"r"(V) : "memory");
++  } else {
++    __asm__ volatile("msr S3_6_C15_C1_5, %0\n\tisb" ::"r"(V) : "memory");
++  }
++#else
++  (void)V;
++#endif
++}
++
++// Encadre une ecriture dans le tampon de code ; Profondeur est un compteur du fil (imbrication : seule la sortie la plus
++// externe repasse en execution, juste avant de rendre la main au code JIT).
++class Ecriture {
++  uint32_t* Profondeur;
++
++public:
++  explicit Ecriture(uint32_t* P)
++    : Profondeur(Global.Genre ? P : nullptr) {
++    if (Profondeur && (*Profondeur)++ == 0) {
++      Poser(Global.Ecriture);
++    }
++  }
++  ~Ecriture() {
++    if (Profondeur && --*Profondeur == 0) {
++      Poser(Global.Execution);
++    }
++  }
++  Ecriture(const Ecriture&) = delete;
++  Ecriture& operator=(const Ecriture&) = delete;
++};
++} // namespace FEXCore::CidreWX

@@ -1,0 +1,103 @@
+Generated-by: LLM
+
+fex : shufps sur une copie d'une seule valeur (CIDRE_SHUF_COPIE=0 le retire). « movaps x8, x7 ; shufps x8, x7, imm » est la forme de _mm_shuffle_ps(v, v, imm) quand v reste vivant (clang, MSVC) ; FEX y voyait deux sources differentes et emettait mov + dup + dup + zip1 pour une diffusion. MOVVectorAligned/Unaligned (registre a registre) note la copie pour l'instruction suivante du meme bloc (PC suivant, registres ; oubliee a chaque debut de bloc), et SHUFOp prend alors la meme valeur pour les deux sources. Avec une seule source : diffusion de n'importe quel element (0x00, 0x55, 0xaa, 0xff) en un dup, paires echangees (0xb1) en rev64. Banc : sse_mat4 71 -> 110 % de Rosetta, categorie SSE 101 -> 117 % ; sommes de controle identiques.
+
+diff -uN a/FEXCore/Source/Interface/Core/OpcodeDispatcher.h b/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+@@ -155,8 +155,14 @@
+     // Thus we need to end up in a new block
+     SetCurrentCodeBlock(it->second.BlockEntry);
+   }
++
++  // Cidre 0299 : copie xmm -> xmm (movaps/movups registre a registre) de l'instruction precedente du meme bloc : PC de
++  // l'instruction suivante, registres. Sert a SHUFOp : « movaps x8, x7 ; shufps x8, x7, imm » melange une seule valeur.
++  uint64_t CidreCopieXmmSuite {~0ULL};
++  uint32_t CidreCopieXmmDst {}, CidreCopieXmmSrc {};
+ 
+   void StartNewBlock() {
++    CidreCopieXmmSuite = ~0ULL;
+     // If we loaded flags but didn't change them, invalidate the cached copy and move on.
+     // Changes get stored out by CalculateDeferredFlags.
+     CachedNZCV = nullptr;
+diff -uN a/FEXCore/Source/Interface/Core/OpcodeDispatcher/Vector.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher/Vector.cpp
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher/Vector.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher/Vector.cpp
+@@ -20,11 +20,22 @@
+ #include <array>
+ #include <bit>
+ #include <cstdint>
++#include <cstdlib>
+ #include <stddef.h>
+ 
+ namespace FEXCore::IR {
+ #define OpcodeArgs [[maybe_unused]] FEXCore::X86Tables::DecodedOp Op
+ 
++// Cidre 0299 : CIDRE_SHUF_COPIE=0 retire la reconnaissance de « movaps x8, x7 ; shufps x8, x7, imm ».
++static bool CidreShufCopie() {
++  static int8_t V = -1;
++  if (V < 0) {
++    const char* E = getenv("CIDRE_SHUF_COPIE");
++    V = !(E && *E == '0');
++  }
++  return V;
++}
++
+ void OpDispatchBuilder::MOVVectorAlignedOp(OpcodeArgs) {
+   if (Op->Dest.IsGPR() && Op->Src[0].IsGPR() && Op->Dest.Data.GPR.GPR == Op->Src[0].Data.GPR.GPR) {
+     // Nop
+@@ -32,6 +43,11 @@
+   }
+   Ref Src = LoadSourceFPR(Op, Op->Src[0], Op->Flags);
+   StoreResult_WithAVXInsert(VectorOpType::SSE, RegClass::FPR, Op, Src);
++  if (Op->Dest.IsGPR() && Op->Src[0].IsGPR()) {
++    CidreCopieXmmSuite = Op->PC + Op->InstSize;
++    CidreCopieXmmDst = Op->Dest.Data.GPR.GPR;
++    CidreCopieXmmSrc = Op->Src[0].Data.GPR.GPR;
++  }
+ }
+ 
+ void OpDispatchBuilder::MOVVectorUnalignedOp(OpcodeArgs) {
+@@ -41,6 +57,11 @@
+   }
+   Ref Src = LoadSourceFPR(Op, Op->Src[0], Op->Flags, {.Align = OpSize::i8Bit});
+   StoreResult_WithAVXInsert(VectorOpType::SSE, RegClass::FPR, Op, Src);
++  if (Op->Dest.IsGPR() && Op->Src[0].IsGPR()) {
++    CidreCopieXmmSuite = Op->PC + Op->InstSize;
++    CidreCopieXmmDst = Op->Dest.Data.GPR.GPR;
++    CidreCopieXmmSrc = Op->Src[0].Data.GPR.GPR;
++  }
+ }
+ 
+ void OpDispatchBuilder::MOVVectorUnalignedNoNopOp(OpcodeArgs) {
+@@ -1800,6 +1821,17 @@
+       // TODO: We can optimize significantly more shuffles when we know the sources match.
+       // Special case broadcast element 0.
+       return _VDupElement(DstSize, ElementSize, LHS, LaneShuffle & SelectionMask);
++    }
++    if (LHS == RHS && ElementSize == OpSize::i32Bit && CidreShufCopie()) {
++      // Cidre 0299 : une seule source. Diffusion d'un element (0x55, 0xaa, 0xff) : un dup au lieu de dup, dup, zip1 ;
++      // paires echangees (0xb1) : rev64.
++      const uint32_t E0 = LaneShuffle & 3;
++      if (LaneShuffle == E0 * 0b01'01'01'01) {
++        return _VDupElement(OpSize::i128Bit, ElementSize, LHS, E0);
++      }
++      if (LaneShuffle == 0b10'11'00'01) {
++        return _VRev64(OpSize::i128Bit, OpSize::i32Bit, LHS);
++      }
+     }
+     if (ElementSize == OpSize::i32Bit) {
+       // We can shuffle optimally in a lot of cases.
+@@ -1986,6 +2018,12 @@
+ void OpDispatchBuilder::SHUFOp(OpcodeArgs, IR::OpSize ElementSize) {
+   Ref Src1Node = LoadSourceFPR(Op, Op->Dest, Op->Flags);
+   Ref Src2Node = LoadSourceFPR(Op, Op->Src[0], Op->Flags);
++  // Cidre 0299 : la destination vient d'etre copiee de la source par l'instruction precedente du bloc (movaps x8, x7 ;
++  // shufps x8, x7, imm, la forme de _mm_shuffle_ps(v, v, imm) quand v reste vivant) : une seule valeur melangee.
++  if (CidreShufCopie() && CidreCopieXmmSuite == Op->PC && Op->Dest.IsGPR() && Op->Src[0].IsGPR() &&
++      Op->Dest.Data.GPR.GPR == CidreCopieXmmDst && Op->Src[0].Data.GPR.GPR == CidreCopieXmmSrc) {
++    Src1Node = Src2Node;
++  }
+   uint8_t Shuffle = Op->Src[1].Literal();
+ 
+   Ref Result = SHUFOpImpl(OpSizeFromDst(Op), ElementSize, Src1Node, Src2Node, Shuffle);

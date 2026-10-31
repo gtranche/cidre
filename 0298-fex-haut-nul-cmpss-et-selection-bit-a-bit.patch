@@ -1,0 +1,85 @@
+Generated-by: LLM
+
+fex : haut nul (0230) etendu a cmpeqss/cmpltss/cmpless (et sd) et a travers la selection bit a bit (VBSL : blendvps, blendps, selections SSE), CIDRE_HAUT_NUL_SELECTION=0 le retire. La largeur d'un VBSL est le max de celles de ses deux sources (le masque n'importe pas), ce qui garde connue nulle la moitie haute d'un accumulateur scalaire mis a jour par un ternaire sans branche, y compris d'un tour de boucle a l'autre (point fixe du multibloc). VFCMPScalarInsert recoit le drapeau CidreHautNul ; le JIT ne l'emploie que pour EQ, LT et LE, dont le resultat s'ecrit directement dans le registre de destination (UNO, NEQ et ORD passent par VTMP1 puis un ins et gardent ce chemin). Banc (M1 Max, 7 passes entrelacees) : fp_float 69 -> 100 % de Rosetta, categorie flottant 81 -> 98 % ; sommes de controle identiques a Rosetta.
+
+diff -uN a/FEXCore/Source/Interface/IR/IR.json b/FEXCore/Source/Interface/IR/IR.json
+--- a/FEXCore/Source/Interface/IR/IR.json
++++ b/FEXCore/Source/Interface/IR/IR.json
+@@ -1809,7 +1809,7 @@
+         "DestSize": "RegisterSize",
+         "ElementSize": "ElementSize"
+       },
+-      "FPR = VFCMPScalarInsert OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2, FloatCompareOp:$Op, i1:$ZeroUpperBits": {
++      "FPR = VFCMPScalarInsert OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2, FloatCompareOp:$Op, i1:$ZeroUpperBits, i1:$CidreHautNul{false}": {
+         "Desc": ["Does a scalar 'cmp' between Vector1 and Vecto2, inserting in to Vector1 and storing in to the destination.",
+                  "Compare op determined by argument",
+                  "Inserting the result in to the lower element of Vector1 and returning the results.",
+diff -uN a/FEXCore/Source/Interface/IR/Passes/CidreHautNul.cpp b/FEXCore/Source/Interface/IR/Passes/CidreHautNul.cpp
+--- a/FEXCore/Source/Interface/IR/Passes/CidreHautNul.cpp
++++ b/FEXCore/Source/Interface/IR/Passes/CidreHautNul.cpp
+@@ -48,6 +48,8 @@
+       if (Features.SupportsAFP || (Features.SupportsAVX && Features.SupportsSVE256)) {
+         Mode = 0; // AFP : pas d'ins a supprimer ; registres de 256 bits : non traite
+       }
++      const char* C = getenv("CIDRE_HAUT_NUL_SELECTION"); // Cidre 0298 : =0 retire cmpss et la selection bit a bit
++      Selection = !(C && *C == '0');
+       const char* D = getenv("CIDRE_DIAG_HAUT_NUL");
+       Diag = D && *D >= '2';
+     }
+@@ -60,6 +62,7 @@
+ 
+     int Mode {};
+     bool Diag {};
++    bool Selection {true};
+     IRListView* IR {};
+     fextl::vector<uint8_t> Memo; // largeur par NodeID (PasCalculee : a calculer)
+     fextl::vector<uint8_t> LR;   // largeur de chaque LoadRegister FPR au point de lecture
+@@ -121,6 +124,16 @@
+       break;
+     }
+     case OP_VANDN: R = Taille(Largeur(H->C<IROp_VAndn>()->Vector1, Profondeur + 1)); break; // bic : V1 & ~V2
++    case OP_VBSL: {
++      if (!Selection) {
++        break;
++      }
++      // Cidre 0298 : selection bit a bit (blendvps, blendps, cmov SSE) : chaque bit vient de l'une des deux sources, le
++      // masque n'importe pas.
++      const auto* Op = H->C<IROp_VBSL>();
++      R = Taille(std::max(Largeur(Op->VectorTrue, Profondeur + 1), Largeur(Op->VectorFalse, Profondeur + 1)));
++      break;
++    }
+     case OP_VOR:
+     case OP_VXOR: {
+       const auto* Op = H->C<IROp_VOr>();
+@@ -343,6 +356,16 @@
+           CAS(VFTOISCALARINSERT, VFToIScalarInsert, Vector1)
+           CAS(VSTOFGPRINSERT, VSToFGPRInsert, Vector)
+ #undef CAS
++        case OP_VFCMPSCALARINSERT: {
++          // Cidre 0298 : cmpeqss/cmpltss/cmpless (et sd) ; les autres comparaisons gardent leur ins (voir le JIT).
++          auto* Op = IROp->CW<IROp_VFCMPScalarInsert>();
++          if (Selection && Op->Op <= FloatCompareOp::LE) {
++            V1 = Op->Vector1;
++            Drapeau = &Op->CidreHautNul;
++            ZeroUpper = Op->ZeroUpperBits;
++          }
++          break;
++        }
+         case OP_VSTOFVECTORINSERT: {
+           auto* Op = IROp->CW<IROp_VSToFVectorInsert>();
+           if (!Op->HasTwoElements) { // la forme a deux elements garde son ins (chemin a part dans le JIT)
+diff -uN a/FEXCore/Source/Interface/Core/JIT/VectorOps.cpp b/FEXCore/Source/Interface/Core/JIT/VectorOps.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/VectorOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/VectorOps.cpp
+@@ -939,7 +939,10 @@
+   const auto Vector1 = GetVReg(Op->Vector1);
+   const auto Vector2 = GetVReg(Op->Vector2);
+ 
+-  VFScalarOperation(IROp->Size, ElementSize, Op->ZeroUpperBits, Funcs[FEXCore::ToUnderlying(Op->Op)], Dst, Vector1, Vector2);
++  // Cidre 0298 : HautNul seulement pour EQ, LT et LE (pose par la passe), dont le resultat s'ecrit directement dans Dst ;
++  // UNO, NEQ et ORD passent par VTMP1 puis un ins dans Dst, qui supposerait Dst = Vector1.
++  VFScalarOperation(IROp->Size, ElementSize, Op->ZeroUpperBits, Funcs[FEXCore::ToUnderlying(Op->Op)], Dst, Vector1, Vector2,
++                    Op->CidreHautNul && Op->Op <= IR::FloatCompareOp::LE);
+ }
+ 
+ DEF_OP(VectorImm) {

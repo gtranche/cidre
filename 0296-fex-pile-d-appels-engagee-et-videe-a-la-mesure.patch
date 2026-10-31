@@ -1,0 +1,280 @@
+Generated-by: LLM
+
+fex : pile d'appels de retour engagee et videe a la mesure (CIDRE_PILE_MESURE, actif ; =0 rend l'engagement et le vidage de 4 Mio). Seule la partie [base, position par defaut + 64 Kio) de la pile est engagee d'office ; un debordement vers le haut (retours sans appel, push + ret des codes proteges) fait faute dans la reservation et HandleAccessViolation engage le bloc de 64 Kio touche puis reprend l'instruction (CidrePileHaut), les gardes ramenant le pointeur a sa position par defaut comme avant. Une invalidation de code (faute SMC, changement de protection, liberation) ne vide plus 4 Mio par NtFree + NtAllocate (environ un tiers d'une faute SMC dans le profil : mmap, page_hote_mixte, decommit) : pour le fil qui la declenche, dont le frontal pose le pointeur vivant (x17 dans le JIT, State.callret_sp hors du JIT, le plus bas des deux pour couvrir la reprise par le repartiteur), un memset de [pointeur, fin engagee) suffit, les entrees sous le pointeur etant mortes (reecrites avant toute relecture) ; sa partie haute engagee a la demande, s'il y en a, est decommise ; les autres fils voient leur partie engagee decommise comme avant, sur 1 Mio + 64 Kio au lieu de 4 Mio (plus leur partie haute s'ils en ont une). Sans cout sur les appels et retours (contrairement a la cle d'epoque 0279). Banc (M1 Max, 7 passes entrelacees, medianes, % de Rosetta, avec 0300) : JIT/SMC 65 -> 114 % (0296 seul sur la base : voir le rapport) ; ind_fib 84 % inchange. Temoins : pile_mesure (300 000 retours non apparies, puis 20 000 SMC sur un appelant encore sur la pile, par le JIT et par memcpy natif, avec derive partielle et 4 fils) 0 erreur ; smc_retour 0 erreur ; litmus, suspension, tflags, feuilles, crit, gathertest, paires.
+
+diff -uN a/FEXCore/include/FEXCore/Debug/InternalThreadState.h b/FEXCore/include/FEXCore/Debug/InternalThreadState.h
+--- a/FEXCore/include/FEXCore/Debug/InternalThreadState.h
++++ b/FEXCore/include/FEXCore/Debug/InternalThreadState.h
+@@ -10,6 +10,7 @@
+ 
+ #include <cstddef>
+ #include <cstdint>
++#include <cstdlib>
+ #include <shared_mutex>
+ #include <type_traits>
+ 
+@@ -40,7 +41,17 @@
+ };
+ 
+ namespace FEXCore::Core {
++// Cidre 0296 : pile d'appels engagee et videe a la mesure (CIDRE_PILE_MESURE=0 rend l'engagement et le vidage de 4 Mio).
++inline bool CidrePileMesure() {
++  static int8_t V = -1;
++  if (V < 0) {
++    const char* E = getenv("CIDRE_PILE_MESURE");
++    V = !(E && *E == '0');
++  }
++  return V;
++}
+ 
++
+ // Special-purpose replacement for std::unique_ptr to allow InternalThreadState to be standard layout.
+ // Since a NonMovableUniquePtr is neither copyable nor movable, its only function is to own and release the contained object.
+ template<typename T>
+@@ -110,10 +121,23 @@
+   void* FrontendPtr;
+ 
+   static constexpr size_t CALLRET_STACK_SIZE {0x400000};
++  // Cidre 0296 : seule la partie [base, position par defaut + 64 Kio) est engagee d'office ; au-dela (debordement vers
++  // le haut : retours sans appel), la reservation fait faute et le frontal engage le bloc de 64 Kio touche (CidrePileHaut).
++  // Une invalidation n'a donc plus a vider que cette partie, et pour le fil qui la declenche, que [pointeur vivant, fin) :
++  // les entrees sous le pointeur sont mortes (reecrites avant toute relecture) ; la partie haute, s'il y en a, est
++  // decommise (elle refera faute et sera engagee a zero).
++  static constexpr size_t CALLRET_STACK_ENGAGE {CALLRET_STACK_SIZE / 4 + 0x10000};
+ 
+   // The low address of the call-ret stack allocation (not including guard pages)
+   void* CallRetStackBase {};
+ 
++  // Cidre 0296 : pointeur de pile d'appels vivant de ce fil, pose par le frontal autour d'une invalidation que ce fil
++  // declenche hors du code JIT (faute d'ecriture SMC, changement de protection, liberation) ; 0 = inconnu.
++  uint64_t CidrePileSpVivant {};
++  // Cidre 0296 : fin de la partie haute engagee a la demande (debordement vers le haut, push + ret) au-dela de la partie
++  // engagee d'office ; 0 = rien au-dela. Tenu par le fil lui-meme (sa faute), remis a 0 quand cette partie est decommise.
++  uint64_t CidrePileHaut {};
++
+   uintptr_t JITGuardPage {};
+   uint64_t JITGuardOverflowArgument {};
+   FEXCore::UncheckedLongJump::JumpBuf RestartJump;
+diff -uN a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -9,6 +9,7 @@
+ */
+ 
+ #include "Interface/Core/CidrePileCle.h"
++#include <cstring>
+ #include <cstdint>
+ #ifdef ZYDIS_DISASSEMBLER
+ #include <Zydis/Zydis.h>
+@@ -82,7 +83,7 @@
+ 
+ namespace FEXCore::Context {
+ // Cidre 0278 : la pile d'appels de retour est toujours engagee en lecture-ecriture ; CIDRE_SMC_RAPIDE=0 rend l'amont.
+-static inline void CidreViderPileAppels(void* Base);
++static inline void CidreViderPileAppels(FEXCore::Core::InternalThreadState* T);
+ // Cidre 0279 : avancer la cle d'epoque au lieu de vider la pile (CIDRE_PILE_CLE=1) ; videe au retour a zero.
+ static inline void CidreInvaliderPileAppels(FEXCore::Core::InternalThreadState* T) {
+   {
+@@ -103,9 +104,35 @@
+       return;
+     }
+   }
+-  CidreViderPileAppels(T->CallRetStackBase);
++  CidreViderPileAppels(T);
+ }
+-static inline void CidreViderPileAppels(void* Base) {
++static inline void CidreViderPileAppels(FEXCore::Core::InternalThreadState* T) {
++  void* Base = T->CallRetStackBase;
++  if (FEXCore::Core::CidrePileMesure()) {
++    // Cidre 0296 : fil qui declenche l'invalidation, pointeur vivant connu : zero sur [pointeur, fin engagee) seulement.
++    // Sinon (autre fil, en cours d'execution) : la partie engagee, au lieu des 4 Mio.
++    const uint64_t Debut = reinterpret_cast<uint64_t>(Base);
++    const uint64_t Fin = Debut + FEXCore::Core::InternalThreadState::CALLRET_STACK_ENGAGE;
++    const uint64_t Sp = T->CidrePileSpVivant & ~uint64_t {15};
++    if (Sp >= Debut && Sp <= Fin) {
++      memset(reinterpret_cast<void*>(Sp), 0, Fin - Sp);
++      // Partie haute engagee a la demande par ce fil (le seul a la tenir) : decommise, elle refera faute a zero.
++      if (T->CidrePileHaut > Fin) {
++        FEXCore::Allocator::VirtualDontNeed(reinterpret_cast<void*>(Fin), T->CidrePileHaut - Fin, false);
++        T->CidrePileHaut = 0;
++      }
++    } else {
++      FEXCore::Allocator::VirtualDontNeedRW(Base, FEXCore::Core::InternalThreadState::CALLRET_STACK_ENGAGE);
++      // Autre fil, peut-etre en train d'engager sa partie haute : toute la partie haute est decommise, sans se fier a
++      // CidrePileHaut (qu'il tient seul).
++      if (T->CidrePileHaut) {
++        FEXCore::Allocator::VirtualDontNeed(reinterpret_cast<void*>(Fin),
++                                            FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE - FEXCore::Core::InternalThreadState::CALLRET_STACK_ENGAGE,
++                                            false);
++      }
++    }
++    return;
++  }
+   static int8_t V = -1;
+   if (V < 0) {
+     const char* E = getenv("CIDRE_SMC_RAPIDE");
+diff -uN a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -148,7 +148,7 @@
+ }
+ 
+ // Cidre 0278 : la pile d'appels de retour est toujours engagee en lecture-ecriture ; CIDRE_SMC_RAPIDE=0 rend l'amont.
+-static inline void CidreViderPileAppels(void* Base);
++static inline void CidreViderPileAppels(FEXCore::Core::InternalThreadState* T);
+ // Cidre 0279 : avancer la cle d'epoque au lieu de vider la pile (CIDRE_PILE_CLE=1) ; videe au retour a zero.
+ static inline void CidreInvaliderPileAppels(FEXCore::Core::InternalThreadState* T) {
+   {
+@@ -169,9 +169,35 @@
+       return;
+     }
+   }
+-  CidreViderPileAppels(T->CallRetStackBase);
++  CidreViderPileAppels(T);
+ }
+-static inline void CidreViderPileAppels(void* Base) {
++static inline void CidreViderPileAppels(FEXCore::Core::InternalThreadState* T) {
++  void* Base = T->CallRetStackBase;
++  if (FEXCore::Core::CidrePileMesure()) {
++    // Cidre 0296 : fil qui declenche l'invalidation, pointeur vivant connu : zero sur [pointeur, fin engagee) seulement.
++    // Sinon (autre fil, en cours d'execution) : la partie engagee, au lieu des 4 Mio.
++    const uint64_t Debut = reinterpret_cast<uint64_t>(Base);
++    const uint64_t Fin = Debut + FEXCore::Core::InternalThreadState::CALLRET_STACK_ENGAGE;
++    const uint64_t Sp = T->CidrePileSpVivant & ~uint64_t {15};
++    if (Sp >= Debut && Sp <= Fin) {
++      memset(reinterpret_cast<void*>(Sp), 0, Fin - Sp);
++      // Partie haute engagee a la demande par ce fil (le seul a la tenir) : decommise, elle refera faute a zero.
++      if (T->CidrePileHaut > Fin) {
++        FEXCore::Allocator::VirtualDontNeed(reinterpret_cast<void*>(Fin), T->CidrePileHaut - Fin, false);
++        T->CidrePileHaut = 0;
++      }
++    } else {
++      FEXCore::Allocator::VirtualDontNeedRW(Base, FEXCore::Core::InternalThreadState::CALLRET_STACK_ENGAGE);
++      // Autre fil, peut-etre en train d'engager sa partie haute : toute la partie haute est decommise, sans se fier a
++      // CidrePileHaut (qu'il tient seul).
++      if (T->CidrePileHaut) {
++        FEXCore::Allocator::VirtualDontNeed(reinterpret_cast<void*>(Fin),
++                                            FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE - FEXCore::Core::InternalThreadState::CALLRET_STACK_ENGAGE,
++                                            false);
++      }
++    }
++    return;
++  }
+   static int8_t V = -1;
+   if (V < 0) {
+     const char* E = getenv("CIDRE_SMC_RAPIDE");
+diff -uN a/Source/Windows/Common/CallRetStack.h b/Source/Windows/Common/CallRetStack.h
+--- a/Source/Windows/Common/CallRetStack.h
++++ b/Source/Windows/Common/CallRetStack.h
+@@ -93,7 +93,12 @@
+                                         FEXCore::Allocator::THPControl::Disable);
+ 
+   Thread->CallRetStackBase = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(CallRetStackAlloc) + TAILLE_GARDE);
+-  ::VirtualAlloc(Thread->CallRetStackBase, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE, MEM_COMMIT, PAGE_READWRITE);
++  // Cidre 0296 : seule la partie utile est engagee (voir CALLRET_STACK_ENGAGE) ; un debordement vers le haut au-dela fait
++  // faute dans la reservation et HandleAccessViolation ramene le pointeur a sa position par defaut.
++  ::VirtualAlloc(Thread->CallRetStackBase,
++                 FEXCore::Core::CidrePileMesure() ? FEXCore::Core::InternalThreadState::CALLRET_STACK_ENGAGE :
++                                                    FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE,
++                 MEM_COMMIT, PAGE_READWRITE);
+ 
+   Thread->CurrentFrame->State.callret_sp = GetInfoThread(Thread).DefaultLocation;
+ #ifdef SONDE_FAUTE_INVITE
+@@ -130,6 +135,22 @@
+ 
+ bool HandleAccessViolation(FEXCore::Core::InternalThreadState* Thread, uint64_t Address, uint64_t& CallRetSPReg) {
+   auto CallRetStackInfo = GetInfoThread(Thread);
++  if (FEXCore::Core::CidrePileMesure()) {
++    // Cidre 0296 : debordement vers le haut dans la partie non engagee d'office : le bloc de 64 Kio touche est engage (a
++    // zero) et l'instruction reprend, sans perdre la pile ; aux gardes, ramene a la position par defaut comme avant.
++    const uint64_t Base = reinterpret_cast<uint64_t>(Thread->CallRetStackBase);
++    const uint64_t Fin = Base + FEXCore::Core::InternalThreadState::CALLRET_STACK_ENGAGE;
++    const uint64_t Limite = Base + FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE;
++    if (Address >= Fin && Address < Limite) {
++      const uint64_t Bloc = Address & ~uint64_t {0xFFFF};
++      if (::VirtualAlloc(reinterpret_cast<void*>(Bloc), 0x10000, MEM_COMMIT, PAGE_READWRITE)) {
++        if (Bloc + 0x10000 > Thread->CidrePileHaut) {
++          Thread->CidrePileHaut = Bloc + 0x10000;
++        }
++        return true;
++      }
++    }
++  }
+   if (Address >= CallRetStackInfo.AllocationBase && Address < CallRetStackInfo.AllocationEnd) {
+ #ifdef SONDE_FAUTE_INVITE
+     Noter("rattrapage", Address, CallRetSPReg, CallRetStackInfo.AllocationBase);
+diff -uN a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -171,7 +171,33 @@
+ ThreadCPUArea GetCPUArea() {
+   return ThreadCPUArea(NtCurrentTeb());
+ }
++
++// Cidre 0296 : pointeur de pile d'appels vivant du fil courant pose le temps d'une invalidation qu'il declenche, pour que
++// FEXCore ne vide que [pointeur, fin engagee) de sa pile (voir InternalThreadState::CidrePileSpVivant). Hors du JIT
++// (appel natif depuis le code traduit), State.callret_sp est celui que la sortie du JIT a range ; dans le JIT, x17. Le
++// plus bas des deux couvre aussi le cas ou le fil repart de State.callret_sp (SMC dans le bloc courant).
++class CidrePileVivante {
++  FEXCore::Core::InternalThreadState* Thread;
++
++public:
++  CidrePileVivante(FEXCore::Core::InternalThreadState* T, uint64_t Sp)
++    : Thread(T) {
++    if (Thread) {
++      Thread->CidrePileSpVivant = Sp;
++    }
++  }
++  ~CidrePileVivante() {
++    if (Thread) {
++      Thread->CidrePileSpVivant = 0;
++    }
++  }
++  static uint64_t HorsJIT(const ThreadCPUArea CPUArea) {
++    auto* T = CPUArea.ThreadState();
++    return (T && !CPUArea.Area->InSimulation) ? T->CurrentFrame->State.callret_sp : 0;
++  }
++};
+ 
++
+ FrontendThreadData* GetFrontendThreadData(FEXCore::Core::InternalThreadState* Thread) {
+   return static_cast<FrontendThreadData*>(Thread->FrontendPtr);
+ }
+@@ -914,6 +940,13 @@
+     if (CidreEcriture) {
+       Lock.lock();
+     }
++    uint64_t CidreSp = 0;
++    if (CidreEcriture) {
++      CidreSp = CTX->IsAddressInCodeBuffer(Thread, NativeContext->Pc) ?
++                  std::min<uint64_t>(NativeContext->X17, Thread->CurrentFrame->State.callret_sp) :
++                  CidrePileVivante::HorsJIT(CPUArea);
++    }
++    CidrePileVivante CidrePile(CidreEcriture ? Thread : nullptr, CidreSp);
+     if (CidreEcriture && InvalidationTracker && InvalidationTracker->HandleRWXAccessViolation(Thread, NativeContext->Pc, FaultAddress)) {
+       FEXCORE_PROFILE_INSTANT_INCREMENT(Thread, AccumulatedSMCCount, 1);
+       if (CTX->IsAddressInCodeBuffer(Thread, NativeContext->Pc) && !CTX->IsCurrentBlockSingleInst(CPUArea.ThreadState()) &&
+@@ -1040,6 +1073,7 @@
+   // qui execute.
+   if (After) {
+     std::scoped_lock Lock(ThreadCreationMutex);
++    CidrePileVivante Pile(GetCPUArea().ThreadState(), CidrePileVivante::HorsJIT(GetCPUArea()));
+     // MEM_RESET(_UNDO) ignores the passed permissions
+     if (!Status && !(Type & (MEM_RESET | MEM_RESET_UNDO))) {
+       InvalidationTracker->HandleMemoryProtectionNotification(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), Prot);
+@@ -1110,6 +1144,7 @@
+   // Voir NotifyMemoryAlloc : traite au retour seulement, verrou non tenu pendant l'appel.
+   if (After && !Status) {
+     std::scoped_lock Lock(ThreadCreationMutex);
++    CidrePileVivante Pile(GetCPUArea().ThreadState(), CidrePileVivante::HorsJIT(GetCPUArea()));
+     // Cidre 0225 : entre la liberation et cette notification, un autre fil a pu reallouer la meme adresse, et sa
+     // notification d'allocation (traitee elle aussi au retour) a pu passer avant celle-ci. Retirer alors les
+     // intervalles executables effacerait ceux de la nouvelle allocation : FEX la croirait non executable et
+@@ -1152,6 +1187,7 @@
+   // Voir NotifyMemoryAlloc : traite au retour seulement, verrou non tenu pendant l'appel.
+   if (After && !Status) {
+     std::scoped_lock Lock(ThreadCreationMutex);
++    CidrePileVivante Pile(GetCPUArea().ThreadState(), CidrePileVivante::HorsJIT(GetCPUArea()));
+     InvalidationTracker->HandleMemoryProtectionNotification(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), NewProt);
+   }
+ }

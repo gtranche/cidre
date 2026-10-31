@@ -1,0 +1,203 @@
+Generated-by: LLM
+
+fex : sonnette de suspension et piege invite par une faute de lecture, plus par brk (CIDRE_SONNETTE_FAUTE=0 rend les brk). Le crashhandler du client Steam (charge par lsteamclient) fait signal( SIGTRAP, SIG_IGN ) dans le processus du jeu, comme d'autres codes tiers (anti-triche) : un brk n'a plus de signal et le noyau le reprend sur place, sans fin. Etaient touches : la sonnette en ligne (brk #0xCAFE apres le controle de SuspendDoorbell), les talons 0281 (brk #0xCAFD), le point de suspension de ExitFunctionEC (brk #0xCAFE, Module.S) et le piege invite GuestSignal_SIGTRAP (brk #0 : int3, int1 de l'invite). Un fil suspendu (SuspendThread, ramasse-miettes, anti-triche) tournait alors a 100 % sur le brk et le suspendeur attendait sans fin. A la place, comme 0275 pour le tremplin W^X : une lecture dans une reservation PAGE_NOACCESS de 64 Kio (SIGSEGV), allouee par le frontal ARM64EC avant InitCore, reconnue a son adresse exacte : +0 sonnette en ligne, +16 talon 0281 (le mot qui suit la lecture reste le decalage vers le site), +32 piege invite (l'exception invitee est reconstruite depuis SynchronousFaultData comme avant), et la lecture de ExitFunctionSuspendPoint. WOW64 garde les brk (reservation nulle). Temoins : suspension sous faux crashhandler (SIGTRAP et SIGALRM ignores toutes les 50 ms, runtime 1.5.20 avec 0275) : 5/5 bloques avant, 50/50 apres ; int3_temoin (1000 int3 attrapes par un gestionnaire vectorise) 1000/1000 avant comme apres (le piege invite est durci par precaution) ; dans l'ilot (clone pfx-ilotr, xtajit64 de l'ilot + 0306), ou le brk est pris par le vecteur du vCPU et ne depend pas de SIGTRAP : 3/3 avant, 50/50 apres, int3 1000/1000 ; litmus, smc_retour, pile_mesure, tflags, feuilles, crit, gathertest, paires sans faux crashhandler.
+
+diff -uN a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -38,6 +38,7 @@
+ #include <cstdio>
+ #include <cstring>
+ #include <FEXCore/Utils/CidreWX.h>
++#include <FEXCore/Utils/CidreSonnetteFaute.h>
+ #include <optional>
+ #include <type_traits>
+ #include <unistd.h>
+@@ -927,7 +928,13 @@
+   } else {
+     ARMEmitter::ForwardLabel l_NoSuspend;
+     (void)cbz(ARMEmitter::Size::i32Bit, TMP2, &l_NoSuspend);
+-    brk(SuspendMagic);
++    if (const uint64_t Page = FEXCore::CidreSonnetteFaute::Page) {
++      // Cidre 0306 : faute de lecture au lieu du brk (SIGTRAP peut etre ignore par du code tiers)
++      LoadConstant(ARMEmitter::Size::i64Bit, TMP2, Page);
++      ldr(TMP2.W(), TMP2, FEXCore::CidreSonnetteFaute::EN_LIGNE);
++    } else {
++      brk(SuspendMagic);
++    }
+     (void)Bind(&l_NoSuspend);
+   }
+ #endif
+@@ -1335,8 +1342,16 @@
+   // Cidre 0281 : talons des sonnettes hors ligne : brk #0xCAFD, puis decalage vers le cbnz (Module.cpp le lit)
+   for (auto& S : CidreSonnettes) {
+     BindOrRestart(&S.Label);
+-    const uint64_t Talon = GetCursorAddress<uint64_t>();
+-    brk(0xCAFD);
++    uint64_t Talon;
++    if (const uint64_t Page = FEXCore::CidreSonnetteFaute::Page) {
++      // Cidre 0306 : la lecture fautive tient lieu de brk ; le decalage se compte depuis elle.
++      LoadConstant(ARMEmitter::Size::i64Bit, TMP2, Page);
++      Talon = GetCursorAddress<uint64_t>();
++      ldr(TMP2.W(), TMP2, FEXCore::CidreSonnetteFaute::FROIDE);
++    } else {
++      Talon = GetCursorAddress<uint64_t>();
++      brk(0xCAFD);
++    }
+     dc32(static_cast<uint32_t>(static_cast<int32_t>(static_cast<int64_t>(S.Site) - static_cast<int64_t>(Talon))));
+   }
+   CidreSonnettes.clear();
+diff -uN a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+--- a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+@@ -1,5 +1,6 @@
+ // SPDX-License-Identifier: MIT
+ 
++#include <FEXCore/Utils/CidreSonnetteFaute.h>
+ #include "Interface/Core/CidrePileCle.h"
+ #include "Common/VectorRegType.h"
+ #include "Interface/Context/Context.h"
+@@ -434,7 +435,13 @@
+ 
+     SpillStaticRegs(TMP1);
+ 
+-    brk(0);
++    if (const uint64_t Page = FEXCore::CidreSonnetteFaute::Page) {
++      // Cidre 0306 : faute de lecture au lieu du brk ; l'exception invitee vient de SynchronousFaultData.
++      LoadConstant(ARMEmitter::Size::i64Bit, TMP1, Page);
++      ldr(TMP1.W(), TMP1, FEXCore::CidreSonnetteFaute::PIEGE);
++    } else {
++      brk(0);
++    }
+   }
+ 
+   {
+diff -uN a/Source/Windows/ARM64EC/Module.S b/Source/Windows/ARM64EC/Module.S
+--- a/Source/Windows/ARM64EC/Module.S
++++ b/Source/Windows/ARM64EC/Module.S
+@@ -87,7 +87,7 @@
+   strb wzr, [x17, #0x0] // ChpeV2CpuAreaInfo->InSimulation
+   ldr x17, [x17, #0x20] // ChpeV2CpuAreaInfo->SuspendDoorbell
+   ldr w17, [x17]
+-  cbnz w17, ExitFunctionSuspendPoint
++  cbnz w17, CidreSuspendre
+ 
+ .global ExitFunctionSuspendResumePoint
+ ExitFunctionSuspendResumePoint:
+@@ -120,8 +120,17 @@
+   ldr lr, [lr, #:lo12:X64ReturnInstr]
+   br x17
+ 
++  // Cidre 0306 : la suspension se signale par une lecture dans la reservation sans droits de la sonnette (SIGSEGV),
++  // plus par brk (SIGTRAP, que du code tiers peut faire ignorer) ; brk seulement si la reservation manque.
++CidreSuspendre:
++  adrp x16, CidreSonnettePageEC
++  ldr x16, [x16, #:lo12:CidreSonnettePageEC]
++  cbz x16, ExitFunctionSuspendPointBrk
+ .global ExitFunctionSuspendPoint
+ ExitFunctionSuspendPoint:
++  ldr w16, [x16]
++.global ExitFunctionSuspendPointBrk
++ExitFunctionSuspendPointBrk:
+   brk #0xCAFE
+   // Resume will jump back to `ExitFunctionSuspendResumePoint`
+ 
+diff -uN a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -34,6 +34,7 @@
+ #include "Windows/Common/FEXUnixLib.h"
+ #include "Common/CallRetStack.h"
+ #include <FEXCore/Utils/CidreWX.h>
++#include <FEXCore/Utils/CidreSonnetteFaute.h>
+ #include "Common/JITGuardPage.h"
+ #include "Common/Config.h"
+ #include "Common/Exception.h"
+@@ -76,6 +77,9 @@
+ extern void* ExitFunctionEC;
+ extern void* CheckCall;
+ extern void* ExitFunctionSuspendPoint;
++extern void* ExitFunctionSuspendPointBrk;
++// Cidre 0306 : reservation sans droits de la sonnette (lue par Module.S)
++uint64_t CidreSonnettePageEC;
+ extern void* ExitFunctionSuspendResumePoint;
+ 
+ void* X64ReturnInstr; // See Module.S
+@@ -861,6 +865,18 @@
+                       FEXCore::CidreWX::Global.Genre, DansIlot ? "oui" : "non");
+   }
+ 
++  {
++    // Cidre 0306 : reservation sans droits de la sonnette et du piege invite, avant InitCore (le repartiteur s'emet
++    // avec son adresse). CIDRE_SONNETTE_FAUTE=0 rend les brk.
++    const char* E = getenv("CIDRE_SONNETTE_FAUTE");
++    if (!(E && *E == '0')) {
++      void* P = ::VirtualAlloc(nullptr, 0x10000, MEM_RESERVE, PAGE_NOACCESS);
++      FEXCore::CidreSonnetteFaute::Page = reinterpret_cast<uint64_t>(P);
++      CidreSonnettePageEC = reinterpret_cast<uint64_t>(P);
++    }
++    LogMan::Msg::IFmt("cidre sonnette : par faute {}", FEXCore::CidreSonnetteFaute::Page ? "oui" : "non");
++  }
++
+   CTX->SetSignalDelegator(SignalDelegator.get());
+   CTX->SetSyscallHandler(SyscallHandler.get());
+   CTX->InitCore();
+@@ -930,7 +946,8 @@
+   FEXCORE_PROFILE_ACCUMULATION(Thread, AccumulatedSignalTime);
+   LogMan::Msg::DFmt("Exception: Code: {:X} Address: {:X}", Exception->ExceptionCode, reinterpret_cast<uintptr_t>(Exception->ExceptionAddress));
+ 
+-  if (NativeContext->Pc == reinterpret_cast<uint64_t>(&ExitFunctionSuspendPoint)) {
++  if (NativeContext->Pc == reinterpret_cast<uint64_t>(&ExitFunctionSuspendPoint) ||
++      NativeContext->Pc == reinterpret_cast<uint64_t>(&ExitFunctionSuspendPointBrk)) {
+     // A suspend interrupt can occur in ExitFunctionEC before InSimulation is unset and set SuspendDoorbell. If this
+     // occurs then it is still our duty to cooperatively suspend with an appropriate context. To support this, after
+     // unsetting InSimulation a brk #0xCAFE instruction will be raised that we can handle here.
+@@ -939,6 +956,25 @@
+     return true;
+   }
+ 
++  // Cidre 0306 : sonnette de suspension par faute de lecture (voir FEXCore/Utils/CidreSonnetteFaute.h), reconnue a son
++  // adresse exacte dans la reservation, depuis le code JIT. Meme traitement que les brk #0xCAFE / #0xCAFD plus bas.
++  if (Exception->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && FEXCore::CidreSonnetteFaute::Page && Exception->NumberParameters >= 2) {
++    const uint64_t Adresse = Exception->ExceptionInformation[1];
++    const uint64_t Page = FEXCore::CidreSonnetteFaute::Page;
++    if ((Adresse == Page + FEXCore::CidreSonnetteFaute::EN_LIGNE || Adresse == Page + FEXCore::CidreSonnetteFaute::FROIDE) &&
++        CTX->IsAddressInCodeBuffer(Thread, NativeContext->Pc)) {
++      if (Adresse == Page + FEXCore::CidreSonnetteFaute::FROIDE) {
++        NativeContext->Pc += static_cast<int64_t>(*reinterpret_cast<int32_t*>(NativeContext->Pc + 4));
++      }
++      Exception::ReconstructThreadState(Thread, *NativeContext);
++      *NativeContext = Exception::StoreStateToPackedECContext(Thread, NativeContext->Fpcr, NativeContext->Fpsr);
++      LogMan::Msg::DFmt("Suspending (sonnette par faute): RIP: {:X} SP: {:X}", NativeContext->Pc, NativeContext->Sp);
++      CPUArea.Area->InSimulation = 0;
++      *CPUArea.Area->SuspendDoorbell = 0;
++      return true;
++    }
++  }
++
+   // Cidre, sous-pages : une faute sur la copie de l'instruction dans un talon est
+   // ramenee a l'instruction reecrite, contexte d'origine (voir SousPages.h). Une
+   // faute autre qu'une violation d'acces ou une page de garde (desalignement d'un
+diff -uN a/FEXCore/include/FEXCore/Utils/CidreSonnetteFaute.h b/FEXCore/include/FEXCore/Utils/CidreSonnetteFaute.h
+--- a/FEXCore/include/FEXCore/Utils/CidreSonnetteFaute.h
++++ b/FEXCore/include/FEXCore/Utils/CidreSonnetteFaute.h
+@@ -0,0 +1,19 @@
++// SPDX-License-Identifier: MIT
++#pragma once
++// Cidre 0306 : sonnette de suspension et piege invite (int3/int1) par une faute de lecture, plus par brk (SIGTRAP).
++//
++// Le crashhandler du client Steam (et des anti-triche) fait signal( SIGTRAP, SIG_IGN ) dans le processus du jeu : un brk
++// n'a alors plus de signal, le noyau le reprend sur place, sans fin. La sonnette de suspension de FEX (brk #0xCAFE en
++// ligne, brk #0xCAFD des talons 0281, brk #0xCAFE de ExitFunctionEC) et le piege invite (brk #0 de GuestSignal_SIGTRAP)
++// gelaient ainsi le fil (SuspendThread, ramasse-miettes, int3 de l'invite). A la place : une lecture dans une reservation
++// sans droits (SIGSEGV/SIGBUS, comme 0275 pour le tremplin W^X), reconnue par son adresse exacte.
++//
++// Page est posee par le frontal ARM64EC avant InitCore ; nulle (WOW64, autres frontaux) : les brk d'origine.
++#include <cstdint>
++
++namespace FEXCore::CidreSonnetteFaute {
++inline uint64_t Page {};
++constexpr uint64_t EN_LIGNE = 0;  // sonnette en ligne (CIDRE_SONNETTE_FROIDE=0)
++constexpr uint64_t FROIDE = 16;   // talon 0281 : le mot qui suit la lecture est le decalage vers le site
++constexpr uint64_t PIEGE = 32;    // GuestSignal_SIGTRAP : exception invitee prise dans SynchronousFaultData
++} // namespace FEXCore::CidreSonnetteFaute

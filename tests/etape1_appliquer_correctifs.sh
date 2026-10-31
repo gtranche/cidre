@@ -149,6 +149,12 @@ if [ -d "$R/third_party/FEX" ]; then
          0287-*) temoin="Cidre 0287 : paire de lectures TSO voisines"; ou=FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp ;;
          0288-*) temoin="Cidre 0288 (ilot) : dans l'ilot, FEX tourne sans TSO logiciel"; ou=FEXCore/Source/Interface/Core/JIT/JIT.cpp ;;
          0289-*) temoin="inline bool CidreSansLdpQ = false;"; ou=CodeEmitter/CodeEmitter/Emitter.h ;;
+         0296-*) temoin="static constexpr size_t CALLRET_STACK_ENGAGE"; ou=FEXCore/include/FEXCore/Debug/InternalThreadState.h ;;
+         0298-*) temoin="Cidre 0298 : selection bit a bit"; ou=FEXCore/Source/Interface/IR/Passes/CidreHautNul.cpp ;;
+         0299-*) temoin="Cidre 0299 : CIDRE_SHUF_COPIE=0"; ou=FEXCore/Source/Interface/Core/OpcodeDispatcher/Vector.cpp ;;
+         0300-*) temoin="namespace FEXCore::CidreWX {"; ou=FEXCore/include/FEXCore/Utils/CidreWX.h ;;
+         0306-*) temoin="namespace FEXCore::CidreSonnetteFaute {"; ou=FEXCore/include/FEXCore/Utils/CidreSonnetteFaute.h ;;
+         0307-*) temoin="bool HandleSuspendFault(CONTEXT* Context, uint64_t FaultAddress) {"; ou=Source/Windows/WOW64/Module.cpp ;;
          *) echo "   correctif FEX sans temoin : $(basename "$f")" >&2; exit 1 ;;
       esac
       # -F : texte litteral (les temoins contiennent . ( * &).

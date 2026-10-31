@@ -1,0 +1,85 @@
+Generated-by: LLM
+
+fex : WOW64 (invites 32 bits), sonnette de suspension par faute de lecture (0306) et talons 0281 reconnus. Le frontal WOW64 alloue a son tour la reservation PAGE_NOACCESS de 0306 avant InitCore (CIDRE_SONNETTE_FAUTE=0 rend les brk) : le JIT et le repartiteur y lisent au lieu d'emettre brk #0xCAFE, brk #0xCAFD et brk #0 (piege invite). BTCpuResetToConsistentStateImpl reconnait la faute a son adresse exacte (+0 en ligne, +16 talon : le mot qui suit la lecture est le decalage vers le site) avant les autres traitements de violation d'acces, puis suspend comme avant (ReconstructThreadState, cession au suspendeur, retour au repartiteur). Au passage, HandleSuspendInterrupt reconnait aussi le brk #0xCAFD des talons 0281, qu'il ne connaissait pas (avec CIDRE_SONNETTE_FAUTE=0). Temoins (runtime 1.5.20, invites i386, faux crashhandler qui ignore SIGTRAP et SIGALRM) : suspension32 bloque 5/5 avec le xtajit.dll livre et 3/3 avec CIDRE_SONNETTE_FAUTE=0, passe 50/50 avec le correctif ; sans faux crashhandler, 3/3 dans les trois cas ; int3_temoin32 1000/1000 ; le 64 bits ne change pas.
+
+diff -uN a/Source/Windows/WOW64/Module.cpp b/Source/Windows/WOW64/Module.cpp
+--- a/Source/Windows/WOW64/Module.cpp
++++ b/Source/Windows/WOW64/Module.cpp
+@@ -63,6 +63,7 @@
+ #include <winternl.h>
+ #include <wine/debug.h>
+ #include <wine/unixlib.h>
++#include <FEXCore/Utils/CidreSonnetteFaute.h>
+ 
+ #ifdef FEX_TEB_SANS_X18
+ namespace FEXCore::IR {
+@@ -387,12 +388,41 @@
+   }
+ }
+ 
++// Cidre 0307 : suspension a partir du site de la sonnette (Pc deja ramene au controle pour un talon 0281).
++static bool SuspendreIci(CONTEXT* Context);
++
+ bool HandleSuspendInterrupt(CONTEXT* Context) {
+   static constexpr uint32_t SuspendTrapMagic {0xD4395FC0}; // brk #0xCAFE
++  // Cidre 0307 : talon 0281 (brk #0xCAFD puis le decalage vers le site), que ce frontal ne reconnaissait pas.
++  static constexpr uint32_t SuspendTrapFroid {0xD4395FA0}; // brk #0xCAFD
++  if (*reinterpret_cast<uint32_t*>(Context->Pc) == SuspendTrapFroid) {
++    Context->Pc += static_cast<int64_t>(*reinterpret_cast<int32_t*>(Context->Pc + 4));
++    return SuspendreIci(Context);
++  }
+   if (*reinterpret_cast<uint32_t*>(Context->Pc) != SuspendTrapMagic) {
++    return false;
++  }
++  return SuspendreIci(Context);
++}
++
++// Cidre 0307 : sonnette par faute de lecture (0306, FEXCore/Utils/CidreSonnetteFaute.h) : adresse exacte dans la
++// reservation, depuis le code JIT.
++bool HandleSuspendFault(CONTEXT* Context, uint64_t FaultAddress) {
++  const uint64_t Page = FEXCore::CidreSonnetteFaute::Page;
++  if (!Page || (FaultAddress != Page + FEXCore::CidreSonnetteFaute::EN_LIGNE && FaultAddress != Page + FEXCore::CidreSonnetteFaute::FROIDE)) {
++    return false;
++  }
++  auto Thread = GetTLS().ThreadState();
++  if (!Thread || !Thread->CTX->IsAddressInCodeBuffer(Thread, Context->Pc)) {
+     return false;
+   }
++  if (FaultAddress == Page + FEXCore::CidreSonnetteFaute::FROIDE) {
++    Context->Pc += static_cast<int64_t>(*reinterpret_cast<int32_t*>(Context->Pc + 4));
++  }
++  return SuspendreIci(Context);
++}
+ 
++static bool SuspendreIci(CONTEXT* Context) {
+   // Since interrupts only happen at the start of blocks, the reconstructed state should be entirely accurate
+   ReconstructThreadState(Context);
+   FlushThreadStateContext();
+@@ -558,6 +588,16 @@
+     CTX = FEXCore::Context::Context::CreateNewContext(HostFeatures);
+   }
+ 
++  {
++    // Cidre 0307 : reservation sans droits de la sonnette et du piege invite (0306), avant InitCore (le repartiteur
++    // s'emet avec son adresse). CIDRE_SONNETTE_FAUTE=0 rend les brk.
++    const char* E = getenv("CIDRE_SONNETTE_FAUTE");
++    if (!(E && *E == '0')) {
++      FEXCore::CidreSonnetteFaute::Page = reinterpret_cast<uint64_t>(::VirtualAlloc(nullptr, 0x10000, MEM_RESERVE, PAGE_NOACCESS));
++    }
++    LogMan::Msg::IFmt("cidre sonnette (wow64) : par faute {}", FEXCore::CidreSonnetteFaute::Page ? "oui" : "non");
++  }
++
+   CTX->SetSignalDelegator(SignalDelegator.get());
+   CTX->SetSyscallHandler(SyscallHandler.get());
+   CTX->InitCore();
+@@ -780,6 +820,10 @@
+ 
+   if (Exception->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
+     const auto FaultAddress = static_cast<uint64_t>(Exception->ExceptionInformation[1]);
++    if (Thread && Context::HandleSuspendFault(Context, FaultAddress)) {
++      LogMan::Msg::DFmt("Resumed from suspend (sonnette par faute)");
++      return true;
++    }
+     if (FEX::Windows::CallRetStack::HandleAccessViolation(Thread, FaultAddress, Context->X25)) {
+       return true;
+     }
