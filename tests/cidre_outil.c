@@ -1,7 +1,7 @@
 /* cidre-outil : ce que le script `cidre` ne sait pas faire en sh.
  *
  *    cidre-outil session <steamcmd.sh> <arguments de SteamCMD...>
- *    cidre-outil bibliotheque [--texte] [--bouteilles <liste|->] [--mac32|--mac64 <appid,...>] <licences.txt> [appid installe ...]
+ *    cidre-outil bibliotheque [--texte] [--sans-rosetta] [--bouteilles <liste|->] [--mac32|--mac64 <appid,...>] <licences.txt> [appid installe ...]
  *    cidre-outil builds <appinfo.vdf> <appid ...>
  *    cidre-outil plateformes <appinfo.vdf> <appid ...>
  *    cidre-outil seance <appid>
@@ -34,6 +34,9 @@
  * Un jeu dont la version macOS n'existe qu'en 32 bits (i386, PowerPC) porte
  * "mac_32bits": true (voir plateformes) ; --mac32 et --mac64 <appid,...>
  * imposent la reponse (les fiches de la base de profils, `mac_32bits`).
+ * --sans-rosetta (Mac Apple Silicon sans Rosetta 2) : une version macOS 64
+ * bits sans `macosapplesilicon` est Intel seulement, et ne tourne pas non plus ;
+ * le jeu porte "mac_sans_rosetta": true (« (intel) » en --texte).
  *
  * plateformes -- pour chaque jeu demande, une ligne « appid <TAB> oslist <TAB>
  * osextended <TAB> mac_32bits (oui|non) », d'apres le cache du client Steam.
@@ -468,6 +471,12 @@ static int mac_32bits(const Commun *c)
           !dans_liste(c->osext, "macosapplesilicon") && !c->mac64;
 }
 
+/* La version macOS de ce jeu est arm64 (ou universelle), d'apres Steam */
+static int mac_arm64(const Commun *c)
+{
+   return dans_liste(c->osext, "macosapplesilicon");
+}
+
 typedef struct {
    uint32_t appid;
    Commun c;
@@ -795,12 +804,14 @@ static const Bouteille *bouteille_de(const Bouteilles *b, uint32_t appid)
 
 static int cmd_bibliotheque(int argc, char **argv)
 {
-   int texte = 0;
+   int texte = 0, sans_rosetta = 0;
    Bouteilles bouteilles = { 0 };
    Ens force32 = { 0 }, force64 = { 0 };
    for (; argc > 0 && !strncmp(argv[0], "--", 2); argc--, argv++) {
       if (!strcmp(argv[0], "--texte"))
          texte = 1;
+      else if (!strcmp(argv[0], "--sans-rosetta"))
+         sans_rosetta = 1;
       else if ((!strcmp(argv[0], "--mac32") || !strcmp(argv[0], "--mac64")) && argc > 1) {
          ens_ajoute_nombres(argv[0][5] == '3' ? &force32 : &force64, argv[1], argv[1] + strlen(argv[1]));
          argc--, argv++;
@@ -930,6 +941,8 @@ static int cmd_bibliotheque(int argc, char **argv)
       const char *second = j->windows == 2 ? "windows" : j->macos == 2 ? "macos" : NULL;
       int m32 = j->macos && !ens_contient(&force64, j->appid) &&
                 (ens_contient(&force32, j->appid) || mac_32bits(&j->c));
+      /* sans Rosetta : une version macOS Intel seulement ne tourne pas non plus */
+      int sr = sans_rosetta && j->macos && !m32 && !mac_arm64(&j->c);
       int installe = ens_contient(&installes, j->appid);
       const Bouteille *b = installe ? NULL : bouteille_de(&bouteilles, j->appid);
       if (texte) {
@@ -940,7 +953,7 @@ static int cmd_bibliotheque(int argc, char **argv)
          printf("%-9u ", j->appid);
          for (size_t k = 0; u[k] && colonnes < 40; colonnes++)
             utf8_ecrire(utf8_lire(u, &k));
-         snprintf(os, sizeof os, "%s%s%s%s", premier, second ? "," : "", second ? second : "", m32 ? "(32)" : "");
+         snprintf(os, sizeof os, "%s%s%s%s", premier, second ? "," : "", second ? second : "", m32 ? "(32)" : sr ? "(intel)" : "");
          printf("%*s %-15s %s", 40 - colonnes, "", os, installe ? "oui" : b ? "a reprendre" : "");
          if (b)
             printf(" (%s : %s)", b->origine, b->bouteille);
@@ -954,6 +967,8 @@ static int cmd_bibliotheque(int argc, char **argv)
          printf("]");
          if (m32)
             printf(", \"mac_32bits\": true");
+         if (sr)
+            printf(", \"mac_sans_rosetta\": true");
          printf(", \"installe\": %s", installe ? "true" : "false");
          if (b) {
             printf(", \"source\": \"bouteille\", \"origine\": ");
@@ -1047,7 +1062,7 @@ int main(int argc, char **argv)
    if (argc == 3 && !strcmp(argv[1], "seance"))
       return cmd_seance(argv[2]);
    fprintf(stderr, "usage: cidre-outil session <steamcmd.sh> <arguments...>\n"
-                   "       cidre-outil bibliotheque [--texte] [--bouteilles <liste|->] [--mac32|--mac64 <appid,...>] <licences.txt> [appid installe ...]\n"
+                   "       cidre-outil bibliotheque [--texte] [--sans-rosetta] [--bouteilles <liste|->] [--mac32|--mac64 <appid,...>] <licences.txt> [appid installe ...]\n"
                    "       cidre-outil builds <appinfo.vdf> <appid ...>\n"
                    "       cidre-outil plateformes <appinfo.vdf> <appid ...>\n"
                    "       cidre-outil seance <appid>\n");

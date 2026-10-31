@@ -577,7 +577,16 @@ fiche_json() {
    [ "$p" = macos ] && l=natif || l=cidre
    # "mac_32bits" : sa version macOS installee n'existe qu'en 32 bits (true) ;
    # null pour un jeu Windows. Il ne se lance pas en natif : c'est un jeu Cidre.
-   m32=null; [ "$p" = macos ] && { [ "$(mac_32bits "$1")" = oui ] && { m32=true; l=cidre; } || m32=false; }
+   # "mac_sans_rosetta":true (absent sinon) : sa version macOS installee est
+   # Intel seulement et Rosetta 2 manque ; c'est aussi un jeu Cidre.
+   m32=null; fj_sr=
+   if [ "$p" = macos ]; then
+      case $(mac_vers_windows "$1") in
+         32bits) m32=true; l=cidre ;;
+         sans_rosetta) m32=false; l=cidre; fj_sr=',"mac_sans_rosetta":true' ;;
+         *) m32=false ;;
+      esac
+   fi
    [ "$p" = absent ] && inst=false || inst=true
    # dossier Cidre : un telechargement interrompu n'est pas un jeu installe...
    # sauf si c'est la mise a jour d'un jeu qui l'etait : il reste lancable
@@ -594,8 +603,8 @@ fiche_json() {
    if est_local "$1"; then [ ! -f "$(local_champ "$1" 3)" ] && volume_absent "$(local_champ "$1" 3)" && fj_l=false
    elif est_bnet "$1"; then bnet_hors_ligne "$1" && fj_l=false
    elif [ "$s" = cidre ]; then eval "fj_e=\\\"\${JE_$1:-}\\\""; hors_ligne "$1" && fj_l=false; fi
-   printf '{"id":"%s","appid":%s,"nom":%s,"plateforme":"%s","lancement":"%s","source":"%s","installe":%s,"wrapper":%s,"chemin":%s,"taille":%s,"dernier_lancement":%s,"emplacement":%s,"en_ligne":%s,"deplacement":%s,"mac_32bits":%s' \
-      "$1" "$a" "$(json "$(nom "$1")")" "$p" "$l" "$s" "$inst" "$w" "$(json "$(chemin "$1")")" "${t:-0}" "${d:-0}" "$fj_e" "$fj_l" "$(depl_json "$1")" "$m32"
+   printf '{"id":"%s","appid":%s,"nom":%s,"plateforme":"%s","lancement":"%s","source":"%s","installe":%s,"wrapper":%s,"chemin":%s,"taille":%s,"dernier_lancement":%s,"emplacement":%s,"en_ligne":%s,"deplacement":%s,"mac_32bits":%s%s' \
+      "$1" "$a" "$(json "$(nom "$1")")" "$p" "$l" "$s" "$inst" "$w" "$(json "$(chemin "$1")")" "${t:-0}" "${d:-0}" "$fj_e" "$fj_l" "$(depl_json "$1")" "$m32" "$fj_sr"
 }
 # Le deplacement d'un jeu, en JSON : null, ou {"etat": en_cours (avec
 # "phase", "avancement" en %, "octets", "total"), interrompu ou echoue (avec
@@ -699,17 +708,23 @@ plat() {
 # (cidre-outil plateformes : `osextended` sans macos64, la case « 64 Bit
 # Binaries Included » que le client exige depuis Catalina).
 APPINFO_CLIENT="$STEAM/appcache/appinfo.vdf"
-# 64, 32, ou rien : les executables principaux des .app d'un dossier de jeu
-mac_bits_installes() { # <dossier du jeu>
+# arm64, x86_64, i386 (32 bits : i386 ou PowerPC), ou rien : l'architecture
+# des executables principaux des .app d'un dossier de jeu. Un binaire
+# universel compte pour arm64 ; une seule .app arm64 suffit.
+mac_arch_installee() { # <dossier du jeu>
    mb_r=
    for mb_app in $(find "$1" -maxdepth 3 -name '*.app' -type d ! -path '*.app/*' 2>/dev/null | tr ' ' '\001'); do
       mb_app=$(printf '%s' "$mb_app" | tr '\001' ' ')
       mb_e=$(plutil -extract CFBundleExecutable raw -o - "$mb_app/Contents/Info.plist" 2>/dev/null)
       [ -n "$mb_e" ] && [ -f "$mb_app/Contents/MacOS/$mb_e" ] || continue
       mb_f=$(file -b "$mb_app/Contents/MacOS/$mb_e" 2>/dev/null)
-      case $mb_f in *x86_64*|*arm64*) echo 64; return ;; *Mach-O*) mb_r=32 ;; esac
+      case $mb_f in *arm64*) echo arm64; return ;; *x86_64*) mb_r=x86_64 ;; *Mach-O*) [ -n "$mb_r" ] || mb_r=i386 ;; esac
    done
    [ -z "$mb_r" ] || echo "$mb_r"
+}
+# 64, 32, ou rien
+mac_bits_installes() { # <dossier du jeu>
+   case $(mac_arch_installee "$1") in arm64|x86_64) echo 64 ;; i386) echo 32 ;; esac
 }
 # une cle de [jeu] dans la fiche du jeu (sa valeur brute), ou rien
 fiche_jeu() { # <appid> <cle>
@@ -717,20 +732,86 @@ fiche_jeu() { # <appid> <cle>
    [ -n "$fj_f" ] || return 0
    sh "$R/tests/fiche_profil.sh" toml "$fj_f" 2>/dev/null | awk -F'\t' -v c="$2" '$1 == "jeu" && $2 == c { print $4; exit }'
 }
-# oui : la version macOS de ce jeu n'existe qu'en 32 bits ; non ; rien : on ne
-# sait pas (pas de version macOS, ou rien qui en parle)
-mac_32bits() { # <appid>
+# L'architecture de la version macOS d'un jeu : arm64 (arm64 ou universelle),
+# x86_64 (Intel 64 bits seulement), i386 (32 bits seulement), 64 (64 bits,
+# sans savoir si arm64 : la fiche dit mac_32bits = false et le cache du client
+# Steam manque), ou rien : on ne sait pas (pas de version macOS, ou rien qui en
+# parle). Memes sources, dans le meme ordre, que mac_32bits.
+# Les drapeaux de Valve (`osextended`) : `macosapplesilicon` -> arm64 ;
+# `macos64`, ou `osarch` 64 -> x86_64 ; rien -> i386. Ils sont coches par
+# l'editeur, et beaucoup ne cochent rien : une partie des x86_64 sont en fait
+# universels (etude-jeux-macos, 1.4). Le binaire installe l'emporte.
+mac_arch_brut() { # <appid>
    case $1 in ''|*[!0-9]*) return 0 ;; esac
    # (un jeu que le client n'a pas : son chemin serait steamapps/common/ entier)
    m3_d=; connu "$1" && m3_d=$(chemin "$1")
    case $m3_d in */common/) m3_d= ;; esac
    if [ -n "$m3_d" ] && [ -d "$m3_d" ]; then
-      case $(mac_bits_installes "$m3_d") in 32) echo oui; return ;; 64) echo non; return ;; esac
+      m3_a=$(mac_arch_installee "$m3_d")
+      [ -z "$m3_a" ] || { echo "$m3_a"; return; }
    fi
-   case $(fiche_jeu "$1" mac_32bits) in true) echo oui; return ;; false) echo non; return ;; esac
-   [ -f "$APPINFO_CLIENT" ] && outil_pret 2>/dev/null || return 0
-   "$OUTIL" plateformes "$APPINFO_CLIENT" "$1" 2>/dev/null | awk -F'\t' '$2 ~ /(^|,)macos(,|$)/ { print $4; exit }'
+   m3_64=
+   case $(fiche_jeu "$1" mac_32bits) in true) echo i386; return ;; false) m3_64=oui ;; esac
+   if [ -f "$APPINFO_CLIENT" ] && outil_pret 2>/dev/null; then
+      m3_a=$("$OUTIL" plateformes "$APPINFO_CLIENT" "$1" 2>/dev/null | awk -F'\t' -v f64="$m3_64" '$2 ~ /(^|,)macos(,|$)/ {
+         if ($3 ~ /(^|,)macosapplesilicon(,|$)/) print "arm64"; else if ($4 == "oui" && f64 == "") print "i386"; else print "x86_64"; exit }')
+      [ -z "$m3_a" ] || { echo "$m3_a"; return; }
+   fi
+   [ -z "$m3_64" ] || echo 64
 }
+# oui : la version macOS de ce jeu n'existe qu'en 32 bits ; non ; rien : on ne
+# sait pas (pas de version macOS, ou rien qui en parle)
+mac_32bits() { # <appid>
+   case $(mac_arch_brut "$1") in i386) echo oui ;; arm64|x86_64|64) echo non ;; esac
+}
+
+# --- Rosetta 2 absente ------------------------------------------------------
+# Sans Rosetta, un Mac Apple Silicon ne lance pas non plus une version macOS
+# Intel seulement (x86_64 sans arm64) : comme le 32 bits, c'est alors un jeu
+# Windows pour Cidre. Avec Rosetta, rien ne change.
+# Detection sans rien lancer (un binaire x86_64 lance sans Rosetta peut ouvrir
+# le dialogue d'installation) : le moteur de Rosetta,
+# /Library/Apple/usr/libexec/oah/libRosettaRuntime, que pose le paquet
+# com.apple.pkg.RosettaUpdateAuto (softwareupdate --install-rosetta) et qui
+# manque sans lui ; oahd et /usr/libexec/rosetta/ sont dans le volume systeme,
+# la meme Rosetta installee ou non. Un Mac Intel lance le x86_64 lui-meme.
+# A partir de macOS 28, Apple ne garde de Rosetta qu'un sous-ensemble pour
+# « certains vieux jeux » (support.apple.com/102527), sans dire lesquels :
+# partielle, traitee comme absente (la version Windows d'abord ;
+# CIDRE_ROSETTA=presente pour garder la version Mac).
+# CIDRE_ROSETTA=absente|presente|partielle impose la reponse (tests) ;
+# CIDRE_ROSETTA_RUNTIME et CIDRE_MACOS_MAJEUR remplacent le chemin du moteur
+# et la version de macOS (tests de la detection).
+ROSETTA_ETAT=
+rosetta_etat() {
+   if [ -z "$ROSETTA_ETAT" ]; then
+      case ${CIDRE_ROSETTA:-} in
+         absente|presente|partielle) ROSETTA_ETAT=$CIDRE_ROSETTA ;;
+         *)
+            if [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" != 1 ]; then ROSETTA_ETAT=presente
+            elif [ ! -f "${CIDRE_ROSETTA_RUNTIME:-/Library/Apple/usr/libexec/oah/libRosettaRuntime}" ]; then ROSETTA_ETAT=absente
+            else
+               re_v=${CIDRE_MACOS_MAJEUR:-$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)}
+               case $re_v in ''|*[!0-9]*) re_v=0 ;; esac
+               [ "$re_v" -ge 28 ] && ROSETTA_ETAT=partielle || ROSETTA_ETAT=presente
+            fi ;;
+      esac
+   fi
+   echo "$ROSETTA_ETAT"
+}
+# La version macOS de ce jeu ne tourne pas sur ce Mac, et Cidre prend sa version
+# Windows : i386 (raison 32bits), ou x86_64 seul sans Rosetta (raison
+# sans_rosetta) ; rien sinon. Avec Rosetta, exactement mac_32bits.
+mac_vers_windows() { # <appid>
+   case $(mac_arch_brut "$1") in
+      i386) echo 32bits ;;
+      x86_64) [ "$(rosetta_etat)" = presente ] || echo sans_rosetta ;;
+   esac
+}
+# pour `cidre library` : sans Rosetta, ses versions macOS Intel seulement
+# sont marquees (cidre-outil bibliotheque --sans-rosetta)
+bib_rosetta() { [ "$(rosetta_etat)" = presente ] || echo --sans-rosetta; }
+MACX64_MESSAGE="Sa version Mac n'existe que pour les Mac Intel, et Rosetta 2 n'est pas sur ce Mac. Cidre installe la version Windows"
 MAC32_MESSAGE="Sa version Mac n'existe qu'en 32 bits : macOS ne la lance plus depuis Catalina (Rosetta 2 ne traduit pas le 32 bits). Cidre installe la version Windows"
 # Les fiches qui tranchent (mac_32bits = true|false), pour `cidre library` :
 # les provisoires, puis la copie livree, puis le cache (qui prime).
@@ -1285,7 +1366,9 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
                                   "en_ligne" (false : son disque est debranche ; il reste installe),
                                   "deplacement" (null, ou etat d'un deplacement en cours ou inacheve),
                                   "mac_32bits" (true : version macOS installee en 32 bits seulement, qui ne
-                                  se lance plus ; le jeu est alors un jeu Cidre ; null : jeu Windows)
+                                  se lance plus ; le jeu est alors un jeu Cidre ; null : jeu Windows),
+                                  "mac_sans_rosetta":true (absent sinon) : version macOS installee Intel
+                                  seulement sur un Mac sans Rosetta 2 ; jeu Cidre aussi
                                   "source" : steam, cidre (emplacement Cidre), local (hors Steam) ou battlenet
                                   (installe par le client Battle.net ; id bnet-<code>, "appid" null)
   cidre info <id> [--json]        fiche d'un jeu : plateforme, taille, chemin, options actives
@@ -1314,7 +1397,9 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
                                   {"evenement":"erreur","code":"hors_ligne","message":...}) ; un jeu en cours
                                   de deplacement non plus (code 4). La version macOS 32 bits d'un jeu du client
                                   Steam non plus (code 9, {"evenement":"erreur","code":"mac_32bits",...}) :
-                                  macOS ne la lance plus, cidre dl <appid> installe la version Windows
+                                  macOS ne la lance plus, cidre dl <appid> installe la version Windows ;
+                                  sans Rosetta 2, sa version macOS Intel seulement non plus (code 9,
+                                  "code":"mac_sans_rosetta")
   cidre running [--json]          les jeux en cours
   cidre stop [<id>]               force l'arret d'un jeu lance par Cidre (et de tout ce que Wine fait tourner
                                   dans son prefixe : pour un jeu Battle.net, le client avec lui)
@@ -1356,7 +1441,9 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
                                   --json : "source":"bouteille" (avec "origine", "bouteille", "chemin") sur
                                   un jeu deja installe par CrossOver, Whisky ou Heroic, que cidre import reprend ;
                                   "mac_32bits":true quand sa version macOS n'existe qu'en 32 bits (Steam, ou
-                                  [jeu] mac_32bits de sa fiche) : pour Cidre, un jeu Windows seulement
+                                  [jeu] mac_32bits de sa fiche) : pour Cidre, un jeu Windows seulement ;
+                                  "mac_sans_rosetta":true sur un Mac sans Rosetta 2 quand sa version macOS
+                                  est Intel seulement (osextended sans macosapplesilicon) : idem
   cidre updates [--json] [--refresh] [--fond]   les jeux installes dont une version plus recente est publiee
                                   (lue dans le cache du client Steam, sinon demandee a Steam par SteamCMD)
                                   --fond : rafraichir en arriere-plan et rendre la main aussitot
@@ -1399,7 +1486,10 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
   cidre logout                    oublie la session Steam (les jeux installes restent jouables)
   cidre install <appid> [auto|macos|windows]   installe le depot dans le client Steam
                                   auto : la version macOS si elle tourne ici, sinon Windows ; une version
-                                  macOS 32 bits seulement est refusee (code 9), comme par cidre dl <appid> macos
+                                  macOS 32 bits seulement est refusee (code 9), comme par cidre dl <appid> macos ;
+                                  sans Rosetta 2, une version macOS Intel seulement aussi (auto prend Windows ;
+                                  macOS 28+, Rosetta partielle : auto prend Windows, macos reste permis).
+                                  CIDRE_ROSETTA=absente|presente|partielle impose la detection
   cidre wrap                      (re)pose le wrapper Cidre sur les jeux Windows-only
  Emplacements (ou vivent les jeux Cidre : ce Mac, un disque externe...)
   cidre emplacements [--json]     les emplacements : branches ou non, place libre, nombre de jeux ; ceux
@@ -1470,7 +1560,10 @@ case "$cmd" in
     printf "%-18s %-26s %-10s %s\n" ID JEU PLATEFORME LANCEMENT
     for id in $(ids); do
       p=$(plat "$id"); [ "$p" = macos ] && l="natif (Steam)" || l="Cidre"
-      [ "$p" = macos ] && [ "$(mac_32bits "$id")" = oui ] && l="Mac 32 bits : cidre dl $id"
+      [ "$p" = macos ] && case $(mac_vers_windows "$id") in
+        32bits) l="Mac 32 bits : cidre dl $id" ;;
+        sans_rosetta) l="Mac Intel sans Rosetta : cidre dl $id" ;;
+      esac
       case $(source_de "$id") in
         cidre) l="Cidre (dossier Cidre)" ;;
         local) l="Cidre (hors Steam)" ;;
@@ -1632,10 +1725,18 @@ case "$cmd" in
       # Jeu du client Steam (natif, ou Windows par le wrapper) : Steam le met a
       # jour lui-meme avant de le lancer. Sa version macOS 32 bits ne se lance
       # pas : on le dit (code 9), avec ce qu'il faut faire.
-      if [ "$(plat "$id")" = macos ] && [ "$(mac_32bits "$id")" = oui ]; then
-        m="$(nom "$id") : $MAC32_MESSAGE (\`cidre dl $id\`)."
-        evenement "$(printf '{"evenement":"erreur","code":"mac_32bits","message":%s}' "$(json "$m")")"
-        echo "$m" >&2; exit 9
+      # Sans Rosetta, sa version macOS Intel seulement non plus (code
+      # mac_sans_rosetta) ; avec une Rosetta partielle (macOS 28), Steam essaie.
+      if [ "$(plat "$id")" = macos ]; then
+        pl_c=
+        case $(mac_vers_windows "$id") in
+          32bits) m="$(nom "$id") : $MAC32_MESSAGE (\`cidre dl $id\`)."; pl_c=mac_32bits ;;
+          sans_rosetta) [ "$(rosetta_etat)" = absente ] && { m="$(nom "$id") : $MACX64_MESSAGE (\`cidre dl $id\`)."; pl_c=mac_sans_rosetta; } ;;
+        esac
+        if [ -n "$pl_c" ]; then
+          evenement "$(printf '{"evenement":"erreur","code":"%s","message":%s}' "$pl_c" "$(json "$m")")"
+          echo "$m" >&2; exit 9
+        fi
       fi
       partir
       echo "lancement de $(nom "$id") ($id) via Steam..."
@@ -1846,17 +1947,28 @@ case "$cmd" in
   install|installer)
     case ${1:-} in *[!0-9]*|'') ;; *)
       # auto : la version macOS si Steam en distribue une qui tourne ici (pas
-      # en 32 bits seulement), sinon la version Windows
-      if [ "$(mac_32bits "$1")" = oui ]; then
-        [ "${2:-auto}" = macos ] && { echo "$(nom "$1") : $MAC32_MESSAGE : \`cidre install $1 windows\` ou \`cidre dl $1\`." >&2; exit 9; }
-        [ "${2:-auto}" = auto ] && set -- "$1" windows
-      fi
+      # en 32 bits seulement, ni Intel seulement sans Rosetta), sinon la
+      # version Windows. macos impose : refuse si elle ne peut pas tourner
+      # (avec une Rosetta partielle, macOS 28, on laisse essayer).
+      case $(mac_vers_windows "$1") in
+        32bits)
+          [ "${2:-auto}" = macos ] && { echo "$(nom "$1") : $MAC32_MESSAGE : \`cidre install $1 windows\` ou \`cidre dl $1\`." >&2; exit 9; }
+          [ "${2:-auto}" = auto ] && set -- "$1" windows ;;
+        sans_rosetta)
+          [ "${2:-auto}" = macos ] && [ "$(rosetta_etat)" = absente ] && { echo "$(nom "$1") : $MACX64_MESSAGE : \`cidre install $1 windows\` ou \`cidre dl $1\`." >&2; exit 9; }
+          [ "${2:-auto}" = auto ] && set -- "$1" windows ;;
+      esac
       [ "${2:-auto}" = macos ] || fiche_provisoire "$1" ;; esac
     sh "$R/tests/cidre_install.sh" "$@" ;;
   dl|download|telecharger)
     id=${1:?usage: cidre dl <appid> [windows|macos] [--vers <emplacement>]}; os=${2:-windows}
     case $id in ''|*[!0-9]*) echo "usage: cidre dl <appid> [windows|macos] [--vers <emplacement>]" >&2; exit 2 ;; esac
-    [ "$os" = macos ] && [ "$(mac_32bits "$id")" = oui ] && { echo "$id : $MAC32_MESSAGE : \`cidre dl $id\`." >&2; exit 9; }
+    if [ "$os" = macos ]; then
+      case $(mac_vers_windows "$id") in
+        32bits) echo "$id : $MAC32_MESSAGE : \`cidre dl $id\`." >&2; exit 9 ;;
+        sans_rosetta) [ "$(rosetta_etat)" = absente ] && { echo "$id : $MACX64_MESSAGE : \`cidre dl $id\`." >&2; exit 9; } ;;
+      esac
+    fi
     maj_en_cours "$id" && { echo "Un telechargement de ce jeu est deja en cours (processus $(maj_champ "$id" pid))." >&2; exit 4; }
     depl_en_cours "$id" && { echo "Ce jeu est en cours de deplacement (processus $(depl_champ "$id" pid)) : attends la fin." >&2; exit 4; }
     hors_ligne "$id" && { hors_ligne_message "$id" >&2; echo >&2; exit 8; }
@@ -2191,9 +2303,9 @@ case "$cmd" in
     # pas encore repris : "source":"bouteille" (cidre import), sans peser leur dossier.
     export CIDRE_JEUX_CONNUS="$IDS_EMPL"
     if [ "$JSON" = oui ]; then
-      sh "$R/tests/trouver_jeux_bouteilles.sh" --rapide | "$OUTIL" bibliotheque --bouteilles - --mac32 "$(fiches_mac true)," --mac64 "$(fiches_mac false)," "$CACHE" $(appids)
+      sh "$R/tests/trouver_jeux_bouteilles.sh" --rapide | "$OUTIL" bibliotheque $(bib_rosetta) --bouteilles - --mac32 "$(fiches_mac true)," --mac64 "$(fiches_mac false)," "$CACHE" $(appids)
     else
-      sh "$R/tests/trouver_jeux_bouteilles.sh" --rapide | "$OUTIL" bibliotheque --texte --bouteilles - --mac32 "$(fiches_mac true)," --mac64 "$(fiches_mac false)," "$CACHE" $(appids)
+      sh "$R/tests/trouver_jeux_bouteilles.sh" --rapide | "$OUTIL" bibliotheque $(bib_rosetta) --texte --bouteilles - --mac32 "$(fiches_mac true)," --mac64 "$(fiches_mac false)," "$CACHE" $(appids)
     fi ;;
   updates|majs)
     # Le build installe de chaque jeu, compare a celui de la branche publique.
