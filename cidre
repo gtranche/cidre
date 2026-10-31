@@ -848,18 +848,104 @@ exe_principal() {
          | grep -v '/Engine/Binaries/' | grep -viE 'crash|prereq|unrealcef|epicwebhelper' | head -1)
    [ -n "$e" ] && echo "$e"
 }
-# L'executable d'un jeu du dossier Cidre : celui de sa fiche (`exe` de [jeu],
-# relatif au dossier du jeu) s'il est sur le disque, sinon le premier .exe de la
-# racine. Steam lance la cible de sa configuration, pas forcement l'exe de la
-# racine : Still Wakes the Deep a a la racine un amorceur qui cherche un binaire
-# absent de la version Steam (Habitat-Win64-Shipping.exe, code 45).
-exe_du_jeu() { # <appid> <dossier du jeu>
-   f=$(sh "$R/tests/fiche_profil.sh" chemin "$1" 2>/dev/null)
-   if [ -n "$f" ]; then
-      e=$(sh "$R/tests/fiche_profil.sh" toml "$f" 2>/dev/null | awk -F'\t' '$1 == "jeu" && $2 == "exe" { print $4; exit }')
-      [ -n "$e" ] && [ -f "$2/$e" ] && { echo "$2/$e"; return; }
+# Un chemin relatif au dossier d'un jeu (separateurs / ou \, comme les ecrit
+# Steam), retrouve sur le disque a la casse pres : Steam ecrit « beyond the
+# sword\Civ4BeyondSword.exe », le dossier s'appelle « Beyond the Sword », et
+# un volume peut distinguer la casse. Rien (code 1) s'il n'existe pas.
+chemin_reel() { # <dossier du jeu> <chemin relatif>
+   cr_r=$1
+   cr_l=$(printf '%s' "$2" | tr '\\' '/')
+   cr_ifs=$IFS; IFS=/
+   set -f
+   for cr_c in $cr_l; do
+      case $cr_c in
+         ''|.) ;;
+         ..) cr_r=$(dirname "$cr_r") ;;
+         *) # le nom tel qu'il est sur le disque, meme sur un volume qui
+            # ignore la casse (le journal et le lanceur voient le vrai nom)
+            cr_m=$(ls -1A "$cr_r" 2>/dev/null | LC_ALL=C awk -v c="$cr_c" '$0 == c { print; t = 1; exit }
+               tolower($0) == tolower(c) && m == "" { m = $0 } END { if (!t && m != "") print m }')
+            [ -n "$cr_m" ] || { IFS=$cr_ifs; set +f; return 1; }
+            cr_r=$cr_r/$cr_m ;;
+      esac
+   done
+   IFS=$cr_ifs; set +f
+   [ -e "$cr_r" ] && printf '%s\n' "$cr_r"
+}
+
+# Le lancement d'un jeu du dossier Cidre, choisi comme le fait le client Steam
+# dans la configuration de lancement du jeu (appinfo, config/launch) :
+# l'entree Windows (sans oslist : toutes), de l'architecture du systeme (64
+# bits, qui lance aussi le 32 bits ; d'une paire 32/64, le 64), de la branche
+# installee (betakey), de type default/none (sans type) avant les options
+# (option1...), la premiere a egalite ; jamais server, editor, config... Le
+# cache du client (CLIENT_APPINFO, lu sans rien y ecrire) d'abord, puis la
+# fiche de SteamCMD (APPINFO). cidre-outil lancement fait le choix. Steam lance
+# la cible de sa configuration, pas forcement un exe de la racine : Still Wakes
+# the Deep a a la racine un amorceur qui cherche un binaire absent de la
+# version Steam (Habitat-Win64-Shipping.exe, code 45).
+# La fiche du jeu prime : `exe` de [jeu] (s'il est sur le disque) remplace
+# l'exe de Steam -- ses arguments et son dossier de travail ne valent que si
+# une entree de Steam lance ce meme exe (Civilization V : DX11, option2) ;
+# `arguments_steam = false` de [jeu] retire les arguments de Steam (ceux de
+# l'option `arguments` de [cidre], et de la ligne de commande, restent). Sans
+# entree utilisable, l'exe principal (exe_principal). Pose EXE, et LS_ENTREE,
+# LS_TYPE, LS_ARGUMENTS (la chaine de Steam), LS_ARGS (un argument par ligne,
+# decoupes comme Windows), LS_TRAVAIL (le dossier de travail sur le disque,
+# vide sans workingdir), LS_SOURCE (client, steamcmd ou vide).
+choisir_lancement() { # <appid> <dossier du jeu>
+   cl_id=$1; cl_g=$2
+   EXE= LS_ENTREE= LS_TYPE= LS_ARGUMENTS= LS_ARGS= LS_TRAVAIL= LS_SOURCE= LS_EXE_STEAM=
+   cl_fe= cl_as=
+   cl_f=$(sh "$R/tests/fiche_profil.sh" chemin "$cl_id" 2>/dev/null)
+   if [ -n "$cl_f" ]; then
+      cl_t=$(sh "$R/tests/fiche_profil.sh" toml "$cl_f" 2>/dev/null)
+      cl_fe=$(printf '%s\n' "$cl_t" | awk -F'\t' '$1 == "jeu" && $2 == "exe" { print $4; exit }')
+      cl_as=$(printf '%s\n' "$cl_t" | awk -F'\t' '$1 == "jeu" && $2 == "arguments_steam" { print $4; exit }')
    fi
-   exe_principal "$2"
+   cl_fx=
+   [ -z "$cl_fe" ] || cl_fx=$(chemin_reel "$cl_g" "$cl_fe") || cl_fx=
+   [ -n "$cl_fx" ] || cl_fe=
+   cl_o=
+   if entier "$cl_id" && outil_pret >/dev/null 2>&1; then
+      cl_br=$(branche "$cl_id")
+      for cl_s in "$CLIENT_APPINFO" "$APPINFO"; do
+         [ -s "$cl_s" ] || continue
+         set -- lancement "$cl_s" "$cl_id"
+         [ -z "$cl_br" ] || set -- "$@" --branche "$cl_br"
+         [ -z "$cl_fe" ] || set -- "$@" --exe "$cl_fe"
+         cl_o=$("$OUTIL" "$@" 2>/dev/null); cl_rc=$?
+         [ $cl_rc -eq 3 ] && { cl_o=; continue; }   # absent de cette source
+         [ $cl_rc -eq 0 ] || cl_o=
+         [ "$cl_s" = "$CLIENT_APPINFO" ] && LS_SOURCE=client || LS_SOURCE=steamcmd
+         break
+      done
+   fi
+   if [ -n "$cl_o" ]; then
+      LS_EXE_STEAM=$(printf '%s\n' "$cl_o" | sed -n 's/^exe=//p' | head -1)
+      cl_x=$(chemin_reel "$cl_g" "$LS_EXE_STEAM") || cl_x=
+      if [ -n "$cl_fx" ] || [ -n "$cl_x" ]; then
+         LS_ENTREE=$(printf '%s\n' "$cl_o" | sed -n 's/^entree=//p' | head -1)
+         LS_TYPE=$(printf '%s\n' "$cl_o" | sed -n 's/^type=//p' | head -1)
+         cl_d=$(printf '%s\n' "$cl_o" | sed -n 's/^dossier=//p' | head -1)
+         [ -z "$cl_d" ] || LS_TRAVAIL=$(chemin_reel "$cl_g" "$cl_d") || LS_TRAVAIL=
+         [ -d "$LS_TRAVAIL" ] || LS_TRAVAIL=
+         if [ "$cl_as" != false ]; then
+            LS_ARGUMENTS=$(printf '%s\n' "$cl_o" | sed -n 's/^arguments=//p' | head -1)
+            LS_ARGS=$(printf '%s\n' "$cl_o" | sed -n 's/^arg=//p')
+         fi
+         EXE=${cl_fx:-$cl_x}
+      fi
+   fi
+   [ -n "$EXE" ] || EXE=$cl_fx
+   [ -n "$EXE" ] || EXE=$(exe_principal "$cl_g")
+   [ -n "$LS_SOURCE" ] && [ -z "$LS_ENTREE" ] && LS_SOURCE=
+   return 0
+}
+# L'executable d'un jeu du dossier Cidre (choisir_lancement), sur la sortie.
+exe_du_jeu() { # <appid> <dossier du jeu>
+   choisir_lancement "$1" "$2"
+   [ -n "$EXE" ] && printf '%s\n' "$EXE"
 }
 # Cidre (notre wrapper) pose sur ce jeu ?
 cidre_wrap() { grep -A6 "\"$1\"$" "$STEAM"/userdata/*/config/localconfig.vdf 2>/dev/null | grep -q "lancer_depuis_steam.sh" && echo oui || echo non; }
@@ -1723,11 +1809,29 @@ case "$cmd" in
         echo "$m" >&2; exit 4
       fi
       maj_avant_lancement "$id"
-      EXE=$(exe_du_jeu "$id" "$CDIR")
+      choisir_lancement "$id" "$CDIR"
       [ -n "$EXE" ] || { dire "aucun .exe dans $CDIR"; exit 1; }
       partir
       echo "lancement Cidre : $(basename "$EXE")  (appid $id)"
       echo "  (dossier : $CDIR)"
+      # La configuration de lancement de Steam : ses arguments passent devant
+      # ceux de la ligne de commande (`cidre play <id> -- ...`), comme Steam met
+      # les options de lancement du joueur apres les siens ; son dossier de
+      # travail va au lanceur (CIDRE_DOSSIER_TRAVAIL).
+      if [ -n "$LS_ENTREE" ]; then
+        echo "  (lancement Steam : entree $LS_ENTREE, $LS_TYPE, ${EXE#"$CDIR/"}${LS_ARGUMENTS:+ $LS_ARGUMENTS}${LS_TRAVAIL:+, dossier de travail ${LS_TRAVAIL#"$CDIR/"}})"
+        if [ -n "$LS_ARGS" ]; then
+          cl_n=$#
+          while IFS= read -r cl_a; do set -- "$@" "$cl_a"; done <<FIN_ARGS_STEAM
+$LS_ARGS
+FIN_ARGS_STEAM
+          cl_i=0
+          while [ $cl_i -lt $cl_n ]; do set -- "$@" "$1"; shift; cl_i=$((cl_i + 1)); done
+        fi
+        if [ -n "$LS_TRAVAIL" ] && [ "$LS_TRAVAIL" != "$(dirname "$EXE")" ]; then
+          export CIDRE_DOSSIER_TRAVAIL="$LS_TRAVAIL"
+        fi
+      fi
       temoin_en_cours "$id"
       # (CIDRE_SEANCE : le client ne synchronisera pas le nuage au lancement,
       # le lanceur l'y pousse -- tests/seance_steam_cloud.sh)

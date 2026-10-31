@@ -886,22 +886,38 @@ if [ -n "$METALFX" ]; then
    esac
 fi
 
+# --- d3d9 : debut ---
 # Rendu Direct3D 9 : d3d9 = "dxvk" (DXVK -> Vulkan -> KosmicKrisp -> Metal) ou
 # "wined3d" (le d3d9 builtin de Wine, sur l'OpenGL de macOS). Sans choix, un jeu
 # 32 bits part en dxvk : son wined3d i386 passe par les relais wow64 d'opengl32,
 # sur un OpenGL que macOS ne fait plus evoluer, quand l'i386 sur Vulkan tient
-# depuis DREDGE (winevulkan rebase, §251). Un jeu 64 bits garde wined3d tant
-# qu'aucun n'a ete essaye en DXVK arm64ec sur cette pile. Le d3d9 de DXVK ne
-# depend ni de son dxgi ni de son d3d11 : il cohabite avec DXMT. Sa variante
-# i386 ($R/dxvk/i386, a defaut build/dxvk-win32) va en syswow64, l'arm64ec est
-# deja en system32 (cidre setup) ; =n les fait prendre au chargeur, qui ne
-# garde le builtin que pour une DLL factice de Wine. CIDRE_DXVK32_DIR=<dossier>
-# (essais) : un d3d9.dll i386 pris avant celui du runtime.
+# depuis DREDGE (winevulkan rebase, §251). Un jeu 64 bits part en dxvk quand sa
+# fiche dit D3D9 : `api = "d3d9"`, ou, sans `api`, d3d9 dans `api_disponibles`
+# sans D3D10/11/12 ni Vulkan (Garry's Mod : "d3d9 opengl") ; les autres gardent
+# wined3d (un jeu D3D11 qui charge d3d9.dll pour D3DPERF_*, comme Unreal, n'en
+# change pas). Le d3d9
+# de DXVK ne depend ni de son dxgi ni de son d3d11 : il cohabite avec DXMT. Sa
+# variante i386 ($R/dxvk/i386, a defaut build/dxvk-win32) va en syswow64 ;
+# l'arm64ec (x86_64 emule : $R/dxvk/async, puis stock, a defaut les builds
+# dxvk-async-winarm64ec et dxvk-winarm64ec) en system32, pose ici a chaque
+# lancement comme l'i386 -- `cidre setup` l'y met aussi, mais une remise a jour
+# du prefixe par Wine y avait remis le builtin. =n les fait prendre au
+# chargeur ; =b (wined3d) prend le builtin de Wine dans son propre dossier,
+# meme avec celui de DXVK en place. CIDRE_DXVK32_DIR=<dossier>,
+# CIDRE_DXVK64_DIR=<dossier> (essais) : un d3d9.dll pris avant celui du runtime.
 est_dxvk() { LC_ALL=C grep -q -a -i dxvk "$1" 2>/dev/null; }
+api_d3d9() { # oui si la fiche dit le jeu D3D9
+   ad_a=$(profil api)
+   if [ -n "$ad_a" ]; then [ "$ad_a" = d3d9 ] && echo oui; return 0; fi
+   case " $(profil api_disponibles) " in
+      *" d3d10"*|*" d3d11 "*|*" d3d12 "*|*" vulkan "*) ;;
+      *" d3d9 "*) echo oui ;;
+   esac
+}
 D3D9=$(opt d3d9 CIDRE_D3D9)
 case $D3D9 in
    dxvk|wined3d) ;;
-   *) if est_pe32 "$DOSSIER/$PROG"; then D3D9=dxvk; else D3D9=wined3d; fi ;;
+   *) if est_pe32 "$DOSSIER/$PROG" || [ "$(api_d3d9)" = oui ]; then D3D9=dxvk; else D3D9=wined3d; fi ;;
 esac
 if [ "$D3D9" = dxvk ]; then
    if est_pe32 "$DOSSIER/$PROG"; then
@@ -916,11 +932,21 @@ if [ "$D3D9" = dxvk ]; then
          poser "$D9" "$SYSWOW/d3d9.dll"
          echo "    d3d9  : dxvk i386 pose depuis $(dirname "$D9")" >>"$JOURNAL"
       fi
-   elif ! est_dxvk "$SYS32/d3d9.dll"; then
-      echo "    d3d9  : dxvk demande mais system32/d3d9.dll n'est pas celui de DXVK (cidre setup) : wined3d" >>"$JOURNAL"
-      D3D9=wined3d
    else
-      echo "    d3d9  : dxvk (arm64ec, system32)" >>"$JOURNAL"
+      D9=
+      for cand in ${CIDRE_DXVK64_DIR:+"$CIDRE_DXVK64_DIR/d3d9.dll"} "$R/dxvk/async/d3d9.dll" "$R/dxvk/stock/d3d9.dll" \
+                  "$R/build/dxvk-async-winarm64ec/src/d3d9/d3d9.dll" "$R/build/dxvk-winarm64ec/src/d3d9/d3d9.dll"; do
+         [ -f "$cand" ] && est_dxvk "$cand" && { D9=$cand; break; }
+      done
+      if [ -n "$D9" ] && [ -d "$SYS32" ]; then
+         poser "$D9" "$SYS32/d3d9.dll"
+         echo "    d3d9  : dxvk arm64ec pose depuis $(dirname "$D9")" >>"$JOURNAL"
+      elif est_dxvk "$SYS32/d3d9.dll"; then
+         echo "    d3d9  : dxvk (arm64ec, system32)" >>"$JOURNAL"
+      else
+         echo "    d3d9  : dxvk demande mais pas de d3d9.dll arm64ec de DXVK (ni $R/dxvk/async ni build/dxvk-async-winarm64ec) : wined3d" >>"$JOURNAL"
+         D3D9=wined3d
+      fi
    fi
 fi
 [ "$D3D9" = dxvk ] && D3D9_OV="d3d9=n" || D3D9_OV="d3d9=b"
@@ -928,6 +954,7 @@ case ";${CIDRE_DLL_OVERRIDES:-};" in
    *";d3d9="*) : ;;
    *) export CIDRE_DLL_OVERRIDES="${CIDRE_DLL_OVERRIDES:+$CIDRE_DLL_OVERRIDES;}$D3D9_OV" ;;
 esac
+# --- d3d9 : fin ---
 
 # Journal detaille : par defaut on fait taire Wine (WINEDEBUG=-all), ce qui rend
 # muet aussi un Wine qui ne demarre pas. journal_detaille = true lui laisse ses
@@ -1004,6 +1031,7 @@ if [ -n "${SteamAppId:-}" ] && [ -f "$TABLE" ]; then
          # loin (§284).
          DOSSIER=$RACINE; PROG=$CIBLE
          set --
+         unset CIDRE_DOSSIER_TRAVAIL
       else
          echo "    table  : $CIBLE introuvable, on garde $PROG" >>"$JOURNAL"
       fi
@@ -1127,6 +1155,13 @@ $AJOUTS
 FIN_ARGUMENTS
    echo "    profil : arguments du jeu : $ARGJ" >>"$JOURNAL"
 fi
+
+#   dependances : redistribuables que la fiche note (verbes facon winetricks,
+#     import CrossOver). Aucun installeur ne les pose encore (profils/README.md,
+#     « dependances ») : on les nomme au journal, pour qu'un jeu qui en meurt
+#     le dise.
+DEPS=$(profil dependances)
+[ -z "$DEPS" ] || echo "    profil : dependances notees par la fiche, NON posees (pas d'installeur) : $DEPS" >>"$JOURNAL"
 
 # Sauvegardes. Steam d'abord : si le jeu ecrit par l'API Remote Storage, ou
 # declare a Steam Cloud un dossier pour macOS (le dossier du prefixe y est lie
@@ -1262,7 +1297,18 @@ fi
 if [ $BNET = oui ]; then
    CIDRE_BNET_JOURNAL=$JOURNAL CIDRE_OVERLAY_DYLIB= sh "$R/tests/battlenet.sh" jouer "$JEU" "$@" >>"$JOURNAL" 2>&1 && RC=0 || RC=$?
 else
-   CIDRE_OVERLAY_DYLIB=$OVERLAY sh "$R/tests/etape2_pile_arm64ec.sh" "$PROG" "$@" >>"$JOURNAL" 2>&1 && RC=0 || RC=$?
+   # Dossier de travail de la configuration de lancement Steam (workingdir,
+   # passe par `cidre play` : CIDRE_DOSSIER_TRAVAIL), quand il n'est pas celui
+   # de l'executable -- Portal, Half-Life 2 : hl2.exe a la racine, lance depuis
+   # bin. L'executable est alors donne par son chemin complet.
+   LANCE=$PROG
+   if [ -n "${CIDRE_DOSSIER_TRAVAIL:-}" ] && [ -d "$CIDRE_DOSSIER_TRAVAIL" ] &&
+      [ "$(cd "$CIDRE_DOSSIER_TRAVAIL" && pwd -P)" != "$(pwd -P)" ]; then
+      cd "$CIDRE_DOSSIER_TRAVAIL"
+      LANCE=$DOSSIER/$PROG
+      echo "    travail : $CIDRE_DOSSIER_TRAVAIL (configuration de lancement Steam)" >>"$JOURNAL"
+   fi
+   CIDRE_OVERLAY_DYLIB=$OVERLAY sh "$R/tests/etape2_pile_arm64ec.sh" "$LANCE" "$@" >>"$JOURNAL" 2>&1 && RC=0 || RC=$?
 fi
 [ -z "$ETAT_STEAM" ] || sh "$R/tests/client_steam_natif.sh" rendre "$ETAT_STEAM" >>"$JOURNAL" 2>&1 || true
 # Le jeu est sorti : le client de service n'a plus de raison d'etre. Une fois

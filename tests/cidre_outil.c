@@ -4,6 +4,7 @@
  *    cidre-outil bibliotheque [--texte] [--sans-rosetta] [--bouteilles <liste|->] [--mac32|--mac64|--macarm|--macx64 <appid,...>] <licences.txt> [appid installe ...]
  *    cidre-outil builds <appinfo.vdf> <appid ...>
  *    cidre-outil plateformes <appinfo.vdf> <appid ...>
+ *    cidre-outil lancement <appinfo.vdf|appinfo.txt> <appid> [--os windows] [--arch 64|32] [--branche <nom>] [--exe <chemin>] [--toutes]
  *    cidre-outil seance <appid>
  *
  * Livre construit dans le runtime (build/cidre-outil) : un Mac sans outils de
@@ -57,6 +58,24 @@
  * sans reseau ni SteamCMD, le client Steam suivant les fiches de son compte.
  * Un jeu absent du cache, ou sans branche publique, ne donne pas de ligne ; un
  * fichier illisible ou d'un autre format, rien du tout (code 1).
+ *
+ * lancement -- l'entree de la configuration de lancement d'un jeu
+ * (config/launch/<n>) que le client Steam lancerait, pour `cidre play` d'un
+ * jeu du dossier Cidre. Source : le cache du client (appinfo.vdf, binaire) ou
+ * la sortie `app_info_print` de SteamCMD (texte, le cache de `cidre`). Entrees
+ * retenues : celles de l'OS (--os, windows ; sans oslist : toutes), de
+ * l'architecture (--arch, 64, qui accepte aussi le 32), de la branche
+ * installee (--branche ; betakey, « default » valant la publique), sans
+ * ownsdlc, de type default, none ou sans type, ou option<n> ; server, editor,
+ * config, vr... jamais. Choix : l'exe impose (--exe, celui de la fiche) s'il
+ * est l'exe d'une entree retenue, sinon aucune ; puis le lancement par defaut
+ * avant les options ; sur une autre branche que la publique, l'entree qui lui
+ * est propre ; l'architecture du systeme (ou aucune) avant l'autre ; enfin la
+ * premiere du fichier. Sortie : des lignes `cle=valeur` (entree, type, exe,
+ * dossier, description, arguments), puis une ligne `arg=` par argument,
+ * decoupes comme CommandLineToArgvW ; --toutes : une ligne TAB par entree
+ * (choisie, possible ou ecartee). Codes : 0, 3 jeu absent de la source, 4
+ * aucune entree retenue, 1 fichier illisible.
  *
  * seance -- ouvre puis ferme une seance Steam au nom d'un jeu, sans le lancer.
  * Le client Steam de macOS ne synchronise Steam Cloud au lancement que pour les
@@ -1015,6 +1034,368 @@ static int cmd_plateformes(int argc, char **argv)
    return fflush(stdout) || ferror(stdout) ? 1 : 0;
 }
 
+/* --------------------------------------------------------------- lancement */
+
+/* Les entrees de lancement d'un jeu (config/launch/<n>), comme le client Steam
+ * les choisit (voir l'en-tete). */
+enum { ENTREES_MAX = 64 };
+
+typedef struct {
+   const char *n, *exe, *args, *dossier, *type, *description, *os, *arch, *beta, *dlc;
+} Entree;
+
+typedef struct {
+   Entree v[ENTREES_MAX];
+   int n;
+} Entrees;
+
+static void visite_lancement(Lecteur *L, int prof, const char *cle, int type, const char *chaine, int64_t entier)
+{
+   Entrees *e = L->ctx;
+   int base = prof >= 1 && !strcmp(L->cles[0], "appinfo");
+   if (prof < base + 2 || strcmp(L->cles[base], "config") || strcmp(L->cles[base + 1], "launch"))
+      return;
+   if (prof == base + 2) {
+      if (type == VDF_DICT && e->n < ENTREES_MAX)
+         e->v[e->n++] = (Entree){ .n = cle };
+      return;
+   }
+   if (!e->n || L->cles[base + 2] != e->v[e->n - 1].n)
+      return;
+   Entree *x = &e->v[e->n - 1];
+   if (type == VDF_ENTIER) {
+      /* ownsdlc en entier, parfois */
+      if (prof == base + 4 && !strcmp(L->cles[base + 3], "config") && !strcasecmp(cle, "ownsdlc") && entier)
+         x->dlc = "?";
+      return;
+   }
+   if (type != VDF_CHAINE)
+      return;
+   if (prof == base + 3) {
+      if (!strcasecmp(cle, "executable"))
+         x->exe = chaine;
+      else if (!strcasecmp(cle, "arguments"))
+         x->args = chaine;
+      else if (!strcasecmp(cle, "workingdir"))
+         x->dossier = chaine;
+      else if (!strcasecmp(cle, "type"))
+         x->type = chaine;
+      else if (!strcasecmp(cle, "description"))
+         x->description = chaine;
+   } else if (prof == base + 4 && !strcmp(L->cles[base + 3], "config")) {
+      if (!strcasecmp(cle, "oslist"))
+         x->os = chaine;
+      else if (!strcasecmp(cle, "osarch"))
+         x->arch = chaine;
+      else if (!strcasecmp(cle, "betakey"))
+         x->beta = chaine;
+      else if (!strcasecmp(cle, "ownsdlc"))
+         x->dlc = chaine;
+   }
+}
+
+/* un element de `liste` (separee par des virgules ou des espaces), sans casse */
+static int dans_liste_souple(const char *liste, const char *mot)
+{
+   size_t m = strlen(mot);
+   for (const char *p = liste ? liste : ""; *p;) {
+      size_t l = strcspn(p, ", ");
+      if (l == m && !strncasecmp(p, mot, l))
+         return 1;
+      p += l + (p[l] ? 1 : 0);
+   }
+   return 0;
+}
+
+/* 2 : lancement par defaut (default, none, sans type) ; 1 : une option de la
+ * fenetre de choix (option1, option2...) ; 0 : rien que Steam lance de
+ * lui-meme (server, editor, manual, config, vr, benchmark...) */
+static int genre_lancement(const char *t)
+{
+   if (!t || !*t || !strcasecmp(t, "default") || !strcasecmp(t, "none"))
+      return 2;
+   if (!strncasecmp(t, "option", 6))
+      return 1;
+   return 0;
+}
+
+static void champ(const char *s)
+{
+   for (; s && *s; s++)
+      putchar(*s == '\t' || *s == '\n' || *s == '\r' ? ' ' : *s);
+}
+
+/* La sortie de `app_info_print` de SteamCMD (le cache texte de `cidre`) :
+ * « AppID : <n>, ... » puis "<n>" { ... } en VDF texte. Le bloc de l'appid
+ * voulu est lu en place (chaines rendues a leurs octets, \\ et \" compris),
+ * sa racine etant le contenu du bloc, comme `common` et `config` dans le
+ * fichier binaire. Rend 0, ou -1 s'il n'y est pas. */
+static char *vdf_jeton(char **p, char *fin, int *genre)
+{
+   char *s = *p;
+   while (s < fin) {
+      if (isspace((unsigned char)*s))
+         s++;
+      else if (s + 1 < fin && s[0] == '/' && s[1] == '/')
+         while (s < fin && *s != '\n')
+            s++;
+      else
+         break;
+   }
+   if (s >= fin)
+      return *p = s, *genre = 0, NULL;
+   if (*s == '{' || *s == '}') {
+      *genre = *s;
+      *p = s + 1;
+      return s;
+   }
+   if (*s != '"')
+      return *p = fin, *genre = 0, NULL;
+   char *debut = ++s, *o = s;
+   while (s < fin && *s != '"') {
+      if (*s == '\\' && s + 1 < fin) {
+         s++;
+         *o++ = *s == 'n' ? '\n' : *s == 't' ? '\t' : *s;
+         s++;
+      } else
+         *o++ = *s++;
+   }
+   if (s >= fin)
+      return *p = fin, *genre = 0, NULL;
+   *o = 0;
+   *p = s + 1;
+   *genre = '"';
+   return debut;
+}
+
+static int vdf_texte_lire(Lecteur *L, char **p, char *fin, int prof)
+{
+   for (;;) {
+      int g;
+      char *cle = vdf_jeton(p, fin, &g);
+      if (g == '}' || g == 0)
+         return g == '}' || prof == 0 ? 0 : -1;
+      if (g != '"' || prof >= PROF_MAX - 1)
+         return -1;
+      char *val = vdf_jeton(p, fin, &g);
+      if (g == '{') {
+         L->visite(L, prof, cle, VDF_DICT, NULL, 0);
+         L->cles[prof] = cle;
+         if (vdf_texte_lire(L, p, fin, prof + 1))
+            return -1;
+      } else if (g == '"')
+         L->visite(L, prof, cle, VDF_CHAINE, val, 0);
+      else
+         return -1;
+   }
+}
+
+static int lire_appinfo_texte(unsigned char *d, size_t n, uint32_t voulu, Lecteur *L)
+{
+   char motif[32];
+   snprintf(motif, sizeof motif, "AppID : %u,", voulu);
+   char *p = (char *)d, *fin = (char *)d + n;
+   for (; (p = strstr(p, motif)); p++)
+      if (p == (char *)d || p[-1] == '\n')
+         break;
+   if (!p)
+      return -1;
+   int g;
+   p = strchr(p, '\n');
+   if (!p)
+      return -1;
+   char *cle = vdf_jeton(&p, fin, &g);
+   if (g != '"' || strtoul(cle, NULL, 10) != voulu)
+      return -1;
+   vdf_jeton(&p, fin, &g);
+   if (g != '{')
+      return -1;
+   return vdf_texte_lire(L, &p, fin, 0) ? -1 : 0;
+}
+
+/* Les arguments d'une ligne de commande Windows, un par ligne, selon les
+ * regles de CommandLineToArgvW : les blancs separent, les guillemets
+ * groupent ; 2n barres obliques inverses suivies d'un guillemet en donnent n
+ * (le guillemet groupe), 2n+1 en donnent n et un guillemet ; sinon elles
+ * restent telles quelles. */
+static void arguments_windows(const char *s)
+{
+   int dedans = 0, tient = 0;
+   while (s && *s) {
+      if (!dedans && (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r')) {
+         if (tient)
+            putchar('\n'), tient = 0;
+         s++;
+         continue;
+      }
+      if (!tient)
+         fputs("arg=", stdout), tient = 1;
+      if (*s == '\\') {
+         size_t b = strspn(s, "\\");
+         if (s[b] == '"') {
+            for (size_t i = 0; i < b / 2; i++)
+               putchar('\\');
+            if (b % 2)
+               putchar('"');
+            else
+               dedans = !dedans;
+            s += b + 1;
+         } else {
+            for (size_t i = 0; i < b; i++)
+               putchar('\\');
+            s += b;
+         }
+      } else if (*s == '"') {
+         /* "" dans un groupe : un guillemet */
+         if (dedans && s[1] == '"')
+            putchar('"'), s += 2;
+         else
+            dedans = !dedans, s++;
+      } else {
+         putchar(*s == '\t' || *s == '\n' || *s == '\r' ? ' ' : *s);
+         s++;
+      }
+   }
+   if (tient)
+      putchar('\n');
+}
+
+/* deux chemins relatifs au dossier du jeu, a la casse et au separateur pres */
+static int meme_chemin(const char *a, const char *b)
+{
+   while (*a == '.' && (a[1] == '/' || a[1] == '\\'))
+      a += 2;
+   while (*b == '.' && (b[1] == '/' || b[1] == '\\'))
+      b += 2;
+   for (; *a && *b; a++, b++) {
+      char x = *a == '\\' ? '/' : (char)tolower((unsigned char)*a);
+      char y = *b == '\\' ? '/' : (char)tolower((unsigned char)*b);
+      if (x != y)
+         return 0;
+   }
+   return !*a && !*b;
+}
+
+static const char USAGE_LANCEMENT[] =
+   "usage: cidre-outil lancement <appinfo.vdf|appinfo.txt> <appid> [--os windows] [--arch 64|32] [--branche <nom>] [--exe <chemin>] [--toutes]\n";
+
+static int cmd_lancement(int argc, char **argv)
+{
+   const char *os = "windows", *arch = "64", *branche = "", *exe = NULL, *chemin = NULL;
+   int toutes = 0;
+   uint32_t voulu = 0;
+   for (int i = 0; i < argc; i++) {
+      if (!strcmp(argv[i], "--toutes"))
+         toutes = 1;
+      else if (!strcmp(argv[i], "--os") && i + 1 < argc)
+         os = argv[++i];
+      else if (!strcmp(argv[i], "--arch") && i + 1 < argc)
+         arch = argv[++i];
+      else if (!strcmp(argv[i], "--branche") && i + 1 < argc)
+         branche = argv[++i];
+      else if (!strcmp(argv[i], "--exe") && i + 1 < argc)
+         exe = argv[++i];
+      else if (!chemin)
+         chemin = argv[i];
+      else if (!voulu && que_des_chiffres(argv[i]))
+         voulu = (uint32_t)strtoul(argv[i], NULL, 10);
+      else
+         return fputs(USAGE_LANCEMENT, stderr), 2;
+   }
+   if (!chemin || !voulu)
+      return fputs(USAGE_LANCEMENT, stderr), 2;
+   Entrees e = { 0 };
+   Lecteur L = { .visite = visite_lancement, .ctx = &e };
+   size_t n;
+   unsigned char *d = lire_fichier(chemin, &n);
+   if (!d) {
+      perror(chemin);
+      return 1;
+   }
+   if (n >= 4 && u32(d) >> 8 == 0x075644) {
+      free(d);
+      AppInfo a;
+      if (ouvrir_appinfo(chemin, &a))
+         return 1;
+      for (;;) {
+         uint32_t appid, date;
+         size_t debut, fin;
+         if (entree_suivante(&a, &appid, &debut, &fin, &date)) {
+            fprintf(stderr, "appinfo.vdf : fichier tronque\n");
+            return 1;
+         }
+         if (appid == 0)
+            return 3; /* absent du cache */
+         if (appid != voulu || debut >= fin)
+            continue;
+         L.d = a.d, L.pos = debut, L.fin = fin, L.table = a.table, L.ntable = a.ntable;
+         if (vdf_lire(&L, 0))
+            return 1;
+         break;
+      }
+   } else if (lire_appinfo_texte(d, n, voulu, &L))
+      return 3;
+   /* les entrees que le client propose sur ce systeme : son OS (sans oslist :
+    * tous), son architecture (un systeme 64 bits lance aussi le 32 bits), la
+    * branche installee (betakey ; « default » vaut la publique), sans DLC
+    * exige (ownsdlc : la possession n'est pas connue ici) */
+   int ok[ENTREES_MAX] = { 0 }, choix = -1, rang_choix = 0;
+   int publique = !*branche || !strcasecmp(branche, "public");
+   if (publique)
+      branche = "public";
+   for (int i = 0; i < e.n; i++) {
+      const Entree *x = &e.v[i];
+      int g = genre_lancement(x->type);
+      if (!x->exe || !*x->exe || !g)
+         continue;
+      if (x->os && *x->os && !dans_liste_souple(x->os, os))
+         continue;
+      if (x->arch && *x->arch && strcmp(x->arch, arch) && !(!strcmp(arch, "64") && !strcmp(x->arch, "32")))
+         continue;
+      if (x->beta && *x->beta && !dans_liste_souple(x->beta, branche) &&
+          !(publique && dans_liste_souple(x->beta, "default")))
+         continue;
+      if (x->dlc && *x->dlc && strcmp(x->dlc, "0"))
+         continue;
+      /* rang : l'exe impose (--exe, celui de la fiche) d'abord ; puis le
+       * lancement par defaut avant les options ; puis, sur une branche autre
+       * que la publique, l'entree qui lui est propre ; puis l'entree de
+       * l'architecture du systeme, ou sans architecture, avant celle d'une
+       * autre (le 32 bits d'une paire 32/64) ; a egalite, la premiere du
+       * fichier, comme la fenetre de choix du client */
+      int r = (exe && meme_chemin(exe, x->exe) ? 32 : 0) + g * 8 + (!publique && x->beta && *x->beta ? 4 : 0) +
+              (!x->arch || !*x->arch || !strcmp(x->arch, arch) ? 2 : 0);
+      ok[i] = 1;
+      if (r > rang_choix)
+         choix = i, rang_choix = r;
+   }
+   /* un exe impose que Steam ne lance par aucune entree : pas d'entree (ses
+    * arguments et son dossier ne sont pas ceux de cet exe) */
+   if (exe && choix >= 0 && rang_choix < 32)
+      choix = -1;
+   if (toutes) {
+      for (int i = 0; i < e.n; i++) {
+         const Entree *x = &e.v[i];
+         printf("%s\t", i == choix ? "choisie" : ok[i] ? "possible" : "ecartee");
+         champ(x->n), putchar('\t'), champ(x->type), putchar('\t'), champ(x->os), putchar('\t');
+         champ(x->arch), putchar('\t'), champ(x->beta), putchar('\t'), champ(x->exe), putchar('\t');
+         champ(x->args), putchar('\t'), champ(x->dossier), putchar('\t'), champ(x->description), putchar('\n');
+      }
+   } else if (choix >= 0) {
+      const Entree *x = &e.v[choix];
+      fputs("entree=", stdout), champ(x->n), putchar('\n');
+      fputs("type=", stdout), champ(x->type && *x->type ? x->type : "default"), putchar('\n');
+      fputs("exe=", stdout), champ(x->exe), putchar('\n');
+      fputs("dossier=", stdout), champ(x->dossier), putchar('\n');
+      fputs("description=", stdout), champ(x->description), putchar('\n');
+      fputs("arguments=", stdout), champ(x->args), putchar('\n');
+      arguments_windows(x->args);
+   }
+   if (fflush(stdout) || ferror(stdout))
+      return 1;
+   return choix < 0 ? 4 : 0;
+}
+
 /* --- seance ------------------------------------------------------------- */
 
 static int cmd_seance(const char *appid)
@@ -1067,12 +1448,15 @@ int main(int argc, char **argv)
       return cmd_builds(argc - 2, argv + 2);
    if (argc >= 3 && !strcmp(argv[1], "plateformes"))
       return cmd_plateformes(argc - 2, argv + 2);
+   if (argc >= 4 && !strcmp(argv[1], "lancement"))
+      return cmd_lancement(argc - 2, argv + 2);
    if (argc == 3 && !strcmp(argv[1], "seance"))
       return cmd_seance(argv[2]);
    fprintf(stderr, "usage: cidre-outil session <steamcmd.sh> <arguments...>\n"
                    "       cidre-outil bibliotheque [--texte] [--sans-rosetta] [--bouteilles <liste|->] [--mac32|--mac64|--macarm|--macx64 <appid,...>] <licences.txt> [appid installe ...]\n"
                    "       cidre-outil builds <appinfo.vdf> <appid ...>\n"
                    "       cidre-outil plateformes <appinfo.vdf> <appid ...>\n"
+                   "       cidre-outil lancement <appinfo.vdf|appinfo.txt> <appid> [--os windows] [--arch 64|32] [--branche <nom>] [--exe <chemin>] [--toutes]\n"
                    "       cidre-outil seance <appid>\n");
    return 2;
 }

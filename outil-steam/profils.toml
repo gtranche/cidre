@@ -254,7 +254,10 @@
 #   dll_overrides    overrides DLL propres au jeu, format Wine "a,b=n;c=b" (n natif,
 #                    b builtin, = disable). Ajoutes aux overrides par defaut. APPLIQUE.
 #   dependances      redistribuables requis, verbes facon winetricks separes par des
-#                    espaces (ex. "vcrun2022 dotnet48"). Pour l'installeur (a venir).
+#                    espaces (ex. "vcrun2022 dotnet48"). NON APPLIQUE : aucun installeur
+#                    ne les pose (il faudrait telecharger les redistribuables de
+#                    Microsoft) ; le lanceur les nomme au journal (« dependances notees
+#                    par la fiche, NON posees »).
 #   moteur           moteur du jeu : unity, unreal, hashlink, stingray, godot...
 #   anticheat        none, eac, battleye, denuvo. eac/battleye EN LIGNE = mur.
 #   etat             compat testee ICI : or (parfait), argent (jouable, limites),

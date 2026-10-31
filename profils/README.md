@@ -110,6 +110,33 @@ Exemple mesuré (2026-10-14, PEAK en vrai D3D12, même vue) : Unity rend par
 défaut en ~120 listes de commandes par image, que KosmicKrisp ne peut pas
 fusionner ; avec `-force-gfx-direct`, 2 listes par image, et 32 → 45 images/s.
 
+### Lancement d'un jeu du dossier Cidre : la configuration de Steam
+
+Un jeu téléchargé par Cidre (`cidre dl`, hors du client) est lancé comme le
+ferait le client Steam, d'après la configuration de lancement du jeu
+(`config/launch` de l'appinfo : le cache du client, `appcache/appinfo.vdf`, lu
+sans rien y écrire, sinon la fiche lue par SteamCMD). L'entrée retenue est
+celle de Windows (une entrée sans `oslist` vaut pour tous), de l'architecture
+du système (64 bits, qui lance aussi le 32 bits ; d'une paire 32/64, celle de
+64), de la branche installée (`betakey` ; `default` vaut la branche publique),
+sans DLC exigé (`ownsdlc`), de type `default`, `none` ou sans type avant les
+options de la fenêtre de choix (`option1`…), la première à égalité ; jamais
+`server`, `editor`, `config`, `vr`… Son exécutable (retrouvé à la casse près,
+sous-dossier compris : `GameData\jasp.exe`, `beyond the sword\…`), ses
+arguments (`-game portal -steam`, découpés comme Windows, devant ceux de
+`cidre play <id> -- …`) et son dossier de travail (`workingdir`, ici `bin` pour
+Portal et Half-Life 2) sont ceux du lancement. `cidre-outil lancement
+<appinfo> <appid> --toutes` montre toutes les entrées et le choix.
+
+La fiche prime : `[jeu] exe`, s'il est sur le disque, remplace l'exécutable de
+Steam ; les arguments et le dossier de travail de Steam ne valent alors que si
+une entrée lance ce même exécutable (Civilization V : `exe =
+"CivilizationV_DX11.exe"` prend l'entrée `option2`). `[jeu] arguments_steam =
+false` retire les arguments de Steam ; ceux de `arguments` (`[cidre]`) et de la
+ligne de commande restent. Sans entrée utilisable (jeu absent des deux caches,
+exécutable de Steam absent du disque), le premier `.exe` de la racine qui n'est
+pas un lanceur, comme avant.
+
 ### Clavier AZERTY : les touches à leur place (`clavier`)
 
 Un jeu qui lit les codes virtuels de Windows (`VK_W`, `WM_KEYDOWN` : Unreal,
@@ -240,7 +267,8 @@ Les commentaires commencent par `#`.
 [jeu]
 appid = 1903340                    # entier ; l'id Steam, ou "local-..." (chaîne) hors Steam
 nom = "Clair Obscur: Expedition 33"
-exe = "Expedition33_Steam.exe"     # relatif au dossier du jeu
+exe = "Expedition33_Steam.exe"     # relatif au dossier du jeu ; prime sur l'exe de la configuration Steam
+arguments_steam = true             # optionnel : false retire les arguments de la configuration Steam
 moteur = "unreal"                  # unity, unreal, hashlink, stingray, godot, source, autre
 api = "d3d11"                      # d3d11, d3d12, opengl, vulkan (ce que le jeu demande d'abord)
 bits = 64                          # 32 ou 64
@@ -255,7 +283,8 @@ lanceur = "steam"                  # steam, epic, gog, battlenet (id bnet-<code>
 # langue, journal_detaille, maj_avant_lancement, tso, tso_sans, tso_msvc, sync_local, vsync, hud, overlay, async, narrow_barriers,
 # garde_index, fils_compilation, eac_untrusted, luajit, plein_ecran, mode_emule, gamemode,
 # dx12, d3d11, d3d9, metalfx, dlss, generation_images, clavier, deck, fex_cache_disque, fex_x87_reduit, fex_maxinst, fex_multiblock,
-# arguments, exe_sans_anticheat, dll_overrides, windows_version, knowndlls, sortie_normale, sortie_normale_apres, dependances.
+# arguments, exe_sans_anticheat, dll_overrides, windows_version, knowndlls, sortie_normale, sortie_normale_apres, dependances
+# (dependances : NON appliquee, aucun installeur ; le lanceur la nomme au journal).
 # On n'y met que ce qui diffère de [defaut].
 async = true
 fils_compilation = 6
@@ -341,7 +370,11 @@ Sens des champs :
 
 - `[jeu]` identifie le jeu : `appid`, `nom`, `exe`, `moteur`, `api`, `bits`,
   `anticheat`, `lanceur`. Données, jamais exécutées : le lanceur prend
-  l'exécutable que Steam lui donne (ou `outil-steam/jeux.conf`).
+  l'exécutable que Steam lui donne (ou `outil-steam/jeux.conf`). Pour un jeu
+  du dossier Cidre, `exe` et `arguments_steam` corrigent la configuration de
+  lancement de Steam (voir plus haut) ; `api = "d3d9"` (ou, sans `api`, d3d9
+  dans `api_disponibles` sans D3D10/11/12 ni Vulkan) fait passer un jeu 64
+  bits en DXVK arm64ec (option `d3d9`, sans choix explicite).
 - `[jeu] mac_32bits = true` : Steam distribue une version macOS, mais en 32
   bits seulement (i386, PowerPC). macOS ne la lance plus depuis Catalina et
   Rosetta 2 ne traduit pas le 32 bits : Cidre traite le jeu en Windows
@@ -1181,7 +1214,10 @@ pas d'options de lancement.
   par notre table (`vcrun2005`…`vcrun2022`, `dotnet40`, `dotnet35sp1`,
   `msxml3/4/6`, `corefonts`, `physx`, `xna40`, `d3dcompiler_47`, `wmp9`… ;
   `directx_jun2010` et `directx_feb2010` pour les redistribuables DirectX de
-  juin et février 2010). Ce qu'elle ne sait pas nommer reste cité par son
+  juin et février 2010). **Non appliqué** : aucun script ne pose ces
+  redistribuables (il faudrait les télécharger chez Microsoft) ; le lanceur
+  les nomme au journal (« dependances notees par la fiche, NON posees »), pour
+  qu'un jeu qui en meurt le dise. Ce qu'elle ne sait pas nommer reste cité par son
   identifiant dans `dependances_non_traduites` ; « DXVK (Builtin) » et les
   variables `WINED3DMETAL`/`D3DMetal` deviennent `graphismes` (le chemin que
   CrossOver prend sur Mac : une donnée, Cidre a le sien).
