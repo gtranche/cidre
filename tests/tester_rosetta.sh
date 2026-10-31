@@ -12,7 +12,9 @@
 #      presente (rien ne change), absente (le x86_64 seul bascule) et partielle ;
 #   3. des jeux non installes, d'apres le cache du client Steam (faux
 #      appinfo.vdf : osextended) et les fiches : install auto, et
-#      cidre-outil bibliotheque --sans-rosetta (cidre library).
+#      cidre-outil bibliotheque --sans-rosetta (cidre library) ;
+#   3b. [jeu] mac_arch : la fiche corrige les drapeaux de Steam (un universel
+#      declare Intel), apres le binaire installe et avant mac_32bits.
 # Rien n'est telecharge ni lance : HOME, CIDRE_DIR, le client Steam et `open`
 # sont faux, et `cidre` tourne dans une copie du depot ou tests/cidre_install.sh
 # (SteamCMD) ne fait que dire ce qu'on lui demande.
@@ -256,6 +258,47 @@ mkdir -p "$CIDRE_DIR/cache"; cp "$T/licences.txt" "$CIDRE_DIR/cache/licences.txt
 verif "cidre library --json, Rosetta presente : pas de mac_sans_rosetta" "0" "$(CIDRE_ROSETTA=presente C library --json 2>/dev/null | grep -o mac_sans_rosetta | wc -l | tr -d ' ')"
 verif "cidre library --json, Rosetta absente : le x86_64 seul, et la fiche 64 bits sans drapeau arm64" "940002 940006" "$(CIDRE_ROSETTA=absente C library --json 2>/dev/null | tr '}' '\n' | grep '"mac_sans_rosetta": true' | sed -n 's/.*"appid": \([0-9]*\).*/\1/p' | tr '\n' ' ' | sed 's/ $//')"
 verif "cidre library --json, Rosetta partielle : comme absente" "940002 940006" "$(CIDRE_ROSETTA=partielle C library --json 2>/dev/null | tr '}' '\n' | grep '"mac_sans_rosetta": true' | sed -n 's/.*"appid": \([0-9]*\).*/\1/p' | tr '\n' ' ' | sed 's/ $//')"
+
+echo "== 3b. [jeu] mac_arch : la fiche tranche l'architecture"
+# Les memes jeux, des fiches qui corrigent Steam : 940002 (macos64) est en fait
+# universel, 940003 (macosapplesilicon) en fait Intel, 940001 (sans drapeau)
+# en fait x86_64 ; 940008 (absent du cache) en i386 ; 940009 dit mac_32bits =
+# true mais mac_arch = "arm64" (mac_arch prime).
+fiche() { printf '[jeu]\nappid = %s\nnom = "Fiche %s"\n%s\n' "$1" "$1" "$2" >"$CIDRE_PROFILS_BASE/$1.toml"; }
+fiche 940001 'mac_arch = "x86_64"'
+fiche 940002 'mac_arch = "universel"'
+fiche 940003 'mac_arch = "x86_64"'
+fiche 940008 'mac_arch = "i386"'
+fiche 940009 "$(printf 'mac_32bits = true\nmac_arch = "arm64"')"
+verif "la fiche se lit : mac_arch" "universel" "$(sh "$R/tests/fiche_profil.sh" toml "$CIDRE_PROFILS_BASE/940002.toml" | awk -F'\t' '$1 == "jeu" && $2 == "mac_arch" { print $4 }')"
+for ro in presente absente; do
+   r=
+   for a in 940001 940002 940003 940008 940009; do r="$r$a:$(CIDRE_ROSETTA=$ro C install $a 2>/dev/null | awk '{ print ($3 == "" ? "auto" : $3) }') "; done
+   case $ro in
+      presente) attendu="940001:auto 940002:auto 940003:auto 940008:windows 940009:auto " ;;
+      absente)  attendu="940001:windows 940002:auto 940003:windows 940008:windows 940009:auto " ;;
+   esac
+   verif "install auto ($ro), d'apres mac_arch" "$attendu" "$r"
+done
+verif "install macos d'un universel de fiche, sans Rosetta : accepte" "0" "$(CIDRE_ROSETTA=absente C install 940002 macos >/dev/null 2>&1; echo $?)"
+verif "dl macos d'un i386 de fiche : refuse (code 9)" "9" "$(CIDRE_ROSETTA=presente C dl 940008 macos >/dev/null 2>&1; echo $?)"
+# le binaire installe passe avant la fiche
+fiche 930002 'mac_arch = "arm64"'
+fiche 930003 'mac_arch = "x86_64"'
+verif "binaire installe prime : x86_64 malgre mac_arch arm64, sans Rosetta" "cidre_install 930002 windows" "$(CIDRE_ROSETTA=absente C install 930002 2>/dev/null)"
+verif "binaire installe prime : arm64 malgre mac_arch x86_64, sans Rosetta" "cidre_install 930003" "$(CIDRE_ROSETTA=absente C install 930003 2>/dev/null)"
+rm -f "$CIDRE_PROFILS_BASE/930002.toml" "$CIDRE_PROFILS_BASE/930003.toml"
+# une valeur inconnue : ignoree
+fiche 940002 'mac_arch = "ppc64"'
+verif "mac_arch inconnue : ignoree (Steam : x86_64)" "cidre_install 940002 windows" "$(CIDRE_ROSETTA=absente C install 940002 2>/dev/null)"
+fiche 940002 'mac_arch = "universel"'
+# cidre library : --mac32/--mac64/--macarm/--macx64 d'apres les fiches
+printf 'License packageID 1:\n - Apps    : 940001, 940002, 940003, 940004, 940005, 940006, 940009, (7 in total)\n' >"$CIDRE_DIR/cache/licences.txt"
+lib() { CIDRE_ROSETTA=$1 C library --json 2>/dev/null | tr '}' '\n' | grep "\"$2\": true" | sed -n 's/.*"appid": \([0-9]*\).*/\1/p' | sort | tr '\n' ' ' | sed 's/ $//'; }
+verif "library, Rosetta presente : aucun mac_32bits (940001 corrige en x86_64, 940006 par mac_32bits = false, 940009 arm64)" "" "$(lib presente mac_32bits)"
+verif "library, Rosetta presente : aucun mac_sans_rosetta" "" "$(lib presente mac_sans_rosetta)"
+verif "library, Rosetta absente : mac_sans_rosetta d'apres les fiches" "940001 940003 940006" "$(lib absente mac_sans_rosetta)"
+verif "cidre-outil : --macx64 l'emporte sur macosapplesilicon, --macarm sur macos64" "940003" "$("$O" bibliotheque --sans-rosetta --macarm 940002, --macx64 940003, "$T/licences.txt" | tr '}' '\n' | grep '"mac_sans_rosetta": true' | sed -n 's/.*"appid": \([0-9]*\).*/\1/p' | tr '\n' ' ' | sed 's/ $//')"
 
 echo "== 4. syntaxe"
 sh -n "$R/cidre" && ok "sh -n cidre" || echec "sh -n cidre"

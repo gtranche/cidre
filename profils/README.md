@@ -245,6 +245,7 @@ moteur = "unreal"                  # unity, unreal, hashlink, stingray, godot, s
 api = "d3d11"                      # d3d11, d3d12, opengl, vulkan (ce que le jeu demande d'abord)
 bits = 64                          # 32 ou 64
 mac_32bits = true                  # optionnel : la version macOS n'existe qu'en 32 bits
+mac_arch = "universel"             # optionnel : arm64, universel, x86_64 ou i386 (prime sur mac_32bits)
 anticheat = "none"                 # none, eac, battleye, denuvo, vac
 lanceur = "steam"                  # steam, epic, gog, battlenet (id bnet-<code>, tests/battlenet.sh), aucun
 
@@ -353,6 +354,13 @@ Sens des champs :
   corrige un éditeur qui n'a pas coché la case. Un jeu installé se juge
   d'abord sur ses binaires (`file`), puis sur la fiche, puis sur le cache du
   client Steam (`cidre-outil plateformes`).
+- `[jeu] mac_arch` (posé à la main) : l'architecture de la version macOS,
+  `"arm64"`, `"universel"` (compte pour arm64), `"x86_64"` (Intel seulement)
+  ou `"i386"` (32 bits). Elle passe avant `mac_32bits` et avant le cache du
+  client Steam, mais après les binaires installés. Pour un éditeur qui ne
+  coche pas `macosapplesilicon` : sans Rosetta 2, Cidre prendrait sinon la
+  version Windows d'un jeu universel (Hollow Knight). `"i386"` vaut
+  `mac_32bits = true`, `"x86_64"` et `"arm64"` valent `mac_32bits = false`.
 - `[cidre]` : les options de lancement. `moteur`, `anticheat` (de `[jeu]`),
   `etat` et `source` (de `[compat]`) sont aussi rendus par `profil_cidre.sh`,
   à plat, comme avant la migration.

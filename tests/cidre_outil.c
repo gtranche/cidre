@@ -1,7 +1,7 @@
 /* cidre-outil : ce que le script `cidre` ne sait pas faire en sh.
  *
  *    cidre-outil session <steamcmd.sh> <arguments de SteamCMD...>
- *    cidre-outil bibliotheque [--texte] [--sans-rosetta] [--bouteilles <liste|->] [--mac32|--mac64 <appid,...>] <licences.txt> [appid installe ...]
+ *    cidre-outil bibliotheque [--texte] [--sans-rosetta] [--bouteilles <liste|->] [--mac32|--mac64|--macarm|--macx64 <appid,...>] <licences.txt> [appid installe ...]
  *    cidre-outil builds <appinfo.vdf> <appid ...>
  *    cidre-outil plateformes <appinfo.vdf> <appid ...>
  *    cidre-outil seance <appid>
@@ -36,7 +36,9 @@
  * imposent la reponse (les fiches de la base de profils, `mac_32bits`).
  * --sans-rosetta (Mac Apple Silicon sans Rosetta 2) : une version macOS 64
  * bits sans `macosapplesilicon` est Intel seulement, et ne tourne pas non plus ;
- * le jeu porte "mac_sans_rosetta": true (« (intel) » en --texte).
+ * le jeu porte "mac_sans_rosetta": true (« (intel) » en --texte) ; --macarm
+ * et --macx64 <appid,...> imposent l'architecture, arm64 (ou universelle) ou
+ * Intel seulement, contre les drapeaux de Steam (les fiches, [jeu] mac_arch).
  *
  * plateformes -- pour chaque jeu demande, une ligne « appid <TAB> oslist <TAB>
  * osextended <TAB> mac_32bits (oui|non) », d'apres le cache du client Steam.
@@ -806,7 +808,7 @@ static int cmd_bibliotheque(int argc, char **argv)
 {
    int texte = 0, sans_rosetta = 0;
    Bouteilles bouteilles = { 0 };
-   Ens force32 = { 0 }, force64 = { 0 };
+   Ens force32 = { 0 }, force64 = { 0 }, forcearm = { 0 }, forcex64 = { 0 };
    for (; argc > 0 && !strncmp(argv[0], "--", 2); argc--, argv++) {
       if (!strcmp(argv[0], "--texte"))
          texte = 1;
@@ -814,6 +816,9 @@ static int cmd_bibliotheque(int argc, char **argv)
          sans_rosetta = 1;
       else if ((!strcmp(argv[0], "--mac32") || !strcmp(argv[0], "--mac64")) && argc > 1) {
          ens_ajoute_nombres(argv[0][5] == '3' ? &force32 : &force64, argv[1], argv[1] + strlen(argv[1]));
+         argc--, argv++;
+      } else if ((!strcmp(argv[0], "--macarm") || !strcmp(argv[0], "--macx64")) && argc > 1) {
+         ens_ajoute_nombres(argv[0][5] == 'a' ? &forcearm : &forcex64, argv[1], argv[1] + strlen(argv[1]));
          argc--, argv++;
       } else if (!strcmp(argv[0], "--bouteilles") && argc > 1) {
          lire_bouteilles(argv[1], &bouteilles);
@@ -837,6 +842,8 @@ static int cmd_bibliotheque(int argc, char **argv)
    ens_trie(&installes);
    ens_trie(&force32);
    ens_trie(&force64);
+   ens_trie(&forcearm);
+   ens_trie(&forcex64);
 
    /* Une licence : « License packageID <n>: », puis plus bas « - Apps : ... »,
     * la liste (peut-etre tronquee par « ... ») suivie de « (<n> in total) ». */
@@ -942,7 +949,8 @@ static int cmd_bibliotheque(int argc, char **argv)
       int m32 = j->macos && !ens_contient(&force64, j->appid) &&
                 (ens_contient(&force32, j->appid) || mac_32bits(&j->c));
       /* sans Rosetta : une version macOS Intel seulement ne tourne pas non plus */
-      int sr = sans_rosetta && j->macos && !m32 && !mac_arm64(&j->c);
+      int arm = ens_contient(&forcearm, j->appid) || (!ens_contient(&forcex64, j->appid) && mac_arm64(&j->c));
+      int sr = sans_rosetta && j->macos && !m32 && !arm;
       int installe = ens_contient(&installes, j->appid);
       const Bouteille *b = installe ? NULL : bouteille_de(&bouteilles, j->appid);
       if (texte) {
@@ -1062,7 +1070,7 @@ int main(int argc, char **argv)
    if (argc == 3 && !strcmp(argv[1], "seance"))
       return cmd_seance(argv[2]);
    fprintf(stderr, "usage: cidre-outil session <steamcmd.sh> <arguments...>\n"
-                   "       cidre-outil bibliotheque [--texte] [--sans-rosetta] [--bouteilles <liste|->] [--mac32|--mac64 <appid,...>] <licences.txt> [appid installe ...]\n"
+                   "       cidre-outil bibliotheque [--texte] [--sans-rosetta] [--bouteilles <liste|->] [--mac32|--mac64|--macarm|--macx64 <appid,...>] <licences.txt> [appid installe ...]\n"
                    "       cidre-outil builds <appinfo.vdf> <appid ...>\n"
                    "       cidre-outil plateformes <appinfo.vdf> <appid ...>\n"
                    "       cidre-outil seance <appid>\n");

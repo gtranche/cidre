@@ -736,7 +736,10 @@ fiche_jeu() { # <appid> <cle>
 # x86_64 (Intel 64 bits seulement), i386 (32 bits seulement), 64 (64 bits,
 # sans savoir si arm64 : la fiche dit mac_32bits = false et le cache du client
 # Steam manque), ou rien : on ne sait pas (pas de version macOS, ou rien qui en
-# parle). Memes sources, dans le meme ordre, que mac_32bits.
+# parle). Memes sources, dans le meme ordre, que mac_32bits ; la fiche peut
+# trancher l'architecture par [jeu] mac_arch ("arm64", "universel" -- compte
+# pour arm64 --, "x86_64" ou "i386"), qui passe avant son mac_32bits : pour un
+# editeur qui ne coche pas `macosapplesilicon` (Hollow Knight, universel).
 # Les drapeaux de Valve (`osextended`) : `macosapplesilicon` -> arm64 ;
 # `macos64`, ou `osarch` 64 -> x86_64 ; rien -> i386. Ils sont coches par
 # l'editeur, et beaucoup ne cochent rien : une partie des x86_64 sont en fait
@@ -750,6 +753,9 @@ mac_arch_brut() { # <appid>
       m3_a=$(mac_arch_installee "$m3_d")
       [ -z "$m3_a" ] || { echo "$m3_a"; return; }
    fi
+   case $(fiche_jeu "$1" mac_arch) in
+      arm64|universel) echo arm64; return ;; x86_64) echo x86_64; return ;; i386) echo i386; return ;;
+   esac
    m3_64=
    case $(fiche_jeu "$1" mac_32bits) in true) echo i386; return ;; false) m3_64=oui ;; esac
    if [ -f "$APPINFO_CLIENT" ] && outil_pret 2>/dev/null; then
@@ -813,13 +819,20 @@ mac_vers_windows() { # <appid>
 bib_rosetta() { [ "$(rosetta_etat)" = presente ] || echo --sans-rosetta; }
 MACX64_MESSAGE="Sa version Mac n'existe que pour les Mac Intel, et Rosetta 2 n'est pas sur ce Mac. Cidre installe la version Windows"
 MAC32_MESSAGE="Sa version Mac n'existe qu'en 32 bits : macOS ne la lance plus depuis Catalina (Rosetta 2 ne traduit pas le 32 bits). Cidre installe la version Windows"
-# Les fiches qui tranchent (mac_32bits = true|false), pour `cidre library` :
-# les provisoires, puis la copie livree, puis le cache (qui prime).
-fiches_mac() { # <true|false>
+# Les fiches qui tranchent, pour `cidre library` : true (32 bits), false (64
+# bits), arm64 (arm64 ou universelle), x86_64 (Intel seulement) ; d'apres [jeu] mac_arch, qui passe
+# avant mac_32bits. Les provisoires, puis la copie livree, puis le cache (qui
+# prime), cle par cle.
+fiches_mac() { # <true|false|arm64|x86_64>
    for fm_d in "${CIDRE_PROFILS_PROVISOIRES:-$CIDRE_DIR/profils-provisoires}" "$R/profils" "${CIDRE_PROFILS_BASE:-$CIDRE_DIR/profils-base}"; do
-      [ -d "$fm_d" ] && grep -E '^mac_32bits[[:space:]]*=' "$fm_d"/*.toml 2>/dev/null
-   done | sed -n 's|.*/\([0-9][0-9]*\)\.toml:mac_32bits[[:space:]]*=[[:space:]]*\([a-z]*\).*|\1 \2|p' |
-      awk -v v="$1" '{ d[$1] = $2 } END { for (a in d) if (d[a] == v) printf "%s,", a }'
+      [ -d "$fm_d" ] && grep -E '^mac_(32bits|arch)[[:space:]]*=' "$fm_d"/*.toml 2>/dev/null
+   done | sed -En 's|.*/([0-9]+)\.toml:mac_(32bits\|arch)[[:space:]]*=[[:space:]]*"?([a-z0-9_]*).*|\1 \2 \3|p' |
+      awk -v v="$1" '$2 == "32bits" && ($3 == "true" || $3 == "false") { m[$1] = $3; ids[$1] = 1 }
+         $2 == "arch" && ($3 == "arm64" || $3 == "universel" || $3 == "x86_64" || $3 == "i386") { a[$1] = $3; ids[$1] = 1 }
+         END { for (i in ids) {
+            x = a[i]; if (x == "universel") x = "arm64"
+            c = x == "i386" ? "true" : x != "" ? "false" : m[i]
+            if (c == v || (v ~ /^(arm64|x86_64)$/ && x == v)) printf "%s,", i } }'
 }
 
 # L'executable principal d'un jeu du dossier Cidre : on ecarte les variantes
@@ -2303,9 +2316,9 @@ case "$cmd" in
     # pas encore repris : "source":"bouteille" (cidre import), sans peser leur dossier.
     export CIDRE_JEUX_CONNUS="$IDS_EMPL"
     if [ "$JSON" = oui ]; then
-      sh "$R/tests/trouver_jeux_bouteilles.sh" --rapide | "$OUTIL" bibliotheque $(bib_rosetta) --bouteilles - --mac32 "$(fiches_mac true)," --mac64 "$(fiches_mac false)," "$CACHE" $(appids)
+      sh "$R/tests/trouver_jeux_bouteilles.sh" --rapide | "$OUTIL" bibliotheque $(bib_rosetta) --bouteilles - --mac32 "$(fiches_mac true)," --mac64 "$(fiches_mac false)," --macarm "$(fiches_mac arm64)," --macx64 "$(fiches_mac x86_64)," "$CACHE" $(appids)
     else
-      sh "$R/tests/trouver_jeux_bouteilles.sh" --rapide | "$OUTIL" bibliotheque $(bib_rosetta) --texte --bouteilles - --mac32 "$(fiches_mac true)," --mac64 "$(fiches_mac false)," "$CACHE" $(appids)
+      sh "$R/tests/trouver_jeux_bouteilles.sh" --rapide | "$OUTIL" bibliotheque $(bib_rosetta) --texte --bouteilles - --mac32 "$(fiches_mac true)," --mac64 "$(fiches_mac false)," --macarm "$(fiches_mac arm64)," --macx64 "$(fiches_mac x86_64)," "$CACHE" $(appids)
     fi ;;
   updates|majs)
     # Le build installe de chaque jeu, compare a celui de la branche publique.
