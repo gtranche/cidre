@@ -1,0 +1,23 @@
+# Garry's Mod -- fiche posee a la main (coordination, 2026-11-01). Voir profils/README.md.
+# Le depot Windows porte gmod.exe en 64 bits (et hl2.exe en 32) : on lance le 64 bits.
+
+[jeu]
+appid = 4000
+nom = "Garry's Mod"
+plateformes_steam = "macos windows linux"
+moteur = "source"
+api_disponibles = "d3d9 opengl"
+bits = 64
+exe = "gmod.exe"
+
+[jeu.sources]
+nom = "steam 2026-10-31"
+plateformes_steam = "steam 2026-10-31"
+moteur = "steam 2026-10-31"
+api_disponibles = "pcgamingwiki 2026-10-31"
+bits = "steam appinfo 2026-10-31"
+exe = "steam appinfo 2026-10-31"
+
+[compat]
+etat = "non-teste"
+date = "2026-11-01"

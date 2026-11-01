@@ -110,7 +110,7 @@ empreinte = "5cd8c815d2bd014eff54c764302be6a5"
 nom = "ScourgeBringer"
 etat = "non-teste"
 date = "2026-10-13"
-empreinte = "5302c8ab9148b1a8a5313fce596a8ab3"
+empreinte = "8c38126985f08234624b78bd97ab0384"
 
 [1037910]
 nom = "Paw Paw Paw"
@@ -320,7 +320,7 @@ empreinte = "4e5f3cb112b041f2cefbddab1bc10703"
 nom = "Roguebook"
 etat = "non-teste"
 date = "2026-10-13"
-empreinte = "2817ae6a17af4dafbbcc8372ea792562"
+empreinte = "b9b413b9822dfcc0296b886b19327043"
 
 [1078920]
 nom = "Main Assembly"
@@ -374,7 +374,7 @@ empreinte = "36f4386332360f4341b2b652efa263e2"
 nom = "Rebel Inc: Escalation"
 etat = "non-teste"
 date = "2026-10-13"
-empreinte = "00607afadef7bf0fe8fef17a7c93abdb"
+empreinte = "a82d011096268186933a8adeaab835fa"
 
 [1089980]
 nom = "The Henry Stickmin Collection"
@@ -686,7 +686,7 @@ empreinte = "30ee4bb6af4eb9980726306c8a596b6a"
 nom = "Timelie"
 etat = "non-teste"
 date = "2026-10-13"
-empreinte = "784fd71ca43a145e12d48a3b3b306776"
+empreinte = "cca9648a3bf0f654e402237b2e2c4ef4"
 
 [1151050]
 nom = "Golf Gang"
@@ -1310,7 +1310,7 @@ empreinte = "41ad1449061ebb23f814e06ad362693f"
 nom = "Oaken"
 etat = "non-teste"
 date = "2026-10-13"
-empreinte = "102ef1c98cf25c557c2be9005b20bed2"
+empreinte = "31c94fe1ffc48e68adc0c9ae9bb765e9"
 
 [1353270]
 nom = "Five Dates"
@@ -1484,7 +1484,7 @@ empreinte = "2b7635618d6a096df2d7c9f82e901c65"
 nom = "The Past Within"
 etat = "non-teste"
 date = "2026-10-13"
-empreinte = "5569fc53eae7b54b13ca9eab314aca67"
+empreinte = "ffc5f9c7156a43be59decc271ee1acb1"
 
 [1532690]
 nom = "BLACKTAIL"
@@ -2144,7 +2144,7 @@ empreinte = "f5fff9ff8f67d38bd9f79bfcf922eb4f"
 nom = "Deponia"
 etat = "non-teste"
 date = "2026-10-13"
-empreinte = "e20f349a566b860a8602fadbf6afe62c"
+empreinte = "e15f47995e03529734a543ba37ad00ba"
 
 [2144740]
 nom = "Ghostrunner 2"
@@ -2798,7 +2798,7 @@ empreinte = "1a152d9f7dfa812325e600205a6735c2"
 nom = "Cook, Serve, Delicious!"
 etat = "non-teste"
 date = "2026-10-13"
-empreinte = "59462f9a7a189a063cf3d276655fc0f9"
+empreinte = "6017008c7cf974a3849794a8a1bc9d8f"
 
 [247080]
 nom = "Crypt of the NecroDancer"
@@ -3254,7 +3254,7 @@ empreinte = "17c9a731bdc36d11c8067b5211bd7259"
 nom = "Westerado: Double Barreled"
 etat = "non-teste"
 date = "2026-10-13"
-empreinte = "e974ad5b8b899e8a5ff16ab6b0af426b"
+empreinte = "4026e77ab70d25712aac28cddb7c7a80"
 
 [275390]
 nom = "Guacamelee! Super Turbo Championship Edition"
@@ -4406,7 +4406,7 @@ empreinte = "9abc11a080fa1e48ebfa5437ce72f87c"
 nom = "Hollow Knight"
 etat = "non-teste"
 date = "2026-10-13"
-empreinte = "a665a5a32b44ec5ea9c52aa2391a6780"
+empreinte = "2b8b3593ca16252d1d84979a0ce7a5e9"
 
 [368080]
 nom = "Aurion: Legacy of the Kori-Odan"
@@ -4666,6 +4666,12 @@ etat = "non-teste"
 date = "2026-10-13"
 empreinte = "cb5701d015cdbd3acf36d589e4117623"
 
+[4000]
+nom = "Garry's Mod"
+etat = "non-teste"
+date = "2026-11-01"
+empreinte = "b497165f08cf71285db221a16073bec5"
+
 [400080]
 nom = "Out of Space"
 etat = "non-teste"
@@ -4808,7 +4814,7 @@ empreinte = "28286bf492ba0566e393bf57a1488207"
 nom = "Stardew Valley"
 etat = "non-teste"
 date = "2026-10-13"
-empreinte = "18dc2e4bb5f26fa8a3ddd448e358e334"
+empreinte = "32bd7b21e5b0cf302e1a5e697d0e793b"
 
 [414340]
 nom = "Hellblade: Senua's Sacrifice"
@@ -5114,7 +5120,7 @@ empreinte = "8b5977c737c3766bebf07026f149c6e7"
 nom = "LUNA The Shadow Dust"
 etat = "non-teste"
 date = "2026-10-13"
-empreinte = "abd3872dcd4ed344aa7fc4efc7da0d9c"
+empreinte = "7004882570764ac87c389b357d1a3344"
 
 [465200]
 nom = "Fury Unleashed"
@@ -5660,7 +5666,7 @@ empreinte = "f68d737874b9e5d52687b8be293d0bc4"
 nom = "Dead Cells"
 etat = "or"
 date = "2026-10-13"
-empreinte = "d338aed105f9c239fe5944f93e17ec0b"
+empreinte = "93138231fcf03a9865f8148c9d81e28b"
 
 [590590]
 nom = "Remnants of Naezith"
@@ -6662,7 +6668,7 @@ empreinte = "78c2ae23fc98a026a2a7669da2069337"
 nom = "112 Operator"
 etat = "non-teste"
 date = "2026-10-13"
-empreinte = "a544b73c79ce1cad9ccb6ee8e1869704"
+empreinte = "f7680ff93159acf00681491c32478abe"
 
 [794260]
 nom = "Outward"
@@ -7100,7 +7106,7 @@ empreinte = "48ec614ef584e9131a18c0982bb95503"
 nom = "Sid Meier's Civilization V"
 etat = "non-teste"
 date = "2026-10-13"
-empreinte = "d716281523a310995fb23ae2c6f85aac"
+empreinte = "47076483a42e95b83ae02ecc616b804a"
 
 [893180]
 nom = "Catherine Classic"
@@ -7364,7 +7370,7 @@ empreinte = "ed467d8ebdb728e75467b77ea442c0e6"
 nom = "Prodeus"
 etat = "non-teste"
 date = "2026-10-13"
-empreinte = "777db75a5ef84601ea013e8b37ff8615"
+empreinte = "bde8452f29fb86d80faf77f8b3c1c671"
 
 [965680]
 nom = "Boomerang Fu"

@@ -12,6 +12,7 @@ moteur_nom = "Unity"
 api_disponibles = "d3d11 metal"
 bits = 32
 drm = "steam"
+mac_arch = "universel"
 
 [jeu.sources]
 nom = "steam 2026-10-13"
@@ -21,6 +22,7 @@ moteur_nom = "pcgamingwiki 2026-10-11"
 api_disponibles = "pcgamingwiki 2026-10-11"
 bits = "pcgamingwiki 2026-10-11"
 drm = "pcgamingwiki 2026-10-11"
+mac_arch = "pcgamingwiki 2026-11-01"
 
 [compat]
 etat = "non-teste"

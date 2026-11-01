@@ -12,6 +12,7 @@ moteur_nom = "MonoGame"
 bits = 64
 bits_32_aussi = true
 drm = "drm-free"
+mac_arch = "universel"
 
 [jeu.sources]
 nom = "steam 2026-10-13"
@@ -21,6 +22,7 @@ moteur_nom = "pcgamingwiki 2026-10-13"
 bits = "pcgamingwiki 2026-10-13"
 bits_32_aussi = "pcgamingwiki 2026-10-13"
 drm = "pcgamingwiki 2026-10-13"
+mac_arch = "pcgamingwiki 2026-11-01"
 
 [compat]
 etat = "non-teste"

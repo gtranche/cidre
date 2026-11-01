@@ -11,6 +11,7 @@ api = "d3d11"
 bits = 32
 anticheat = "none"
 lanceur = "steam"
+mac_arch = "universel"               # applegamingwiki 2026-11-01
 
 [cidre]
 tso = false
