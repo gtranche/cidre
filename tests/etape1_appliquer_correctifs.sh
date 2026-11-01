@@ -156,6 +156,7 @@ if [ -d "$R/third_party/FEX" ]; then
          0306-*) temoin="namespace FEXCore::CidreSonnetteFaute {"; ou=FEXCore/include/FEXCore/Utils/CidreSonnetteFaute.h ;;
          0307-*) temoin="bool HandleSuspendFault(CONTEXT* Context, uint64_t FaultAddress) {"; ou=Source/Windows/WOW64/Module.cpp ;;
          0310-*) temoin="namespace FEXCore::CidreKuser {"; ou=FEXCore/include/FEXCore/Utils/CidreKuser.h ;;
+         0313-*) temoin="Cidre : faute d'execution levee par un bloc NoExec"; ou=Source/Windows/ARM64EC/Module.cpp ;;
          *) echo "   correctif FEX sans temoin : $(basename "$f")" >&2; exit 1 ;;
       esac
       # -F : texte litteral (les temoins contiennent . ( * &).

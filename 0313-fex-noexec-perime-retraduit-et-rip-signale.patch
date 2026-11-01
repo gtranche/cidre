@@ -1,0 +1,93 @@
+Generated-by: LLM
+
+fex : faute d'execution d'un bloc NoExec sur un code devenu executable : retraduire et reprendre au meme rip, et signaler le rip (pas la page suivante) hors instruction a cheval. FEX decide « non executable » a la traduction (NoExecOp) et faute a l'execution du bloc ; entre les deux, un autre fil ou le gestionnaire de l'invite a pu rendre la page executable, et le bloc NoExec reste installe. Sous Windows, le processeur verifie a l'execution : une page executable ne faute pas. HandleGuestException signalait en plus la page SUIVANTE des que le rip etait executable pour Wine (heuristique du decodage partiel) : le chargeur protege de D2R (KiUserExceptionDispatcher detourne, pages du jeu dans une vue MEM_MAPPED dechiffrees a la premiere execution, reprise au meme rip) rendait executable une page qui l'etait deja, sans fin : 0,25 a 4,3 millions de fautes par manche dans l'ilot avec 0309, par rafales hors ilot (5 900/s), sur 3 a 7 pages PAGE_EXECUTE_READ pour Wine ET pour FEX (XIntervals). Dans RethrowGuestException (ARM64EC) : si rip..rip+15 est executable pour FEX et pour Wine, la page du rip est invalidee et l'invite reprend au meme rip sans exception (au plus 16 fois de suite pour un meme rip et un meme fil, compteur dans InternalThreadState : pas de thread_local, qui passe par x18 en ARM64EC et faute dans ce contexte) ; sinon la faute porte sur le rip, sauf instruction a cheval (rip executable pour FEX, plage finie avant rip+15) qui garde la page suivante. CIDRE_NOEXEC_PERIME=0 coupe. Journal : « cidre noexec : bloc perime N » aux puissances de 2. Temoins (M1 Max, runtime 1.5.20) : noexec_temoin (4 fils, 8 pages dechiffrees par un gestionnaire vectorise, un gardien qui les re-protege en RW) : avant 0/2 (exception non geree sur la page suivante, hors ilot comme dans l'ilot), coupe 0/2, apres 10/10 hors ilot et 10/10 dans l'ilot ; suspension 2000/2000, smc_retour, int3_temoin 1000/1000, exceptions_cpp 20000/20000, seh_simple 1000/1000, av_cout (6,9 us inchange), litmus, feuilles, crit, tflags ; D2R dans l'ilot (0309, 5 manches de 300 s) : 15 000 exceptions par manche (contre 0,25 a 4,3 millions), 0 FATAL, sauvegardes identiques.
+
+--- a/FEXCore/include/FEXCore/Debug/InternalThreadState.h
++++ b/FEXCore/include/FEXCore/Debug/InternalThreadState.h
+@@ -140,6 +140,9 @@
+ 
+   // Cidre 0300 : imbrication des zones d'ecriture de code (FEXCore::CidreWX::Ecriture).
+   uint32_t CidreWXProfondeur {};
++  // Cidre : reprises sans exception d'un bloc NoExec perime (Module.cpp ARM64EC, RethrowGuestException) : dernier rip, suite.
++  uint64_t CidreNoExecRip {};
++  uint32_t CidreNoExecSuite {};
+ 
+   uintptr_t JITGuardPage {};
+   uint64_t JITGuardOverflowArgument {};
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -617,6 +617,14 @@
+   ECContext.Fpsr = FPSR;
+ 
+   return ECContext;
++}
++
++static bool CidreNoExecPerime() {
++  static const bool Actif = [] {
++    const char* E = getenv("CIDRE_NOEXEC_PERIME");
++    return !(E && *E == '0');
++  }();
++  return Actif;
+ }
+ 
+ static void RethrowGuestException(const EXCEPTION_RECORD& Rec, ARM64_NT_CONTEXT& Context) {
+@@ -643,6 +651,59 @@
+ 
+   BOOL FirstChance = TRUE;
+   EXCEPTION_RECORD GuestRec = FEX::Windows::HandleGuestException(Fault, Rec, GuestContext.Pc, GuestContext.X8, GuestContext.X0, FirstChance);
++  // Cidre : faute d'execution levee par un bloc NoExec (NoExecOp) alors que le code du rip est maintenant executable.
++  // FEX decide « non executable » a la traduction et faute plus tard, a l'execution du bloc : entre les deux, un autre
++  // fil (ou le gestionnaire de l'invite) a pu rendre la page executable, et le bloc NoExec peut rester installe. Sous
++  // Windows, le processeur verifie a l'execution : une page executable ne faute pas. Pire, HandleGuestException signale
++  // alors la page SUIVANTE (heuristique du decodage partiel, rip executable) : le chargeur protege de D2R rendait
++  // executable une page qui l'etait deja et reprenait au meme rip, sans fin (jusqu'a 35 000 fautes par seconde dans
++  // l'ilot, par rafales hors ilot ; noexec_temoin : exception non geree sur la page suivante).
++  // Si les 15 octets du rip sont executables pour FEX et pour Wine : retraduire la page du rip et reprendre au meme rip,
++  // sans exception (au plus 16 fois de suite pour un meme rip sur ce fil, puis l'exception comme avant). Une instruction
++  // a cheval sur une page non executable garde le chemin de HandleGuestException. CIDRE_NOEXEC_PERIME=0 coupe.
++  if (GuestRec.ExceptionCode == EXCEPTION_ACCESS_VIOLATION && GuestRec.NumberParameters >= 2 && GuestRec.ExceptionInformation[0] == 8 &&
++      InvalidationTracker && CidreNoExecPerime()) {
++    const uint64_t R = GuestContext.Pc;
++    // Pas de thread_local ici : en ARM64EC il passe par x18, qui n'est pas le TEB dans ce contexte (faute).
++    Thread->CidreNoExecSuite = R == Thread->CidreNoExecRip ? Thread->CidreNoExecSuite + 1 : 0;
++    Thread->CidreNoExecRip = R;
++    const uint32_t Suite = Thread->CidreNoExecSuite;
++    const auto Plage = InvalidationTracker->QueryExecutableRange(R);
++    if (!Plage.Size || R < Plage.Base || R + 15 <= Plage.Base + Plage.Size || R >= Plage.Base + Plage.Size) {
++      // La faute porte sur le rip, comme sous Windows quand la page ne l'etait pas a l'execution : rip non executable
++      // pour FEX (la traduction l'a vu ainsi), meme si Wine la dit deja executable (un autre fil vient de la proteger, sa
++      // notification n'est pas encore passee) ; ou rip + 15 entierement executable (pas d'instruction a cheval : la page
++      // a change entre la traduction et l'execution, voir la reprise ci-dessous). L'heuristique de la page suivante ne
++      // vaut que pour une instruction a cheval (rip executable pour FEX, fin de plage avant rip + 15).
++      GuestRec.ExceptionInformation[1] = R;
++    }
++    bool WinX = false;
++    if (Suite < 16 && Plage.Size && R >= Plage.Base && R + 15 <= Plage.Base + Plage.Size) {
++      WinX = true;
++      for (uint64_t P = R & ~uint64_t {0xfff}; P <= ((R + 14) & ~uint64_t {0xfff}); P += 0x1000) {
++        MEMORY_BASIC_INFORMATION Info {};
++        WinX = WinX && !NtQueryVirtualMemory(NtCurrentProcess(), reinterpret_cast<void*>(P), MemoryBasicInformation, &Info, sizeof(Info), nullptr) &&
++               Info.State == MEM_COMMIT && !(Info.Protect & PAGE_GUARD) &&
++               (Info.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY));
++      }
++    }
++    if (WinX) {
++      static std::atomic<uint64_t> CidreNbPerimes;
++      const uint64_t N = CidreNbPerimes.fetch_add(1, std::memory_order_relaxed) + 1;
++      if (N <= 4 || !(N & (N - 1))) {
++        LogMan::Msg::IFmt("cidre noexec : bloc perime {} ; rip {:#x} (adresse signalee {:#x}) executable : retraduit, reprise sans exception", N, R,
++                          GuestRec.ExceptionInformation[1]);
++      }
++      {
++        std::scoped_lock Lock(ThreadCreationMutex);
++        InvalidationTracker->InvalidateAlignedInterval(R & ~uint64_t {0xfff}, ((R + 14) & ~uint64_t {0xfff}) + 0x1000 - (R & ~uint64_t {0xfff}), false);
++      }
++      // Comme a la sortie de ResetToConsistentState : le ScopedCallbackDisable de l'appelant ne sera pas detruit.
++      GetCPUArea().Area->InSyscallCallback = false;
++      NtContinueNative(&GuestContext, false);
++    }
++  }
++
+   if (GuestRec.ExceptionCode == EXCEPTION_SINGLE_STEP) {
+     GuestContext.Cpsr &= ~(1 << 21); // PSTATE.SS
+   } else if (GuestRec.ExceptionCode == EXCEPTION_BREAKPOINT) {
