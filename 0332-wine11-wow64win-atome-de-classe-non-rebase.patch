@@ -1,0 +1,18 @@
+diff --git a/dlls/wow64win/user.c b/dlls/wow64win/user.c
+index 678bb684..77936ce6 100644
+--- a/dlls/wow64win/user.c
++++ b/dlls/wow64win/user.c
+@@ -2033,8 +2033,11 @@ NTSTATUS WINAPI wow64_NtUserCreateWindowEx( UINT *args )
+     DWORD flags = get_ulong( &args );
+     HINSTANCE client_instance = get_guest_ptr( &args );
+     /* win32u lit cette chaine ; le rappel vers l'invite la tronquera, ce qui la
+-     * ramene chez lui. */
+-    const WCHAR *class = get_ptr( &args );
++     * ramene chez lui. Un atome (MAKEINTATOM : classes ATL, CreateWindowEx par
++     * atome) n'est pas une adresse : jamais rebase, sinon win32u le lit comme une
++     * chaine a guest_base + atome et NtUserCreateWindowEx rend c0000005. */
++    ULONG class32 = get_ulong( &args );
++    const WCHAR *class = IS_INTRESOURCE( class32 ) ? ULongToPtr( class32 ) : ptr_32to64( class32 );
+     BOOL ansi = get_ulong( &args );
+ 
+     UNICODE_STRING class_name, version, window_name;

@@ -101,7 +101,7 @@ kk_defaut() {
 # pour ne compiler qu'une fois. Active par defaut des qu'on a un identifiant de
 # jeu ; CIDRE_PIPELINE_CACHE=0 (ou cache_pipelines=0 dans le profil) le coupe.
 if [ -n "$JEU" ] && [ "$(opt cache_pipelines CIDRE_PIPELINE_CACHE)" != false ]; then
-   export MESA_KK_PIPELINE_CACHE="${MESA_KK_PIPELINE_CACHE:-$HOME/Library/Application Support/Cidre/vkd3d-cache/$JEU}"
+   export MESA_KK_PIPELINE_CACHE="${MESA_KK_PIPELINE_CACHE:-${CIDRE_DIR:-$HOME/Library/Application Support/Cidre}/vkd3d-cache/$JEU}"
    # Pipelines precompiles livres par Cidre pour ce jeu, cette famille de GPU et
    # ce KosmicKrisp (tests/precompil_kk.sh, `cidre precompil`) : l'AIR et
    # l'archive de cette architecture, consultes avant toute compilation (0165).
@@ -117,7 +117,7 @@ if [ -n "$JEU" ] && [ "$(opt cache_pipelines CIDRE_PIPELINE_CACHE)" != false ]; 
    # jour du pilote) ; celles d'une autre cle ne serviraient plus a rien.
    # CIDRE_AIR_LOCAL=0 : pas de reserve.
    if [ -z "${MESA_KK_AIR_LOCAL:-}" ] && [ "${CIDRE_AIR_LOCAL:-1}" != 0 ]; then
-      AIR_LOCAL=$(CIDRE_DIR="$HOME/Library/Application Support/Cidre" sh "$R/tests/precompil_kk.sh" air_local "$JEU" 2>/dev/null || true)
+      AIR_LOCAL=$(CIDRE_DIR="${CIDRE_DIR:-$HOME/Library/Application Support/Cidre}" sh "$R/tests/precompil_kk.sh" air_local "$JEU" 2>/dev/null || true)
       [ -z "$AIR_LOCAL" ] || export MESA_KK_AIR_LOCAL="$AIR_LOCAL"
    fi
 fi
