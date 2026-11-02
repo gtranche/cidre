@@ -23,9 +23,13 @@ bits = "pcgamingwiki 2026-10-11"
 drm = "pcgamingwiki 2026-10-11"
 
 [cidre]
+arguments = "-nolauncher"
+d3d11 = "dxvk"
 dependances = "directx_feb2010"
 
 [cidre.sources]
+arguments = "cidre-test 2026-11-01"
+d3d11 = "cidre-test 2026-11-02 (M1 : DXMT i386 tourne a 250 % CPU sans presenter ; DXVK 60 img/s au menu)"
 dependances = "crossover 2026-10-13"
 
 [compat]

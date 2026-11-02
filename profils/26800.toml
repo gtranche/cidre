@@ -20,6 +20,14 @@ bits = "pcgamingwiki 2026-10-11"
 drm = "pcgamingwiki 2026-10-11"
 mac_32bits = "steam 2026-10-16"
 
+[cidre]
+arguments = "-no_launcher"
+dll_overrides = "d3dx9_43,d3dcompiler_43=n,b"
+
+[cidre.sources]
+arguments = "cidre-test 2026-11-01"
+dll_overrides = "cidre-test 2026-11-02 (M1 : sans =n, le d3dx9 builtin ne compile pas les effets fx_2_0 et Braid plante ; avec les natifs deja en syswow64, 59 img/s)"
+
 [compat]
 etat = "non-teste"
 date = "2026-10-13"

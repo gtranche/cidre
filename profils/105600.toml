@@ -22,6 +22,14 @@ api_disponibles = "pcgamingwiki 2026-10-11"
 bits = "pcgamingwiki 2026-10-11"
 drm = "pcgamingwiki 2026-10-11"
 
+[cidre]
+dll_overrides = "mscoree=b"
+dependances = "wine-mono"
+
+[cidre.sources]
+dll_overrides = "cidre-test 2026-11-01"
+dependances = "cidre-test 2026-11-02 (M1 : Wine Mono 11.3.0 dans le prefixe ; Mono remplace XNA par FNA/SDL_GPU Vulkan ; ~80 s de chargement sous FEX puis 60 img/s au menu)"
+
 [compat]
 etat = "non-teste"
 date = "2026-10-13"
