@@ -1,0 +1,167 @@
+Generated-by: LLM
+
+KosmicKrisp / WSI Metal : temoin d'image par relecture du drawable (CIDRE_WSI_RELECTURE, diagnostic)
+
+Port dans la serie integree du temoin utilise par les chantiers ER (arbre
+cidre-kk-er) : CIDRE_WSI_RELECTURE=<n> relit, toutes les n images presentees,
+le drawable apres le travail de l'image sur la file Metal 4 (evenement partage
+puis blit sur une file Metal 3 a part) et imprime sur stderr :
+  [CIDRE_RELECTURE] image <n> <l>x<h> fmt <f> moy R G B noir <%> grille <4x4>
+(moyennes RGB, part de pixels de luminance < 0,02, grille 4x4 de luminance,
+un pixel sur quatre). framebufferOnly est coupe quand l'option est posee.
+Formats lus : BGRA8/RGBA8 (sRGB ou non), RGB10A2/BGR10A2, RGBA16F.
+Sans la variable : rien ne change (framebufferOnly inchange, aucun appel).
+Sert a verifier une image en jeu sans capture du bureau (Demonologist au menu,
+M4, 02/11 : grilles stables d'une relecture a l'autre, ecran noir detecte
+quand le jeu reste bloque au chargement).
+
+diff --git a/src/vulkan/wsi/wsi_common_metal.c b/src/vulkan/wsi/wsi_common_metal.c
+index bc33539..6ed8fe2 100644
+--- a/src/vulkan/wsi/wsi_common_metal.c
++++ b/src/vulkan/wsi/wsi_common_metal.c
+@@ -1010,6 +1010,16 @@ wsi_metal_swapchain_queue_present(struct wsi_swapchain *wsi_chain,
+                                                  wsi_metal_presented_time, NULL);
+    }
+ 
++   if (wsi_metal_relecture_periode() > 0 && !chain->upscaler && !wsi_chain->wsi->sw) {
++      static uint64_t n_relecture;
++      if (++n_relecture % (uint64_t)wsi_metal_relecture_periode() == 0) {
++         void *q4 = NULL;
++         if (wsi_chain->wsi->metal.get_mtl4_command_queue)
++            q4 = wsi_chain->wsi->metal.get_mtl4_command_queue(wsi_chain->device);
++         wsi_metal_layer_relire(image->drawable, q4, n_relecture);
++      }
++   }
++
+    if (chain->upscaler) {
+       void *mtl4_queue = NULL;
+       if (wsi_chain->wsi->metal.get_mtl4_command_queue)
+diff --git a/src/vulkan/wsi/wsi_common_metal_layer.h b/src/vulkan/wsi/wsi_common_metal_layer.h
+index 155bf5b..28d2d9e 100644
+--- a/src/vulkan/wsi/wsi_common_metal_layer.h
++++ b/src/vulkan/wsi/wsi_common_metal_layer.h
+@@ -33,6 +33,14 @@ wsi_metal_layer_add_presented_time_handler(CAMetalDrawable *drawable_ptr,
+                                            void (*presented)(void *, double),
+                                            void *data);
+ 
++/* CIDRE_WSI_RELECTURE=<n> (diagnostic) : toutes les n images, relit le drawable
++ * (apres le travail de l'image sur la file Metal 4) et imprime moyenne, part de
++ * noir et grille 4x4 de luminance. framebufferOnly est alors coupe. */
++int
++wsi_metal_relecture_periode(void);
++void
++wsi_metal_layer_relire(CAMetalDrawable *drawable_ptr, void *mtl4_command_queue, uint64_t numero);
++
+ /* Refresh rate of the main screen (NSScreen.maximumFramesPerSecond), 0 if unknown. */
+ double
+ wsi_metal_display_refresh_hz(void);
+diff --git a/src/vulkan/wsi/wsi_common_metal_layer.m b/src/vulkan/wsi/wsi_common_metal_layer.m
+index 85de3be..661c299 100644
+--- a/src/vulkan/wsi/wsi_common_metal_layer.m
++++ b/src/vulkan/wsi/wsi_common_metal_layer.m
+@@ -227,7 +227,7 @@ - (uint64_t)displayCompositingInternalStatus;
+ 
+       /* So acquire timeout works */
+       metal_layer.allowsNextDrawableTimeout = YES;
+-      metal_layer.framebufferOnly = framebuffer_only;
++      metal_layer.framebufferOnly = framebuffer_only && wsi_metal_relecture_periode() == 0;
+ 
+       metal_layer.maximumDrawableCount = image_count;
+       metal_layer.drawableSize = (CGSize){.width = width, .height = height};
+@@ -835,3 +835,96 @@ - (uint64_t)displayCompositingInternalStatus;
+       return (float)max_edr;
+    }
+ }
++
++int
++wsi_metal_relecture_periode(void)
++{
++   static int periode = -1;
++   if (periode < 0) {
++      const char *e = getenv("CIDRE_WSI_RELECTURE");
++      periode = e ? atoi(e) : 0;
++      if (periode < 0)
++         periode = 0;
++   }
++   return periode;
++}
++
++static float
++relecture_demi(uint16_t h)
++{
++   uint32_t s = (h >> 15) & 1, e = (h >> 10) & 31, m = h & 1023;
++   float v = e == 0 ? ldexpf((float)m, -24) : e == 31 ? 65504.0f : ldexpf((float)(m | 1024), (int)e - 25);
++   return s ? -v : v;
++}
++
++void
++wsi_metal_layer_relire(CAMetalDrawable *drawable_ptr, void *mtl4_command_queue, uint64_t numero)
++{
++   static id<MTLCommandQueue> queue;
++   static id<MTLSharedEvent> event;
++   static uint64_t valeur;
++   @autoreleasepool {
++      id<CAMetalDrawable> drawable = (id<CAMetalDrawable>)drawable_ptr;
++      id<MTLTexture> tex = drawable.texture;
++      if (tex == nil || tex.framebufferOnly)
++         return;
++      if (queue == nil) {
++         queue = [tex.device newCommandQueue];
++         event = [tex.device newSharedEvent];
++      }
++      MTLPixelFormat f = tex.pixelFormat;
++      uint32_t bpp = (f == MTLPixelFormatRGBA16Float) ? 8 : 4;
++      if (!(f == MTLPixelFormatBGRA8Unorm || f == MTLPixelFormatBGRA8Unorm_sRGB || f == MTLPixelFormatRGBA8Unorm ||
++            f == MTLPixelFormatRGBA8Unorm_sRGB || f == MTLPixelFormatRGB10A2Unorm || f == MTLPixelFormatBGR10A2Unorm ||
++            f == MTLPixelFormatRGBA16Float)) {
++         fprintf(stderr, "[CIDRE_RELECTURE] format %lu non gere\n", (unsigned long)f);
++         return;
++      }
++      NSUInteger w = tex.width, h = tex.height, pitch = w * bpp;
++      id<MTLBuffer> buf = [tex.device newBufferWithLength:pitch * h options:MTLResourceStorageModeShared];
++      id<MTLCommandBuffer> cb = [queue commandBuffer];
++      if (mtl4_command_queue != NULL) {
++         uint64_t v = ++valeur;
++         [(id<MTL4CommandQueue>)mtl4_command_queue signalEvent:event value:v];
++         [cb encodeWaitForEvent:event value:v];
++      }
++      id<MTLBlitCommandEncoder> bl = [cb blitCommandEncoder];
++      [bl copyFromTexture:tex sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
++               sourceSize:MTLSizeMake(w, h, 1) toBuffer:buf destinationOffset:0
++      destinationBytesPerRow:pitch destinationBytesPerImage:pitch * h];
++      [bl endEncoding];
++      [cb addCompletedHandler:^(id<MTLCommandBuffer> c) {
++         const uint8_t *p = buf.contents;
++         double sr = 0, sg = 0, sb = 0, grille[16] = {0}; uint64_t ng[16] = {0}, noir = 0, n = 0;
++         for (NSUInteger y = 0; y < h; y += 2) {
++            for (NSUInteger x = 0; x < w; x += 2) {
++               const uint8_t *q = p + y * pitch + x * bpp; float r, g, b;
++               if (bpp == 8) {
++                  const uint16_t *hq = (const uint16_t *)q;
++                  r = relecture_demi(hq[0]); g = relecture_demi(hq[1]); b = relecture_demi(hq[2]);
++               } else if (f == MTLPixelFormatRGB10A2Unorm || f == MTLPixelFormatBGR10A2Unorm) {
++                  uint32_t v = *(const uint32_t *)q;
++                  r = (v & 1023) / 1023.0f; g = ((v >> 10) & 1023) / 1023.0f; b = ((v >> 20) & 1023) / 1023.0f;
++                  if (f == MTLPixelFormatBGR10A2Unorm) { float t = r; r = b; b = t; }
++               } else {
++                  r = q[0] / 255.0f; g = q[1] / 255.0f; b = q[2] / 255.0f;
++                  if (f == MTLPixelFormatBGRA8Unorm || f == MTLPixelFormatBGRA8Unorm_sRGB) { float t = r; r = b; b = t; }
++               }
++               float l = 0.2126f * r + 0.7152f * g + 0.0722f * b;
++               sr += r; sg += g; sb += b; n++;
++               if (l < 0.02f) noir++;
++               unsigned k = (unsigned)(y * 4 / h) * 4 + (unsigned)(x * 4 / w);
++               grille[k] += l; ng[k]++;
++            }
++         }
++         char gl[16 * 6 + 1], *o = gl;
++         for (int k = 0; k < 16; k++)
++            o += snprintf(o, 7, "%.3f ", ng[k] ? grille[k] / ng[k] : 0.0);
++         fprintf(stderr, "[CIDRE_RELECTURE] image %llu %lux%lu fmt %lu moy %.4f %.4f %.4f noir %.1f%% grille %s\n",
++                 (unsigned long long)numero, (unsigned long)w, (unsigned long)h, (unsigned long)f,
++                 sr / n, sg / n, sb / n, 100.0 * noir / n, gl);
++         [buf release];
++      }];
++      [cb commit];
++   }
++}

@@ -1,0 +1,667 @@
+Generated-by: LLM
+
+KosmicKrisp : passes de la soumission (CIDRE_FUSION_SOUMISSION=2) : effacements
+plies en loadOp CLEAR dans la passe qui charge, passes aux memes attachements
+reunies a travers les listes qui ne font qu'horodater
+
+Base : serie integree jusqu'a 0272 + 0321/0322 + 0330 (journal des passes).
+
+Constat (0330, Demonologist au menu, M4) : 70 passes Metal par image, dont 23
+passes d'effacement seules (ClearRenderTargetView / ClearDepthStencilView de
+vkd3d : Begin loadOp CLEAR puis End, sans dessin) suivies, dans la meme
+soumission, de la passe qui CHARGE ces attachements (G-buffer 1600x900 :
+6 effacements puis la passe a 6 cibles + profondeur, toutes en LOAD) ; et la
+pre-passe de profondeur (ainsi qu'une passe 512x512 c3) coupee en deux listes
+D3D12 separees par des listes qui ne contiennent que ResetQueryPool /
+WriteTimestamp (CPU sous CIDRE_HORODATAGES_CPU) : la paire voisine de 0263/0322
+ne voyait jamais les deux moities cote a cote (0 fusion).
+
+CIDRE_FUSION_SOUMISSION=2 analyse toute la soumission (les enregistrements a
+usage unique sont mis en file comme avec =1) :
+ 1. une passe d'effacement (tous ses attachements en CLEAR/STORE, sans
+    resolution, toute l'image, aucune commande de travail entre Begin et End)
+    est retiree si la premiere passe qui suit, avec entre elles seulement
+    liaisons, etats, barrieres, horodatages notes par le CPU, d'autres passes
+    d'effacement (d'autres images) et des frontieres d'enregistrement, charge
+    chacun de ses attachements (meme sous-ressource et format, toute l'image) ;
+    ceux-ci passent en loadOp CLEAR avec la valeur d'effacement (Begin et End
+    de l'effacement sautes, ses liaisons gardees) ;
+ 2. deux passes successives aux memes attachements (kk_fusion_compatible, la
+    seconde sans effacement) sans travail entre elles (barrieres d'attachement
+    seulement, comme 0263) sont reunies, a travers les enregistrements.
+Les enregistrements concernes sont rejoues en un seul (comme 0263), entrees
+sautees et loadOp modifies le temps du rejeu puis remis. Un enregistrement
+non rejouable (porteur de drawable, erreur, secondaire) borne l'analyse.
+=1 garde l'ancienne fusion par paires ; sans la variable rien ne change.
+CIDRE_FUSION_STATS=1 : bilan toutes les 5 s ([CIDRE_PASSES_SOUM]).
+
+Mesures (M4, Demonologist au menu 1600x900, base = options de la manche
+exec : SSBO_SANS_BORNES, NUL_PUITS, REDUCTIONS_SIMD, DEMI_PRECISION,
+HORODATAGES_CPU, VSYNC=0..., sans HUD, CIDRE_WSI_STATS/GPU_STATS, 02/11 soir) :
+  bilan B : ~661 effacements plies/s (~18 par image), ~73-112 passes reunies/s
+  (2-3 par image), 0 refus de cible ; 70 -> ~50 passes Metal par image ;
+  rejeu : ~294 groupes/s de 4,5 enregistrements (double encodage CPU, le jeu
+  est limite par le GPU).
+  img/s ponderes au menu (fenetre ecran deverrouille) :
+    A (sans) : 35,0  34,8*  36,3  35,4      (* 70 s avant verrouillage)
+    B (=2)   : 36,3  36,7   37,2  36,5      (+ P1 36,6, autre plan du menu)
+  soit +1,1 a +1,3 img/s (~+3 %, ~0,9 ms par image) ; entrelacees
+  RA RB / TA1 TB2 TB3 TA4 TA5 TB6.
+  Image : relecture du drawable (0321 + 0330 PPM) au meme numero d'image :
+  ecart A/B 0,142/255 en moyenne, 0 % de composantes > 24, identique a
+  l'ecart A/A entre deux relectures (animation) ; image du menu verifiee a
+  l'oeil.
+
+diff --git a/src/kosmickrisp/vulkan/kk_queue.c b/src/kosmickrisp/vulkan/kk_queue.c
+--- a/src/kosmickrisp/vulkan/kk_queue.c
++++ b/src/kosmickrisp/vulkan/kk_queue.c
+@@ -21,6 +21,7 @@
+ #include "kosmickrisp/bridge/vk_to_mtl_map.h"
+ 
+ #include "vk_cmd_queue.h"
++#include "kk_image_view.h"
+ 
+ #include "util/os_time.h"
+ #include "util/u_atomic.h"
+@@ -1443,6 +1444,525 @@
+    return true;
+ }
+ 
++/* ===== Cidre CIDRE_FUSION_SOUMISSION=2 : passes de la soumission (0331) =====
++ * Vue d'ensemble de la soumission plutot que paires d'enregistrements
++ * voisins. Sur Demonologist (UE5, M4), une image fait 70 passes Metal ; les
++ * coupures evitables sont de deux sortes :
++ *  - effacement en passe a part : ClearRenderTargetView/ClearDepthStencilView
++ *    deviennent chez vkd3d une passe Begin(loadOp CLEAR)/End sans dessin, puis
++ *    la passe qui dessine charge (loadOp LOAD) l'attachement efface (G-buffer :
++ *    6 passes d'effacement puis la passe a 6 cibles, ~23 par image). Ici la
++ *    passe d'effacement est retiree et la passe suivante prend loadOp CLEAR
++ *    (valeur d'effacement reprise), si rien d'autre ne s'intercale que des
++ *    liaisons, des etats, des barrieres, des horodatages notes par le CPU,
++ *    d'autres passes d'effacement (d'autres images) et des frontieres
++ *    d'enregistrements ; les deux passes couvrent toute l'image (meme
++ *    sous-ressource, meme format).
++ *  - une meme passe coupee entre deux listes D3D12 separees par des listes qui
++ *    ne font qu'horodater (Unreal pose ResetQueryPool/WriteTimestamp dans des
++ *    listes a part) : la paire voisine de 0263 ne la voyait jamais. Ici deux
++ *    passes successives aux memes attachements (kk_fusion_compatible) sans
++ *    travail entre elles sont reunies, a travers ces listes.
++ * Les enregistrements concernes sont rejoues dans un seul enregistrement
++ * (comme 0263), entrees sautees et operations de chargement modifiees le temps
++ * du rejeu. CIDRE_FUSION_STATS=1 : bilan toutes les 5 s. */
++enum kk_pp_cls { KK_PP_NEUTRE, KK_PP_BARR, KK_PP_BEGIN, KK_PP_END, KK_PP_TRAVAIL };
++struct kk_pp_ent {
++   struct vk_cmd_queue_entry *e;
++   uint16_t cb;
++   uint8_t cls;
++   bool saute;
++};
++struct kk_pp_passe {
++   uint32_t b, e;
++   bool efface, plie, modifiee;
++   VkRenderingInfo *ri;
++};
++struct kk_pp_mod {
++   VkRenderingAttachmentInfo *att;
++   VkAttachmentLoadOp load;
++   VkClearValue clear;
++};
++static struct {
++   uint64_t soum, plis, plis_refus_cible, plis_refus_travail, fusions,
++      fus_refus_att, fus_refus_travail, groupes, cbs, t0;
++} kk_pp_st;
++
++static void
++kk_pp_stats(void)
++{
++   static int on = -1;
++   if (on < 0)
++      on = getenv("CIDRE_FUSION_STATS") != NULL;
++   if (!on)
++      return;
++   uint64_t t = os_time_get_nano();
++   if (!kk_pp_st.t0)
++      kk_pp_st.t0 = t;
++   if (t - kk_pp_st.t0 < 5000000000ull)
++      return;
++   double d = (t - kk_pp_st.t0) / 1e9;
++   fprintf(stderr,
++           "[CIDRE_PASSES_SOUM] %.0f soum/s : effacements plies %.0f/s (refus : "
++           "cible %.0f, travail %.0f), passes reunies %.0f/s (refus : "
++           "attachements %.0f, travail %.0f), %.0f rejeux/s de %.1f "
++           "enregistrements\n",
++           kk_pp_st.soum / d, kk_pp_st.plis / d, kk_pp_st.plis_refus_cible / d,
++           kk_pp_st.plis_refus_travail / d, kk_pp_st.fusions / d,
++           kk_pp_st.fus_refus_att / d, kk_pp_st.fus_refus_travail / d,
++           kk_pp_st.groupes / d,
++           kk_pp_st.groupes ? (double)kk_pp_st.cbs / kk_pp_st.groupes : 0.0);
++   memset(&kk_pp_st, 0, sizeof(kk_pp_st));
++   kk_pp_st.t0 = t;
++}
++
++static uint8_t
++kk_pp_classer(const struct vk_cmd_queue_entry *e)
++{
++   switch (e->type) {
++   case VK_CMD_BEGIN_RENDERING:
++      return KK_PP_BEGIN;
++   case VK_CMD_END_RENDERING:
++   case VK_CMD_END_RENDERING2_KHR:
++      return KK_PP_END;
++   case VK_CMD_PIPELINE_BARRIER2:
++      return KK_PP_BARR;
++   default:
++      return (kk_fusion_cmd_neutre(e->type) || kk_fusion_ts_neutre(e))
++                ? KK_PP_NEUTRE
++                : KK_PP_TRAVAIL;
++   }
++}
++
++static struct kk_image_view *
++kk_pp_vue(const VkRenderingAttachmentInfo *a)
++{
++   if (!a || a->imageView == VK_NULL_HANDLE)
++      return NULL;
++   VK_FROM_HANDLE(kk_image_view, iv, a->imageView);
++   return iv;
++}
++
++static bool
++kk_pp_meme_sous_ressource(const struct kk_image_view *a,
++                          const struct kk_image_view *b)
++{
++   return a && b &&
++          (a == b ||
++           (a->vk.image == b->vk.image &&
++            a->vk.base_mip_level == b->vk.base_mip_level &&
++            a->vk.base_array_layer == b->vk.base_array_layer &&
++            a->vk.layer_count == b->vk.layer_count &&
++            a->vk.format == b->vk.format));
++}
++
++/* Toute l'image (au niveau de la vue) est couverte par la zone de rendu. */
++static bool
++kk_pp_zone_entiere(const VkRenderingInfo *ri, const struct kk_image_view *iv)
++{
++   return ri->renderArea.offset.x == 0 && ri->renderArea.offset.y == 0 &&
++          ri->renderArea.extent.width == iv->vk.extent.width &&
++          ri->renderArea.extent.height == iv->vk.extent.height &&
++          ri->viewMask == 0 && ri->layerCount == iv->vk.layer_count;
++}
++
++/* Passe sans dessin dont chaque attachement est efface sur toute l'image. */
++static bool
++kk_pp_est_effacement(const VkRenderingInfo *ri)
++{
++   if (ri->flags || ri->viewMask)
++      return false;
++   bool any = false;
++   const VkRenderingAttachmentInfo *atts[KK_MAX_RTS + 2];
++   uint32_t n = 0;
++   for (uint32_t i = 0; i < ri->colorAttachmentCount && i < KK_MAX_RTS; i++)
++      atts[n++] = &ri->pColorAttachments[i];
++   atts[n++] = ri->pDepthAttachment;
++   atts[n++] = ri->pStencilAttachment;
++   for (uint32_t i = 0; i < n; i++) {
++      struct kk_image_view *iv = kk_pp_vue(atts[i]);
++      if (!iv)
++         continue;
++      if (atts[i]->loadOp != VK_ATTACHMENT_LOAD_OP_CLEAR ||
++          atts[i]->storeOp != VK_ATTACHMENT_STORE_OP_STORE ||
++          atts[i]->resolveMode != VK_RESOLVE_MODE_NONE ||
++          !kk_pp_zone_entiere(ri, iv))
++         return false;
++      any = true;
++   }
++   return any;
++}
++
++static bool
++kk_pp_touche(const VkRenderingInfo *ri, const struct kk_image_view *iv)
++{
++   for (uint32_t i = 0; i < ri->colorAttachmentCount; i++) {
++      struct kk_image_view *v = kk_pp_vue(&ri->pColorAttachments[i]);
++      if (v && v->vk.image == iv->vk.image)
++         return true;
++   }
++   struct kk_image_view *d = kk_pp_vue(ri->pDepthAttachment);
++   struct kk_image_view *s = kk_pp_vue(ri->pStencilAttachment);
++   return (d && d->vk.image == iv->vk.image) || (s && s->vk.image == iv->vk.image);
++}
++
++static bool
++kk_pp_touche_effacement(const VkRenderingInfo *c, const VkRenderingInfo *d)
++{
++   for (uint32_t i = 0; i < c->colorAttachmentCount; i++) {
++      struct kk_image_view *v = kk_pp_vue(&c->pColorAttachments[i]);
++      if (v && kk_pp_touche(d, v))
++         return true;
++   }
++   struct kk_image_view *v = kk_pp_vue(c->pDepthAttachment);
++   if (v && kk_pp_touche(d, v))
++      return true;
++   v = kk_pp_vue(c->pStencilAttachment);
++   return v && kk_pp_touche(d, v);
++}
++
++/* Plie l'effacement c dans la passe d : chaque attachement de c doit etre
++ * charge par d (meme sous-ressource, toute l'image). Ajoute les
++ * modifications a mods (rendu faux si une seule manque, sans rien ajouter). */
++static bool
++kk_pp_plier(const VkRenderingInfo *c, VkRenderingInfo *d,
++            struct util_dynarray *mods)
++{
++   if (d->flags & (VK_RENDERING_RESUMING_BIT | VK_RENDERING_SUSPENDING_BIT))
++      return false;
++   struct kk_pp_mod m[KK_MAX_RTS + 2];
++   uint32_t nm = 0;
++   for (uint32_t i = 0; i < c->colorAttachmentCount; i++) {
++      const VkRenderingAttachmentInfo *ca = &c->pColorAttachments[i];
++      struct kk_image_view *cv = kk_pp_vue(ca);
++      if (!cv)
++         continue;
++      VkRenderingAttachmentInfo *da = NULL;
++      for (uint32_t k = 0; k < d->colorAttachmentCount; k++) {
++         struct kk_image_view *dv = kk_pp_vue(&d->pColorAttachments[k]);
++         if (kk_pp_meme_sous_ressource(cv, dv)) {
++            da = (VkRenderingAttachmentInfo *)&d->pColorAttachments[k];
++            break;
++         }
++      }
++      if (!da || da->loadOp != VK_ATTACHMENT_LOAD_OP_LOAD ||
++          !kk_pp_zone_entiere(d, cv))
++         return false;
++      m[nm++] = (struct kk_pp_mod){da, VK_ATTACHMENT_LOAD_OP_CLEAR, ca->clearValue};
++   }
++   const VkRenderingAttachmentInfo *cds[2] = {c->pDepthAttachment,
++                                              c->pStencilAttachment};
++   const VkRenderingAttachmentInfo *dds[2] = {d->pDepthAttachment,
++                                              d->pStencilAttachment};
++   for (uint32_t a = 0; a < 2; a++) {
++      struct kk_image_view *cv = kk_pp_vue(cds[a]);
++      if (!cv)
++         continue;
++      struct kk_image_view *dv = kk_pp_vue(dds[a]);
++      if (!kk_pp_meme_sous_ressource(cv, dv) ||
++          dds[a]->loadOp != VK_ATTACHMENT_LOAD_OP_LOAD ||
++          !kk_pp_zone_entiere(d, cv))
++         return false;
++      m[nm++] = (struct kk_pp_mod){(VkRenderingAttachmentInfo *)dds[a],
++                                   VK_ATTACHMENT_LOAD_OP_CLEAR, cds[a]->clearValue};
++   }
++   if (!nm)
++      return false;
++   for (uint32_t i = 0; i < nm; i++)
++      util_dynarray_foreach(mods, struct kk_pp_mod, o)
++         if (o->att == m[i].att)
++            return false;
++   util_dynarray_append_array(mods, struct kk_pp_mod, m, nm);
++   return true;
++}
++
++/* Rejoue cbs[i..j] en un enregistrement, sans les entrees sautees, puis le
++ * commite (cf. kk_fusion_commit). Les modifications sont deja appliquees. */
++static VkResult
++kk_pp_commit(struct kk_queue *queue, struct kk_cmd_buffer **cbs, uint32_t i,
++             uint32_t j, struct kk_pp_ent *ents, uint32_t nents)
++{
++   struct kk_device *dev = kk_queue_device(queue);
++   struct vk_command_buffer *vk_cmd = NULL;
++   VkResult result = VK_SUCCESS;
++
++   mtx_lock(&queue->mutex);
++   if (util_dynarray_num_elements(&queue->free_cmd_buffers,
++                                  struct vk_command_buffer *) > 0u) {
++      vk_cmd = util_dynarray_pop(&queue->free_cmd_buffers,
++                                 struct vk_command_buffer *);
++   } else {
++      result = kk_cmd_buffer_ops.create(
++         &queue->cmd_pool->vk, VK_COMMAND_BUFFER_LEVEL_PRIMARY, &vk_cmd);
++      if (result != VK_SUCCESS)
++         goto unlock;
++   }
++   struct kk_cmd_buffer *rr = container_of(vk_cmd, struct kk_cmd_buffer, vk);
++   VkCommandBuffer h = kk_cmd_buffer_to_handle(rr);
++   const VkCommandBufferBeginInfo begin_info = {
++      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
++      .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
++   };
++   result = kk_BeginCommandBuffer(h, &begin_info);
++   if (result != VK_SUCCESS)
++      goto release;
++   rr->fusion_enfile = false;
++
++   for (uint32_t k = i; k <= j; k++) {
++      /* entrees sautees de cet enregistrement, retirees de la liste le temps
++       * du rejeu (ordre de la liste), remises dans l'ordre inverse */
++      uint32_t ns = 0;
++      for (uint32_t x = 0; x < nents; x++)
++         ns += ents[x].cb == k && ents[x].saute;
++      struct vk_cmd_queue_entry **skip = NULL;
++      struct list_head **prev = NULL;
++      if (ns) {
++         skip = malloc(ns * sizeof(*skip));
++         prev = malloc(ns * sizeof(*prev));
++         if (!skip || !prev) {
++            free(skip);
++            free(prev);
++            result = vk_error(queue, VK_ERROR_OUT_OF_HOST_MEMORY);
++            goto release;
++         }
++         uint32_t s = 0;
++         for (uint32_t x = 0; x < nents; x++) {
++            if (ents[x].cb != k || !ents[x].saute)
++               continue;
++            skip[s] = ents[x].e;
++            prev[s] = skip[s]->cmd_link.prev;
++            list_del(&skip[s]->cmd_link);
++            s++;
++         }
++      }
++      vk_cmd_queue_execute(&cbs[k]->vk.cmd_queue, h, &dev->vk.dispatch_table);
++      for (int s = (int)ns - 1; s >= 0; s--)
++         list_add(&skip[s]->cmd_link, prev[s]);
++      free(skip);
++      free(prev);
++   }
++
++   result = kk_EndCommandBuffer(h);
++   if (result != VK_SUCCESS)
++      goto release;
++   if (!kk_cmd_buffer_has_work(rr)) {
++      if (kk_horodatages_cpu())
++         kk_ts_cpu_pousser(queue, rr);
++      goto release;
++   }
++
++   struct kk_commit_data *commit = vk_alloc(&dev->vk.alloc, sizeof(*commit), 8,
++                                            VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
++   if (commit == NULL) {
++      result = vk_error(queue, VK_ERROR_OUT_OF_HOST_MEMORY);
++      goto release;
++   }
++   commit->queue = queue;
++   commit->cmd = rr;
++   kk_device_make_resources_resident(dev);
++   queue->commits_in_flight++;
++   kk_queue_commit(queue, rr, rerecord_commit_callback, commit);
++   mtx_unlock(&queue->mutex);
++   return VK_SUCCESS;
++
++release:
++   kk_queue_release_cmd_buffer_locked(queue, rr);
++unlock:
++   mtx_unlock(&queue->mutex);
++   return result;
++}
++
++/* Analyse les enregistrements eligibles consecutifs cbs[a..b] (indices de la
++ * soumission) ; groupe[k] recoit, pour le premier enregistrement d'un groupe a
++ * rejouer, l'indice du dernier ; -1 sinon. ents/mods : rendus a l'appelant
++ * (liberes par lui), mods deja appliquees. */
++static void
++kk_pp_analyser(struct kk_cmd_buffer **cbs, const bool *elig, uint32_t a,
++               uint32_t b, int32_t *groupe, struct kk_pp_ent **ents_out,
++               uint32_t *nents_out, struct util_dynarray *mods)
++{
++   uint32_t n = 0;
++   for (uint32_t k = a; k <= b; k++) {
++      n++;
++      if (elig[k])
++         list_for_each_entry(struct vk_cmd_queue_entry, e,
++                             &cbs[k]->vk.cmd_queue.cmds, cmd_link) n++;
++   }
++   if (n == 0 || n > (1u << 18))
++      return;
++   struct kk_pp_ent *ents = malloc(n * sizeof(*ents));
++   struct kk_pp_passe *ps = malloc((n / 2 + 1) * sizeof(*ps));
++   if (!ents || !ps) {
++      free(ents);
++      free(ps);
++      return;
++   }
++   uint32_t ne = 0, np = 0;
++   int64_t ouvert = -1;
++   for (uint32_t k = a; k <= b; k++) {
++      if (!elig[k]) { /* enregistrement non rejouable : borne tout */
++         ents[ne++] = (struct kk_pp_ent){NULL, (uint16_t)k, KK_PP_TRAVAIL, false};
++         ouvert = -1;
++         continue;
++      }
++      list_for_each_entry(struct vk_cmd_queue_entry, e,
++                          &cbs[k]->vk.cmd_queue.cmds, cmd_link) {
++         uint8_t c = kk_pp_classer(e);
++         ents[ne] = (struct kk_pp_ent){e, (uint16_t)k, c, false};
++         if (c == KK_PP_BEGIN) {
++            ouvert = ne;
++         } else if (c == KK_PP_END && ouvert >= 0) {
++            struct kk_pp_passe *p = &ps[np++];
++            memset(p, 0, sizeof(*p));
++            p->b = (uint32_t)ouvert;
++            p->e = ne;
++            p->ri = ents[ouvert].e->u.begin_rendering.rendering_info;
++            bool vide = true;
++            for (uint32_t x = p->b + 1; x < ne; x++)
++               vide &= ents[x].cls == KK_PP_NEUTRE;
++            p->efface = vide && kk_pp_est_effacement(p->ri);
++            ouvert = -1;
++         }
++         ne++;
++      }
++   }
++   bool transforme = false;
++
++   /* 1. effacements plies dans la passe qui charge */
++   for (uint32_t pc = 0; pc < np; pc++) {
++      if (!ps[pc].efface)
++         continue;
++      uint32_t x = ps[pc].e + 1, pd = pc + 1;
++      bool fait = false;
++      while (x < ne) {
++         uint8_t c = ents[x].cls;
++         if (c == KK_PP_NEUTRE || c == KK_PP_BARR) {
++            x++;
++            continue;
++         }
++         if (c != KK_PP_BEGIN || pd >= np || ps[pd].b != x) {
++            kk_pp_st.plis_refus_travail++;
++            break;
++         }
++         if (ps[pd].efface && !ps[pd].plie) {
++            if (kk_pp_touche_effacement(ps[pc].ri, ps[pd].ri))
++               break;
++            x = ps[pd].e + 1;
++            pd++;
++            continue;
++         }
++         if (ps[pd].efface) { /* deja plie plus loin : on passe par-dessus */
++            if (kk_pp_touche_effacement(ps[pc].ri, ps[pd].ri))
++               break;
++            x = ps[pd].e + 1;
++            pd++;
++            continue;
++         }
++         if (kk_pp_plier(ps[pc].ri, ps[pd].ri, mods)) {
++            fait = true;
++            ps[pd].modifiee = true;
++         } else {
++            kk_pp_st.plis_refus_cible++;
++         }
++         break;
++      }
++      if (fait) {
++         ps[pc].plie = true;
++         /* seulement Begin et End : les liaisons et etats notes entre eux
++          * restent (hors passe), vkd3d peut compter dessus plus loin */
++         ents[ps[pc].b].saute = true;
++         ents[ps[pc].e].saute = true;
++         int32_t c0 = ents[ps[pc].b].cb, c1 = ents[ps[pd].b].cb;
++         for (int32_t k = c0; k <= c1; k++)
++            groupe[k] = MAX2(groupe[k], c1); /* marque provisoire : fin */
++         kk_pp_st.plis++;
++         transforme = true;
++      }
++   }
++
++   /* 2. passes successives aux memes attachements reunies */
++   for (uint32_t pp = 0; pp < np; pp++) {
++      if (ps[pp].plie)
++         continue;
++      uint32_t pq = pp + 1;
++      while (pq < np && ps[pq].plie)
++         pq++;
++      if (pq >= np)
++         break;
++      bool libre = true;
++      for (uint32_t x = ps[pp].e + 1; x < ps[pq].b && libre; x++) {
++         if (ents[x].saute)
++            continue;
++         libre = ents[x].cls == KK_PP_NEUTRE ||
++                 (ents[x].cls == KK_PP_BARR &&
++                  kk_fusion_barriere_attachements(
++                     ents[x].e->u.pipeline_barrier2.dependency_info));
++      }
++      if (!libre) {
++         kk_pp_st.fus_refus_travail++;
++         continue;
++      }
++      if (ps[pq].modifiee || ps[pp].ri->renderArea.extent.width == 0 ||
++          kk_fusion_compatible(ps[pp].ri, ps[pq].ri) != 1) {
++         kk_pp_st.fus_refus_att++;
++         continue;
++      }
++      ents[ps[pp].e].saute = true;
++      ents[ps[pq].b].saute = true;
++      for (uint32_t x = ps[pp].e + 1; x < ps[pq].b; x++)
++         if (ents[x].cls == KK_PP_BARR)
++            ents[x].saute = true;
++      int32_t c0 = ents[ps[pp].e].cb, c1 = ents[ps[pq].b].cb;
++      for (int32_t k = c0; k <= c1; k++)
++         groupe[k] = MAX2(groupe[k], c1);
++      kk_pp_st.fusions++;
++      transforme = true;
++   }
++   free(ps);
++   if (!transforme) {
++      free(ents);
++      return;
++   }
++   /* groupes : intervalles qui se chevauchent reunis ; groupe[debut] = fin */
++   for (uint32_t k = a; k <= b;) {
++      if (groupe[k] < 0) {
++         k++;
++         continue;
++      }
++      uint32_t fin = (uint32_t)groupe[k];
++      uint32_t m = k;
++      while (m <= fin) {
++         if (groupe[m] > (int32_t)fin)
++            fin = (uint32_t)groupe[m];
++         m++;
++      }
++      for (uint32_t y = k + 1; y <= fin; y++)
++         groupe[y] = -2; /* dans le groupe */
++      groupe[k] = (int32_t)fin;
++      kk_pp_st.groupes++;
++      kk_pp_st.cbs += fin - k + 1;
++      k = fin + 1;
++   }
++   util_dynarray_foreach(mods, struct kk_pp_mod, m) {
++      struct kk_pp_mod old = {m->att, m->att->loadOp, m->att->clearValue};
++      m->att->loadOp = m->load;
++      m->att->clearValue = m->clear;
++      *m = old; /* garde l'ancien pour la remise */
++   }
++   *ents_out = ents;
++   *nents_out = ne;
++}
++
++static void
++kk_pp_remettre(struct util_dynarray *mods)
++{
++   util_dynarray_foreach(mods, struct kk_pp_mod, m) {
++      m->att->loadOp = m->load;
++      m->att->clearValue = m->clear;
++   }
++   util_dynarray_clear(mods);
++}
++
+ /* CIDRE_PASSES_JOURNAL : imprime les enregistrements notes (voir
+  * kk_journal_phase), une ligne par enregistrement, precedee de la soumission. */
+ static void
+@@ -1588,7 +2108,7 @@
+    const uint32_t ncb = submit->command_buffer_count;
+    struct kk_fusion_info *fus_info = NULL;
+    bool *fus = NULL, *fus_zdiff = NULL;
+-   if (kk_fusion_mode() && ncb - submit_debut >= 2) {
++   if (kk_fusion_mode() == 1 && ncb - submit_debut >= 2) {
+       fus_info = vk_alloc(&dev->vk.alloc, ncb * sizeof(*fus_info), 8,
+                           VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+       fus = vk_zalloc(&dev->vk.alloc, 2 * ncb * sizeof(*fus), 8,
+@@ -1640,10 +2160,49 @@
+       }
+    }
+ 
++   /* Cidre CIDRE_FUSION_SOUMISSION=2 (0331) : passes de toute la soumission. */
++   int32_t *pp_groupe = NULL;
++   struct kk_cmd_buffer **pp_cbs = NULL;
++   struct kk_pp_ent *pp_ents = NULL;
++   uint32_t pp_nents = 0;
++   struct util_dynarray pp_mods = UTIL_DYNARRAY_INIT;
++   if (kk_fusion_mode() == 2 && ncb > submit_debut) {
++      pp_groupe = (int32_t *)alloca(ncb * sizeof(int32_t));
++      pp_cbs = (struct kk_cmd_buffer **)alloca(ncb * sizeof(*pp_cbs));
++      bool *pp_elig = (bool *)alloca(ncb * sizeof(bool));
++      for (uint32_t k = 0; k < ncb; k++) {
++         struct kk_cmd_buffer *c =
++            container_of(submit->command_buffers[k], struct kk_cmd_buffer, vk);
++         pp_cbs[k] = c;
++         pp_groupe[k] = -1;
++         pp_elig[k] = (!c->one_time_submit || c->fusion_enfile) &&
++                      !c->drawable && !vk_command_buffer_has_error(&c->vk) &&
++                      c->vk.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY;
++      }
++      kk_pp_st.soum++;
++      kk_pp_analyser(pp_cbs, pp_elig, submit_debut, ncb - 1, pp_groupe,
++                     &pp_ents, &pp_nents, &pp_mods);
++   }
++
+    for (uint32_t i = submit_debut; i < submit->command_buffer_count; ++i) {
+       struct kk_cmd_buffer *cmd_buffer =
+          container_of(submit->command_buffers[i], struct kk_cmd_buffer, vk);
+ 
++      if (pp_ents && pp_groupe[i] >= 0) {
++         uint32_t j = (uint32_t)pp_groupe[i];
++         VkResult r = kk_pp_commit(queue, pp_cbs, i, j, pp_ents, pp_nents);
++         if (r != VK_SUCCESS) {
++            kk_pp_remettre(&pp_mods);
++            util_dynarray_fini(&pp_mods);
++            free(pp_ents);
++            return r;
++         }
++         for (uint32_t k = i; k <= j; k++)
++            pp_cbs[k]->submitted = true;
++         i = j;
++         continue;
++      }
++
+       if (fus && fus_info && fus[i]) {
+          uint32_t j = i;
+          while (j + 1 < ncb && fus[j])
+@@ -1705,8 +2264,15 @@
+       vk_free(&dev->vk.alloc, fus_info);
+    if (fus)
+       vk_free(&dev->vk.alloc, fus);
+-   if (kk_fusion_mode())
++   if (pp_ents) {
++      kk_pp_remettre(&pp_mods);
++      free(pp_ents);
++   }
++   util_dynarray_fini(&pp_mods);
++   if (kk_fusion_mode() == 1)
+       kk_fusion_stats();
++   else if (kk_fusion_mode() == 2)
++      kk_pp_stats();
+ 
+    const bool signaux_cpu = kk_horodatages_cpu() &&
+                             kk_ts_cpu_fin_soumission(queue, submit);

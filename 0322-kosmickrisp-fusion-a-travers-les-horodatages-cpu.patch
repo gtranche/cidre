@@ -1,0 +1,149 @@
+Generated-by: LLM
+
+KosmicKrisp : fusion a la soumission a travers les horodatages notes par le CPU (CIDRE_FUSION_HORODATAGES)
+
+Avec CIDRE_HORODATAGES_CPU (0272), remises a zero, ecritures et copies d'un
+pool d'horodatage ne sont que notees dans l'enregistrement : aucun encodeur,
+aucun travail GPU. CIDRE_FUSION_SOUMISSION (0263) les comptait pourtant comme
+des commandes bloquantes : Unreal pose RESET_QUERY_POOL en tete et
+WRITE_TIMESTAMP2 en queue de chaque liste, si bien que la fusion ne
+s'appliquait jamais sur Demonologist (bilan 0263 : t:RESET_QUERY_POOL=624/s,
+q:WRITE_TIMESTAMP2=256/s, 0 fusion).
+
+Ici (CIDRE_FUSION_HORODATAGES, 1 par defaut, effectif seulement avec
+CIDRE_HORODATAGES_CPU et CIDRE_FUSION_SOUMISSION) ces commandes sont neutres
+pour l'analyse de fusion ; rejouees dans l'enregistrement fusionne, elles y
+sont notees comme avant et prennent le temps du commit qui les porte.
+CIDRE_FUSION_STATS=2 : en plus du bilan, les 60 premieres paires de listes
+consecutives dont les passes de bord ont la meme zone et le meme nombre de
+couleurs, avec les commandes qui les separent.
+
+Mesure (M4, Demonologist au menu, 02/11) : les refus de tete disparaissent,
+mais toujours 0 fusion : les deux moities du G-buffer (RP 1600x900 c6 d42 puis
+c6 d41) et de la pre-passe de profondeur ne sont pas dans la meme soumission
+(listes de soumissions differentes), et les queues restantes se terminent par
+un DISPATCH (178/s), DISPATCH_INDIRECT (36/s) ou FILL_BUFFER (36/s). Aucun gain
+mesure sur ce jeu ; utile seulement aux jeux ou la fusion s'applique deja
+(Elden Ring) et qui posent des horodatages. Ne change rien sans
+CIDRE_FUSION_SOUMISSION.
+
+diff --git a/src/kosmickrisp/vulkan/kk_queue.c b/src/kosmickrisp/vulkan/kk_queue.c
+index b86d893..6a3bc09 100644
+--- a/src/kosmickrisp/vulkan/kk_queue.c
++++ b/src/kosmickrisp/vulkan/kk_queue.c
+@@ -864,6 +864,42 @@ kk_fusion_cmd_neutre(enum vk_cmd_type t)
+    }
+ }
+ 
++/* Cidre (CIDRE_FUSION_HORODATAGES, defaut 1 avec CIDRE_HORODATAGES_CPU) :
++ * sous CIDRE_HORODATAGES_CPU, remises a zero, ecritures et copies d'un pool
++ * d'horodatage ne sont que notees dans l'enregistrement (aucun travail GPU,
++ * aucun encodeur) : elles ne bornent pas une fusion. Unreal en pose en tete
++ * (RESET_QUERY_POOL) et en queue (WRITE_TIMESTAMP2) de chaque liste, ce qui
++ * empechait toute fusion sur Demonologist (G-buffer et pre-passe de
++ * profondeur coupes en deux passes Metal). L'horodatage garde le temps du
++ * commit qui le porte (interpole par rang), comme sans fusion. */
++static bool
++kk_fusion_ts_neutre(const struct vk_cmd_queue_entry *e)
++{
++   static int on = -1;
++   if (on < 0) {
++      const char *v = getenv("CIDRE_FUSION_HORODATAGES");
++      on = v ? atoi(v) : 1;
++   }
++   if (!on || !kk_horodatages_cpu())
++      return false;
++   switch (e->type) {
++   case VK_CMD_WRITE_TIMESTAMP2:
++   case VK_CMD_WRITE_TIMESTAMP:
++      return true;
++   case VK_CMD_RESET_QUERY_POOL: {
++      VK_FROM_HANDLE(kk_query_pool, pool, e->u.reset_query_pool.query_pool);
++      return pool && pool->vk.query_type == VK_QUERY_TYPE_TIMESTAMP;
++   }
++   case VK_CMD_COPY_QUERY_POOL_RESULTS_TO_MEMORY_KHR: {
++      VK_FROM_HANDLE(kk_query_pool, pool,
++                     e->u.copy_query_pool_results_to_memory_khr.query_pool);
++      return pool && pool->vk.query_type == VK_QUERY_TYPE_TIMESTAMP;
++   }
++   default:
++      return false;
++   }
++}
++
+ struct kk_fusion_info {
+    struct vk_cmd_queue_entry *first_begin, *last_begin, *last_end;
+    bool head_ok, tail_ok;
+@@ -876,6 +912,51 @@ struct kk_fusion_info {
+    enum vk_cmd_type head_bloque, tail_bloque;
+ };
+ 
++/* CIDRE_FUSION_STATS=2 (diagnostic) : pour les 60 premieres paires de listes
++ * dont la derniere passe de l'une et la premiere de l'autre ont la meme zone et
++ * le meme nombre de couleurs, imprime les commandes entre les deux passes. */
++static void
++kk_fusion_journal_paire(struct kk_cmd_buffer *a, struct kk_cmd_buffer *b,
++                        const struct kk_fusion_info *fa,
++                        const struct kk_fusion_info *fb)
++{
++   static int niveau = -1, n = 0;
++   if (niveau < 0) {
++      const char *v = getenv("CIDRE_FUSION_STATS");
++      niveau = v ? atoi(v) : 0;
++   }
++   if (niveau < 2 || n >= 60 || !fa->last_begin || !fb->first_begin)
++      return;
++   const VkRenderingInfo *ra = fa->last_begin->u.begin_rendering.rendering_info;
++   const VkRenderingInfo *rb = fb->first_begin->u.begin_rendering.rendering_info;
++   if (ra->renderArea.extent.width != rb->renderArea.extent.width ||
++       ra->renderArea.extent.height != rb->renderArea.extent.height ||
++       ra->colorAttachmentCount != rb->colorAttachmentCount)
++      return;
++   n++;
++   char buf[2048];
++   int o = snprintf(buf, sizeof buf, "[CIDRE_FUSION] paire %ux%u c%u fin=%d queue:",
++                    ra->renderArea.extent.width, ra->renderArea.extent.height,
++                    ra->colorAttachmentCount, fa->last_end != NULL);
++   bool apres = false;
++   list_for_each_entry(struct vk_cmd_queue_entry, e, &a->vk.cmd_queue.cmds, cmd_link) {
++      if (e == fa->last_end) { apres = true; continue; }
++      if (apres && o < (int)sizeof buf - 64)
++         o += snprintf(buf + o, sizeof buf - o, " %s", vk_cmd_queue_type_names[e->type] + 7);
++   }
++   o += snprintf(buf + o, sizeof buf - o, " | tete:");
++   list_for_each_entry(struct vk_cmd_queue_entry, e, &b->vk.cmd_queue.cmds, cmd_link) {
++      if (e == fb->first_begin) break;
++      if (o < (int)sizeof buf - 64)
++         o += snprintf(buf + o, sizeof buf - o, " %s", vk_cmd_queue_type_names[e->type] + 7);
++   }
++   int ok = 1;
++   for (uint32_t c = 0; c < ra->colorAttachmentCount; c++)
++      ok &= ra->pColorAttachments[c].imageView == rb->pColorAttachments[c].imageView;
++   fprintf(stderr, "%s | memes_vues=%d chargeB=%d\n", buf, ok,
++           rb->colorAttachmentCount ? rb->pColorAttachments[0].loadOp : -1);
++}
++
+ /* Barriere dont toutes les sources sont des acces d'attachement (ecriture /
+  * lecture couleur ou profondeur) : entre deux passes fusionnees sur les MEMES
+  * attachements, elle ne peut rien ordonner (une image liee comme attachement
+@@ -985,7 +1066,7 @@ kk_fusion_analyser(struct kk_cmd_buffer *c, struct kk_fusion_info *f)
+          f->tail_bloque = VK_CMD_TYPE_COUNT;
+          continue;
+       }
+-      bool neutre = kk_fusion_cmd_neutre(e->type);
++      bool neutre = kk_fusion_cmd_neutre(e->type) || kk_fusion_ts_neutre(e);
+       if (e->type == VK_CMD_PIPELINE_BARRIER2) {
+          neutre = true;
+          const VkDependencyInfo *dep = e->u.pipeline_barrier2.dependency_info;
+@@ -1480,6 +1561,11 @@ kk_queue_submit(struct vk_queue *vk_queue, struct vk_queue_submit *submit)
+                kk_fusion_analyser(c, &fus_info[i]);
+          }
+          for (uint32_t i = submit_debut; i + 1 < ncb; ++i) {
++            if (elig[i] && elig[i + 1])
++               kk_fusion_journal_paire(
++                  container_of(submit->command_buffers[i], struct kk_cmd_buffer, vk),
++                  container_of(submit->command_buffers[i + 1], struct kk_cmd_buffer, vk),
++                  &fus_info[i], &fus_info[i + 1]);
+             kk_fus.paires++;
+             if (!elig[i] || !elig[i + 1]) {
+                kk_fus.inelig++;

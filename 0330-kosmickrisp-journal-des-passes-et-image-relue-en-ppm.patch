@@ -1,0 +1,392 @@
+Generated-by: LLM
+
+KosmicKrisp : journal des passes par image (CIDRE_PASSES_JOURNAL) et image
+relue ecrite en PPM (CIDRE_WSI_RELECTURE_PPM), diagnostics
+
+- CIDRE_PASSES_JOURNAL=<delai_s>[:<fenetre_ms>] (+ CIDRE_PASSES_JOURNAL_FICHIER) :
+  pendant une fenetre (defaut 120 ms) <delai_s> s apres la premiere soumission,
+  chaque enregistrement note ses evenements et les imprime a la soumission :
+  SOUM (file, nombre d'enregistrements, attentes, signaux), puis par
+  enregistrement les lettres de kk_sig (d dispatch, C/R ouverture
+  calcul/rendu, b barriere, t/z/q horodatages et requetes, y/i copies,
+  k effacement) et, par passe, [BR zone attachements image/format/LxSy]
+  (operations Vulkan), <R ...> (ouverture Metal et sa cause),
+  stN/stD/stS (MTLStoreAction posees), (fin ...) et </R> (fermeture
+  immediate ou differee). Outils : ~/Dev/cidre-demono-passes/ana/coupures.py.
+- CIDRE_WSI_RELECTURE_PPM=<prefixe> (avec CIDRE_WSI_RELECTURE de 0321) : image
+  relue ecrite, un pixel sur deux, dans <prefixe>-<numero>.ppm (formats 8 bits)
+  pour verifier une image en jeu sans capture du bureau.
+Sans les variables : rien ne change.
+
+Constat (Demonologist au menu, M4, 02/11) : 70 passes Metal par image, dont
+23 passes d'effacement seules (ClearRenderTargetView/ClearDepthStencilView de
+vkd3d : Begin loadOp CLEAR / End sans dessin, ~5 us de sommets « Clear » sans
+fragments chacune), puis la passe qui dessine CHARGE ce qui vient d'etre
+efface (G-buffer 1600x900 : 6 effacements puis 6 cibles + profondeur en
+LOAD). Toutes les autres operations sont LOAD/STORE ou CLEAR/STORE, aucune
+passe partielle, aucune passe transitoire (rien a mettre en memoryless). La
+pre-passe de profondeur et une passe 512x512 c3 sont coupees en deux listes
+D3D12 separees par des listes qui ne font qu'horodater (z/tt). Les ~40 autres
+coupures sont des attachements differents avec calcul entre les passes.
+
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.c b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+@@ -6,6 +6,7 @@
+  */
+ 
+ #include "kk_cmd_buffer.h"
++#include <stdarg.h>
+ #include "kk_debug.h"
+ 
+ #include "util/simple_mtx.h"
+@@ -325,6 +326,7 @@
+    util_dynarray_fini(&cmd->ts_written);
+    util_dynarray_fini(&cmd->ts_stage_map);
+    util_dynarray_fini(&cmd->ts_cpu_ops);
++   util_dynarray_fini(&cmd->journal);
+ 
+    vk_free(&pool->vk.alloc, cmd);
+ }
+@@ -360,6 +362,7 @@
+    cmd->ts_written = UTIL_DYNARRAY_INIT;
+    cmd->ts_stage_map = UTIL_DYNARRAY_INIT;
+    cmd->ts_cpu_ops = UTIL_DYNARRAY_INIT;
++   cmd->journal = UTIL_DYNARRAY_INIT;
+    cmd->post_render_writes = UTIL_DYNARRAY_INIT;
+    cmd->tess_ops = UTIL_DYNARRAY_INIT;
+    cmd->tess_rec_phase = -1;
+@@ -442,6 +445,110 @@
+    .destroy = kk_destroy_cmd_buffer,
+ };
+ 
++
++/* ===== Cidre CIDRE_PASSES_JOURNAL=<delai_s>[:<fenetre_ms>] (diagnostic) =====
++ * Pendant une fenetre (defaut 120 ms) commencant <delai_s> secondes apres la
++ * premiere soumission, chaque enregistrement note ses evenements (passes de
++ * rendu avec attachements et operations load/store Vulkan et Metal, raisons
++ * de fermeture des encodeurs, effacements, barrieres, dispatchs) ; ils sont
++ * imprimes a la soumission (CIDRE_PASSES_JOURNAL_FICHIER, sinon stderr) avec
++ * le decoupage des soumissions (file, attentes, signaux). */
++uint64_t kk_journal_t0;
++static double kk_journal_delai = -1.0, kk_journal_fen = 0.12;
++
++static void
++kk_journal_init(void)
++{
++   if (kk_journal_delai > -0.5)
++      return;
++   const char *v = getenv("CIDRE_PASSES_JOURNAL");
++   if (!v) {
++      kk_journal_delai = 1e30;
++      return;
++   }
++   kk_journal_delai = atof(v);
++   const char *c = strchr(v, ':');
++   if (c)
++      kk_journal_fen = atof(c + 1) / 1000.0;
++}
++
++/* 0 avant la fenetre, 1 dedans, 2 apres. */
++int
++kk_journal_phase(void)
++{
++   kk_journal_init();
++   if (kk_journal_delai > 1e29 || !kk_journal_t0)
++      return 0;
++   double t = (os_time_get_nano() - kk_journal_t0) / 1e9;
++   if (t < kk_journal_delai - 0.05)
++      return 0;
++   return t <= kk_journal_delai + kk_journal_fen ? 1 : 2;
++}
++
++bool
++kk_journal_arme(void)
++{
++   return kk_journal_phase() == 1;
++}
++
++void
++kk_journal_c(struct kk_cmd_buffer *cmd, char c)
++{
++   util_dynarray_append(&cmd->journal, c);
++}
++
++void
++kk_journal(struct kk_cmd_buffer *cmd, const char *fmt, ...)
++{
++   char buf[1024];
++   va_list ap;
++   va_start(ap, fmt);
++   int n = vsnprintf(buf, sizeof(buf), fmt, ap);
++   va_end(ap);
++   if (n <= 0)
++      return;
++   if (n >= (int)sizeof(buf))
++      n = sizeof(buf) - 1;
++   util_dynarray_append_array(&cmd->journal, char, buf, n);
++}
++
++static unsigned
++kk_jimg(const struct kk_image_view *iv)
++{
++   return iv ? (unsigned)(((uintptr_t)iv->vk.image >> 4) & 0xffffu) : 0u;
++}
++
++/* Attachements et operations de la passe (appele au debut de passe). */
++void
++kk_journal_passe(struct kk_cmd_buffer *cmd, const VkRenderingInfo *ri,
++                 bool whole)
++{
++   kk_journal(cmd, " [BR %ux%u+%d+%d fl%x%s", ri->renderArea.extent.width,
++              ri->renderArea.extent.height, ri->renderArea.offset.x,
++              ri->renderArea.offset.y, ri->flags, whole ? "" : " PARTIEL");
++   for (uint32_t i = 0; i < ri->colorAttachmentCount; i++) {
++      const VkRenderingAttachmentInfo *a = &ri->pColorAttachments[i];
++      if (!a->imageView)
++         continue;
++      VK_FROM_HANDLE(kk_image_view, iv, a->imageView);
++      kk_journal(cmd, " c%u=%04x/f%u/L%dS%d%s", i, kk_jimg(iv), iv->vk.format,
++                 a->loadOp, a->storeOp,
++                 a->resolveMode ? "/res" : "");
++   }
++   if (ri->pDepthAttachment && ri->pDepthAttachment->imageView) {
++      const VkRenderingAttachmentInfo *a = ri->pDepthAttachment;
++      VK_FROM_HANDLE(kk_image_view, iv, a->imageView);
++      kk_journal(cmd, " d=%04x/f%u/s%u/L%dS%d", kk_jimg(iv), iv->vk.format,
++                 iv->vk.image->samples, a->loadOp, a->storeOp);
++   }
++   if (ri->pStencilAttachment && ri->pStencilAttachment->imageView) {
++      const VkRenderingAttachmentInfo *a = ri->pStencilAttachment;
++      VK_FROM_HANDLE(kk_image_view, iv, a->imageView);
++      kk_journal(cmd, " s=%04x/L%dS%d", kk_jimg(iv), a->loadOp, a->storeOp);
++   }
++   kk_journal(cmd, "]");
++}
++
+ VKAPI_ATTR VkResult VKAPI_CALL
+ kk_BeginCommandBuffer(VkCommandBuffer commandBuffer,
+                       const VkCommandBufferBeginInfo *pBeginInfo)
+@@ -481,6 +588,8 @@
+    if (kk_enc_stats_enabled())
+       kk_enc_stat(KK_ENCS_VKCB, NULL);
+    cmd->sig_n = 0;
++   util_dynarray_clear(&cmd->journal);
++   cmd->journal_on = kk_journal_arme();
+    cmd->ts_emis = false;
+    cmd->metal.encoders_in_cmd_buf = 0u;
+    cmd->metal.pre_slot = -1;
+@@ -996,6 +1105,10 @@
+ 
+    if (kk_pass_stats_enabled())
+       kk_pass_stats_record(cmd, had_closing);
++   if (cmd->journal_on)
++      kk_journal(cmd, " <R%s%s>", cmd->metal.start_reason == 1 ? " reprise" :
++                 cmd->metal.start_reason == 2 ? " coupure_barriere" : "",
++                 had_closing ? " apres_fermeture_differee" : "");
+    cmd->metal.start_reason = 0;
+ 
+    kk_cmd_buffer_split_if_full(cmd);
+@@ -1430,6 +1543,8 @@
+    cmd->metal.closing_needs_barrier = false;
+    if (kk_enc_stats_enabled())
+       kk_enc_stat(KK_ENCS_FERM_DIFF, __builtin_return_address(0));
++   if (cmd->journal_on)
++      kk_journal(cmd, " </R>");
+    close_encoder(cmd, encoder);
+ }
+ 
+@@ -1519,6 +1634,8 @@
+    if (cmd->metal.render) {
+       if (kk_pass_trace_enabled())
+          kk_pass_trace_end(cmd);
++      if (cmd->journal_on)
++         kk_journal(cmd, " </R imm>");
+       end_encoder(cmd, cmd->metal.render);
+       cmd->metal.render = NULL;
+       kk_pre_finish(cmd);
+@@ -1529,6 +1646,8 @@
+    }
+ 
+    if (cmd->metal.compute) {
++      if (cmd->journal_on)
++         kk_journal(cmd, "/");
+       end_encoder(cmd, cmd->metal.compute);
+       cmd->metal.compute = NULL;
+ 
+@@ -1552,6 +1671,11 @@
+       &cmd->post_render_writes, struct libkk_imm_write) > 0;
+    bool has_ts_resolves = kk_ts_resolves_pending_cur(cmd);
+ 
++   if (cmd->journal_on && cmd->metal.render)
++      kk_journal(cmd, " (fin%s%s%s%s)", cmd->metal.compute ? " calcul" : "",
++                 has_post_render_writes ? " ecr_post" : "",
++                 has_ts_resolves ? " resolutions" : "",
++                 writes_memory ? " ecrit_memoire" : "");
+    if (KK_DEBUG(BLANKET_BARRIER) || cmd->metal.render == NULL ||
+        cmd->metal.compute != NULL || has_post_render_writes || has_ts_resolves ||
+        writes_memory) {
+@@ -2602,6 +2726,8 @@
+ 
+          mtl_render_set_color_store_action(encoder, store_action,
+                                            logical_index);
++         if (cmd->journal_on)
++            kk_journal(cmd, " st%u=%d", i, store_action);
+       }
+    }
+    enum mtl_store_action depth_store_action = MTL_STORE_ACTION_UNKNOWN;
+@@ -2633,6 +2759,8 @@
+          depth_store_action = MTL_STORE_ACTION_STORE_AND_MULTISAMPLE_RESOLVE;
+ 
+       mtl_render_set_depth_store_action(encoder, depth_store_action);
++      if (cmd->journal_on)
++         kk_journal(cmd, " stD=%d", depth_store_action);
+    }
+    if (render->stencil_att.iview) {
+       if (stencil_store_action == MTL_STORE_ACTION_MULTISAMPLE_RESOLVE &&
+@@ -2640,6 +2768,8 @@
+          stencil_store_action = MTL_STORE_ACTION_STORE_AND_MULTISAMPLE_RESOLVE;
+ 
+       mtl_render_set_stencil_store_action(encoder, stencil_store_action);
++      if (cmd->journal_on)
++         kk_journal(cmd, " stS=%d", stencil_store_action);
+    }
+ }
+ 
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.h b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+@@ -415,6 +415,10 @@
+    bool ts_emis;
+    char sig[44];
+    uint8_t sig_n;
++   /* Cidre CIDRE_PASSES_JOURNAL (diagnostic) : texte des evenements de
++    * l'enregistrement, imprime a la soumission. */
++   struct util_dynarray journal;
++   bool journal_on;
+    /* Timestamps already sampled by the current render encoder. (struct
+     * kk_ts_stage_entry). */
+    struct util_dynarray ts_stage_map;
+@@ -550,9 +554,19 @@
+    KK_ENCS_COUNT,
+ };
+ int kk_enc_stats_enabled(void);
++void kk_journal_c(struct kk_cmd_buffer *cmd, char c);
++extern uint64_t kk_journal_t0;
++int kk_journal_phase(void);
++bool kk_journal_arme(void);
++void kk_journal_passe(struct kk_cmd_buffer *cmd, const VkRenderingInfo *ri,
++                      bool whole);
++void kk_journal(struct kk_cmd_buffer *cmd, const char *fmt, ...)
++   __attribute__((format(printf, 2, 3)));
+ static inline void
+ kk_sig(struct kk_cmd_buffer *cmd, char c)
+ {
++   if (cmd->journal_on)
++      kk_journal_c(cmd, c);
+    if (!kk_enc_stats_enabled())
+       return;
+    if (cmd->sig_n < 40)
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_draw.c b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -393,6 +393,8 @@
+        render->view_mask == BITFIELD64_MASK(render->layer_count));
+ 
+    render->rendering_to_whole_framebuffer = is_whole_framebuffer;
++   if (cmd->journal_on)
++      kk_journal_passe(cmd, pRenderingInfo, is_whole_framebuffer);
+ 
+    if (KK_DEBUG(PASS_STATS)) {
+       extern uint64_t kk_pass_count, kk_pass_partial, kk_pass_px_area,
+diff --git a/src/kosmickrisp/vulkan/kk_queue.c b/src/kosmickrisp/vulkan/kk_queue.c
+--- a/src/kosmickrisp/vulkan/kk_queue.c
++++ b/src/kosmickrisp/vulkan/kk_queue.c
+@@ -1443,6 +1443,47 @@
+    return true;
+ }
+ 
++/* CIDRE_PASSES_JOURNAL : imprime les enregistrements notes (voir
++ * kk_journal_phase), une ligne par enregistrement, precedee de la soumission. */
++static void
++kk_journal_soumission(struct kk_queue *queue, const struct vk_queue_submit *submit)
++{
++   static FILE *f;
++   static simple_mtx_t lock = SIMPLE_MTX_INITIALIZER;
++   static uint32_t n_soum;
++   bool any = false;
++   for (uint32_t i = 0; i < submit->command_buffer_count; ++i) {
++      struct kk_cmd_buffer *c =
++         container_of(submit->command_buffers[i], struct kk_cmd_buffer, vk);
++      any |= c->journal_on;
++   }
++   if (!any)
++      return;
++   simple_mtx_lock(&lock);
++   if (!f) {
++      const char *p = getenv("CIDRE_PASSES_JOURNAL_FICHIER");
++      f = p ? fopen(p, "w") : NULL;
++      if (!f)
++         f = stderr;
++   }
++   double t = (os_time_get_nano() - kk_journal_t0) / 1e9;
++   fprintf(f, "SOUM %u t=%.4f file=%p ncb=%u att=%u sig=%u\n", n_soum++, t,
++           (void *)queue, submit->command_buffer_count, submit->wait_count,
++           submit->signal_count);
++   for (uint32_t i = 0; i < submit->command_buffer_count; ++i) {
++      struct kk_cmd_buffer *c =
++         container_of(submit->command_buffers[i], struct kk_cmd_buffer, vk);
++      uint32_t n = util_dynarray_num_elements(&c->journal, char);
++      fprintf(f, " CB%u %s%s%s sc%u : %.*s\n", i, c->journal_on ? "" : "(non note)",
++              c->submitted ? " REJOUE" : "", c->drawable ? " PRESENT" : "",
++              (unsigned)util_dynarray_num_elements(&c->metal.sealed_cmd_bufs, mtl_command_buffer *),
++              (int)n, (const char *)c->journal.data);
++      c->journal_on = false;
++   }
++   fflush(f);
++   simple_mtx_unlock(&lock);
++}
++
+ static VkResult
+ kk_queue_submit(struct vk_queue *vk_queue, struct vk_queue_submit *submit)
+ {
+@@ -1451,6 +1492,10 @@
+ 
+    if (vk_queue_is_lost(&queue->vk))
+       return VK_ERROR_DEVICE_LOST;
++
++   if (!kk_journal_t0)
++      kk_journal_t0 = os_time_get_nano();
++   kk_journal_soumission(queue, submit);
+ 
+    if (kk_ts_cpu_courante) { /* reste d'une soumission sortie en erreur */
+       struct kk_ts_cpu_soum *reste = kk_ts_cpu_courante;
+diff --git a/src/vulkan/wsi/wsi_common_metal_layer.m b/src/vulkan/wsi/wsi_common_metal_layer.m
+--- a/src/vulkan/wsi/wsi_common_metal_layer.m
++++ b/src/vulkan/wsi/wsi_common_metal_layer.m
+@@ -923,6 +923,25 @@
+          fprintf(stderr, "[CIDRE_RELECTURE] image %llu %lux%lu fmt %lu moy %.4f %.4f %.4f noir %.1f%% grille %s\n",
+                  (unsigned long long)numero, (unsigned long)w, (unsigned long)h, (unsigned long)f,
+                  sr / n, sg / n, sb / n, 100.0 * noir / n, gl);
++         /* CIDRE_WSI_RELECTURE_PPM=<prefixe> (diagnostic) : l'image relue,
++          * un pixel sur deux, dans <prefixe>-<numero>.ppm (formats 8 bits). */
++         const char *ppm = getenv("CIDRE_WSI_RELECTURE_PPM");
++         if (ppm && bpp == 4 && f != MTLPixelFormatRGB10A2Unorm && f != MTLPixelFormatBGR10A2Unorm) {
++            char chemin[1024];
++            snprintf(chemin, sizeof(chemin), "%s-%llu.ppm", ppm, (unsigned long long)numero);
++            FILE *pf = fopen(chemin, "wb");
++            if (pf) {
++               bool bgra = f == MTLPixelFormatBGRA8Unorm || f == MTLPixelFormatBGRA8Unorm_sRGB;
++               fprintf(pf, "P6\n%lu %lu\n255\n", (unsigned long)(w / 2), (unsigned long)(h / 2));
++               for (NSUInteger y = 0; y + 1 < h; y += 2)
++                  for (NSUInteger x = 0; x + 1 < w; x += 2) {
++                     const uint8_t *q = p + y * pitch + x * 4;
++                     uint8_t rgb[3] = {bgra ? q[2] : q[0], q[1], bgra ? q[0] : q[2]};
++                     fwrite(rgb, 1, 3, pf);
++                  }
++               fclose(pf);
++            }
++         }
+          [buf release];
+       }];
+       [cb commit];

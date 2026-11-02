@@ -59,7 +59,11 @@ plateformes_steam = "steam 2026-10-11"
 # GPUStartTime/GPUEndTime au retour de commit, sans travail GPU (UE en pose ~1400/s) :
 # M4 28,4 -> 33,4 img/s (2 paires, dylib de la serie), M1 28,3 -> ~31 ; 0 gel, 0 faute.
 # Statistiques GPU d UE / resolution dynamique a confirmer dans une vraie partie.
-code_kk = "ssbo_sans_bornes ssbo_nul_puits reductions_simd min_lod_txf_libre sans_attachement_borne horodatages_cpu"
+# 0331 fusion_effacements (2026-11-02, M4, 4+4 manches entrelacees au menu 1600x900) :
+# effacements plies en loadOp CLEAR dans la passe suivante et passes reunies a travers
+# les listes qui ne font qu horodater : 70 -> ~50 passes Metal/image, 35,4 -> 36,7 img/s
+# (+3 %), image identique (ecart A/B = ecart A/A).
+code_kk = "ssbo_sans_bornes ssbo_nul_puits reductions_simd min_lod_txf_libre sans_attachement_borne horodatages_cpu fusion_effacements"
 
 [[machine]]
 si = "famille_gpu <= 7"
