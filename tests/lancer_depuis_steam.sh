@@ -347,7 +347,8 @@ fi
 #                               0256, 0263 : fusion_soumission, tess_phases,
 #                               strip_sans_deroule ; 0271 : cbv_sans_bornes ; 0269 : min_lod_txf_libre ;
 #                               0270 : sans_attachement_borne ; 0272 : horodatages_cpu ;
-#                               0331 : fusion_effacements = CIDRE_FUSION_SOUMISSION=2), noms en minuscules sans CIDRE_ : la plupart
+#                               0331 : fusion_effacements = CIDRE_FUSION_SOUMISSION=2 ;
+#                               0340 : sans_tampon_vide), noms en minuscules sans CIDRE_ : la plupart
 #                               plantent ou ralentissent ailleurs (SSBO_SANS_BORNES
 #                               seul : Unreal 5 faute au demarrage).
 # Elles changent la cle du cache de pipelines. CIDRE_<option>=0 en retire une.
@@ -355,7 +356,7 @@ fi
 [ "$(opt compile_differee CIDRE_COMPILE_DIFFEREE)" = true ] && kk_defaut CIDRE_COMPILE_DIFFEREE 1
 for o in $(profil code_kk | tr -d '"'); do
    case $o in
-      lectures_cachees|w10_sans_court_circuit|images_nulles_sans_branche|ssbo_sans_bornes|ssbo_nul_puits|contraction_malgre_precis|reductions_simd|minmax_zero_entier|textures_nulles_sans_branche|fusion_soumission|tess_phases|strip_sans_deroule|cbv_sans_bornes|min_lod_txf_libre|sans_attachement_borne|horodatages_cpu)
+      lectures_cachees|w10_sans_court_circuit|images_nulles_sans_branche|ssbo_sans_bornes|ssbo_nul_puits|contraction_malgre_precis|reductions_simd|minmax_zero_entier|textures_nulles_sans_branche|fusion_soumission|tess_phases|strip_sans_deroule|cbv_sans_bornes|min_lod_txf_libre|sans_attachement_borne|horodatages_cpu|sans_tampon_vide)
          kk_defaut "CIDRE_$(printf '%s' "$o" | tr '[:lower:]' '[:upper:]')" 1 ;;
       fusion_effacements) kk_defaut CIDRE_FUSION_SOUMISSION 2 ;;
       *) echo "code_kk : option inconnue ignoree : $o" >&2 ;;

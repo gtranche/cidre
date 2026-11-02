@@ -1,0 +1,498 @@
+Generated-by: LLM
+
+KosmicKrisp : diagnostics de temps en jeu (CIDRE_CS_CHRONO, CIDRE_TROUS_STATS,
+CIDRE_RESIDENCE_STATS), sans effet par defaut
+
+Base : serie integree jusqu'a 0331 (+ 0340 facultatif).
+
+ - CIDRE_CS_CHRONO="<h8>,..." ou "tout" : horodatages precis avant/apres les
+   dispatchs des nuanceurs choisis (cle = 32 bits de tete du FNV-1a de leur
+   MSL, celle de CIDRE_CS_SAUTER/REPETER de 0335), relus par le CPU dans un
+   anneau de 4096 entrees ; bilan [CIDRE_CHRONO] par nuanceur toutes les 5 s
+   (dispatchs/s, mediane, moyenne, ms/s). Serialise un peu (32 au lieu de
+   37 img/s sur Demonologist en mode « tout »).
+ - CIDRE_TROUS_STATS=1 : par file Metal, ecart entre la fin d'un commit et le
+   debut du suivant (retour MTL4CommitFeedback), separe en « CPU en retard »
+   (commit pose apres la fin du precedent) et « cote GPU », histogramme,
+   ecarts apres une attente d'evenement, gros ecarts (> 50 us) par classe
+   d'encodeurs du commit precedent/suivant (0 vide, 1, 2-4, 5+, 4 = scelles),
+   occupation par file.
+ - CIDRE_RESIDENCE_STATS=1 : soumissions et commits de l'ensemble de
+   residence par seconde.
+ - pont : mtl_counter_heap_resolve_cpu (lecture CPU d'un tas d'horodatage
+   MTL4).
+
+Ce qu'ils ont montre sur Demonologist (M4, menu, 02-03/11) : TraceVoxels
+(6897ebd2) 1,33 ms en jeu pour une premiere execution (0,95 repetee, 0,83 au
+banc), inchange si un groupe du meme pipeline la precede (code et descripteurs
+chauds) : le surcout est dans les donnees ; TSR MainCS 3,05 ms et
+LightScattering = banc. File principale : ~7 200 commits/s, CPU jamais en
+retard ; les gros ecarts precedent tous un tampon vide (-> 0340).
+Ensemble de residence : ~1 780 commits/s sans CIDRE_RESIDENCE_PARESSEUSE,
+0 avec.
+
+diff --git a/src/kosmickrisp/bridge/mtl_device.h b/src/kosmickrisp/bridge/mtl_device.h
+--- a/src/kosmickrisp/bridge/mtl_device.h
++++ b/src/kosmickrisp/bridge/mtl_device.h
+@@ -45,6 +45,8 @@
+  * mtl_release. */
+ mtl_counter_heap *mtl_new_timestamp_counter_heap(mtl_device *dev,
+                                                  uint32_t count);
++uint32_t mtl_counter_heap_resolve_cpu(mtl_counter_heap *heap, uint32_t index,
++                                      uint32_t count, uint64_t *out);
+ 
+ /* Resource queries */
+ void mtl_heap_buffer_size_and_align_with_length(mtl_device *device,
+diff --git a/src/kosmickrisp/bridge/mtl_device.m b/src/kosmickrisp/bridge/mtl_device.m
+--- a/src/kosmickrisp/bridge/mtl_device.m
++++ b/src/kosmickrisp/bridge/mtl_device.m
+@@ -356,5 +356,21 @@
+    @autoreleasepool {
+       id<MTLDevice> dev = (id<MTLDevice>)device;
+       return [dev newCommandBuffer];
++   }
++}
++
++/* Cidre (diagnostic) : lecture CPU d'entrees d'un tas d'horodatage MTL4. */
++uint32_t
++mtl_counter_heap_resolve_cpu(mtl_counter_heap *heap, uint32_t index,
++                             uint32_t count, uint64_t *out)
++{
++   @autoreleasepool {
++      id<MTL4CounterHeap> h = (id<MTL4CounterHeap>)heap;
++      NSData *d = [h resolveCounterRange:NSMakeRange(index, count)];
++      if (!d)
++         return 0;
++      uint32_t n = MIN(count, (uint32_t)(d.length / sizeof(uint64_t)));
++      memcpy(out, d.bytes, n * sizeof(uint64_t));
++      return n;
+    }
+ }
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_dispatch.c b/src/kosmickrisp/vulkan/kk_cmd_dispatch.c
+--- a/src/kosmickrisp/vulkan/kk_cmd_dispatch.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_dispatch.c
+@@ -13,6 +13,8 @@
+ #include "kk_device.h"
+ #include "kk_entrypoints.h"
+ #include "kk_shader.h"
++#include "util/os_time.h"
++#include "util/hash_table.h"
+ #include "util/simple_mtx.h"
+ 
+ #include "kosmickrisp/bridge/mtl_bridge.h"
+@@ -104,6 +106,169 @@
+    simple_mtx_unlock(&log_lock);
+ }
+ 
++
++/* Cidre (0341, diagnostic) : CIDRE_CS_CHRONO="<h8>,<h8>,..." ou "tout" : horodatages precis avant et apres
++ * chaque dispatch des nuanceurs choisis (cle = 32 bits de tete du FNV-1a de leur MSL), anneau de 4096
++ * entrees relu par le CPU 1024 paires plus tard, bilan par nuanceur toutes les 5 s sur stderr :
++ *   [CIDRE_CHRONO] <h8> n <dispatchs/s> med <us> moy <us> tot <ms/s>
++ * Les horodatages precis serialisent autour du dispatch (~-12 % d'images/s) : sert a comparer des variantes
++ * et a situer un nuanceur en jeu contre le banc, pas a additionner. */
++#define KK_CH_N 4096u
++#define KK_CH_PAIRES (KK_CH_N / 2u)
++#define KK_CH_RECUL 1024u
++#define KK_CH_MAXS 512
++static mtl_counter_heap *kk_ch;
++static uint64_t kk_ch_freq;
++static uint32_t kk_ch_pos;
++static uint32_t kk_ch_qui[KK_CH_PAIRES];
++static simple_mtx_t kk_ch_lock = SIMPLE_MTX_INITIALIZER;
++static struct { uint32_t h; uint32_t n; double tot; float d[256]; } kk_ch_s[KK_CH_MAXS];
++static uint64_t kk_ch_t0;
++static struct hash_table_u64 *kk_ch_hash;
++
++static const char *
++kk_chrono_env(void)
++{
++   static const char *env = (const char *)1;
++   if (env == (const char *)1)
++      env = getenv("CIDRE_CS_CHRONO");
++   return env && *env ? env : NULL;
++}
++
++static uint32_t
++kk_chrono_hash32(const struct kk_shader *cs)
++{
++   uintptr_t v = (uintptr_t)_mesa_hash_table_u64_search(kk_ch_hash, (uint64_t)(uintptr_t)cs);
++   if (!v) {
++      const char *m = cs->msl_data[MESA_SHADER_COMPUTE].code;
++      uint64_t h = 0xcbf29ce484222325ull;
++      for (const unsigned char *q = (const unsigned char *)(m ? m : ""); *q; q++)
++         h = (h ^ *q) * 0x100000001b3ull;
++      v = (uintptr_t)(h >> 32) | ((uintptr_t)1 << 32);
++      _mesa_hash_table_u64_insert(kk_ch_hash, (uint64_t)(uintptr_t)cs, (void *)v);
++   }
++   return (uint32_t)v;
++}
++
++static bool
++kk_chrono_veut(uint32_t h)
++{
++   const char *env = kk_chrono_env();
++   if (!strcmp(env, "tout"))
++      return true;
++   char hex[9];
++   snprintf(hex, sizeof(hex), "%08x", h);
++   for (const char *c = env; *c;) {
++      size_t lc = strcspn(c, ",+");
++      if (lc >= 1 && lc <= 8 && !strncmp(hex, c, lc))
++         return true;
++      c += lc;
++      if (*c)
++         c++;
++   }
++   return false;
++}
++
++static int
++kk_chrono_cmp(const void *a, const void *b)
++{
++   float x = *(const float *)a, y = *(const float *)b;
++   return x < y ? -1 : x > y;
++}
++
++static void
++kk_chrono_cumuler_locked(uint32_t paire)
++{
++   uint32_t h = kk_ch_qui[paire];
++   if (!h)
++      return;
++   kk_ch_qui[paire] = 0;
++   uint64_t v[2] = {0, 0};
++   if (mtl_counter_heap_resolve_cpu(kk_ch, paire * 2u, 2u, v) != 2 || !v[0] || v[1] <= v[0])
++      return;
++   double ns = (double)(v[1] - v[0]);
++   if (kk_ch_freq && kk_ch_freq != 1000000000ull)
++      ns = ns * 1e9 / (double)kk_ch_freq;
++   if (ns > 50e6)
++      return;
++   for (int i = 0; i < KK_CH_MAXS; i++) {
++      if (kk_ch_s[i].h == h || !kk_ch_s[i].h) {
++         kk_ch_s[i].h = h;
++         kk_ch_s[i].d[kk_ch_s[i].n % 256] = (float)(ns / 1e3);
++         kk_ch_s[i].n++;
++         kk_ch_s[i].tot += ns;
++         break;
++      }
++   }
++}
++
++static void
++kk_chrono_bilan_locked(void)
++{
++   uint64_t now = os_time_get_nano();
++   if (!kk_ch_t0) {
++      kk_ch_t0 = now;
++      return;
++   }
++   double dt = (now - kk_ch_t0) / 1e9;
++   if (dt < 5.0)
++      return;
++   for (int i = 0; i < KK_CH_MAXS && kk_ch_s[i].h; i++) {
++      if (!kk_ch_s[i].n)
++         continue;
++      uint32_t m = MIN2(kk_ch_s[i].n, 256u);
++      float tmp[256];
++      memcpy(tmp, kk_ch_s[i].d, m * sizeof(float));
++      qsort(tmp, m, sizeof(float), kk_chrono_cmp);
++      fprintf(stderr, "[CIDRE_CHRONO] %08x n %.1f/s med %.1f us moy %.1f us tot %.2f ms/s\n",
++              kk_ch_s[i].h, kk_ch_s[i].n / dt, tmp[m / 2],
++              kk_ch_s[i].tot / 1e3 / kk_ch_s[i].n, kk_ch_s[i].tot / 1e6 / dt);
++      kk_ch_s[i].n = 0;
++      kk_ch_s[i].tot = 0;
++   }
++   kk_ch_t0 = now;
++}
++
++static int
++kk_chrono_avant(struct kk_cmd_buffer *cmd, mtl_compute_encoder *enc,
++                const struct kk_shader *cs)
++{
++   if (!kk_chrono_env())
++      return -1;
++   simple_mtx_lock(&kk_ch_lock);
++   if (!kk_ch_hash)
++      kk_ch_hash = _mesa_hash_table_u64_create(NULL);
++   uint32_t h = kk_chrono_hash32(cs);
++   if (!kk_chrono_veut(h)) {
++      simple_mtx_unlock(&kk_ch_lock);
++      return -1;
++   }
++   if (!kk_ch) {
++      mtl_device *d = kk_cmd_buffer_device(cmd)->mtl_handle;
++      kk_ch_freq = mtl_device_timestamp_frequency(d);
++      kk_ch = mtl_new_timestamp_counter_heap(d, KK_CH_N);
++      if (!kk_ch) {
++         simple_mtx_unlock(&kk_ch_lock);
++         return -1;
++      }
++   }
++   uint32_t p = kk_ch_pos++ % KK_CH_PAIRES;
++   kk_chrono_cumuler_locked((p + KK_CH_PAIRES - KK_CH_RECUL) % KK_CH_PAIRES);
++   kk_chrono_cumuler_locked(p);
++   kk_ch_qui[p] = h;
++   kk_chrono_bilan_locked();
++   simple_mtx_unlock(&kk_ch_lock);
++   mtl_compute_write_timestamp(enc, kk_ch, p * 2u, true);
++   return (int)p;
++}
++
++static void
++kk_chrono_apres(mtl_compute_encoder *enc, int p)
++{
++   if (p >= 0)
++      mtl_compute_write_timestamp(enc, kk_ch, (uint32_t)p * 2u + 1u, true);
++}
++
+ VKAPI_ATTR void VKAPI_CALL
+ kk_CmdDispatchBase(VkCommandBuffer commandBuffer, uint32_t baseGroupX,
+                    uint32_t baseGroupY, uint32_t baseGroupZ,
+@@ -162,7 +327,9 @@
+       if (kk_dispatch_trace_dir())
+          kk_dispatch_trace_label(cmd, encoder, cs, groupCountX, groupCountY,
+                                  groupCountZ, false);
++      int chrono = kk_chrono_avant(cmd, encoder, cs);
+       mtl_dispatch_threads(encoder, grid_size, local_size);
++      kk_chrono_apres(encoder, chrono);
+       if (kk_dispatch_trace_dir())
+          cs_end(cmd);
+    }
+@@ -207,8 +374,10 @@
+       kk_flush_compute_state(cmd);
+       if (kk_dispatch_trace_dir())
+          kk_dispatch_trace_label(cmd, encoder, cs, 0, 0, 0, true);
++      int chrono = kk_chrono_avant(cmd, encoder, cs);
+       mtl_dispatch_threadgroups_with_indirect_buffer(
+          encoder, pInfo->addressRange.address, local_size);
++      kk_chrono_apres(encoder, chrono);
+       if (kk_dispatch_trace_dir())
+          cs_end(cmd);
+    }
+diff --git a/src/kosmickrisp/vulkan/kk_device.c b/src/kosmickrisp/vulkan/kk_device.c
+--- a/src/kosmickrisp/vulkan/kk_device.c
++++ b/src/kosmickrisp/vulkan/kk_device.c
+@@ -6,6 +6,7 @@
+  */
+ 
+ #include "kk_device.h"
++#include "util/os_time.h"
+ #include "kk_query_pool.h"
+ #include "kk_debug.h"
+ 
+@@ -556,15 +557,35 @@
+    simple_mtx_unlock(&dev->residency_set.mutex);
+ }
+ 
++/* CIDRE_RESIDENCE_STATS=1 (0341, diagnostic) : soumissions et commits de
++ * l'ensemble de residence par 5 s sur stderr. */
+ void
+ kk_device_make_resources_resident(struct kk_device *dev)
+ {
++   static uint64_t t0, appels, commits;
++   static int stats = -1;
++   if (stats < 0) {
++      const char *v = getenv("CIDRE_RESIDENCE_STATS");
++      stats = v && *v && *v != '0';
++   }
+    simple_mtx_lock(&dev->residency_set.mutex);
++   appels++;
+    if (kk_residence_sale || !kk_residence_paresseuse()) {
+       mtl_residency_set_commit(dev->residency_set.handle);
+       mtl_residency_set_request_residency(dev->residency_set.handle);
+       kk_residence_sale = false;
++      commits++;
+    }
++   if (stats) {
++      uint64_t now = os_time_get_nano();
++      if (!t0)
++         t0 = now;
++      if (now - t0 > 5000000000ull) {
++         fprintf(stderr, "[CIDRE_RESIDENCE] %.1f soumissions/s, %.1f commits/s\n",
++                 appels * 1e9 / (now - t0), commits * 1e9 / (now - t0));
++         t0 = now; appels = commits = 0;
++      }
++   }
+    simple_mtx_unlock(&dev->residency_set.mutex);
+ }
+ 
+diff --git a/src/kosmickrisp/vulkan/kk_queue.c b/src/kosmickrisp/vulkan/kk_queue.c
+--- a/src/kosmickrisp/vulkan/kk_queue.c
++++ b/src/kosmickrisp/vulkan/kk_queue.c
+@@ -301,11 +301,150 @@
+ 
+ /* Commit Metal qui porte, s'il y a lieu, la reference de la soumission
+  * CIDRE_HORODATAGES_CPU courante. */
++/* Cidre (froid, diagnostic CIDRE_TROUS_STATS=1) : pour chaque commit, ecart GPU entre la fin du tampon
++ * precedent de la meme file et le debut de celui-ci, separe en « CPU en retard » (commit pose apres la fin
++ * du precedent) et « cote GPU » (deja commis, le GPU n'a pas enchaine). Bilan par file toutes les 5 s. */
++#include <mach/mach_time.h>
++struct kk_trou_porteur {
++   void *q;
++   double t_commit;
++   bool attente;
++   int cl; /* classe : 0 vide/porteur, 1 = 1 encodeur, 2 = 2-4, 3 = 5+, 4 = scelles */
++};
++static int kk_trous_cl_suivant = 0;
++static void *kk_trous_attente_q[8];
++#define KK_TROUS_FILES 8
++static struct {
++   void *q;
++   double fin_prec, t0;
++   uint64_t n;
++   double ecart, retard, gpu, gpu_gros, occ, att;
++   uint64_t natt;
++   int cl_prec;
++   uint64_t gn[5][5];
++   double gs[5][5];
++   uint64_t hn[5];
++   double hs[5];
++} kk_trous[KK_TROUS_FILES];
++static simple_mtx_t kk_trous_lock = SIMPLE_MTX_INITIALIZER;
++
++static bool
++kk_trous_actif(void)
++{
++   static int v = -1;
++   if (v < 0) {
++      const char *e = getenv("CIDRE_TROUS_STATS");
++      v = e && *e && *e != '0';
++   }
++   return v;
++}
++
++static double
++kk_trous_maintenant(void)
++{
++   static mach_timebase_info_data_t tb;
++   if (!tb.denom)
++      mach_timebase_info(&tb);
++   return (double)mach_absolute_time() * tb.numer / tb.denom / 1e9;
++}
++
+ static void
++kk_trous_retour(struct mtl_feedback_data *data)
++{
++   struct kk_trou_porteur *t = data->user_data;
++   simple_mtx_lock(&kk_trous_lock);
++   int i;
++   for (i = 0; i < KK_TROUS_FILES; i++)
++      if (kk_trous[i].q == t->q || !kk_trous[i].q)
++         break;
++   if (i < KK_TROUS_FILES && data->gpu_start > 0 && data->gpu_end >= data->gpu_start) {
++      kk_trous[i].q = t->q;
++      double prec = kk_trous[i].fin_prec;
++      if (prec > 0) {
++         double e = data->gpu_start - prec;
++         if (e > 0 && e < 0.05) {
++            double r = t->t_commit - prec;
++            r = r < 0 ? 0 : (r > e ? e : r);
++            kk_trous[i].ecart += e;
++            kk_trous[i].retard += r;
++            kk_trous[i].gpu += e - r;
++            if (e - r > 50e-6)
++               kk_trous[i].gpu_gros += e - r;
++            if (e > 50e-6) {
++               kk_trous[i].gn[kk_trous[i].cl_prec][t->cl]++;
++               kk_trous[i].gs[kk_trous[i].cl_prec][t->cl] += e;
++            }
++            if (t->attente) {
++               kk_trous[i].natt++;
++               kk_trous[i].att += e;
++            }
++            int b = e < 10e-6 ? 0 : e < 50e-6 ? 1 : e < 200e-6 ? 2 : e < 1e-3 ? 3 : 4;
++            kk_trous[i].hn[b]++;
++            kk_trous[i].hs[b] += e;
++         }
++      }
++      if (data->gpu_end > kk_trous[i].fin_prec)
++         kk_trous[i].fin_prec = data->gpu_end;
++      kk_trous[i].occ += data->gpu_end - data->gpu_start;
++      kk_trous[i].cl_prec = t->cl;
++      kk_trous[i].n++;
++      double now = kk_trous_maintenant();
++      if (!kk_trous[i].t0)
++         kk_trous[i].t0 = now;
++      double dt = now - kk_trous[i].t0;
++      if (dt > 5.0) {
++         fprintf(stderr, "[CIDRE_TROUS] file %d : %.0f tampons/s, ecart %.1f ms/s dont CPU en retard %.1f, "
++                 "cote GPU %.1f (dont ecarts > 50 us %.1f)\n", i, kk_trous[i].n / dt,
++                 kk_trous[i].ecart * 1e3 / dt, kk_trous[i].retard * 1e3 / dt,
++                 kk_trous[i].gpu * 1e3 / dt, kk_trous[i].gpu_gros * 1e3 / dt);
++         fprintf(stderr, "[CIDRE_TROUS] file %d : occupation %.1f ms/s ; apres attente GPU %.0f/s %.1f ms/s\n", i,
++                 kk_trous[i].occ * 1e3 / dt, kk_trous[i].natt / dt, kk_trous[i].att * 1e3 / dt);
++         kk_trous[i].occ = kk_trous[i].att = 0;
++         kk_trous[i].natt = 0;
++         fprintf(stderr, "[CIDRE_TROUS] file %d : <10us %.0f/s %.1f ms/s | 10-50 %.0f/s %.1f | 50-200 %.0f/s %.1f | "
++                 "200-1000 %.0f/s %.1f | >1ms %.0f/s %.1f\n", i,
++                 kk_trous[i].hn[0] / dt, kk_trous[i].hs[0] * 1e3 / dt, kk_trous[i].hn[1] / dt, kk_trous[i].hs[1] * 1e3 / dt,
++                 kk_trous[i].hn[2] / dt, kk_trous[i].hs[2] * 1e3 / dt, kk_trous[i].hn[3] / dt, kk_trous[i].hs[3] * 1e3 / dt,
++                 kk_trous[i].hn[4] / dt, kk_trous[i].hs[4] * 1e3 / dt);
++         for (int a = 0; a < 5; a++)
++            for (int b2 = 0; b2 < 5; b2++)
++               if (kk_trous[i].gn[a][b2] && kk_trous[i].gs[a][b2] * 1e3 / dt > 2.0)
++                  fprintf(stderr, "[CIDRE_TROUS] file %d : gros ecarts classe %d -> %d : %.0f/s %.1f ms/s\n", i, a, b2,
++                          kk_trous[i].gn[a][b2] / dt, kk_trous[i].gs[a][b2] * 1e3 / dt);
++         memset(kk_trous[i].gn, 0, sizeof(kk_trous[i].gn));
++         memset(kk_trous[i].gs, 0, sizeof(kk_trous[i].gs));
++         memset(kk_trous[i].hn, 0, sizeof(kk_trous[i].hn));
++         memset(kk_trous[i].hs, 0, sizeof(kk_trous[i].hs));
++         kk_trous[i].t0 = now;
++         kk_trous[i].n = 0;
++         kk_trous[i].ecart = kk_trous[i].retard = kk_trous[i].gpu = kk_trous[i].gpu_gros = 0;
++      }
++   }
++   simple_mtx_unlock(&kk_trous_lock);
++   free(t);
++}
++
++static void
+ kk_hcpu_commit(mtl_command_queue *q, mtl_command_buffer **cbs, uint32_t n,
+                mtl_commit_options *options)
+ {
+    kk_ts_cpu_attacher(options);
++   if (kk_trous_actif()) {
++      struct kk_trou_porteur *t = malloc(sizeof(*t));
++      if (t) {
++         t->q = q;
++         t->t_commit = kk_trous_maintenant();
++         t->attente = false;
++         t->cl = kk_trous_cl_suivant;
++         kk_trous_cl_suivant = 0;
++         for (int k = 0; k < 8; k++)
++            if (kk_trous_attente_q[k] == q) {
++               kk_trous_attente_q[k] = NULL;
++               t->attente = true;
++            }
++         mtl_commit_options_add_feedback_handler(options, kk_trous_retour, t);
++      }
++   }
+    mtl_command_queue_commit(q, cbs, n, options);
+ }
+ 
+@@ -324,6 +463,10 @@
+    uint32_t sealed_count = util_dynarray_num_elements(
+       &cmd->metal.sealed_cmd_bufs, mtl_command_buffer *);
+ 
++   {
++      uint32_t ne = cmd->metal.encoders_in_cmd_buf;
++      kk_trous_cl_suivant = sealed_count ? 4 : ne == 0 ? 0 : ne == 1 ? 1 : ne <= 4 ? 2 : 3;
++   }
+    if (sealed_count == 0u) {
+       if (kk_enc_stats_enabled()) kk_enc_stat(KK_ENCS_COMMIT, NULL);
+       kk_hcpu_commit(queue->mtl_handle, &cmd->metal.cmd_buf, 1u,
+@@ -2041,6 +2184,12 @@
+          continue;
+       }
+       mtl_wait_for_event(queue->mtl_handle, sync->mtl_handle, wait->wait_value);
++      if (kk_trous_actif())
++         for (int k = 0; k < 8; k++)
++            if (!kk_trous_attente_q[k] || kk_trous_attente_q[k] == queue->mtl_handle) {
++               kk_trous_attente_q[k] = queue->mtl_handle;
++               break;
++            }
+    }
+    kk_soum_stats(queue, submit, sautees);
+ 

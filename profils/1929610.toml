@@ -63,7 +63,10 @@ plateformes_steam = "steam 2026-10-11"
 # effacements plies en loadOp CLEAR dans la passe suivante et passes reunies a travers
 # les listes qui ne font qu horodater : 70 -> ~50 passes Metal/image, 35,4 -> 36,7 img/s
 # (+3 %), image identique (ecart A/B = ecart A/A).
-code_kk = "ssbo_sans_bornes ssbo_nul_puits reductions_simd min_lod_txf_libre sans_attachement_borne horodatages_cpu fusion_effacements"
+# 0340 sans_tampon_vide (2026-11-03, M4, menu 1600x900, 17+15 manches comparees a vue
+# du lobby egale) : enregistrements sans encodeur et porteurs vides plus commis
+# (7 200 -> 2 400 commits/s), +1,2 a +2,2 % selon la vue (~+0,5 img/s), image identique.
+code_kk = "ssbo_sans_bornes ssbo_nul_puits reductions_simd min_lod_txf_libre sans_attachement_borne horodatages_cpu fusion_effacements sans_tampon_vide"
 
 [[machine]]
 si = "famille_gpu <= 7"

@@ -1,0 +1,104 @@
+Generated-by: LLM
+
+KosmicKrisp : pas de tampon Metal vide sous CIDRE_HORODATAGES_CPU
+(CIDRE_SANS_TAMPON_VIDE=1, coupe par defaut)
+
+Base : serie integree jusqu'a 0331.
+
+Constat (Demonologist au menu, M4, diagnostic CIDRE_TROUS_STATS de 0341) :
+la file principale recoit ~7 200 commits Metal par seconde (~195 par image),
+dont les deux tiers sont des enregistrements vkd3d-proton sans aucun encodeur
+(ResetQueryPool / WriteTimestamp seuls, joues par le CPU sous
+CIDRE_HORODATAGES_CPU) et des tampons porteurs vides en fin de soumission.
+Le retour Metal date le debut d'un tampon vide ~0,15-0,35 ms apres la fin du
+precedent : 870 ecarts de plus de 50 us par seconde, tous devant un tampon
+vide (classes d'encodeurs 1/2-4/5+ -> 0), 150 ms/s au total.
+
+Correctif (sous CIDRE_SANS_TAMPON_VIDE=1 et CIDRE_HORODATAGES_CPU) :
+ - un enregistrement jamais soumis, sans encodeur, sans morceau scelle, sans
+   drawable et sans horodatage GPU emis n'est pas commis : ses operations CPU
+   passent au commit suivant de la soumission (kk_ts_cpu_pousser, deja utilise
+   pour les enregistrements sans tampon) ;
+ - les operations qui restent apres le dernier commit d'une soumission
+   rejoignent le groupe de ce commit (appliquees a son retour, avec ses temps)
+   au lieu d'un tampon porteur vide ; le porteur ne sert plus que pour une
+   soumission sans aucun commit.
+Les signaux de la soumission restent donnes par le CPU apres toutes les
+operations (inchange).
+
+Mesures (M4, menu 1600x900, base 0331 + CIDRE_FUSION_SOUMISSION=2, sans HUD,
+image verifiee par 0321) : 7 200 -> 2 400 commits/s, ecarts entre tampons de
+la file principale 163 -> 95 ms/s. Le lobby tire une vue parmi quatre a
+chaque lancement (part de noir 0 / 2,4 / 10,4 / 20,9 % au temoin 0321), qui
+change le debit de ~0,6 img/s : comparaison a vue egale, 17 manches
+correctif contre 15 base entrelacees (dylib de chantier) puis 2+2 sur la
+serie integree :
+  vue 0 %    : base 37,1-37,4 (6)   correctif 37,7 x4
+  vue 2,4 %  : base 37,4-37,7 (4)   correctif 37,9 / 38,2
+  vue 10,4 % : base 36,5-37,2 (7)   correctif 37,5 / 37,6 / 37,6
+  vue 20,9 % : base 36,6-36,8 (5)   correctif 37,2 / 37,3 (avec residence
+               paresseuse, neutre seule)
+soit +1,2 a +2,2 % dans chaque vue (~+0,5 img/s). Une partie de ces ecarts
+etait recouverte par les tampons qui se chevauchent dans la file MTL4, d'ou
+un gain plus petit que les 68 ms/s d'ecarts retires. Image identique, aucun
+message d'erreur, aucune requete perdue ([CIDRE_HCPU] muet).
+
+diff --git a/src/kosmickrisp/vulkan/kk_queue.c b/src/kosmickrisp/vulkan/kk_queue.c
+--- a/src/kosmickrisp/vulkan/kk_queue.c
++++ b/src/kosmickrisp/vulkan/kk_queue.c
+@@ -1404,6 +1404,26 @@
+    free(p);
+ }
+ 
++/* Cidre (CIDRE_SANS_TAMPON_VIDE=1, 0340) : sous CIDRE_HORODATAGES_CPU, un
++ * enregistrement sans aucun encodeur (remises a zero de requetes et
++ * horodatages seulement : la moitie des enregistrements de vkd3d-proton sous
++ * Unreal 5) n'est plus commis en tampon Metal vide, et les operations
++ * restantes d'une soumission rejoignent le groupe de son dernier commit au
++ * lieu d'un tampon porteur vide. Chaque tampon vide laissait le GPU a l'arret
++ * ~0,15-0,35 ms (son debut attend la fin du precedent plus la latence de
++ * retour) : Demonologist M4, 7 200 -> 2 400 commits/s sur la file
++ * principale, ecarts entre tampons 163 -> 95 ms/s. */
++static bool
++kk_sans_tampon_vide(void)
++{
++   static int v = -1;
++   if (v < 0) {
++      const char *e = getenv("CIDRE_SANS_TAMPON_VIDE");
++      v = e && *e && *e != '0';
++   }
++   return v;
++}
++
+ /* Fin de soumission (CIDRE_HORODATAGES_CPU) : les operations notees apres le
+  * dernier commit partent sur un tampon vide ; les signaux de la soumission
+  * passent au CPU (donnes apres les operations). Rend vrai si les signaux sont
+@@ -1419,7 +1439,11 @@
+    uint32_t ng = util_dynarray_num_elements(&soum->groupes, struct kk_ts_cpu_groupe);
+    uint32_t fin = ng ? util_dynarray_element(&soum->groupes, struct kk_ts_cpu_groupe,
+                                              ng - 1)->fin : 0;
+-   if (n > fin) {
++   if (n > fin && ng > 0 && kk_sans_tampon_vide()) {
++      /* CIDRE_SANS_TAMPON_VIDE : appliquees au dernier retour, avec les temps
++       * du dernier commit. */
++      util_dynarray_element(&soum->groupes, struct kk_ts_cpu_groupe, ng - 1)->fin = n;
++   } else if (n > fin) {
+       struct kk_ts_cpu_porteur *p = calloc(1, sizeof(*p));
+       if (p) {
+          p->alloc = mtl_new_command_allocator(dev->mtl_handle);
+@@ -2235,6 +2259,15 @@
+          VkResult result = rerecord_and_commit_cmd_buffer(queue, cmd_buffer);
+          if (result != VK_SUCCESS)
+             return result;
++      } else if (kk_cmd_buffer_has_work(cmd_buffer) && kk_sans_tampon_vide() &&
++                 kk_horodatages_cpu() && !cmd_buffer->drawable &&
++                 cmd_buffer->metal.encoders_in_cmd_buf == 0u &&
++                 !cmd_buffer->ts_emis &&
++                 !util_dynarray_num_elements(&cmd_buffer->metal.sealed_cmd_bufs,
++                                             mtl_command_buffer *)) {
++         /* CIDRE_SANS_TAMPON_VIDE : rien d'encode, les operations partent
++          * avec le commit suivant de la soumission. */
++         kk_ts_cpu_pousser(queue, cmd_buffer);
+       } else if (kk_cmd_buffer_has_work(cmd_buffer)) {
+          if (kk_resolve_groupe() >= 5 && !cmd_buffer->drawable &&
+              cmd_buffer->metal.encoders_in_cmd_buf == 0u && !cmd_buffer->ts_emis &&
