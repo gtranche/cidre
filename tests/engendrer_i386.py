@@ -14,7 +14,13 @@ steam_api.dll du jeu. Rien n'est devine.
 """
 import json, sys, os
 
-EMPLACEMENTS = 84     # emplacement maximal releve : 81
+# Au-dela du steam_api mesure (emplacement 81), les versions exactes de
+# versions32.h vont jusqu'a 98 (STEAMUGC_INTERFACE_VERSION021) : une table plus
+# courte que l'interface faisait lire au jeu un pointeur de methode hors de la
+# table, dans le tas (Portal et Half-Life 2 de 2024 : ISteamUGC020 emplacement
+# 84, StopPlaytimeTrackingForAllItems). Garder EMPLACEMENTS au-dessus du maximum
+# de versions32.h, et NB_EMPLACEMENTS de main.c (64 bits) pareil.
+EMPLACEMENTS = 128
 MOTS = 10             # au plus 36 octets empiles, soit 9 mots
 
 
