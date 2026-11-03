@@ -1,0 +1,57 @@
+Generated-by: LLM
+
+KosmicKrisp : test de couche robustness2 saute pour une couche constante nulle, et en option partout (CIDRE_COUCHES_SANS_TEST=1)
+
+msl_lower_robustness2_array_layers interroge la taille de la texture (get_width/height/array_size, sous branche de poignee nulle) avant chaque lecture d'un texture2d_array pour rendre 0 hors des couches. Par defaut, plus de test quand la couche est la constante 0 (toujours valide). Avec l'option, plus de test du tout : sonde M1/M4 (banc/sonde_couche.m), Metal borne lui-meme la couche en echantillonnage (ce que demande Vulkan) et rend 0 en lecture hors limites (robustness2). Entre dans la cle du cache.
+Banc (noyau TSR 200x113 sans atomique, 15 lectures avec test) : 0,637 -> 0,624 ms, sortie identique.
+
+diff --git a/src/kosmickrisp/compiler/msl_nir_lower_common.c b/src/kosmickrisp/compiler/msl_nir_lower_common.c
+index 84f8aac..e643ab6 100644
+--- a/src/kosmickrisp/compiler/msl_nir_lower_common.c
++++ b/src/kosmickrisp/compiler/msl_nir_lower_common.c
+@@ -3,6 +3,8 @@
+  * Copyright 2025 Google LLC
+  * SPDX-License-Identifier: MIT
+  */
++
++#include <stdlib.h>
+ #include "msl_private.h"
+ #include "nir_to_msl.h"
+ 
+@@ -206,6 +208,24 @@ kk_lower_robustness2_array_layer(nir_builder *b, nir_instr *instr,
+    if (tex->coord_components < 2)
+       return false;
+ 
++   static int sans_test = -1;
++   if (sans_test < 0)
++      sans_test = getenv("CIDRE_COUCHES_SANS_TEST") != NULL;
++   if (sans_test)
++      return false;
++
++   nir_scalar layer_s = nir_scalar_resolved(coord, tex->coord_components - 1);
++   if (nir_scalar_is_const(layer_s)) {
++      if (tex->op == nir_texop_txf || tex->op == nir_texop_txf_ms) {
++         if (nir_scalar_as_int(layer_s) == 0)
++            return false;
++      } else {
++         double v = nir_scalar_as_float(layer_s);
++         if (v >= -0.5 && v <= 0.5)
++            return false;
++      }
++   }
++
+    b->cursor = nir_before_instr(instr);
+    nir_def *size = nir_build_texture_query(b, tex, nir_texop_txs, 3,
+                                            nir_type_uint32, false, false);
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
+index 2ad2d89..b2399f3 100644
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -1204,6 +1204,7 @@ kk_physical_device_init_pipeline_cache(struct kk_physical_device *pdev)
+       "CIDRE_MIN_LOD_TXF_LIBRE",
+       "CIDRE_FENCES_UTILES",
+       "CIDRE_ATOMIQUES_NULLES_SANS_BRANCHE",
++      "CIDRE_COUCHES_SANS_TEST",
+    };
+    for (unsigned i = 0; i < ARRAY_SIZE(options_codegen); i++) {
+       uint8_t pose = getenv(options_codegen[i]) != NULL;

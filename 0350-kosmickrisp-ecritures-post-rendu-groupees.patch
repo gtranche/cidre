@@ -1,0 +1,62 @@
+Generated-by: LLM
+
+KosmicKrisp : ecritures differees d'une passe groupees en un dispatch (CIDRE_ECRITURES_GROUPEES=1, coupe par defaut)
+
+Les ecritures demandees pendant une passe de rendu (disponibilite des requetes
+d'occlusion surtout) partaient chacune en un dispatch LIBKK_WRITE_U32 d'un fil
+encadre de deux barrieres, a la fermeture de la passe : ~41 par image au lobby
+de Demonologist (1 560 a 1 930/s selon la vue, diagnostic 0351). Elles partent
+maintenant en un seul dispatch LIBKK_WRITE_U32_ARRAY (deja dans libkk) avec une
+paire de barrieres : 2 dispatchs internes par image au lieu de ~41.
+
+Mesure (M4, lobby 1600x900, serie G 4+4 entrelacee, a vue egale) : vue noir
+2,4 % 38,0 -> 38,1/38,1 img/s, vue 0,0 % 37,8 -> 37,9/37,9 ; +0,3 %, image
+identique (CIDRE_WSI_RELECTURE). Petit, mais sans risque : meme ordre, memes
+valeurs.
+
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.c b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+index 0ae468e..37deb2d 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+@@ -1548,6 +1548,17 @@ cs_flush_closing(struct kk_cmd_buffer *cmd, bool force_barrier)
+    close_encoder(cmd, encoder);
+ }
+ 
++static bool
++kk_ecritures_groupees(void)
++{
++   static int e = -1;
++   if (e < 0) {
++      const char *v = getenv("CIDRE_ECRITURES_GROUPEES");
++      e = v && v[0] == '1';
++   }
++   return e;
++}
++
+ static void
+ flush_post_render_writes(struct kk_cmd_buffer *cmd)
+ {
+@@ -1557,6 +1568,23 @@ flush_post_render_writes(struct kk_cmd_buffer *cmd)
+                                    struct libkk_imm_write))
+       return;
+ 
++   /* Cidre (CIDRE_ECRITURES_GROUPEES=1) : les ecritures differees d'une passe
++    * (disponibilite des requetes d'occlusion, ~40 par image dans Demonologist)
++    * partent en un seul dispatch LIBKK_WRITE_U32_ARRAY, une paire de barrieres,
++    * au lieu d'un dispatch d'un fil et de deux barrieres chacune. */
++   unsigned n = util_dynarray_num_elements(&cmd->post_render_writes,
++                                           struct libkk_imm_write);
++   if (n > 1 && kk_ecritures_groupees()) {
++      struct kk_ptr arr = kk_pool_upload(
++         cmd, util_dynarray_begin(&cmd->post_render_writes),
++         n * sizeof(struct libkk_imm_write), 8u);
++      if (arr.gpu) {
++         libkk_write_u32_array(cmd, kk_grid_1d(n), true, arr.gpu);
++         util_dynarray_clear(&cmd->post_render_writes);
++         return;
++      }
++   }
++
+    util_dynarray_foreach(&cmd->post_render_writes, struct libkk_imm_write, w) {
+       libkk_write_u32(cmd, kk_grid_1d(1), true, (uint64_t)w->address, w->value);
+    }

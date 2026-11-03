@@ -1,0 +1,55 @@
+Generated-by: LLM
+
+KosmicKrisp : multiplications sans la garde de KK_WORKAROUND_14 (CIDRE_MUL_SANS_GARDE=1, coupe par defaut)
+
+KK_WORKAROUND_14 ecrit '!&buf0.contents[0] ? 1 : a' devant chaque multiplication qui doit garder inf/NaN, pour empecher le compilateur Metal (math rapide) de la simplifier : un select et pas de fma. Le convertisseur d'Apple n'en met pas sur le meme DXIL. Avec l'option, seules les multiplications (fmul et le facteur de flrp) perdent la garde ; les comparaisons gardent la leur (tests de NaN d'Unreal, cf. gardes W17). Entre dans la cle du cache.
+Banc (noyau TSR 200x113, 38 multiplications gardees) : 0,619 -> 0,594 ms (-4 %), sortie identique ; D3DMetal 0,53 ms.
+
+diff --git a/src/kosmickrisp/compiler/nir_to_msl.c b/src/kosmickrisp/compiler/nir_to_msl.c
+index 9b57fcc..e88ee74 100644
+--- a/src/kosmickrisp/compiler/nir_to_msl.c
++++ b/src/kosmickrisp/compiler/nir_to_msl.c
+@@ -313,6 +313,15 @@ kk_w10_sans_court_circuit_enabled(void)
+  * recalculent la meme valeur (fissures Nanite) ; option par fiche, a verifier a
+  * l'image. Les comparaisons gardent KK_WORKAROUND_14.
+  */
++static bool
++kk_mul_sans_garde_enabled(void)
++{
++   static int enabled = -1;
++   if (enabled < 0)
++      enabled = getenv("CIDRE_MUL_SANS_GARDE") != NULL;
++   return enabled;
++}
++
+ static bool
+ kk_contraction_malgre_precis_enabled(void)
+ {
+@@ -374,6 +383,7 @@ alu_to_msl(struct nir_to_msl_ctx *ctx, nir_alu_instr *instr)
+    case nir_op_imul:
+    case nir_op_fmul:
+       if (!(ctx->disabled_workarounds & BITFIELD64_BIT(14)) &&
++          !kk_mul_sans_garde_enabled() &&
+           (nir_alu_instr_is_inf_preserve(instr) ||
+            nir_alu_instr_is_nan_preserve(instr)))
+          P(ctx, "!&buf0.contents[0] ? 1 : ")
+@@ -553,6 +563,7 @@ alu_to_msl(struct nir_to_msl_ctx *ctx, nir_alu_instr *instr)
+          alu_src_to_msl(ctx, instr, 0);
+          P(ctx, ") * (");
+          if (!(ctx->disabled_workarounds & BITFIELD64_BIT(14)) &&
++             !kk_mul_sans_garde_enabled() &&
+              (nir_alu_instr_is_inf_preserve(instr) ||
+               nir_alu_instr_is_nan_preserve(instr)))
+             P(ctx, "!&buf0.contents[0] ? 1 : ")
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
+index b2399f3..d37a1d7 100644
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -1205,6 +1205,7 @@ kk_physical_device_init_pipeline_cache(struct kk_physical_device *pdev)
+       "CIDRE_FENCES_UTILES",
+       "CIDRE_ATOMIQUES_NULLES_SANS_BRANCHE",
+       "CIDRE_COUCHES_SANS_TEST",
++      "CIDRE_MUL_SANS_GARDE",
+    };
+    for (unsigned i = 0; i < ARRAY_SIZE(options_codegen); i++) {
+       uint8_t pose = getenv(options_codegen[i]) != NULL;

@@ -1,0 +1,65 @@
+Generated-by: LLM
+
+KosmicKrisp : pas de fence d'image dans un nuanceur qui ne relit aucune image de stockage (CIDRE_FENCES_UTILES=1, coupe par defaut)
+
+kk_nir_lower_textures pose un .fence() apres chaque ecriture ou atomique sur une image lisible, pour qu'une lecture suivante du meme fil voie la valeur. Un nuanceur qui ne fait aucun image_load (ni sparse) n'a pas de telle lecture : les fences n'y servent a rien et coutent (sequences image_barrier dans le code AGX). Avec l'option, la passe est sautee pour ces nuanceurs. Entre dans la cle du cache de pipelines.
+Banc sur donnees capturees en jeu (Demonologist, M4, noyau TSR 200x113 a 12 atomic_fetch_max) : 0,798 -> 0,729 ms (-8,5 %), sortie identique au bit pres ; D3DMetal 0,62 ms sur le meme DXIL. Mesure en jeu : en cours (serie interrompue).
+
+diff --git a/src/kosmickrisp/vulkan/kk_nir_lower_textures.c b/src/kosmickrisp/vulkan/kk_nir_lower_textures.c
+index c314baf..70bd4c7 100644
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_textures.c
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_textures.c
+@@ -196,6 +196,24 @@ lower_image(nir_builder *b, nir_instr *instr)
+    return false;
+ }
+ 
++static bool
++reads_storage_image(struct nir_builder *b, nir_intrinsic_instr *intr, void *data)
++{
++   if (intr->intrinsic == nir_intrinsic_bindless_image_load ||
++       intr->intrinsic == nir_intrinsic_bindless_image_sparse_load)
++      *(bool *)data = true;
++   return false;
++}
++
++static bool
++kk_fences_utiles(void)
++{
++   static int enabled = -1;
++   if (enabled < 0)
++      enabled = getenv("CIDRE_FENCES_UTILES") != NULL;
++   return enabled;
++}
++
+ static bool
+ fence_image(struct nir_builder *b, nir_intrinsic_instr *intr, void *data)
+ {
+@@ -237,8 +255,14 @@ kk_nir_lower_textures(nir_shader *nir)
+       }
+    }
+ 
+-   NIR_PASS(progress, nir, nir_shader_intrinsics_pass, fence_image,
+-            nir_metadata_control_flow, NULL);
++   bool lit = true;
++   if (kk_fences_utiles()) {
++      lit = false;
++      nir_shader_intrinsics_pass(nir, reads_storage_image, nir_metadata_all, &lit);
++   }
++   if (lit)
++      NIR_PASS(progress, nir, nir_shader_intrinsics_pass, fence_image,
++               nir_metadata_control_flow, NULL);
+ 
+    return progress;
+ }
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
+index 06aee08..f671bc0 100644
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -1202,6 +1202,7 @@ kk_physical_device_init_pipeline_cache(struct kk_physical_device *pdev)
+       "CIDRE_LECTURES_VECTORISEES",
+       "CIDRE_DEMI_PRECISION",
+       "CIDRE_MIN_LOD_TXF_LIBRE",
++      "CIDRE_FENCES_UTILES",
+    };
+    for (unsigned i = 0; i < ARRAY_SIZE(options_codegen); i++) {
+       uint8_t pose = getenv(options_codegen[i]) != NULL;

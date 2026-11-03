@@ -1,0 +1,64 @@
+Generated-by: LLM
+
+KosmicKrisp : atomiques d'image par poignee nulle sans branche (CIDRE_ATOMIQUES_NULLES_SANS_BRANCHE=1, coupe par defaut)
+
+kk_nir_lower_null_images entourait chaque atomique d'image d'un if (poignee non nulle). Sondes M1 et M4 (banc/sonde_atom_nul.m, 300 passes) : une atomique par MTLResourceID nul ne fait aucune faute ni n'abime d'autre ressource, mais rend une valeur quelconque. Avec l'option, l'atomique est executee et son resultat remplace par 0 si la poignee est nulle (select), comme les lectures sous CIDRE_IMAGES_NULLES_SANS_BRANCHE. Entre dans la cle du cache.
+Banc (meme noyau TSR, apres 0352) : 0,729 -> 0,720 ms avec le select (0,702 sans aucun test), sortie identique.
+
+diff --git a/src/kosmickrisp/vulkan/kk_nir_lower_null_images.c b/src/kosmickrisp/vulkan/kk_nir_lower_null_images.c
+index 35ea345..7c2066b 100644
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_null_images.c
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_null_images.c
+@@ -87,6 +87,30 @@ kk_null_image_select_enabled(void)
+    return enabled;
+ }
+ 
++static bool
++kk_null_atomic_select_enabled(void)
++{
++   static int enabled = -1;
++   if (enabled < 0)
++      enabled = getenv("CIDRE_ATOMIQUES_NULLES_SANS_BRANCHE") != NULL;
++   return enabled;
++}
++
++static bool
++image_atomic_select_on_null(const nir_instr *instr)
++{
++   if (!kk_null_atomic_select_enabled() || instr->type != nir_instr_type_intrinsic)
++      return false;
++
++   switch (nir_instr_as_intrinsic(instr)->intrinsic) {
++   case nir_intrinsic_bindless_image_atomic:
++   case nir_intrinsic_bindless_image_atomic_swap:
++      return true;
++   default:
++      return false;
++   }
++}
++
+ static bool
+ image_select_on_null(const nir_instr *instr)
+ {
+@@ -160,7 +184,8 @@ lower(nir_builder *b, nir_instr *instr, UNUSED void *data)
+       return false;
+ 
+    if (def && ((kk_null_texture_select_enabled() && tex_reads_texels(instr)) ||
+-               (kk_null_image_select_enabled() && image_select_on_null(instr)))) {
++               (kk_null_image_select_enabled() && image_select_on_null(instr)) ||
++               image_atomic_select_on_null(instr))) {
+       b->cursor = nir_after_instr(instr);
+       nir_def *zero = nir_imm_zero(b, def->num_components, def->bit_size);
+       nir_def *sel = nir_bcsel(b, is_null, zero, def);
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
+index f671bc0..2ad2d89 100644
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -1203,6 +1203,7 @@ kk_physical_device_init_pipeline_cache(struct kk_physical_device *pdev)
+       "CIDRE_DEMI_PRECISION",
+       "CIDRE_MIN_LOD_TXF_LIBRE",
+       "CIDRE_FENCES_UTILES",
++      "CIDRE_ATOMIQUES_NULLES_SANS_BRANCHE",
+    };
+    for (unsigned i = 0; i < ARRAY_SIZE(options_codegen); i++) {
+       uint8_t pose = getenv(options_codegen[i]) != NULL;
