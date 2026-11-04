@@ -1,0 +1,475 @@
+Generated-by: LLM
+
+KosmicKrisp : AIR direct relaye par les archives MSL (CIDRE_AIR_RELAIS)
+
+Avec CIDRE_AIR_DIRECT=1, la reserve d'AIR (MESA_KK_AIR_LOCAL, MESA_KK_PRECOMPIL)
+passait avant l'AIR direct : sa cle est celle du MSL, et une reserve remplie en
+mode MSL rendait le code issu du MSL (Lumen de Demonologist : x1,1 a x1,43 plus
+lent par nuanceur). L'ignorer (CIDRE_AIR_AVANT_RESERVE) faisait tout recompiler
+au premier lancement : M4, 4168 pipelines, 2947 hors archives, ~60 s d'attente.
+
+Avec CIDRE_AIR_RELAIS (par defaut 2 fils ; 0 = ancien ordre, reserve d'abord) :
+- la bibliotheque est toujours l'AIR direct ; si la reserve a la version MSL
+  (meme cle), son chemin est note, sans la charger ;
+- a la creation d'un pipeline, archives avec l'AIR direct d'abord ; si elles
+  n'ont rien, archives avec la version MSL (bibliotheque relue de la reserve) :
+  trouve, ce pipeline MSL est rendu tout de suite, et la version AIR direct
+  est compilee par des fils QOS_CLASS_BACKGROUND (coeurs E) ; prete, elle le
+  remplace a la liaison suivante (mtl_compute/render_set_pipeline_state) ;
+- rien dans aucune archive : compilation AIR direct comme avant (vrai froid).
+Le pipeline AIR compile en arriere-plan passe par le serialiseur : il est dans
+l'archive (MESA_KK_PIPELINE_CACHE) au lancement suivant, qui prend l'AIR direct
+d'emblee. L'archive, adressee par l'empreinte de l'AIR, sert de reserve AIR a
+cle distincte.
+Un pipeline de calcul relaye n'est substitue que si son
+maxTotalThreadsPerThreadgroup n'est pas plus petit. Les travaux en file d'un
+compilateur detruit sont abandonnes ; le dernier flush prend le verrou
+d'ecriture pour ne pas croiser une compilation de fond. Statistiques
+(MESA_KK_COMPILE_STATS) : « relais N pipelines MSL pris aux archives, N
+remplaces par l'AIR direct, N echecs, N abandonnes ».
+
+Recherches d'archive : celles du relais (pipeline MSL cherche avec la
+bibliotheque relue de la reserve) passent par KK_ARCHIVE_LOCK comme les autres
+(0265 : la lecture concurrente d'une archive MTL4 fait planter Metal). Les fils
+kkrelais ne lisent aucune archive : ils compilent par le MTL4Compiler sous le
+verrou de compilation en lecture, et le pipeline produit part au serialiseur.
+Regenere sur la serie jusqu'a 0272 (ancien 0264, rejete sur mtl_compiler.m
+depuis 0260/0265) : la bibliotheque AIR direct garde l'ecriture de son AIR dans
+la reserve (0260) quand la cle n'y est pas encore.
+
+Banc banc_relais (M1 Max, hors jeu, arbre de la serie + ce correctif) : reserve
+et archive remplies en MSL ; 1er lancement AIR : 2/2 pipelines pris aux
+archives MSL, creation 1,0 ms, AIR substitue 232 ms plus tard ; 2e lancement :
+2/2 pipelines AIR pris a l'archive, aucun relais ; CIDRE_AIR_RELAIS=0 :
+bibliotheque de la reserve comme avant.
+
+
+Rebase sur la serie de l integration a9e7866 (jusqu a 0356) : ancien 0285.
+
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.h b/src/kosmickrisp/bridge/mtl_compiler.h
+index 4c973e1..082ddc2 100644
+--- a/src/kosmickrisp/bridge/mtl_compiler.h
++++ b/src/kosmickrisp/bridge/mtl_compiler.h
+@@ -31,6 +31,7 @@ mtl_new_library_air(mtl_compiler *compiler, const char *src, const void *air,
+                     enum mtl_math_mode math_mode,
+                     enum mtl_math_floating_point_functions math_fp_fns);
+ bool mtl_library_is_air_direct(mtl_library *library);
++void *mtl_pipeline_relais(void *pipeline);
+ void mtl_compile_stat_gen(uint64_t air_ns, uint64_t msl_ns, bool air_fail);
+ void mtl_compile_stat_air_repli(void);
+ mtl_function_descriptor *
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.m b/src/kosmickrisp/bridge/mtl_compiler.m
+index fbfc08f..7c091cb 100644
+--- a/src/kosmickrisp/bridge/mtl_compiler.m
++++ b/src/kosmickrisp/bridge/mtl_compiler.m
+@@ -297,6 +297,252 @@ - (BOOL)serializeToURL:(NSURL *)url error:(NSError **)error;
+    pthread_rwlock_unlock(&kk_compile_rwlock);
+ }
+ 
++static int
++kk_relais_threads(void)
++{
++   static int threads = -1;
++   if (threads < 0) {
++      const char *v = getenv("CIDRE_AIR_RELAIS");
++      long n = v && v[0] ? strtol(v, NULL, 10) : 2;
++      threads = (int)CLAMP(n, 0, 8);
++   }
++   return threads;
++}
++
++static const void *kk_lib_msl_path_key = &kk_lib_msl_path_key;
++static const void *kk_lib_msl_lib_key = &kk_lib_msl_lib_key;
++static const void *kk_relais_key = &kk_relais_key;
++static pthread_mutex_t kk_relais_lib_mutex = PTHREAD_MUTEX_INITIALIZER;
++static _Atomic uint32_t kk_relais_live;
++static _Atomic uint32_t kk_stat_relais_msl;
++static _Atomic uint32_t kk_stat_relais_up;
++static _Atomic uint32_t kk_stat_relais_fail;
++static _Atomic uint32_t kk_stat_relais_dropped;
++
++@interface KKRelais : NSObject {
++@public
++   id upgraded;
++   _Atomic int ready;
++}
++@end
++
++@implementation KKRelais
++- (void)dealloc
++{
++   [upgraded release];
++   [super dealloc];
++}
++@end
++
++struct kk_relais_job {
++   struct kk_relais_job *next;
++   id<MTL4Compiler> comp;
++   MTL4PipelineDescriptor *desc;
++   KKRelais *slot;
++   bool compute;
++   NSUInteger min_threads;
++};
++
++static pthread_mutex_t kk_relais_q_mutex = PTHREAD_MUTEX_INITIALIZER;
++static pthread_cond_t kk_relais_q_cond = PTHREAD_COND_INITIALIZER;
++static struct kk_relais_job *kk_relais_head, *kk_relais_tail;
++static int kk_relais_started;
++
++static void
++kk_relais_job_free(struct kk_relais_job *job)
++{
++   [job->comp release];
++   [job->desc release];
++   [job->slot release];
++   free(job);
++}
++
++static void *
++kk_relais_main(void *arg)
++{
++   (void)arg;
++   pthread_set_qos_class_self_np(QOS_CLASS_BACKGROUND, 0);
++   pthread_setname_np("kkrelais");
++   for (;;) {
++      pthread_mutex_lock(&kk_relais_q_mutex);
++      while (kk_relais_head == NULL)
++         pthread_cond_wait(&kk_relais_q_cond, &kk_relais_q_mutex);
++      struct kk_relais_job *job = kk_relais_head;
++      kk_relais_head = job->next;
++      if (kk_relais_head == NULL)
++         kk_relais_tail = NULL;
++      pthread_mutex_unlock(&kk_relais_q_mutex);
++
++      @autoreleasepool {
++         id pipe = nil;
++         kk_compile_lock();
++         if (job->compute)
++            pipe = [job->comp newComputePipelineStateWithDescriptor:(MTL4ComputePipelineDescriptor *)job->desc
++                                                compilerTaskOptions:nil
++                                                              error:NULL];
++         else
++            pipe = [job->comp newRenderPipelineStateWithDescriptor:(MTL4RenderPipelineDescriptor *)job->desc
++                                               compilerTaskOptions:nil
++                                                             error:NULL];
++         kk_compile_unlock();
++         if (pipe != nil)
++            atomic_fetch_add(&kk_pipe_total, 1);
++         if (pipe != nil && job->compute &&
++             [(id<MTLComputePipelineState>)pipe maxTotalThreadsPerThreadgroup] < job->min_threads) {
++            [pipe release];
++            pipe = nil;
++         }
++         if (pipe != nil) {
++            job->slot->upgraded = pipe;
++            atomic_store_explicit(&job->slot->ready, 1, memory_order_release);
++            atomic_fetch_add(&kk_stat_relais_up, 1);
++         } else {
++            atomic_fetch_add(&kk_stat_relais_fail, 1);
++         }
++      }
++      kk_relais_job_free(job);
++   }
++   return NULL;
++}
++
++static void
++kk_relais_submit(id<MTL4Compiler> comp, MTL4PipelineDescriptor *desc, id provisional,
++                 bool compute, NSUInteger min_threads)
++{
++   struct kk_relais_job *job = calloc(1, sizeof(*job));
++   if (job == NULL)
++      return;
++   KKRelais *slot = [KKRelais new];
++   objc_setAssociatedObject(provisional, kk_relais_key, slot, OBJC_ASSOCIATION_RETAIN);
++   job->comp = [comp retain];
++   job->desc = [desc retain];
++   job->slot = slot;
++   job->compute = compute;
++   job->min_threads = min_threads;
++   atomic_fetch_add(&kk_relais_live, 1);
++
++   pthread_mutex_lock(&kk_relais_q_mutex);
++   if (!kk_relais_started) {
++      kk_relais_started = 1;
++      for (int i = 0; i < kk_relais_threads(); i++) {
++         pthread_t t;
++         if (pthread_create(&t, NULL, kk_relais_main, NULL) == 0)
++            pthread_detach(t);
++      }
++   }
++   if (kk_relais_tail)
++      kk_relais_tail->next = job;
++   else
++      kk_relais_head = job;
++   kk_relais_tail = job;
++   pthread_cond_signal(&kk_relais_q_cond);
++   pthread_mutex_unlock(&kk_relais_q_mutex);
++}
++
++static void
++kk_relais_drop(id<MTL4Compiler> comp)
++{
++   struct kk_relais_job *keep = NULL, *keep_tail = NULL, *drop = NULL;
++   pthread_mutex_lock(&kk_relais_q_mutex);
++   for (struct kk_relais_job *j = kk_relais_head, *n; j; j = n) {
++      n = j->next;
++      j->next = NULL;
++      if (j->comp == comp) {
++         j->next = drop;
++         drop = j;
++      } else {
++         if (keep_tail)
++            keep_tail->next = j;
++         else
++            keep = j;
++         keep_tail = j;
++      }
++   }
++   kk_relais_head = keep;
++   kk_relais_tail = keep_tail;
++   pthread_mutex_unlock(&kk_relais_q_mutex);
++   for (struct kk_relais_job *n; drop; drop = n) {
++      n = drop->next;
++      atomic_fetch_add(&kk_stat_relais_dropped, 1);
++      kk_relais_job_free(drop);
++   }
++}
++
++void *
++mtl_pipeline_relais(void *pipeline)
++{
++   if (likely(atomic_load_explicit(&kk_relais_live, memory_order_relaxed) == 0) || pipeline == NULL)
++      return pipeline;
++   KKRelais *slot = objc_getAssociatedObject((id)pipeline, kk_relais_key);
++   if (slot != nil && atomic_load_explicit(&slot->ready, memory_order_acquire))
++      return slot->upgraded;
++   return pipeline;
++}
++
++static MTL4FunctionDescriptor *
++kk_relais_msl_fd(id<MTLDevice> dev, MTL4FunctionDescriptor *fd, bool *changed)
++{
++   if (fd == nil || ![fd isKindOfClass:[MTL4LibraryFunctionDescriptor class]])
++      return fd;
++   MTL4LibraryFunctionDescriptor *lfd = (MTL4LibraryFunctionDescriptor *)fd;
++   id air = lfd.library;
++   NSString *path = objc_getAssociatedObject(air, kk_lib_msl_path_key);
++   if (path == nil)
++      return fd;
++   pthread_mutex_lock(&kk_relais_lib_mutex);
++   id<MTLLibrary> msl = objc_getAssociatedObject(air, kk_lib_msl_lib_key);
++   if (msl == nil) {
++      msl = [dev newLibraryWithURL:[NSURL fileURLWithPath:path] error:NULL];
++      if (msl != nil) {
++         objc_setAssociatedObject(msl, kk_lib_key_key, objc_getAssociatedObject(air, kk_lib_key_key),
++                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
++         objc_setAssociatedObject(air, kk_lib_msl_lib_key, msl, OBJC_ASSOCIATION_RETAIN);
++         [msl release];
++         atomic_fetch_add(&kk_stat_lib_air_local, 1);
++      } else {
++         objc_setAssociatedObject(air, kk_lib_msl_path_key, nil, OBJC_ASSOCIATION_RETAIN);
++      }
++   }
++   pthread_mutex_unlock(&kk_relais_lib_mutex);
++   if (msl == nil)
++      return nil;
++   MTL4LibraryFunctionDescriptor *n = [[MTL4LibraryFunctionDescriptor new] autorelease];
++   n.name = lfd.name;
++   n.library = msl;
++   *changed = true;
++   return n;
++}
++
++static MTL4ComputePipelineDescriptor *
++kk_relais_compute_desc(id<MTLDevice> dev, MTL4ComputePipelineDescriptor *desc)
++{
++   bool changed = false;
++   MTL4FunctionDescriptor *cs = kk_relais_msl_fd(dev, desc.computeFunctionDescriptor, &changed);
++   if (cs == nil || !changed)
++      return nil;
++   MTL4ComputePipelineDescriptor *alt = [[desc copy] autorelease];
++   alt.computeFunctionDescriptor = cs;
++   return alt;
++}
++
++static MTL4RenderPipelineDescriptor *
++kk_relais_render_desc(id<MTLDevice> dev, MTL4RenderPipelineDescriptor *desc)
++{
++   bool changed = false;
++   MTL4FunctionDescriptor *vs = kk_relais_msl_fd(dev, desc.vertexFunctionDescriptor, &changed);
++   if (vs == nil && desc.vertexFunctionDescriptor != nil)
++      return nil;
++   MTL4FunctionDescriptor *fs = kk_relais_msl_fd(dev, desc.fragmentFunctionDescriptor, &changed);
++   if (fs == nil && desc.fragmentFunctionDescriptor != nil)
++      return nil;
++   if (!changed)
++      return nil;
++   MTL4RenderPipelineDescriptor *alt = [[desc copy] autorelease];
++   alt.vertexFunctionDescriptor = vs;
++   alt.fragmentFunctionDescriptor = fs;
++   return alt;
++}
++
+ static bool
+ kk_serialize_to_dir(id<MTL4PipelineDataSetSerializer> serializer, const char *dir)
+ {
+@@ -590,6 +836,11 @@ precompile des milliers de pipelines au demarrage (Detroit:
+       fprintf(stderr, "KK compile: AIR direct %u libraries / %.3f s, %u fallbacks to MSL, %u pipeline fallbacks\n",
+               atomic_load(&kk_stat_airdirect_count), atomic_load(&kk_stat_airdirect_ns) / 1.0e9,
+               atomic_load(&kk_stat_airdirect_fallback), atomic_load(&kk_stat_airdirect_pipe_fallback));
++   if (atomic_load(&kk_stat_relais_msl))
++      fprintf(stderr, "KK compile: relais %u pipelines MSL pris aux archives, %u remplaces par l'AIR direct, "
++                      "%u echecs, %u abandonnes\n",
++              atomic_load(&kk_stat_relais_msl), atomic_load(&kk_stat_relais_up),
++              atomic_load(&kk_stat_relais_fail), atomic_load(&kk_stat_relais_dropped));
+ }
+ 
+ void
+@@ -606,6 +857,9 @@ precompile des milliers de pipelines au demarrage (Detroit:
+       kk_flush_compiler = nil;
+    }
+ 
++   if (compiler != NULL)
++      kk_relais_drop((id<MTL4Compiler>)compiler);
++
+    if (compiler == NULL || cache_dir == NULL || cache_dir[0] == '\0')
+       return;
+ 
+@@ -615,7 +869,9 @@ precompile des milliers de pipelines au demarrage (Detroit:
+       if (serializer == nil)
+          return;
+ 
++      pthread_rwlock_wrlock(&kk_compile_rwlock);
+       kk_serialize_to_dir(serializer, cache_dir);
++      pthread_rwlock_unlock(&kk_compile_rwlock);
+    }
+ }
+ 
+@@ -704,15 +960,27 @@ precompile des milliers de pipelines au demarrage (Detroit:
+       id<MTLLibrary> lib = nil;
+       const char *pre = kk_env_dir("MESA_KK_PRECOMPIL");
+       const char *local = kk_env_dir("MESA_KK_AIR_LOCAL");
+-      if (pre) {
+-         lib = kk_library_from_air(comp.device, pre, key);
+-         if (lib != nil)
+-            atomic_fetch_add(&kk_stat_lib_air, 1);
+-      }
+-      if (lib == nil && local) {
+-         lib = kk_library_from_air(comp.device, local, key);
+-         if (lib != nil)
+-            atomic_fetch_add(&kk_stat_lib_air_local, 1);
++      NSString *msl_path = nil;
++      if (kk_relais_threads() > 0) {
++         for (unsigned i = 0; i < 2 && msl_path == nil; i++) {
++            const char *dir = i == 0 ? pre : local;
++            if (dir == NULL)
++               continue;
++            NSString *p = [NSString stringWithFormat:@"%s/air/%@.metallib", dir, key];
++            if (access(p.fileSystemRepresentation, R_OK) == 0)
++               msl_path = p;
++         }
++      } else {
++         if (pre) {
++            lib = kk_library_from_air(comp.device, pre, key);
++            if (lib != nil)
++               atomic_fetch_add(&kk_stat_lib_air, 1);
++         }
++         if (lib == nil && local) {
++            lib = kk_library_from_air(comp.device, local, key);
++            if (lib != nil)
++               atomic_fetch_add(&kk_stat_lib_air_local, 1);
++         }
+       }
+       if (lib == nil) {
+          NSError *error = nil;
+@@ -734,6 +1002,8 @@ precompile des milliers de pipelines au demarrage (Detroit:
+             return mtl_new_library(compiler, src, msl_version, math_mode, math_fp_fns);
+          }
+          atomic_fetch_add(&kk_stat_airdirect_count, 1);
++         if (msl_path != nil)
++            objc_setAssociatedObject(lib, kk_lib_msl_path_key, msl_path, OBJC_ASSOCIATION_RETAIN);
+          if (local)
+             kk_air_local_write_bytes(local, key, air, air_size);
+          objc_setAssociatedObject(lib, kk_lib_air_key,
+@@ -818,6 +1088,23 @@ precompile des milliers de pipelines au demarrage (Detroit:
+       }
+       KK_ARCHIVE_UNLOCK();
+       bool cached = pipeline != nil;
++      if (!cached && kk_relais_threads() > 0) {
++         MTL4ComputePipelineDescriptor *alt = kk_relais_compute_desc(comp.device, desc);
++         if (alt != nil) {
++            KK_ARCHIVE_LOCK();
++            for (id<MTL4Archive> archive in kk_compiler_archives(comp)) {
++               pipeline = [archive newComputePipelineStateWithDescriptor:alt error:NULL];
++               if (pipeline != nil)
++                  break;
++            }
++            KK_ARCHIVE_UNLOCK();
++         }
++         if (pipeline != nil) {
++            cached = true;
++            atomic_fetch_add(&kk_stat_relais_msl, 1);
++            kk_relais_submit(comp, desc, pipeline, true, pipeline.maxTotalThreadsPerThreadgroup);
++         }
++      }
+       if (!cached)
+          pipeline = [comp newComputePipelineStateWithDescriptor:desc compilerTaskOptions:nil
+                                                           error:&error];
+@@ -1000,6 +1287,23 @@ precompile des milliers de pipelines au demarrage (Detroit:
+       }
+       KK_ARCHIVE_UNLOCK();
+       bool cached = pipeline != nil;
++      if (!cached && kk_relais_threads() > 0) {
++         MTL4RenderPipelineDescriptor *alt = kk_relais_render_desc(comp.device, desc);
++         if (alt != nil) {
++            KK_ARCHIVE_LOCK();
++            for (id<MTL4Archive> archive in kk_compiler_archives(comp)) {
++               pipeline = [archive newRenderPipelineStateWithDescriptor:alt error:NULL];
++               if (pipeline != nil)
++                  break;
++            }
++            KK_ARCHIVE_UNLOCK();
++         }
++         if (pipeline != nil) {
++            cached = true;
++            atomic_fetch_add(&kk_stat_relais_msl, 1);
++            kk_relais_submit(comp, [[desc copy] autorelease], pipeline, false, 0);
++         }
++      }
+       if (!cached)
+          pipeline = [comp newRenderPipelineStateWithDescriptor:desc compilerTaskOptions:nil
+                                                          error:&error];
+diff --git a/src/kosmickrisp/bridge/mtl_encoder.m b/src/kosmickrisp/bridge/mtl_encoder.m
+index aed8135..e280b4f 100644
+--- a/src/kosmickrisp/bridge/mtl_encoder.m
++++ b/src/kosmickrisp/bridge/mtl_encoder.m
+@@ -5,6 +5,7 @@
+  */
+ 
+ #include "mtl_encoder.h"
++#include "mtl_compiler.h"
+ 
+ #include <Metal/MTL4CommandBuffer.h>
+ #include <Metal/MTL4ComputeCommandEncoder.h>
+@@ -305,7 +306,8 @@
+ {
+    @autoreleasepool {
+       id<MTL4ComputeCommandEncoder> enc = (id<MTL4ComputeCommandEncoder>)encoder;
+-      id<MTLComputePipelineState> state = (id<MTLComputePipelineState>)state_handle;
++      id<MTLComputePipelineState> state =
++         (id<MTLComputePipelineState>)mtl_pipeline_relais(state_handle);
+       [enc setComputePipelineState:state];
+    }
+ }
+@@ -392,7 +394,8 @@
+ {
+    @autoreleasepool {
+       id<MTL4RenderCommandEncoder> enc = (id<MTL4RenderCommandEncoder>)encoder;
+-      id<MTLRenderPipelineState> pipe = (id<MTLRenderPipelineState>)pipeline;
++      id<MTLRenderPipelineState> pipe =
++         (id<MTLRenderPipelineState>)mtl_pipeline_relais(pipeline);
+       [enc setRenderPipelineState:pipe];
+    }
+ }

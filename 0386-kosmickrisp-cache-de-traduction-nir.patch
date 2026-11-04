@@ -1,0 +1,749 @@
+Generated-by: LLM
+
+KosmicKrisp : cache disque de la traduction NIR -> AIR / MSL (CIDRE_CACHE_TRADUCTION)
+
+Avec l'AIR direct, chaque lancement, meme a chaud, refait nir_to_air et
+nir_to_msl pour chaque nuanceur : le MSL sert encore de cle (reserve d'AIR,
+archives) et de repli. Demonologist au M4 : ~23 s de nir_to_air et ~27 s de
+nir_to_msl cumules par lancement.
+
+kk_nir_to_msl_data est coupee en deux : les passes NIR (poly, optimisation,
+modify_nir_info) puis kk_nir_translate (nir_to_air, msl_finish_nir,
+nir_to_msl). kk_nir_translate cherche d'abord dans un cache disque
+(kk_trad_cache.c) :
+- cle = BLAKE3 du NIR serialise tel que nir_to_air le recoit, des options de
+  traduction (contournements coupes, composantes des cibles), de l'AIR direct
+  demande ou non, et de la cle de code de KK (0208 : KK_CODEGEN_VERSION,
+  empreinte des sources du compilateur, options CIDRE_* qui changent le code,
+  famille du GPU, macOS 27, mode des atomiques 64 bits), posee par
+  kk_physical_device_init_pipeline_cache ;
+- valeur = MSL, nom du point d'entree, metallib de l'AIR direct (absent si
+  nir_to_air a echoue, le repli MSL est alors rejoue tel quel), compresses
+  (zstd), avec la cle et une somme de controle BLAKE3 ; un fichier faux ou
+  tronque est traite comme absent ;
+- un fichier par entree, <dossier>/<cle de code>/<2 hex>/<62 hex>, ecrit par
+  un temporaire renomme (fils et processus concurrents sans verrou).
+Trouve : ni nir_to_air ni nir_to_msl ; le reste (bibliotheque, archives,
+reserve d'AIR) voit exactement les memes octets qu'avant.
+
+CIDRE_CACHE_TRADUCTION : non posee = actif dans
+<MESA_KK_PIPELINE_CACHE>/traduction (coupe sans cache de pipelines) ; « 0 » =
+coupe ; chemin absolu = ce dossier. Coupe aussi sous CIDRE_AIR_DUMP et
+CIDRE_TEX_STATS, qui veulent voir la traduction se faire. Un fil d'entretien,
+une fois par processus, efface les dossiers des autres cles de code inutilises
+depuis 14 jours et mesure le dossier courant : au-dela de
+CIDRE_CACHE_TRADUCTION_MAX_MO (2048 par defaut), plus d'ecriture pour ce
+processus. MESA_KK_COMPILE_STATS : « cache de traduction N trouves, N absents,
+recherche s, N ecrits (N rates), ecriture s ».
+
+cidre_trad_hors_ligne (exporte, comme cidre_air_hors_ligne) rejoue
+kk_nir_translate sur un NIR vide par CIDRE_AIR_DUMP_NIR, pour le banc.
+
+Bancs (M1 Max, hors jeu, CIDRE_AIR_DIRECT=1), corpus : 6166 SPIR-V de
+vkd3d-proton (Unreal, Lumen ; cidre-kk-agx/dx0/vkdump : 3359 calcul, 780
+sommets, 2027 fragments), un pipeline par nuanceur, 4 fils, KK chargee sans
+chargeur (outils de ~/Dev/cidre-kk-trad) :
+- a chaud (archives remplies), 3 passes entrelacees : sans cache 13,23 a
+  13,49 s (nir_to_air 10,5 s + nir_to_msl 10,3 s cumules, 52,5 s CPU) ; avec
+  cache 8,33 a 8,51 s, 8973 trouves / 0 absent, recherche 1,7 s cumulee,
+  33,4 s CPU : -36 % de temps et de CPU ;
+- a froid : 64,1 s sans cache, 67,1 s avec (ecriture 3,3 s cumulee pour 6283
+  entrees, recherche 1,1 s ; +5 %) ; 146 Mo pour 6283 entrees (82 Mo sans
+  l'AIR) ;
+- hors ligne, un fil, 6283 NIR : 2,79 ms par nuanceur sans cache, 3,31 a froid,
+  0,21 a chaud (x13) ; MSL seul : 1,34 / 1,77 / 0,19 ms ;
+- octet pour octet : SHA-256 du MSL et de l'AIR des 6283 nuanceurs identiques
+  entre deux passes sans cache, la passe qui remplit et deux passes a chaud
+  (avec et sans AIR direct).
+
+
+Rebase sur la serie de l integration a9e7866 + 0385 : ancien 0286.
+
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.h b/src/kosmickrisp/bridge/mtl_compiler.h
+index 082ddc2..123b6cd 100644
+--- a/src/kosmickrisp/bridge/mtl_compiler.h
++++ b/src/kosmickrisp/bridge/mtl_compiler.h
+@@ -34,6 +34,7 @@ bool mtl_library_is_air_direct(mtl_library *library);
+ void *mtl_pipeline_relais(void *pipeline);
+ void mtl_compile_stat_gen(uint64_t air_ns, uint64_t msl_ns, bool air_fail);
+ void mtl_compile_stat_air_repli(void);
++void mtl_compile_stat_trad(unsigned kind, uint64_t ns);
+ mtl_function_descriptor *
+ mtl_new_library_function_descriptor(mtl_library *library,
+                                     const char *entry_point);
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.m b/src/kosmickrisp/bridge/mtl_compiler.m
+index 7c091cb..0ea0f84 100644
+--- a/src/kosmickrisp/bridge/mtl_compiler.m
++++ b/src/kosmickrisp/bridge/mtl_compiler.m
+@@ -686,6 +686,17 @@ precompile des milliers de pipelines au demarrage (Detroit:
+    if (air_fail)
+       atomic_fetch_add(&kk_stat_gen_air_fail, 1);
+ }
++/* Cache de traduction (kk_trad_cache.c) : 0 trouve, 1 absent, 2 ecrit,
++ * 3 ecriture ratee ; temps de recherche (0, 1) et d'ecriture (2, 3). */
++static _Atomic uint32_t kk_stat_trad[4];
++static _Atomic uint64_t kk_stat_trad_ns[2];
++
++void
++mtl_compile_stat_trad(unsigned kind, uint64_t ns)
++{
++   atomic_fetch_add(&kk_stat_trad[kind & 3], 1);
++   atomic_fetch_add(&kk_stat_trad_ns[(kind & 3) >= 2], ns);
++}
+ static _Atomic uint64_t kk_stat_pipe_ns;
+ static _Atomic uint32_t kk_stat_lib_count;
+ static _Atomic uint32_t kk_stat_pipe_count;
+@@ -832,6 +843,12 @@ precompile des milliers de pipelines au demarrage (Detroit:
+            t0 ? (kk_now_ns() - t0) / 1.0e9 : 0.0, atomic_load(&kk_stat_gen_count),
+            atomic_load(&kk_stat_gen_air_ns) / 1.0e9, atomic_load(&kk_stat_gen_air_fail),
+            atomic_load(&kk_stat_gen_msl_ns) / 1.0e9);
++   if (atomic_load(&kk_stat_trad[0]) || atomic_load(&kk_stat_trad[1]))
++      fprintf(stderr, "KK compile: cache de traduction %u trouves, %u absents, recherche %.3f s, "
++                      "%u ecrits (%u rates), ecriture %.3f s\n",
++              atomic_load(&kk_stat_trad[0]), atomic_load(&kk_stat_trad[1]),
++              atomic_load(&kk_stat_trad_ns[0]) / 1.0e9, atomic_load(&kk_stat_trad[2]),
++              atomic_load(&kk_stat_trad[3]), atomic_load(&kk_stat_trad_ns[1]) / 1.0e9);
+    if (atomic_load(&kk_stat_airdirect_count) || atomic_load(&kk_stat_airdirect_fallback))
+       fprintf(stderr, "KK compile: AIR direct %u libraries / %.3f s, %u fallbacks to MSL, %u pipeline fallbacks\n",
+               atomic_load(&kk_stat_airdirect_count), atomic_load(&kk_stat_airdirect_ns) / 1.0e9,
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
+index d37a1d7..34166a7 100644
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -9,6 +9,7 @@
+ 
+ #include "kk_descriptor_types.h"
+ #include "kk_physical_device.h"
++#include "kk_trad_cache.h"
+ 
+ #include "kk_debug.h"
+ #include "kk_entrypoints.h"
+@@ -1226,6 +1227,7 @@ kk_physical_device_init_pipeline_cache(struct kk_physical_device *pdev)
+    STATIC_ASSERT(BLAKE3_KEY_LEN >= VK_UUID_SIZE);
+    memcpy(pdev->vk.properties.pipelineCacheUUID, blake3, VK_UUID_SIZE);
+    memcpy(pdev->vk.properties.shaderBinaryUUID, blake3, VK_UUID_SIZE);
++   kk_trad_cache_set_codegen_key(blake3, sizeof(blake3));
+ 
+    if (getenv("CIDRE_CLE_CACHE_DIAG")) {
+       char hex[2 * VK_UUID_SIZE + 1];
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+index cbba1b4..712a98a 100644
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -6,6 +6,7 @@
+  */
+ 
+ #include "kk_shader.h"
++#include "kk_trad_cache.h"
+ 
+ #include <stdatomic.h>
+ #include <unistd.h>
+@@ -1679,14 +1680,9 @@ kk_air_dump(const char *dir, const struct msl_compile_data *data,
+ }
+ 
+ static void
+-kk_nir_to_msl_data(nir_shader *nir, struct nir_to_msl_options *options,
+-                   struct msl_compile_data *data)
++kk_nir_translate(nir_shader *nir, struct nir_to_msl_options *options,
++                 struct msl_compile_data *data)
+ {
+-   NIR_PASS(_, nir, kk_nir_lower_poly);
+-
+-   msl_optimize_nir_ssa(nir);
+-   modify_nir_info(nir);
+-
+    struct air_output air = {0};
+    bool air_ok = false;
+    const char *dump = getenv("CIDRE_AIR_DUMP");
+@@ -1719,6 +1715,11 @@ kk_nir_to_msl_data(nir_shader *nir, struct nir_to_msl_options *options,
+       }
+       blob_finish(&b);
+    }
++   struct kk_trad_key trad_key = {0};
++   if (!dump &&
++       kk_trad_cache_lookup(nir, options, kk_air_direct_enabled(), &trad_key, data))
++      return;
++
+    if (kk_air_direct_enabled() || dump) {
+       struct air_options ao = {.disabled_workarounds = options->disabled_workarounds};
+       memcpy(ao.rts_component_count, options->rts_component_count, sizeof(ao.rts_component_count));
+@@ -1749,6 +1750,20 @@ kk_nir_to_msl_data(nir_shader *nir, struct nir_to_msl_options *options,
+     * where the entrypoint gets renamed. */
+    ralloc_steal(NULL, (void *)entrypoint_name);
+    data->entrypoint_name = (char *)entrypoint_name;
++
++   kk_trad_cache_store(&trad_key, data);
++}
++
++static void
++kk_nir_to_msl_data(nir_shader *nir, struct nir_to_msl_options *options,
++                   struct msl_compile_data *data)
++{
++   NIR_PASS(_, nir, kk_nir_lower_poly);
++
++   msl_optimize_nir_ssa(nir);
++   modify_nir_info(nir);
++
++   kk_nir_translate(nir, options, data);
+ }
+ 
+ static VkResult
+@@ -3740,3 +3755,56 @@ cidre_air_hors_ligne(const char *path, const char *out_metallib, char *reason,
+    ralloc_free(nir);
+    return ok ? 1 : 0;
+ }
++
++/* Banc hors ligne (Cidre) : rejoue la traduction (cache de traduction compris)
++ * d'un NIR vide par CIDRE_AIR_DUMP_NIR ; MSL et AIR rendus par malloc. */
++PUBLIC int cidre_trad_hors_ligne(const char *path, const uint8_t *codegen_key,
++                                 char **msl, void **air, size_t *air_size,
++                                 double *ms);
++PUBLIC int
++cidre_trad_hors_ligne(const char *path, const uint8_t *codegen_key, char **msl,
++                      void **air, size_t *air_size, double *ms)
++{
++   FILE *f = fopen(path, "rb");
++   if (!f)
++      return -1;
++   fseek(f, 0, SEEK_END);
++   long n = ftell(f);
++   fseek(f, 0, SEEK_SET);
++   void *buf = malloc(n);
++   if (fread(buf, 1, n, f) != (size_t)n) {
++      fclose(f);
++      free(buf);
++      return -1;
++   }
++   fclose(f);
++   if (codegen_key)
++      kk_trad_cache_set_codegen_key(codegen_key, VK_UUID_SIZE);
++   struct blob_reader br;
++   blob_reader_init(&br, buf, n);
++   struct nir_to_msl_options options = {
++      .disabled_workarounds = blob_read_uint64(&br),
++   };
++   blob_copy_bytes(&br, options.rts_component_count,
++                   sizeof(options.rts_component_count));
++   glsl_type_singleton_init_or_ref();
++   nir_shader *nir = nir_deserialize(NULL, &kk_nir_options, &br);
++   free(buf);
++   if (!nir)
++      return -1;
++   struct msl_compile_data data = {0};
++   uint64_t t0 = os_time_get_nano();
++   kk_nir_translate(nir, &options, &data);
++   *ms = (os_time_get_nano() - t0) / 1e6;
++   ralloc_free(nir);
++   *msl = data.code ? strdup(data.code) : NULL;
++   *air_size = data.air ? data.air_size : 0;
++   *air = NULL;
++   if (*air_size) {
++      *air = malloc(*air_size);
++      memcpy(*air, data.air, *air_size);
++   }
++   ralloc_free(data.code);
++   ralloc_free(data.entrypoint_name);
++   return *msl ? 1 : 0;
++}
+diff --git a/src/kosmickrisp/vulkan/kk_trad_cache.c b/src/kosmickrisp/vulkan/kk_trad_cache.c
+new file mode 100644
+index 0000000..442f252
+--- /dev/null
++++ b/src/kosmickrisp/vulkan/kk_trad_cache.c
+@@ -0,0 +1,444 @@
++/*
++ * Copyright 2026 Cidre
++ * SPDX-License-Identifier: MIT
++ */
++
++/* Cache disque de la traduction NIR -> AIR / MSL (CIDRE_CACHE_TRADUCTION).
++ *
++ * Cle : empreinte BLAKE3 du NIR serialise tel que nir_to_air le recoit, des
++ * options de traduction (contournements, composantes des cibles), de l'AIR
++ * direct demande ou non, et de la cle de code de KosmicKrisp (0208 :
++ * KK_CODEGEN_VERSION, empreinte des sources du compilateur, options
++ * d'environnement qui changent le code, famille du GPU). Valeur : le MSL, le
++ * nom du point d'entree et le metallib de l'AIR direct (absent si nir_to_air a
++ * echoue), compresses (zstd), suivis d'une somme de controle.
++ *
++ * CIDRE_CACHE_TRADUCTION : non posee = actif dans <MESA_KK_PIPELINE_CACHE>/
++ * traduction ; « 0 » = coupe ; un chemin absolu = ce dossier. Sans dossier de
++ * cache de pipelines ni chemin, coupe. Sous ce dossier, un sous-dossier par cle
++ * de code (64 hex), puis <2 hex>/<62 hex> par entree. Un fichier par cle, ecrit par un
++ * fichier temporaire renomme : un autre fil ou processus ne lit jamais une
++ * moitie, et un fichier illisible ou faux est traite comme absent.
++ */
++
++#include "kk_trad_cache.h"
++
++#include "kk_shader.h"
++#include "kosmickrisp/bridge/mtl_compiler.h"
++#include "kosmickrisp/compiler/nir_to_msl.h"
++
++#include "nir_serialize.h"
++#include "util/blob.h"
++#include "util/compress.h"
++#include "util/os_time.h"
++#include "util/macros.h"
++#include "util/ralloc.h"
++
++#include <dirent.h>
++#include <errno.h>
++#include <ftw.h>
++#include <time.h>
++#include <fcntl.h>
++#include <limits.h>
++#include <pthread.h>
++#include <stdatomic.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++#define KK_TRAD_MAGIC   0x3154524bu /* "KRT1" */
++#define KK_TRAD_FORMAT  1u
++#define KK_TRAD_SUM_LEN 16u
++
++#define KK_TRAD_HAS_AIR 0x1u
++
++struct kk_trad_header {
++   uint32_t magic;
++   uint32_t format;
++   uint8_t key[BLAKE3_OUT_LEN];
++   uint32_t flags;
++   uint32_t entry_len;
++   uint32_t code_len;
++   uint32_t code_packed;
++   uint32_t air_len;
++   uint32_t air_packed;
++};
++
++static uint8_t kk_trad_codegen[BLAKE3_OUT_LEN];
++static atomic_bool kk_trad_codegen_set;
++
++void
++kk_trad_cache_set_codegen_key(const uint8_t *key, unsigned size)
++{
++   memset(kk_trad_codegen, 0, sizeof(kk_trad_codegen));
++   memcpy(kk_trad_codegen, key, MIN2(size, sizeof(kk_trad_codegen)));
++   atomic_store(&kk_trad_codegen_set, true);
++}
++
++static pthread_once_t kk_trad_once = PTHREAD_ONCE_INIT;
++static char kk_trad_root[PATH_MAX];
++static char kk_trad_dir[PATH_MAX];
++static atomic_bool kk_trad_full;
++
++#define KK_TRAD_STAMP     "dernier-usage"
++#define KK_TRAD_STALE_S   (14 * 24 * 3600)
++#define KK_TRAD_MAX_MO    2048
++
++static uint64_t kk_trad_scan_bytes;
++
++static int
++kk_trad_sum_cb(const char *path, const struct stat *st, int flag, struct FTW *ftw)
++{
++   (void)path;
++   (void)ftw;
++   if (flag == FTW_F)
++      kk_trad_scan_bytes += (uint64_t)st->st_blocks * 512u;
++   return 0;
++}
++
++static int
++kk_trad_rm_cb(const char *path, const struct stat *st, int flag, struct FTW *ftw)
++{
++   (void)st;
++   (void)ftw;
++   if (flag == FTW_DP)
++      rmdir(path);
++   else
++      unlink(path);
++   return 0;
++}
++
++static bool
++kk_trad_is_key_name(const char *n)
++{
++   if (strlen(n) != 2 * BLAKE3_OUT_LEN)
++      return false;
++   for (const char *c = n; *c; c++)
++      if (!((*c >= '0' && *c <= '9') || (*c >= 'a' && *c <= 'f')))
++         return false;
++   return true;
++}
++
++/* Fil d'entretien, une fois par processus : date d'usage du dossier de la cle
++ * courante, effacement des dossiers des autres cles de code inutilises depuis
++ * KK_TRAD_STALE_S (anciennes versions de KK), puis taille du dossier courant :
++ * au-dela de CIDRE_CACHE_TRADUCTION_MAX_MO (2048 par defaut), plus d'ecriture
++ * pour ce processus (les entrees presentes servent toujours). */
++static void *
++kk_trad_housekeeping(void *arg)
++{
++   (void)arg;
++   pthread_setname_np("kktrad");
++   char p[PATH_MAX];
++   snprintf(p, sizeof(p), "%s/" KK_TRAD_STAMP, kk_trad_dir);
++   int fd = open(p, O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
++   if (fd >= 0) {
++      futimens(fd, NULL);
++      close(fd);
++   }
++   const char *own = strrchr(kk_trad_dir, '/') + 1;
++   DIR *d = opendir(kk_trad_root);
++   time_t now = time(NULL);
++   for (struct dirent *e; d && (e = readdir(d));) {
++      if (!kk_trad_is_key_name(e->d_name) || strcmp(e->d_name, own) == 0)
++         continue;
++      struct stat st;
++      snprintf(p, sizeof(p), "%s/%s/" KK_TRAD_STAMP, kk_trad_root, e->d_name);
++      if (stat(p, &st) == 0 && now - st.st_mtime < KK_TRAD_STALE_S)
++         continue;
++      snprintf(p, sizeof(p), "%s/%s", kk_trad_root, e->d_name);
++      nftw(p, kk_trad_rm_cb, 16, FTW_DEPTH | FTW_PHYS);
++   }
++   if (d)
++      closedir(d);
++   const char *m = getenv("CIDRE_CACHE_TRADUCTION_MAX_MO");
++   uint64_t max = (uint64_t)(m && m[0] ? strtoull(m, NULL, 10) : KK_TRAD_MAX_MO) << 20;
++   kk_trad_scan_bytes = 0;
++   nftw(kk_trad_dir, kk_trad_sum_cb, 16, FTW_PHYS);
++   if (kk_trad_scan_bytes > max) {
++      atomic_store(&kk_trad_full, true);
++      fprintf(stderr, "KK: cache de traduction plein (%llu Mo), plus d'ecriture\n",
++              (unsigned long long)(kk_trad_scan_bytes >> 20));
++   }
++   return NULL;
++}
++
++static void
++kk_trad_init(void)
++{
++   const char *v = getenv("CIDRE_CACHE_TRADUCTION");
++   if (v && strcmp(v, "0") == 0)
++      return;
++   /* diagnostics qui veulent voir la traduction se faire */
++   if (getenv("CIDRE_AIR_DUMP") || getenv("CIDRE_TEX_STATS"))
++      return;
++   if (v && v[0] == '/') {
++      snprintf(kk_trad_root, sizeof(kk_trad_root), "%s", v);
++   } else {
++      const char *base = getenv("MESA_KK_PIPELINE_CACHE");
++      if (!base || !base[0])
++         return;
++      snprintf(kk_trad_root, sizeof(kk_trad_root), "%s/traduction", base);
++   }
++   char hex[2 * BLAKE3_OUT_LEN + 1];
++   for (unsigned i = 0; i < BLAKE3_OUT_LEN; i++)
++      snprintf(hex + 2 * i, 3, "%02x", kk_trad_codegen[i]);
++   snprintf(kk_trad_dir, sizeof(kk_trad_dir), "%s/%s", kk_trad_root, hex);
++   for (char *c = kk_trad_dir + 1; *c; c++) {
++      if (*c != '/')
++         continue;
++      *c = '\0';
++      mkdir(kk_trad_dir, 0755);
++      *c = '/';
++   }
++   if (mkdir(kk_trad_dir, 0755) != 0 && errno != EEXIST) {
++      kk_trad_dir[0] = '\0';
++      return;
++   }
++   pthread_t t;
++   if (pthread_create(&t, NULL, kk_trad_housekeeping, NULL) == 0)
++      pthread_detach(t);
++}
++
++/* Appele seulement une fois la cle de code posee : elle nomme le dossier. */
++static const char *
++kk_trad_get_dir(void)
++{
++   pthread_once(&kk_trad_once, kk_trad_init);
++   return kk_trad_dir[0] ? kk_trad_dir : NULL;
++}
++
++static void
++kk_trad_path(char *path, size_t size, const char *dir, const uint8_t *hash)
++{
++   char hex[2 * BLAKE3_OUT_LEN + 1];
++   for (unsigned i = 0; i < BLAKE3_OUT_LEN; i++)
++      snprintf(hex + 2 * i, 3, "%02x", hash[i]);
++   snprintf(path, size, "%s/%.2s/%s", dir, hex, hex + 2);
++}
++
++static void
++kk_trad_sum(const void *data, size_t size, uint8_t *out)
++{
++   blake3_hash h;
++   _mesa_blake3_compute(data, size, h);
++   memcpy(out, h, KK_TRAD_SUM_LEN);
++}
++
++static void *
++kk_trad_read_file(const char *path, size_t *size)
++{
++   int fd = open(path, O_RDONLY | O_CLOEXEC);
++   if (fd < 0)
++      return NULL;
++   struct stat st;
++   void *buf = NULL;
++   if (fstat(fd, &st) == 0 && st.st_size > (off_t)sizeof(struct kk_trad_header) &&
++       st.st_size < (off_t)(256u << 20)) {
++      buf = malloc(st.st_size);
++      if (buf && read(fd, buf, st.st_size) != st.st_size) {
++         free(buf);
++         buf = NULL;
++      }
++   }
++   close(fd);
++   *size = buf ? (size_t)st.st_size : 0;
++   return buf;
++}
++
++static bool
++kk_trad_unpack(void *mem_ctx, const uint8_t *src, uint32_t packed, uint32_t len,
++               void **out)
++{
++   uint8_t *dst = ralloc_size(mem_ctx, len);
++   if (dst == NULL)
++      return false;
++   if (packed == 0)
++      memcpy(dst, src, len);
++   else if (!util_compress_inflate(src, packed, dst, len)) {
++      ralloc_free(dst);
++      return false;
++   }
++   *out = dst;
++   return true;
++}
++
++bool
++kk_trad_cache_lookup(struct nir_shader *nir,
++                     const struct nir_to_msl_options *options, bool air_wanted,
++                     struct kk_trad_key *key, struct msl_compile_data *data)
++{
++   key->valid = false;
++   if (!atomic_load(&kk_trad_codegen_set))
++      return false;
++   const char *dir = kk_trad_get_dir();
++   if (dir == NULL)
++      return false;
++
++   uint64_t t0 = os_time_get_nano();
++   struct blob b;
++   blob_init(&b);
++   blob_write_uint32(&b, KK_TRAD_FORMAT);
++   blob_write_bytes(&b, kk_trad_codegen, sizeof(kk_trad_codegen));
++   blob_write_uint8(&b, air_wanted);
++   blob_write_uint64(&b, options->disabled_workarounds);
++   blob_write_bytes(&b, options->rts_component_count,
++                    sizeof(options->rts_component_count));
++   nir_serialize(&b, nir, false);
++   if (b.out_of_memory) {
++      blob_finish(&b);
++      return false;
++   }
++   blake3_hash h;
++   _mesa_blake3_compute(b.data, b.size, h);
++   blob_finish(&b);
++   memcpy(key->hash, h, sizeof(key->hash));
++   key->valid = true;
++
++   char path[PATH_MAX];
++   kk_trad_path(path, sizeof(path), dir, key->hash);
++   size_t size;
++   uint8_t *buf = kk_trad_read_file(path, &size);
++   bool hit = false;
++   if (buf != NULL) {
++      struct kk_trad_header hd;
++      memcpy(&hd, buf, sizeof(hd));
++      const size_t body = sizeof(hd);
++      const uint64_t code_bytes = hd.code_packed ? hd.code_packed : hd.code_len;
++      const uint64_t air_bytes = hd.air_packed ? hd.air_packed : hd.air_len;
++      const uint64_t total = body + (uint64_t)hd.entry_len + code_bytes +
++                             air_bytes + KK_TRAD_SUM_LEN;
++      uint8_t sum[KK_TRAD_SUM_LEN];
++      if (hd.magic == KK_TRAD_MAGIC && hd.format == KK_TRAD_FORMAT &&
++          memcmp(hd.key, key->hash, sizeof(hd.key)) == 0 && total == size &&
++          hd.entry_len > 0 && hd.code_len > 0 &&
++          ((hd.flags & KK_TRAD_HAS_AIR) != 0) == (hd.air_len != 0) &&
++          (air_wanted || hd.air_len == 0)) {
++         kk_trad_sum(buf, size - KK_TRAD_SUM_LEN, sum);
++         if (memcmp(sum, buf + size - KK_TRAD_SUM_LEN, KK_TRAD_SUM_LEN) == 0) {
++            const uint8_t *p = buf + body;
++            const uint8_t *entry = p;
++            p += hd.entry_len;
++            void *code = NULL, *air = NULL;
++            if (entry[hd.entry_len - 1] == '\0' &&
++                kk_trad_unpack(options->mem_ctx, p, hd.code_packed, hd.code_len, &code)) {
++               p += code_bytes;
++               if (((char *)code)[hd.code_len - 1] != '\0' ||
++                   (hd.air_len && !kk_trad_unpack(code, p, hd.air_packed, hd.air_len, &air))) {
++                  ralloc_free(code);
++               } else {
++                  data->code = code;
++                  data->air = air;
++                  data->air_size = hd.air_len;
++                  data->entrypoint_name = ralloc_strdup(NULL, (const char *)entry);
++                  hit = data->entrypoint_name != NULL;
++                  if (!hit) {
++                     ralloc_free(code);
++                     data->code = NULL;
++                     data->air = NULL;
++                     data->air_size = 0;
++                  }
++               }
++            }
++         }
++      }
++      free(buf);
++   }
++   mtl_compile_stat_trad(hit ? 0 : 1, os_time_get_nano() - t0);
++   return hit;
++}
++
++static size_t
++kk_trad_pack(const void *src, size_t len, uint8_t **out)
++{
++   size_t max = util_compress_max_compressed_len(len);
++   uint8_t *tmp = max ? malloc(max) : NULL;
++   size_t packed = tmp ? util_compress_deflate(src, len, tmp, max) : 0;
++   if (packed == 0 || packed >= len) {
++      free(tmp);
++      *out = NULL;
++      return 0;
++   }
++   *out = tmp;
++   return packed;
++}
++
++void
++kk_trad_cache_store(const struct kk_trad_key *key,
++                    const struct msl_compile_data *data)
++{
++   const char *dir = kk_trad_get_dir();
++   if (!key->valid || dir == NULL || data->code == NULL ||
++       data->entrypoint_name == NULL || atomic_load(&kk_trad_full))
++      return;
++
++   uint64_t t0 = os_time_get_nano();
++   struct kk_trad_header hd = {
++      .magic = KK_TRAD_MAGIC,
++      .format = KK_TRAD_FORMAT,
++      .flags = data->air_size ? KK_TRAD_HAS_AIR : 0,
++      .entry_len = strlen(data->entrypoint_name) + 1,
++      .code_len = strlen(data->code) + 1,
++      .air_len = data->air ? data->air_size : 0,
++   };
++   if (hd.air_len == 0)
++      hd.flags = 0;
++   memcpy(hd.key, key->hash, sizeof(hd.key));
++   uint8_t *code_packed = NULL, *air_packed = NULL;
++   hd.code_packed = kk_trad_pack(data->code, hd.code_len, &code_packed);
++   if (hd.air_len)
++      hd.air_packed = kk_trad_pack(data->air, hd.air_len, &air_packed);
++
++   struct blob b;
++   blob_init(&b);
++   blob_write_bytes(&b, &hd, sizeof(hd));
++   blob_write_bytes(&b, data->entrypoint_name, hd.entry_len);
++   if (hd.code_packed)
++      blob_write_bytes(&b, code_packed, hd.code_packed);
++   else
++      blob_write_bytes(&b, data->code, hd.code_len);
++   if (hd.air_packed)
++      blob_write_bytes(&b, air_packed, hd.air_packed);
++   else if (hd.air_len)
++      blob_write_bytes(&b, data->air, hd.air_len);
++   free(code_packed);
++   free(air_packed);
++   uint8_t sum[KK_TRAD_SUM_LEN];
++   if (!b.out_of_memory) {
++      kk_trad_sum(b.data, b.size, sum);
++      blob_write_bytes(&b, sum, sizeof(sum));
++   }
++
++   char path[PATH_MAX], tmp[PATH_MAX + 64];
++   kk_trad_path(path, sizeof(path), dir, key->hash);
++   bool ok = false;
++   if (!b.out_of_memory) {
++      char *slash = strrchr(path, '/');
++      *slash = '\0';
++      if (mkdir(path, 0755) != 0 && errno == ENOENT) {
++         for (char *c = path + 1; *c; c++) {
++            if (*c != '/')
++               continue;
++            *c = '\0';
++            mkdir(path, 0755);
++            *c = '/';
++         }
++         mkdir(path, 0755);
++      }
++      *slash = '/';
++      snprintf(tmp, sizeof(tmp), "%s.%d.%p.tmp", path, (int)getpid(),
++               (void *)pthread_self());
++      int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
++      if (fd >= 0) {
++         ok = write(fd, b.data, b.size) == (ssize_t)b.size;
++         ok = close(fd) == 0 && ok;
++         ok = ok && rename(tmp, path) == 0;
++         if (!ok)
++            unlink(tmp);
++      }
++   }
++   blob_finish(&b);
++   mtl_compile_stat_trad(ok ? 2 : 3, os_time_get_nano() - t0);
++}
+diff --git a/src/kosmickrisp/vulkan/kk_trad_cache.h b/src/kosmickrisp/vulkan/kk_trad_cache.h
+new file mode 100644
+index 0000000..9636f24
+--- /dev/null
++++ b/src/kosmickrisp/vulkan/kk_trad_cache.h
+@@ -0,0 +1,33 @@
++/*
++ * Copyright 2026 Cidre
++ * SPDX-License-Identifier: MIT
++ */
++
++#ifndef KK_TRAD_CACHE_H
++#define KK_TRAD_CACHE_H 1
++
++#include <stdbool.h>
++#include <stdint.h>
++
++#include "util/mesa-blake3.h"
++
++struct nir_shader;
++struct nir_to_msl_options;
++struct msl_compile_data;
++
++struct kk_trad_key {
++   bool valid;
++   uint8_t hash[BLAKE3_OUT_LEN];
++};
++
++void kk_trad_cache_set_codegen_key(const uint8_t *key, unsigned size);
++
++bool kk_trad_cache_lookup(struct nir_shader *nir,
++                          const struct nir_to_msl_options *options,
++                          bool air_wanted, struct kk_trad_key *key,
++                          struct msl_compile_data *data);
++
++void kk_trad_cache_store(const struct kk_trad_key *key,
++                         const struct msl_compile_data *data);
++
++#endif
+diff --git a/src/kosmickrisp/vulkan/meson.build b/src/kosmickrisp/vulkan/meson.build
+index ab14070..7d46d8c 100644
+--- a/src/kosmickrisp/vulkan/meson.build
++++ b/src/kosmickrisp/vulkan/meson.build
+@@ -112,6 +112,8 @@ kk_files = files(
+   'kk_sampler.c',
+   'kk_shader.h',
+   'kk_shader.c',
++  'kk_trad_cache.h',
++  'kk_trad_cache.c',
+   'kk_sync.h',
+   'kk_sync.c',
+   'kk_wsi.h',
