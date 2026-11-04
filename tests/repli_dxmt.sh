@@ -26,9 +26,11 @@ a "d3d11 : dxmt pose" || exit 1
 # deja replie dans ce meme journal (on ne boucle pas)
 a "repli automatique vers dxvk" && exit 1
 # les signatures d'un refus au demarrage. « Failed to create swap chain » seul
-# n'en est PAS une : Expedition 33 l'ecrit des centaines de fois et tourne.
+# n'en est PAS une : Expedition 33 l'ecrit des centaines de fois et tourne. E_NOINTERFACE
+# compte seulement sur une ligne d3d11 (une trace +mfplat en contient partout).
 if a "887A0004" || a "DXGI_ERROR_UNSUPPORTED" || a "Failed to initialize DirectX" \
-   || { a "D3D11CreateDevice" && a "failed"; } || a "E_NOINTERFACE" && a "d3d11"; then
+   || { a "D3D11CreateDevice" && a "failed"; } \
+   || printf '%s\n' "$S" | grep -qiE 'd3d11.*E_NOINTERFACE|E_NOINTERFACE.*d3d11'; then
    sh "$R/tests/profil_cidre.sh" "$JEU" set d3d11 dxvk >/dev/null 2>&1 || exit 1
    echo "    d3d11 : repli automatique vers dxvk pour $JEU (DXMT refuse par le jeu au demarrage) -- cidre set $JEU d3d11 dxmt pour reessayer"
    exit 0

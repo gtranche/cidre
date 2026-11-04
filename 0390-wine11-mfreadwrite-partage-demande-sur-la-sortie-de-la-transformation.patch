@@ -1,0 +1,105 @@
+wine11 : mfreadwrite, echantillons partages quand le client le demande sur la sortie de la derniere transformation (0390)
+
+Unity (WindowsVideoMedia) cree son source reader avec gestionnaire DXGI et traitement video avance, puis
+pose MF_SA_D3D11_SHARED_WITHOUT_MUTEX (USAGE 0, BINDFLAGS 0x208) sur les attributs du flux de sortie de la
+derniere transformation (GetServiceForStream -> IMFTransform -> GetOutputStreamAttributes), apres
+SetCurrentMediaType. Wine recopie la sortie dans les echantillons de l allocateur du lecteur, initialise
+seulement avec les attributs du lecteur : textures non partagees, GetSharedHandle rend NULL (« Got null
+handle from IDXGIResource::GetSharedHandle », 538 fois par session), aucune video affichee (Escape Academy).
+Le lecteur lit maintenant aussi ces attributs et reinitialise son allocateur quand la demande de partage
+change. Banc mfpartage.exe (mode Unity) : 0/30 -> 30/30 poignees ; en jeu (M4, DXMT) 0 poignee nulle et
+videos vues par l utilisateur.
+
+--- a/dlls/mfreadwrite/reader.c	2026-11-04 14:24:45
++++ b/dlls/mfreadwrite/reader.c	2026-11-04 14:24:45
+@@ -99,6 +99,7 @@
+     unsigned int responses;
+     LONGLONG last_sample_ts;
+     struct source_reader *reader;
++    UINT32 allocator_shared; /* cidre 0390 : partage demande a la derniere initialisation de l'allocateur */
+ };
+ 
+ enum source_reader_async_op
+@@ -1237,8 +1238,33 @@
+     }
+ 
+     return response;
++}
++
++/* cidre 0390 : partage demande pour les echantillons rendus par le lecteur. Le client (Unity) peut le demander sur
++ * les attributs du flux de sortie de la derniere transformation (GetServiceForStream + GetOutputStreamAttributes :
++ * MF_SA_D3D11_SHARED_WITHOUT_MUTEX), apres SetCurrentMediaType ; sous Windows ces echantillons lui arrivent tels
++ * quels. Ici le lecteur recopie la sortie dans les echantillons de son propre allocateur, qui ne lisait que ses
++ * attributs a lui : textures non partagees, IDXGIResource::GetSharedHandle rendait NULL (videos Unity noires).
++ * 0 = rien, 1 = MF_SA_D3D11_SHARED, 2 = MF_SA_D3D11_SHARED_WITHOUT_MUTEX. */
++static UINT32 source_reader_stream_shared(const struct source_reader *reader, const struct media_stream *stream)
++{
++    UINT32 shared = 0, shared_without_mutex = 0;
++    IMFAttributes *attributes;
++
++    IMFAttributes_GetUINT32(reader->attributes, &MF_SA_D3D11_SHARED, &shared);
++    IMFAttributes_GetUINT32(reader->attributes, &MF_SA_D3D11_SHARED_WITHOUT_MUTEX, &shared_without_mutex);
++    if (!shared && !shared_without_mutex && stream && stream->transform_service
++            && SUCCEEDED(IMFTransform_GetOutputStreamAttributes(stream->transform_service, 0, &attributes)))
++    {
++        IMFAttributes_GetUINT32(attributes, &MF_SA_D3D11_SHARED, &shared);
++        IMFAttributes_GetUINT32(attributes, &MF_SA_D3D11_SHARED_WITHOUT_MUTEX, &shared_without_mutex);
++        IMFAttributes_Release(attributes);
++    }
++    return shared_without_mutex ? 2 : shared ? 1 : 0;
+ }
+ 
++static HRESULT source_reader_setup_sample_allocator(struct source_reader *reader, unsigned int index);
++
+ static struct stream_response *media_stream_pop_response(struct source_reader *reader, struct media_stream *stream)
+ {
+     struct stream_response *response;
+@@ -1252,6 +1278,14 @@
+ 
+         if (!stream && response->stream_index < reader->stream_count)
+             stream = &reader->streams[response->stream_index];
++
++        if (response->sample && stream->allocator
++                && source_reader_stream_shared(reader, stream) != stream->allocator_shared)
++        {
++            TRACE("cidre 0390 : partage %u demande apres coup, allocateur du flux %u reinitialise.\n",
++                    source_reader_stream_shared(reader, stream), stream->index);
++            source_reader_setup_sample_allocator(reader, stream->index);
++        }
+ 
+         if (response->sample && stream->allocator)
+         {
+@@ -1989,20 +2023,17 @@
+ }
+ 
+ static HRESULT source_reader_create_sample_allocator_attributes(const struct source_reader *reader,
+-        IMFAttributes **attributes)
++        struct media_stream *stream, IMFAttributes **attributes)
+ {
+-    UINT32 shared = 0, shared_without_mutex = 0;
+     HRESULT hr;
+ 
+     if (FAILED(hr = MFCreateAttributes(attributes, 1)))
+         return hr;
+ 
+-    IMFAttributes_GetUINT32(reader->attributes, &MF_SA_D3D11_SHARED, &shared);
+-    IMFAttributes_GetUINT32(reader->attributes, &MF_SA_D3D11_SHARED_WITHOUT_MUTEX, &shared_without_mutex);
+-
+-    if (shared_without_mutex)
++    stream->allocator_shared = source_reader_stream_shared(reader, stream);
++    if (stream->allocator_shared == 2)
+         hr = IMFAttributes_SetUINT32(*attributes, &MF_SA_D3D11_SHARED_WITHOUT_MUTEX, TRUE);
+-    else if (shared)
++    else if (stream->allocator_shared == 1)
+         hr = IMFAttributes_SetUINT32(*attributes, &MF_SA_D3D11_SHARED, TRUE);
+ 
+     return hr;
+@@ -2038,7 +2069,7 @@
+         return hr;
+     }
+ 
+-    if (FAILED(hr = source_reader_create_sample_allocator_attributes(reader, &attributes)))
++    if (FAILED(hr = source_reader_create_sample_allocator_attributes(reader, stream, &attributes)))
+         WARN("Failed to create allocator attributes, hr %#lx.\n", hr);
+ 
+     if (FAILED(hr = IMFVideoSampleAllocatorEx_InitializeSampleAllocatorEx(stream->allocator, 2, 8,
