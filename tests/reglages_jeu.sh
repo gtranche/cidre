@@ -8,6 +8,8 @@
 #   reglages_jeu.sh <appid>
 #   reglages_jeu.sh <appid> nouvelles <ids>         les seules entrees a `id` absent de <ids> (liste a virgules) :
 #                                                   pour un jeu deja marque, une entree ajoutee depuis a la fiche
+#   reglages_jeu.sh <appid> toujours                les seules entrees `toujours = true` : a chaque lancement, meme
+#                                                   sur un jeu deja marque (voir plus bas)
 #   reglages_jeu.sh <appid> temoin                  la valeur du temoin de la fiche (voir plus bas), vide s'il n'y en a pas
 #   reglages_jeu.sh <appid> temoin-change <avant> [voie]   apres la partie : si le temoin ne vaut plus <avant>, retire
 #                                                   le marqueur ; garde sa valeur pour la voie (dxmt, dxvk, d3d12)
@@ -42,6 +44,20 @@
 # premiere ecriture, le fichier est copie en <fichier>.avant-cidre, jamais ecrase.
 # Avec `creer = true` (et une section), un fichier absent dont le dossier existe
 # est cree vide puis rempli : l'Engine.ini d'Unreal, que le jeu n'ecrit pas.
+#
+# `toujours = true` sur une entree : elle est reposee a CHAQUE lancement, pas une
+# seule fois. Pour un jeu qui efface lui-meme une entree de son fichier, a chaque
+# lancement, apres l avoir lue : Demonologist reecrit son Engine.ini sans ses
+# [SystemSettings] des le demarrage (constate sur le M4 le 2026-11-04), et une
+# entree posee une fois ne vaut que pour une partie. Le lanceur appelle
+# `reglages_jeu.sh <appid> toujours` avant chaque partie d un jeu deja marque
+# (sinon l appel complet les pose deja). A ne mettre que sur des cles que le
+# joueur ne regle pas lui-meme dans le jeu : elles y seraient remises.
+#
+# Apres chaque fichier traite, sa copie dans le dossier des sauvegardes de Cidre
+# (saves/<appid>, tests/sync_saves_steam.sh), s il en a une, est mise a jour :
+# sans cela, une copie d avant pourrait etre restauree par-dessus au lancement
+# suivant (Little Nightmares, le 2026-10-20).
 #
 # Le temoin ([reglages_jeu_temoin] de la fiche : fichier INI + cle). Certains
 # jeux refont leur detection du materiel quand la carte graphique vue change
@@ -520,6 +536,7 @@ entree() {
    while IFS= read -r rel; do
       F="$BASE/$rel"
       "poser_$FORMAT" "$rel" </dev/null; r=$?
+      [ $r -eq 0 ] && sh "$R/tests/sync_saves_steam.sh" "$APPID" miroir "$F" </dev/null 2>/dev/null
       [ $r -eq 1 ] && rce=1
       [ $r -eq 3 ] && [ $rce -ne 1 ] && rce=3
    done <"$V.fichiers"
@@ -547,6 +564,9 @@ for n in $(printf '%s\n' "$REGL" | cut -f1 | awk '!vu[$0]++'); do
       id=$(printf '%s\n' "$REGL" | awk -F'\t' -v n="$n" '$1 == n && $2 == "id" { print $3; exit }')
       case ",${3:-}," in *",$id,"*) continue ;; esac
       [ -n "$id" ] || continue
+   fi
+   if [ "${2:-}" = toujours ]; then
+      [ "$(printf '%s\n' "$REGL" | awk -F'\t' -v n="$n" '$1 == n && $2 == "toujours" { print $3; exit }')" = true ] || continue
    fi
    entree "$n"; rc=$?
    # une erreur l emporte ; sinon un « pas maintenant » suffit a reporter le marqueur

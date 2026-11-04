@@ -108,6 +108,38 @@ dx12 = true
 sm66 = true
 arguments = "-dx12"
 
+# Carte de base (M2 et suivants, 10 coeurs GPU au plus) : definition de rendu
+# plafonnee a 731 lignes, TSR du jeu jusqu a la sortie. Seul
+# r.ScreenPercentage.MaxResolution porte (r.ScreenPercentage, sg.ResolutionQuality,
+# -dpcvars, r.FidelityFX.FSR.* : sans effet, le jeu impose 100 %). Un plafond : sans
+# effet en sortie 1280x720 ou moins. Mesure sur l iMac M4 (10 coeurs GPU) le
+# 2026-11-04 au lobby, plein ecran fenetre 2240x1260, pile KK de l integration
+# (vsync coupee), definition interne lue aux grilles de calcul (RejectShading
+# ceil(L/26) x ceil(H/26)) :
+#     natif 2240x1260                                   23,5 img/s
+#     MaxResolution=900  (1600x900, TSR)                35,4 img/s  SSIM 0,9965
+#     MaxResolution=731  (1300x732, TSR)                43,0 img/s  SSIM 0,9950
+#     MaxResolution=630  (1120x632, TSR)                48,6 img/s  SSIM 0,9930
+#     1600x900 exclusif etire par Core Animation        38,1 img/s  SSIM 0,9871
+#     1600x900 + MetalFX spatial (option metalfx)       37,4 img/s  SSIM 0,9845
+# (SSIM contre le natif de meme vue ; natif contre natif 0,9996.) 731 = plus
+# rapide ET plus net que l etirement. Le jeu reecrit son Engine.ini sans
+# [SystemSettings] des le demarrage, apres l avoir lu (constate le 2026-11-04 :
+# fichier reecrit dans la minute du lancement) : l entree est reposee a chaque
+# lancement (toujours = true ; un lanceur qui ne connait pas ce champ, Cidre
+# <= 1.5.19, la pose une fois par son id, et elle ne vaut que pour une partie).
+# Release 1.5.19 (sans la pile KK), vsync du profil : 16,7 img/s a 1300x732.
+[[machine]]
+si = "famille_gpu >= 8 et coeurs_gpu <= 10"
+[[machine.reglages_jeu]]
+id = "tsr-plafond-731"
+fichier = "AppData/Local/Shivers/Saved/Config/Windows/Engine.ini"
+section = "SystemSettings"
+creer = true
+toujours = true
+[machine.reglages_jeu.valeurs]
+"r.ScreenPercentage.MaxResolution" = "731"
+
 [compat]
 etat = "bronze"
 source = "cidre-test"

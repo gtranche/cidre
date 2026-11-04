@@ -11,7 +11,7 @@
 #                                           "jeu_sources":{},"reglages_jeu":[...],"variantes":[...],"compat_reference":{},"compat_machines":[...],
 #                                           "origine":"cache|livree|provisoire","rapports":n} ; "compat" est celle de CETTE machine
 #   fiche_profil.sh reglages <appid>        [reglages_jeu] en lignes TAB, une entree (section INI visee) par numero :
-#                                           `n TAB fichier|format|section|id|creer TAB val`, puis `n TAB valeur TAB cle TAB val`
+#                                           `n TAB fichier|format|section|id|creer|toujours TAB val`, puis `n TAB valeur TAB cle TAB val`
 #   fiche_profil.sh compat <appid>          la compatibilite sur cette machine (`cle TAB valeur`), puis les entrees par
 #                                           famille de Mac : `machines TAB nom TAB voie TAB etat TAB applique`
 #   fiche_profil.sh variantes <appid>       les conditions `si` des blocs [[machine]] qui s'appliquent ici, une par ligne
@@ -250,9 +250,12 @@ fiche_plat() { # <fiche>
          # la meme section INI n en font qu une, la derniere valeur d une cle gagne.
          # Une entree a `id` reste a part (son id avec elle) : posee une fois sur un
          # jeu deja marque, elle ne doit ni perdre son id ni entrainer les autres.
+         # De meme une entree `toujours = true` (reposee a chaque lancement) : fondue
+         # avec une entree posee une fois, elle reposerait aussi les cles de celle-ci.
          for (k = 1; k <= no; k++) {
-            sec = ordre[k]; id = attr[sec, "fichier"] SUBSEP attr[sec, "section"] SUBSEP attr[sec, "id"]
-            if (!(id in parid)) { parid[id] = ++en; ef[en] = attr[sec, "fichier"]; es[en] = attr[sec, "section"]; ei[en] = attr[sec, "id"] }
+            sec = ordre[k]; tj = (attr[sec, "toujours"] == "true")
+            id = attr[sec, "fichier"] SUBSEP attr[sec, "section"] SUBSEP attr[sec, "id"] SUBSEP tj
+            if (!(id in parid)) { parid[id] = ++en; ef[en] = attr[sec, "fichier"]; es[en] = attr[sec, "section"]; ei[en] = attr[sec, "id"]; etj[en] = tj }
             e = parid[id]
             if (attr[sec, "format"] != "") efo[e] = attr[sec, "format"]
             if (attr[sec, "creer"] != "") ecr[e] = attr[sec, "creer"]
@@ -268,6 +271,7 @@ fiche_plat() { # <fiche>
             if (es[e] != "") print "reglages_jeu." e "\tsection\ts\t" es[e]
             if (ei[e] != "") print "reglages_jeu." e "\tid\ts\t" ei[e]
             if (ecr[e] != "") print "reglages_jeu." e "\tcreer\tb\t" ecr[e]
+            if (etj[e]) print "reglages_jeu." e "\ttoujours\tb\ttrue"
             for (k = 1; k <= vn[e]; k++) print "reglages_jeu." e ".valeurs\t" vo[e, k] "\t" vt[e, vo[e, k]] "\t" vv[e, vo[e, k]]
          }
       }' "$B"

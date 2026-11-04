@@ -32,6 +32,12 @@
 #        le jeu (tests/reprendre_saves_bouteille.sh : "etat", "fichiers",
 #        "depuis", "vers", "message"...), ou null.
 #   sync_saves_steam.sh - dossier        le dossier des copies
+#   sync_saves_steam.sh <id> miroir <fichier>   un fichier du prefixe que le lanceur vient de
+#        retoucher (reglages du jeu, tests/reglages_jeu.sh) : s'il a deja sa copie dans le
+#        dossier des copies et qu'elle differe, elle est remplacee (l'ancienne en
+#        .history/reglages-<date>/), date du fichier comprise -- sinon la restauration
+#        suivante reposerait la copie d'avant. Rien en mode Steam, rien si le fichier
+#        n'est pas sous le dossier des sauvegardes du jeu ou n'y a pas encore de copie.
 #
 # Ou sont les sauvegardes d'un jeu : outil-steam/saves.conf (livre), surcharge
 # par ~/Library/Application Support/Cidre/saves.conf (`cidre saves set`).
@@ -59,7 +65,7 @@ reprise() {
 
 # --- Steam synchronise-t-il ce jeu lui-meme ? ---------------------------------
 STEAM_MODE=$(sh "$R/tests/lier_saves_steam.sh" "$APPID" mode 2>/dev/null || true)
-if [ "$STEAM_MODE" = lien ] && [ "$SENS" != etat ]; then
+if [ "$STEAM_MODE" = lien ] && [ "$SENS" != etat ] && [ "$SENS" != miroir ]; then
    # Le lien se pose (ou se verifie) avant chaque lancement et apres : s'il ne
    # peut pas l'etre, la copie Cidre reprend la main.
    sh "$R/tests/lier_saves_steam.sh" "$APPID" lier || STEAM_MODE=
@@ -119,7 +125,7 @@ non_configure() {
 # que les moteurs connus viennent d'ecrire). Trouve : memorise dans le
 # saves.conf de l'utilisateur (`cidre saves unset` l'oublie), pour que Verger
 # n'ait pas a demander.
-if [ -z "$reldir" ]; then
+if [ -z "$reldir" ] && [ "$SENS" != miroir ]; then
    reldir=$(sh "$R/tests/deviner_saves.sh" "$APPID" ${CIDRE_SAVES_DEPUIS:+"$CIDRE_SAVES_DEPUIS"} 2>/dev/null || true)
    if [ -n "$reldir" ]; then
       mkdir -p "$CIDRE_DIR"; touch "$CIDRE_DIR/saves.conf"
@@ -163,7 +169,7 @@ copie() { # <src> <dst> : archive l'ancien dst s'il differe, puis copie
 # Le defaut etait iCloud Drive (CidreSaves) jusqu'a la v1.5.8 : ce qui s'y
 # trouve pour ce jeu est repris une fois dans le nouveau dossier. Rien n'est
 # retire d'iCloud.
-if [ $DEFAUT = oui ] && [ -z "$(ls "$BAK" 2>/dev/null)" ] && [ -d "$ICLOUD/CidreSaves/$APPID" ] && [ "$SENS" != etat ]; then
+if [ $DEFAUT = oui ] && [ -z "$(ls "$BAK" 2>/dev/null)" ] && [ -d "$ICLOUD/CidreSaves/$APPID" ] && [ "$SENS" != etat ] && [ "$SENS" != miroir ]; then
    mkdir -p "$BAK" && cp -Rp "$ICLOUD/CidreSaves/$APPID/." "$BAK/" 2>/dev/null \
       && echo "    saves: copies reprises d'iCloud Drive dans $BAK (celles d'iCloud restent en place)"
 fi
@@ -177,6 +183,15 @@ case "$SENS" in
       done
       echo "    saves: backup $APPID -> $BAK"
       [ -z "$STEAM_ET_COPIE" ] || sh "$R/tests/lier_saves_steam.sh" "$APPID" envoi "${CIDRE_SAVES_DEPUIS:-}" ;;
+   miroir)
+      # un seul fichier, du prefixe vers sa copie existante (jamais l'inverse)
+      loc=${3:-}
+      case $loc in "$SRC"/*) ;; *) exit 0 ;; esac
+      case $loc in *..*) exit 0 ;; esac
+      rel=${loc#$SRC/}; dst="$BAK/$rel"
+      [ -f "$loc" ] && [ -f "$dst" ] || exit 0
+      cmp -s "$loc" "$dst" && exit 0
+      copie "$loc" "$dst" "$BAK/.history/reglages-$TS" "$BAK" && echo "    saves: copie de $rel mise a jour (reglages du jeu)" ;;
    restore)
       [ -d "$BAK" ] || exit 0
       # Steam d'abord : un dossier du prefixe qui est un lien pose par

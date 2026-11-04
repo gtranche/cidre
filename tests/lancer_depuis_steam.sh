@@ -1237,6 +1237,8 @@ fi
 # redetectee une fois, 0141) atteint aussi un jeu deja marque : les `id` poses
 # sont gardes dans reglages_jeu_ids, et une entree a `id` nouveau est posee une
 # fois, sans reposer les autres.
+# Une entree `toujours = true` est reposee a chaque lancement, meme sur un jeu
+# deja marque : pour une cle que le jeu efface lui-meme apres l'avoir lue.
 # Le temoin de la fiche depend aussi de l'API graphique (Expedition 33 : la carte
 # vue n'est pas la meme en DXMT, en DXVK et en D3D12) : celui que le jeu a ecrit
 # lors d'une partie dans cette voie est garde dans le profil, et remis avant le
@@ -1246,7 +1248,8 @@ VOIE_TEMOIN=$D3D11
 [ "$(opt dx12 CIDRE_DX12)" = true ] && VOIE_TEMOIN=d3d12
 [ -z "$JEU" ] || sh "$R/tests/reglages_jeu.sh" "$JEU" temoin-remettre "$VOIE_TEMOIN" >>"$JOURNAL" 2>&1 || true
 if [ -n "$JEU" ]; then
-   IDS_FICHE=$(sh "$R/tests/fiche_profil.sh" reglages "$JEU" 2>/dev/null | awk -F'\t' '$2 == "id" && !vu[$3]++ { printf "%s%s", (n++ ? "," : ""), $3 }')
+   REGL_FICHE=$(sh "$R/tests/fiche_profil.sh" reglages "$JEU" 2>/dev/null || true)
+   IDS_FICHE=$(printf '%s\n' "$REGL_FICHE" | awk -F'\t' '$2 == "id" && !vu[$3]++ { printf "%s%s", (n++ ? "," : ""), $3 }')
    if [ "$(profil reglages_jeu_appliques)" != true ]; then
       sh "$R/tests/reglages_jeu.sh" "$JEU" >>"$JOURNAL" 2>&1 && RCR=0 || RCR=$?
       if [ "$RCR" -eq 0 ]; then
@@ -1254,15 +1257,24 @@ if [ -n "$JEU" ]; then
             && echo "    reglages du jeu : notes comme appliques (cidre unset $JEU reglages_jeu_appliques pour les reposer)" >>"$JOURNAL" || true
          [ -z "$IDS_FICHE" ] || sh "$R/tests/profil_cidre.sh" "$JEU" set reglages_jeu_ids "\"$IDS_FICHE\"" >>"$JOURNAL" 2>&1 || true
       fi
-   elif [ -n "$IDS_FICHE" ]; then
-      IDS_FAITS=$(profil reglages_jeu_ids)
-      NOUVEAUX=$(awk -v f="$IDS_FICHE" -v d="$IDS_FAITS" 'BEGIN { n = split(f, a, ","); for (i = 1; i <= n; i++) if (index("," d ",", "," a[i] ",") == 0) print a[i] }')
-      if [ -n "$NOUVEAUX" ]; then
-         sh "$R/tests/reglages_jeu.sh" "$JEU" nouvelles "$IDS_FAITS" >>"$JOURNAL" 2>&1 && RCR=0 || RCR=$?
-         if [ "$RCR" -eq 0 ]; then
-            sh "$R/tests/profil_cidre.sh" "$JEU" set reglages_jeu_ids "\"$IDS_FICHE\"" >>"$JOURNAL" 2>&1 \
-               && echo "    reglages du jeu : nouvelles entrees de la fiche posees ($(echo $NOUVEAUX))" >>"$JOURNAL" || true
+   else
+      if [ -n "$IDS_FICHE" ]; then
+         IDS_FAITS=$(profil reglages_jeu_ids)
+         NOUVEAUX=$(awk -v f="$IDS_FICHE" -v d="$IDS_FAITS" 'BEGIN { n = split(f, a, ","); for (i = 1; i <= n; i++) if (index("," d ",", "," a[i] ",") == 0) print a[i] }')
+         if [ -n "$NOUVEAUX" ]; then
+            sh "$R/tests/reglages_jeu.sh" "$JEU" nouvelles "$IDS_FAITS" >>"$JOURNAL" 2>&1 && RCR=0 || RCR=$?
+            if [ "$RCR" -eq 0 ]; then
+               sh "$R/tests/profil_cidre.sh" "$JEU" set reglages_jeu_ids "\"$IDS_FICHE\"" >>"$JOURNAL" 2>&1 \
+                  && echo "    reglages du jeu : nouvelles entrees de la fiche posees ($(echo $NOUVEAUX))" >>"$JOURNAL" || true
+            fi
          fi
+      fi
+      # Les entrees `toujours = true` : reposees a chaque lancement, marqueur ou
+      # non -- le jeu efface lui-meme ces cles (Demonologist reecrit son
+      # Engine.ini sans [SystemSettings] des le demarrage). Rien a faire si la
+      # fiche n'en a pas.
+      if printf '%s\n' "$REGL_FICHE" | awk -F'\t' '$2 == "toujours" && $3 == "true" { t = 1 } END { exit !t }'; then
+         sh "$R/tests/reglages_jeu.sh" "$JEU" toujours >>"$JOURNAL" 2>&1 || true
       fi
    fi
 fi

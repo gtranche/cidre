@@ -358,6 +358,51 @@ printf '[reglages_jeu]\nfichier = "AppData/Local/Jeu/Config/Engine.ini"\ncreer =
 verif "creer sans section : code 1, rien cree" "1 " "$(sh "$R/tests/reglages_jeu.sh" 999 >/dev/null; echo $?) $(ls "$U/AppData/Local/Jeu/Config/" | grep Engine)"
 printf '[[machine]]\nsi = "coeurs_gpu >= 1"\n[[machine.reglages_jeu]]\nfichier = "AppData/Local/Jeu/Config/Engine.ini"\nsection = "SystemSettings"\ncreer = true\n[machine.reglages_jeu.valeurs]\n"k" = "v"\n' >"$CIDRE_PROFILS_BASE/999.toml"
 verif "creer : garde a la fusion d un bloc [[machine]]" "true" "$(sh "$R/tests/fiche_profil.sh" reglages 999 | awk -F'\t' '$2 == "creer" { print $3 }')"
+# toujours = true : reposee a chaque lancement (appel `toujours`), les autres entrees non ; le jeu efface
+# l entree (Demonologist reecrit son Engine.ini sans [SystemSettings]) : l appel suivant la repose
+E="$U/AppData/Local/Jeu/Config/Engine.ini"
+printf '[Core.Log]\r\nLogX=Verbose\r\n' >"$E"; rm -f "$E.avant-cidre"
+cp "$INI" "$T/ini-avant-toujours"
+cat >"$CIDRE_PROFILS_BASE/999.toml" <<'FICHE'
+[[reglages_jeu]]
+fichier = "AppData/Local/Jeu/Config/GameUserSettings.ini"
+section = "ScalabilityGroups"
+valeurs = { "sg.ShadowQuality" = "0" }
+[[machine]]
+si = "coeurs_gpu >= 1"
+[[machine.reglages_jeu]]
+id = "plafond"
+fichier = "AppData/Local/Jeu/Config/Engine.ini"
+section = "SystemSettings"
+creer = true
+toujours = true
+valeurs = { "r.ScreenPercentage.MaxResolution" = "731" }
+FICHE
+verif "toujours : garde a la fusion d un bloc [[machine]]" "2 true" "$(sh "$R/tests/fiche_profil.sh" reglages 999 | awk -F'\t' '$2 == "toujours" { print $1, $3 }')"
+sortie=$(sh "$R/tests/reglages_jeu.sh" 999 toujours); rc=$?
+verif "toujours : code 0" "0" "$rc"
+verif "toujours : l entree toujours posee" "[Core.Log] LogX=Verbose [SystemSettings] r.ScreenPercentage.MaxResolution=731" "$(tr -d '\r' <"$E" | grep -v '^$' | tr '\n' ' ' | sed 's/ $//')"
+verif "toujours : les autres entrees laissees" "" "$(cmp "$INI" "$T/ini-avant-toujours" 2>&1)"
+printf '[Core.Log]\r\nLogX=Verbose\r\n' >"$E"
+sh "$R/tests/reglages_jeu.sh" 999 toujours >/dev/null
+verif "toujours : effacee par le jeu, reposee au lancement suivant" "r.ScreenPercentage.MaxResolution=731" "$(tr -d '\r' <"$E" | grep MaxResolution)"
+verif "toujours : sauvegarde d origine gardee" "[Core.Log] LogX=Verbose" "$(tr -d '\r' <"$E.avant-cidre" | tr '\n' ' ' | sed 's/ $//')"
+# une entree toujours et une entree posee une fois sur le meme fichier et la meme section restent a part
+printf '[[reglages_jeu]]\nfichier = "x.ini"\nsection = "S"\nvaleurs = { a = "1" }\n[[reglages_jeu]]\nfichier = "x.ini"\nsection = "S"\ntoujours = true\nvaleurs = { b = "2" }\n[[machine]]\nsi = "coeurs_gpu >= 1"\n[[machine.reglages_jeu]]\nfichier = "x.ini"\nsection = "S"\nvaleurs = { c = "3" }\n' >"$CIDRE_PROFILS_BASE/998.toml"
+verif "toujours : pas fondue avec une entree posee une fois" "1:a=1,c=3 2:b=2" "$(sh "$R/tests/fiche_profil.sh" reglages 998 | awk -F'\t' '$2 == "valeur" { v[$1] = v[$1] (v[$1] == "" ? "" : ",") $3 "=" $4 } END { print "1:" v[1], "2:" v[2] }')"
+rm -f "$CIDRE_PROFILS_BASE/998.toml"
+# la copie de Cidre (saves/<appid>) d un fichier retouche est mise a jour, l ancienne gardee en .history
+mkdir -p "$T/copies/999" "$CIDRE_DIR"; printf '999\tAppData/Local/Jeu/Config\n' >"$CIDRE_DIR/saves.conf"
+printf '[Core.Log]\r\nLogX=Verbose\r\n' >"$T/copies/999/Engine.ini"; touch -t 202601010000 "$T/copies/999/Engine.ini"
+printf '[Core.Log]\r\nLogX=Verbose\r\n' >"$E"
+sortie=$(CIDRE_SAVES_DIR="$T/copies" sh "$R/tests/reglages_jeu.sh" 999 toujours)
+verif "toujours : copie de Cidre mise a jour" "" "$(cmp "$E" "$T/copies/999/Engine.ini" 2>&1)"
+verif "toujours : copie de Cidre a la date du fichier (pas restauree par-dessus)" "" "$([ "$E" -nt "$T/copies/999/Engine.ini" ] || [ "$T/copies/999/Engine.ini" -nt "$E" ] && echo dates differentes)"
+verif "toujours : ancienne copie dans .history" "1" "$(ls "$T/copies/999/.history/"reglages-*/Engine.ini 2>/dev/null | wc -l | tr -d ' ')"
+verif "toujours : journal de la copie" "mise a jour" "$(printf '%s' "$sortie" | grep -o 'mise a jour' | head -1)"
+CIDRE_SAVES_DIR="$T/copies" sh "$R/tests/reglages_jeu.sh" 999 toujours >/dev/null
+verif "toujours : copie deja a jour, pas de nouvel historique" "1" "$(ls -d "$T/copies/999/.history/"reglages-* 2>/dev/null | wc -l | tr -d ' ')"
+rm -rf "$T/copies" "$CIDRE_DIR/saves.conf" "$E" "$E.avant-cidre"; rmdir "$CIDRE_DIR" 2>/dev/null
 verif "jeu sans reglages : code 3" "3" "$(sh "$R/tests/reglages_jeu.sh" 998 >/dev/null; echo $?)"
 verif "chemin hors du dossier utilisateur refuse" "1" "$(printf '[reglages_jeu]\nfichier = "../../windows/x.ini"\nvaleurs = { "k" = "v" }\n' >"$CIDRE_PROFILS_BASE/999.toml"; sh "$R/tests/reglages_jeu.sh" 999 >/dev/null; echo $?)"
 

@@ -533,6 +533,29 @@ les pose, une fois :
   `id` (`id = "resolution-edid"`) : le lanceur garde les `id` posés dans
   `reglages_jeu_ids` et pose une fois, même sur un jeu déjà marqué, les seules
   entrées dont l'`id` est nouveau, sans reposer les autres.
+- `toujours = true` sur une entrée : elle est reposée à **chaque** lancement,
+  même sur un jeu déjà marqué. Pour une clé que le jeu efface lui-même après
+  l'avoir lue : Demonologist réécrit son `Engine.ini` sans ses
+  `[SystemSettings]` dès le démarrage, et une entrée posée une fois ne vaut que
+  pour une partie. À ne mettre que sur des clés que le joueur ne règle pas dans
+  le jeu (elles y seraient remises). Une telle entrée n'est jamais fondue avec
+  une entrée posée une fois qui vise le même fichier et la même section. Un
+  runtime qui ne connaît pas ce champ (Cidre ≤ 1.5.19) la traite comme les
+  autres : posée une fois (par son `id` sur un jeu déjà marqué).
+
+  ```toml
+  [[machine.reglages_jeu]]
+  id = "tsr-plafond-731"
+  fichier = "AppData/Local/Shivers/Saved/Config/Windows/Engine.ini"
+  section = "SystemSettings"
+  creer = true
+  toujours = true
+  valeurs = { "r.ScreenPercentage.MaxResolution" = "731" }
+  ```
+- Un fichier retouché qui a sa copie dans le dossier des sauvegardes de Cidre
+  (`saves/<appid>`, quand Cidre copie lui-même les sauvegardes du jeu) voit
+  cette copie mise à jour (l'ancienne dans `.history/reglages-<date>/`) : sinon
+  la restauration du lancement suivant pourrait reposer la copie d'avant.
 - Une ligne de journal dit ce qui a été fait (`cidre log <appid>`).
 - Le témoin (`[reglages_jeu_temoin]`, optionnel : `fichier` INI et `cle`).
   Certains jeux refont leur détection du matériel quand la carte graphique
