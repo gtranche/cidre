@@ -26,6 +26,10 @@ drm = "pcgamingwiki 2026-10-11"
 
 [cidre]
 dx12 = true
+# Options KosmicKrisp mesurees par le lanceur de l'integration (M4, 2240x1260
+# plein ecran fenetre, menu, 4+4 entrelacees, image identique) : 47,2 -> 49,0
+# img/s (+3,7 %), devant dans les 4 paires (04/11).
+code_kk = "ssbo_sans_bornes ssbo_nul_puits reductions_simd min_lod_txf_libre sans_attachement_borne horodatages_cpu sans_tampon_vide fences_utiles atomiques_nulles_sans_branche couches_sans_test mul_sans_garde ecritures_groupees demi_precision"
 
 # Resolution redetectee une fois. Au premier lancement (ResolutionSizeX/Y a 0),
 # Unreal prend la definition native du moniteur dans son EDID ; avant le
