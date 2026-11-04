@@ -1,0 +1,25 @@
+diff --git a/dlls/winemac.drv/cocoa_window.m b/dlls/winemac.drv/cocoa_window.m
+--- a/dlls/winemac.drv/cocoa_window.m
++++ b/dlls/winemac.drv/cocoa_window.m
+@@ -882,7 +882,20 @@
+         if (subview == _metalView)
+         {
+             _metalView = nil;
+-            dispatch_async(dispatch_get_main_queue(), ^{ [(WineWindow*)self.window cidreUpdateDirect]; });
++            /* cidre 0381 : jamais self.window dans le bloc (pointeur non retenu, pendant si la fenetre est detruite avant
++             * l'execution du bloc, ex. a la sortie du jeu : SIGSEGV sur le fil principal Cocoa, puis OnMainThread du fil
++             * qui detruit la chaine Metal attend sans fin). On ne garde que l'adresse et on ne rappelle que si la fenetre
++             * figure encore parmi celles de NSApp. */
++            void* fenetre = self.window;
++            if (fenetre)
++                dispatch_async(dispatch_get_main_queue(), ^{
++                    for (NSWindow* w in [NSApp windows])
++                        if ((void*)w == fenetre && [w isKindOfClass:[WineWindow class]])
++                        {
++                            [(WineWindow*)w cidreUpdateDirect];
++                            break;
++                        }
++                });
+         }
+         [super willRemoveSubview:subview];
+     }
