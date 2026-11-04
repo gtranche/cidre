@@ -1,0 +1,209 @@
+wine11 : winemac, position du serveur recalee sur le pointeur quand une fenetre devient cle (0391)
+
+Cocoa n envoie aucun mouseMoved tant que la souris ne bouge pas. Une fenetre de jeu qui apparait sous un
+pointeur immobile laissait la position du curseur du serveur Wine a 0,0 (Escape Academy, M4 : « pointer at
+(1185,880) server pos 0,0 » pendant tout le menu), alors que GetCursorPos rend le pointeur reel : deux
+positions pour le jeu (WM_MOUSEMOVE, survol, hit-test au coin haut-gauche ; GetCursorPos au pointeur).
+Symptome rapporte : souris pas au bon endroit, selection du menu qui bouge toute seule. Un MOUSE_MOVED_ABSOLUTE
+est poste a windowDidBecomeKey et windowDidEnterFullScreen si le pointeur est dans la fenetre et hors de la
+capture 0122/0205 (equivalent de EnterNotify sous X11). CIDRE_SYNC_POINTEUR=0 coupe. A appliquer apres 0381.
+
+--- c/dlls/winemac.drv/cocoa_window.m	2026-11-04 14:24:45
++++ d/dlls/winemac.drv/cocoa_window.m	2026-11-04 14:24:45
+@@ -1363,7 +1363,7 @@
+                                forWindow:self];
+ 
+         event = macdrv_create_event(WINDOW_DID_UNMINIMIZE, self);
+-        [queue postEvent:event];
++        [self.queue postEvent:event];
+         macdrv_release_event(event);
+     }
+ 
+@@ -2289,7 +2289,7 @@
+         if ((cgevent = [theEvent CGEvent]))
+             controller.keyboardType = CGEventGetIntegerValueField(cgevent, kCGKeyboardEventKeyboardType);
+ 
+-        [queue postEvent:event];
++        [self.queue postEvent:event];
+ 
+         macdrv_release_event(event);
+ 
+@@ -2333,7 +2333,7 @@
+     - (void) postBroughtForwardEvent
+     {
+         macdrv_event* event = macdrv_create_event(WINDOW_BROUGHT_FORWARD, self);
+-        [queue postEvent:event];
++        [self.queue postEvent:event];
+         macdrv_release_event(event);
+     }
+ 
+@@ -2358,7 +2358,7 @@
+         event->window_frame_changed.fullscreen = isFullscreen;
+         event->window_frame_changed.in_resize = resizing;
+         event->window_frame_changed.skip_size_move_loop = skipSizeMove;
+-        [queue postEvent:event];
++        [self.queue postEvent:event];
+         macdrv_release_event(event);
+     }
+ 
+@@ -2374,7 +2374,7 @@
+             if (draggingPhase == 3)
+             {
+                 macdrv_event* event = macdrv_create_event(WINDOW_DRAG_END, self);
+-                [queue postEvent:event];
++                [self.queue postEvent:event];
+                 macdrv_release_event(event);
+             }
+ 
+@@ -2576,7 +2576,7 @@
+     - (id) _displayChanged
+     {
+         macdrv_event* event = macdrv_create_event(REASSERT_WINDOW_POSITION, self);
+-        [queue postEvent:event];
++        [self.queue postEvent:event];
+         macdrv_release_event(event);
+ 
+         return [super _displayChanged];
+@@ -2695,7 +2695,7 @@
+                     event = macdrv_create_event(WINDOW_RESTORE_REQUESTED, self);
+                     event->window_restore_requested.keep_frame = true;
+                     event->window_restore_requested.frame = cgrect_win_from_mac(NSRectToCGRect(frame));
+-                    [queue postEvent:event];
++                    [self.queue postEvent:event];
+                     macdrv_release_event(event);
+ 
+                     draggingPhase = 2;
+@@ -2722,7 +2722,7 @@
+         }
+ 
+         macdrv_event* event = macdrv_create_event(WINDOW_MINIMIZE_REQUESTED, self);
+-        [queue postEvent:event];
++        [self.queue postEvent:event];
+         macdrv_release_event(event);
+ 
+         WineWindow* parent = (WineWindow*)self.parentWindow;
+@@ -3029,6 +3029,36 @@
+         return proposedOptions;
+     }
+ 
++    /* cidre 0391 : position du serveur Wine recalee sur le pointeur quand la fenetre devient cle ou entre
++     * dans son espace plein ecran. Cocoa n'envoie aucun mouseMoved tant que la souris ne bouge pas : une
++     * fenetre de jeu qui apparait sous un pointeur immobile laissait la position du serveur a 0,0 (relevee
++     * dans Escape Academy : « pointer at (1185,880) server pos 0,0 » pendant tout le menu) alors que
++     * GetCursorPos rend le pointeur reel. Le jeu voyait deux positions (survol, WM_MOUSEMOVE, hit-test au
++     * coin haut-gauche ; GetCursorPos au pointeur) : souris « pas au bon endroit », selection du menu qui
++     * saute toute seule. Sous X11, EnterNotify fait ce recalage. Rien sous la capture du curseur (0122/0205 :
++     * mouvements relatifs seulement) ni si le pointeur est hors de la fenetre. CIDRE_SYNC_POINTEUR=0 coupe. */
++    - (void) cidrePostPointerPosition
++    {
++        WineApplicationController* controller = [WineApplicationController sharedController];
++        NSPoint loc = [NSEvent mouseLocation];
++        const char* env = getenv("CIDRE_SYNC_POINTEUR");
++        macdrv_event* event;
++        CGPoint pt;
++
++        if (env && *env == '0') return;
++        if (![self isVisible] || !NSMouseInRect(loc, [self frame], NO)) return;
++        if ([[controller valueForKey:@"cidreCursorCaptured"] boolValue]) return;
++
++        pt = cgpoint_win_from_mac(NSPointToCGPoint([controller flippedMouseLocation:loc]));
++        event = macdrv_create_event(MOUSE_MOVED_ABSOLUTE, self);
++        event->mouse_moved.x = floor(pt.x);
++        event->mouse_moved.y = floor(pt.y);
++        event->mouse_moved.time_ms = [controller ticksForEventTime:[[NSProcessInfo processInfo] systemUptime]];
++        event->mouse_moved.drag = FALSE;
++        [self.queue postEvent:event];
++        macdrv_release_event(event);
++    }
++
+     - (void)windowDidBecomeKey:(NSNotification *)notification
+     {
+         WineApplicationController* controller = [WineApplicationController sharedController];
+@@ -3045,6 +3075,7 @@
+         if (causing_becomeKeyWindow == self) return;
+ 
+         [controller windowGotFocus:self];
++        [self cidrePostPointerPosition];
+     }
+ 
+     - (void)windowDidDeminiaturize:(NSNotification *)notification
+@@ -3080,7 +3111,7 @@
+         if (!maximized)
+         {
+             macdrv_event* event = macdrv_create_event(WINDOW_RESIZE_ENDED, self);
+-            [queue postEvent:event];
++            [self.queue postEvent:event];
+             macdrv_release_event(event);
+         }
+     }
+@@ -3096,6 +3127,8 @@
+             [[WineApplicationController sharedController] adjustWindowLevels];
+         [self cidreUpdateDirect];
+         [[WineApplicationController sharedController] cidreUpdateCursorCapture];
++        if ([self isKeyWindow])
++            [self cidrePostPointerPosition];
+         if (pendingOrderOut)
+             [self doOrderOut];
+     }
+@@ -3137,7 +3170,7 @@
+             [[WineApplicationController sharedController] updateFullscreenWindows];
+ 
+         event = macdrv_create_event(WINDOW_DID_MINIMIZE, self);
+-        [queue postEvent:event];
++        [self.queue postEvent:event];
+         macdrv_release_event(event);
+     }
+ 
+@@ -3156,7 +3189,7 @@
+         if (causing_becomeKeyWindow) return;
+ 
+         event = macdrv_create_event(WINDOW_LOST_FOCUS, self);
+-        [queue postEvent:event];
++        [self.queue postEvent:event];
+         macdrv_release_event(event);
+     }
+ 
+@@ -3211,7 +3244,7 @@
+     - (BOOL)windowShouldClose:(id)sender
+     {
+         macdrv_event* event = macdrv_create_event(WINDOW_CLOSE_REQUESTED, self);
+-        [queue postEvent:event];
++        [self.queue postEvent:event];
+         macdrv_release_event(event);
+         return NO;
+     }
+@@ -3221,14 +3254,14 @@
+         if (maximized)
+         {
+             macdrv_event* event = macdrv_create_event(WINDOW_RESTORE_REQUESTED, self);
+-            [queue postEvent:event];
++            [self.queue postEvent:event];
+             macdrv_release_event(event);
+             return NO;
+         }
+         else if (!resizable)
+         {
+             macdrv_event* event = macdrv_create_event(WINDOW_MAXIMIZE_REQUESTED, self);
+-            [queue postEvent:event];
++            [self.queue postEvent:event];
+             macdrv_release_event(event);
+             return NO;
+         }
+@@ -3330,7 +3363,7 @@
+             event = macdrv_create_event(WINDOW_RESTORE_REQUESTED, self);
+             event->window_restore_requested.keep_frame = true;
+             event->window_restore_requested.frame = cgrect_win_from_mac(NSRectToCGRect(frame));
+-            [queue postEvent:event];
++            [self.queue postEvent:event];
+             macdrv_release_event(event);
+         }
+         else
+@@ -3399,7 +3432,7 @@
+     - (void) pasteboardChangedOwner:(NSPasteboard*)sender
+     {
+         macdrv_event* event = macdrv_create_event(LOST_PASTEBOARD_OWNERSHIP, self);
+-        [queue postEvent:event];
++        [self.queue postEvent:event];
+         macdrv_release_event(event);
+     }
+ 
