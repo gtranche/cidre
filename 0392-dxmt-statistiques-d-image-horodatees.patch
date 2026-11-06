@@ -1,0 +1,38 @@
+--- a/src/d3d11/d3d11_swapchain.cpp
++++ b/src/d3d11/d3d11_swapchain.cpp
+@@ -716,13 +716,25 @@
+   HRESULT
+   STDMETHODCALLTYPE
+   GetFrameStatistics(DXGI_FRAME_STATISTICS *stats) final {
+-    DEBUG("DXGISwapChain::GetFrameStatistics: stub");
++    /* cidre 0392 : SyncQPCTime restait a 0. Unity (2020.2+, vsync active) calcule son temps d'image a partir
++     * des statistiques DXGI : avec un horodatage nul, deltaTime/unscaledDeltaTime deviennent faux et la
++     * repetition de navigation de l'interface s'emballe (Escape Academy : selection du menu qui defile toute
++     * seule, s'arrete en coupant la vsync du jeu). Comme DXVK : compte de presentations et instant QPC
++     * courant ; DISJOINT au premier appel. */
++    if (!stats)
++      return E_INVALIDARG;
+     std::unique_lock<d3d11_device_mutex> lock(device_->mutex);
++    LARGE_INTEGER now;
++    QueryPerformanceCounter(&now);
+     stats->PresentCount = presentation_count_;
+     stats->SyncRefreshCount = presentation_count_;
+     stats->PresentRefreshCount = presentation_count_;
+     stats->SyncGPUTime = {};
+-    stats->SyncQPCTime = {};
++    stats->SyncQPCTime = now;
++    if (!frame_statistics_queried_) {
++      frame_statistics_queried_ = true;
++      return DXGI_ERROR_FRAME_STATISTICS_DISJOINT;
++    }
+     return S_OK;
+   };
+ 
+@@ -1404,6 +1416,7 @@
+   WMT::Object native_view_;
+   WMT::MetalLayer layer_weak_;
+   ULONG presentation_count_;
++  bool frame_statistics_queried_ = false; /* cidre 0392 */
+   DXGI_SWAP_CHAIN_DESC1 desc_;
+   DXGI_SWAP_CHAIN_FULLSCREEN_DESC fullscreen_desc_;
+   D3D11_TEXTURE2D_DESC1 backbuffer_desc_;
