@@ -192,6 +192,13 @@ for f in $(find "$IPS" -maxdepth 2 -name '*.ips' -mtime -7 2>/dev/null | xargs l
    esac
    cp "$f" "$B/plantages/$(basename "$f")" && n_ips=$((n_ips + 1))
 done
+# Rapports de redemarrage du GPU (0411) : macOS les ecrit dans le dossier du
+# systeme puis les range dans Retired/ ; le motif (« BIF0 page fault », delai...)
+# n'est que la. Sept jours, trois au plus, ceux de wine.
+GPUEV=${CIDRE_DIAG_GPUEVENT:-/Library/Logs/DiagnosticReports}
+for f in $(find "$GPUEV" -maxdepth 2 -name 'gpuEvent-wine*.ips' -mtime -7 2>/dev/null | xargs ls -t 2>/dev/null | head -3); do
+   cp "$f" "$B/plantages/$(basename "$f")" 2>/dev/null
+done
 
 # --- Systeme ----------------------------------------------------------------
 if [ "${CIDRE_DIAG_SANS_SYSTEME:-}" != 1 ]; then

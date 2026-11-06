@@ -1,0 +1,210 @@
+Generated-by: LLM
+
+KosmicKrisp : anneaux des derniers pipelines Metal crees et lies, vides a la premiere erreur GPU
+
+Suite de 0410. Rapport CIDRE-BN58-GF : Metal compilait encore des pipelines
+pour le jeu 15 s avant la faute de page (attaque d'un fantome, effets rares),
+mais rien ne disait lesquels ni lesquels etaient lies au moment de la faute.
+
+- creations (64 dernieres) : pipeline, sorte (c calcul, r rendu), trouve en
+  archive ou compile, heure, cle de bibliotheque et point d'entree du VS/FS ou
+  du CS (comme MESA_KK_RECOLTE) ; ecrit dans mtl_new_compute_pipeline_state et
+  mtl_new_render_pipeline, cout seulement a la creation ;
+- liaisons (256 dernieres) : poignee et heure de chaque
+  set{Compute,Render}PipelineState (avant le relais 0385), a l'encodage :
+  un fetch_add relache et trois ecritures ;
+- mtl_anneau_vider, appele par kk_journal_perte a la premiere erreur : les 32
+  dernieres creations puis les 48 derniers pipelines lies distincts, plus
+  recents d'abord, avec l'age en ms et, s'il a ete cree recemment, ses
+  fonctions. Lignes « [CIDRE_PERTE] cree » et « [CIDRE_PERTE] lie ».
+Sans verrou (best-effort : une entree peut etre a moitie ecrite au vidage).
+Les liaisons sont celles de l'encodage, pas de l'execution GPU : le pipeline
+fautif est parmi les plus recents, le tampon en faute ayant ete encode peu
+avant. Rien n'est ecrit hors d'une erreur.
+
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.h b/src/kosmickrisp/bridge/mtl_compiler.h
+index 123b6cd..0086fa1 100644
+--- a/src/kosmickrisp/bridge/mtl_compiler.h
++++ b/src/kosmickrisp/bridge/mtl_compiler.h
+@@ -32,6 +32,10 @@ mtl_new_library_air(mtl_compiler *compiler, const char *src, const void *air,
+                     enum mtl_math_floating_point_functions math_fp_fns);
+ bool mtl_library_is_air_direct(mtl_library *library);
+ void *mtl_pipeline_relais(void *pipeline);
++/* Cidre (0412) : anneaux des derniers pipelines Metal crees et lies, vides sur
++ * stderr par mtl_anneau_vider() a la premiere erreur GPU (kk_journal_perte). */
++void mtl_anneau_lien(void *pipeline, char sorte);
++void mtl_anneau_vider(void);
+ void mtl_compile_stat_gen(uint64_t air_ns, uint64_t msl_ns, bool air_fail);
+ void mtl_compile_stat_air_repli(void);
+ void mtl_compile_stat_trad(unsigned kind, uint64_t ns);
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.m b/src/kosmickrisp/bridge/mtl_compiler.m
+index d6bd5cd..7d035ef 100644
+--- a/src/kosmickrisp/bridge/mtl_compiler.m
++++ b/src/kosmickrisp/bridge/mtl_compiler.m
+@@ -469,6 +469,116 @@ - (void)dealloc
+    }
+ }
+ 
++/* Cidre (0412) : anneaux de pipelines pour la perte du peripherique.
++ * - creations (64) : pipeline, sorte (c calcul, r rendu), trouve en archive ou
++ *   compile, heure, cle de bibliotheque et point d'entree de chaque fonction ;
++ * - liaisons (256) : pipeline et heure de chaque set*PipelineState, a
++ *   l'encodage (cout : un fetch_add relache et trois ecritures).
++ * Best-effort sans verrou : une entree peut etre a moitie ecrite au vidage. */
++#define KK_ANNEAU_CREA 64u
++#define KK_ANNEAU_LIEN 256u
++struct kk_anneau_crea {
++   uint64_t t;
++   void *p;
++   char sorte, archive;
++   char vs[96], fs[96];
++};
++struct kk_anneau_lien {
++   uint64_t t;
++   void *p;
++   char sorte;
++};
++static struct kk_anneau_crea kk_anneau_crea[KK_ANNEAU_CREA];
++static struct kk_anneau_lien kk_anneau_lien[KK_ANNEAU_LIEN];
++static _Atomic uint32_t kk_anneau_crea_n, kk_anneau_lien_n;
++
++static uint64_t
++kk_anneau_t(void)
++{
++   return clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
++}
++
++static void
++kk_anneau_nom(char *dst, size_t n, MTL4FunctionDescriptor *fd)
++{
++   dst[0] = 0;
++   if (fd == nil || ![fd isKindOfClass:[MTL4LibraryFunctionDescriptor class]])
++      return;
++   MTL4LibraryFunctionDescriptor *lfd = (MTL4LibraryFunctionDescriptor *)fd;
++   NSString *key = objc_getAssociatedObject(lfd.library, kk_lib_key_key);
++   snprintf(dst, n, "%s/%s", key ? key.UTF8String : "?",
++            lfd.name ? lfd.name.UTF8String : "?");
++}
++
++static void
++kk_anneau_creation(void *p, char sorte, bool archive, MTL4FunctionDescriptor *vs,
++                   MTL4FunctionDescriptor *fs)
++{
++   if (p == NULL)
++      return;
++   uint32_t i = atomic_fetch_add_explicit(&kk_anneau_crea_n, 1, memory_order_relaxed);
++   struct kk_anneau_crea *e = &kk_anneau_crea[i % KK_ANNEAU_CREA];
++   e->p = NULL;
++   e->t = kk_anneau_t();
++   e->sorte = sorte;
++   e->archive = archive;
++   kk_anneau_nom(e->vs, sizeof(e->vs), vs);
++   kk_anneau_nom(e->fs, sizeof(e->fs), fs);
++   e->p = p;
++}
++
++void
++mtl_anneau_lien(void *p, char sorte)
++{
++   uint32_t i = atomic_fetch_add_explicit(&kk_anneau_lien_n, 1, memory_order_relaxed);
++   struct kk_anneau_lien *e = &kk_anneau_lien[i % KK_ANNEAU_LIEN];
++   e->t = kk_anneau_t();
++   e->p = p;
++   e->sorte = sorte;
++}
++
++static const struct kk_anneau_crea *
++kk_anneau_cherche(void *p)
++{
++   for (uint32_t k = 0; k < KK_ANNEAU_CREA; k++)
++      if (kk_anneau_crea[k].p == p)
++         return &kk_anneau_crea[k];
++   return NULL;
++}
++
++void
++mtl_anneau_vider(void)
++{
++   uint64_t now = kk_anneau_t();
++   uint32_t nc = atomic_load(&kk_anneau_crea_n), nl = atomic_load(&kk_anneau_lien_n);
++   fprintf(stderr, "[CIDRE_PERTE] pipelines : %u crees depuis le debut, %u liaisons ; "
++                   "les plus recents d'abord (age en ms)\n", nc, nl);
++   uint32_t m = nc < KK_ANNEAU_CREA ? nc : KK_ANNEAU_CREA;
++   for (uint32_t k = 0; k < m && k < 32u; k++) {
++      const struct kk_anneau_crea *e = &kk_anneau_crea[(nc - 1u - k) % KK_ANNEAU_CREA];
++      fprintf(stderr, "[CIDRE_PERTE] cree  -%9.1f %c %p %s vs=%s fs=%s\n",
++              (now - e->t) / 1e6, e->sorte, e->p, e->archive ? "archive" : "compile",
++              e->vs, e->fs);
++   }
++   m = nl < KK_ANNEAU_LIEN ? nl : KK_ANNEAU_LIEN;
++   void *vus[48];
++   uint32_t nv = 0;
++   for (uint32_t k = 0; k < m && nv < 48u; k++) {
++      const struct kk_anneau_lien *e = &kk_anneau_lien[(nl - 1u - k) % KK_ANNEAU_LIEN];
++      bool deja = false;
++      for (uint32_t j = 0; j < nv; j++)
++         deja |= vus[j] == e->p;
++      if (deja)
++         continue;
++      vus[nv++] = e->p;
++      const struct kk_anneau_crea *c = kk_anneau_cherche(e->p);
++      fprintf(stderr, "[CIDRE_PERTE] lie   -%9.1f %c %p%s%s%s%s\n", (now - e->t) / 1e6,
++              e->sorte, e->p, c ? " (cree recemment) vs=" : "", c ? c->vs : "",
++              c ? " fs=" : "", c ? c->fs : "");
++   }
++   fflush(stderr);
++}
++
+ void *
+ mtl_pipeline_relais(void *pipeline)
+ {
+@@ -1143,6 +1253,7 @@ precompile des milliers de pipelines au demarrage (Detroit:
+             kk_compile_unlock();
+          }
+       }
++      kk_anneau_creation(pipeline, 'c', cached, desc.computeFunctionDescriptor, nil);
+       if (pipeline == nil) {
+          fprintf(stderr, "Failed to create MTLComputePipelineState: %s\n", [error.localizedDescription UTF8String]);
+       } else if (kk_env_dir("MESA_KK_RECOLTE")) {
+@@ -1346,6 +1457,8 @@ precompile des milliers de pipelines au demarrage (Detroit:
+             kk_compile_unlock();
+          }
+       }
++      kk_anneau_creation(pipeline, 'r', cached, desc.vertexFunctionDescriptor,
++                         desc.fragmentFunctionDescriptor);
+       if (pipeline == nil) {
+          fprintf(stderr, "Failed to create MTLRenderPipelineState: %s\n", [error.localizedDescription UTF8String]);
+       } else if (kk_env_dir("MESA_KK_RECOLTE")) {
+diff --git a/src/kosmickrisp/bridge/mtl_encoder.m b/src/kosmickrisp/bridge/mtl_encoder.m
+index e280b4f..e5712d5 100644
+--- a/src/kosmickrisp/bridge/mtl_encoder.m
++++ b/src/kosmickrisp/bridge/mtl_encoder.m
+@@ -306,6 +306,7 @@
+ {
+    @autoreleasepool {
+       id<MTL4ComputeCommandEncoder> enc = (id<MTL4ComputeCommandEncoder>)encoder;
++      mtl_anneau_lien(state_handle, 'c');
+       id<MTLComputePipelineState> state =
+          (id<MTLComputePipelineState>)mtl_pipeline_relais(state_handle);
+       [enc setComputePipelineState:state];
+@@ -394,6 +395,7 @@
+ {
+    @autoreleasepool {
+       id<MTL4RenderCommandEncoder> enc = (id<MTL4RenderCommandEncoder>)encoder;
++      mtl_anneau_lien(pipeline, 'r');
+       id<MTLRenderPipelineState> pipe =
+          (id<MTLRenderPipelineState>)mtl_pipeline_relais(pipeline);
+       [enc setRenderPipelineState:pipe];
+diff --git a/src/kosmickrisp/vulkan/kk_queue.c b/src/kosmickrisp/vulkan/kk_queue.c
+index df1471f..572c333 100644
+--- a/src/kosmickrisp/vulkan/kk_queue.c
++++ b/src/kosmickrisp/vulkan/kk_queue.c
+@@ -153,6 +153,8 @@ kk_journal_perte(const char *quoi, const char *fmt, ...)
+    va_end(ap);
+    fprintf(stderr, "[CIDRE_PERTE] #%u (+%.3f s) %s : %s\n", n,
+            (t - kk_perte_t0) / 1e9, quoi, msg);
++   if (n == 1u)
++      mtl_anneau_vider();
+    if (n == 1u)
+       fprintf(stderr, "[CIDRE_PERTE] la cause materielle est dans le rapport "
+                       "systeme gpuEvent-*.ips de cette heure-ci "

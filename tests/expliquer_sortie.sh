@@ -136,6 +136,18 @@ if a "EasyAntiCheat" || a "BattlEye" || printf '%s\n' "$S" | grep -qE 'anticheat
    exit 0
 fi
 
+# Perte du peripherique Vulkan (0410/0411) : KK ecrit [CIDRE_PERTE] ; vkd3d,
+# lui, « vr -4 » (VK_ERROR_DEVICE_LOST) a chaque attente qui suit.
+if a "[CIDRE_PERTE]" || a "vr -4" || a "VK_ERROR_DEVICE_LOST"; then
+   motif=$(ligne "[CIDRE_PERTE] #1")
+   GE=${CIDRE_DIAG_GPUEVENT:-/Library/Logs/DiagnosticReports}
+   gpuev=$(ls -t "$GE"/gpuEvent-wine*.ips "$GE"/Retired/gpuEvent-wine*.ips 2>/dev/null | head -1)
+   raison=$( [ -n "$gpuev" ] && grep -o '"restart_reason_desc":"[^"]*"' "$gpuev" 2>/dev/null | cut -d'"' -f4)
+   dire "la carte graphique a signale une erreur et Vulkan a perdu le peripherique (VK_ERROR_DEVICE_LOST)${raison:+ ; macOS : « $raison »}${motif:+ ; $motif}" \
+        "c'est un defaut de Cidre : « Partager mon resultat » dans Verger tout de suite (le rapport gpuEvent de macOS est joint) ; relancer le jeu"
+   exit 0
+fi
+
 if a "GPU Timeout" || a "kIOGPUCommandBufferCallbackErrorTimeout" || a "victim of GPU error"; then
    dire "la carte graphique a abandonne une image (depassement de temps GPU) et le jeu ne s'en est pas remis" \
         "relancer ; si cela se repete, baisser les reglages graphiques du jeu ou la resolution"

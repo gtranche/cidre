@@ -105,6 +105,16 @@ absent "anticheat=none n'est pas un anti-triche" "anti-triche" "$r"
 r=$(expliquer 1 "$(journal '    profil  : moteur=unreal anticheat=eac etat=bronze')")
 contient "anticheat=eac en est un" "anti-triche" "$r"
 
+echo "== perte du peripherique Vulkan (0410/0411)"
+mkdir -p "$T/gpuev/Retired"
+printf '%s\n%s\n' '{"bug_type":"284"}' '{"analysis":{"restart_reason_desc":"BIF0 page fault"}}' >"$T/gpuev/Retired/gpuEvent-wine-2026-11-04-220945.ips"
+r=$(CIDRE_DIAG_GPUEVENT="$T/gpuev" expliquer 3 "$(journal '2063421.638:0108:01f4:err:vkd3d-proton:vkd3d_wait_for_gpu_timeline_semaphore: Failed to wait for Vulkan timeline semaphore, vr -4.')")
+contient "vr -4 : perte" "perdu le peripherique" "$r"
+contient "motif du gpuEvent" "BIF0 page fault" "$r"
+r=$(CIDRE_DIAG_GPUEVENT="$T/vide" expliquer 3 "$(journal '[CIDRE_PERTE] #1 (+0.000 s) erreur de tampon Metal : MTL_COMMAND_QUEUE_ERROR_AUTRE (domaine X, code 8)')")
+contient "[CIDRE_PERTE] : perte" "perdu le peripherique" "$r"
+contient "ligne KK citee" "MTL_COMMAND_QUEUE_ERROR_AUTRE" "$r"
+
 echo "== arret demande par cidre stop"
 L="$CIDRE_JOURNAUX"
 touch "$L/arret-demande-1"

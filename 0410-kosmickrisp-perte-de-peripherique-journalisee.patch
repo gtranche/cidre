@@ -1,0 +1,197 @@
+Generated-by: LLM
+
+KosmicKrisp : l'erreur GPU de Metal et la perte du peripherique ecrites au journal (CIDRE_PERTE)
+
+Rapport CIDRE-BN58-GF (Demonologist, M4, 1.5.22) : apres 51 min de partie,
+vkd3d « Failed to wait for Vulkan timeline semaphore, vr -4 » en rafale puis
+code 3, sans une ligne de KK. Cause : vk_device_set_lost passe par vk_log, muet
+dans un Mesa de release (MESA_VK_LOG=0, pas de rappel debug_utils). Le journal
+systeme montrait pourtant IOGPUMetalError x3 et un rapport
+/Library/Logs/DiagnosticReports/Retired/gpuEvent-wine-2026-11-04-220945.ips
+(restart_reason « BIF0 page fault », lecture).
+
+- le rappel de commit MTL4 rend aussi le domaine, le code et le userInfo de
+  NSError ; un code hors de MTL4CommandQueueErrorDomain (faute de page,
+  victime innocente...) devient MTL_COMMAND_QUEUE_ERROR_AUTRE au lieu d'etre
+  pris tel quel dans l'enum ;
+- mtl_command_queue_error_to_string ne fait plus UNREACHABLE sur un code
+  inconnu (comportement indefini en release, appele sur le chemin de perte) ;
+- kk_journal_perte : « [CIDRE_PERTE] #n (+t s) <quoi> : <erreur> » sur stderr,
+  toujours (8 premieres en clair, puis un compte a 16/64/256), avec renvoi au
+  rapport gpuEvent ; appele par check_device_lost (erreur de tampon Metal) et
+  par l'attente de requete de 2 s (« query timeout »).
+Rien ne change hors du chemin d'erreur.
+
+diff --color -ru a/src/kosmickrisp/bridge/mtl_command_queue.m b/src/kosmickrisp/bridge/mtl_command_queue.m
+--- a/src/kosmickrisp/bridge/mtl_command_queue.m	2026-11-06 11:38:21
++++ b/src/kosmickrisp/bridge/mtl_command_queue.m	2026-11-06 11:39:11
+@@ -31,15 +31,27 @@
+       [opt addFeedbackHandler:^(id<MTL4CommitFeedback> feedback) {
+          @autoreleasepool {
+             NSError *error = feedback.error;
++            enum mtl_command_queue_error code = MTL_COMMAND_QUEUE_ERROR_NONE;
++            if (error) {
++               code = MTL_COMMAND_QUEUE_ERROR_AUTRE;
++               if ([error.domain isEqualToString:MTL4CommandQueueErrorDomain] &&
++                   error.code >= MTL_COMMAND_QUEUE_ERROR_TIMEOUT &&
++                   error.code <= MTL_COMMAND_QUEUE_ERROR_INTERNAL &&
++                   error.code != 4)
++                  code = (enum mtl_command_queue_error)error.code;
++            }
+             struct mtl_feedback_data feedback_data = (struct mtl_feedback_data){
+                .user_data = data,
+                .error_message =
+                   error ? error.localizedDescription.UTF8String : NULL,
+                .gpu_start = feedback.GPUStartTime,
+                .gpu_end = feedback.GPUEndTime,
+-               .error = error
+-                           ? (enum mtl_command_queue_error)error.code
+-                           : MTL_COMMAND_QUEUE_ERROR_NONE,
++               .error = code,
++               .error_domain = error ? error.domain.UTF8String : NULL,
++               .error_code = error ? (long)error.code : 0,
++               .error_info = error && error.userInfo.count
++                                ? error.userInfo.description.UTF8String
++                                : NULL,
+             };
+             callback(&feedback_data);
+          }
+diff --color -ru a/src/kosmickrisp/bridge/mtl_types.h b/src/kosmickrisp/bridge/mtl_types.h
+--- a/src/kosmickrisp/bridge/mtl_types.h	2026-11-06 11:38:21
++++ b/src/kosmickrisp/bridge/mtl_types.h	2026-11-06 11:39:11
+@@ -337,6 +337,11 @@
+ 
+    /* Indicates an internal problem in the Metal framework. */
+    MTL_COMMAND_QUEUE_ERROR_INTERNAL = 6,
++
++   /* Cidre (0410) : erreur hors de MTL4CommandQueueErrorDomain ou de code
++    * inconnu (faute de page, victime innocente...) : domaine et code bruts dans
++    * mtl_feedback_data. */
++   MTL_COMMAND_QUEUE_ERROR_AUTRE = 1000,
+ };
+ 
+ enum mtl_math_mode {
+@@ -425,6 +430,10 @@
+    double gpu_start;
+    double gpu_end;
+    enum mtl_command_queue_error error;
++   /* Cidre (0410) : l'erreur telle que Metal la rend (valides le temps du rappel). */
++   const char *error_domain;
++   long error_code;
++   const char *error_info;
+ };
+ 
+ #endif /* KK_MTL_TYPES_H */
+diff --color -ru a/src/kosmickrisp/bridge/vk_to_mtl_map.c b/src/kosmickrisp/bridge/vk_to_mtl_map.c
+--- a/src/kosmickrisp/bridge/vk_to_mtl_map.c	2026-11-06 11:38:21
++++ b/src/kosmickrisp/bridge/vk_to_mtl_map.c	2026-11-06 11:39:11
+@@ -321,7 +321,10 @@
+       return "MTL_COMMAND_QUEUE_ERROR_ACCESS_REVOKED";
+    case MTL_COMMAND_QUEUE_ERROR_INTERNAL:
+       return "MTL_COMMAND_QUEUE_ERROR_INTERNAL";
++   case MTL_COMMAND_QUEUE_ERROR_AUTRE:
++      return "MTL_COMMAND_QUEUE_ERROR_AUTRE";
+    default:
+-      UNREACHABLE("Unsupported error value");
++      /* Cidre (0410) : jamais d'UNREACHABLE sur un code venu de Metal. */
++      return "MTL_COMMAND_QUEUE_ERROR_INCONNUE";
+    }
+ }
+diff --color -ru a/src/kosmickrisp/vulkan/kk_query_pool.c b/src/kosmickrisp/vulkan/kk_query_pool.c
+--- a/src/kosmickrisp/vulkan/kk_query_pool.c	2026-11-06 11:38:21
++++ b/src/kosmickrisp/vulkan/kk_query_pool.c	2026-11-06 11:39:11
+@@ -1184,6 +1184,9 @@
+          return status;
+    }
+ 
++   kk_journal_perte("requete jamais disponible",
++                    "requete %u du pool %p (type %d) non ecrite apres 2 s d'attente CPU",
++                    query, (void *)pool, (int)pool->vk.query_type);
+    return vk_device_set_lost(&dev->vk, "query timeout");
+ }
+ 
+diff --color -ru a/src/kosmickrisp/vulkan/kk_queue.c b/src/kosmickrisp/vulkan/kk_queue.c
+--- a/src/kosmickrisp/vulkan/kk_queue.c	2026-11-06 11:38:21
++++ b/src/kosmickrisp/vulkan/kk_queue.c	2026-11-06 11:39:11
+@@ -27,6 +27,7 @@
+ #include "util/u_atomic.h"
+ #include "util/simple_mtx.h"
+ #include <alloca.h>
++#include <stdarg.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -122,10 +123,61 @@
+    util_dynarray_append(&queue->free_cmd_buffers, &cmd->vk);
+ }
+ 
++/* Cidre (0410) : vk_device_set_lost ne journalise rien dans un KK de release
++ * (vk_log muet sans MESA_DEBUG ni rappel debug_utils) : le jeu ne voyait que
++ * VK_ERROR_DEVICE_LOST (vkd3d « vr -4 »). On ecrit donc toujours l'erreur de
++ * Metal sur stderr (journal du jeu), les 8 premieres en clair puis un compte.
++ * La cause materielle (faute de page, delai...) est dans le rapport systeme
++ * gpuEvent-<processus>-<date>.ips (/Library/Logs/DiagnosticReports[/Retired]),
++ * que le diagnostic de Cidre recopie (0411). */
++static uint32_t kk_pertes_vues;
++static uint64_t kk_perte_t0;
++
++void
++kk_journal_perte(const char *quoi, const char *fmt, ...)
++{
++   uint32_t n = p_atomic_inc_return(&kk_pertes_vues);
++   if (n > 8u) {
++      if (n == 16u || n == 64u || n == 256u)
++         fprintf(stderr, "[CIDRE_PERTE] %u erreurs GPU depuis la premiere\n", n);
++      return;
++   }
++   uint64_t t = os_time_get_nano();
++   if (n == 1u)
++      kk_perte_t0 = t;
++   char msg[2048];
++   va_list ap;
++   va_start(ap, fmt);
++   vsnprintf(msg, sizeof(msg), fmt, ap);
++   va_end(ap);
++   fprintf(stderr, "[CIDRE_PERTE] #%u (+%.3f s) %s : %s\n", n,
++           (t - kk_perte_t0) / 1e9, quoi, msg);
++   if (n == 1u)
++      fprintf(stderr, "[CIDRE_PERTE] la cause materielle est dans le rapport "
++                      "systeme gpuEvent-*.ips de cette heure-ci "
++                      "(/Library/Logs/DiagnosticReports et Retired/)\n");
++   fflush(stderr);
++}
++
+ static void
+ check_device_lost(struct kk_device *dev, struct mtl_feedback_data *data)
+ {
+    if (data->error != MTL_COMMAND_QUEUE_ERROR_NONE) {
++      char info[1024] = "";
++      if (data->error_info) {
++         /* une ligne : le userInfo de NSError est sur plusieurs */
++         size_t j = 0;
++         for (const char *c = data->error_info; *c && j + 1 < sizeof(info); c++)
++            info[j++] = (*c == '\n' || *c == '\r') ? ' ' : *c;
++         info[j] = 0;
++      }
++      kk_journal_perte("erreur de tampon Metal",
++                       "%s (domaine %s, code %ld) \"%s\" ; GPU %.6f -> %.6f ; %s",
++                       mtl_command_queue_error_to_string(data->error),
++                       data->error_domain ? data->error_domain : "?",
++                       data->error_code,
++                       data->error_message ? data->error_message : "",
++                       data->gpu_start, data->gpu_end, info);
+       vk_device_set_lost(
+          &dev->vk, "Command queue error: %s, with message \"%s\"",
+          mtl_command_queue_error_to_string(data->error), data->error_message);
+diff --color -ru a/src/kosmickrisp/vulkan/kk_queue.h b/src/kosmickrisp/vulkan/kk_queue.h
+--- a/src/kosmickrisp/vulkan/kk_queue.h	2026-11-06 11:39:22
++++ b/src/kosmickrisp/vulkan/kk_queue.h	2026-11-06 11:39:22
+@@ -60,4 +60,8 @@
+ 
+ void kk_queue_finish(struct kk_device *dev, struct kk_queue *queue);
+ 
++/* Cidre (0410) : erreur GPU ou perte ecrite sur stderr meme en release. */
++void kk_journal_perte(const char *quoi, const char *fmt, ...)
++   __attribute__((format(printf, 2, 3)));
++
+ #endif
