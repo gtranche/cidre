@@ -88,6 +88,14 @@ envoyer)
    [ -n "$A" ] || { echo "usage: envoyer_diag.sh envoyer <archive> [--json]" >&2; exit 2; }
    [ -f "$A" ] && [ -r "$A" ] || echec 6 archive "Archive introuvable : $A"
    [ $configure = true ] || echec 3 non_configure "Le service de diagnostic n'est pas configure sur ce Mac : envoie l'archive a la main ($A)."
+   # Garde-fou : un agent de developpement (environnement CLAUDE_* / ANTHROPIC_*) n'envoie
+   # rien au vrai service ; seule une adresse locale (127.0.0.1, localhost) reste permise,
+   # pour les tests. CIDRE_DIAG_FORCER=1 leve la garde (envoi voulu par l'utilisateur).
+   case $URL in http://127.0.0.1*|http://localhost*) ;; *)
+      if [ "${CIDRE_DIAG_FORCER:-}" != 1 ] && env | grep -qE '^(CLAUDE|ANTHROPIC)[A-Z_]*='; then
+         echec 7 refuse_dev "Envoi refuse : lance depuis un agent de developpement (CIDRE_DIAG_FORCER=1 pour forcer)."
+      fi ;;
+   esac
    case $A in *.tar.zst) FORMAT=tar.zst ;; *.tar.gz) FORMAT=tar.gz ;; *) FORMAT=autre ;; esac
    T=$(mktemp -d) || exit 1
    trap 'rm -rf "$T"' EXIT
