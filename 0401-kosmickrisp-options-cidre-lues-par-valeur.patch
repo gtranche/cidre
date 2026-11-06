@@ -1,0 +1,735 @@
+Generated-by: LLM
+
+KosmicKrisp : options CIDRE_* booleennes lues par leur valeur (« 0 » ou vide =
+coupee) au lieu de getenv() != NULL ; la cle de code (0208) suit la meme lecture
+
+Avant : la plupart des options se lisaient par presence. CIDRE_X=0 les laissait
+ACTIVES, et la cle pipelineCacheUUID (0208, options_codegen) hachait aussi la
+seule presence : un essai « option a 0 » gardait le code et les caches de
+l'option active. partie_d4.sh pose chaque option avec ${VAR:-1} : les essais
+« tout coupe » sur Diablo IV (04/11) ne coupaient rien.
+
+Apres : util/cidre_env.h, cidre_env_actif(nom) = posee, non vide et != « 0 ».
+Avec VAR=1 (ou toute autre valeur non nulle), comportement et cle inchanges ;
+avec VAR=0 ou VAR=, l'option est coupee et la cle est celle de l'option absente.
+CIDRE_DEMI_PRECISION (deja lue sur « 1... ») entre dans la cle par cette meme
+regle. Les options a valeur (chemins, nombres, listes) ne changent pas.
+
+Options concernees : AIR_DEBUG, AIR_DUMP (test seul), AIR_DUMP_LL,
+ATOMIQUES_64, ATOMIQUES_64_EMULEES, ATOMIQUES_NULLES_SANS_BRANCHE, CACHE_BRUT,
+CBV_SANS_BORNES, CLE_CACHE_DIAG, COMPILE_HORS_VERROU, CONTRACTION_MALGRE_PRECIS,
+COUCHES_SANS_TEST, DERIVEES_CALCUL, DEROULER, DESCRIPTEURS_CONSTANT,
+DIAG_OCCLUSION, DISPATCH_TRACE (activation), ENC_STATS, FENCES_UTILES,
+FUSION_SANS_SAUT, FUSION_STATS, FUSION_ZONES, GPU_STATS, HORODATAGES_PRECIS,
+IMAGES_NULLES_SANS_BRANCHE, LECTURES_CACHEES, LECTURES_VECTORISEES,
+MIN_LOD_TXF_LIBRE, MINMAX_ZERO_ENTIER, MUL_SANS_GARDE, PASS_STATS,
+REDUCTIONS_SIMD, REPRISES_STATS, SANS_ATTACHEMENT_BORNE, SANS_ATTACHEMENT_STATS,
+SOUM_STATS, SSBO_NUL_PUITS, SSBO_SANS_BORNES, STRIP_SANS_DEROULE, TESS_PHASES,
+TEX_STATS, TEXTURES_NULLES_SANS_BRANCHE, W10_SANS_COURT_CIRCUIT, WSI_STATS ;
+dans la cle : toutes celles d'options_codegen.
+
+Base : integration ea07be9 (avec 0385/0386).
+
+diff --color -ruN --exclude=*.o a/src/kosmickrisp/bridge/mtl_compiler.m src/kosmickrisp/bridge/mtl_compiler.m
+--- a/src/kosmickrisp/bridge/mtl_compiler.m	2026-11-04 13:34:53
++++ b/src/kosmickrisp/bridge/mtl_compiler.m	2026-11-06 10:07:28
+@@ -25,6 +25,7 @@
+ #include <string.h>
+ #include <time.h>
+ #include <unistd.h>
++#include "util/cidre_env.h"
+ 
+ static const void *kk_archives_key = &kk_archives_key;
+ 
+@@ -1013,7 +1014,7 @@
+             atomic_fetch_add(&kk_stat_airdirect_ns, kk_now_ns() - t0);
+          if (lib == nil) {
+             atomic_fetch_add(&kk_stat_airdirect_fallback, 1);
+-            if (getenv("CIDRE_AIR_DEBUG"))
++            if (cidre_env_actif("CIDRE_AIR_DEBUG"))
+                fprintf(stderr, "CIDRE_AIR: newLibraryWithData failed: %s\n",
+                        [error.localizedDescription UTF8String]);
+             return mtl_new_library(compiler, src, msl_version, math_mode, math_fp_fns);
+@@ -1074,7 +1075,7 @@
+    n.library = lib;
+    [lib release];
+    atomic_fetch_add(&kk_stat_airdirect_pipe_fallback, 1);
+-   if (getenv("CIDRE_AIR_DEBUG"))
++   if (cidre_env_actif("CIDRE_AIR_DEBUG"))
+       fprintf(stderr, "CIDRE_AIR: pipeline refuse, repli MSL\n");
+    return n;
+ }
+diff --color -ruN --exclude=*.o a/src/kosmickrisp/compiler/msl_nir_lower_common.c src/kosmickrisp/compiler/msl_nir_lower_common.c
+--- a/src/kosmickrisp/compiler/msl_nir_lower_common.c	2026-11-03 18:45:49
++++ b/src/kosmickrisp/compiler/msl_nir_lower_common.c	2026-11-06 10:07:28
+@@ -13,6 +13,7 @@
+ #include "nir_builtin_builder.h"
+ 
+ #include "util/format/u_format.h"
++#include "util/cidre_env.h"
+ 
+ bool
+ msl_nir_vs_remove_point_size_write(nir_builder *b, nir_intrinsic_instr *intrin,
+@@ -210,7 +211,7 @@
+ 
+    static int sans_test = -1;
+    if (sans_test < 0)
+-      sans_test = getenv("CIDRE_COUCHES_SANS_TEST") != NULL;
++      sans_test = cidre_env_actif("CIDRE_COUCHES_SANS_TEST");
+    if (sans_test)
+       return false;
+ 
+diff --color -ruN --exclude=*.o a/src/kosmickrisp/compiler/msl_nir_lower_subgroups.c src/kosmickrisp/compiler/msl_nir_lower_subgroups.c
+--- a/src/kosmickrisp/compiler/msl_nir_lower_subgroups.c	2026-10-26 20:55:23
++++ b/src/kosmickrisp/compiler/msl_nir_lower_subgroups.c	2026-11-06 10:07:28
+@@ -10,6 +10,7 @@
+ #include "msl_private.h"
+ #include "nir.h"
+ #include "nir_builder.h"
++#include "util/cidre_env.h"
+ 
+ static bool
+ needs_bool_widening(nir_intrinsic_instr *intrin)
+@@ -58,7 +59,7 @@
+ {
+    static int enabled = -1;
+    if (enabled < 0)
+-      enabled = getenv("CIDRE_REDUCTIONS_SIMD") != NULL;
++      enabled = cidre_env_actif("CIDRE_REDUCTIONS_SIMD");
+    return enabled;
+ }
+ 
+diff --color -ruN --exclude=*.o a/src/kosmickrisp/compiler/nir_to_air.cpp src/kosmickrisp/compiler/nir_to_air.cpp
+--- a/src/kosmickrisp/compiler/nir_to_air.cpp	2026-10-26 20:55:23
++++ b/src/kosmickrisp/compiler/nir_to_air.cpp	2026-11-06 10:07:45
+@@ -27,6 +27,7 @@
+ #include "nir_builder.h"
+ #include "nir_to_air.h"
+ #include "util/u_math.h"
++#include "util/cidre_env.h"
+ 
+ #define MSL_MAX_SAMPLERS 4096
+ enum { MSL_ACCESS_SAMPLE = 0, MSL_ACCESS_READ, MSL_ACCESS_WRITE, MSL_ACCESS_READ_WRITE };
+diff --color -ruN --exclude=*.o a/src/kosmickrisp/compiler/nir_to_air_emit.inc src/kosmickrisp/compiler/nir_to_air_emit.inc
+--- a/src/kosmickrisp/compiler/nir_to_air_emit.inc	2026-10-30 20:18:09
++++ b/src/kosmickrisp/compiler/nir_to_air_emit.inc	2026-11-06 10:07:38
+@@ -308,7 +308,7 @@
+     * vkd3d ignore, l'operation garde les drapeaux relaches/rapides. */
+    static int malgre = -1;
+    if (malgre < 0)
+-      malgre = getenv("CIDRE_CONTRACTION_MALGRE_PRECIS") != NULL;
++      malgre = cidre_env_actif("CIDRE_CONTRACTION_MALGRE_PRECIS");
+    if ((ctrl & (nir_fp_no_contract | nir_fp_no_reassoc)) && !malgre)
+       return FP_SAFE;
+    if (ctrl & (nir_fp_preserve_inf | nir_fp_preserve_nan | nir_fp_preserve_signed_zero))
+diff --color -ruN --exclude=*.o a/src/kosmickrisp/compiler/nir_to_msl.c src/kosmickrisp/compiler/nir_to_msl.c
+--- a/src/kosmickrisp/compiler/nir_to_msl.c	2026-11-03 18:45:49
++++ b/src/kosmickrisp/compiler/nir_to_msl.c	2026-11-06 10:07:28
+@@ -8,6 +8,7 @@
+ #include "msl_private.h"
+ #include "nir.h"
+ #include "nir_builder.h"
++#include "util/cidre_env.h"
+ 
+ static const char *
+ get_stage_string(mesa_shader_stage stage)
+@@ -302,7 +303,7 @@
+ {
+    static int enabled = -1;
+    if (enabled < 0)
+-      enabled = getenv("CIDRE_W10_SANS_COURT_CIRCUIT") != NULL;
++      enabled = cidre_env_actif("CIDRE_W10_SANS_COURT_CIRCUIT");
+    return enabled;
+ }
+ 
+@@ -318,7 +319,7 @@
+ {
+    static int enabled = -1;
+    if (enabled < 0)
+-      enabled = getenv("CIDRE_MUL_SANS_GARDE") != NULL;
++      enabled = cidre_env_actif("CIDRE_MUL_SANS_GARDE");
+    return enabled;
+ }
+ 
+@@ -327,7 +328,7 @@
+ {
+    static int enabled = -1;
+    if (enabled < 0)
+-      enabled = getenv("CIDRE_CONTRACTION_MALGRE_PRECIS") != NULL;
++      enabled = cidre_env_actif("CIDRE_CONTRACTION_MALGRE_PRECIS");
+    return enabled;
+ }
+ 
+@@ -336,7 +337,7 @@
+ {
+    static int enabled = -1;
+    if (enabled < 0)
+-      enabled = getenv("CIDRE_MINMAX_ZERO_ENTIER") != NULL;
++      enabled = cidre_env_actif("CIDRE_MINMAX_ZERO_ENTIER");
+    return enabled;
+ }
+ 
+@@ -1199,7 +1200,7 @@
+ {
+    static int enabled = -1;
+    if (enabled < 0)
+-      enabled = getenv("CIDRE_LECTURES_CACHEES") != NULL;
++      enabled = cidre_env_actif("CIDRE_LECTURES_CACHEES");
+    return enabled;
+ }
+ 
+@@ -1208,7 +1209,7 @@
+ {
+    static int enabled = -1;
+    if (enabled < 0)
+-      enabled = getenv("CIDRE_DESCRIPTEURS_CONSTANT") != NULL;
++      enabled = cidre_env_actif("CIDRE_DESCRIPTEURS_CONSTANT");
+    return enabled;
+ }
+ 
+@@ -2451,7 +2452,7 @@
+ {
+    static int enabled = -1;
+    if (enabled < 0)
+-      enabled = getenv("CIDRE_LECTURES_VECTORISEES") != NULL;
++      enabled = cidre_env_actif("CIDRE_LECTURES_VECTORISEES");
+    return enabled;
+ }
+ 
+@@ -2460,7 +2461,7 @@
+ {
+    static int enabled = -1;
+    if (enabled < 0)
+-      enabled = getenv("CIDRE_DEROULER") != NULL;
++      enabled = cidre_env_actif("CIDRE_DEROULER");
+    return enabled;
+ }
+ 
+@@ -2836,7 +2837,7 @@
+    emit_output_return(&ctx, shader);
+    ctx.indentlevel--;
+    P(&ctx, "}\n");
+-   if (shader->info.stage == MESA_SHADER_FRAGMENT && getenv("CIDRE_TEX_STATS")) {
++   if (shader->info.stage == MESA_SHADER_FRAGMENT && cidre_env_actif("CIDRE_TEX_STATS")) {
+       unsigned tex_handles = 0, samples = 0;
+       nir_foreach_block(block, impl) {
+          nir_foreach_instr(instr, block) {
+diff --color -ruN --exclude=*.o a/src/kosmickrisp/vulkan/kk_cmd_buffer.c src/kosmickrisp/vulkan/kk_cmd_buffer.c
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c	2026-11-03 18:45:49
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c	2026-11-06 10:07:28
+@@ -174,6 +174,7 @@
+ #include "vk_common_entrypoints.h"
+ #include "vk_format.h"
+ #include "vk_pipeline_layout.h"
++#include "util/cidre_env.h"
+ 
+ static void
+ kk_descriptor_state_fini(struct kk_cmd_buffer *cmd,
+@@ -726,7 +727,7 @@
+ {
+    static int enabled = -1;
+    if (enabled < 0)
+-      enabled = getenv("CIDRE_PASS_STATS") != NULL;
++      enabled = cidre_env_actif("CIDRE_PASS_STATS");
+    return enabled;
+ }
+ 
+@@ -880,7 +881,7 @@
+ {
+    static int on = -1;
+    if (on < 0)
+-      on = getenv("CIDRE_TESS_PHASES") != NULL;
++      on = cidre_env_actif("CIDRE_TESS_PHASES");
+    return on;
+ }
+ 
+@@ -1058,7 +1059,7 @@
+    static double zone, retenu;
+    static simple_mtx_t lock = SIMPLE_MTX_INITIALIZER;
+    if (on < 0)
+-      on = getenv("CIDRE_SANS_ATTACHEMENT_STATS") != NULL;
++      on = cidre_env_actif("CIDRE_SANS_ATTACHEMENT_STATS");
+    if (!on)
+       return;
+    const VkRect2D *a = &cmd->state.gfx.render.area;
+@@ -1203,7 +1204,7 @@
+ {
+    static int enabled = -1;
+    if (enabled < 0)
+-      enabled = getenv("CIDRE_REPRISES_STATS") != NULL;
++      enabled = cidre_env_actif("CIDRE_REPRISES_STATS");
+    return enabled;
+ }
+ 
+@@ -1264,7 +1265,7 @@
+ {
+    static int enabled = -1;
+    if (enabled < 0)
+-      enabled = getenv("CIDRE_ENC_STATS") != NULL;
++      enabled = cidre_env_actif("CIDRE_ENC_STATS");
+    return enabled;
+ }
+ 
+@@ -1597,7 +1598,7 @@
+ {
+    static int enabled = -1;
+    if (enabled < 0)
+-      enabled = getenv("CIDRE_DISPATCH_TRACE") != NULL;
++      enabled = cidre_env_actif("CIDRE_DISPATCH_TRACE");
+    return enabled;
+ }
+ 
+diff --color -ruN --exclude=*.o a/src/kosmickrisp/vulkan/kk_cmd_draw.c src/kosmickrisp/vulkan/kk_cmd_draw.c
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c	2026-11-02 19:56:45
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c	2026-11-06 10:07:28
+@@ -33,6 +33,7 @@
+ 
+ #include "vulkan/runtime/vk_render_pass.h"
+ #include "vulkan/util/vk_format.h"
++#include "util/cidre_env.h"
+ 
+ static void
+ kk_cmd_buffer_dirty_render_pass(struct kk_cmd_buffer *cmd)
+@@ -810,7 +811,7 @@
+ {
+    static int on = -1;
+    if (on < 0)
+-      on = getenv("CIDRE_SANS_ATTACHEMENT_BORNE") != NULL;
++      on = cidre_env_actif("CIDRE_SANS_ATTACHEMENT_BORNE");
+    return on;
+ }
+ 
+@@ -2104,7 +2105,7 @@
+     * reutilisation des sommets). Elden Ring : ~55 dessins par image. */
+    static int strip_sans_deroule = -1;
+    if (strip_sans_deroule < 0)
+-      strip_sans_deroule = getenv("CIDRE_STRIP_SANS_DEROULE") != NULL;
++      strip_sans_deroule = cidre_env_actif("CIDRE_STRIP_SANS_DEROULE");
+ 
+    switch (data->prim) {
+    case MESA_PRIM_LINE_STRIP:
+diff --color -ruN --exclude=*.o a/src/kosmickrisp/vulkan/kk_device.c src/kosmickrisp/vulkan/kk_device.c
+--- a/src/kosmickrisp/vulkan/kk_device.c	2026-11-03 00:42:54
++++ b/src/kosmickrisp/vulkan/kk_device.c	2026-11-06 10:07:28
+@@ -33,6 +33,7 @@
+ #include "vk_pipeline_cache.h"
+ 
+ #include <time.h>
++#include "util/cidre_env.h"
+ 
+ struct kk_mtl_compiler {
+    mtl_compiler *handle;
+@@ -358,8 +359,8 @@
+       kk_bo_set_label(dev->atomic64_locks, "atomiques 64 bits : verrous");
+    }
+ 
+-   if (getenv("CIDRE_SSBO_NUL_PUITS") != NULL &&
+-       getenv("CIDRE_SSBO_SANS_BORNES") != NULL) {
++   if (cidre_env_actif("CIDRE_SSBO_NUL_PUITS") &&
++       cidre_env_actif("CIDRE_SSBO_SANS_BORNES")) {
+       result = kk_alloc_bo(dev, &dev->vk.base, 32u << 20, 256,
+                            &dev->ssbo_puits);
+       if (result != VK_SUCCESS)
+diff --color -ruN --exclude=*.o a/src/kosmickrisp/vulkan/kk_nir_lower_image_view_min_lod.c src/kosmickrisp/vulkan/kk_nir_lower_image_view_min_lod.c
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_image_view_min_lod.c	2026-10-30 20:18:09
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_image_view_min_lod.c	2026-11-06 10:07:28
+@@ -18,6 +18,7 @@
+ 
+ #include <stdbool.h>
+ #include <stdlib.h>
++#include "util/cidre_env.h"
+ 
+ static nir_def *
+ query_min_lod(nir_builder *b, nir_tex_instr *tex, bool int_min_lod)
+@@ -41,7 +42,7 @@
+ {
+    static int on = -1;
+    if (on < 0)
+-      on = getenv("CIDRE_MIN_LOD_TXF_LIBRE") != NULL;
++      on = cidre_env_actif("CIDRE_MIN_LOD_TXF_LIBRE");
+    return on;
+ }
+ 
+diff --color -ruN --exclude=*.o a/src/kosmickrisp/vulkan/kk_nir_lower_null_images.c src/kosmickrisp/vulkan/kk_nir_lower_null_images.c
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_null_images.c	2026-11-03 18:45:49
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_null_images.c	2026-11-06 10:07:28
+@@ -10,6 +10,7 @@
+ 
+ #include "compiler/nir/nir.h"
+ #include "compiler/nir/nir_builder.h"
++#include "util/cidre_env.h"
+ 
+ static nir_def *
+ tex_handle_to_resource_id(nir_builder *b, nir_def *handle)
+@@ -66,7 +67,7 @@
+ {
+    static int enabled = -1;
+    if (enabled < 0)
+-      enabled = getenv("CIDRE_TEXTURES_NULLES_SANS_BRANCHE") != NULL;
++      enabled = cidre_env_actif("CIDRE_TEXTURES_NULLES_SANS_BRANCHE");
+    return enabled;
+ }
+ 
+@@ -83,7 +84,7 @@
+ {
+    static int enabled = -1;
+    if (enabled < 0)
+-      enabled = getenv("CIDRE_IMAGES_NULLES_SANS_BRANCHE") != NULL;
++      enabled = cidre_env_actif("CIDRE_IMAGES_NULLES_SANS_BRANCHE");
+    return enabled;
+ }
+ 
+@@ -92,7 +93,7 @@
+ {
+    static int enabled = -1;
+    if (enabled < 0)
+-      enabled = getenv("CIDRE_ATOMIQUES_NULLES_SANS_BRANCHE") != NULL;
++      enabled = cidre_env_actif("CIDRE_ATOMIQUES_NULLES_SANS_BRANCHE");
+    return enabled;
+ }
+ 
+diff --color -ruN --exclude=*.o a/src/kosmickrisp/vulkan/kk_nir_lower_textures.c src/kosmickrisp/vulkan/kk_nir_lower_textures.c
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_textures.c	2026-11-03 18:45:49
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_textures.c	2026-11-06 10:07:28
+@@ -16,6 +16,7 @@
+ #include "nir_builder.h"
+ 
+ #include "stdbool.h"
++#include "util/cidre_env.h"
+ 
+ static bool
+ lower_texture_buffer_tex_instr(nir_builder *b, nir_tex_instr *tex)
+@@ -210,7 +211,7 @@
+ {
+    static int enabled = -1;
+    if (enabled < 0)
+-      enabled = getenv("CIDRE_FENCES_UTILES") != NULL;
++      enabled = cidre_env_actif("CIDRE_FENCES_UTILES");
+    return enabled;
+ }
+ 
+diff --color -ruN --exclude=*.o a/src/kosmickrisp/vulkan/kk_physical_device.c src/kosmickrisp/vulkan/kk_physical_device.c
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c	2026-11-04 13:34:53
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c	2026-11-06 10:07:39
+@@ -34,6 +34,7 @@
+ #include "vk_device.h"
+ #include "vk_drm_syncobj.h"
+ #include "vk_shader_module.h"
++#include "util/cidre_env.h"
+ 
+ #define KK_MAX_SAMPLER_ALLOCATIONS 65536u
+ 
+@@ -604,7 +605,7 @@
+     * des denormaux independant pour le 32 bits. vkd3d-proton expose alors
+     * Native16BitShaderOpsSupported (comme D3DMetal) : FidelityFX choisit ses
+     * variantes FP16, TSR son 16BitVALU. */
+-   const bool demi_precision = getenv("CIDRE_DEMI_PRECISION") != NULL &&
++   const bool demi_precision = cidre_env_actif("CIDRE_DEMI_PRECISION") &&
+                                getenv("CIDRE_DEMI_PRECISION")[0] == '1';
+    const char *ident = getenv("CIDRE_VK_IDENTITE");
+    if (ident != NULL && ident[0] != '\0') {
+@@ -1209,7 +1210,13 @@
+       "CIDRE_MUL_SANS_GARDE",
+    };
+    for (unsigned i = 0; i < ARRAY_SIZE(options_codegen); i++) {
+-      uint8_t pose = getenv(options_codegen[i]) != NULL;
++      /* 0401 : la cle suit la valeur lue par l'option (« 0 »/vide = coupee),
++       * pas la seule presence ; DEMI_PRECISION n'est active que sur « 1... ». */
++      uint8_t pose = cidre_env_actif(options_codegen[i]);
++      if (!strcmp(options_codegen[i], "CIDRE_DEMI_PRECISION")) {
++         const char *dp = getenv("CIDRE_DEMI_PRECISION");
++         pose = dp != NULL && dp[0] == '1';
++      }
+       _mesa_blake3_update(&blake3_ctx, &pose, 1);
+    }
+    const char *air_direct = getenv("CIDRE_AIR_DIRECT");
+@@ -1229,7 +1236,7 @@
+    memcpy(pdev->vk.properties.shaderBinaryUUID, blake3, VK_UUID_SIZE);
+    kk_trad_cache_set_codegen_key(blake3, sizeof(blake3));
+ 
+-   if (getenv("CIDRE_CLE_CACHE_DIAG")) {
++   if (cidre_env_actif("CIDRE_CLE_CACHE_DIAG")) {
+       char hex[2 * VK_UUID_SIZE + 1];
+       for (unsigned i = 0; i < VK_UUID_SIZE; i++)
+          snprintf(hex + 2 * i, 3, "%02x", blake3[i]);
+diff --color -ruN --exclude=*.o a/src/kosmickrisp/vulkan/kk_query_pool.c src/kosmickrisp/vulkan/kk_query_pool.c
+--- a/src/kosmickrisp/vulkan/kk_query_pool.c	2026-10-30 20:18:09
++++ b/src/kosmickrisp/vulkan/kk_query_pool.c	2026-11-06 10:07:28
+@@ -29,6 +29,7 @@
+ #include "util/simple_mtx.h"
+ #include <stdio.h>
+ #include <stdlib.h>
++#include "util/cidre_env.h"
+ 
+ static void cpu_write_query_result(void *dst, uint32_t idx, VkQueryResultFlags flags,
+                                    uint64_t result);
+@@ -857,7 +858,7 @@
+ {
+    static int enabled = -1;
+    if (enabled < 0)
+-      enabled = getenv("CIDRE_HORODATAGES_PRECIS") != NULL;
++      enabled = cidre_env_actif("CIDRE_HORODATAGES_PRECIS");
+    return enabled;
+ }
+ 
+@@ -1070,7 +1071,7 @@
+ {
+    static int enabled = -1;
+    if (enabled < 0)
+-      enabled = getenv("CIDRE_DIAG_OCCLUSION") != NULL;
++      enabled = cidre_env_actif("CIDRE_DIAG_OCCLUSION");
+    return enabled;
+ }
+ 
+diff --color -ruN --exclude=*.o a/src/kosmickrisp/vulkan/kk_queue.c src/kosmickrisp/vulkan/kk_queue.c
+--- a/src/kosmickrisp/vulkan/kk_queue.c	2026-11-03 00:42:54
++++ b/src/kosmickrisp/vulkan/kk_queue.c	2026-11-06 10:08:03
+@@ -6,6 +6,7 @@
+  */
+ 
+ #include "kk_queue.h"
++#include "util/cidre_env.h"
+ #include "kk_query_pool.h"
+ #include "kk_buffer.h"
+ #include "kk_bo.h"
+@@ -49,7 +50,7 @@
+ static void
+ kk_gpu_stats_init(void)
+ {
+-   kk_gpu_stats_enabled = getenv("CIDRE_GPU_STATS") != NULL;
++   kk_gpu_stats_enabled = cidre_env_actif("CIDRE_GPU_STATS");
+    const char *w = getenv("CIDRE_GPU_STATS_WINDOW");
+    if (w) {
+       int v = atoi(w);
+@@ -901,7 +902,7 @@
+    static int enabled = -1;
+    static uint64_t t0, n_soum, n_att, n_saut, n_sig, n_cmd;
+    if (enabled < 0)
+-      enabled = getenv("CIDRE_SOUM_STATS") != NULL;
++      enabled = cidre_env_actif("CIDRE_SOUM_STATS");
+    if (!enabled)
+       return;
+    /* kk_queue_submit est serialise par file ; une seule file. */
+@@ -1118,7 +1119,7 @@
+       VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    static int off = -1;
+    if (off < 0)
+-      off = getenv("CIDRE_FUSION_SANS_SAUT") != NULL;
++      off = cidre_env_actif("CIDRE_FUSION_SANS_SAUT");
+    if (off || dep == NULL)
+       return false;
+    /* Sources permises : acces d'attachement et lectures (dependance
+@@ -1273,7 +1274,7 @@
+ {
+    static int z = -1;
+    if (z < 0)
+-      z = getenv("CIDRE_FUSION_ZONES") != NULL;
++      z = cidre_env_actif("CIDRE_FUSION_ZONES");
+    return z;
+ }
+ 
+@@ -1356,7 +1357,7 @@
+ {
+    static int on = -1;
+    if (on < 0)
+-      on = getenv("CIDRE_FUSION_STATS") != NULL;
++      on = cidre_env_actif("CIDRE_FUSION_STATS");
+    if (!on)
+       return;
+    uint64_t t = os_time_get_nano();
+@@ -1660,7 +1661,7 @@
+ {
+    static int on = -1;
+    if (on < 0)
+-      on = getenv("CIDRE_FUSION_STATS") != NULL;
++      on = cidre_env_actif("CIDRE_FUSION_STATS");
+    if (!on)
+       return;
+    uint64_t t = os_time_get_nano();
+diff --color -ruN --exclude=*.o a/src/kosmickrisp/vulkan/kk_shader.c src/kosmickrisp/vulkan/kk_shader.c
+--- a/src/kosmickrisp/vulkan/kk_shader.c	2026-11-04 13:34:53
++++ b/src/kosmickrisp/vulkan/kk_shader.c	2026-11-06 10:07:28
+@@ -41,6 +41,7 @@
+ #include "vk_graphics_state.h"
+ #include "vk_nir_convert_ycbcr.h"
+ #include "vk_pipeline.h"
++#include "util/cidre_env.h"
+ 
+ static const nir_shader_compiler_options *
+ kk_get_nir_options(struct vk_physical_device *vk_pdev, mesa_shader_stage stage,
+@@ -881,7 +882,7 @@
+ {
+    static int enabled = -1;
+    if (enabled < 0)
+-      enabled = getenv("CIDRE_DERIVEES_CALCUL") != NULL;
++      enabled = cidre_env_actif("CIDRE_DERIVEES_CALCUL");
+    return enabled;
+ }
+ 
+@@ -890,7 +891,7 @@
+ {
+    static int enabled = -1;
+    if (enabled < 0)
+-      enabled = getenv("CIDRE_ATOMIQUES_64") != NULL;
++      enabled = cidre_env_actif("CIDRE_ATOMIQUES_64");
+    return enabled;
+ }
+ 
+@@ -901,7 +902,7 @@
+ {
+    static int enabled = -1;
+    if (enabled < 0)
+-      enabled = getenv("CIDRE_ATOMIQUES_64_EMULEES") != NULL;
++      enabled = cidre_env_actif("CIDRE_ATOMIQUES_64_EMULEES");
+    return enabled;
+ }
+ 
+@@ -1724,7 +1725,7 @@
+       struct air_options ao = {.disabled_workarounds = options->disabled_workarounds};
+       memcpy(ao.rts_component_count, options->rts_component_count, sizeof(ao.rts_component_count));
+       air_ok = nir_to_air(nir, &ao, dump && getenv("CIDRE_AIR_DUMP_LL"), &air);
+-      if (!air_ok && getenv("CIDRE_AIR_DEBUG"))
++      if (!air_ok && cidre_env_actif("CIDRE_AIR_DEBUG"))
+          fprintf(stderr, "CIDRE_AIR: repli MSL (%s)\n", air.reason);
+    }
+ 
+@@ -2518,7 +2519,7 @@
+ {
+    static int enabled = -1;
+    if (enabled < 0)
+-      enabled = getenv("CIDRE_COMPILE_HORS_VERROU") != NULL;
++      enabled = cidre_env_actif("CIDRE_COMPILE_HORS_VERROU");
+    return enabled;
+ }
+ 
+@@ -3379,7 +3380,7 @@
+ {
+    static int brut = -1;
+    if (brut < 0)
+-      brut = getenv("CIDRE_CACHE_BRUT") != NULL;
++      brut = cidre_env_actif("CIDRE_CACHE_BRUT");
+    return brut;
+ }
+ 
+@@ -3731,7 +3732,7 @@
+       return -1;
+    struct air_output air = {0};
+    uint64_t t0 = os_time_get_nano();
+-   bool ok = nir_to_air(nir, &ao, getenv("CIDRE_AIR_DUMP_LL") != NULL, &air);
++   bool ok = nir_to_air(nir, &ao, cidre_env_actif("CIDRE_AIR_DUMP_LL"), &air);
+    *ms = (os_time_get_nano() - t0) / 1e6;
+    if (!ok)
+       snprintf(reason, reason_len, "%s", air.reason);
+diff --color -ruN --exclude=*.o a/src/kosmickrisp/vulkan/kk_shader.h src/kosmickrisp/vulkan/kk_shader.h
+--- a/src/kosmickrisp/vulkan/kk_shader.h	2026-10-30 20:18:09
++++ b/src/kosmickrisp/vulkan/kk_shader.h	2026-11-06 10:07:28
+@@ -27,6 +27,7 @@
+ #include "vk_pipeline_cache.h"
+ 
+ #include "vk_shader.h"
++#include "util/cidre_env.h"
+ 
+ struct kk_cmd_buffer;
+ struct vk_vertex_input_state;
+@@ -350,7 +351,7 @@
+ {
+    static int sans_bornes = -1;
+    if (sans_bornes < 0)
+-      sans_bornes = getenv("CIDRE_SSBO_SANS_BORNES") != NULL;
++      sans_bornes = cidre_env_actif("CIDRE_SSBO_SANS_BORNES");
+    if (sans_bornes)
+       return nir_address_format_64bit_global_32bit_offset;
+    return kk_buffer_addr_format(robustness);
+@@ -369,7 +370,7 @@
+ {
+    static int sans_bornes = -1;
+    if (sans_bornes < 0)
+-      sans_bornes = getenv("CIDRE_CBV_SANS_BORNES") != NULL;
++      sans_bornes = cidre_env_actif("CIDRE_CBV_SANS_BORNES");
+    if (sans_bornes)
+       return nir_address_format_64bit_global_32bit_offset;
+    return kk_buffer_addr_format(robustness);
+diff --color -ruN --exclude=*.o a/src/kosmickrisp/vulkan/kk_trad_cache.c src/kosmickrisp/vulkan/kk_trad_cache.c
+--- a/src/kosmickrisp/vulkan/kk_trad_cache.c	2026-11-04 13:34:53
++++ b/src/kosmickrisp/vulkan/kk_trad_cache.c	2026-11-06 10:07:28
+@@ -47,6 +47,7 @@
+ #include <string.h>
+ #include <sys/stat.h>
+ #include <unistd.h>
++#include "util/cidre_env.h"
+ 
+ #define KK_TRAD_MAGIC   0x3154524bu /* "KRT1" */
+ #define KK_TRAD_FORMAT  1u
+@@ -172,7 +173,7 @@
+    if (v && strcmp(v, "0") == 0)
+       return;
+    /* diagnostics qui veulent voir la traduction se faire */
+-   if (getenv("CIDRE_AIR_DUMP") || getenv("CIDRE_TEX_STATS"))
++   if (cidre_env_actif("CIDRE_AIR_DUMP") || cidre_env_actif("CIDRE_TEX_STATS"))
+       return;
+    if (v && v[0] == '/') {
+       snprintf(kk_trad_root, sizeof(kk_trad_root), "%s", v);
+--- a/src/vulkan/wsi/wsi_common_metal.c	2026-11-02 19:56:45
++++ b/src/vulkan/wsi/wsi_common_metal.c	2026-11-06 10:07:28
+@@ -22,6 +22,7 @@
+ #include <assert.h>
+ #include <math.h>
+ #include "c11/threads.h"
++#include "util/cidre_env.h"
+ 
+ struct wsi_metal {
+    struct wsi_interface base;
+@@ -756,7 +757,7 @@
+ {
+    static int enabled = -1;
+    if (enabled < 0)
+-      enabled = getenv("CIDRE_WSI_STATS") != NULL;
++      enabled = cidre_env_actif("CIDRE_WSI_STATS");
+    return enabled;
+ }
+ 
+--- a/src/vulkan/wsi/wsi_common_metal_layer.m	2026-11-02 19:56:45
++++ b/src/vulkan/wsi/wsi_common_metal_layer.m	2026-11-06 10:07:28
+@@ -12,6 +12,7 @@
+ #import <Metal/Metal.h>
+ #import <MetalFX/MetalFX.h>
+ #import <CoreGraphics/CoreGraphics.h>
++#include "util/cidre_env.h"
+ 
+ void
+ wsi_metal_layer_size(const CAMetalLayer *metal_layer,
+@@ -664,7 +665,7 @@
+       u->commandQueue = [device newCommandQueue];
+       u->frameEvent = [device newSharedEvent];
+       u->doneEvent = [device newSharedEvent];
+-      u->stats = getenv("CIDRE_WSI_STATS") != NULL;
++      u->stats = cidre_env_actif("CIDRE_WSI_STATS");
+       u->relire = getenv("MESA_WSI_METAL_METALFX_RELIRE");
+ 
+       MTLTextureDescriptor *td =
+--- /dev/null
++++ b/src/util/cidre_env.h	2026-11-06 10:07:28
+@@ -0,0 +1,23 @@
++/*
++ * Cidre (0401) : lecture des options CIDRE_* par leur valeur.
++ * SPDX-License-Identifier: MIT
++ */
++#ifndef CIDRE_ENV_H
++#define CIDRE_ENV_H
++
++#include <stdbool.h>
++#include <stdlib.h>
++#include <string.h>
++
++/* Une option booleenne CIDRE_* est active si elle est posee, non vide et
++ * differente de « 0 ». Avant 0401, la plupart se lisaient par
++ * getenv() != NULL : VAR=0 les laissait actives (et partie_d4.sh, qui pose
++ * ${VAR:-1}, ne pouvait pas les couper). Avec VAR=1, rien ne change. */
++static inline bool
++cidre_env_actif(const char *nom)
++{
++   const char *v = getenv(nom);
++   return v != NULL && v[0] != '\0' && strcmp(v, "0") != 0;
++}
++
++#endif
