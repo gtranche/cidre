@@ -1,0 +1,37 @@
+Generated-by: LLM
+
+KosmicKrisp : une lecture de texels (txf) par une poignee nulle garde la
+selection a 0 sous CIDRE_TEXTURES_NULLES_SANS_BRANCHE (sans branche)
+
+0138 laisse brutes toutes les lectures d'une poignee nulle, sur la foi de sondes
+(sample, read, gather, bias, gradient). Diablo IV (M1, ilot, ecran de selection,
+04-06/11) montre le contraire pour txf : avec CIDRE_MIN_LOD_TXF_LIBRE (0269, qui
+retire la garde de LOD minimale des txf) ET CIDRE_TEXTURES_NULLES_SANS_BRANCHE,
+une passe ecrit des NaN/Inf dans une image que le filtre temporel 9388151c
+(demi-resolution, groupes 8x8) etale en tuiles noires de 16 px ; chacune des
+deux options seule est saine (bissection de 15 options, relecture PPM 0330 :
+3,1 % de noir pur avec le couple, 2,05 % sans). txf reprend donc le select de
+0136 (bcsel apres la lecture) ; sample/gather restent bruts.
+
+Base : integration ea07be9 + 0401. A valider : 2 demarrages jusqu'a la
+selection avec le couple d'options pose (noir pur ~2,05 %).
+
+diff --git a/src/kosmickrisp/vulkan/kk_nir_lower_null_images.c b/src/kosmickrisp/vulkan/kk_nir_lower_null_images.c
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_null_images.c
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_null_images.c
+@@ -163,8 +163,14 @@
+    if (!tex_reads_texels(instr))
+       return false;
+ 
++   /* Cidre (0402) : Diablo IV (M1) ecrit des NaN/Inf, que son filtre temporel
++    * etale en tuiles noires, quand CIDRE_MIN_LOD_TXF_LIBRE (garde de LOD
++    * minimale retiree des txf) et cette option sont posees ensemble ; chacune
++    * seule est saine. Hypothese : txf par une poignee nulle ne rend pas 0 dans
++    * tous les cas. txf garde donc la selection sur poignee nulle (sans branche). */
+    const nir_tex_instr *tex = nir_instr_as_tex(instr);
+-   return tex->op != nir_texop_txf_ms && !tex->is_sparse;
++   return tex->op != nir_texop_txf_ms && tex->op != nir_texop_txf &&
++          !tex->is_sparse;
+ }
+ 
+ static bool

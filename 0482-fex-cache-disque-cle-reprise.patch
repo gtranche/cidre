@@ -1,0 +1,50 @@
+Generated-by: LLM
+
+Cidre 0482 (FEX, cache disque) : la consultation de la variante validee reprend la cle de la premiere consultation (Lookup ne
+recalcule pas GuestCodeKey quand il est fourni) : plus de second decodage des 64 octets (CLE_BRUTE=0, ~8 us par consultation en jeu,
+~75 000 consultations de variante par partie de 4 min). Le saut du calcul dans Lookup est dans le hunk de signature de 0481. Local Cidre.
+
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -1960,17 +1960,38 @@
+     FEXCORE_PROFILE_ACCUMULATION(Thread, AccumulatedDiskCacheLookupTime);
+     const uint64_t CidreTS = ::FEXCore::CidreMesure::Tick();
+     CidreDisque.Consult.fetch_add(1, std::memory_order_relaxed);
++    auto* CidreDec = Thread->FrontendDecoder.get();
++    CidreDec->CidreCauseRIP = GuestRIP;
+     Hit = DiskCache.Lookup(Thread, Region, GuestRIP, DiskCacheGuestCodeKey);
+     CidreDisque.TicksLookup.fetch_add(::FEXCore::CidreMesure::Tick() - CidreTS, std::memory_order_relaxed);
+     if (Hit && !DiskCache.IsValidating() && !CidreDisqueRearmer(this, Thread, GuestRIP, *Hit)) {
+       Hit.reset();
+     }
++    CidreDec->CidreCause1 = Hit ? FEXCore::DiskCache::CAUSE_AUCUNE : CidreDec->CidreCauseFin;
++    // Cidre 0481 : trouve sous la cle normale (bloc arme) mais rearmement refuse : la compilation va produire un bloc sans
++    // armement ni validation (intervalle sans SMC complet), qu'amont n'ecrivait jamais (doublon de l'empreinte du bloc arme).
++    // Il est garde sous la cle « simple » et cherche ici.
++    if (!Hit && !DiskCache.IsValidating() && CidreDec->CidreCause1 == FEXCore::DiskCache::CAUSE_REARM && DiskCacheGuestCodeKey &&
++        CidreDisqueSimpleActif()) {
++      std::optional<uint64_t> CidreCleS = DiskCacheGuestCodeKey;
++      CidreDisque.SimpleConsult.fetch_add(1, std::memory_order_relaxed);
++      Hit = DiskCache.Lookup(Thread, Region, GuestRIP, CidreCleS, false, true);
++      if (Hit && !CidreDisqueRearmer(this, Thread, GuestRIP, *Hit)) {
++        Hit.reset();
++      }
++      if (Hit) {
++        CidreDisque.SimpleServis.fetch_add(1, std::memory_order_relaxed);
++      }
++    }
+     if (!Hit && !DiskCache.IsValidating() && CidreDisqueValidesActif() && (GuestCodeArmed || GuestCodeAlias)) {
+-      std::optional<uint64_t> CidreCle2;
++      std::optional<uint64_t> CidreCle2 = DiskCacheGuestCodeKey; // 0482 : cle deja calculee
+       Hit = DiskCache.Lookup(Thread, Region, GuestRIP, CidreCle2, true);
+       if (Hit) {
+-        if (!CidreDisqueVarianteSure(this, GuestRIP, *Hit) || !CidreDisqueRearmer(this, Thread, GuestRIP, *Hit)) {
++        if (!CidreDisqueVarianteSure(this, GuestRIP, *Hit)) {
++          CidreDec->CidreCauseFin = FEXCore::DiskCache::CAUSE_VARIANTE_ARMABLE;
+           Hit.reset();
++        } else if (!CidreDisqueRearmer(this, Thread, GuestRIP, *Hit)) {
++          Hit.reset();
+         } else {
+           CidreDisque.VarServis.fetch_add(1, std::memory_order_relaxed);
+         }

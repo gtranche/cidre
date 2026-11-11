@@ -1,0 +1,204 @@
+Generated-by: LLM
+
+fex : SMC en ligne sur une page chaude validee par CRC (CIDRE_SMC_EN_LIGNE_CHAUD=N)
+
+Le fil de protection de Diablo IV ecrit un octet par tour dans sa page RWX : a chaque ecriture, faute,
+invalidation de la granule sous verrou exclusif, vidage des caches de tous les fils, re-service disque,
+reprotection (15-25 k SMC par 5 s, 2,2 s d'invalidation par 5 s). Apres N SMC en ligne sur une meme page
+(N = CIDRE_SMC_EN_LIGNE_CHAUD ; 0 ou absent : coupe), la page est forcee chaude : validation par CRC, hors
+piege et hors cache. Banc (vrai code de D4, ~/Dev/cidre-ralent/test/smc_d4.c) : 57-60 -> 0,23 us/octet dans
+l'ilot. Reglage de D4 : 64. Chantier : ~/Dev/cidre-ralent.
+
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -143,19 +143,56 @@
+         }
+         break;
+       }
++    }
++  }
++}
++// Cidre 0370 (CIDRE_SMC_EN_LIGNE_CHAUD) : page forcee chaude par InvalidationTracker::CidreRendreChaud (SMC en ligne en
++// boucle) ; compte sentinelle, vaut aussi quand CIDRE_SMC_BLOC_APRES est coupe.
++static constexpr uint32_t COMPTE_FORCE = 0x80000000u;
++static std::atomic<uint64_t> PagesForcees {};
++void MarquerChaude(uint64_t Page) {
++  const uint64_t Cle = Page + 1;
++  for (size_t i = 0, h = HachePage(Cle); i < 32; i++, h = (h + 1) & (NB_PAGES_INVAL - 1)) {
++    uint64_t c = PagesInval[h].load(std::memory_order_relaxed);
++    if (!c && PagesInval[h].compare_exchange_strong(c, Cle, std::memory_order_relaxed)) {
++      c = Cle;
++    }
++    if (c == Cle) {
++      if (!(ComptesInval[h].fetch_or(COMPTE_FORCE, std::memory_order_relaxed) & COMPTE_FORCE)) {
++        PagesForcees.fetch_add(1, std::memory_order_relaxed);
++        PagesChaudes.fetch_add(1, std::memory_order_relaxed);
++      }
++      return;
++    }
++  }
++}
++bool PageForcee(uint64_t Page) {
++  if (!PagesForcees.load(std::memory_order_relaxed)) {
++    return false;
++  }
++  const uint64_t Cle = Page + 1;
++  for (size_t i = 0, h = HachePage(Cle); i < 32; i++, h = (h + 1) & (NB_PAGES_INVAL - 1)) {
++    const uint64_t c = PagesInval[h].load(std::memory_order_relaxed);
++    if (c == Cle) {
++      return ComptesInval[h].load(std::memory_order_relaxed) & COMPTE_FORCE;
+     }
++    if (!c) {
++      return false;
++    }
+   }
++  return false;
+ }
+ bool PageChaude(uint64_t Page) {
+   const uint64_t Seuil = SeuilChaud();
+-  if (!Seuil) {
++  if (!Seuil && !PagesForcees.load(std::memory_order_relaxed)) {
+     return false;
+   }
+   const uint64_t Cle = Page + 1;
+   for (size_t i = 0, h = HachePage(Cle); i < 32; i++, h = (h + 1) & (NB_PAGES_INVAL - 1)) {
+     const uint64_t c = PagesInval[h].load(std::memory_order_relaxed);
+     if (c == Cle) {
+-      return ComptesInval[h].load(std::memory_order_relaxed) >= Seuil;
++      const uint32_t N = ComptesInval[h].load(std::memory_order_relaxed);
++      return (N & COMPTE_FORCE) || (Seuil && N >= Seuil);
+     }
+     if (!c) {
+       return false;
+@@ -1885,7 +1922,8 @@
+   // ni avec les reecritures de sous-pages a la compilation (sites et talons propres au processus)
+   const bool CidreDisqueLu = DiskCache.IsReadingDiskCache();
+   const bool CidreDisquePermis = CidreDisqueLu && MaxInst == 0 && !Thread->PassManager->CidreRapide &&
+-                                 !Thread->FrontendDecoder->CidreSansMultibloc && !GuestMixedSite && !GuestMixedPrewrite && !GuestReadAlias;
++                                 !Thread->FrontendDecoder->CidreSansMultibloc && !GuestMixedSite && !GuestMixedPrewrite && !GuestReadAlias &&
++                                 !::FEXCore::CidreMesure::PageForcee(GuestRIP >> 12); // 0370 : page SMC en ligne, validee
+   const int CidreClasse = CidreDisqueLu ? CidreDisqueClasse(Region) : 2;
+   if (CidreDisqueLu && !CidreDisquePermis) {
+     CidreDisque.Interdit.fetch_add(1, std::memory_order_relaxed);
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -1267,6 +1267,7 @@
+         NativeContext->Sp = CPUArea.EmulatorStackBase();
+         NativeContext->X11 = 1;                                        // Set ENTRY_FILL_SRA_SINGLE_INST_REG to force a single step
+         NativeContext->X17 = reinterpret_cast<uint64_t>(CPUArea.Area); // Set EC_ENTRY_CPUAREA_REG
++        InvalidationTracker->CidreSmcEnLigne(FaultAddress); // Cidre 0370
+       } else {
+         LogMan::Msg::DFmt("Handled self-modifying code: pc: {:X} fault: {:X}", NativeContext->Pc, FaultAddress);
+       }
+diff --git a/Source/Windows/Common/InvalidationTracker.cpp b/Source/Windows/Common/InvalidationTracker.cpp
+--- a/Source/Windows/Common/InvalidationTracker.cpp
++++ b/Source/Windows/Common/InvalidationTracker.cpp
+@@ -23,6 +23,12 @@
+ namespace FEXCore::CidreMesure {
+ extern std::atomic<uint64_t> InvalAttente, InvalTenue, InvalNb;
+ void NoterInvalidation(uint64_t Address, uint64_t Size); // CIDRE_SMC_BLOC_APRES (Core.cpp)
++void MarquerChaude(uint64_t Page); // 0370 (Core.cpp)
++static inline uint64_t Freq() {
++  uint64_t v;
++  __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(v));
++  return v;
++}
+ static inline uint64_t Tick() {
+   uint64_t v;
+   __asm__ volatile("mrs %0, cntvct_el0" : "=r"(v));
+@@ -453,6 +459,78 @@
+     return true;
+   }
+   return false;
++}
++
++bool InvalidationTracker::CidreSmcEnLigne(uint64_t FaultAddress) {
++  static const uint32_t Seuil = [] {
++    const char* E = getenv("CIDRE_SMC_EN_LIGNE_CHAUD");
++    return E ? static_cast<uint32_t>(strtoul(E, nullptr, 10)) : 0u;
++  }();
++  if (!Seuil || !InGuest32Window(FaultAddress)) {
++    return false;
++  }
++  const uint64_t Granule = ToGuest32(FaultAddress) & TRAP_GRANULE_MASK;
++  // Fenetre de 250 ms par granule (table a 64 entrees, remplacement de la plus ancienne)
++  struct Entree {
++    uint64_t Granule, Debut;
++    uint32_t N;
++  };
++  static Entree Table[64];
++  static std::mutex TableVerrou;
++  const uint64_t T = FEXCore::CidreMesure::Tick(), Fenetre = FEXCore::CidreMesure::Freq() / 4;
++  {
++    std::scoped_lock L(TableVerrou);
++    Entree* E = nullptr;
++    Entree* Vieille = &Table[0];
++    for (auto& X : Table) {
++      if (X.Granule == Granule + 1) {
++        E = &X;
++        break;
++      }
++      if (X.Debut < Vieille->Debut) {
++        Vieille = &X;
++      }
++    }
++    if (!E) {
++      E = Vieille;
++      *E = {Granule + 1, T, 0};
++    }
++    if (T - E->Debut > Fenetre) {
++      E->Debut = T;
++      E->N = 0;
++    }
++    if (++E->N < Seuil) {
++      return false;
++    }
++    E->Granule = 0; // promue : l'entree se libere
++    E->Debut = 0;
++  }
++
++  std::scoped_lock Lock(CTX.GetCodeInvalidationMutex());
++  bool Promue = false;
++  {
++    std::unique_lock IntervalsWriteLock(IntervalsLock);
++    for (uint64_t Page = Granule; Page < Granule + TRAP_GRANULE; Page += FEXCore::Utils::FEX_PAGE_SIZE) {
++      if (!RWXIntervals.Query(Page).Enclosed) {
++        continue;
++      }
++      RWXIntervals.Remove({Page, Page + FEXCore::Utils::FEX_PAGE_SIZE});
++      AliasXIntervals.Insert({Page, Page + FEXCore::Utils::FEX_PAGE_SIZE});
++      FEXCore::CidreMesure::MarquerChaude(Page >> 12);
++      Promue = true;
++    }
++  }
++  if (Promue) {
++    // blocs compiles par d'autres fils entre la faute et la promotion (sans validation) ; caches de plage des decodeurs
++    InvalidateIntervalInternalLocked(Granule, TRAP_GRANULE);
++    static std::atomic<uint64_t> Nb;
++    const uint64_t N = Nb.fetch_add(1, std::memory_order_relaxed) + 1;
++    if (N <= 32 || !(N & (N - 1))) {
++      LogMan::Msg::IFmt("cidre 0370 : granule {:#x} promue en SMC complet (SMC en ligne {} fois en moins de 250 ms) ; promues {}", Granule,
++                        Seuil, N);
++    }
++  }
++  return Promue;
+ }
+ 
+ bool InvalidationTracker::BeginUntrackedWriteLocked(uint64_t Address, uint64_t Size) {
+diff --git a/Source/Windows/Common/InvalidationTracker.h b/Source/Windows/Common/InvalidationTracker.h
+--- a/Source/Windows/Common/InvalidationTracker.h
++++ b/Source/Windows/Common/InvalidationTracker.h
+@@ -46,6 +46,11 @@
+   bool ContientExecutable(uint64_t Address, uint64_t Size);
+   void ReprotectRWXIntervals(uint64_t Address, uint64_t Size);
+   bool HandleRWXAccessViolation(FEXCore::Core::InternalThreadState* Thread, uint64_t HostPC, uint64_t FaultAddress);
++  // Cidre 0370 (CIDRE_SMC_EN_LIGNE_CHAUD=N, 0 ou absent : coupe) : appele apres chaque SMC EN LIGNE (un bloc ecrit dans la
++  // page de 16 Kio qu'il execute). N fautes sur la meme granule en moins de 250 ms : elle n'est plus piegee (sortie de
++  // RWXIntervals), ses blocs valident chaque instruction (AliasXIntervals -> ForceFullSMCDetection, pages forcees
++  // chaudes : ni armement ni cache disque) et son code est invalide une derniere fois. Rend vrai si promue.
++  bool CidreSmcEnLigne(uint64_t FaultAddress);
+ 
+   // Unprotects any RWX intervals in the input interval and invalidates code
+   // NOTE: CodeInvalidationMutex must be locked when calling this, and if true is returned, kept locked until the write ends.

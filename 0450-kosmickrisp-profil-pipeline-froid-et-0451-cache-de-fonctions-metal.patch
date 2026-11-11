@@ -1,0 +1,412 @@
+Generated-by: LLM
+
+KosmicKrisp : profil du pipeline froid (0450) et cache de fonctions Metal (0451, CIDRE_CACHE_FONCTIONS)
+
+0450 : compteurs du cout d'un pipeline froid (mtl_prof : frontal, nir_to_air, AIR -> bibliotheque, creation
+du pipeline Metal), lus par les lignes « KK compile » (MESA_KK_COMPILE_STATS) ; 0494 s'en sert.
+0451 : le serialiseur CaptureBinaries attache au MTL4Compiler (MESA_KK_PIPELINE_CACHE) coupait le cache de
+fonctions de Metal (functions.data = 0 octet) : chaque pipeline recompilait des VS et FS deja vus. Sous
+CIDRE_CACHE_FONCTIONS=1, pas de serialiseur ; le cache de fonctions de Metal sert. Paire deja vue 57 -> 0,1 ms,
+FS deja vu 37 -> 18 ms ; rejeu de la base 286 -> 136 s ; menu froid de D4 -9,5 %. Les deux numeros sont restes
+dans un seul fichier, comme dans le chantier (~/Dev/cidre-pipeline-froid, kk-I4).
+
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.h b/src/kosmickrisp/bridge/mtl_compiler.h
+--- a/src/kosmickrisp/bridge/mtl_compiler.h
++++ b/src/kosmickrisp/bridge/mtl_compiler.h
+@@ -42,6 +42,8 @@
+ void mtl_compile_stat_gen(uint64_t air_ns, uint64_t msl_ns, bool air_fail);
+ void mtl_compile_stat_air_repli(void);
+ void mtl_compile_stat_trad(unsigned kind, uint64_t ns);
++uint64_t *mtl_prof(void);
++void mtl_metal_cache_init(void);
+ mtl_function_descriptor *
+ mtl_new_library_function_descriptor(mtl_library *library,
+                                     const char *entry_point);
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.m b/src/kosmickrisp/bridge/mtl_compiler.m
+--- a/src/kosmickrisp/bridge/mtl_compiler.m
++++ b/src/kosmickrisp/bridge/mtl_compiler.m
+@@ -798,6 +798,17 @@
+ static _Atomic uint32_t kk_stat_airdirect_fallback;
+ static _Atomic uint32_t kk_stat_airdirect_pipe_fallback;
+ static _Atomic uint64_t kk_stat_gen_air_ns, kk_stat_gen_msl_ns, kk_stat_t0;
++/* Cidre (0450) : profil par pipeline froid (fil courant), lu par le rejeu.
++ * [0] nir_to_air [1] nir_to_msl [2] recherche trad [3] ecriture trad
++ * [4] newLibraryWithData [5] newRenderPipelineState [6] abaissement+varyings
++ * [7] kk_compile_shader [8] cache disque [9] recherche archives [10] total
++ * [11] trad trouves [12] generations [13] bibliotheques [14] ecriture AIR local */
++_Thread_local uint64_t kk_prof[16];
++uint64_t *
++mtl_prof(void)
++{
++   return kk_prof;
++}
+ static _Atomic uint32_t kk_stat_gen_count, kk_stat_gen_air_fail;
+ 
+ /* Bibliotheque compilee depuis le MSL alors que l'AIR direct est demande
+@@ -814,6 +825,9 @@
+    atomic_fetch_add(&kk_stat_gen_air_ns, air_ns);
+    atomic_fetch_add(&kk_stat_gen_msl_ns, msl_ns);
+    atomic_fetch_add(&kk_stat_gen_count, 1);
++   kk_prof[0] += air_ns;
++   kk_prof[1] += msl_ns;
++   kk_prof[12]++;
+    if (air_fail)
+       atomic_fetch_add(&kk_stat_gen_air_fail, 1);
+ }
+@@ -827,6 +841,9 @@
+ {
+    atomic_fetch_add(&kk_stat_trad[kind & 3], 1);
+    atomic_fetch_add(&kk_stat_trad_ns[(kind & 3) >= 2], ns);
++   kk_prof[(kind & 3) >= 2 ? 3 : 2] += ns;
++   if ((kind & 3) == 0)
++      kk_prof[11]++;
+ }
+ static _Atomic uint64_t kk_stat_pipe_ns;
+ static _Atomic uint32_t kk_stat_lib_count;
+@@ -851,8 +868,62 @@
+ kk_now_ns(void)
+ {
+    return clock_gettime_nsec_np(CLOCK_MONOTONIC);
++}
++
++/* Cidre (0451) : dossier du cache Metal, avant toute creation de MTLDevice
++ * (appele par mtl_device_create : plus tard, Metal garde le dossier global).
++ * CIDRE_METAL_CACHE_DIR, sinon avec CIDRE_CACHE_FONCTIONS=1
++ * <MESA_KK_PIPELINE_CACHE>/metal. */
++void
++mtl_metal_cache_init(void)
++{
++   static bool fait;
++   if (fait)
++      return;
++   fait = true;
++   const char *mcache = getenv("CIDRE_METAL_CACHE_DIR");
++   char mdir[2048];
++   const char *kk = getenv("MESA_KK_PIPELINE_CACHE");
++   if (!(mcache && mcache[0]) && cidre_env_actif("CIDRE_CACHE_FONCTIONS") && kk && kk[0]) {
++      snprintf(mdir, sizeof(mdir), "%s/metal", kk);
++      mcache = mdir;
++   }
++   if (!(mcache && mcache[0]) || !MTLSetShaderCachePath)
++      return;
++   @autoreleasepool {
++      NSString *p = [NSString stringWithUTF8String:mcache];
++      [[NSFileManager defaultManager] createDirectoryAtPath:p withIntermediateDirectories:YES
++                                                 attributes:nil error:nil];
++      MTLSetShaderCachePath(p);
++      if (cidre_env_actif("MESA_KK_COMPILE_STATS"))
++         fprintf(stderr, "KK: cache Metal %s\n", mcache);
++   }
++}
++
++/* Cidre (0451) : sans serialiseur, pas de fil de flush : les statistiques
++ * (MESA_KK_COMPILE_STATS) passent par un petit fil a part, toutes les 10 s. */
++static void *
++kk_stats_main(void *arg)
++{
++   (void)arg;
++   for (;;) {
++      sleep(10);
++      kk_print_compile_stats();
++   }
++   return NULL;
+ }
+ 
++static void
++kk_stats_fil(void)
++{
++   static atomic_bool lance;
++   if (!kk_compile_stats_enabled() || atomic_exchange(&lance, true))
++      return;
++   pthread_t t;
++   if (pthread_create(&t, NULL, kk_stats_main, NULL) == 0)
++      pthread_detach(t);
++}
++
+ /* Compiler */
+ mtl_compiler *
+ mtl_new_compiler(mtl_device *device, const char *cache_dir)
+@@ -862,19 +933,23 @@
+ 
+       uint64_t z = 0;
+       atomic_compare_exchange_strong(&kk_stat_t0, &z, kk_now_ns());
+-      static bool cache_path_done;
++      mtl_metal_cache_init();
+       const char *mcache = getenv("CIDRE_METAL_CACHE_DIR");
+-      if (!cache_path_done && mcache && mcache[0] && MTLSetShaderCachePath) {
+-         cache_path_done = true;
+-         NSString *p = [NSString stringWithUTF8String:mcache];
+-         [[NSFileManager defaultManager] createDirectoryAtPath:p withIntermediateDirectories:YES
+-                                                    attributes:nil error:nil];
+-         MTLSetShaderCachePath(p);
+-      }
++      /* Cidre (0451) : CIDRE_CACHE_FONCTIONS=1 : compilateur SANS serialiseur.
++       * Le serialiseur CaptureBinaries court-circuite le cache de fonctions de
++       * Metal (functions.data reste vide) : chaque pipeline recompile son VS
++       * et son FS meme deja compiles dans un autre pipeline, dans la session
++       * ou une precedente. Sans lui, le cache Metal (par fonction) sert, ici
++       * dans un dossier par jeu (<MESA_KK_PIPELINE_CACHE>/metal, ou
++       * CIDRE_METAL_CACHE_DIR) ; les archives deja ecrites restent lues. */
++      const bool fonctions = cidre_env_actif("CIDRE_CACHE_FONCTIONS");
++      (void)mcache;
++      if (fonctions)
++         kk_stats_fil();
+ 
+       MTL4CompilerDescriptor *desc = [[MTL4CompilerDescriptor new] autorelease];
+ 
+-      if (cache_dir && cache_dir[0]) {
++      if (cache_dir && cache_dir[0] && !fonctions) {
+          MTL4PipelineDataSetSerializerDescriptor *sdesc =
+             [[MTL4PipelineDataSetSerializerDescriptor new] autorelease];
+          sdesc.configuration =
+@@ -1225,7 +1300,10 @@
+          dispatch_data_t d = dispatch_data_create(air, air_size, NULL,
+                                                   DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+          kk_compile_lock();
++         uint64_t tl0 = kk_now_ns();
+          lib = [comp.device newLibraryWithData:d error:&error];
++         kk_prof[4] += kk_now_ns() - tl0;
++         kk_prof[13]++;
+          kk_compile_unlock();
+          dispatch_release(d);
+          if (stats)
+@@ -1240,8 +1318,11 @@
+          atomic_fetch_add(&kk_stat_airdirect_count, 1);
+          if (msl_path != nil)
+             objc_setAssociatedObject(lib, kk_lib_msl_path_key, msl_path, OBJC_ASSOCIATION_RETAIN);
+-         if (local)
++         if (local) {
++            uint64_t tw0 = kk_now_ns();
+             kk_air_local_write_bytes(local, key, air, air_size);
++            kk_prof[14] += kk_now_ns() - tw0;
++         }
+          objc_setAssociatedObject(lib, kk_lib_air_key,
+                                   @[[NSString stringWithUTF8String:src], @((uint32_t)msl_version),
+                                     @((uint32_t)math_mode), @((uint32_t)math_fp_fns)],
+@@ -1516,6 +1597,7 @@
+       uint64_t t0 = stats ? kk_now_ns() : 0;
+       kk_compile_lock();
+       id<MTLRenderPipelineState> pipeline = nil;
++      uint64_t ta0 = kk_now_ns();
+       KK_ARCHIVE_LOCK();
+       for (id<MTL4Archive> archive in kk_compiler_archives(comp)) {
+          pipeline = [archive newRenderPipelineStateWithDescriptor:desc error:NULL];
+@@ -1523,6 +1605,7 @@
+             break;
+       }
+       KK_ARCHIVE_UNLOCK();
++      kk_prof[9] += kk_now_ns() - ta0;
+       bool cached = pipeline != nil;
+       if (!cached && kk_relais_threads() > 0) {
+          MTL4RenderPipelineDescriptor *alt = kk_relais_render_desc(comp.device, desc);
+@@ -1541,9 +1624,12 @@
+             kk_relais_submit(comp, [[desc copy] autorelease], pipeline, false, 0);
+          }
+       }
+-      if (!cached)
++      if (!cached) {
++         uint64_t tp0 = kk_now_ns();
+          pipeline = [comp newRenderPipelineStateWithDescriptor:desc compilerTaskOptions:nil
+                                                          error:&error];
++         kk_prof[5] += kk_now_ns() - tp0;
++      }
+       kk_compile_unlock();
+       atomic_fetch_add(cached ? &kk_stat_pipe_hits : &kk_pipe_total, 1);
+       if (stats) {
+diff --git a/src/kosmickrisp/bridge/mtl_device.m b/src/kosmickrisp/bridge/mtl_device.m
+--- a/src/kosmickrisp/bridge/mtl_device.m
++++ b/src/kosmickrisp/bridge/mtl_device.m
+@@ -5,6 +5,7 @@
+  */
+ 
+ #include "mtl_device.h"
++#include "mtl_compiler.h"
+ 
+ /* TODO_KOSMICKRISP Remove */
+ #include "kk_image_layout.h"
+@@ -20,6 +21,7 @@
+ {
+    mtl_device *device = nil;
+ 
++   mtl_metal_cache_init(); /* Cidre (0451) : avant le premier MTLDevice */
+    @autoreleasepool {
+       NSArray<id<MTLDevice>> *devs = [MTLCopyAllDevices() autorelease];
+       uint32_t device_count = [devs count];
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -3417,6 +3417,7 @@
+    }
+ 
+    atomic_fetch_add(&kk_stat_etape_ns[0], (uint64_t)(os_time_get_nano() - t_abaisse));
++   mtl_prof()[6] += (uint64_t)(os_time_get_nano() - t_abaisse);
+ 
+    if (passthrough_gs) {
+       nir_shader *gs = kk_build_passthrough_gs(dev, capturing_vs, state);
+@@ -3450,6 +3451,7 @@
+          kk_compile_shader(dev, nir_shaders[i], prev_stage, vertex_robustness,
+                            state, fs_input_comps, pAllocator, &shaders[i]);
+       atomic_fetch_add(&kk_stat_etape_ns[1], (uint64_t)(os_time_get_nano() - t_cs));
++      mtl_prof()[7] += (uint64_t)(os_time_get_nano() - t_cs);
+ 
+       if (result != VK_SUCCESS) {
+          /* Clean up all the shaders before this point */
+@@ -4908,6 +4910,7 @@
+    int fd_fait;
+    _Atomic uint32_t *en_vol;
+    bool ok;
++   uint32_t sur;
+ };
+ 
+ static void
+@@ -5023,13 +5026,106 @@
+    return NULL;
+ }
+ 
++/* Cidre (0450) : risque de sauter un dessin. b0 profondeur ecrite (possible),
++ * b1 stencil ecrit (possible), b2 ecritures memoire (UAV), b3 toutes les
++ * cibles ecrites melangees, b4 au moins une cible ecrite, b5 discard,
++ * b6 au moins une cible melangee. */
++static uint32_t
++kk_rejeu_drapeaux(const struct kk_rejeu_job *j)
++{
++   const struct vk_graphics_pipeline_state *st = &j->state;
++   uint32_t f = 0;
++#define DYN(x) BITSET_TEST(st->dynamic, MESA_VK_DYNAMIC_##x)
++   const bool prof = st->rp && st->rp->depth_attachment_format != VK_FORMAT_UNDEFINED;
++   const bool sten = st->rp && st->rp->stencil_attachment_format != VK_FORMAT_UNDEFINED;
++   if (prof && st->ds && (st->ds->depth.write_enable || DYN(DS_DEPTH_WRITE_ENABLE)))
++      f |= 1;
++   if (sten && st->ds && (st->ds->stencil.test_enable || DYN(DS_STENCIL_TEST_ENABLE))) {
++      const struct vk_stencil_test_face_state *fa[2] = {&st->ds->stencil.front, &st->ds->stencil.back};
++      for (unsigned k = 0; k < 2; k++) {
++         bool ops = fa[k]->op.fail != VK_STENCIL_OP_KEEP || fa[k]->op.pass != VK_STENCIL_OP_KEEP ||
++                    fa[k]->op.depth_fail != VK_STENCIL_OP_KEEP || DYN(DS_STENCIL_OP);
++         if (ops && (fa[k]->write_mask != 0 || DYN(DS_STENCIL_WRITE_MASK)))
++            f |= 2;
++      }
++   }
++   for (unsigned i = 0; i < 2; i++) {
++      const nir_shader *n = j->infos[i].nir;
++      if (n == NULL)
++         continue;
++      if (n->info.writes_memory)
++         f |= 4;
++      if (n->info.stage == MESA_SHADER_FRAGMENT && n->info.fs.uses_discard)
++         f |= 32;
++   }
++   bool tout = true, une = false, melange = false;
++   if (st->rp && st->cb) {
++      for (unsigned i = 0; i < st->rp->color_attachment_count && i < MESA_VK_MAX_COLOR_ATTACHMENTS; i++) {
++         if (st->rp->color_attachment_formats[i] == VK_FORMAT_UNDEFINED)
++            continue;
++         const struct vk_color_blend_attachment_state *a = &st->cb->attachments[i];
++         const bool ecrit = DYN(CB_WRITE_MASKS) || a->write_mask != 0;
++         if (!ecrit)
++            continue;
++         une = true;
++         const bool m = a->blend_enable && !DYN(CB_BLEND_ENABLES);
++         melange |= m;
++         tout &= m;
++      }
++   }
++#undef DYN
++   if (une && tout)
++      f |= 8;
++   if (une)
++      f |= 16;
++   if (melange)
++      f |= 64;
++   return f;
++}
++
++/* Cidre (0450) : CIDRE_PROFIL_FROID=<fichier> : une ligne par pipeline rejoue
++ * (us) : vs fs ok nir_to_air nir_to_msl trad_r trad_e newLibrary pso abaisse
++ * compile_shader disque archives total trad_trouves generations biblios air_local */
++static void
++kk_profil_ecrire(const struct kk_rejeu_job *j, const uint64_t *p)
++{
++   static int fd = -2;
++   if (fd == -2) {
++      const char *f = getenv("CIDRE_PROFIL_FROID");
++      fd = f != NULL && f[0] == '/' ? open(f, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0644) : -1;
++   }
++   if (fd < 0)
++      return;
++   char l[512];
++   int n = snprintf(l, sizeof(l),
++                    "%02x%02x%02x%02x%02x%02x\t%02x%02x%02x%02x%02x%02x\t%d\t%x\t%llu\t%llu\t%llu\t%llu\t%llu\t%llu\t%llu\t%llu\t%llu\t%llu\t%llu\t%llu\t%llu\t%llu\t%llu\n",
++                    j->vs_cle[0], j->vs_cle[1], j->vs_cle[2], j->vs_cle[3], j->vs_cle[4], j->vs_cle[5],
++                    j->fs_cle[0], j->fs_cle[1], j->fs_cle[2], j->fs_cle[3], j->fs_cle[4], j->fs_cle[5],
++                    j->ok, j->sur,
++                    (unsigned long long)(p[0] / 1000), (unsigned long long)(p[1] / 1000),
++                    (unsigned long long)(p[2] / 1000), (unsigned long long)(p[3] / 1000),
++                    (unsigned long long)(p[4] / 1000), (unsigned long long)(p[5] / 1000),
++                    (unsigned long long)(p[6] / 1000), (unsigned long long)(p[7] / 1000),
++                    (unsigned long long)(p[8] / 1000), (unsigned long long)(p[9] / 1000),
++                    (unsigned long long)(p[10] / 1000), (unsigned long long)p[11],
++                    (unsigned long long)p[12], (unsigned long long)p[13],
++                    (unsigned long long)(p[14] / 1000));
++   if (n > 0 && write(fd, l, (size_t)n) < 0)
++      fd = -1;
++}
++
+ static void
+ kk_rejeu_execute(void *data, UNUSED void *gdata, UNUSED int thread_index)
+ {
+    struct kk_rejeu_job *j = data;
+    struct kk_device *dev = j->dev;
+-   kk_qos_fil(QOS_CLASS_UTILITY);
++   kk_qos_fil(kk_env_u("CIDRE_REJEU_QOS_HAUTE", 0) ? QOS_CLASS_USER_INTERACTIVE : QOS_CLASS_UTILITY);
+    struct vk_shader *out[2] = {NULL, NULL};
++   uint64_t *prof = mtl_prof();
++   memset(prof, 0, 16 * sizeof(uint64_t));
++   j->sur = kk_rejeu_drapeaux(j);
++   const int64_t t_job = os_time_get_nano();
++   uint64_t t_disque = 0;
+    kk_frontal_sync = true;
+    VkResult res = kk_compile_shaders_sync(&dev->vk, 2, j->infos, &j->state,
+                                           j->features, &dev->vk.alloc, out);
+@@ -5040,8 +5136,10 @@
+       vk_cidre_shader_init_cache_obj(&dev->vk, out[1], j->fs_cle);
+       struct kk_shader *vs = container_of(out[0], struct kk_shader, vk);
+       struct kk_shader *fs = container_of(out[1], struct kk_shader, vk);
++      const int64_t t_dp = os_time_get_nano();
+       kk_frontal_disk_put(dev, vs);
+       kk_frontal_disk_put(dev, fs);
++      t_disque = (uint64_t)(os_time_get_nano() - t_dp);
+       /* Pipeline de rendu prechauffe : il part dans l'archive Metal. */
+       if (vs->vs_nir == NULL && vs->function != NULL && fs->function != NULL &&
+           !vs->info.has_gs) {
+@@ -5062,6 +5160,9 @@
+       if (out[i] != NULL)
+          vk_pipeline_cache_object_unref(&dev->vk, &out[i]->pipeline.cache_obj);
+    }
++   prof[8] = t_disque;
++   prof[10] = (uint64_t)(os_time_get_nano() - t_job);
++   kk_profil_ecrire(j, prof);
+ }
+ 
+ static _Atomic uint32_t kk_rejeu_ok, kk_rejeu_echecs;
+@@ -5103,7 +5204,7 @@
+    struct kk_rejeu_index *ix;
+    struct set *faits;
+    int fd_p, fd_fait;
+-   unsigned max, lances, sautes, illisibles, fils;
++   unsigned max, lances, sautes, illisibles, fils, vus;
+    _Atomic uint32_t en_vol;
+ };
+ 
+@@ -5112,6 +5213,12 @@
+ {
+    struct kk_rejeu_parcours *pc = data;
+    if (pc->max && pc->lances >= pc->max)
++      return;
++   /* Cidre (0450) : echantillon CIDRE_REJEU_PAS=k (un enregistrement sur k,
++    * a partir de CIDRE_REJEU_DECALAGE). */
++   const unsigned pas = kk_env_u("CIDRE_REJEU_PAS", 0);
++   const unsigned rang = pc->vus++;
++   if (pas > 1 && rang % pas != kk_env_u("CIDRE_REJEU_DECALAGE", 0) % pas)
+       return;
+    if (_mesa_set_search(pc->faits, cle) != NULL) {
+       pc->sautes++;

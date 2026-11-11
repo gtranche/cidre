@@ -1,0 +1,351 @@
+Generated-by: LLM
+
+KosmicKrisp : frontal NIR differe sur les fils de compilation (CIDRE_FRONTAL_DIFFERE)
+
+0237 ne differe que la compilation Metal ; le frontal (spirv_to_nir, passes,
+liaison, nir_to_air/nir_to_msl) restait sur le fil qui appelle
+vkCreateGraphicsPipelines. Diablo IV cree ses PSO depuis un seul fil et
+l'image l'attend (sample d'un gel : 98 % de ce fil dans le frontal KK, fils
+kkcomp occupes a ~9 %).
+Avec CIDRE_FRONTAL_DIFFERE (et CIDRE_COMPILE_DIFFEREE), un pipeline VS+FS a
+etat de sommets statique rend deux coquilles ; kk_compile_shaders_sync tourne
+sur compile_queue (Metal compile sur place), le resultat est transfere dans
+les coquilles (hors barriere), la variante de rendu est prechauffee, puis les
+barrieres sont signalees ; vkCmdBindPipeline les attend comme pour 0237. La
+serialisation d'une coquille en cours echoue sans attendre ; le fil de
+compilation ecrit ensuite le nuanceur au cache disque 0430.
+Exclus : tess/geom, xfb, VS sans etat de sommets, calcul.
+Diablo IV, demarrage jusqu'a la selection, cle de code neuve (19 562
+traductions) : ~170 s contre ~300 s pour 0410 qui n'en avait que 2 787.
+Demande 0430 (compteurs kk_stat_disque).
+Base : 0410+0412 (~/Dev/cidre-demono-perte-gpu/mesa) + 0402 ; ordre 0430, 0431, 0432.
+
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -30,6 +30,8 @@
+ #include "util/os_time.h"
+ #include "nir_serialize.h"
+ #include "util/blob.h"
++#include "util/disk_cache.h"
++#include "vk_descriptor_set_layout.h"
+ 
+ #include "nir_builder.h"
+ #include "nir_lower_blend.h"
+@@ -2924,6 +2926,8 @@
+ 
+ static unsigned kk_compile_async_threads(void);
+ static _Atomic uint32_t kk_prewarm_count;
++static _Atomic uint32_t kk_frontal_jobs, kk_frontal_disk_puts,
++   kk_frontal_disk_missed;
+ 
+ VkResult
+ kk_device_init_shader_cache(struct kk_device *device)
+@@ -2960,6 +2964,12 @@
+       if (getenv("MESA_KK_COMPILE_STATS"))
+          fprintf(stderr, "kk: %u variantes de rendu prechauffees\n",
+                  atomic_load(&kk_prewarm_count));
++      if (getenv("MESA_KK_COMPILE_STATS"))
++         fprintf(stderr, "kk: frontal differe %u pipelines, %u ecrits au "
++                         "cache disque, %u sans cle\n",
++                 atomic_load(&kk_frontal_jobs),
++                 atomic_load(&kk_frontal_disk_puts),
++                 atomic_load(&kk_frontal_disk_missed));
+    }
+    if (device->rp_variant_cache) {
+       hash_table_foreach(device->rp_variant_cache, entry)
+@@ -3158,11 +3168,13 @@
+ /* Compile tout de suite, ou met en file quand la compilation differee est
+  * active. Ne sert que pour les cas simples : etape de rendu sans NIR retenu
+  * (pas de vs_nir, pas d'emulation en calcul) et pipeline de calcul. */
++static _Thread_local bool kk_frontal_sync;
++
+ static VkResult
+ kk_compile_maybe_async(struct kk_device *dev, struct kk_shader *s,
+                        uint32_t local_size_threads)
+ {
+-   if (!dev->compile_queue_ok) {
++   if (!dev->compile_queue_ok || kk_frontal_sync) {
+       if (s->info.stage == MESA_SHADER_COMPUTE)
+          return kk_compile_compute_pipeline(
+             dev, &s->msl_data[MESA_SHADER_COMPUTE], local_size_threads,
+@@ -3181,7 +3193,7 @@
+ }
+ 
+ static VkResult
+-kk_compile_shaders(struct vk_device *device, uint32_t shader_count,
++kk_compile_shaders_sync(struct vk_device *device, uint32_t shader_count,
+                    struct vk_shader_compile_info *infos,
+                    const struct vk_graphics_pipeline_state *state,
+                    const struct vk_features *enabled_features,
+@@ -3407,8 +3419,247 @@
+    }
+ 
+    return result;
++}
++
++static bool
++kk_frontal_differe_enabled(void)
++{
++   static int enabled = -1;
++   if (enabled < 0)
++      enabled = cidre_env_actif("CIDRE_FRONTAL_DIFFERE");
++   return enabled;
++}
++
++struct kk_frontal_job {
++   struct kk_device *dev;
++   struct kk_shader *shells[2];
++   struct vk_shader_compile_info infos[2];
++   struct vk_pipeline_robustness_state robustness[2];
++   struct vk_descriptor_set_layout **layouts[2];
++   VkPushConstantRange *pcr[2];
++   struct vk_sampler_state *samplers[2];
++   struct vk_graphics_pipeline_state state;
++   void *state_mem;
++   struct vk_features features;
++};
++
++static void
++kk_frontal_job_free(struct kk_frontal_job *job)
++{
++   struct kk_device *dev = job->dev;
++   for (unsigned i = 0; i < 2; i++) {
++      if (job->layouts[i] != NULL) {
++         for (uint32_t l = 0; l < job->infos[i].set_layout_count; l++) {
++            if (job->layouts[i][l] != NULL)
++               vk_descriptor_set_layout_unref(&dev->vk, job->layouts[i][l]);
++         }
++         free(job->layouts[i]);
++      }
++      free(job->pcr[i]);
++      free(job->samplers[i]);
++   }
++   vk_free(&dev->vk.alloc, job->state_mem);
++   free(job);
+ }
+ 
++static void
++kk_frontal_disk_put(struct kk_device *dev, struct kk_shader *shader)
++{
++   struct disk_cache *cache = dev->vk.physical->disk_cache;
++   if (cache == NULL)
++      return;
++   if (shader->vk.pipeline.cache_obj.key_data == NULL) {
++      atomic_fetch_add(&kk_frontal_disk_missed, 1);
++      atomic_fetch_add(&kk_stat_disque[2], 1);
++      return;
++   }
++   struct blob blob;
++   blob_init(&blob);
++   if (shader->vk.ops->serialize(&dev->vk, &shader->vk, &blob) &&
++       !blob.out_of_memory) {
++      cache_key key;
++      disk_cache_compute_key(cache, shader->vk.pipeline.cache_obj.key_data,
++                             shader->vk.pipeline.cache_obj.key_size, key);
++      disk_cache_put(cache, key, blob.data, blob.size, NULL);
++      atomic_fetch_add(&kk_frontal_disk_puts, 1);
++      atomic_fetch_add(&kk_stat_disque[1], 1);
++   }
++   blob_finish(&blob);
++}
++
++static void
++kk_frontal_execute(void *data, UNUSED void *gdata, UNUSED int thread_index)
++{
++   struct kk_frontal_job *job = data;
++   struct kk_device *dev = job->dev;
++   struct vk_shader *out[2] = {NULL, NULL};
++
++   kk_frontal_sync = true;
++   VkResult result = kk_compile_shaders_sync(&dev->vk, 2, job->infos,
++                                             &job->state, &job->features,
++                                             &dev->vk.alloc, out);
++   kk_frontal_sync = false;
++
++   const size_t head = offsetof(struct kk_shader, vk) + sizeof(struct vk_shader);
++   for (unsigned i = 0; i < 2; i++) {
++      struct kk_shader *shell = job->shells[i];
++      if (result == VK_SUCCESS && out[i] != NULL) {
++         struct kk_shader *real = container_of(out[i], struct kk_shader, vk);
++         const size_t f0 = offsetof(struct kk_shader, compile_ready);
++         const size_t f1 = f0 + sizeof(struct util_queue_fence);
++         memcpy((char *)shell + head, (char *)real + head, f0 - head);
++         memcpy((char *)shell + f1, (char *)real + f1,
++                sizeof(struct kk_shader) - f1);
++         atomic_store(&shell->frontal_pending, true);
++         shell->compile_async = true;
++         shell->compile_dev = dev;
++         shell->prewarm_vs = NULL;
++         shell->prewarm_key = NULL;
++         atomic_store(&shell->prewarm_refs, 0);
++         shell->vk.scratch_size = real->vk.scratch_size;
++         shell->vk.stack_size = real->vk.stack_size;
++         vk_shader_free(&dev->vk, &dev->vk.alloc, &real->vk);
++      }
++      shell->compile_result = result;
++   }
++
++   struct kk_shader *vs = job->shells[0], *fs = job->shells[1];
++   if (result == VK_SUCCESS && kk_prewarm_enabled() && vs->vs_nir == NULL &&
++       vs->function != NULL && fs->function != NULL && !vs->info.has_gs) {
++      fs->prewarm_key = kk_prewarm_key(vs, fs);
++      if (fs->prewarm_key != NULL) {
++         fs->prewarm_key->vs_function = vs->function;
++         fs->prewarm_key->fs_function = fs->function;
++         if (kk_get_render_pipeline_variant(dev, vs->function, vs, fs,
++                                            fs->prewarm_key) != NULL)
++            atomic_fetch_add(&kk_prewarm_count, 1);
++      }
++   }
++
++   if (result != VK_SUCCESS)
++      fprintf(stderr, "kk: frontal differe echoue (%d) : les dessins qui "
++                      "l'emploient seront sautes\n", (int)result);
++
++   atomic_fetch_add(&kk_stat_disque[0], 1);
++   atomic_store(&vs->frontal_pending, false);
++   atomic_store(&fs->frontal_pending, false);
++   if (result == VK_SUCCESS) {
++      kk_frontal_disk_put(dev, vs);
++      kk_frontal_disk_put(dev, fs);
++   }
++
++   kk_frontal_job_free(job);
++   atomic_fetch_add(&kk_frontal_jobs, 1);
++   util_queue_fence_signal(&fs->compile_ready);
++}
++
++static bool
++kk_frontal_copy_info(struct kk_frontal_job *job, unsigned i,
++                     const struct vk_shader_compile_info *info)
++{
++   job->infos[i] = *info;
++   if (info->robustness != NULL) {
++      job->robustness[i] = *info->robustness;
++      job->infos[i].robustness = &job->robustness[i];
++   }
++   if (info->set_layout_count > 0) {
++      job->layouts[i] = calloc(info->set_layout_count, sizeof(void *));
++      if (job->layouts[i] == NULL)
++         return false;
++      for (uint32_t l = 0; l < info->set_layout_count; l++) {
++         if (info->set_layouts[l] != NULL)
++            job->layouts[i][l] = vk_descriptor_set_layout_ref(info->set_layouts[l]);
++      }
++      job->infos[i].set_layouts = job->layouts[i];
++   }
++   if (info->push_constant_range_count > 0) {
++      size_t sz = info->push_constant_range_count * sizeof(VkPushConstantRange);
++      job->pcr[i] = malloc(sz);
++      if (job->pcr[i] == NULL)
++         return false;
++      memcpy(job->pcr[i], info->push_constant_ranges, sz);
++      job->infos[i].push_constant_ranges = job->pcr[i];
++   }
++   if (info->embedded_sampler_count > 0) {
++      size_t sz = info->embedded_sampler_count * sizeof(struct vk_sampler_state);
++      job->samplers[i] = malloc(sz);
++      if (job->samplers[i] == NULL)
++         return false;
++      memcpy(job->samplers[i], info->embedded_samplers, sz);
++      job->infos[i].embedded_samplers = job->samplers[i];
++   }
++   return true;
++}
++
++static VkResult
++kk_compile_shaders(struct vk_device *device, uint32_t shader_count,
++                   struct vk_shader_compile_info *infos,
++                   const struct vk_graphics_pipeline_state *state,
++                   const struct vk_features *enabled_features,
++                   const VkAllocationCallbacks *pAllocator,
++                   struct vk_shader **shaders_out)
++{
++   struct kk_device *dev = container_of(device, struct kk_device, vk);
++
++   bool defer = dev->compile_queue_ok && kk_frontal_differe_enabled() &&
++                !kk_frontal_sync && shader_count == 2 && state != NULL &&
++                state->vi != NULL && state->rp != NULL &&
++                infos[0].stage == MESA_SHADER_VERTEX &&
++                infos[1].stage == MESA_SHADER_FRAGMENT &&
++                (infos[0].nir->xfb_info == NULL ||
++                 infos[0].nir->xfb_info->output_count == 0u);
++   if (!defer)
++      return kk_compile_shaders_sync(device, shader_count, infos, state,
++                                     enabled_features, pAllocator,
++                                     shaders_out);
++
++   struct kk_frontal_job *job = calloc(1, sizeof(*job));
++   if (job == NULL)
++      goto sync;
++   job->dev = dev;
++   job->features = *enabled_features;
++   if (vk_graphics_pipeline_state_copy(device, &job->state, state,
++                                       &dev->vk.alloc,
++                                       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT,
++                                       &job->state_mem) != VK_SUCCESS ||
++       !kk_frontal_copy_info(job, 0, &infos[0]) ||
++       !kk_frontal_copy_info(job, 1, &infos[1])) {
++      kk_frontal_job_free(job);
++      goto sync;
++   }
++
++   for (unsigned i = 0; i < 2; i++) {
++      struct kk_shader *shell = vk_shader_zalloc(
++         device, &kk_shader_ops, infos[i].stage, &dev->vk.alloc,
++         sizeof(*shell));
++      if (shell == NULL) {
++         if (i == 1)
++            vk_shader_free(device, &dev->vk.alloc, &job->shells[0]->vk);
++         kk_frontal_job_free(job);
++         goto sync;
++      }
++      shell->info.stage = infos[i].stage;
++      shell->compile_dev = dev;
++      shell->compile_result = VK_SUCCESS;
++      atomic_store(&shell->frontal_pending, true);
++      util_queue_fence_init(&shell->compile_ready);
++      if (i == 1)
++         util_queue_fence_reset(&shell->compile_ready);
++      shell->compile_async = true;
++      job->shells[i] = shell;
++   }
++
++   shaders_out[0] = &job->shells[0]->vk;
++   shaders_out[1] = &job->shells[1]->vk;
++   util_queue_add_job(&dev->compile_queue, job, &job->shells[0]->compile_ready,
++                      kk_frontal_execute, NULL, 0);
++   return VK_SUCCESS;
++
++sync:
++   return kk_compile_shaders_sync(device, shader_count, infos, state,
++                                  enabled_features, pAllocator, shaders_out);
++}
++
+ /* Le MSL de chaque nuanceur part dans le cache de pipelines Vulkan. Un jeu qui
+  * cree des dizaines de milliers de pipelines (Detroit: Become Human : 99 453
+  * pipelines, 151 182 bibliotheques MSL, ~210 Ko de MSL par nuanceur) obtenait
+@@ -3494,6 +3745,10 @@
+ 
+    if (shader->vs_nir != NULL || shader->emu_vs_nir != NULL)
+       return false;
++   if (atomic_load(&shader->frontal_pending)) {
++      atomic_fetch_add(&kk_stat_disque[5], 1);
++      return false;
++   }
+ 
+    blob_write_bytes(blob, &shader->info, sizeof(shader->info));
+    kk_msl_serialize(shader, shader->info.stage, blob);
+diff --git a/src/kosmickrisp/vulkan/kk_shader.h b/src/kosmickrisp/vulkan/kk_shader.h
+--- a/src/kosmickrisp/vulkan/kk_shader.h
++++ b/src/kosmickrisp/vulkan/kk_shader.h
+@@ -252,6 +252,8 @@
+    struct kk_shader *prewarm_vs;
+    struct kk_rp_variant_key *prewarm_key;
+    _Atomic uint32_t prewarm_refs;
++
++   _Atomic bool frontal_pending;
+ };
+ 
+ static inline void

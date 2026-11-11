@@ -1,0 +1,128 @@
+Generated-by: LLM
+
+KosmicKrisp : banc des variantes au dessin (sous CIDRE_REJEU seulement)
+
+Outil de banc : sous CIDRE_REJEU, lie les pipelines rejoues et dessine chacune de leurs variantes notees
+(0471), pour mesurer le cout au dessin hors jeu. Aucun effet hors du rejeu. Chantier : ~/Dev/cidre-d4-variantes.
+
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -4992,6 +4992,9 @@
+    struct kk_device *dev = j->dev;
+    struct kk_shader *vs = j->vs, *fs = j->fs;
+    kk_qos_fil(QOS_CLASS_UTILITY);
++   /* banc (CIDRE_BANC_BIND) : comme la file de fond, retenu jusqu'au depart */
++   while (atomic_load(&kk_banc_retenue) && !atomic_load(&dev->var_arret))
++      usleep(1000);
+    kk_var_ceder(dev);
+    if (atomic_load(&dev->var_arret))
+       goto fin;
+@@ -5116,7 +5119,8 @@
+    const bool table = kk_var_table != NULL;
+    simple_mtx_unlock(&kk_var_lock);
+    /* Le rejeu construit les variantes lui-meme (kk_rejeu_execute). */
+-   if (!table || !kk_var_fond_actif() || getenv("CIDRE_REJEU") != NULL)
++   if (!table || !kk_var_fond_actif() ||
++       (getenv("CIDRE_REJEU") != NULL && kk_env_u("CIDRE_BANC_BIND", 0) == 0))
+       return;
+    const unsigned n = kk_env_u("CIDRE_VARIANTES_FILS", 3);
+    if (n == 0)
+@@ -6094,6 +6098,48 @@
+    b->sh[b->crees * 2 + 1] = out[1];
+    b->crees++;
+    kk_shaders_crees(&b->dev->vk, 2, out);
++}
++
++/* Cidre (0473) : cles de variantes d'un dessin simule (CIDRE_BANC_VARIANTES=N,
++ * N <= 4) : formats declares (cle du prechauffage), puis des etats que le
++ * prechauffage ne devine pas : alpha non ecrit, une seule cible ecrite, une
++ * cible liee de plus que le pipeline n'ecrit pas (RTV en trop, D3D12). */
++static struct kk_rp_variant_key *
++kk_banc_synth(const struct kk_shader *vs, const struct kk_shader *fs, unsigned nb,
++              uint32_t *n)
++{
++   *n = 0;
++   struct kk_rp_variant_key *k0 = kk_prewarm_key(vs, fs);
++   if (k0 == NULL)
++      return NULL;
++   nb = MIN2(nb, 4u);
++   struct kk_rp_variant_key *v = calloc(nb ? nb : 1, sizeof(*v));
++   if (v == NULL) {
++      free(k0);
++      return NULL;
++   }
++   for (unsigned k = 0; k < nb; k++) {
++      v[k] = *k0;
++      int premier = -1, libre = -1;
++      for (int i = 0; i < MAX_DRAW_BUFFERS; i++) {
++         if (k0->formats[i] != MTL_PIXEL_FORMAT_INVALID && premier < 0)
++            premier = i;
++         if (k0->formats[i] == MTL_PIXEL_FORMAT_INVALID && libre < 0)
++            libre = i;
++      }
++      if (k == 1) {
++         for (int i = 0; i < MAX_DRAW_BUFFERS; i++)
++            v[k].blend_write_mask[i] &= 0x7;
++      } else if (k == 2 && premier >= 0) {
++         v[k].write_disable_mask |= ~BITFIELD_BIT(premier) & BITFIELD_MASK(MAX_DRAW_BUFFERS);
++      } else if (k == 3 && libre >= 0) {
++         v[k].formats[libre] = MTL_PIXEL_FORMAT_R8G8B8A8_UNORM;
++         v[k].write_disable_mask |= BITFIELD_BIT(libre);
++      }
++   }
++   free(k0);
++   *n = nb;
++   return v;
+ }
+ 
+ static int
+@@ -6131,6 +6177,11 @@
+ 
+    uint64_t *dt = calloc(nb ? nb : 1, sizeof(uint64_t));
+    unsigned faits = 0, attendus = 0;
++   const unsigned nvar = kk_env_u("CIDRE_BANC_VARIANTES", 0);
++   uint64_t dv_somme = 0, dv_max = 0;
++   unsigned dv_paires = 0;
++   const uint32_t var0 = atomic_load(&kk_stat_fond[9]);
++   const uint32_t vfond0 = atomic_load(&kk_stat_var[3]);
+    const unsigned pas = b.crees > nb && nb ? b.crees / nb : 1;
+    const int64_t t2 = os_time_get_nano();
+    for (unsigned k = 0; k < nb && k * pas < b.crees; k++) {
+@@ -6149,6 +6200,24 @@
+       dt[faits] = (uint64_t)(os_time_get_nano() - ta) / 1000u;
+       if (dt[faits] > 200)
+          attendus++;
++      /* Cidre (0473) : dessin simule, variantes cherchees comme au dessin. */
++      if (nvar) {
++         struct kk_shader *vsk = container_of(paire[0], struct kk_shader, vk);
++         struct kk_shader *fsk = container_of(paire[1], struct kk_shader, vk);
++         uint32_t nk = 0;
++         struct kk_rp_variant_key *v =
++            kk_var_apte(dev, vsk->function, vsk, fsk) ? kk_banc_synth(vsk, fsk, nvar, &nk) : NULL;
++         const int64_t tv = os_time_get_nano();
++         kk_variante_au_dessin = true;
++         for (uint32_t k = 0; k < nk; k++)
++            kk_get_render_pipeline_variant(dev, vsk->function, vsk, fsk, &v[k]);
++         kk_variante_au_dessin = false;
++         const uint64_t us = (uint64_t)(os_time_get_nano() - tv) / 1000u;
++         dv_somme += us;
++         dv_max = MAX2(dv_max, us);
++         dv_paires += nk > 0;
++         free(v);
++      }
+       faits++;
+       if (pause_ms)
+          usleep(pause_ms * 1000u);
+@@ -6169,6 +6238,11 @@
+            faits ? dt[faits - 1] / 1000.0 : 0.0,
+            fond1 - fond0, (fond1 - fond0) / ((t3 - t2) / 1e9),
+            atomic_load(&dev->fond_en_file));
++   if (nvar)
++      fprintf(stderr, "kk: banc variantes : %u paires dessinees, %u variantes construites au dessin, "
++                      "temps des dessins %.1f ms (max %.2f ms) ; %u construites en fond pendant le banc\n",
++              dv_paires, atomic_load(&kk_stat_fond[9]) - var0, dv_somme / 1000.0, dv_max / 1000.0,
++              atomic_load(&kk_stat_var[3]) - vfond0);
+    free(dt);
+    for (unsigned k = 0; k < 2 * b.crees; k++)
+       vk_pipeline_cache_object_unref(&dev->vk, &b.sh[k]->pipeline.cache_obj);

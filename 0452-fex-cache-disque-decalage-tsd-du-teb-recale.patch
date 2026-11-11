@@ -1,0 +1,120 @@
+Generated-by: LLM
+
+fex : cache disque, decalage TSD du TEB recale au service (0452)
+
+Le code hote mis en cache contient en dur le decalage TSD du TEB (ldr x8, [x8, #8*cle_pthread] de LoadTEB) ;
+la cle pthread est creee a l'execution (creer_cle_teb) et peut changer d'un lancement a l'autre : un bloc
+servi lisait alors un TEB nul (Diablo IV : AV 0x1788 dans CUESDK, pris pour un cache corrompu). L'immediat est
+recale au service (motif mrs TPIDRRO / and / ldr) ; Guest64LowBase entre dans le seau s'il n'est pas nul ;
+les anciens caches restent valables. Repro forcee : avant, plantage identique ; apres, 39,7 img/s au menu,
+~79 % de blocs servis. Chantier : ~/Dev/cidre-d4-cache-tsd.
+
+diff --git a/FEXCore/Source/Interface/Core/DiskCache.cpp b/FEXCore/Source/Interface/Core/DiskCache.cpp
+--- a/FEXCore/Source/Interface/Core/DiskCache.cpp
++++ b/FEXCore/Source/Interface/Core/DiskCache.cpp
+@@ -20,6 +20,16 @@
+ #include <atomic>
+ #include <filesystem>
+ 
++#ifdef FEX_TEB_SANS_X18
++// Cidre 0452 : constantes propres au processus emises dans le code hote (Arm64Emitter::LoadTEB, MemoryOps)
++#ifdef ARCHITECTURE_arm64ec
++extern "C" uint64_t FEX_TEBSlotOffset;
++#endif
++namespace FEXCore::IR {
++extern uint64_t Guest64LowBase;
++}
++#endif
++
+ namespace FEXCore {
+ 
+ namespace DiskCache {
+@@ -70,8 +80,62 @@
+       const char* V = getenv(N);
+       R += fextl::fmt::format("|{}={}", N, V ? V : "-");
+     }
++#ifdef FEX_TEB_SANS_X18
++    // Cidre 0452 : base de la fenetre basse LuaJIT, immediat du code emis (MemoryOps) et propre au processus. Ajoutee
++    // seulement si non nulle : le seau des autres jeux ne change pas.
++    if (FEXCore::IR::Guest64LowBase) {
++      R += fextl::fmt::format("|basse={:x}", FEXCore::IR::Guest64LowBase);
++    }
++#endif
+     return R;
++  }
++
++#if defined(ARCHITECTURE_arm64ec) && defined(FEX_TEB_SANS_X18)
++  // Cidre 0452 : LoadTEB (Arm64Emitter) emet « mrs Xd, TPIDRRO_EL0 ; and Xd, Xd, #~7 ; ldr Xd, [Xd, #FEX_TEBSlotOffset] ».
++  // FEX_TEBSlotOffset = 8 * numero de la cle pthread du TEB (ntdll unix, creer_cle_teb), attribue a l'execution : il varie
++  // d'un processus a l'autre selon les cles creees avant (bibliotheques chargees, reglages). Le decalage n'etait ni dans le
++  // seau ni dans les relocations : un bloc garde par un processus a cle 266 lisait, servi a un processus a autre cle, un
++  // emplacement TSD vide (TEB nul, AV a 0x1788 = TEB_CPU_AREA_OFFSET ; D4 : DllMain de CUESDK, __isa_available_init,
++  // retour du CPUID). On recale le decalage dans le code hote servi, comme une relocation. Rend faux si un motif est
++  // trouve et que le decalage courant n'est pas encodable (bloc refuse).
++  static std::atomic<uint64_t> CidreTEBRecales {}, CidreTEBMotifs {};
++  static bool CidreRecalerTEB(std::span<uint8_t> HostCode) {
++    const uint64_t Courant = FEX_TEBSlotOffset;
++    const bool Encodable = (Courant & 7) == 0 && Courant / 8 <= 0xfff;
++    uint32_t* W = reinterpret_cast<uint32_t*>(HostCode.data());
++    const size_t N = HostCode.size() / 4;
++    bool Recale = false;
++    for (size_t i = 0; i + 2 < N; i++) {
++      if ((W[i] & 0xffffffe0u) != 0xd53bd060u) { // mrs Xd, TPIDRRO_EL0
++        continue;
++      }
++      const uint32_t Rd = W[i] & 31;
++      if (W[i + 1] != (0x927df000u | Rd << 5 | Rd)) { // and Xd, Xd, #0xfffffffffffffff8
++        continue;
++      }
++      const uint32_t Base = 0xf9400000u | Rd << 5 | Rd; // ldr Xd, [Xd, #imm12 * 8]
++      if ((W[i + 2] & 0xffc003ffu) != Base) {
++        continue;
++      }
++      CidreTEBMotifs.fetch_add(1, std::memory_order_relaxed);
++      if (!Encodable) {
++        return false;
++      }
++      const uint32_t Voulu = Base | uint32_t(Courant / 8) << 10;
++      if (W[i + 2] != Voulu) {
++        if (CidreTEBRecales.fetch_add(1, std::memory_order_relaxed) == 0) {
++          LogMan::Msg::IFmt("cidre disque : decalage TSD du TEB recale dans le code servi ({:#x} -> {:#x})",
++                            ((W[i + 2] >> 10) & 0xfff) * 8, Courant);
++        }
++        W[i + 2] = Voulu;
++        Recale = true;
++      }
++      i += 2;
++    }
++    (void)Recale;
++    return true;
+   }
++#endif
+ 
+   static inline uint64_t CidreTick() {
+     uint64_t v;
+@@ -490,6 +554,10 @@
+     if (!CidreActif) {
+       return;
+     }
++#if defined(ARCHITECTURE_arm64ec) && defined(FEX_TEB_SANS_X18)
++    // Cidre 0452 : cle TSD du TEB de ce processus (propre au processus, recalee dans le code servi)
++    LogMan::Msg::IFmt("cidre disque : cle TSD du TEB {} (decalage {:#x})", FEX_TEBSlotOffset / 8, FEX_TEBSlotOffset);
++#endif
+ 
+     fextl::string SerializedConfig = FEXCore::Config::SerializeForCache();
+     SerializedConfig += CidreEnvCodegen();
+@@ -1025,8 +1093,14 @@
+     }
+ 
+     if (!CTX->CodeCache.ApplyPackedCodeRelocations(GuestRIP, std::as_writable_bytes(HitData.HostCode), SmallRelocs, ThunkRelocs, Thread)) {
++      CidreSortieConsult[7].fetch_add(1, std::memory_order_relaxed); return std::nullopt;
++    }
++#if defined(ARCHITECTURE_arm64ec) && defined(FEX_TEB_SANS_X18)
++    // Cidre 0452 : decalage TSD du TEB propre au processus (voir CidreRecalerTEB)
++    if (!CidreRecalerTEB(HitData.HostCode)) {
+       CidreSortieConsult[7].fetch_add(1, std::memory_order_relaxed); return std::nullopt;
+     }
++#endif
+ 
+     // Cidre : servi depuis l'ancienne generation : recopie en fond dans la base courante (une fois)
+     if (CidreAncienne && Entry.DB == CidreAncienne && RWCacheDB && !RWCacheDB->Full()) {

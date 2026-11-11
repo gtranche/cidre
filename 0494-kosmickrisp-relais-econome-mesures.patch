@@ -1,0 +1,379 @@
+Generated-by: LLM
+
+KosmicKrisp : relais econome (pas de relais d'archive sans archive) et mesures
+
+kk_relais_utile(comp) : le relais d'archive MTL4 ne sert que si le compilateur a des archives (liste posee
+une fois a sa creation). Sans archive (mode cache de fonctions 0451, cas du joueur) : variantes et pipelines
+de calcul ne relisent plus les deux bibliotheques AIR depuis le disque sous le verrou global et ne cherchent
+plus dans une liste vide ; les bibliotheques ne sondent plus les chemins du relais. Rendu inchange par
+construction. CIDRE_RELAIS_ECONOME=0 rend le comportement de 0492. Mesures (MESA_KK_COMPILE_STATS) : lignes
+« KK compile: mesure (0494) » ; banc (CIDRE_REJEU) : CIDRE_BANC_DESSINS, ligne « banc devinette ».
+98 paires reelles : -37 % sur bind + dessin. KK_CODEGEN inchange (1-fe23de31).
+Chantier : ~/Dev/cidre-d4-kkcompil (RAPPORT-0494.md).
+
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.h b/src/kosmickrisp/bridge/mtl_compiler.h
+--- a/src/kosmickrisp/bridge/mtl_compiler.h
++++ b/src/kosmickrisp/bridge/mtl_compiler.h
+@@ -117,6 +117,7 @@
+ /* Cidre (0443) : rafale et delais (kk_stat_fond2), temps par etape (ns). */
+ extern _Atomic uint32_t kk_stat_fond2[16];
+ extern _Atomic uint32_t kk_stat_froid[4];
++extern _Atomic uint64_t kk_stat_mesure[24];
+ extern _Atomic uint64_t kk_stat_etape_ns[8];
+ /* Cidre (0464) : binds qui ont attendu (categories, prises sur le fil). */
+ extern _Atomic uint32_t kk_stat_bind[16];
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.m b/src/kosmickrisp/bridge/mtl_compiler.m
+--- a/src/kosmickrisp/bridge/mtl_compiler.m
++++ b/src/kosmickrisp/bridge/mtl_compiler.m
+@@ -312,6 +312,19 @@
+       threads = (int)CLAMP(n, 0, 8);
+    }
+    return threads;
++}
++
++static bool
++kk_relais_utile(id<MTL4Compiler> comp)
++{
++   static int econome = -1;
++   if (econome < 0) {
++      const char *v = getenv("CIDRE_RELAIS_ECONOME");
++      econome = !(v && v[0] == '0');
++   }
++   if (kk_relais_threads() <= 0)
++      return false;
++   return !econome || kk_compiler_archives(comp).count > 0;
+ }
+ 
+ static const void *kk_lib_msl_path_key = &kk_lib_msl_path_key;
+@@ -1070,6 +1083,7 @@
+ _Atomic uint64_t kk_stat_fond_us[4];
+ _Atomic uint32_t kk_stat_fond2[16];
+ _Atomic uint32_t kk_stat_froid[4];
++_Atomic uint64_t kk_stat_mesure[24];
+ _Atomic uint32_t kk_stat_bind[16];
+ _Atomic uint32_t kk_stat_var[16];
+ _Atomic uint64_t kk_stat_var_us[4];
+@@ -1161,6 +1175,25 @@
+       fprintf(stderr, "KK compile: froids en fond (0492) : %u enfiles, %u compiles, %u refuses (plafond), %u prets au bind\n",
+               atomic_load(&kk_stat_froid[0]), atomic_load(&kk_stat_froid[1]),
+               atomic_load(&kk_stat_froid[2]), atomic_load(&kk_stat_froid[3]));
++   if (atomic_load(&kk_stat_mesure[0]) || atomic_load(&kk_stat_mesure[1]) ||
++       atomic_load(&kk_stat_mesure[10]) || atomic_load(&kk_stat_mesure[11])) {
++      for (unsigned c = 0; c < 2; c++) {
++         const uint64_t n = atomic_load(&kk_stat_mesure[0 + c]), v = atomic_load(&kk_stat_mesure[10 + c]);
++         fprintf(stderr, "KK compile: mesure (0494) %s : bibliotheques %llu / restaurer %.1f ms + new_library %.1f ms "
++                         "(dont newLibraryWithData %.1f ms) + fonction %.1f ms ; variantes %llu / %.1f ms "
++                         "(archives %.1f ms, compilation %.1f ms)\n",
++                 c ? "fil du bind/dessin" : "autres fils", (unsigned long long)n,
++                 atomic_load(&kk_stat_mesure[2 + c]) / 1e6, atomic_load(&kk_stat_mesure[4 + c]) / 1e6,
++                 atomic_load(&kk_stat_mesure[6 + c]) / 1e6, atomic_load(&kk_stat_mesure[8 + c]) / 1e6,
++                 (unsigned long long)v, atomic_load(&kk_stat_mesure[12 + c]) / 1e6,
++                 atomic_load(&kk_stat_mesure[14 + c]) / 1e6, atomic_load(&kk_stat_mesure[16 + c]) / 1e6);
++      }
++      fprintf(stderr, "KK compile: mesure (0494) detail : bibliotheques : cle sha %.1f ms, chemins relais %.1f ms, "
++                      "ecriture AIR local %.1f ms, association MSL %.1f ms ; pipelines : relais %llu / %.1f ms\n",
++              atomic_load(&kk_stat_mesure[18]) / 1e6, atomic_load(&kk_stat_mesure[19]) / 1e6,
++              atomic_load(&kk_stat_mesure[20]) / 1e6, atomic_load(&kk_stat_mesure[21]) / 1e6,
++              (unsigned long long)atomic_load(&kk_stat_mesure[23]), atomic_load(&kk_stat_mesure[22]) / 1e6);
++   }
+    if (atomic_load(&kk_stat_fond2[14]) || atomic_load(&kk_stat_fond2[0]))
+       fprintf(stderr, "KK compile: rafale : %u enfiles, %u compiles, %u expires, %u refuses, %u prets au bind ; "
+                       "delai creation->bind (%u paires) : <10ms %u, <100ms %u, <1s %u, <10s %u, <60s %u, >=60s %u ; flush reportes %u\n",
+@@ -1365,14 +1398,17 @@
+ {
+    @autoreleasepool {
+       id<MTL4Compiler> comp = (id<MTL4Compiler>)compiler;
++      const uint64_t m0 = kk_now_ns();
+       NSString *key = kk_library_key(src, (uint32_t)msl_version, (uint32_t)math_mode,
+                                      (uint32_t)math_fp_fns);
++      const uint64_t m1 = kk_now_ns();
++      atomic_fetch_add(&kk_stat_mesure[18], m1 - m0);
+       id<MTLLibrary> lib = nil;
+       const char *pre = kk_env_dir("MESA_KK_PRECOMPIL");
+       const char *local = kk_env_dir("MESA_KK_AIR_LOCAL");
+       NSString *msl_path = nil;
+       if (kk_relais_threads() > 0) {
+-         for (unsigned i = 0; i < 2 && msl_path == nil; i++) {
++         for (unsigned i = 0; i < 2 && msl_path == nil && kk_relais_utile(comp); i++) {
+             const char *dir = i == 0 ? pre : local;
+             if (dir == NULL)
+                continue;
+@@ -1380,6 +1416,7 @@
+             if (access(p.fileSystemRepresentation, R_OK) == 0)
+                msl_path = p;
+          }
++         atomic_fetch_add(&kk_stat_mesure[19], kk_now_ns() - m1);
+       } else {
+          if (pre) {
+             lib = kk_library_from_air(comp.device, pre, key);
+@@ -1421,11 +1458,14 @@
+             uint64_t tw0 = kk_now_ns();
+             kk_air_local_write_bytes(local, key, air, air_size);
+             kk_prof[14] += kk_now_ns() - tw0;
++            atomic_fetch_add(&kk_stat_mesure[20], kk_now_ns() - tw0);
+          }
++         const uint64_t ta0 = kk_now_ns();
+          objc_setAssociatedObject(lib, kk_lib_air_key,
+                                   @[[NSString stringWithUTF8String:src], @((uint32_t)msl_version),
+                                     @((uint32_t)math_mode), @((uint32_t)math_fp_fns)],
+                                   OBJC_ASSOCIATION_RETAIN_NONATOMIC);
++         atomic_fetch_add(&kk_stat_mesure[21], kk_now_ns() - ta0);
+       }
+       objc_setAssociatedObject(lib, kk_lib_key_key, key, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+       return lib;
+@@ -1514,7 +1554,7 @@
+          KK_ARCHIVE_UNLOCK();
+       }
+       bool cached = pipeline != nil;
+-      if (!cached && kk_relais_threads() > 0) {
++      if (!cached && kk_relais_utile(comp)) {
+          MTL4ComputePipelineDescriptor *alt = kk_relais_compute_desc(comp.device, desc);
+          if (alt != nil) {
+             KK_ARCHIVE_LOCK();
+@@ -1716,7 +1756,9 @@
+       KK_ARCHIVE_UNLOCK();
+       kk_prof[9] += kk_now_ns() - ta0;
+       bool cached = pipeline != nil;
+-      if (!cached && kk_relais_threads() > 0) {
++      const uint64_t tr0 = kk_now_ns();
++      if (!cached && kk_relais_utile(comp)) {
++         atomic_fetch_add(&kk_stat_mesure[23], 1);
+          MTL4RenderPipelineDescriptor *alt = kk_relais_render_desc(comp.device, desc);
+          if (alt != nil) {
+             KK_ARCHIVE_LOCK();
+@@ -1733,6 +1775,7 @@
+             kk_relais_submit(comp, [[desc copy] autorelease], pipeline, false, 0);
+          }
+       }
++      atomic_fetch_add(&kk_stat_mesure[22], kk_now_ns() - tr0);
+       if (!cached) {
+          uint64_t tp0 = kk_now_ns();
+          pipeline = [comp newRenderPipelineStateWithDescriptor:desc compilerTaskOptions:nil
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -2597,8 +2597,15 @@
+          pipeline_descriptor, fs->info.fs.has_alpha_to_one_enabled);
+    }
+ 
++   const unsigned c = kk_variante_au_dessin ? 1u : 0u;
++   const uint64_t a0 = mtl_prof()[9], p0 = mtl_prof()[5];
++   const int64_t t0 = os_time_get_nano();
+    mtl_render_pipeline_state *state =
+       mtl_new_render_pipeline(device->mtl_compiler_handle, pipeline_descriptor);
++   atomic_fetch_add(&kk_stat_mesure[10 + c], 1);
++   atomic_fetch_add(&kk_stat_mesure[12 + c], (uint64_t)(os_time_get_nano() - t0));
++   atomic_fetch_add(&kk_stat_mesure[14 + c], mtl_prof()[9] - a0);
++   atomic_fetch_add(&kk_stat_mesure[16 + c], mtl_prof()[5] - p0);
+ 
+    mtl_release(pipeline_descriptor);
+    return state;
+@@ -2936,22 +2943,34 @@
+    simple_mtx_unlock(&vs->emu_vs_lock);
+    return pipe;
+ }
++
++static _Thread_local bool kk_fil_appelant;
+ 
+ static VkResult
+ kk_build_stage_library(struct kk_device *device, struct kk_shader *shader)
+ {
+    struct kk_physical_device *pdev = kk_device_physical(device);
++   const unsigned c = kk_fil_appelant ? 1u : 0u;
++   const int64_t t0 = os_time_get_nano();
+    if (!kk_msl_restaurer(shader, shader->info.stage))
+       return VK_ERROR_INVALID_SHADER_NV;
+    const struct msl_compile_data *data = &shader->msl_data[shader->info.stage];
+ 
+    (void)pdev;
++   const int64_t t1 = os_time_get_nano();
++   const uint64_t nl0 = mtl_prof()[4];
+    shader->library = kk_new_library(device, data);
++   const int64_t t2 = os_time_get_nano();
++   atomic_fetch_add(&kk_stat_mesure[0 + c], 1);
++   atomic_fetch_add(&kk_stat_mesure[2 + c], (uint64_t)(t1 - t0));
++   atomic_fetch_add(&kk_stat_mesure[4 + c], (uint64_t)(t2 - t1));
++   atomic_fetch_add(&kk_stat_mesure[6 + c], mtl_prof()[4] - nl0);
+    if (shader->library == NULL)
+       return VK_ERROR_INVALID_SHADER_NV;
+ 
+    shader->function = mtl_new_library_function_descriptor(
+       shader->library, data->entrypoint_name);
++   atomic_fetch_add(&kk_stat_mesure[8 + c], (uint64_t)(os_time_get_nano() - t2));
+    if (shader->function == NULL) {
+       mtl_release(shader->library);
+       shader->library = NULL;
+@@ -6420,8 +6439,91 @@
+    unsigned cap;
+    bool notees;   /* 0474 : seulement les paires du fichier des variantes */
+    uint32_t *rang;
++};
++
++struct kk_banc_d {
++   uint8_t cles[2 * KK_BASE_CLE];
++   uint32_t n, rang_min;
++   struct kk_rp_variant_key v[8];
+ };
++static struct hash_table *kk_banc_dessins;
+ 
++static void
++kk_banc_dessins_charger(const char *chemin)
++{
++   int fd = open(chemin, O_RDONLY | O_CLOEXEC);
++   if (fd < 0)
++      return;
++   kk_banc_dessins = _mesa_hash_table_create(NULL, kk_var_hash, kk_var_egal);
++   uint8_t buf[8 + KK_VAR_REC2];
++   unsigned pos = 0, nv = 0;
++   for (;;) {
++      if (read(fd, buf, 8) != 8)
++         break;
++      uint32_t magic, octets;
++      memcpy(&magic, buf, 4);
++      memcpy(&octets, buf + 4, 4);
++      if (magic != KK_VAR_MAGIC || (octets != KK_VAR_REC1 && octets != KK_VAR_REC2))
++         break;
++      if (read(fd, buf + 8, octets) != (ssize_t)octets)
++         break;
++      uint32_t rang = pos++;
++      if (octets == KK_VAR_REC2)
++         memcpy(&rang, buf + 8 + KK_VAR_REC1, 4);
++      struct hash_entry *e = _mesa_hash_table_search(kk_banc_dessins, buf + 8);
++      struct kk_banc_d *d = e ? e->data : NULL;
++      if (d == NULL) {
++         d = rzalloc(kk_banc_dessins, struct kk_banc_d);
++         memcpy(d->cles, buf + 8, sizeof(d->cles));
++         d->rang_min = UINT32_MAX;
++         _mesa_hash_table_insert(kk_banc_dessins, d->cles, d);
++      }
++      if (d->n < ARRAY_SIZE(d->v)) {
++         memset(&d->v[d->n], 0, sizeof(d->v[0]));
++         memcpy((char *)&d->v[d->n] + KK_VAR_DEBUT, buf + 8 + 2 * KK_BASE_CLE, KK_VAR_OCTETS);
++         d->n++;
++         nv++;
++      }
++      d->rang_min = MIN2(d->rang_min, rang);
++   }
++   close(fd);
++   fprintf(stderr, "kk: banc : dessins a rejouer : %u variantes, %u paires (%s)\n", nv,
++           kk_banc_dessins->entries, chemin);
++}
++
++static uint32_t
++kk_banc_rang(const uint8_t *vs_cle, const uint8_t *fs_cle)
++{
++   if (kk_banc_dessins == NULL)
++      return kk_var_rang_paire(vs_cle, fs_cle);
++   uint8_t cles[2 * KK_BASE_CLE];
++   memcpy(cles, vs_cle, KK_BASE_CLE);
++   memcpy(cles + KK_BASE_CLE, fs_cle, KK_BASE_CLE);
++   struct hash_entry *e = _mesa_hash_table_search(kk_banc_dessins, cles);
++   return e ? ((struct kk_banc_d *)e->data)->rang_min : UINT32_MAX;
++}
++
++static struct kk_rp_variant_key *
++kk_banc_copier(const uint8_t *vs_cle, const uint8_t *fs_cle, uint32_t *n)
++{
++   if (kk_banc_dessins == NULL)
++      return kk_var_copier(vs_cle, fs_cle, n, NULL, NULL);
++   *n = 0;
++   uint8_t cles[2 * KK_BASE_CLE];
++   memcpy(cles, vs_cle, KK_BASE_CLE);
++   memcpy(cles + KK_BASE_CLE, fs_cle, KK_BASE_CLE);
++   struct hash_entry *e = _mesa_hash_table_search(kk_banc_dessins, cles);
++   if (e == NULL)
++      return NULL;
++   struct kk_banc_d *d = e->data;
++   struct kk_rp_variant_key *v = malloc(d->n * sizeof(*v));
++   if (v != NULL) {
++      memcpy(v, d->v, d->n * sizeof(*v));
++      *n = d->n;
++   }
++   return v;
++}
++
+ static struct vk_shader *
+ kk_banc_relire(struct kk_device *dev, const uint8_t *cle)
+ {
+@@ -6463,7 +6565,7 @@
+       if (taille < sizeof(cles) ||
+           pread(b->fd_p, cles, sizeof(cles), pos) != (ssize_t)sizeof(cles))
+          return;
+-      if (b->notees && kk_var_rang_paire(cles, cles + KK_BASE_CLE) == UINT32_MAX)
++      if (b->notees && kk_banc_rang(cles, cles + KK_BASE_CLE) == UINT32_MAX)
+          return;
+       out[0] = kk_banc_relire(b->dev, cles);
+       out[1] = out[0] ? kk_banc_relire(b->dev, cles + KK_BASE_CLE) : NULL;
+@@ -6506,8 +6608,8 @@
+    b->sh[b->crees * 2 + 1] = out[1];
+    if (b->notees) {
+       b->rang = realloc(b->rang, b->cap / 2 * sizeof(uint32_t));
+-      b->rang[b->crees] = kk_var_rang_paire(out[0]->pipeline.cache_key,
+-                                            out[1]->pipeline.cache_key);
++      b->rang[b->crees] = kk_banc_rang(out[0]->pipeline.cache_key,
++                                       out[1]->pipeline.cache_key);
+    }
+    b->crees++;
+    /* 0474 : en mode notees, crochet de creation apres le parcours, dans un
+@@ -6578,7 +6680,10 @@
+     * paires du fichier des variantes (CIDRE_VARIANTES), liees dans l'ordre de
+     * premiere utilisation, chaque dessin cherchant toutes leurs variantes
+     * notees. */
+-   b.notees = kk_env_u("CIDRE_BANC_NOTEES", 0) != 0 && kk_var_table != NULL;
++   if (getenv("CIDRE_BANC_DESSINS") != NULL && kk_banc_dessins == NULL)
++      kk_banc_dessins_charger(getenv("CIDRE_BANC_DESSINS"));
++   b.notees = kk_env_u("CIDRE_BANC_NOTEES", 0) != 0 &&
++              (kk_var_table != NULL || kk_banc_dessins != NULL);
+    const unsigned nb = kk_env_u("CIDRE_BANC_BIND", 50);
+    const unsigned pause_ms = kk_env_u("CIDRE_BANC_PAUSE_MS", 20);
+    char chemin[1024];
+@@ -6634,6 +6739,7 @@
+    getrusage(RUSAGE_SELF, &ru0);
+    const uint64_t vcpu0 = atomic_load(&kk_stat_var_us[1]);
+    uint64_t dv_somme = 0, dv_max = 0;
++   unsigned dg[8] = {0};
+    unsigned dv_paires = 0;
+    const uint32_t var0 = atomic_load(&kk_stat_fond[9]);
+    const uint32_t vfond0 = atomic_load(&kk_stat_var[3]);
+@@ -6662,9 +6768,28 @@
+          uint32_t nk = 0;
+          struct kk_rp_variant_key *v = NULL;
+          if (kk_var_apte(dev, vsk->function, vsk, fsk))
+-            v = b.notees ? kk_var_copier(vsk->vk.pipeline.cache_key, fsk->vk.pipeline.cache_key,
+-                                         &nk, NULL, NULL)
++            v = b.notees ? kk_banc_copier(vsk->vk.pipeline.cache_key, fsk->vk.pipeline.cache_key,
++                                          &nk)
+                          : kk_banc_synth(vsk, fsk, nvar, &nk);
++         if (nk > 0) {
++            struct kk_rp_variant_key *k0 = kk_prewarm_key(vsk, fsk);
++            for (uint32_t k = 0; k < nk && k0 != NULL; k++) {
++               const struct kk_rp_variant_key *x = &v[k];
++               dg[0]++;
++               if (memcmp((const char *)x + KK_VAR_DEBUT, (const char *)k0 + KK_VAR_DEBUT,
++                          KK_VAR_OCTETS) == 0) {
++                  dg[1]++;
++                  continue;
++               }
++               dg[2] += memcmp(x->formats, k0->formats, sizeof(x->formats)) != 0;
++               dg[3] += x->write_disable_mask != k0->write_disable_mask;
++               dg[4] += x->topology != k0->topology;
++               dg[5] += memcmp(x->blend, k0->blend, sizeof(x->blend)) != 0;
++               dg[6] += memcmp(x->blend_write_mask, k0->blend_write_mask,
++                               sizeof(x->blend_write_mask)) != 0;
++            }
++            free(k0);
++         }
+          const int64_t tv = os_time_get_nano();
+          kk_variante_au_dessin = true;
+          for (uint32_t k = 0; k < nk; k++)
+@@ -6709,6 +6834,10 @@
+                       "temps des dessins %.1f ms (max %.2f ms) ; %u construites en fond pendant le banc\n",
+               dv_paires, atomic_load(&kk_stat_fond[9]) - var0, dv_somme / 1000.0, dv_max / 1000.0,
+               atomic_load(&kk_stat_var[3]) - vfond0);
++   if (dg[0])
++      fprintf(stderr, "kk: banc devinette (0494) : %u / %u variantes dessinees = cle de prechauffage ; "
++                      "autres : formats %u, cibles coupees %u, topologie %u, melange %u, masque d'ecriture %u\n",
++              dg[1], dg[0], dg[2], dg[3], dg[4], dg[5], dg[6]);
+    free(dt);
+    for (unsigned k = 0; k < 2 * b.crees; k++)
+       vk_pipeline_cache_object_unref(&dev->vk, &b.sh[k]->pipeline.cache_obj);

@@ -1,0 +1,342 @@
+Generated-by: LLM
+
+Cidre 0476 (FEX, cache disque) : ecrivain par lots. Amont : un StoreCacheBlob par bloc (2 verrous de fichier, 2 tailles, 5 ecritures),
+3,3 a 5 ms par bloc sous l'ilot : la file ne se vidait jamais en partie, ~60 % des blocs perdus a la sortie (le joueur recompilait
+~110 000 blocs a chaque partie). Lots : un verrou, une ecriture des blobs puis une de l'index (format inchange), attente du calme
+(CIDRE_FEX_DISQUE_LOTS_MS, 50 ms), mise a jour de l'index sous un seul verrou par tranche : 7 a 25 us par bloc.
+Coupure : CIDRE_FEX_DISQUE_LOTS=0. Apres 0475.
+
+diff --git a/FEXCore/Source/Interface/Core/DiskCache.cpp b/FEXCore/Source/Interface/Core/DiskCache.cpp
+--- a/FEXCore/Source/Interface/Core/DiskCache.cpp
++++ b/FEXCore/Source/Interface/Core/DiskCache.cpp
+@@ -19,6 +19,8 @@
+ #include <cstring>
+ #include <atomic>
+ #include <filesystem>
++#include <thread>
++#include <chrono>
+ 
+ #ifdef FEX_TEB_SANS_X18
+ // Cidre 0452 : constantes propres au processus emises dans le code hote (Arm64Emitter::LoadTEB, MemoryOps)
+@@ -507,6 +509,70 @@
+     return true;
+   }
+ 
++  void IndexedDB::CidreStoreLot(std::span<const CidreAEcrire> Lot, std::span<uint64_t> Offsets) {
++    for (auto& O : Offsets) {
++      O = ~0ULL;
++    }
++    if (ReadOnly || MaxSizeReached || Lot.empty()) {
++      return;
++    }
++    if (!CacheFOZ.Lock(STORE_LOCK_TIMEOUT_MS) || !IndexFOZ.Lock(STORE_LOCK_TIMEOUT_MS)) {
++      CacheFOZ.Unlock();
++      IndexFOZ.Unlock();
++      return;
++    }
++    const ssize_t TailleDonnees = CacheFOZ.Size(), TailleIndex = IndexFOZ.Size();
++    if (TailleDonnees < 0 || TailleIndex < 0) {
++      CacheFOZ.Unlock();
++      IndexFOZ.Unlock();
++      return;
++    }
++    fextl::vector<uint8_t> Donnees, Idx;
++    size_t N = 0;
++    for (; N < Lot.size(); N++) {
++      const auto& E = Lot[N];
++      // meme plafond qu'amont (CacheFileSize ne suit le fichier que s'il est projete)
++      if (CacheFileSize + Donnees.size() + E.Blob.size() >= MaxFileSize) {
++        MaxSizeReached = true;
++        break;
++      }
++      const MesaFOZ::foz_payload_header H {.payload_size = (uint32_t)E.Blob.size(), .format = MesaFOZ::FOSSILIZE_COMPRESSION_NONE, .crc = 0,
++                                          .uncompressed_size = (uint32_t)E.Blob.size()};
++      const size_t P = Donnees.size();
++      Donnees.resize(P + sizeof(E.Key) + sizeof(H) + E.Blob.size());
++      memcpy(Donnees.data() + P, E.Key.bytes, sizeof(E.Key));
++      memcpy(Donnees.data() + P + sizeof(E.Key), &H, sizeof(H));
++      memcpy(Donnees.data() + P + sizeof(E.Key) + sizeof(H), E.Blob.data(), E.Blob.size());
++      Offsets[N] = (uint64_t)TailleDonnees + P + sizeof(E.Key) + sizeof(H);
++      const MesaFOZ::mesa_index_db_file_entry IE {.hash = E.LookupKey, .size = (uint32_t)E.Blob.size(), .last_access_time = 0,
++                                                  .cache_db_file_offset = Offsets[N]};
++      const uint32_t TI = sizeof(IE) + E.IndexBlob.size();
++      const MesaFOZ::foz_payload_header HI {.payload_size = TI, .format = MesaFOZ::FOSSILIZE_COMPRESSION_NONE, .crc = 0, .uncompressed_size = TI};
++      const size_t Q = Idx.size();
++      Idx.resize(Q + sizeof(E.Key) + sizeof(HI) + TI);
++      memcpy(Idx.data() + Q, E.Key.bytes, sizeof(E.Key));
++      memcpy(Idx.data() + Q + sizeof(E.Key), &HI, sizeof(HI));
++      memcpy(Idx.data() + Q + sizeof(E.Key) + sizeof(HI), &IE, sizeof(IE));
++      memcpy(Idx.data() + Q + sizeof(E.Key) + sizeof(HI) + sizeof(IE), E.IndexBlob.data(), E.IndexBlob.size());
++    }
++    // blobs d'abord, index ensuite : une sortie entre les deux laisse des blobs sans index (ignores), jamais l'inverse
++    bool Ok = N && CacheFOZ.CidreEcrire(Donnees.data(), Donnees.size(), TailleDonnees) && IndexFOZ.CidreEcrire(Idx.data(), Idx.size(), TailleIndex);
++    CacheFOZ.Unlock();
++    IndexFOZ.Unlock();
++    if (!Ok) {
++      for (auto& O : Offsets) {
++        O = ~0ULL;
++      }
++      return;
++    }
++    for (size_t i = N; i < Offsets.size(); i++) {
++      Offsets[i] = ~0ULL;
++    }
++    if (CacheFileMapping) {
++      CacheFileSize = TailleDonnees + Donnees.size();
++    }
++  }
++
+   bool DiskCache::OpenCacheDB(const fextl::string& CacheDBName, bool ReadOnly) {
+     fextl::unique_ptr<IndexedDB> CurDB;
+ 
+@@ -1238,8 +1304,29 @@
+       , Garde(std::move(Garde)) {}
+     void Run() override {
+       struct MesaFOZ::mesa_index_db_file_entry IndexHeader;
++      const uint64_t CidreTW = CidreTick();
+       bool DiskSuccess = !StoreDisk || DB->StoreCacheBlob(UniqueKey, LookupKey, Blob, IndexHeader, IndexBlob);
++      Self->CidreEcrits[StoreDisk ? (DiskSuccess ? 0 : 1) : 2].fetch_add(1, std::memory_order_relaxed);
++      Self->CidreEcrits[3].fetch_add(CidreTick() - CidreTW, std::memory_order_relaxed);
++      Self->CidreEcritsTot[DiskSuccess && StoreDisk ? 0 : 1].fetch_add(1, std::memory_order_relaxed);
++      if (Self->CidreEnFile.fetch_sub(1, std::memory_order_relaxed) == 1) {
++        static uint64_t CidreDernierVide = 0;
++        uint64_t Fq;
++        __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(Fq));
++        if (CidreTick() - CidreDernierVide > Fq) {
++          CidreDernierVide = CidreTick();
++          LogMan::Msg::IFmt("cidre disque ecrivain : file vide ; depuis le lancement : ecrits {}, non ecrits {}",
++                            Self->CidreEcritsTot[0].load(std::memory_order_relaxed), Self->CidreEcritsTot[1].load(std::memory_order_relaxed));
++        }
++      }
+ 
++      Self->CidreApresEcriture(LookupKey, Blob, IndexBlob, StoreDisk, DiskSuccess, IndexHeader.cache_db_file_offset, DB);
++    }
++  };
++
++  void DiskCache::CidreApresEcriture(uint64_t LookupKey, std::span<uint8_t> Blob, const fextl::vector<uint8_t>& IndexBlob, bool StoreDisk,
++                                     bool DiskSuccess, uint64_t Offset, IndexedDB* DB) {
++    DiskCache* Self = this;
+       bool KeepEntryInMemory = true;
+       // todo possible other lru condition here like entry size?
+       if (Blob.size() > Self->MemoryLRUMaxSize) {
+@@ -1263,7 +1350,7 @@
+         if (IndexEntry) {
+           if (StoreDisk && DiskSuccess) {
+             IndexEntry->DB = DB;
+-            IndexEntry->Offset = IndexHeader.cache_db_file_offset;
++            IndexEntry->Offset = Offset;
+           }
+           if (!KeepEntryInMemory) {
+             IndexEntry->MemoryBlob.reset();
+@@ -1276,9 +1363,133 @@
+       if (KeepEntryInMemory && Self->MemoryLRUCurrentSize > Self->MemoryLRUMaxSize + Self->MemoryLRUEvictThreshold) {
+         Self->Writer->QueueWork(fextl::make_unique<PruneMemoryLRUWorkItem>(Self));
+       }
++  }
++
++  struct DiskCache::CidreLotWorkItem final : WorkQueueThread::WorkItem {
++    DiskCache* Self;
++    CidreLotWorkItem(DiskCache* Self)
++      : Self(Self) {}
++    void Run() override {
++      Self->CidreEcrireLot();
+     }
+   };
+ 
++  void DiskCache::CidreEcrireLot() {
++    fextl::vector<CidreEnAttente> Lot;
++    // Cidre 0476 : attendre que la rafale se calme (aucun ajout pendant CIDRE_FEX_DISQUE_LOTS_MS, defaut 50 ms ; au plus
++    // 10 fois plus) : l'ecrivain ne prend pas de processeur au fil du jeu pendant l'entree dans une zone
++    static const uint32_t CidreCalmeMs = [] {
++      const char* E = getenv("CIDRE_FEX_DISQUE_LOTS_MS");
++      return E ? (uint32_t)strtoul(E, nullptr, 10) : 50u;
++    }();
++    for (uint32_t Attendu = 0; CidreCalmeMs && Attendu < 10 * CidreCalmeMs; Attendu += CidreCalmeMs) {
++      size_t Avant;
++      {
++        std::lock_guard Guard(CidreLotVerrou);
++        Avant = CidreLot.size();
++      }
++      std::this_thread::sleep_for(std::chrono::milliseconds(CidreCalmeMs));
++      std::lock_guard Guard(CidreLotVerrou);
++      if (CidreLot.size() == Avant) {
++        break;
++      }
++    }
++    {
++      std::lock_guard Guard(CidreLotVerrou);
++      Lot.swap(CidreLot);
++      CidreLotDemande = false;
++    }
++    if (Lot.empty()) {
++      return;
++    }
++    const uint64_t T0 = CidreTick();
++    // par tranches d'au plus ~32 Mio de blobs
++    size_t Debut = 0;
++    fextl::vector<IndexedDB::CidreAEcrire> AEcrire;
++    fextl::vector<size_t> Rang;
++    fextl::vector<uint64_t> Offsets;
++    while (Debut < Lot.size()) {
++      AEcrire.clear();
++      Rang.clear();
++      size_t Fin = Debut, Octets = 0;
++      for (; Fin < Lot.size() && (Octets < (32u << 20) || AEcrire.empty()); Fin++) {
++        if (Lot[Fin].StoreDisk) {
++          AEcrire.push_back({Lot[Fin].Key, Lot[Fin].LookupKey, Lot[Fin].Blob, {Lot[Fin].IndexBlob.data(), Lot[Fin].IndexBlob.size()}});
++          Rang.push_back(Fin);
++          Octets += Lot[Fin].Blob.size();
++        }
++      }
++      Offsets.assign(AEcrire.size(), ~0ULL);
++      if (!AEcrire.empty()) {
++        RWCacheDB->CidreStoreLot(AEcrire, Offsets);
++      }
++      // meme travail que CidreApresEcriture, mais un verrou LRU puis un verrou d'index pour toute la tranche
++      fextl::vector<uint64_t> Off(Fin - Debut, 0);
++      fextl::vector<uint8_t> Ok(Fin - Debut, 1), Garder(Fin - Debut, 1);
++      fextl::vector<fextl::list<MemoryLRUKey>::iterator> Iter(Fin - Debut);
++      size_t j = 0;
++      for (size_t i = Debut; i < Fin; i++) {
++        auto& E = Lot[i];
++        if (E.StoreDisk) {
++          Off[i - Debut] = Offsets[j++];
++          Ok[i - Debut] = Off[i - Debut] != ~0ULL;
++        }
++        CidreEcrits[E.StoreDisk ? (Ok[i - Debut] ? 0 : 1) : 2].fetch_add(1, std::memory_order_relaxed);
++        CidreEcritsTot[E.StoreDisk && Ok[i - Debut] ? 0 : 1].fetch_add(1, std::memory_order_relaxed);
++        if (E.Blob.size() > MemoryLRUMaxSize) {
++          Garder[i - Debut] = 0;
++        } else {
++          MemoryLRUCurrentSize += E.Blob.size();
++        }
++      }
++      {
++        std::lock_guard Guard(MemoryLRULock);
++        for (size_t i = Debut; i < Fin; i++) {
++          if (Garder[i - Debut]) {
++            const auto* H = reinterpret_cast<const IndexExtraBlobHeader*>(Lot[i].IndexBlob.data());
++            MemoryLRU.push_front({Lot[i].LookupKey, H->GuestHash, H->GuestFootprint, (uint32_t)Lot[i].Blob.size()});
++            Iter[i - Debut] = MemoryLRU.begin();
++          }
++        }
++      }
++      {
++        std::lock_guard Guard(IndexLock);
++        for (size_t i = Debut; i < Fin; i++) {
++          const auto* H = reinterpret_cast<const IndexExtraBlobHeader*>(Lot[i].IndexBlob.data());
++          auto* IE = LookupLocked(Lot[i].LookupKey, H->GuestHash, H->GuestFootprint);
++          if (!IE) {
++            continue;
++          }
++          if (Lot[i].StoreDisk && Ok[i - Debut]) {
++            IE->DB = RWCacheDB.get();
++            IE->Offset = Off[i - Debut];
++          }
++          if (!Garder[i - Debut]) {
++            IE->MemoryBlob.reset();
++          } else {
++            IE->LRUEntry = Iter[i - Debut];
++          }
++        }
++      }
++      if (MemoryLRUCurrentSize > MemoryLRUMaxSize + MemoryLRUEvictThreshold) {
++        Writer->QueueWork(fextl::make_unique<PruneMemoryLRUWorkItem>(this));
++      }
++      Debut = Fin;
++    }
++    CidreEcrits[3].fetch_add(CidreTick() - T0, std::memory_order_relaxed);
++    if (CidreEnFile.fetch_sub(Lot.size(), std::memory_order_relaxed) == (int64_t)Lot.size()) {
++      static uint64_t CidreDernierVide = 0;
++      uint64_t Fq;
++      __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(Fq));
++      if (CidreTick() - CidreDernierVide > Fq) {
++        CidreDernierVide = CidreTick();
++        LogMan::Msg::IFmt("cidre disque ecrivain : file vide (lots) ; depuis le lancement : ecrits {}, non ecrits {}",
++                          CidreEcritsTot[0].load(std::memory_order_relaxed), CidreEcritsTot[1].load(std::memory_order_relaxed));
++      }
++    }
++  }
++
++
+   bool DiskCache::Store(Core::InternalThreadState* Thread, std::optional<ExecutableFileSectionInfo> Region, uint64_t GuestRIP,
+                         uint64_t GuestCodeKey, std::span<const uint8_t> GuestCode, const CPU::CPUBackend::CompiledCode& CompiledCode,
+                         std::span<const FEXCore::CPU::Relocation> Relocations, const Frontend::Decoder::DecodedBlockInformation* DecodedBlockInfo,
+@@ -1613,6 +1824,24 @@
+     }
+ 
+     // hand the rest off to the writer thread
++    CidreEnFile.fetch_add(1, std::memory_order_relaxed);
++    static const bool CidreLots = [] {
++      const char* E = getenv("CIDRE_FEX_DISQUE_LOTS");
++      return !(E && *E == '0');
++    }();
++    if (CidreLots) {
++      bool Demander;
++      {
++        std::lock_guard Guard(CidreLotVerrou);
++        CidreLot.push_back({Key, LookupKey, std::span(BlobData, TotalSize), std::move(IndexBlob), StoreDisk, BlobRef});
++        Demander = !CidreLotDemande;
++        CidreLotDemande = true;
++      }
++      if (Demander) {
++        Writer->QueueWork(fextl::make_unique<CidreLotWorkItem>(this));
++      }
++      return true;
++    }
+     Writer->QueueWork(fextl::make_unique<CacheStoreWorkItem>(this, RWCacheDB.get(), Key, LookupKey, std::span(BlobData, TotalSize),
+                                                              std::move(IndexBlob), StoreDisk, BlobRef));
+     return true;
+diff --git a/FEXCore/Source/Interface/Core/DiskCache.h b/FEXCore/Source/Interface/Core/DiskCache.h
+--- a/FEXCore/Source/Interface/Core/DiskCache.h
++++ b/FEXCore/Source/Interface/Core/DiskCache.h
+@@ -162,6 +162,10 @@
+     bool ReadAll(fextl::vector<uint8_t>& Out); // from first blob
+     bool ReadBlob(uint64_t Offset, std::span<uint8_t> OutBlob);
+     bool WriteBlob(const MesaFOZ::foz_payload_key& Key, std::span<const std::span<const uint8_t>> BlobChunks, uint64_t& OutBlobOffset);
++    // Cidre 0476 : ecriture brute (lots de l'ecrivain)
++    bool CidreEcrire(const void* Data, size_t Taille, uint64_t Offset) {
++      return FD && FD->PWrite(Data, Taille, Offset) == (ssize_t)Taille;
++    }
+ 
+   private:
+     static constexpr uint32_t OPEN_LOCK_TIMEOUT_MS = 100;
+@@ -188,6 +192,15 @@
+     bool Full() const {
+       return MaxSizeReached;
+     }
++    // Cidre 0476 : un lot d'entrees ecrit d'un coup (un verrou, une ecriture pour les blobs, une pour l'index). Offsets[i] =
++    // decalage du blob i dans le fichier, ou ~0 si non ecrit.
++    struct CidreAEcrire {
++      MesaFOZ::foz_payload_key Key;
++      uint64_t LookupKey;
++      std::span<const uint8_t> Blob;
++      std::span<const uint8_t> IndexBlob;
++    };
++    void CidreStoreLot(std::span<const CidreAEcrire> Lot, std::span<uint64_t> Offsets);
+ 
+   private:
+     // stores run on the Writer, so returning quick isn't as important
+@@ -274,6 +287,22 @@
+     std::mutex IndexLock;
+     bool FoundMetadata = false;
+     struct CacheStoreWorkItem;
++    // Cidre 0476 : stockages groupes en lots (CIDRE_FEX_DISQUE_LOTS=0 : un a un, comme amont)
++    struct CidreLotWorkItem;
++    struct CidreEnAttente {
++      MesaFOZ::foz_payload_key Key;
++      uint64_t LookupKey;
++      std::span<uint8_t> Blob;
++      fextl::vector<uint8_t> IndexBlob;
++      bool StoreDisk;
++      fextl::shared_ptr<fextl::vector<uint8_t>> Garde;
++    };
++    std::mutex CidreLotVerrou;
++    fextl::vector<CidreEnAttente> CidreLot;
++    bool CidreLotDemande = false;
++    void CidreEcrireLot();
++    void CidreApresEcriture(uint64_t LookupKey, std::span<uint8_t> Blob, const fextl::vector<uint8_t>& IndexBlob, bool StoreDisk,
++                            bool DiskSuccess, uint64_t Offset, IndexedDB* DB);
+ 
+     struct PruneMemoryLRUWorkItem;
+     std::atomic<uint64_t> MemoryLRUCurrentSize {};

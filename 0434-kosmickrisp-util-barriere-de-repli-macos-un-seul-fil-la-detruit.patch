@@ -1,0 +1,75 @@
+Generated-by: LLM
+
+util : barriere de repli (macOS) rendue vraie a un seul fil
+
+Sans pthread_barrier (macOS, Haiku), util_barrier_wait rendait vrai a tous
+les fils ; util_queue_finish_execute detruit la barriere quand il recoit
+vrai : chaque fil la detruisait pendant que d'autres attendaient encore
+dessus. util_queue_finish se figeait au hasard (fils de file bloques dans
+cnd_wait sur une barriere detruite) : vu dans disk_cache_destroy a
+vkDestroyInstance avec le cache disque 0430 (1 passe sur 12 du temoin), et
+dans le premier essai de 0433 v2. Desormais seul le dernier fil a sortir de
+la tournee recoit vrai (semantique PTHREAD_BARRIER_SERIAL_THREAD) ; la
+barriere reste reutilisable (llvmpipe ignore la valeur rendue).
+Independant de KosmicKrisp ; ordre : apres 0433 v2.
+
+diff --git a/src/util/u_thread.c b/src/util/u_thread.c
+--- a/src/util/u_thread.c
++++ b/src/util/u_thread.c
+@@ -219,6 +219,7 @@
+ {
+    barrier->count = count;
+    barrier->waiters = 0;
++   barrier->leaving = 0;
+    barrier->sequence = 0;
+    (void) mtx_init(&barrier->mutex, mtx_plain);
+    cnd_init(&barrier->condvar);
+@@ -231,8 +232,16 @@
+    cnd_destroy(&barrier->condvar);
+ }
+ 
++/* Cidre (0434) : vrai pour un seul fil, le dernier a sortir de la tournee
++ * (comme PTHREAD_BARRIER_SERIAL_THREAD). L'ancien repli rendait vrai a tous :
++ * util_queue_finish_execute detruisait alors la barriere dans chaque fil,
++ * pendant que d'autres attendaient encore dessus (gel de util_queue_finish,
++ * vu dans disk_cache_destroy a vkDestroyInstance). Le dernier sorti ne laisse
++ * aucun fil dans cnd_wait : la detruire apres son retour est sur. */
+ bool util_barrier_wait(util_barrier *barrier)
+ {
++   bool last;
++
+    mtx_lock(&barrier->mutex);
+ 
+    assert(barrier->waiters < barrier->count);
+@@ -244,15 +253,18 @@
+       do {
+          cnd_wait(&barrier->condvar, &barrier->mutex);
+       } while (sequence == barrier->sequence);
++      last = --barrier->leaving == 0;
+    } else {
+       barrier->waiters = 0;
++      barrier->leaving = barrier->count - 1;
+       barrier->sequence++;
++      last = barrier->leaving == 0;
+       cnd_broadcast(&barrier->condvar);
+    }
+ 
+    mtx_unlock(&barrier->mutex);
+ 
+-   return true;
++   return last;
+ }
+ 
+ #endif
+diff --git a/src/util/u_thread.h b/src/util/u_thread.h
+--- a/src/util/u_thread.h
++++ b/src/util/u_thread.h
+@@ -125,6 +125,8 @@
+ typedef struct {
+    unsigned count;
+    unsigned waiters;
++   /* Cidre (0434) : fils de la derniere tournee pas encore sortis. */
++   unsigned leaving;
+    uint64_t sequence;
+    mtx_t mutex;
+    cnd_t condvar;

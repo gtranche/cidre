@@ -1,0 +1,209 @@
+Generated-by: LLM
+
+Cidre 0475 (FEX, cache disque) : mesures du service et de l'ecrivain, hors comportement.
+Ligne « cidre disque detail » toutes les 2 s : lookup cle/intervalle/index/blob/memoire/relocs/teb, empreintes (Kio, relectures),
+rehash du rearmement, pose (intervalles, entrees), ecrivain (ecrits, refuses, ms, file). Ligne « cidre disque ecrivain : file vide ».
+CIDRE_DIAG_CLE=1 : 40 premieres cles absentes/gardees. Applique sur ~/Dev/cidre-d4-combo/fex (0370+0452+0460). Local Cidre, jamais en amont.
+
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -1613,6 +1613,7 @@
+   std::atomic<uint64_t> TicksLookup {}, TicksLookupEchec {}, TicksPose {}, TicksEmpreinte {};
+   std::atomic<uint64_t> RefusRaison[3] {}, TicksRearm {}, NbAppelsArme {}, TicksCharge {}, VarServis {}, VarArmables {}, VarStockes {};
+   std::atomic<uint64_t> Dernier {};
++  std::atomic<uint64_t> TicksRearmHash {}, TicksPoseInterv {}, TicksPoseMap {}; // 0475
+   int8_t Valides = -1; // CIDRE_FEX_DISQUE_VALIDES
+   uint64_t TotSucces = 0, TotCompil = 0, TotStockes = 0;
+   uint64_t MinDebut = 0, MinServis = 0, MinCompil = 0, MinStockes = 0; // ligne par minute (partie du joueur)
+@@ -1678,6 +1679,16 @@
+                     X(DC.CidreTicksLecture) * 1000.0 / F, X(DC.CidreNbLectureDisque), X(DC.CidreNbLectureMemoire),
+                     DC.CidrePrechargeTaille.load(std::memory_order_relaxed) >> 20, X(S.VarServis), X(S.VarArmables), X(S.VarStockes),
+                     X(S.TicksLookup) * 1000.0 / F, X(S.TicksLookupEchec) * 1000.0 / F, X(S.TicksPose) * 1000.0 / F, X(DC.CidreTicksConsult) * 1000.0 / F);
++  // 0475 : detail du service
++  LogMan::Msg::IFmt("cidre disque detail : t {} ms ; lookup cle {:.1f}, intervalle {:.1f}, index {:.1f}, blob {:.1f}, memoire {:.1f}, relocs {:.1f}, "
++                    "teb {:.1f}, succes {} ; empreintes ko {}, relectures {} ; rearm hash {:.1f} ; pose intervalles {:.1f}, entrees {:.1f} ; "
++                    "ecrivain : ecrits {}, refuses {}, memoire seule {} ({:.1f} ms), en file {}, base pleine {}",
++                    T * 1000 / F, X(DC.CidreDet[0]) * 1000.0 / F, X(DC.CidreDet[1]) * 1000.0 / F, X(DC.CidreDet[2]) * 1000.0 / F,
++                    X(DC.CidreDet[3]) * 1000.0 / F, X(DC.CidreDet[4]) * 1000.0 / F, X(DC.CidreDet[5]) * 1000.0 / F, X(DC.CidreDet[6]) * 1000.0 / F,
++                    X(DC.CidreDet[9]), X(FEXCore::DiskCache::CidreOctetsHashes) >> 10, X(FEXCore::DiskCache::CidreRelectures),
++                    X(S.TicksRearmHash) * 1000.0 / F, X(S.TicksPoseInterv) * 1000.0 / F, X(S.TicksPoseMap) * 1000.0 / F,
++                    X(DC.CidreEcrits[0]), X(DC.CidreEcrits[1]), X(DC.CidreEcrits[2]), X(DC.CidreEcrits[3]) * 1000.0 / F,
++                    DC.CidreEnFile.load(std::memory_order_relaxed), DC.CidreBaseCourante() ? (int)DC.CidreBaseCourante()->Full() : -1);
+ }
+ 
+ // Cidre (cache disque) : un bloc garde n'est resservi que si ses instructions compilees sans validation sont rearmees
+@@ -1732,7 +1743,10 @@
+     }
+   }
+   XXH128_hash_t Vive;
+-  if (!FEXCore::DiskCache::DiskCache::CidreEmpreinteVive(Thread, GuestRIP, Hit.CidreEtendues, Vive) || !XXH128_isEqual(Vive, Hit.CidreEmpreinte)) {
++  const uint64_t CidreTH = ::FEXCore::CidreMesure::Tick();
++  const bool CidreHashOk = FEXCore::DiskCache::DiskCache::CidreEmpreinteVive(Thread, GuestRIP, Hit.CidreEtendues, Vive);
++  CidreDisque.TicksRearmHash.fetch_add(::FEXCore::CidreMesure::Tick() - CidreTH, std::memory_order_relaxed);
++  if (!CidreHashOk || !XXH128_isEqual(Vive, Hit.CidreEmpreinte)) {
+     CidreDisque.RefusRelu.fetch_add(1, std::memory_order_relaxed);
+     return false;
+   }
+@@ -1963,6 +1977,12 @@
+             SyscallHandler->MarkGuestExecutableRange(Thread, CodePage, FEXCore::Utils::FEX_PAGE_SIZE);
+           }
+         }
++        const uint64_t CidreTM = ::FEXCore::CidreMesure::Tick();
++        CidreDisque.TicksPoseInterv.fetch_add(CidreTM - CidreTPose, std::memory_order_relaxed);
++        struct FinMap {
++          uint64_t T;
++          ~FinMap() { CidreDisque.TicksPoseMap.fetch_add(::FEXCore::CidreMesure::Tick() - T, std::memory_order_relaxed); }
++        } CidreFinMap {CidreTM};
+ 
+         LOGMAN_THROW_A_FMT(Hit->EntryPointRIPs.size() == Hit->EntryPointHostOffsets.size(), "Mismatched Disk Cache entrypoint pairs!");
+ 
+diff --git a/FEXCore/Source/Interface/Core/DiskCache.cpp b/FEXCore/Source/Interface/Core/DiskCache.cpp
+--- a/FEXCore/Source/Interface/Core/DiskCache.cpp
++++ b/FEXCore/Source/Interface/Core/DiskCache.cpp
+@@ -213,6 +213,7 @@
+     }
+   };
+ 
++  std::atomic<uint64_t> CidreOctetsHashes {}, CidreRelectures {}; // 0475
+   bool DiskCache::CidreEmpreinteVive(Core::InternalThreadState* Thread, uint64_t GuestRIP, std::span<const uint32_t> Extents,
+                                      XXH128_hash_t& Out) {
+     XXH3_state_t HashState;
+@@ -728,6 +729,7 @@
+     if (!IsReadingDiskCache()) {
+       return std::nullopt;
+     }
++    const uint64_t CidreD0 = CidreTick(); // 0475
+     if (Region && Region->FileStartVA) {
+       struct __attribute__((packed)) {
+         uint64_t GuestOffset;
+@@ -803,6 +805,8 @@
+       // LogMan::Msg::IFmt("anon lookup! length {:d} {}", GuestCodeKey, TotalSize);
+     }
+ 
++    const uint64_t CidreD1 = CidreTick();
++    CidreDet[0].fetch_add(CidreD1 - CidreD0, std::memory_order_relaxed);
+     auto RangeInfo = CTX->SyscallHandler->QueryGuestExecutableRange(Thread, GuestRIP);
+     if (RangeInfo.Size == 0 || RangeInfo.Base > GuestRIP) {
+       CidreSortieConsult[1].fetch_add(1, std::memory_order_relaxed); return std::nullopt;
+@@ -824,11 +828,25 @@
+     fextl::shared_ptr<fextl::vector<uint8_t>> BlobRef;
+     std::optional<fextl::list<MemoryLRUKey>::iterator> LRUIter;
+     uint64_t CurrentFootprint = 0;
++    const uint64_t CidreD2 = CidreTick();
++    CidreDet[1].fetch_add(CidreD2 - CidreD1, std::memory_order_relaxed);
++    struct CidreFinIndex {
++      std::atomic<uint64_t>& A;
++      uint64_t T;
++      ~CidreFinIndex() { A.fetch_add(CidreTick() - T, std::memory_order_relaxed); }
++    };
+     {
++      CidreFinIndex CidreFI {CidreDet[2], CidreD2};
+       std::lock_guard Guard(IndexLock);
+       auto It = Index.find(LookupKey);
+       if (It == Index.end()) {
+         // definite miss
++        static const bool CidreDiagCle = getenv("CIDRE_DIAG_CLE") != nullptr;
++        static std::atomic<int> CidreNbDiag {};
++        if (CidreDiagCle && CidreNbDiag.fetch_add(1) < 40) {
++          LogMan::Msg::IFmt("cidre diag cle : absente rip {:#x} code {:x} cle {:x} inscriptible {} variante {}", GuestRIP, *GuestCodeKey, LookupKey,
++                            RangeInfo.Writable, CidreVariante);
++        }
+         CidreSortieConsult[2].fetch_add(1, std::memory_order_relaxed); return std::nullopt;
+       }
+ 
+@@ -993,6 +1011,7 @@
+     HitData.Blob.resize(GuestPages.size() * sizeof(uint64_t) + EntrySizeWithoutGuestCode);
+     memcpy(HitData.Blob.data(), GuestPages.data(), GuestPages.size() * sizeof(uint64_t));
+     uint32_t BlobOffset = GuestPages.size() * sizeof(uint64_t);
++    const uint64_t CidreD3 = CidreTick();
+     bool FoundInLRU = false;
+     if (BlobRef && BlobRef->size() >= EntrySizeWithoutGuestCode) {
+       FoundInLRU = true;
+@@ -1015,6 +1034,7 @@
+       CidreSortieConsult[4].fetch_add(1, std::memory_order_relaxed); return std::nullopt;
+     }
+ 
++    CidreDet[3].fetch_add(CidreTick() - CidreD3, std::memory_order_relaxed);
+     if (EntrySizeWithoutGuestCode < sizeof(BlobFixedHeader)) {
+       CidreSortieConsult[5].fetch_add(1, std::memory_order_relaxed); return std::nullopt;
+     }
+@@ -1047,6 +1067,7 @@
+       StoreInMemory = false;
+     }
+ 
++    const uint64_t CidreD4 = CidreTick();
+     if (StoreInMemory) {
+       auto NewBlobRef = fextl::make_shared<fextl::vector<uint8_t>>(EntrySizeWithoutGuestCode);
+       memcpy(NewBlobRef->data(), HitData.Blob.data() + CidreDebutEntree, EntrySizeWithoutGuestCode);
+@@ -1065,6 +1086,7 @@
+       Writer->QueueWork(fextl::make_unique<PruneMemoryLRUWorkItem>(this));
+     }
+ 
++    CidreDet[4].fetch_add(CidreTick() - CidreD4, std::memory_order_relaxed);
+     HitData.HostCode = {HitData.Blob.data() + BlobOffset, Header.HostSize};
+     BlobOffset += Header.HostSize;
+     HitData.EntryPointRIPs = {reinterpret_cast<uint64_t*>(HitData.Blob.data() + BlobOffset), Header.EntryPointCount};
+@@ -1092,15 +1114,20 @@
+       EntryPointRip += GuestRIP;
+     }
+ 
++    const uint64_t CidreD5 = CidreTick();
+     if (!CTX->CodeCache.ApplyPackedCodeRelocations(GuestRIP, std::as_writable_bytes(HitData.HostCode), SmallRelocs, ThunkRelocs, Thread)) {
+       CidreSortieConsult[7].fetch_add(1, std::memory_order_relaxed); return std::nullopt;
+     }
++    const uint64_t CidreD6 = CidreTick();
++    CidreDet[5].fetch_add(CidreD6 - CidreD5, std::memory_order_relaxed);
+ #if defined(ARCHITECTURE_arm64ec) && defined(FEX_TEB_SANS_X18)
+     // Cidre 0452 : decalage TSD du TEB propre au processus (voir CidreRecalerTEB)
+     if (!CidreRecalerTEB(HitData.HostCode)) {
+       CidreSortieConsult[7].fetch_add(1, std::memory_order_relaxed); return std::nullopt;
+     }
+ #endif
++    CidreDet[6].fetch_add(CidreTick() - CidreD6, std::memory_order_relaxed);
++    CidreDet[9].fetch_add(1, std::memory_order_relaxed);
+ 
+     // Cidre : servi depuis l'ancienne generation : recopie en fond dans la base courante (une fois)
+     if (CidreAncienne && Entry.DB == CidreAncienne && RWCacheDB && !RWCacheDB->Full()) {
+@@ -1516,6 +1543,14 @@
+     uint64_t LookupKey = MakeLookupKey(Thread, GuestCodeKey, RangeInfo.Writable,
+                                        GuestRIP == CTX->GetMonoBackPatcherBlock().load(std::memory_order_relaxed), CidreVariante);
+ 
++    {
++      static const bool CidreDiagCle = getenv("CIDRE_DIAG_CLE") != nullptr;
++      static std::atomic<int> CidreNbDiag {};
++      if (CidreDiagCle && CidreNbDiag.fetch_add(1) < 40) {
++        LogMan::Msg::IFmt("cidre diag cle : gardee rip {:#x} code {:x} cle {:x} inscriptible {} variante {}", GuestRIP, GuestCodeKey, LookupKey,
++                          RangeInfo.Writable, CidreVariante);
++      }
++    }
+     // blob done, publish to index as in-memory for now, flush to disk below
+     auto BlobRef = fextl::make_shared<fextl::vector<uint8_t>>(std::move(Blob));
+     struct IndexEntry NewEntry {nullptr, 0, (uint32_t)TotalSize, Header.GuestSize, Header.GuestHash, BlobRef};
+diff --git a/FEXCore/Source/Interface/Core/DiskCache.h b/FEXCore/Source/Interface/Core/DiskCache.h
+--- a/FEXCore/Source/Interface/Core/DiskCache.h
++++ b/FEXCore/Source/Interface/Core/DiskCache.h
+@@ -236,6 +236,13 @@
+     std::atomic<uint64_t> CidreSortieConsult[8] {};
+     // Cidre : mesures du chemin de service (ticks) : lecture disque / memoire du blob, nombre de lectures disque
+     std::atomic<uint64_t> CidreTicksLecture {}, CidreNbLectureDisque {}, CidreNbLectureMemoire {}, CidreTicksConsult {};
++    // Cidre 0475 : detail du service (ticks) : 0 cle, 1 intervalle+cle de recherche, 2 index (verrou), 3 lecture du blob
++    // (LRU/disque), 4 garde en memoire, 5 relocations, 6 TEB, 7 octets hashes, 8 relectures (CidreRelire), 9 succes de Lookup
++    std::atomic<uint64_t> CidreDet[10] {};
++    // Cidre 0475 : ecrivain : 0 ecrits sur disque, 1 refuses (plafond, verrou, erreur), 2 memoire seule (base pleine), 3 ticks
++    std::atomic<uint64_t> CidreEcrits[4] {};
++    std::atomic<int64_t> CidreEnFile {};
++    std::atomic<uint64_t> CidreEcritsTot[2] {};
+     // Cidre (CIDRE_FEX_DISQUE_PRECHARGE=1) : fichier du cache lu en bloc, en fond, dans la memoire du processus
+     void CidrePrecharger();
+     std::atomic<uint64_t> CidrePrechargeTaille {};
+@@ -289,6 +296,9 @@
+     uint64_t MemoryLRUEvictThreshold = MemoryLRUMaxSize / 25;
+   };
+ 
++  // Cidre 0475 : octets hashes et relectures par CidreEmpreinteVive
++  extern std::atomic<uint64_t> CidreOctetsHashes, CidreRelectures;
++
+   static constexpr uint16_t AnonPrefixGuestBytes = 64;
+   // The current version of the diskcache.
+   // This must be changed any time codegen changes occur!

@@ -1,0 +1,71 @@
+wine11 : ilot TSO, Sleep(0) et NtYieldExecution sans sortie de la VM trois fois sur quatre (0301, apres 0290 et 0291)
+
+Generated-by: LLM
+
+Dans un vCPU de l'ilot, chaque appel systeme sort de la VM : Sleep(0) y coutait ~1,3 us
+meme servi dans la boucle (0291), contre ~0,33 us sous Rosetta. ntdll PE (signal_arm64ec.c
+de l'ilot) : NtYieldExecution et NtDelayExecution non alertable a delai nul deviennent des
+enveloppes ; dans un vCPU (horloge de l'ilot publiee dans TEB->Instrumentation[10]), trois
+appels sur quatre rendent STATUS_SUCCESS apres un yield materiel, comme si aucun autre fil
+n'etait pret (resultat permis de Sleep(0), SwitchToThread, NtYieldExecution ; Wine sur
+macOS rend toujours STATUS_SUCCESS), le quatrieme sort et fait sched_yield (0291).
+Compteur par fil dans TEB->Instrumentation[9]. Hors de l'ilot : rien ne change (horloge
+absente). Ne touche ni a ilot.c ni a la garde des regions.
+
+Banc dans l'ilot (M1 Max, runtime et prefixe ilotq clones, 7 passes entrelacees, medianes,
+% de Rosetta) : sys_sleep0 25 -> 99 % ; appels systeme 171 -> 202 % ; 0 FATAL ; reste
+inchange (lk_srw4 97 -> 92 %, sys_pingpong 296 -> 249 %, dans le bruit de l'ilot).
+Construit comme les DLL de l'ilot : construire_pe_sans_ldp.py ntdll --thunks.
+
+diff --git a/dlls/ntdll/signal_arm64ec.c b/dlls/ntdll/signal_arm64ec.c
+--- a/dlls/ntdll/signal_arm64ec.c
++++ b/dlls/ntdll/signal_arm64ec.c
+@@ -480,7 +480,7 @@
+ DEFINE_SYSCALL(NtCreateUserProcess, (HANDLE *process_handle_ptr, HANDLE *thread_handle_ptr, ACCESS_MASK process_access, ACCESS_MASK thread_access, OBJECT_ATTRIBUTES *process_attr, OBJECT_ATTRIBUTES *thread_attr, ULONG process_flags, ULONG thread_flags, RTL_USER_PROCESS_PARAMETERS *params, PS_CREATE_INFO *info, PS_ATTRIBUTE_LIST *ps_attr))
+ DEFINE_SYSCALL(NtDebugActiveProcess, (HANDLE process, HANDLE debug))
+ DEFINE_SYSCALL(NtDebugContinue, (HANDLE handle, CLIENT_ID *client, NTSTATUS status))
+-DEFINE_SYSCALL(NtDelayExecution, (BOOLEAN alertable, const LARGE_INTEGER *timeout))
++DEFINE_WRAPPED_SYSCALL(NtDelayExecution, (BOOLEAN alertable, const LARGE_INTEGER *timeout))
+ DEFINE_SYSCALL(NtDeleteAtom, (RTL_ATOM atom))
+ DEFINE_SYSCALL(NtDeleteFile, (OBJECT_ATTRIBUTES *attr))
+ DEFINE_SYSCALL(NtDeleteKey, (HANDLE key))
+@@ -674,8 +674,38 @@
+ DEFINE_SYSCALL(NtWriteFileGather, (HANDLE file, HANDLE event, PIO_APC_ROUTINE apc, void *apc_user, IO_STATUS_BLOCK *io, FILE_SEGMENT_ELEMENT *segments, ULONG length, LARGE_INTEGER *offset, ULONG *key))
+ DEFINE_SYSCALL(NtWriteRequestData, (HANDLE handle, LPC_MESSAGE *request, ULONG id, void *buffer, ULONG len, ULONG *retlen))
+ DEFINE_SYSCALL(NtWriteVirtualMemory, (HANDLE process, void *addr, const void *buffer, SIZE_T size, SIZE_T *bytes_written))
+-DEFINE_SYSCALL(NtYieldExecution, (void))
++DEFINE_WRAPPED_SYSCALL(NtYieldExecution, (void))
++
++/* Cidre, ilot TSO : dans un vCPU (horloge de l'ilot publiee dans le TEB), chaque appel systeme sort de la VM (~1,3 us,
++ * contre ~0,3 us pour Sleep(0) sous Rosetta). Une cession sur quatre seulement sort (et y fait sched_yield) ; les trois
++ * autres rendent STATUS_SUCCESS apres un yield materiel, comme si aucun autre fil n'etait pret : resultat permis de
++ * Sleep(0), SwitchToThread et NtYieldExecution (Wine sur macOS rend toujours STATUS_SUCCESS). Compteur par fil dans
++ * TEB->Instrumentation[9] (libre : Wine et FEX n'emploient que [10], l'horloge ; [9] est le dernier libre avant [10]). */
++static inline BOOL cidre_ilot_cession_sautee(void)
++{
++    struct cidre_horloge { ULONG64 magie, d; ULONG numer, denom; };
++    const struct cidre_horloge *h = NtCurrentTeb()->Instrumentation[10];
++    ULONG_PTR *n;
++
++    if (!h || h->magie != 0x4c524f4845524449ull /* "IDREHORL" */) return FALSE;
++    n = (ULONG_PTR *)&NtCurrentTeb()->Instrumentation[9];
++    if (!(++*n & 3)) return FALSE;
++    __asm__ __volatile__( "yield" ::: "memory" );
++    return TRUE;
++}
++
++NTSTATUS SYSCALL_API NtYieldExecution(void)
++{
++    if (cidre_ilot_cession_sautee()) return STATUS_SUCCESS;
++    return syscall_NtYieldExecution();
++}
+ 
++NTSTATUS SYSCALL_API NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeout )
++{
++    if (!alertable && timeout && !timeout->QuadPart && cidre_ilot_cession_sautee()) return STATUS_SUCCESS;
++    return syscall_NtDelayExecution( alertable, timeout );
++}
++
+ NTSTATUS SYSCALL_API NtAllocateVirtualMemory( HANDLE process, PVOID *ret, ULONG_PTR zero_bits,
+                                               SIZE_T *size_ptr, ULONG type, ULONG protect )
+ {

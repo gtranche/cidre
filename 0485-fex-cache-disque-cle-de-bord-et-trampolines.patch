@@ -1,0 +1,274 @@
+Generated-by: LLM
+
+Cidre 0485 (FEX, cache disque) : blocs sans cle (echec « a ») = blocs d'entree arretes par une page non executable. D4 rend
+ses pages de code executables une a une, a la premiere faute d'execution (« Add full SMC interval » apres chaque « NoExec /
+PartialDecode instruction in entry block », ~10 000 par partie). Le decodage des 64 octets de la cle s'arrete alors en
+NOEXEC/PARTIAL et la cle echouait ; Store refusait de toute facon un sous-bloc en echec.
+- Bloc d'entree sans aucune instruction lisible (RIP non executable, ~2/3 des cas) : « trampoline de faute », jamais garde
+  (rien a compiler), compte a part (cause 15 « trampoline »), sans seconde consultation (variante) ni second decodage.
+- Sinon : cle « de bord » = cle des octets lus + marque + decalage et nature de l'arret + octets lisibles de l'instruction
+  coupee. Elle n'est retrouvee que si le decodage vif s'arrete au meme endroit de la meme facon (page voisine toujours non
+  executable) ; l'empreinte des etendues valide les octets comme pour tout bloc. Store n'accepte un sous-bloc en echec que
+  sous cette cle (meme decodage, meme adresse d'arret). Au service, la page de l'instruction coupee est ajoutee aux pages du
+  bloc (comme CodePages a la compilation) : quand D4 la rend executable, l'invalidation retire le bloc.
+- Journal « NoExec/PartialDecode instruction in entry block » : 20 premieres lignes puis une sur 1000 (CIDRE_DIAG_NOEXEC=1 :
+  toutes). Ligne « cidre disque rates » : « cle de bord : calculees, servis, stockes ; trampolines ».
+- CIDRE_FEX_DISQUE_BORD=0 : comme avant. Local Cidre.
+
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -1618,6 +1618,7 @@
+   std::atomic<uint64_t> Rate1[FEXCore::DiskCache::CAUSE_NB] {}, RateFin[FEXCore::DiskCache::CAUSE_NB] {};
+   std::atomic<uint64_t> Neufs[FEXCore::DiskCache::CAUSE_NB] {}, Doublons[FEXCore::DiskCache::CAUSE_NB] {}, SeauPlein {}, RefusStore {};
+   std::atomic<uint64_t> SimpleServis {}, SimpleStockes {}, SimpleConsult {}; // 0481
++  std::atomic<uint64_t> BordServis {}, BordStockes {}; // 0485
+   int8_t Valides = -1; // CIDRE_FEX_DISQUE_VALIDES
+   uint64_t TotSucces = 0, TotCompil = 0, TotStockes = 0;
+   uint64_t MinDebut = 0, MinServis = 0, MinCompil = 0, MinStockes = 0; // ligne par minute (partie du joueur)
+@@ -1694,7 +1695,7 @@
+                     X(DC.CidreEcrits[0]), X(DC.CidreEcrits[1]), X(DC.CidreEcrits[2]), X(DC.CidreEcrits[3]) * 1000.0 / F,
+                     DC.CidreEnFile.load(std::memory_order_relaxed), DC.CidreBaseCourante() ? (int)DC.CidreBaseCourante()->Full() : -1);
+   // 0479 : causes des blocs compiles. Ordre : aucune, cle decodage, cle relecture, intervalle, cle absente, disponible, non
+-  // executable, octets, sans support, lecture, rearmement refuse, variante armable, chargement, relus, plein SMC
++  // executable, octets, sans support, lecture, rearmement refuse, variante armable, chargement, relus, plein SMC, trampoline (0485)
+   {
+     constexpr size_t N = FEXCore::DiskCache::CAUSE_NB;
+     uint64_t A[N], B[N], C[N], D[N];
+@@ -1702,10 +1703,12 @@
+       A[i] = X(S.Rate1[i]); B[i] = X(S.RateFin[i]); C[i] = X(S.Neufs[i]); D[i] = X(S.Doublons[i]);
+     }
+     LogMan::Msg::IFmt("cidre disque rates : premiere {} ; finale {} ; stockes neufs {} ; doublons {} ; seau plein {}, refus {} ; "
+-                      "cle simple : consult {}, servis {}, stockes {} ; projection {} Mio, amorce {} Mio",
++                      "cle simple : consult {}, servis {}, stockes {} ; projection {} Mio, amorce {} Mio ; "
++                      "cle de bord : calculees {}, servis {}, stockes {} ; trampolines {}",
+                       fmt::join(A, "/"), fmt::join(B, "/"), fmt::join(C, "/"), fmt::join(D, "/"), X(S.SeauPlein), X(S.RefusStore),
+                       X(S.SimpleConsult), X(S.SimpleServis), X(S.SimpleStockes), DC.CidreProjetes.load(std::memory_order_relaxed) >> 20,
+-                      DC.CidreAmorce.load(std::memory_order_relaxed) >> 20);
++                      DC.CidreAmorce.load(std::memory_order_relaxed) >> 20, X(DC.CidreBordCles), X(S.BordServis), X(S.BordStockes),
++                      X(DC.CidreTrampolines));
+   }
+ }
+ 
+@@ -1976,6 +1979,7 @@
+     CidreDisque.Consult.fetch_add(1, std::memory_order_relaxed);
+     auto* CidreDec = Thread->FrontendDecoder.get();
+     CidreDec->CidreCauseRIP = GuestRIP;
++    CidreDec->CidreCleBord = false; // 0485
+     Hit = DiskCache.Lookup(Thread, Region, GuestRIP, DiskCacheGuestCodeKey);
+     CidreDisque.TicksLookup.fetch_add(::FEXCore::CidreMesure::Tick() - CidreTS, std::memory_order_relaxed);
+     if (Hit && !DiskCache.IsValidating() && !CidreDisqueRearmer(this, Thread, GuestRIP, *Hit)) {
+@@ -1997,7 +2001,8 @@
+         CidreDisque.SimpleServis.fetch_add(1, std::memory_order_relaxed);
+       }
+     }
+-    if (!Hit && !DiskCache.IsValidating() && CidreDisqueValidesActif() && (GuestCodeArmed || GuestCodeAlias)) {
++    if (!Hit && !DiskCache.IsValidating() && CidreDisqueValidesActif() && (GuestCodeArmed || GuestCodeAlias) &&
++        CidreDec->CidreCause1 != FEXCore::DiskCache::CAUSE_TRAMPOLINE) { // 0485 : trampoline de faute, rien a chercher
+       std::optional<uint64_t> CidreCle2 = DiskCacheGuestCodeKey; // 0482 : cle deja calculee
+       Hit = DiskCache.Lookup(Thread, Region, GuestRIP, CidreCle2, true);
+       if (Hit) {
+@@ -2048,6 +2053,9 @@
+ 
+         FEXCORE_PROFILE_INSTANT_INCREMENT(Thread, AccumulatedDiskCacheHitCount, 1);
+         CidreDisque.Succes[CidreClasse].fetch_add(1, std::memory_order_relaxed);
++        if (CidreDec->CidreCleBord) {
++          CidreDisque.BordServis.fetch_add(1, std::memory_order_relaxed); // 0485
++        }
+         CidreDisque.SuccesTicks.fetch_add(::FEXCore::CidreMesure::Tick() - CidreTS, std::memory_order_relaxed);
+         CidreDisqueJournal(DiskCache);
+         Thread->FrontendDecoder->DelayedDisownBuffer();
+@@ -2223,6 +2231,9 @@
+           CidreDisque.Stockes[CidreClasse].fetch_add(1, std::memory_order_relaxed);
+           if (CidreVariante) {
+             CidreDisque.VarStockes.fetch_add(1, std::memory_order_relaxed);
++          }
++          if (Dec->CidreCleBord && Dec->CidreIssueStore == 0) {
++            CidreDisque.BordStockes.fetch_add(1, std::memory_order_relaxed); // 0485
+           }
+           if (CidreSimple && Dec->CidreIssueStore == 0) {
+             CidreDisque.SimpleStockes.fetch_add(1, std::memory_order_relaxed);
+diff --git a/FEXCore/Source/Interface/Core/DiskCache.cpp b/FEXCore/Source/Interface/Core/DiskCache.cpp
+--- a/FEXCore/Source/Interface/Core/DiskCache.cpp
++++ b/FEXCore/Source/Interface/Core/DiskCache.cpp
+@@ -1015,7 +1015,7 @@
+     // Cidre 0482 : cle deja calculee par une consultation precedente du meme bloc (variante, cle simple) : pas de second
+     // decodage des 64 octets (CLE_BRUTE=0 : ~8 us par consultation en jeu)
+     if (GuestCodeKey.has_value()) {
+-    } else if (Region && Region->FileStartVA) {
++    } else if (Thread->FrontendDecoder->CidreCleBord = false; Region && Region->FileStartVA) {
+       struct __attribute__((packed)) {
+         uint64_t GuestOffset;
+         uint64_t FileId;
+@@ -1047,13 +1047,40 @@
+       } else {
+       Thread->FrontendDecoder->DecodeLoop(reinterpret_cast<const uint8_t*>(GuestRIP), AnonPrefixGuestBytes);
+       const auto* BlockInfo = Thread->FrontendDecoder->GetDecodedBlockInfo();
++
++      // Cidre 0485 : un seul sous-bloc peut etre en echec : le bloc d'entree, arrete par une page non executable (NOEXEC ou
++      // PARTIAL : page pas encore rendue executable, D4 la dechiffre a la premiere faute). Sa cle « de bord » couvre les octets
++      // lus, l'adresse et la nature de l'arret et les octets lisibles de l'instruction coupee : elle n'est retrouvee que si le
++      // decodage vif s'arrete au meme endroit, de la meme facon (page voisine toujours non executable). Sans aucune
++      // instruction lue (RIP non executable) : trampoline de faute, jamais garde. CIDRE_FEX_DISQUE_BORD=0 : comme avant.
++      static const bool CidreBordActif = [] {
++        const char* E = getenv("CIDRE_FEX_DISQUE_BORD");
++        return !(E && *E == '0');
++      }();
++      const Frontend::Decoder::DecodedBlocks* CidreBord = nullptr;
++      uint64_t CidreCouverts = 0;
++      for (auto& SubBlock : BlockInfo->Blocks) {
++        CidreCouverts += SubBlock.Size;
++        if (SubBlock.BlockStatus == Frontend::Decoder::DecodedBlockStatus::SUCCESS) {
++          continue;
++        }
++        if (CidreBordActif && !CidreBord && SubBlock.Entry <= GuestRIP && GuestRIP <= SubBlock.Entry + SubBlock.Size &&
++            (SubBlock.BlockStatus == Frontend::Decoder::DecodedBlockStatus::NOEXEC_INST ||
++             SubBlock.BlockStatus == Frontend::Decoder::DecodedBlockStatus::PARTIAL_DECODE_INST)) {
++          CidreBord = &SubBlock;
++          continue;
++        }
++        CidreSortieConsult[0].fetch_add(1, std::memory_order_relaxed); Rate(CAUSE_CLE_DECODAGE); return std::nullopt;
++      }
++      if (CidreBord && CidreCouverts == 0) {
++        CidreTrampolines.fetch_add(1, std::memory_order_relaxed);
++        Rate(CAUSE_TRAMPOLINE);
++        return std::nullopt;
++      }
+ 
+       XXH3_state_t HashState;
+       XXH3_64bits_reset(&HashState);
+       for (auto& SubBlock : BlockInfo->Blocks) {
+-        if (SubBlock.BlockStatus != Frontend::Decoder::DecodedBlockStatus::SUCCESS) {
+-          CidreSortieConsult[0].fetch_add(1, std::memory_order_relaxed); Rate(CAUSE_CLE_DECODAGE); return std::nullopt;
+-        }
+         uint64_t HashStart = SubBlock.Entry;
+         // Cidre : octets lus comme le decodeur (alias des pages mixtes), jamais en direct
+         uint8_t Tampon[256];
+@@ -1092,7 +1119,31 @@
+         }
+       }
+       GuestCodeKey = XXH3_64bits_digest(&HashState);
++      if (CidreBord) {
++        // 0485 : cle de bord (marque, decalage et nature de l'arret, octets lisibles de l'instruction coupee)
++        struct __attribute__((packed)) {
++          uint64_t Cle;
++          uint64_t Marque;
++          uint64_t Decalage;
++          uint32_t Nature;
++          uint32_t Lisibles;
++          uint8_t Octets[16];
++        } Bord {};
++        const uint64_t Fin = CidreBord->Entry + CidreBord->Size;
++        Bord.Cle = *GuestCodeKey;
++        Bord.Marque = 0xB0D0'C1D4'0485'0001ULL;
++        Bord.Decalage = Fin - GuestRIP;
++        Bord.Nature = (uint32_t)CidreBord->BlockStatus;
++        while (Bord.Lisibles < 15 &&
++               Thread->FrontendDecoder->CidreRelire(reinterpret_cast<const uint8_t*>(Fin + Bord.Lisibles), &Bord.Octets[Bord.Lisibles], 1)) {
++          Bord.Lisibles++;
++        }
++        GuestCodeKey = XXH3_64bits(&Bord, sizeof(Bord));
++        Thread->FrontendDecoder->CidreCleBord = true;
++        Thread->FrontendDecoder->CidreBordFin = Fin;
++        CidreBordCles.fetch_add(1, std::memory_order_relaxed);
+       }
++      }
+       // if (TotalSize < AnonPrefixGuestBytes) {
+       //   GuestCodeKey = 0;
+       //   return std::nullopt;
+@@ -1319,7 +1370,20 @@
+       uint64_t LastPage = (Entry.GuestExtents[i] + GuestRIP + Entry.GuestExtents[i + 1] - 1) & Utils::FEX_PAGE_MASK;
+       for (uint64_t Page = FirstPage; Page <= LastPage; Page += Utils::FEX_PAGE_SIZE) {
+         if (GuestPages.size() == 0 || Page != GuestPages.back()) {
++          GuestPages.push_back(Page);
++        }
++      }
++    }
++
++    // Cidre 0485 : bloc de bord : la page de l'instruction coupee (non executable) est aussi une page du bloc, comme a la
++    // compilation (CodePages) : quand elle devient executable, l'invalidation retire le bloc (sinon il refauterait sans fin)
++    if (Thread->FrontendDecoder->CidreCleBord) {
++      const uint64_t Fin = Thread->FrontendDecoder->CidreBordFin;
++      for (uint64_t Page : {Fin & Utils::FEX_PAGE_MASK, (Fin + 14) & Utils::FEX_PAGE_MASK}) {
++        if (GuestPages.empty() || Page > GuestPages.back()) {
+           GuestPages.push_back(Page);
++        } else if (std::find(GuestPages.begin(), GuestPages.end(), Page) == GuestPages.end()) {
++          GuestPages.insert(std::lower_bound(GuestPages.begin(), GuestPages.end(), Page), Page);
+         }
+       }
+     }
+@@ -1946,9 +2010,20 @@
+     fextl::vector<uint32_t> ExactGuestCodeExtents;
+     uint64_t CurStartExtent = 0, CurEndExtent = 0;
+     const Frontend::Decoder::DecodedBlocks* LastBlock = nullptr;
++    bool CidreBordVu = false;
+     for (auto& SubBlock : DecodedBlockInfo->Blocks) {
+       if (SubBlock.BlockStatus != Frontend::Decoder::DecodedBlockStatus::SUCCESS) {
+-        return false;
++        // Cidre 0485 : seul le bloc d'entree arrete par une page non executable, et seulement sous sa cle de bord (calculee
++        // sur le meme decodage, meme adresse d'arret)
++        const auto* Dec = Thread->FrontendDecoder.get();
++        const bool Bord = Dec->CidreCleBord && !CidreBordVu && SubBlock.Entry + SubBlock.Size == Dec->CidreBordFin &&
++                          SubBlock.Entry <= GuestRIP && GuestRIP <= Dec->CidreBordFin &&
++                          (SubBlock.BlockStatus == Frontend::Decoder::DecodedBlockStatus::NOEXEC_INST ||
++                           SubBlock.BlockStatus == Frontend::Decoder::DecodedBlockStatus::PARTIAL_DECODE_INST);
++        if (!Bord) {
++          return false;
++        }
++        CidreBordVu = true;
+       }
+       if (!CurStartExtent) {
+         CurStartExtent = SubBlock.Entry;
+diff --git a/FEXCore/Source/Interface/Core/DiskCache.h b/FEXCore/Source/Interface/Core/DiskCache.h
+--- a/FEXCore/Source/Interface/Core/DiskCache.h
++++ b/FEXCore/Source/Interface/Core/DiskCache.h
+@@ -269,6 +269,8 @@
+     std::atomic<uint64_t> CidreEcritsTot[2] {};
+     // Cidre 0483 : octets projetes (base courante) et octets amorces (pages touchees en fond)
+     std::atomic<uint64_t> CidreProjetes {}, CidreAmorce {};
++    // Cidre 0485 : cles de bord calculees, trampolines de faute (RIP non executable, hors cache)
++    std::atomic<uint64_t> CidreBordCles {}, CidreTrampolines {};
+     std::atomic<bool> CidreArret {};
+     void CidreAmorcer();
+     ~DiskCache() {
+@@ -365,6 +367,7 @@
+     CAUSE_CHARGE,         // LoadCachedCode a echoue
+     CAUSE_RELUS,          // octets relus differents apres armement
+     CAUSE_PLEIN_SMC,      // 0481 : cle « simple » demandee dans un intervalle a SMC complet
++    CAUSE_TRAMPOLINE,     // 0485 : bloc d'entree sans instruction lisible (RIP non executable) : jamais garde
+     CAUSE_NB
+   };
+ 
+diff --git a/FEXCore/Source/Interface/Core/Frontend.cpp b/FEXCore/Source/Interface/Core/Frontend.cpp
+--- a/FEXCore/Source/Interface/Core/Frontend.cpp
++++ b/FEXCore/Source/Interface/Core/Frontend.cpp
+@@ -1695,6 +1695,15 @@
+             DecodedMaxAddress -= PCOffset;
+           }
+           EraseBlock = true;
++        } else if ((BlockIt->BlockStatus == DecodedBlockStatus::NOEXEC_INST || BlockIt->BlockStatus == DecodedBlockStatus::PARTIAL_DECODE_INST) &&
++                   [] {
++                     // Cidre 0485 : page pas encore executable (D4 la rend executable a la premiere faute) : ~10 000 lignes
++                     // par partie ecrites depuis l'ilot ; les 20 premieres, puis une sur 1000 (CIDRE_DIAG_NOEXEC=1 : toutes)
++                     static const bool Toutes = getenv("CIDRE_DIAG_NOEXEC") != nullptr;
++                     static std::atomic<uint64_t> N {};
++                     const uint64_t V = N.fetch_add(1, std::memory_order_relaxed);
++                     return !Toutes && V >= 20 && V % 1000 != 0;
++                   }()) {
+         } else {
+           LogMan::Msg::EFmt("{} instruction in entry block: {:X}",
+                             BlockIt->BlockStatus == DecodedBlockStatus::INVALID_INST       ? "Invalid" :
+diff --git a/FEXCore/Source/Interface/Core/Frontend.h b/FEXCore/Source/Interface/Core/Frontend.h
+--- a/FEXCore/Source/Interface/Core/Frontend.h
++++ b/FEXCore/Source/Interface/Core/Frontend.h
+@@ -218,6 +218,10 @@
+   // consultation (cle normale) et la derniere ; RIP consulte ; issue du dernier Store (0 neuf, 1 doublon, 2 seau plein, 3 refus)
+   uint8_t CidreCause1 {}, CidreCauseFin {}, CidreIssueStore {};
+   uint64_t CidreCauseRIP {};
++  // Cidre 0485 (cache disque) : cle « de bord » calculee pour ce bloc (bloc d'entree arrete par une page non executable,
++  // NOEXEC/PARTIAL) ; CidreBordFin = adresse de l'instruction non lue. Store n'accepte un sous-bloc en echec que sous cette cle.
++  bool CidreCleBord {};
++  uint64_t CidreBordFin {};
+ 
+ private:
+   IR::OpSize GetGPROpSize() const {

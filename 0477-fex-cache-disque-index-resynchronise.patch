@@ -1,0 +1,117 @@
+Generated-by: LLM
+
+Cidre 0477 (FEX, cache disque) : index resynchronise. Une entree d'index tronquee (ecrivain tue a la sortie) arretait la lecture de
+l'index ; les lancements suivants ecrivaient a la suite, invisibles pour toujours. Le cache du joueur (09/11 11:42) finit par une
+entree tronquee : sans 0477, plus rien de ce qui sera garde ne sera relu. Resynchronisation sur la prochaine entree bien formee ;
+entrees corrompues sautees en entier (amont restait au milieu). Coupure : CIDRE_FEX_DISQUE_RESYNC=0. Apres 0476.
+
+diff --git a/FEXCore/Source/Interface/Core/DiskCache.cpp b/FEXCore/Source/Interface/Core/DiskCache.cpp
+--- a/FEXCore/Source/Interface/Core/DiskCache.cpp
++++ b/FEXCore/Source/Interface/Core/DiskCache.cpp
+@@ -381,7 +381,60 @@
+     const uint8_t* IndexDataStart = Data.data();
+     const size_t IndexDataSize = Data.size();
+     size_t ReadOffset = 0;
++    // Cidre 0477 : une entree d'index tronquee (ecrivain tue a la sortie du processus au milieu d'une ecriture) faisait
++    // abandonner la lecture (« break ») ; le lancement suivant ecrivait a la suite : toutes les entrees posterieures etaient
++    // perdues pour toujours (compilees et stockees de nouveau a chaque partie). On resynchronise : sur une entree mal
++    // formee, on cherche la prochaine entree bien formee (cle hexadecimale ou meta, en-tete non compresse, taille coherente).
++    // CIDRE_FEX_DISQUE_RESYNC=0 rend le comportement d'origine.
++    static const bool CidreResync = [] {
++      const char* E = getenv("CIDRE_FEX_DISQUE_RESYNC");
++      return !(E && *E == '0');
++    }();
++    constexpr size_t TETE = sizeof(MesaFOZ::foz_payload_key) + sizeof(MesaFOZ::foz_payload_header);
++    constexpr uint64_t FIXE = sizeof(MesaFOZ::mesa_index_db_file_entry) + sizeof(IndexExtraBlobHeader);
++    auto BienFormee = [&](size_t Off) -> bool {
++      if (Off + TETE + FIXE > IndexDataSize) {
++        return false;
++      }
++      const auto* K = reinterpret_cast<const MesaFOZ::foz_payload_key*>(IndexDataStart + Off);
++      const auto* H = reinterpret_cast<const MesaFOZ::foz_payload_header*>(IndexDataStart + Off + sizeof(*K));
++      if (H->format != MesaFOZ::FOSSILIZE_COMPRESSION_NONE || H->crc != 0 || H->payload_size != H->uncompressed_size ||
++          H->payload_size < FIXE || Off + TETE + H->payload_size > IndexDataSize) {
++        return false;
++      }
++      const auto* X = reinterpret_cast<const IndexExtraBlobHeader*>(IndexDataStart + Off + TETE + sizeof(MesaFOZ::mesa_index_db_file_entry));
++      if (H->payload_size != FIXE + uint64_t(X->GuestExtentsCount) * sizeof(uint32_t)) {
++        return false;
++      }
++      if (K->bytes[39] == 0xFF) {
++        return true;
++      }
++      for (int i = 0; i < 32; i++) {
++        const uint8_t c = K->bytes[i];
++        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
++          return false;
++        }
++      }
++      for (size_t i = 32; i < sizeof(K->bytes); i++) {
++        if (K->bytes[i]) {
++          return false;
++        }
++      }
++      return true;
++    };
++    uint64_t CidreSautes = 0, CidreTrous = 0, CidreReprises = 0;
++    bool CidreApresTrou = false;
+     while (ReadOffset + sizeof(MesaFOZ::foz_payload_key) + sizeof(MesaFOZ::foz_payload_header) <= IndexDataSize) {
++      if (CidreResync && !BienFormee(ReadOffset)) {
++        const size_t Debut = ReadOffset;
++        do {
++          ReadOffset++;
++        } while (ReadOffset + TETE + FIXE <= IndexDataSize && !BienFormee(ReadOffset));
++        CidreSautes += ReadOffset - Debut;
++        CidreTrous++;
++        CidreApresTrou = true;
++        continue;
++      }
+       const auto* FOZKey = reinterpret_cast<const MesaFOZ::foz_payload_key*>(IndexDataStart + ReadOffset);
+       ReadOffset += sizeof(MesaFOZ::foz_payload_key);
+       const auto* FOZHeader = reinterpret_cast<const MesaFOZ::foz_payload_header*>(IndexDataStart + ReadOffset);
+@@ -392,6 +445,7 @@
+       if (FOZHeader->payload_size < IndexBlobSize || ReadOffset + FOZHeader->payload_size > IndexDataSize) {
+         break;
+       }
++      const size_t CidreFinEntree = ReadOffset + FOZHeader->payload_size;
+       const auto* IndexBlobCommon = reinterpret_cast<const MesaFOZ::mesa_index_db_file_entry*>(IndexDataStart + ReadOffset);
+       ReadOffset += sizeof(MesaFOZ::mesa_index_db_file_entry);
+       const auto* IndexBlobExtra = reinterpret_cast<const IndexExtraBlobHeader*>(IndexDataStart + ReadOffset);
+@@ -400,9 +454,16 @@
+       // skip corrupt (carefully) so we don't have to figure that out in the hot path later
+       if (IndexBlobCommon->cache_db_file_offset > (uint64_t)CacheFOZSize ||
+           IndexBlobCommon->size > (uint64_t)CacheFOZSize - IndexBlobCommon->cache_db_file_offset) {
++        // Cidre 0477 : amont restait au milieu de l'entree (etendues lues comme la cle suivante) ; on saute l'entree entiere
++        if (CidreResync) {
++          ReadOffset = CidreFinEntree;
++        }
+         continue;
+       }
+       if (IndexBlobExtra->GuestSize + sizeof(BlobFixedHeader) > IndexBlobCommon->size) {
++        if (CidreResync) {
++          ReadOffset = CidreFinEntree;
++        }
+         continue;
+       }
+       IndexBlobSize += IndexBlobExtra->GuestExtentsCount * sizeof(uint32_t);
+@@ -411,6 +472,9 @@
+       }
+       const auto* GuestExtents = reinterpret_cast<const uint32_t*>(IndexDataStart + ReadOffset);
+       ReadOffset += IndexBlobExtra->GuestExtentsCount * sizeof(uint32_t);
++      if (CidreApresTrou) {
++        CidreReprises++;
++      }
+       if (FOZKey->bytes[39] != 0xFF) {
+         IndexEntry NewEntry {this, IndexBlobCommon->cache_db_file_offset, IndexBlobCommon->size, IndexBlobExtra->GuestSize,
+                              IndexBlobExtra->GuestHash};
+@@ -439,6 +503,10 @@
+         FoundMetadata = true;
+       }
+     }
++    if (CidreTrous) {
++      LogMan::Msg::IFmt("cidre disque : index : {} trou(s), {} octets sautes, {} entrees reprises apres le premier trou", CidreTrous,
++                        CidreSautes, CidreReprises);
++    }
+     // could truncate/delete index if we don't end up perfectly at end here
+   }
+ 

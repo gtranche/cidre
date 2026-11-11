@@ -1,0 +1,334 @@
+Generated-by: LLM
+
+Cidre 0490 (FEX, decodeur et cache disque) : une lecture du code de l'invite qui faute ne remonte plus au jeu.
+Gel de D4 au demarrage (10/11, DLL 0489) : le decodeur (ou le cache disque) lit une page que les intervalles de FEX disent
+executable alors qu'un autre fil vient de la fermer (PAGE_NOACCESS ; les notifications de protection sont traitees au
+retour de l'appel, pas dans l'ordre des changements). La faute, levee dans FEX avec CodeInvalidationMutex tenu en partage
+par CompileBlock, allait aux gestionnaires du jeu ; celui de D4 rouvre la page : NtProtectVirtualMemory ->
+NotifyMemoryProtect (ThreadCreationMutex) -> invalidation -> CodeInvalidationMutex exclusif : le fil s'attend lui-meme
+(mot 0x40010001 : un lecteur, un ecrivain en attente), les autres fils bloquent sur ThreadCreationMutex ou en lecture.
+Defaut anterieur a 0479 (DLL 2b48fd8c : 8 gels sur 10 au banc_disque_0490 mode 4).
+- Context::SetGuestCodeCopy : copie du code de l'invite qui peut fauter ; Decoder::ReadCode rend faux sur faute, oublie
+  l'intervalle en cache ; PeekByte/ReadData traitent les octets comme non executables (instruction coupee, bloc NoExec :
+  la faute d'execution arrive ensuite au jeu comme sous Windows) ; CidreRelire faux ; GenerateIR : bloc non garde,
+  armement refuse.
+- Module.S : CidreCopieSure (feuille, ldp/ldrb) ; ResetToConsistentStateImpl reprend une faute dans [Debut, Echec) a
+  CidreCopieSureEchec (rend 0). Journal « cidre 0490 : lecture de code fautive rattrapee » (16 premieres, puis puissances
+  de 2) avec la chaine des appelants (RVA).
+- Diagnostic : « cidre 0490 : faute dans FEX pendant une compilation, remise au jeu » (pc dans xtajit64, compilation ou
+  liaison en cours) pour reconnaitre un autre chemin du meme genre.
+- CIDRE_LECTURE_SURE=0 : comme avant (memcpy). Local Cidre, jamais en amont.
+
+diff --git a/FEXCore/Source/Interface/Context/Context.h b/FEXCore/Source/Interface/Context/Context.h
+--- a/FEXCore/Source/Interface/Context/Context.h
++++ b/FEXCore/Source/Interface/Context/Context.h
+@@ -238,6 +238,10 @@
+     GuestCodeAlias = Fn;
+   }
+   GuestCodeAliasFn GuestCodeAlias {};
++  void SetGuestCodeCopy(GuestCodeCopyFn Fn) override {
++    GuestCodeCopy = Fn;
++  }
++  GuestCodeCopyFn GuestCodeCopy {}; // Cidre 0490
+   void SetGuestMixedSites(GuestMixedSiteFn Fn) override {
+     GuestMixedSite = Fn;
+   }
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -1238,8 +1238,10 @@
+           if (DecodedInfo->InstSize > 16) {
+             D->CidreCollecte = false; // ne devrait pas arriver (x86 : 15 octets au plus) : bloc non garde
+           } else {
+-            uint8_t CidreOctets[16];
+-            D->ReadCode(CidreOctets, GuestCodePtr(Block.Entry + BlockInstructionsLength), DecodedInfo->InstSize);
++            uint8_t CidreOctets[16] {};
++            if (!D->ReadCode(CidreOctets, GuestCodePtr(Block.Entry + BlockInstructionsLength), DecodedInfo->InstSize)) {
++              D->CidreCollecte = false; // 0490 : page fermee depuis le decodage : bloc non garde
++            }
+             CidreCompteCompil::Instruction(D->CidreEmpreinte, InstAddress, CidreOctets, DecodedInfo->InstSize);
+             if (D->CidreCollecte) {
+               if (D->CidreSegments.size() >= 1024) {
+@@ -1265,8 +1267,10 @@
+         // recompilation sans fin, sans jamais lever la faute d'execution.
+         if ((Config.SMCChecks == FEXCore::Config::CONFIG_SMC_FULL || Block.ForceFullSMCDetection) && DecodedInfo->InstSize) {
+           auto ExistingCodePtr = const_cast<uint8_t*>(GuestCodePtr(Block.Entry + BlockInstructionsLength));
+-          uint8_t CodeBytes[16];
+-          Thread->FrontendDecoder->ReadCode(CodeBytes, ExistingCodePtr, DecodedInfo->InstSize);
++          uint8_t CodeBytes[16] {};
++          // 0490 : page fermee depuis le decodage : la validation echouera et le bloc sera refait (lecture du JIT,
++          // faute d'invite ordinaire)
++          (void)Thread->FrontendDecoder->ReadCode(CodeBytes, ExistingCodePtr, DecodedInfo->InstSize);
+           auto Value = FEXCore::Utils::crc32(CodeBytes, DecodedInfo->InstSize);
+           // Cidre (Context::SetGuestCodeArmed) : si Wine arme le suivi d'ecriture de toutes les vues inscriptibles de la
+           // section pour ces octets (une ecriture leve une exception et invalide la page), la validation a chaque
+@@ -1305,8 +1309,8 @@
+           }
+           if (CidreArmeOk) {
+             uint8_t Relus[16];
+-            Thread->FrontendDecoder->ReadCode(Relus, ExistingCodePtr, DecodedInfo->InstSize);
+-            CidreArme = FEXCore::Utils::crc32(Relus, DecodedInfo->InstSize) == Value;
++            CidreArme = Thread->FrontendDecoder->ReadCode(Relus, ExistingCodePtr, DecodedInfo->InstSize) && // 0490
++                        FEXCore::Utils::crc32(Relus, DecodedInfo->InstSize) == Value;
+             if (CidreArme) {
+               auto& A = Thread->FrontendDecoder->CidreDisqueArmes;
+               if (!A.empty() && A.back().first + A.back().second == InstAddress) {
+diff --git a/FEXCore/Source/Interface/Core/Frontend.cpp b/FEXCore/Source/Interface/Core/Frontend.cpp
+--- a/FEXCore/Source/Interface/Core/Frontend.cpp
++++ b/FEXCore/Source/Interface/Core/Frontend.cpp
+@@ -145,11 +145,24 @@
+   return *Byte;
+ }
+ 
+-void Decoder::ReadCode(void* Dst, const uint8_t* P, size_t Size) {
++// Cidre 0490 : lectures du code de l'invite qui ont faute (page fermee apres la verification d'executabilite)
++std::atomic<uint64_t> CidreLecturesFautives {};
++
++bool Decoder::ReadCode(void* Dst, const uint8_t* P, size_t Size) {
+   auto* D = static_cast<uint8_t*>(Dst);
++  const auto Copier = CTX->GuestCodeCopy; // 0490 : copie qui peut fauter sans remonter au jeu
++  auto Echec = [&] {
++    CidreLecturesFautives.fetch_add(1, std::memory_order_relaxed);
++    ResetExecutableRangeCache(); // l'intervalle qui disait la page executable est perime
++    AliasPage = ~0ULL;
++    return false;
++  };
+   if (!CTX->GuestCodeAlias) {
++    if (Copier) {
++      return Copier(D, P, Size) ? true : Echec();
++    }
+     std::memcpy(D, P, Size);
+-    return;
++    return true;
+   }
+   // Cidre 0486 : copie par morceau de page d'hote (16 Kio) au lieu d'octet par octet (meme alias par page)
+   uint64_t A = reinterpret_cast<uint64_t>(P);
+@@ -160,7 +173,11 @@
+       AliasDelta = CTX->GuestCodeAlias(Page);
+     }
+     const size_t N = std::min<uint64_t>(Size, Page + 0x4000 - A);
+-    if (N == 1) {
++    if (Copier) {
++      if (!Copier(D, reinterpret_cast<const void*>(A + AliasDelta), N)) {
++        return Echec();
++      }
++    } else if (N == 1) {
+       *D = *reinterpret_cast<const uint8_t*>(A + AliasDelta);
+     } else {
+       std::memcpy(D, reinterpret_cast<const void*>(A + AliasDelta), N);
+@@ -169,6 +186,7 @@
+     A += N;
+     Size -= N;
+   }
++  return true;
+ }
+ 
+ bool Decoder::CidreRelire(const uint8_t* P, void* Dst, size_t Size) {
+@@ -185,23 +203,23 @@
+   if (!CheckRangeExecutable(reinterpret_cast<uint64_t>(P), Size)) {
+     return false;
+   }
+-  ReadCode(Dst, P, Size);
+-  return true;
++  return ReadCode(Dst, P, Size); // 0490
+ }
+ 
+ bool Decoder::CidreRelireSuite(const uint8_t* P, void* Dst, size_t Size) {
+   if (!CheckRangeExecutable(reinterpret_cast<uint64_t>(P), Size)) {
+     return false;
+   }
+-  ReadCode(Dst, P, Size);
+-  return true;
++  return ReadCode(Dst, P, Size); // 0490
+ }
+ 
+ std::optional<uint8_t> Decoder::PeekByte(uint8_t Offset) {
+   uint64_t ByteAddress = reinterpret_cast<uint64_t>(InstStream.InstStream + InstructionSize + Offset);
+   if (CheckRangeExecutable(ByteAddress, 1)) {
+     uint8_t Byte;
+-    ReadCode(&Byte, &InstStream.AdjustedInstStream[InstructionSize + Offset], 1);
++    if (!ReadCode(&Byte, &InstStream.AdjustedInstStream[InstructionSize + Offset], 1)) {
++      return std::nullopt; // 0490 : page fermee entre-temps : non executable
++    }
+     return Byte;
+   } else {
+     return std::nullopt;
+@@ -215,9 +233,9 @@
+   uint64_t Address = reinterpret_cast<uint64_t>(InstStream.InstStream + InstructionSize);
+   LastFieldReadOffset = (uint8_t)InstructionSize;
+   LastFieldReadSize = Size;
+-  if (CheckRangeExecutable(Address, Size)) {
+-    ReadCode(&Res, &InstStream.AdjustedInstStream[InstructionSize], Size);
++  if (CheckRangeExecutable(Address, Size) && ReadCode(&Res, &InstStream.AdjustedInstStream[InstructionSize], Size)) {
+   } else {
++    Res = 0; // 0490 : une lecture fautive laisse Res partiel
+     HitNonExecutableRange = true;
+     // See PeekByte, this specific case may cause some executable memory to read as 0 but it doesn't matter as the entire instruction will be rolled back anyway.
+     Res = 0;
+diff --git a/FEXCore/Source/Interface/Core/Frontend.h b/FEXCore/Source/Interface/Core/Frontend.h
+--- a/FEXCore/Source/Interface/Core/Frontend.h
++++ b/FEXCore/Source/Interface/Core/Frontend.h
+@@ -190,7 +190,9 @@
+ public:
+   // Cidre : lit Size octets de code de l'invite a P (adresse hote), par l'alias de Wine si la page d'hote est
+   // mixte : ses voisines fermees feraient fauter chaque octet lu (rejoue par Wine, ~2,4 us).
+-  void ReadCode(void* Dst, const uint8_t* P, size_t Size);
++  // Cidre 0490 : faux si une lecture a faute (page fermee depuis la verification, voir Context::SetGuestCodeCopy) ; le
++  // cache de l'intervalle executable est alors oublie, et l'appelant traite les octets comme non executables.
++  bool ReadCode(void* Dst, const uint8_t* P, size_t Size);
+ 
+   // Cidre (CIDRE_COMPTE_COMPIL, Core.cpp) : empreinte des octets du bloc en cours de decodage ; jamais de TLS (arm64ec)
+   uint64_t CidreEmpreinte {};
+diff --git a/FEXCore/include/FEXCore/Core/Context.h b/FEXCore/include/FEXCore/Core/Context.h
+--- a/FEXCore/include/FEXCore/Core/Context.h
++++ b/FEXCore/include/FEXCore/Core/Context.h
+@@ -174,6 +174,16 @@
+    */
+   using GuestCodeAliasFn = int64_t (*)(uint64_t HostPage);
+   FEX_DEFAULT_VISIBILITY virtual void SetGuestCodeAlias(GuestCodeAliasFn Fn) = 0;
++
++  /**
++   * @brief Cidre 0490 : copy of guest code that may fault. The executability check of the decoder relies on FEX's
++   * intervals, which can briefly say executable for a page another thread has just closed (PAGE_NOACCESS). A fault
++   * there, while CodeInvalidationMutex is held shared, used to reach the game's exception handlers, which reopen the
++   * page (NtProtectVirtualMemory -> invalidation -> CodeInvalidationMutex exclusive) : the thread waited for itself.
++   * Fn returns false if a read faulted ; the frontend then treats the bytes as not executable. Without it : memcpy.
++   */
++  using GuestCodeCopyFn = bool (*)(void* Dst, const void* Src, size_t Size);
++  FEX_DEFAULT_VISIBILITY virtual void SetGuestCodeCopy(GuestCodeCopyFn Fn) = 0;
+ 
+   /**
+    * @brief Cidre : guest instructions known to access mixed host pages. Given a guest RIP, the hook returns a 16-byte
+diff --git a/Source/Windows/ARM64EC/Module.S b/Source/Windows/ARM64EC/Module.S
+--- a/Source/Windows/ARM64EC/Module.S
++++ b/Source/Windows/ARM64EC/Module.S
+@@ -183,7 +183,37 @@
+   ldr w11, [x17, x16, lsl #2]
+   add x11, x11, x9
+ end:
++  ret
++
++  // Cidre 0490 : copie de code de l'invite qui peut fauter. x0 = destination, x1 = source, x2 = taille ; rend 1, ou 0
++  // si une lecture a faute : ResetToConsistentStateImpl (Module.cpp) reprend alors a CidreCopieSureEchec. Feuille, sans
++  // pile ; rien n'est ecrit hors de [x0, x0 + x2). Lectures par 16 octets (ldp non aligne : memoire normale), puis octets.
++.global "#CidreCopieSure"
++"#CidreCopieSure":
++.global CidreCopieSureDebut
++CidreCopieSureDebut:
++  cbz x2, 3f
++  cmp x2, #16
++  b.lo 2f
++1:
++  ldp x3, x4, [x1], #16
++  stp x3, x4, [x0], #16
++  sub x2, x2, #16
++  cmp x2, #16
++  b.hs 1b
++  cbz x2, 3f
++2:
++  ldrb w3, [x1], #1
++  strb w3, [x0], #1
++  subs x2, x2, #1
++  b.ne 2b
++3:
++  mov x0, #1
+   ret
++.global CidreCopieSureEchec
++CidreCopieSureEchec:
++  mov x0, #0
++  ret
+ 
+   // Expects target address in x0, and the SP to set in x1
+ .global "#JumpSetStack"
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -108,8 +108,38 @@
+ 
+ [[noreturn]]
+ void JumpSetStack(uintptr_t PC, uintptr_t SP);
++// Cidre 0490 (Module.S) : copie de code de l'invite qui peut fauter ; [Debut, Echec) : pc repris a Echec
++uint64_t CidreCopieSure(void* Dst, const void* Src, uint64_t Size);
++extern void* CidreCopieSureDebut;
++extern void* CidreCopieSureEchec;
+ }
+ 
++// Cidre 0490 : voir Context::SetGuestCodeCopy
++static bool CidreCopieCode(void* Dst, const void* Src, size_t Size) {
++  return CidreCopieSure(Dst, Src, Size) != 0;
++}
++static std::atomic<uint64_t> CidreNbCopiesRattrapees, CidreNbFautesFexRemises;
++// RVA dans xtajit64 (ou 0 hors de l'image), pour le journal
++static uint64_t CidreRva(uint64_t A) {
++  const uint64_t Base = reinterpret_cast<uint64_t>(&__ImageBase);
++  return A >= Base && A < Base + 0x4000000 ? A - Base : 0;
++}
++// chaine des cadres (x29) d'un contexte natif, bornee, pour reconnaitre l'appelant dans le journal
++static fextl::string CidreChaineCadres(const ARM64_NT_CONTEXT* C) {
++  fextl::string S = fextl::fmt::format("lr {:#x}", CidreRva(C->Lr));
++  uint64_t Fp = C->Fp;
++  for (int I = 0; I < 10 && Fp && !(Fp & 7) && Fp >= C->Sp && Fp - C->Sp < 0x100000; I++) {
++    const uint64_t Suivant = reinterpret_cast<const uint64_t*>(Fp)[0];
++    const uint64_t Retour = reinterpret_cast<const uint64_t*>(Fp)[1];
++    S += fextl::fmt::format(" {:#x}", CidreRva(Retour));
++    if (Suivant <= Fp) {
++      break;
++    }
++    Fp = Suivant;
++  }
++  return S;
++}
++
+ struct ThreadCPUArea {
+   static constexpr size_t TEBCPUAreaOffset = 0x1788;
+   CHPE_V2_CPU_AREA_INFO* Area;
+@@ -1041,6 +1071,10 @@
+       FEX::Windows::CPUFeatures::FetchHostFeatures(IsWine, FEXCore::HostFeatures::HostTypeEnum::Arm64ec, FEX::Windows::UnixLib::GetPID());
+     CTX = FEXCore::Context::Context::CreateNewContext(HostFeatures);
+   }
++  // Cidre 0490 : lecture du code de l'invite qui peut fauter sans remonter au jeu (CIDRE_LECTURE_SURE=0 : memcpy, avant)
++  if (const char* E = getenv("CIDRE_LECTURE_SURE"); !(E && *E == '0')) {
++    CTX->SetGuestCodeCopy(&CidreCopieCode);
++  }
+   if (FEX::Windows::SousPages::Active()) {
+     // Le decodeur lit le code des pages d'hote mixtes par l'alias de Wine (sans faute rejouee par octet).
+     CTX->SetGuestCodeAlias(&FEX::Windows::SousPages::DecalageCode);
+@@ -1253,6 +1287,21 @@
+     }
+   }
+ 
++  // Cidre 0490 : faute dans CidreCopieSure (lecture du code de l'invite par le decodeur ou le cache disque, verrou
++  // CodeInvalidationMutex tenu en partage) : la copie rend 0, rien ne remonte au jeu. Avant, l'exception allait aux
++  // gestionnaires du jeu (D4 : rouvrir la page, NtProtectVirtualMemory -> invalidation -> verrou exclusif) : gel.
++  if (Exception->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && NativeContext->Pc >= reinterpret_cast<uint64_t>(&CidreCopieSureDebut) &&
++      NativeContext->Pc < reinterpret_cast<uint64_t>(&CidreCopieSureEchec)) {
++    const uint64_t N = CidreNbCopiesRattrapees.fetch_add(1, std::memory_order_relaxed) + 1;
++    if (N <= 16 || !(N & (N - 1))) {
++      LogMan::Msg::IFmt("cidre 0490 : lecture de code fautive rattrapee {} : adresse {:#x} nature {} ; appelants {}", N,
++                        Exception->NumberParameters >= 2 ? Exception->ExceptionInformation[1] : 0,
++                        Exception->NumberParameters >= 1 ? Exception->ExceptionInformation[0] : 0, CidreChaineCadres(NativeContext));
++    }
++    NativeContext->Pc = reinterpret_cast<uint64_t>(&CidreCopieSureEchec);
++    return true;
++  }
++
+   // Cidre, sous-pages : une faute sur la copie de l'instruction dans un talon est
+   // ramenee a l'instruction reecrite, contexte d'origine (voir SousPages.h). Une
+   // faute autre qu'une violation d'acces ou une page de garde (desalignement d'un
+@@ -1339,6 +1388,16 @@
+   }
+ 
+   if (!IsJIT && !IsDispatcherAddress(NativeContext->Pc)) {
++    // Cidre 0490 (diagnostic) : faute du code de FEX meme (pc dans xtajit64) pendant une compilation ou une liaison :
++    // remise au jeu, elle risque l'interblocage decrit plus haut ; journal pour la reconnaitre.
++    if (Exception->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && Thread->CidreWXProfondeur && CidreRva(NativeContext->Pc)) {
++      const uint64_t N = CidreNbFautesFexRemises.fetch_add(1, std::memory_order_relaxed) + 1;
++      if (N <= 16 || !(N & (N - 1))) {
++        LogMan::Msg::IFmt("cidre 0490 : faute dans FEX pendant une compilation, remise au jeu {} : pc {:#x} adresse {:#x} ; appelants {}", N,
++                          CidreRva(NativeContext->Pc), Exception->NumberParameters >= 2 ? Exception->ExceptionInformation[1] : 0,
++                          CidreChaineCadres(NativeContext));
++      }
++    }
+     if (Exception::CidreJournalExceptions()) {
+       LogMan::Msg::DFmt("Passing through exception");
+     }

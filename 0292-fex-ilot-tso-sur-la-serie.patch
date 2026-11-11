@@ -1,0 +1,3948 @@
+Generated-by: LLM
+
+fex : partie FEX de l'ilot (0292, version 0292b du 31/10) portee sur la serie integree 4cc64cc (FEX jusqu'a 0307). Meme contenu que 0292
+(lectures groupees, CidreBarriereLd, jumelles v2, tampon 128, compteurs, 0288/0289 actifs dans l'ilot) ; les
+conflits avec 0296 (vidage de la pile d'appels, definition deplacee par 0292) et 0300 (initialisation du frontal)
+sont resolus a la main. 0300 reste inactif dans l'ilot (journal : « cidre wx : bascule explicite inactive (genre 0,
+ilot oui) ») ; 0306 y est actif (sonnette par faute ; suspension 50/50 sous faux crashhandler dans l'ilot).
+Remplace 0292 pour une serie qui contient 0296-0307.
+
+S'applique sans conflit sur la serie de main (FEX jusqu'a 0313, avec 0310 : inerte quand CIDRE_ILOT est pose).
+
+diff --git a/CodeEmitter/CodeEmitter/Buffer.h b/CodeEmitter/CodeEmitter/Buffer.h
+--- a/CodeEmitter/CodeEmitter/Buffer.h
++++ b/CodeEmitter/CodeEmitter/Buffer.h
+@@ -63,7 +63,25 @@
+   }
+ 
+   static void ClearICache(void* Begin, std::size_t Length) {
++#ifdef ARCHITECTURE_arm64ec
++    // Cidre : code JIT de FEX lui-meme. __builtin___clear_cache passe en ARM64EC par FlushInstructionCache, donc par
++    // ntdll, qui rappelle FEX (BTCpu64FlushInstructionCache) et prend ses verrous d'invalidation pour une plage qui n'est
++    // pas du code x64 (ilot TSO, D2R : NtFlushInstructionCache et WritePriorityMutex::lock_shared en tete des releves).
++    // dc cvau / ic ivau sont permis en EL0 sur macOS (sys_icache_invalidate fait de meme) et dans le vCPU de l'ilot
++    // (EL1). Pas de 64 octets : au plus la plus petite ligne des puces Apple, chaque ligne est donc couverte.
++    const uintptr_t Debut = reinterpret_cast<uintptr_t>(Begin) & ~uintptr_t {63};
++    const uintptr_t Fin = reinterpret_cast<uintptr_t>(Begin) + Length;
++    for (uintptr_t A = Debut; A < Fin; A += 64) {
++      __asm__ volatile("dc cvau, %0" ::"r"(A) : "memory");
++    }
++    __asm__ volatile("dsb ish" ::: "memory");
++    for (uintptr_t A = Debut; A < Fin; A += 64) {
++      __asm__ volatile("ic ivau, %0" ::"r"(A) : "memory");
++    }
++    __asm__ volatile("dsb ish\n\tisb" ::: "memory");
++#else
+     __builtin___clear_cache(static_cast<char*>(Begin), static_cast<char*>(Begin) + Length);
++#endif
+   }
+ 
+   size_t GetCursorOffset() const {
+diff --git a/FEXCore/Source/Interface/Context/Context.h b/FEXCore/Source/Interface/Context/Context.h
+--- a/FEXCore/Source/Interface/Context/Context.h
++++ b/FEXCore/Source/Interface/Context/Context.h
+@@ -238,6 +238,22 @@
+     GuestCodeAlias = Fn;
+   }
+   GuestCodeAliasFn GuestCodeAlias {};
++  void SetGuestMixedSites(GuestMixedSiteFn Fn) override {
++    GuestMixedSite = Fn;
++  }
++  GuestMixedSiteFn GuestMixedSite {};
++  void SetGuestMixedPrewrite(GuestMixedPrewriteFn Fn) override {
++    GuestMixedPrewrite = Fn;
++  }
++  GuestMixedPrewriteFn GuestMixedPrewrite {};
++  void SetGuestReadAlias(GuestReadAliasFn Fn) override {
++    GuestReadAlias = Fn;
++  }
++  GuestReadAliasFn GuestReadAlias {};
++  void SetGuestCodeArmed(GuestCodeArmedFn Fn) override {
++    GuestCodeArmed = Fn;
++  }
++  GuestCodeArmedFn GuestCodeArmed {};
+ 
+   // returns false if a handler was already registered
+   std::optional<CustomIRResult>
+diff --git a/FEXCore/Source/Interface/Core/CPUBackend.cpp b/FEXCore/Source/Interface/Core/CPUBackend.cpp
+--- a/FEXCore/Source/Interface/Core/CPUBackend.cpp
++++ b/FEXCore/Source/Interface/Core/CPUBackend.cpp
+@@ -337,6 +337,9 @@
+     }
+     return nullptr;
+   }
++
++  // Cidre, diag : octets pris par les talons des sous-pages dans les tampons de code (voir JIT.cpp, vidages).
++  std::atomic<uint64_t> CidreOctetsTalons;
+ 
+   uint8_t* CPUBackend::AllocateCodeStub(uintptr_t Near, size_t Size) {
+     if (!CurrentCodeBuffer) {
+@@ -350,6 +353,7 @@
+     if (!Allocation.BufferAllocationOffset) {
+       return nullptr;
+     }
++    CidreOctetsTalons.fetch_add(FEXCore::AlignUp(Size, 16), std::memory_order_relaxed);
+     const auto Stub = reinterpret_cast<uintptr_t>(Allocation.BufferAllocationOffset);
+     const auto Distance = Stub > Near ? Stub - Near : Near - Stub;
+     if (Distance + Size >= (128ULL << 20)) {
+diff --git a/FEXCore/Source/Interface/Core/CPUBackend.h b/FEXCore/Source/Interface/Core/CPUBackend.h
+--- a/FEXCore/Source/Interface/Core/CPUBackend.h
++++ b/FEXCore/Source/Interface/Core/CPUBackend.h
+@@ -8,6 +8,7 @@
+ 
+ #pragma once
+ 
++#include <FEXCore/fextl/unordered_map.h>
+ #include "Interface/Core/SharedCodeBufferManager.h"
+ 
+ #include <FEXCore/Utils/CompilerDefs.h>
+@@ -136,6 +137,14 @@
+     // See FEXCore::Context::Context::AllocateCodeStub.
+     uint8_t* AllocateCodeStub(uintptr_t Near, size_t Size);
+ 
++    // Cidre (P) : plages de code hote [debut, fin) des acces de RIP connus du dernier bloc compile, a reecrire vers
++    // leur talon avant publication (Context::SetGuestMixedPrewrite).
++    fextl::vector<std::pair<uint64_t, uint64_t>> CidrePreSites;
++
++    // Cidre (lecture directe, Context::SetGuestReadAlias) : adresse constante des lectures du bloc en cours, par numero de
++    // noeud, relevee avant l'allocation des registres (qui remplace les arguments par des registres physiques).
++    fextl::unordered_map<uint32_t, uint64_t> CidreAdressesConstantes;
++
+     // Updates the CodeBuffer if needed and returns a reference to the old one.
+     // The returned reference should be kept alive carefully to avoid early deletion of resources.
+     [[nodiscard]]
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -47,6 +47,7 @@
+ #include <FEXCore/HLE/SyscallHandler.h>
+ #include <FEXCore/HLE/SourcecodeResolver.h>
+ #include <FEXCore/Utils/Allocator.h>
++#include <FEXCore/Utils/AllocatorHooks.h>
+ #include <FEXCore/Utils/Event.h>
+ #include <FEXCore/Utils/File.h>
+ #include <FEXCore/Utils/LogManager.h>
+@@ -59,6 +60,8 @@
+ #include <FEXCore/fextl/set.h>
+ #include <FEXCore/fextl/sstream.h>
+ #include <FEXCore/fextl/vector.h>
++#include <FEXCore/fextl/string.h>
++#include <FEXCore/fextl/unordered_map.h>
+ #include <FEXHeaderUtils/Syscalls.h>
+ 
+ #include <algorithm>
+@@ -81,32 +84,88 @@
+ #include <utility>
+ #include <xxhash.h>
+ #include "Interface/Core/Addressing.h"
++#include <FEXCore/Utils/CidreCompteurs.h>
+ 
+-namespace FEXCore::Context {
+-// Cidre 0278 : la pile d'appels de retour est toujours engagee en lecture-ecriture ; CIDRE_SMC_RAPIDE=0 rend l'amont.
+-static inline void CidreViderPileAppels(FEXCore::Core::InternalThreadState* T);
+-// Cidre 0279 : avancer la cle d'epoque au lieu de vider la pile (CIDRE_PILE_CLE=1) ; videe au retour a zero.
+-static inline void CidreInvaliderPileAppels(FEXCore::Core::InternalThreadState* T) {
+-  {
+-    static int8_t SansVidage = -1; // temoin de sensibilite seulement : CIDRE_PILE_TEMOIN_SANS=1 ne vide rien (FAUX)
+-    if (SansVidage < 0) {
+-      const char* E = getenv("CIDRE_PILE_TEMOIN_SANS");
+-      SansVidage = E && *E == '1';
++// Cidre, mesure par etape (ticks CNTVCT, cumules ; imprimes et remis a zero chaque seconde par la ligne « cidre
++// compil ») : compilation, reinstallation, armement (GuestCodeArmed), invalidation (InvalidationTracker.cpp : attente et
++// tenue du verrou unique), vidages du cache de code. Toujours comptes (deux lectures de CNTVCT par evenement), imprimes
++// seulement avec CIDRE_COMPTE_COMPIL=1.
++namespace FEXCore::CidreMesure {
++std::atomic<uint64_t> InvalAttente, InvalTenue, InvalNb, CompilTicks, ReinstTicks, ArmeTicks, ArmeNb, VidageTicks, VidageNb;
++static inline uint64_t Tick() {
++  uint64_t v;
++  __asm__ volatile("mrs %0, cntvct_el0" : "=r"(v));
++  return v;
++}
++static inline uint64_t Freq() {
++  uint64_t v;
++  __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(v));
++  return v;
++}
++
++// Cidre (CIDRE_SMC_BLOC_APRES=N, 0 ou absent : coupe) : une page de 4 Kio invalidee N fois devient « chaude ». Ses
++// instructions ne sont plus armees (GuestCodeArmed) : les blocs y gardent la validation integree de FEX (ValidateCode a
++// chaque instruction, SMC complet : une reecriture, meme au milieu d'un bloc en cours, est vue avant l'instruction et ne
++// fait recompiler que ce bloc). Plus d'armement, donc plus de faute d'ecriture ni d'invalidation sur cette page : Wine
++// la desarme a la premiere CodeEcrit et FEX ne la rearme plus. Table sans verrou, insertion seule ; une page chaude le
++// reste. Compte aux deux entrees de l'invalidation (InvalidationTracker.cpp) ; plages de plus de 64 Kio ignorees
++// (liberations, reprotections larges : pas une reecriture de code).
++uint64_t SeuilChaud() {
++  static const uint64_t N = [] {
++    const char* E = getenv("CIDRE_SMC_BLOC_APRES");
++    return E ? strtoull(E, nullptr, 10) : 0ULL;
++  }();
++  return N;
++}
++static constexpr size_t NB_PAGES_INVAL = size_t {1} << 16;
++static std::atomic<uint64_t> PagesInval[NB_PAGES_INVAL];
++static std::atomic<uint32_t> ComptesInval[NB_PAGES_INVAL];
++std::atomic<uint64_t> PagesChaudes, ValidationsForcees;
++static inline uint64_t HachePage(uint64_t P) {
++  return (P * 0x9E3779B97F4A7C15ULL) >> 48;
++}
++void NoterInvalidation(uint64_t Address, uint64_t Size) {
++  const uint64_t Seuil = SeuilChaud();
++  if (!Seuil || !Size || Size > 0x10000) {
++    return;
++  }
++  for (uint64_t Page = Address >> 12, Fin = (Address + Size - 1) >> 12; Page <= Fin; Page++) {
++    const uint64_t Cle = Page + 1;
++    for (size_t i = 0, h = HachePage(Cle); i < 32; i++, h = (h + 1) & (NB_PAGES_INVAL - 1)) {
++      uint64_t c = PagesInval[h].load(std::memory_order_relaxed);
++      if (!c && PagesInval[h].compare_exchange_strong(c, Cle, std::memory_order_relaxed)) {
++        c = Cle;
++      }
++      if (c == Cle) {
++        if (ComptesInval[h].fetch_add(1, std::memory_order_relaxed) + 1 == Seuil) {
++          PagesChaudes.fetch_add(1, std::memory_order_relaxed);
++        }
++        break;
++      }
+     }
+-    if (SansVidage) {
+-      return;
+-    }
+   }
+-  if (FEXCore::CPU::CidrePileCle()) {
+-    auto& Cle = T->CurrentFrame->State.callret_cle;
+-    const uint64_t Nouvelle = __atomic_load_n(&Cle, __ATOMIC_RELAXED) + FEXCore::CPU::CIDRE_PILE_CLE_PAS;
+-    __atomic_store_n(&Cle, Nouvelle, __ATOMIC_RELEASE);
+-    if (Nouvelle != 0) {
+-      return;
++}
++bool PageChaude(uint64_t Page) {
++  const uint64_t Seuil = SeuilChaud();
++  if (!Seuil) {
++    return false;
++  }
++  const uint64_t Cle = Page + 1;
++  for (size_t i = 0, h = HachePage(Cle); i < 32; i++, h = (h + 1) & (NB_PAGES_INVAL - 1)) {
++    const uint64_t c = PagesInval[h].load(std::memory_order_relaxed);
++    if (c == Cle) {
++      return ComptesInval[h].load(std::memory_order_relaxed) >= Seuil;
+     }
++    if (!c) {
++      return false;
++    }
+   }
+-  CidreViderPileAppels(T);
++  return false;
+ }
++} // namespace FEXCore::CidreMesure
++
++namespace FEXCore::Context {
++// Cidre 0278 : la pile d'appels de retour est toujours engagee en lecture-ecriture ; CIDRE_SMC_RAPIDE=0 rend l'amont.
+ static inline void CidreViderPileAppels(FEXCore::Core::InternalThreadState* T) {
+   void* Base = T->CallRetStackBase;
+   if (FEXCore::Core::CidrePileMesure()) {
+@@ -145,6 +204,28 @@
+     FEXCore::Allocator::VirtualDontNeed(Base, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE);
+   }
+ }
++// Cidre 0279 : avancer la cle d'epoque au lieu de vider la pile (CIDRE_PILE_CLE=1) ; videe au retour a zero.
++static inline void CidreInvaliderPileAppels(FEXCore::Core::InternalThreadState* T) {
++  {
++    static int8_t SansVidage = -1; // temoin de sensibilite seulement : CIDRE_PILE_TEMOIN_SANS=1 ne vide rien (FAUX)
++    if (SansVidage < 0) {
++      const char* E = getenv("CIDRE_PILE_TEMOIN_SANS");
++      SansVidage = E && *E == '1';
++    }
++    if (SansVidage) {
++      return;
++    }
++  }
++  if (FEXCore::CPU::CidrePileCle()) {
++    auto& Cle = T->CurrentFrame->State.callret_cle;
++    const uint64_t Nouvelle = __atomic_load_n(&Cle, __ATOMIC_RELAXED) + FEXCore::CPU::CIDRE_PILE_CLE_PAS;
++    __atomic_store_n(&Cle, Nouvelle, __ATOMIC_RELEASE);
++    if (Nouvelle != 0) {
++      return;
++    }
++  }
++  CidreViderPileAppels(T);
++}
+ 
+ 
+ /* La lecture du code de l'invite est un chemin a part : les adresses de donnees
+@@ -565,9 +646,34 @@
+     CodeBufferList.emplace_back(Buffer);
+   }
+ }
++
++// Cidre (CIDRE_CACHE_BLOCS) : un vidage jette le code et la table des liens ; les blocs gardes d'avant ne sont plus
++// reinstallables (leurs raccords sortants ne seraient plus suivis par les delieurs).
++
++namespace {
++std::atomic<uint64_t> CidreGenerationCode {1};
++std::atomic<uint64_t> CidreReinstalles {0}, CidreReinstallesRefus {0};
++} // namespace
+ 
+ void ContextImpl::ClearCodeCache(FEXCore::Core::InternalThreadState* Thread, bool NewCodeBuffer) {
+   FEXCORE_PROFILE_INSTANT("ClearCodeCache");
++  CidreGenerationCode.fetch_add(1, std::memory_order_acq_rel);
++  const uint64_t CidreT0 = ::FEXCore::CidreMesure::Tick();
++  // Cidre : un vidage jette toutes les traductions ; tout est recompile et chaque site de page mixte refait sa
++  // premiere faute. Journalise (heure en ms et duree) pour le recouper avec les trous des presentations (gels de D2R).
++  struct CidreFin {
++    uint64_t T0;
++    bool Nouveau;
++    ~CidreFin() {
++      const uint64_t T1 = ::FEXCore::CidreMesure::Tick(), F = ::FEXCore::CidreMesure::Freq();
++      ::FEXCore::CidreMesure::VidageTicks.fetch_add(T1 - T0, std::memory_order_relaxed);
++      ::FEXCore::CidreMesure::VidageNb.fetch_add(1, std::memory_order_relaxed);
++      ::FEXCore::CidreCompteurs::Partages.Vidages.fetch_add(1, std::memory_order_relaxed);
++      ::FEXCore::CidreCompteurs::Partages.TicksVidages.fetch_add(T1 - T0, std::memory_order_relaxed);
++      LogMan::Msg::IFmt("cidre : cache de code vide ({}) t {} ms, {} us", Nouveau ? "nouveau tampon" : "caches de recherche",
++                        F ? T0 * 1000 / F : 0, F ? (T1 - T0) * 1000000 / F : 0);
++    }
++  } CidreFinVidage {CidreT0, NewCodeBuffer};
+ 
+   if (NewCodeBuffer) {
+     // Allocate new CodeBuffer + L3 LookupCache and clear L1+L2 caches
+@@ -590,11 +696,377 @@
+ 
+ bool ContextImpl::CheckIfBlockIsCacheable(FEXCore::Core::InternalThreadState& Thread, uint64_t GuestRIP, uint64_t MaxInst) {
+   return Thread.FrontendDecoder->CheckIfCacheable(Thread, GuestCodePtr(GuestRIP), GuestRIP, MaxInst);
++}
++
++// Cidre, mesure (CIDRE_COMPTE_COMPIL=1) : combien de compilations un cache de code par bloc invite aurait evitees.
++// Cle (RIP, empreinte des octets x64 de chaque instruction decodee, lus par FrontendDecoder->ReadCode comme la
++// validation SMC, jamais la memoire invitee en direct) ; une table garde toutes les cles deja compilees (y compris les
++// blocs jetes depuis par une invalidation), une autre les RIP deja vus. Rien n'est reinstalle : seulement compte, et
++// journalise a chaque seconde (CNTVCT) avec l'heure en ms. Tables allouees au premier usage (VirtualAlloc, repli : compteur
++// coupe), hors verrou ; LogMan hors verrou ; empreinte dans le Decoder du fil (pas de TLS : arm64ec). Sans la variable,
++// seul un test du pointeur statique.
++namespace {
++struct CidreCompteCompil {
++  static constexpr size_t NB = size_t {1} << 20; // 8 Mio par table
++  std::mutex Mutex;
++  uint64_t *Cles = nullptr, *Rips = nullptr;
++  uint64_t Compil = 0, Evitables = 0, RipVuOctetsDiff = 0, Neufs = 0, Pleines = 0;
++  uint64_t TotCompil = 0, TotEvitables = 0, TotRipVu = 0, TotNeufs = 0, TotReinstalles = 0;
++  // Cidre : histogramme des temps de compilation par classe (0 neuf, 1 evitable, 2 meme RIP octets differents), seuils
++  // 1, 5, 20, 50 ms ; par intervalle et au total ; le pire bloc de l'intervalle ; les blocs de plus de 20 ms journalises
++  // un par un (100 au plus)
++  static constexpr int NB_SEUILS = 5;
++  uint64_t Histo[3][NB_SEUILS] {}, TotHisto[3][NB_SEUILS] {};
++  uint64_t HistoRapide[NB_SEUILS] {}, TotHistoRapide[NB_SEUILS] {};   // compilations de premier niveau (CIDRE_COMPIL_RAPIDE)
++  uint64_t PireTicks = 0, PireRip = 0, PireLongueur = 0, TotLongs = 0;
++  static int Seuil(double Ms) {
++    return Ms < 1 ? 0 : Ms < 5 ? 1 : Ms < 20 ? 2 : Ms < 50 ? 3 : 4;
++  }
++  uint64_t DernierTick = 0, Freq = 0;
++
++  bool Allouer() {
++    auto* P = static_cast<uint64_t*>(FEXCore::Allocator::VirtualAlloc(2 * NB * sizeof(uint64_t)));
++    if (!P || P == reinterpret_cast<uint64_t*>(-1)) {
++      return false;
++    }
++    Cles = P;
++    Rips = P + NB;
++    __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(Freq));
++    DernierTick = Tick();
++    return true;
++  }
++  static uint64_t Melanger(uint64_t x) {
++    x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL; x ^= x >> 33;
++    return x ? x : 1;
++  }
++  static void Instruction(uint64_t& Empreinte, uint64_t Adresse, const uint8_t* Octets, size_t Taille) {
++    Empreinte = Melanger(Empreinte + ((uint64_t)FEXCore::Utils::crc32(Octets, Taille) << 8 | Taille) + Adresse * 0x9E3779B97F4A7C15ULL);
++  }
++  // 1 : deja present, 0 : insere, -1 : table pleine (sonde de 64)
++  static int Inserer(uint64_t* T, uint64_t Cle) {
++    for (size_t i = 0, h = Cle & (NB - 1); i < 64; i++, h = (h + 1) & (NB - 1)) {
++      if (T[h] == Cle) return 1;
++      if (!T[h]) { T[h] = Cle; return 0; }
++    }
++    return -1;
++  }
++  static uint64_t Tick() { uint64_t v; __asm__ volatile("mrs %0, cntvct_el0" : "=r"(v)); return v; }
++
++  // relevé sans compilation (reinstallation reussie) : seulement la ligne, si la seconde est passee
++  void Relever() {
++    Noter(0, 0, false);
++  }
++  void Noter(uint64_t GuestRIP, uint64_t Empreinte, bool Compte = true, uint64_t DureeTicks = 0, uint64_t Longueur = 0, bool Rapide = false) {
++    const uint64_t Cle = Melanger(GuestRIP ^ Empreinte), Rip = Melanger(GuestRIP);
++    fextl::string Ligne, Long;
++    {
++      std::scoped_lock lk(Mutex);
++      if (Compte) {
++      Compil++; TotCompil++;
++      int r = Inserer(Cles, Cle);
++      int Classe = 0;
++      if (r < 0) {
++        Pleines++;
++      } else if (r == 1) {
++        Evitables++; TotEvitables++;
++        Inserer(Rips, Rip);
++        Classe = 1;
++      } else if (Inserer(Rips, Rip) == 1) {
++        RipVuOctetsDiff++; TotRipVu++;
++        Classe = 2;
++      } else {
++        Neufs++; TotNeufs++;
++      }
++      const double Ms = Freq ? DureeTicks * 1000.0 / Freq : 0.0;
++      const int S = Seuil(Ms);
++      Histo[Classe][S]++;
++      TotHisto[Classe][S]++;
++      if (Rapide) {
++        HistoRapide[S]++;
++        TotHistoRapide[S]++;
++      }
++      if (DureeTicks > PireTicks) {
++        PireTicks = DureeTicks; PireRip = GuestRIP; PireLongueur = Longueur;
++      }
++      if (Ms >= 20 && TotLongs++ < 100) {
++        Long = fextl::fmt::format("cidre compil longue : t {} ms ; RIP {:#x}, {} octets x64, {:.1f} ms, classe {}{}", Tick() * 1000 / Freq, GuestRIP,
++                                  Longueur, Ms, Classe == 0 ? "neuf" : Classe == 1 ? "evitable" : "meme RIP", Rapide ? ", premier niveau" : "");
++      }
++      }
++      uint64_t t = Tick();
++      if (Freq && t - DernierTick >= Freq) {
++        const uint64_t R = CidreReinstalles.exchange(0, std::memory_order_relaxed);
++        const uint64_t RR = CidreReinstallesRefus.exchange(0, std::memory_order_relaxed);
++        TotReinstalles += R;
++        auto Ms = [&](std::atomic<uint64_t>& A) { return Freq ? A.exchange(0, std::memory_order_relaxed) * 1000.0 / Freq : 0.0; };
++        auto Nb = [](std::atomic<uint64_t>& A) { return A.exchange(0, std::memory_order_relaxed); };
++        const double MsCompil = Ms(::FEXCore::CidreMesure::CompilTicks), MsReinst = Ms(::FEXCore::CidreMesure::ReinstTicks), MsArme = Ms(::FEXCore::CidreMesure::ArmeTicks);
++        const double MsAttente = Ms(::FEXCore::CidreMesure::InvalAttente), MsTenue = Ms(::FEXCore::CidreMesure::InvalTenue), MsVidage = Ms(::FEXCore::CidreMesure::VidageTicks);
++        const uint64_t NArme = Nb(::FEXCore::CidreMesure::ArmeNb), NInval = Nb(::FEXCore::CidreMesure::InvalNb), NVidage = Nb(::FEXCore::CidreMesure::VidageNb);
++        Ligne = fextl::fmt::format("cidre compil : t {} ms ; intervalle : compilations {}, evitables {} ({:.1f} %), meme RIP octets differents {}, "
++                                   "neufs {}, table pleine {}, reinstalles {}, candidats refuses {} ; total : compilations {}, evitables {} ({:.1f} %), "
++                                   "meme RIP {}, neufs {}, reinstalles {}",
++                                   t * 1000 / Freq, Compil, Evitables, Compil ? 100.0 * Evitables / Compil : 0.0, RipVuOctetsDiff, Neufs, Pleines,
++                                   R, RR, TotCompil, TotEvitables, TotCompil ? 100.0 * TotEvitables / TotCompil : 0.0, TotRipVu, TotNeufs,
++                                   TotReinstalles);
++        auto H = [](const uint64_t* T) { return fextl::fmt::format("{}/{}/{}/{}/{}", T[0], T[1], T[2], T[3], T[4]); };
++        Ligne += fextl::fmt::format(" ; temps (<1/1-5/5-20/20-50/>=50 ms) : neufs {}, evitables {}, meme RIP {} ; pire {:.1f} ms (RIP {:#x}, {} octets) ; "
++                                    "total : neufs {}, evitables {}, meme RIP {} ; premier niveau : {} (total {})",
++                                    H(Histo[0]), H(Histo[1]), H(Histo[2]), Freq ? PireTicks * 1000.0 / Freq : 0.0, PireRip, PireLongueur,
++                                    H(TotHisto[0]), H(TotHisto[1]), H(TotHisto[2]), H(HistoRapide), H(TotHistoRapide));
++        memset(Histo, 0, sizeof(Histo));
++        memset(HistoRapide, 0, sizeof(HistoRapide));
++        PireTicks = PireRip = PireLongueur = 0;
++        Ligne += fextl::fmt::format(" ; ms (tous fils) : compilation {:.1f}, reinstallation {:.1f}, armement {:.1f} ({}), invalidation attente {:.1f} "
++                                    "tenue {:.1f} ({}), vidages {:.1f} ({}) ; pages chaudes {} (total), instructions validees {}",
++                                    MsCompil, MsReinst, MsArme, NArme, MsAttente, MsTenue, NInval, MsVidage, NVidage,
++                                    ::FEXCore::CidreMesure::PagesChaudes.load(std::memory_order_relaxed),
++                                    ::FEXCore::CidreMesure::ValidationsForcees.exchange(0, std::memory_order_relaxed));
++        Compil = Evitables = RipVuOctetsDiff = Neufs = Pleines = 0;
++        DernierTick = t;
++      }
++    }
++    if (!Long.empty()) {
++      LogMan::Msg::IFmt("{}", Long);
++    }
++    if (!Ligne.empty()) {
++      LogMan::Msg::IFmt("{}", Ligne);
++    }
++  }
++};
++CidreCompteCompil* CidreCompte() {
++  static CidreCompteCompil* C = [] {
++    const char* E = getenv("CIDRE_COMPTE_COMPIL");
++    if (!E || E[0] != '1') {
++      return static_cast<CidreCompteCompil*>(nullptr);
++    }
++    auto* N = new CidreCompteCompil;
++    if (!N->Allouer()) {
++      LogMan::Msg::IFmt("cidre compil : tables non allouees, compteur coupe");
++      delete N;
++      return static_cast<CidreCompteCompil*>(nullptr);
++    }
++    return N;
++  }();
++  return C;
+ }
+ 
++// Cidre, armement groupe (actif par defaut ; CIDRE_ARME_GROUPE=0 : un GuestCodeArmed par instruction, comme avant) :
++// GenerateIR arme d'un coup la fin de la page de 4 Kio de l'instruction ([InstAddress, fin de page)), puis relit et compare
++// les octets de chaque instruction de cet intervalle sans rappeler Wine. Exact : chaque instruction est relue APRES
++// l'armement qui la couvre (une ecriture entre les deux leve une CodeEcrit, qui invalide le bloc des que la compilation
++// rend le verrou) ; armer plus d'octets que le code n'ajoute que des fautes d'ecriture sur la meme page, deja suivie a
++// 16 Kio cote hote. Echec de l'armement large (page a cheval sur deux vues...) : repli sur l'instruction seule.
++bool CidreArmeGroupe() {
++  static const bool G = [] {
++    const char* E = getenv("CIDRE_ARME_GROUPE");
++    return !(E && E[0] == '0');
++  }();
++  return G;
++}
++// Cidre (CIDRE_COMPIL_RAPIDE=1) : compilation a deux niveaux, phase A. La PREMIERE compilation d'un RIP est de premier
++// niveau : sans les passes d'optimisation facultatives (X87StackOptimization, DeadFlagCalculationEliminination ; le
++// RA reste) et, si CIDRE_COMPIL_RAPIDE_MAXINST=n, avec au plus n instructions (multibloc garde : les boucles courtes
++// restent dans le bloc). Toute compilation suivante au meme RIP (apres une invalidation, une reecriture) est optimisee :
++// le code reecrit souvent se promeut de lui-meme. Le code stable garde sa version rapide (phase B : compteur d'entrees
++// dans le prologue, si la phase A paie). Table des RIP deja compiles sans verrou, insertion seule, 1 Mi entrees ;
++// pleine, la compilation est optimisee.
++bool CidreCompilRapide() {
++  static const bool R = [] {
++    const char* E = getenv("CIDRE_COMPIL_RAPIDE");
++    return E && E[0] == '1';
++  }();
++  return R;
++}
++uint64_t CidreCompilRapideMaxInst() {
++  static const uint64_t N = [] {
++    const char* E = getenv("CIDRE_COMPIL_RAPIDE_MAXINST");
++    return E ? strtoull(E, nullptr, 10) : 0ULL;
++  }();
++  return N;
++}
++struct CidreRipsCompiles {
++  static constexpr size_t NB = size_t {1} << 20;
++  std::atomic<uint64_t>* T = nullptr;
++  // vrai si Rip n'avait jamais ete compile (et le note) ; faux s'il l'a ete, ou si la table est pleine ou absente
++  bool Premiere(uint64_t Rip) {
++    if (!T) {
++      return false;
++    }
++    const uint64_t Cle = Rip + 1;
++    for (size_t i = 0, h = (Cle * 0x9E3779B97F4A7C15ULL) >> 44; i < 64; i++, h = (h + 1) & (NB - 1)) {
++      uint64_t c = T[h].load(std::memory_order_relaxed);
++      if (c == Cle) {
++        return false;
++      }
++      if (!c && T[h].compare_exchange_strong(c, Cle, std::memory_order_relaxed)) {
++        return true;
++      }
++      if (c == Cle) {
++        return false;
++      }
++    }
++    return false;
++  }
++};
++CidreRipsCompiles* CidreRips() {
++  static CidreRipsCompiles* R = [] {
++    if (!CidreCompilRapide()) {
++      return static_cast<CidreRipsCompiles*>(nullptr);
++    }
++    auto* N = new CidreRipsCompiles;
++    N->T = static_cast<std::atomic<uint64_t>*>(FEXCore::Allocator::VirtualAlloc(CidreRipsCompiles::NB * sizeof(uint64_t)));
++    if (!N->T || N->T == reinterpret_cast<std::atomic<uint64_t>*>(-1)) {
++      N->T = nullptr;
++      LogMan::Msg::IFmt("cidre compil : table des RIP non allouee, compilation rapide coupee");
++    } else {
++      LogMan::Msg::IFmt("cidre compil : compilation rapide (premier niveau) active, MaxInst {}", CidreCompilRapideMaxInst());
++    }
++    return N;
++  }();
++  return R;
++}
++
++// Cidre (CIDRE_ARME_MAXINST=n, 0 ou absent : coupe) : les blocs dont l'entree est sur une page deja armee (vue par
++// GuestCodeArmed) sont compiles avec au plus n instructions et sans multibloc : plus petits, plus vite compiles, invalides
++// plus finement. Table des pages armees sans verrou (insertion seule ; une page reste « armee » une fois vue).
++uint64_t CidreArmeMaxInst() {
++  static const uint64_t N = [] {
++    const char* E = getenv("CIDRE_ARME_MAXINST");
++    return E ? strtoull(E, nullptr, 10) : 0ULL;
++  }();
++  return N;
++}
++struct CidrePagesArmees {
++  static constexpr size_t NB = size_t {1} << 16;
++  std::atomic<uint64_t> T[NB] {};
++  static uint64_t H(uint64_t p) {
++    p *= 0x9E3779B97F4A7C15ULL;
++    return p >> 48;
++  }
++  void Ajouter(uint64_t Page) {
++    const uint64_t P = Page + 1;
++    for (size_t i = 0, h = H(P); i < 32; i++, h = (h + 1) & (NB - 1)) {
++      uint64_t c = T[h].load(std::memory_order_relaxed);
++      if (c == P) return;
++      if (!c && T[h].compare_exchange_strong(c, P, std::memory_order_relaxed)) return;
++      if (c == P) return;
++    }
++  }
++  bool Contient(uint64_t Page) const {
++    const uint64_t P = Page + 1;
++    for (size_t i = 0, h = H(P); i < 32; i++, h = (h + 1) & (NB - 1)) {
++      uint64_t c = T[h].load(std::memory_order_relaxed);
++      if (c == P) return true;
++      if (!c) return false;
++    }
++    return false;
++  }
++};
++CidrePagesArmees CidrePages;
++
++// Cidre (CIDRE_CACHE_BLOCS=1) : cache du code compile par bloc invite. Une invalidation (CodeEcrit, jumelle armee) retire
++// le bloc du LookupCache sans liberer son code hote ; si le jeu remet les memes octets, on le reinstalle au lieu de le
++// recompiler. Exactitude :
++//  - les octets x64 de chaque instruction sont gardes et compares octet par octet (memcmp, jamais une seule empreinte),
++//    relus par le Decoder (intervalle executable et alias redemandes : une page liberee ou fermee refuse le candidat) ;
++//  - les instructions compilees sans validation (CodeArme) sont rearmees, puis relues et recomparees, comme GenerateIR ;
++//    un rearmement refuse rejette le candidat (la compilation normale suit) ;
++//  - meme carte partagee (GuestToHostMap, donc meme tampon de code) et meme generation (aucun ClearCodeCache depuis) ;
++//    sinon le code hote ou ses liens ne sont plus suivis ;
++//  - reinstallation comme le cache disque : pages de code (AddBlockExecutableRange, MarkGuestExecutableRange), sites
++//    d'acces des pages mixtes (GuestMixedPrewrite), puis points d'entree (AddBlockMapping). Les liens entrants ont ete
++//    coupes par Erase a l'invalidation et se refont a la demande ; les sortants sont restes suivis par leurs delieurs.
++//  - tout se fait sous CodeInvalidationMutex partage (CompileBlock) : aucune invalidation ne s'intercale.
++// Borne : anneau de NB_ENTREES blocs (plus ancien remplace), au plus 4 par RIP, au plus 1024 instructions par bloc.
++struct CidreBloc {
++  uint64_t Rip {}, MaxInst {}, Generation {};
++  bool TF {};
++  void* Carte {};
++  fextl::vector<std::pair<uint64_t, uint8_t*>> Entrees;
++  fextl::vector<uint64_t> Pages, PointsEntree;
++  fextl::vector<std::pair<uint64_t, uint64_t>> PreSites;
++  fextl::vector<FEXCore::Frontend::Decoder::CidreSegment> Segments;
++};
++struct CidreCacheBlocs {
++  static constexpr size_t NB_ENTREES = 16384;
++  std::mutex Mutex;
++  fextl::vector<CidreBloc> Anneau;
++  size_t Tete = 0;
++  fextl::unordered_map<uint64_t, fextl::vector<uint32_t>> ParRip;
++
++  CidreCacheBlocs() {
++    Anneau.resize(NB_ENTREES);
++  }
++  void Garder(CidreBloc&& B) {
++    std::scoped_lock lk(Mutex);
++    auto& V = ParRip[B.Rip];
++    // un bloc identique deja garde est remplace sur place
++    for (auto i : V) {
++      auto& A = Anneau[i];
++      if (A.Carte == B.Carte && A.MaxInst == B.MaxInst && A.TF == B.TF && A.Segments.size() == B.Segments.size() &&
++          std::equal(A.Segments.begin(), A.Segments.end(), B.Segments.begin(), [](const auto& x, const auto& y) {
++            return x.Adresse == y.Adresse && x.Taille == y.Taille && !memcmp(x.Octets, y.Octets, x.Taille);
++          })) {
++        A = std::move(B);
++        return;
++      }
++    }
++    if (V.size() >= 4) {
++      // le plus ancien de ce RIP laisse sa place
++      Anneau[V.front()] = CidreBloc {};
++      V.erase(V.begin());
++    }
++    const uint32_t i = Tete;
++    Tete = (Tete + 1) % NB_ENTREES;
++    if (Anneau[i].Rip) {
++      auto it = ParRip.find(Anneau[i].Rip);
++      if (it != ParRip.end()) {
++        std::erase(it->second, i);
++        if (it->second.empty()) {
++          ParRip.erase(it);
++        }
++      }
++    }
++    Anneau[i] = std::move(B);
++    ParRip[Anneau[i].Rip].push_back(i);
++  }
++  // copies des candidats de ce RIP, du plus recent au plus ancien (verifies hors verrou)
++  fextl::vector<CidreBloc> Candidats(uint64_t Rip) {
++    fextl::vector<CidreBloc> R;
++    std::scoped_lock lk(Mutex);
++    auto it = ParRip.find(Rip);
++    if (it != ParRip.end()) {
++      for (auto k = it->second.rbegin(); k != it->second.rend(); ++k) {
++        R.push_back(Anneau[*k]);
++      }
++    }
++    return R;
++  }
++};
++CidreCacheBlocs* CidreCache() {
++  static CidreCacheBlocs* C = [] {
++    const char* E = getenv("CIDRE_CACHE_BLOCS");
++    if (!E || E[0] != '1') {
++      return static_cast<CidreCacheBlocs*>(nullptr);
++    }
++    LogMan::Msg::IFmt("cidre compil : cache de blocs actif ({} blocs au plus)", CidreCacheBlocs::NB_ENTREES);
++    return new CidreCacheBlocs;
++  }();
++  return C;
++}
++} // namespace
++
+ ContextImpl::GenerateIRResult
+ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t GuestRIP, bool ExtendedDebugInfo, uint64_t MaxInst) {
+   FEXCORE_PROFILE_SCOPED("GenerateIR");
++  if (CidreCompte() || CidreCache()) {
++    // Cidre (CIDRE_COMPTE_COMPIL, CIDRE_CACHE_BLOCS) : empreinte et octets du bloc, instruction par instruction
++    Thread->FrontendDecoder->CidreEmpreinte = 0;
++    Thread->FrontendDecoder->CidreSegments.clear();
++    Thread->FrontendDecoder->CidreCollecte = CidreCache() != nullptr;
++  }
++  Thread->FrontendDecoder->CidreArmeDebut = Thread->FrontendDecoder->CidreArmeFin = 0; // Cidre : armement groupe
+ 
+   Thread->OpDispatcher->ResetWorkingList();
+ 
+@@ -716,6 +1188,28 @@
+         // that more explicitly later.
+         Thread->OpDispatcher->FlushRegisterCache(true);
+ 
++        if (DecodedInfo->InstSize && (CidreCompte() || CidreCache())) {
++          auto* D = Thread->FrontendDecoder.get();
++          if (DecodedInfo->InstSize > 16) {
++            D->CidreCollecte = false; // ne devrait pas arriver (x86 : 15 octets au plus) : bloc non garde
++          } else {
++            uint8_t CidreOctets[16];
++            D->ReadCode(CidreOctets, GuestCodePtr(Block.Entry + BlockInstructionsLength), DecodedInfo->InstSize);
++            CidreCompteCompil::Instruction(D->CidreEmpreinte, InstAddress, CidreOctets, DecodedInfo->InstSize);
++            if (D->CidreCollecte) {
++              if (D->CidreSegments.size() >= 1024) {
++                D->CidreCollecte = false; // trop long pour le cache
++              } else {
++                auto& Seg = D->CidreSegments.emplace_back();
++                Seg.Adresse = InstAddress;
++                Seg.Taille = DecodedInfo->InstSize;
++                Seg.Arme = false;
++                memcpy(Seg.Octets, CidreOctets, DecodedInfo->InstSize);
++              }
++            }
++          }
++        }
++
+         if (ExtendedDebugInfo || Thread->OpDispatcher->CanHaveSideEffects(TableInfo, DecodedInfo)) {
+           Thread->OpDispatcher->_GuestOpcode(InstAddress - GuestRIP);
+         }
+@@ -726,36 +1220,92 @@
+         // recompilation sans fin, sans jamais lever la faute d'execution.
+         if ((Config.SMCChecks == FEXCore::Config::CONFIG_SMC_FULL || Block.ForceFullSMCDetection) && DecodedInfo->InstSize) {
+           auto ExistingCodePtr = const_cast<uint8_t*>(GuestCodePtr(Block.Entry + BlockInstructionsLength));
+-          auto InstAddressReg = Thread->OpDispatcher->_EntrypointOffset(GPRSize, InstAddress - GuestRIP);
+-
+           uint8_t CodeBytes[16];
+           Thread->FrontendDecoder->ReadCode(CodeBytes, ExistingCodePtr, DecodedInfo->InstSize);
+           auto Value = FEXCore::Utils::crc32(CodeBytes, DecodedInfo->InstSize);
+-          auto CRC = WantsDiskCachePatching ?
+-                       Thread->OpDispatcher->_PatchableGuestCRC(IR::OpSize::i64Bit, Value, (int64_t)ExistingCodePtr, DecodedInfo->InstSize) :
+-                       Thread->OpDispatcher->Constant(Value);
+-          auto CodeChanged = Thread->OpDispatcher->_ValidateCode(CRC, InstAddressReg, DecodedInfo->InstSize);
++          // Cidre (Context::SetGuestCodeArmed) : si Wine arme le suivi d'ecriture de toutes les vues inscriptibles de la
++          // section pour ces octets (une ecriture leve une exception et invalide la page), la validation a chaque
++          // passage est inutile. Les octets sont relus apres l'armement : une ecriture entre le decodage et l'armement
++          // garde la validation.
++          bool CidreArme = false;
++          bool CidreArmeOk = false;
++          const bool CidreChaude = ::FEXCore::CidreMesure::PageChaude(InstAddress >> 12) ||
++                                   ::FEXCore::CidreMesure::PageChaude((InstAddress + DecodedInfo->InstSize - 1) >> 12);
++          if (CidreChaude) {
++            ::FEXCore::CidreMesure::ValidationsForcees.fetch_add(1, std::memory_order_relaxed);
++          }
++          if (GuestCodeArmed && !WantsDiskCachePatching && !CidreChaude) {
++            auto* DA = Thread->FrontendDecoder.get();
++            const uint64_t Fin = InstAddress + DecodedInfo->InstSize;
++            if (CidreArmeGroupe() && InstAddress >= DA->CidreArmeDebut && Fin <= DA->CidreArmeFin) {
++              CidreArmeOk = true; // deja arme par un appel precedent de ce GenerateIR (les octets sont relus ci-dessous)
++            } else {
++              const uint64_t CidreTA = ::FEXCore::CidreMesure::Tick();
++              const uint64_t FinPage = (InstAddress & ~uint64_t {0xfff}) + 0x1000;
++              if (CidreArmeGroupe() && Fin <= FinPage && GuestCodeArmed(InstAddress, FinPage - InstAddress)) {
++                DA->CidreArmeDebut = InstAddress;
++                DA->CidreArmeFin = FinPage;
++                CidreArmeOk = true;
++              } else {
++                CidreArmeOk = GuestCodeArmed(InstAddress, DecodedInfo->InstSize);
++              }
++              ::FEXCore::CidreMesure::ArmeTicks.fetch_add(::FEXCore::CidreMesure::Tick() - CidreTA, std::memory_order_relaxed);
++              ::FEXCore::CidreMesure::ArmeNb.fetch_add(1, std::memory_order_relaxed);
++            }
++            if (CidreArmeOk && CidreArmeMaxInst()) {
++              CidrePages.Ajouter(InstAddress >> 12);
++            }
++          }
++          if (CidreArmeOk) {
++            uint8_t Relus[16];
++            Thread->FrontendDecoder->ReadCode(Relus, ExistingCodePtr, DecodedInfo->InstSize);
++            CidreArme = FEXCore::Utils::crc32(Relus, DecodedInfo->InstSize) == Value;
++            if (auto* D = Thread->FrontendDecoder.get(); D->CidreCollecte) {
++              // le cache doit rearmer ces octets et les relire avant de reinstaller ; s'ils different de ceux gardes, le
++              // bloc n'est pas garde (le code compile depend des octets relus)
++              if (!D->CidreSegments.empty() && D->CidreSegments.back().Adresse == InstAddress && CidreArme &&
++                  !memcmp(D->CidreSegments.back().Octets, Relus, DecodedInfo->InstSize)) {
++                D->CidreSegments.back().Arme = true;
++              } else if (CidreArme) {
++                D->CidreCollecte = false;
++              }
++            }
++            static std::atomic<uint64_t> CidreNbSansValidation, CidreNbRelusDifferents;
++            auto& N = CidreArme ? CidreNbSansValidation : CidreNbRelusDifferents;
++            const uint64_t V = N.fetch_add(1, std::memory_order_relaxed) + 1;
++            if (!(V & (V - 1))) {
++              LogMan::Msg::IFmt("cidre : SMC arme, {} {} (derniere {:#x})",
++                                CidreArme ? "instructions compilees sans validation" : "octets changes apres armement", V, InstAddress);
++            }
++          }
++          if (!CidreArme) {
++            auto InstAddressReg = Thread->OpDispatcher->_EntrypointOffset(GPRSize, InstAddress - GuestRIP);
++            auto CRC = WantsDiskCachePatching ?
++                         Thread->OpDispatcher->_PatchableGuestCRC(IR::OpSize::i64Bit, Value, (int64_t)ExistingCodePtr, DecodedInfo->InstSize) :
++                         Thread->OpDispatcher->Constant(Value);
++            auto CodeChanged = Thread->OpDispatcher->_ValidateCode(CRC, InstAddressReg, DecodedInfo->InstSize);
+ 
+-          auto InvalidateCodeCond = Thread->OpDispatcher->CondJump(CodeChanged);
++            auto InvalidateCodeCond = Thread->OpDispatcher->CondJump(CodeChanged);
+ 
+-          auto CurrentBlock = Thread->OpDispatcher->GetCurrentBlock();
+-          auto CodeWasChangedBlock = Thread->OpDispatcher->CreateNewCodeBlockAtEnd();
+-          Thread->OpDispatcher->SetTrueJumpTarget(InvalidateCodeCond, CodeWasChangedBlock);
++            auto CurrentBlock = Thread->OpDispatcher->GetCurrentBlock();
++            auto CodeWasChangedBlock = Thread->OpDispatcher->CreateNewCodeBlockAtEnd();
++            Thread->OpDispatcher->SetTrueJumpTarget(InvalidateCodeCond, CodeWasChangedBlock);
+ 
+-          Thread->OpDispatcher->SetCurrentCodeBlock(CodeWasChangedBlock);
+-          Thread->OpDispatcher->StartNewBlock();
++            Thread->OpDispatcher->SetCurrentCodeBlock(CodeWasChangedBlock);
++            Thread->OpDispatcher->StartNewBlock();
+ 
+-          // Generate a relocatable entry for invalidation purposes.
+-          auto EntryToInvalidate = Thread->OpDispatcher->_EntrypointOffset(GPRSize, 0);
+-          auto NewRIP = Thread->OpDispatcher->_EntrypointOffset(GPRSize, InstAddress - GuestRIP);
+-          // Invalidate and exit the function
+-          Thread->OpDispatcher->_ThreadRemoveCodeEntry(EntryToInvalidate, NewRIP);
++            // Generate a relocatable entry for invalidation purposes.
++            auto EntryToInvalidate = Thread->OpDispatcher->_EntrypointOffset(GPRSize, 0);
++            auto NewRIP = Thread->OpDispatcher->_EntrypointOffset(GPRSize, InstAddress - GuestRIP);
++            // Invalidate and exit the function
++            Thread->OpDispatcher->_ThreadRemoveCodeEntry(EntryToInvalidate, NewRIP);
+ 
+-          auto NextOpBlock = Thread->OpDispatcher->CreateNewCodeBlockAfter(CurrentBlock);
++            auto NextOpBlock = Thread->OpDispatcher->CreateNewCodeBlockAfter(CurrentBlock);
+ 
+-          Thread->OpDispatcher->SetFalseJumpTarget(InvalidateCodeCond, NextOpBlock);
+-          Thread->OpDispatcher->SetCurrentCodeBlock(NextOpBlock);
+-          Thread->OpDispatcher->StartNewBlock();
++            Thread->OpDispatcher->SetFalseJumpTarget(InvalidateCodeCond, NextOpBlock);
++            Thread->OpDispatcher->SetCurrentCodeBlock(NextOpBlock);
++            Thread->OpDispatcher->StartNewBlock();
++          }
+         }
+ 
+         if (TableInfo && TableInfo->OpcodeDispatcher.OpDispatch) {
+@@ -854,6 +1404,65 @@
+   // Debug
+   if (ShouldDump) {
+     IRDumper(Thread, IREmitter, GuestRIP);
++  }
++
++  // Cidre (lecture directe, Context::SetGuestReadAlias) : adresses constantes des lectures (RIP-relatif, constante, plus
++  // un immediat), relevees avant les passes : l'allocation des registres remplace les arguments par des registres.
++  auto& Constantes = Thread->CPUBackend->CidreAdressesConstantes;
++  Constantes.clear();
++  if (GuestReadAlias) {
++    const auto Vue = IREmitter->ViewIR();
++    for (auto [CodeNode, IROp] : Vue.GetAllCode()) {
++      if (IROp->Op == IR::OP_VALIDATECODE) {
++        // Validation du code (SMC complet : vues projetees executables, D2R.exe) : relit les octets de l'instruction a
++        // chaque passage ; sur une page d'hote mixte, chaque lecture faisait faute.
++        const auto Addr = IROp->Args[1];
++        if (!Addr.IsInvalid() && !Addr.IsImmediate()) {
++          const auto* A = Vue.GetOp<IR::IROp_Header>(Addr);
++          if (A->Op == IR::OP_ENTRYPOINTOFFSET) {
++            const uint64_t Masque = A->Size == IR::OpSize::i32Bit ? 0xFFFF'FFFFULL : ~0ULL;
++            Constantes[Vue.GetID(CodeNode).Value] = (GuestRIP + A->C<IR::IROp_EntrypointOffset>()->Offset) & Masque;
++          }
++        }
++        continue;
++      }
++      if (IROp->Op != IR::OP_LOADMEM && IROp->Op != IR::OP_LOADMEMTSO) {
++        continue;
++      }
++      const auto Addr = IROp->Args[0];
++      const auto Offset = IROp->Args[1];
++      if (Addr.IsInvalid() || Addr.IsImmediate()) {
++        continue;
++      }
++      const auto* A = Vue.GetOp<IR::IROp_Header>(Addr);
++      uint64_t Valeur = 0;
++      if (A->Op == IR::OP_ENTRYPOINTOFFSET) {
++        const uint64_t Masque = A->Size == IR::OpSize::i32Bit ? 0xFFFF'FFFFULL : ~0ULL;
++        Valeur = (GuestRIP + A->C<IR::IROp_EntrypointOffset>()->Offset) & Masque;
++      } else if (A->Op == IR::OP_CONSTANT) {
++        Valeur = A->C<IR::IROp_Constant>()->Constant;
++      } else {
++        continue;
++      }
++      if (!Offset.IsInvalid()) {
++        const uint8_t Echelle = IROp->Op == IR::OP_LOADMEM ? IROp->C<IR::IROp_LoadMem>()->OffsetScale :
++                                                              IROp->C<IR::IROp_LoadMemTSO>()->OffsetScale;
++        if (Offset.IsImmediate() || Echelle != 1) {
++          continue;
++        }
++        const auto* O = Vue.GetOp<IR::IROp_Header>(Offset);
++        if (O->Op != IR::OP_INLINECONSTANT) {
++          continue;
++        }
++        Valeur += O->C<IR::IROp_InlineConstant>()->Constant;
++      }
++      Constantes[Vue.GetID(CodeNode).Value] = Valeur;
++      static std::atomic<uint64_t> CidreNbReleves;
++      const uint64_t N = CidreNbReleves.fetch_add(1, std::memory_order_relaxed) + 1;
++      if ((N & (N - 1)) == 0) {
++        LogMan::Msg::IFmt("cidre : lectures a adresse constante relevees {} (derniere : {:#x}, bloc {:#x})", N, Valeur, GuestRIP);
++      }
++    }
+   }
+ 
+   // Run the passmanager over the IR from the dispatcher
+@@ -933,6 +1542,7 @@
+   };
+ }
+ 
++
+ uintptr_t ContextImpl::CompileBlock(FEXCore::Core::CpuStateFrame* Frame, uint64_t GuestRIP, uint64_t MaxInst) {
+   if constexpr (BLOCK_DEBUGGING) {
+     // Block debugging logic is hand-written and needs to be handled with care.
+@@ -960,6 +1570,114 @@
+   // The backends only check L1 and L2, not L3
+   if (auto HostCode = Thread->LookupCache->FindBlock(Thread, GuestRIP)) {
+     return HostCode;
++  }
++
++  // Cidre (CIDRE_COMPIL_RAPIDE) : premiere compilation de ce RIP, premier niveau
++  Thread->PassManager->CidreRapide = false;
++  if (auto* R = CidreRips(); R && R->Premiere(GuestRIP)) {
++    Thread->PassManager->CidreRapide = true;
++    if (const uint64_t N = CidreCompilRapideMaxInst(); N && (MaxInst == 0 || MaxInst > N)) {
++      MaxInst = N;
++    }
++  }
++  struct CidreFinRapide {
++    FEXCore::IR::PassManager* P;
++    ~CidreFinRapide() { P->CidreRapide = false; }
++  } CidreFinRap {Thread->PassManager.get()};
++
++  // Cidre (CIDRE_ARME_MAXINST) : bloc d'une page armee, plus court et sans multibloc
++  Thread->FrontendDecoder->CidreSansMultibloc = false;
++  if (const uint64_t N = CidreArmeMaxInst(); N && CidrePages.Contient(GuestRIP >> 12)) {
++    if (MaxInst == 0 || MaxInst > N) {
++      MaxInst = N;
++    }
++    Thread->FrontendDecoder->CidreSansMultibloc = true;
++  }
++
++  // Cidre (CIDRE_CACHE_BLOCS) : un bloc deja compile avec les memes octets est reinstalle (voir CidreCacheBlocs)
++  if (auto* K = CidreCache()) {
++    const uint64_t CidreTR = ::FEXCore::CidreMesure::Tick();
++    struct CidreFinR {
++      uint64_t T0;
++      ~CidreFinR() { ::FEXCore::CidreMesure::ReinstTicks.fetch_add(::FEXCore::CidreMesure::Tick() - T0, std::memory_order_relaxed); }
++    } CidreFinReinst {CidreTR};
++    const bool TF = Thread->CurrentFrame->State.flags[X86State::RFLAG_TF_RAW_LOC];
++    const uint64_t Generation = CidreGenerationCode.load(std::memory_order_acquire);
++    void* Carte = Thread->LookupCache->Shared;
++    for (auto& B : K->Candidats(GuestRIP)) {
++      if (B.Carte != Carte || B.Generation != Generation || B.MaxInst != MaxInst || B.TF != TF) {
++        continue;
++      }
++      auto* D = Thread->FrontendDecoder.get();
++      auto Identiques = [&] {
++        for (const auto& Seg : B.Segments) {
++          uint8_t Lus[16];
++          if (!D->CidreRelire(GuestCodePtr(Seg.Adresse), Lus, Seg.Taille) || memcmp(Lus, Seg.Octets, Seg.Taille)) {
++            return false;
++          }
++        }
++        return true;
++      };
++      bool Ok = Identiques();
++      // instructions compilees sans validation : rearmees, puis relues (une ecriture entre-temps refuse le candidat)
++      bool Rearme = false;
++      uint64_t ArmeDebut = 0, ArmeFin = 0;
++      for (const auto& Seg : B.Segments) {
++        if (Ok && Seg.Arme) {
++          Rearme = true;
++          if (::FEXCore::CidreMesure::PageChaude(Seg.Adresse >> 12) || ::FEXCore::CidreMesure::PageChaude((Seg.Adresse + Seg.Taille - 1) >> 12)) {
++            Ok = false; // compile sans validation, sur une page qu'on ne rearme plus : a recompiler avec validation
++            continue;
++          }
++          if (CidreArmeGroupe() && Seg.Adresse >= ArmeDebut && Seg.Adresse + Seg.Taille <= ArmeFin) {
++            continue; // deja arme ; relu par Identiques() ci-dessous
++          }
++          const uint64_t CidreTA = ::FEXCore::CidreMesure::Tick();
++          const uint64_t FinPage = (Seg.Adresse & ~uint64_t {0xfff}) + 0x1000;
++          if (!GuestCodeArmed) {
++            Ok = false;
++          } else if (CidreArmeGroupe() && Seg.Adresse + Seg.Taille <= FinPage && GuestCodeArmed(Seg.Adresse, FinPage - Seg.Adresse)) {
++            ArmeDebut = Seg.Adresse;
++            ArmeFin = FinPage;
++          } else if (!GuestCodeArmed(Seg.Adresse, Seg.Taille)) {
++            Ok = false;
++          }
++          ::FEXCore::CidreMesure::ArmeTicks.fetch_add(::FEXCore::CidreMesure::Tick() - CidreTA, std::memory_order_relaxed);
++          ::FEXCore::CidreMesure::ArmeNb.fetch_add(1, std::memory_order_relaxed);
++        }
++      }
++      if (Ok && Rearme) {
++        Ok = Identiques();
++      }
++      if (!Ok) {
++        CidreReinstallesRefus.fetch_add(1, std::memory_order_relaxed);
++        continue;
++      }
++      if (GuestMixedPrewrite) {
++        for (auto [Debut, Fin] : B.PreSites) {
++          GuestMixedPrewrite(this, Thread, Debut, Fin);
++        }
++      }
++      for (auto CodePage : B.Pages) {
++        if (Thread->LookupCache->AddBlockExecutableRange(Thread, B.PointsEntree, CodePage, FEXCore::Utils::FEX_PAGE_SIZE)) {
++          SyscallHandler->MarkGuestExecutableRange(Thread, CodePage, FEXCore::Utils::FEX_PAGE_SIZE);
++        }
++      }
++      uintptr_t Hote = 0;
++      for (auto [Rip, HostAddr] : B.Entrees) {
++        Thread->LookupCache->AddBlockMapping(Thread, Rip, B.Pages, HostAddr);
++        if (Rip == GuestRIP) {
++          Hote = reinterpret_cast<uintptr_t>(HostAddr);
++        }
++      }
++      if (Hote) {
++        CidreReinstalles.fetch_add(1, std::memory_order_relaxed);
++        if (auto C = CidreCompte()) {
++          C->Relever();
++        }
++        return Hote;
++      }
++    }
+   }
+ 
+   Thread->FrontendDecoder->SetupDecodeInstructionsAtEntry(Thread, GuestRIP, MaxInst);
+@@ -1006,14 +1724,34 @@
+   // Accumulate a JIT count now, as even if another thread raced us, it should count as a compile.
+   FEXCORE_PROFILE_INSTANT_INCREMENT(Thread, AccumulatedJITCount, 1);
+ 
++  const uint64_t CidreTC = ::FEXCore::CidreMesure::Tick();
+   auto [CompiledCode, DebugData, StartAddr, Length, NeedsAddGuestCodeRanges] = CompileCode(Thread, GuestRIP, MaxInst);
++  const uint64_t CidreDureeCompil = ::FEXCore::CidreMesure::Tick() - CidreTC;
++  ::FEXCore::CidreMesure::CompilTicks.fetch_add(CidreDureeCompil, std::memory_order_relaxed);
++  ::FEXCore::CidreCompteurs::NoterCompil(CidreDureeCompil);
+   auto CodePtr = CompiledCode.EntryPoints[GuestRIP];
+   if (CodePtr == nullptr) {
+     return 0;
+   } else if (!DebugData) {
+     // DebugData wasn't populated, indicating another thread raced us for compiling this block
+     return reinterpret_cast<uintptr_t>(CodePtr);
++  }
++
++  if (auto C = CidreCompte()) {
++    C->Noter(GuestRIP, Thread->FrontendDecoder->CidreEmpreinte, true, CidreDureeCompil, Length, Thread->PassManager->CidreRapide);
++  }
++
++  // Cidre (P) : acces des RIP connus sur page mixte reecrits vers leur talon avant que le bloc soit publie.
++  if (GuestMixedPrewrite) {
++    for (auto [Debut, Fin] : Thread->CPUBackend->CidrePreSites) {
++      GuestMixedPrewrite(this, Thread, Debut, Fin);
++    }
++  }
++  fextl::vector<std::pair<uint64_t, uint64_t>> CidrePreSitesGardes;
++  if (CidreCache() && Thread->FrontendDecoder->CidreCollecte) {
++    CidrePreSitesGardes = Thread->CPUBackend->CidrePreSites;
+   }
++  Thread->CPUBackend->CidrePreSites.clear();
+ 
+   if (DiskCacheGuestCodeKey && Hit && DiskCache.IsValidating()) {
+     DiskCache.Validate(*DiskCacheGuestCodeKey, *Hit, CompiledCode, Region);
+@@ -1097,6 +1835,26 @@
+   // Insert to lookup cache
+   for (auto [GuestAddr, HostAddr] : CompiledCode.EntryPoints) {
+     Thread->LookupCache->AddBlockMapping(Thread, GuestAddr, CodePages, HostAddr);
++  }
++
++  // Cidre (CIDRE_CACHE_BLOCS) : le bloc est garde pour une reinstallation apres invalidation
++  if (auto* K = CidreCache(); K && NeedsAddGuestCodeRanges && Thread->FrontendDecoder->CidreCollecte &&
++                              !Thread->FrontendDecoder->CidreSegments.empty() && !Config.GDBSymbols()) {
++    CidreBloc B;
++    B.Rip = GuestRIP;
++    B.MaxInst = MaxInst;
++    B.TF = Thread->CurrentFrame->State.flags[X86State::RFLAG_TF_RAW_LOC];
++    B.Generation = CidreGenerationCode.load(std::memory_order_acquire);
++    B.Carte = Thread->LookupCache->Shared;
++    for (auto [GuestAddr, HostAddr] : CompiledCode.EntryPoints) {
++      B.Entrees.emplace_back(GuestAddr, HostAddr);
++    }
++    B.Pages = CodePages;
++    auto BlockInfo = Thread->FrontendDecoder->GetDecodedBlockInfo();
++    B.PointsEntree.assign(BlockInfo->EntryPoints.begin(), BlockInfo->EntryPoints.end());
++    B.PreSites = std::move(CidrePreSitesGardes);
++    B.Segments = Thread->FrontendDecoder->CidreSegments;
++    K->Garder(std::move(B));
+   }
+ 
+   // Clear any relocations that might have been generated
+@@ -1157,6 +1915,7 @@
+ 
+   if (Thread->LookupCache->InvalidateCacheRange(Start, Length)) {
+     FEXCORE_PROFILE_SCOPED("InvalidateCallRet");
++    ::FEXCore::CidreCompteurs::Partages.CallRetVidages.fetch_add(1, std::memory_order_relaxed);
+ 
+     // This may cause access violations in the thread on Windows as zeroing is not atomic, this is handled by the frontend
+     CidreInvaliderPileAppels(Thread);
+diff --git a/FEXCore/Source/Interface/Core/Frontend.cpp b/FEXCore/Source/Interface/Core/Frontend.cpp
+--- a/FEXCore/Source/Interface/Core/Frontend.cpp
++++ b/FEXCore/Source/Interface/Core/Frontend.cpp
+@@ -148,7 +148,17 @@
+       AliasDelta = CTX->GuestCodeAlias(Page);
+     }
+     D[i] = *reinterpret_cast<const uint8_t*>(A + AliasDelta);
++  }
++}
++
++bool Decoder::CidreRelire(const uint8_t* P, void* Dst, size_t Size) {
++  ExecutableRangeBase = ExecutableRangeEnd = 0; // les droits ont pu changer depuis le decodage
++  AliasPage = ~0ULL;                            // l'alias aussi
++  if (!CheckRangeExecutable(reinterpret_cast<uint64_t>(P), Size)) {
++    return false;
+   }
++  ReadCode(Dst, P, Size);
++  return true;
+ }
+ 
+ std::optional<uint8_t> Decoder::PeekByte(uint8_t Offset) {
+@@ -1149,7 +1159,7 @@
+ }
+ 
+ void Decoder::BranchTargetInMultiblockRange() {
+-  if (!CTX->Config.Multiblock) {
++  if (!CTX->Config.Multiblock || CidreSansMultibloc) {
+     return;
+   }
+ 
+diff --git a/FEXCore/Source/Interface/Core/Frontend.h b/FEXCore/Source/Interface/Core/Frontend.h
+--- a/FEXCore/Source/Interface/Core/Frontend.h
++++ b/FEXCore/Source/Interface/Core/Frontend.h
+@@ -186,6 +186,26 @@
+   // mixte : ses voisines fermees feraient fauter chaque octet lu (rejoue par Wine, ~2,4 us).
+   void ReadCode(void* Dst, const uint8_t* P, size_t Size);
+ 
++  // Cidre (CIDRE_COMPTE_COMPIL, Core.cpp) : empreinte des octets du bloc en cours de decodage ; jamais de TLS (arm64ec)
++  uint64_t CidreEmpreinte {};
++
++  // Cidre (CIDRE_CACHE_BLOCS, Core.cpp) : octets x64 de chaque instruction decodee du bloc, et s'il a ete compile sans
++  // validation (CodeArme) ; gardes avec le code compile pour verifier, octet par octet, avant de le reinstaller.
++  struct CidreSegment {
++    uint64_t Adresse;
++    uint8_t Taille;
++    bool Arme;
++    uint8_t Octets[16];
++  };
++  fextl::vector<CidreSegment> CidreSegments;
++  bool CidreCollecte {};
++  // Cidre (armement groupe, Core.cpp) : intervalle d'invite deja arme pendant ce GenerateIR, [Debut, Fin)
++  uint64_t CidreArmeDebut {}, CidreArmeFin {};
++  // Cidre (CIDRE_ARME_MAXINST, Core.cpp) : pas de multibloc pour ce decodage (bloc d'une page armee)
++  bool CidreSansMultibloc {};
++  // relit Size octets de code a P hors decodage : intervalle executable et alias redemandes, refus si non executable
++  bool CidreRelire(const uint8_t* P, void* Dst, size_t Size);
++
+ private:
+   IR::OpSize GetGPROpSize() const {
+     return BlockInfo.Is64BitMode ? IR::OpSize::i64Bit : IR::OpSize::i32Bit;
+diff --git a/FEXCore/Source/Interface/Core/JIT/ALUOps.cpp b/FEXCore/Source/Interface/Core/JIT/ALUOps.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/ALUOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/ALUOps.cpp
+@@ -90,6 +90,12 @@
+ 
+ DEF_OP(CycleCounter) {
+   auto Op = IROp->C<IR::IROp_CycleCounter>();
++  if (CidreCompteRdtsc > 0) {
++    // Cidre, diag : un RDTSC de plus pour ce fil (lu par le fil de releve du module, CIDRE_COMPTE_RDTSC=1).
++    ldr(TMP1, STATE, offsetof(FEXCore::Core::CpuStateFrame, CidreRdtsc));
++    add(ARMEmitter::Size::i64Bit, TMP1, TMP1, 1);
++    str(TMP1, STATE, offsetof(FEXCore::Core::CpuStateFrame, CidreRdtsc));
++  }
+   if (CTX->HostFeatures.SupportsECV && Op->SelfSynchronizingLoads) {
+     // CNTVCTSS_EL0 is "self-synchronizing", which means loads can't speculate past this instruction.
+     // Stores still aren't synchronized although.
+diff --git a/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp b/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
+@@ -17,6 +17,8 @@
+ #include <FEXCore/Debug/InternalThreadState.h>
+ #include <FEXCore/HLE/SyscallHandler.h>
+ #include <FEXCore/Utils/MathUtils.h>
++#include <FEXCore/Utils/LogManager.h>
++#include <atomic>
+ 
+ namespace FEXCore::CPU {
+ 
+@@ -349,6 +351,8 @@
+     .NZCV = false,
+   });
+ }
++
++static std::atomic<uint64_t> CidreNbValidationsAlias;
+ 
+ DEF_OP(ValidateCode) {
+   auto Op = IROp->C<IR::IROp_ValidateCode>();
+@@ -369,34 +373,81 @@
+   auto WorkingReg = ARMEmitter::XReg::zr;
+   auto BaseReg = TMP2;
+   auto TmpDataReg = TMP3;
+-  mov(ARMEmitter::Size::i64Bit, BaseReg, Base);
+-
+-  while (len >= 8) {
+-    ldr<ARMEmitter::IndexType::POST>(TmpDataReg, BaseReg, 8);
+-    crc32x(TMP1, WorkingReg, TmpDataReg);
+-    len -= 8;
+-    WorkingReg = TMP1;
+-  }
+-
+-  while (len >= 4) {
+-    ldr<ARMEmitter::IndexType::POST>(TmpDataReg.W(), BaseReg, 4);
+-    crc32w(TMP1.W(), WorkingReg.W(), TmpDataReg.W());
+-    len -= 4;
+-    WorkingReg = TMP1;
++  // Cidre (Context::SetGuestReadAlias) : octets de l'instruction sur une page d'hote mixte lus par l'alias (adresse
++  // relevee avant l'allocation des registres), sans faute rejouee a chaque passage. Une NtProtect de la page invalide
++  // le bloc, et l'alias montre la meme memoire : la validation voit toujours le code courant. Une instruction a cheval
++  // sur deux pages d'hote est lue en deux segments, chacun par l'alias de sa page (ou en place si elle n'est pas
++  // mixte) ; le CRC32 s'enchaine octet par octet, le decoupage ne change pas la somme.
++  struct Segment {
++    int Debut, Longueur;
++    int64_t Delta;
++  };
++  Segment Segments[2] {{0, len, 0}, {0, 0, 0}};
++  int NbSegments = 1;
++  uint64_t CidreAdresse = 0;
++  bool CidreAlias = false;
++  if (CTX->GuestReadAlias) {
++    if (const auto It = CidreAdressesConstantes.find(IR->GetID(Node).Value); It != CidreAdressesConstantes.end()) {
++      CidreAdresse = It->second;
++      const uint64_t Frontiere = (CidreAdresse | 0x3fff) + 1;
++      if (CidreAdresse + len > Frontiere) {
++        const int Premier = static_cast<int>(Frontiere - CidreAdresse);
++        Segments[0] = {0, Premier, 0};
++        Segments[1] = {Premier, len - Premier, 0};
++        NbSegments = 2;
++      }
++      for (int k = 0; k < NbSegments; ++k) {
++        Segments[k].Delta = CTX->GuestReadAlias(CidreAdresse + Segments[k].Debut, Segments[k].Longueur);
++        CidreAlias |= Segments[k].Delta != 0;
++      }
++    }
+   }
+-
+-  while (len >= 2) {
+-    ldrh<ARMEmitter::IndexType::POST>(TmpDataReg.W(), BaseReg, 2);
+-    crc32h(TMP1.W(), WorkingReg.W(), TmpDataReg.W());
+-    len -= 2;
+-    WorkingReg = TMP1;
++  if (CidreAlias) {
++    const uint64_t N = CidreNbValidationsAlias.fetch_add(1, std::memory_order_relaxed) + 1;
++    if ((N & (N - 1)) == 0) {
++      LogMan::Msg::IFmt("cidre : validations du code par l'alias emises {} (derniere : {:#x}, {} segment(s))", N, CidreAdresse,
++                        NbSegments);
++    }
+   }
+ 
+-  while (len >= 1) {
+-    ldrb<ARMEmitter::IndexType::POST>(TmpDataReg.W(), BaseReg, 1);
+-    crc32b(TMP1.W(), WorkingReg.W(), TmpDataReg.W());
+-    len -= 1;
+-    WorkingReg = TMP1;
++  for (int k = 0; k < NbSegments; ++k) {
++    const auto& G = Segments[k];
++    if (G.Delta) {
++      LoadConstant(ARMEmitter::Size::i64Bit, BaseReg, CidreAdresse + G.Debut + G.Delta);
++    } else if (G.Debut == 0) {
++      mov(ARMEmitter::Size::i64Bit, BaseReg, Base);
++    } else {
++      add(ARMEmitter::Size::i64Bit, BaseReg, Base, G.Debut);
++    }
++    len = G.Longueur;
++
++    while (len >= 8) {
++      ldr<ARMEmitter::IndexType::POST>(TmpDataReg, BaseReg, 8);
++      crc32x(TMP1, WorkingReg, TmpDataReg);
++      len -= 8;
++      WorkingReg = TMP1;
++    }
++
++    while (len >= 4) {
++      ldr<ARMEmitter::IndexType::POST>(TmpDataReg.W(), BaseReg, 4);
++      crc32w(TMP1.W(), WorkingReg.W(), TmpDataReg.W());
++      len -= 4;
++      WorkingReg = TMP1;
++    }
++
++    while (len >= 2) {
++      ldrh<ARMEmitter::IndexType::POST>(TmpDataReg.W(), BaseReg, 2);
++      crc32h(TMP1.W(), WorkingReg.W(), TmpDataReg.W());
++      len -= 2;
++      WorkingReg = TMP1;
++    }
++
++    while (len >= 1) {
++      ldrb<ARMEmitter::IndexType::POST>(TmpDataReg.W(), BaseReg, 1);
++      crc32b(TMP1.W(), WorkingReg.W(), TmpDataReg.W());
++      len -= 1;
++      WorkingReg = TMP1;
++    }
+   }
+ 
+   sub(ARMEmitter::Size::i32Bit, Dst, TMP1, CRC32Reg);
+diff --git a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -150,29 +150,6 @@
+ }
+ 
+ // Cidre 0278 : la pile d'appels de retour est toujours engagee en lecture-ecriture ; CIDRE_SMC_RAPIDE=0 rend l'amont.
+-static inline void CidreViderPileAppels(FEXCore::Core::InternalThreadState* T);
+-// Cidre 0279 : avancer la cle d'epoque au lieu de vider la pile (CIDRE_PILE_CLE=1) ; videe au retour a zero.
+-static inline void CidreInvaliderPileAppels(FEXCore::Core::InternalThreadState* T) {
+-  {
+-    static int8_t SansVidage = -1; // temoin de sensibilite seulement : CIDRE_PILE_TEMOIN_SANS=1 ne vide rien (FAUX)
+-    if (SansVidage < 0) {
+-      const char* E = getenv("CIDRE_PILE_TEMOIN_SANS");
+-      SansVidage = E && *E == '1';
+-    }
+-    if (SansVidage) {
+-      return;
+-    }
+-  }
+-  if (FEXCore::CPU::CidrePileCle()) {
+-    auto& Cle = T->CurrentFrame->State.callret_cle;
+-    const uint64_t Nouvelle = __atomic_load_n(&Cle, __ATOMIC_RELAXED) + FEXCore::CPU::CIDRE_PILE_CLE_PAS;
+-    __atomic_store_n(&Cle, Nouvelle, __ATOMIC_RELEASE);
+-    if (Nouvelle != 0) {
+-      return;
+-    }
+-  }
+-  CidreViderPileAppels(T);
+-}
+ static inline void CidreViderPileAppels(FEXCore::Core::InternalThreadState* T) {
+   void* Base = T->CallRetStackBase;
+   if (FEXCore::Core::CidrePileMesure()) {
+@@ -209,9 +186,35 @@
+     FEXCore::Allocator::VirtualDontNeedRW(Base, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE);
+   } else {
+     FEXCore::Allocator::VirtualDontNeed(Base, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE);
++  }
++}
++// Cidre 0279 : avancer la cle d'epoque au lieu de vider la pile (CIDRE_PILE_CLE=1) ; videe au retour a zero.
++static inline void CidreInvaliderPileAppels(FEXCore::Core::InternalThreadState* T) {
++  {
++    static int8_t SansVidage = -1; // temoin de sensibilite seulement : CIDRE_PILE_TEMOIN_SANS=1 ne vide rien (FAUX)
++    if (SansVidage < 0) {
++      const char* E = getenv("CIDRE_PILE_TEMOIN_SANS");
++      SansVidage = E && *E == '1';
++    }
++    if (SansVidage) {
++      return;
++    }
++  }
++  if (FEXCore::CPU::CidrePileCle()) {
++    auto& Cle = T->CurrentFrame->State.callret_cle;
++    const uint64_t Nouvelle = __atomic_load_n(&Cle, __ATOMIC_RELAXED) + FEXCore::CPU::CIDRE_PILE_CLE_PAS;
++    __atomic_store_n(&Cle, Nouvelle, __ATOMIC_RELEASE);
++    if (Nouvelle != 0) {
++      return;
++    }
+   }
++  CidreViderPileAppels(T);
+ }
+ 
++// Cidre, diag : octets compiles, de controles en ligne (R2) et de talons (CPUBackend.cpp), vus aux vidages.
++extern std::atomic<uint64_t> CidreOctetsTalons;
++static std::atomic<uint64_t> CidreTotalCompile, CidreTotalEnLigne;
++static int CidreDiagR2 = -1;
+ 
+ void Arm64JITCore::Op_Unhandled(const IR::IROp_Header* IROp, IR::Ref Node) {
+   FallbackInfo Info;
+@@ -1104,8 +1107,8 @@
+     }
+   }
+ 
+-  // Cidre 0224 : pas de sonnette a l'entree d'un bloc de retour d'appel. Le fil y arrive par un ret ; la suspension
+-  // reste vue a la prochaine entree de fonction ou arete arriere, sans cout a chaque retour.
++  // Cidre : pas de sonnette a l'entree d'un bloc de retour d'appel. Le fil y arrive par un ret ; la suspension reste
++  // vue a la prochaine entree de fonction ou arete arriere (CIDRE_SONNETTE_RETOUR=1 la remet, pour comparer).
+   if (!RetourDAppel || CidreSonnetteRetour > 0) {
+     EmitSuspendInterruptCheck();
+   }
+@@ -1128,6 +1131,10 @@
+     AllocatedInfo = CurrentCodeBuffer->AtomicAllocateBuffer(Size);
+ 
+     if (AllocatedInfo.BufferAllocationOffset == nullptr) {
++      // Cidre : ce qui remplit les tampons (compile, talons), a chaque vidage.
++      LogMan::Msg::IFmt("cidre : tampon de code plein : demande {} o, tampon {} Mio ; depuis le debut {} Mio compiles, {} Mio de talons",
++                        Size, CurrentCodeBuffer->UsableSize() >> 20, CidreTotalCompile.load() >> 20,
++                        FEXCore::CPU::CidreOctetsTalons.load() >> 20);
+       // If it didn't fit then clear the buffer and try again.
+       // This has the possibility of migrating the SharedCodeBuffer. See above in `Arm64JITCore::ClearCache()`
+       CTX->ClearCodeCache(ThreadState);
+@@ -1138,6 +1145,7 @@
+   return AllocatedInfo;
+ }
+ 
++
+ CPUBackend::CompiledCode Arm64JITCore::CompileCode(uint64_t Entry, uint64_t Size, bool SingleInst, const FEXCore::IR::IRListView* IR,
+                                                    FEXCore::Core::DebugData* DebugData, bool CheckTF) {
+   FEXCORE_PROFILE_SCOPED("Arm64::CompileCode");
+@@ -1145,6 +1153,7 @@
+   const auto PrevNumAllocations = Relocations.size();
+ 
+   this->Entry = Entry;
++  CidreGuestRIP = 0;
+   this->DebugData = DebugData;
+   this->IR = IR;
+   RequiresFarARM64Jumps = false;
+@@ -1165,8 +1174,15 @@
+   default: LOGMAN_MSG_A_FMT("Unhandled Arm64 restart condition!");
+   }
+ 
++  uint32_t SSACount = IR->GetSSACount();
++  CidrePreSites.clear(); // aussi apres une reprise : plages de la tentative abandonnee
++  CidrePreDebut = nullptr;
++  CidreBarriereLd = false;
++  if (CidreCompteRdtsc < 0) {
++    const char* E = getenv("CIDRE_COMPTE_RDTSC");
++    CidreCompteRdtsc = E && *E == '1';
++  }
+   if (CidreSonnetteRetour < 0) {
+-    // Pas de statique locale : son initialisation gardee passerait par le TLS (x18 en ARM64EC).
+     const char* E = getenv("CIDRE_SONNETTE_RETOUR");
+     CidreSonnetteRetour = E && *E == '1';
+   }
+@@ -1181,10 +1197,18 @@
+     CidreDiagHautNul = D && *D >= '1' && *D <= '9' ? *D - '0' : 0;
+   }
+   CidreInsSupprimes = CidreInsGardes = 0; // recompte a chaque tentative (reprise par saut long comprise)
+-  uint32_t SSACount = IR->GetSSACount();
+   if (CidreTSODep > 0) {
+     CidreLectureNue.assign(SSACount + 1, false);
+   }
++  if (CidreMemePage < 0) {
++    const char* E = getenv("CIDRE_LECTURE_DIRECTE");
++    CidreMemePage = E && *E == '2';
++  }
++  if (CidreLecturesGroupees < 0) {
++    // Pas de statique locale : son initialisation gardee passerait par le TLS (x18 en ARM64EC).
++    const char* E = getenv("CIDRE_TSO_GROUPE");
++    CidreLecturesGroupees = E && *E == '1';
++  }
+   JumpTargets.clear();
+   CallReturnTargets.clear();
+   PendingJumpThunks.clear();
+@@ -1306,7 +1330,47 @@
+       CidreMarquerLecturesNues(BlockNode);
+     }
+ 
++    if (CidreBarriereLd) {
++      // Entree d'un bloc par une autre voie que son saut : les lectures en attente ne le suivent pas sans ordre.
++      dmb(ARMEmitter::BarrierScope::ISHLD);
++      CidreBarriereLd = false;
++    }
+     for (auto [CodeNode, IROp] : IR->GetCode(BlockNode)) {
++      if (CidreBarriereLd) {
++        switch (IROp->Op) {
++        case IR::IROps::OP_STOREMEMTSO:
++        case IR::IROps::OP_CAS:
++        case IR::IROps::OP_CASPAIR:
++        case IR::IROps::OP_ATOMICSWAP:
++        case IR::IROps::OP_ATOMICFETCHADD:
++        case IR::IROps::OP_ATOMICFETCHSUB:
++        case IR::IROps::OP_ATOMICFETCHAND:
++        case IR::IROps::OP_ATOMICFETCHCLR:
++        case IR::IROps::OP_ATOMICFETCHOR:
++        case IR::IROps::OP_ATOMICFETCHXOR:
++        case IR::IROps::OP_ATOMICFETCHNEG:
++        case IR::IROps::OP_FENCE:
++        case IR::IROps::OP_JUMP:
++        case IR::IROps::OP_CONDJUMP:
++        case IR::IROps::OP_EXITFUNCTION:
++        case IR::IROps::OP_BREAK:
++        case IR::IROps::OP_CALLBACKRETURN:
++        case IR::IROps::OP_SYSCALL:
++        case IR::IROps::OP_THUNK:
++        case IR::IROps::OP_YIELD:
++        case IR::IROps::OP_WFET:
++        case IR::IROps::OP_MONOBACKPATCHERWRITE:
++        case IR::IROps::OP_VSTORENONTEMPORAL:
++        case IR::IROps::OP_VSTORENONTEMPORALPAIR:
++        case IR::IROps::OP_CACHELINECLEAN:
++        case IR::IROps::OP_CACHELINECLEAR:
++        case IR::IROps::OP_CACHELINEZERO:
++          dmb(ARMEmitter::BarrierScope::ISHLD);
++          CidreBarriereLd = false;
++          break;
++        default: break;
++        }
++      }
+       const bool CidreAtomiqueIlot = CidreIlotAtomiques() && CidreEstAtomiqueIlot(IROp->Op);
+       if (CidreAtomiqueIlot) {
+         dmb(ARMEmitter::BarrierScope::ISH);
+@@ -1323,6 +1387,10 @@
+       }
+       if (CidreAtomiqueIlot) {
+         dmb(ARMEmitter::BarrierScope::ISH);
++      }
++      if (CidrePreDebut) {
++        CidrePreSites.emplace_back(reinterpret_cast<uint64_t>(CidrePreDebut), GetCursorAddress<uint64_t>());
++        CidrePreDebut = nullptr;
+       }
+     }
+ 
+@@ -1474,6 +1542,11 @@
+       EntryPoint.second += Delta;
+     }
+     CodeBegin += Delta;
++    // Cidre (P) : les plages notees pendant l'emission sont dans le tampon temporaire.
++    for (auto& [Debut, Fin] : CidrePreSites) {
++      Debut += Delta;
++      Fin += Delta;
++    }
+     CodeData.HostCodeOffset = CodeData.BlockBegin - CurrentCodeBuffer->GetBufferBase();
+ 
+     // Copy over CodeBuffer contents
+@@ -1484,6 +1557,25 @@
+ 
+   ClearICache(CodeBegin, CodeOnlySize);
+ 
++  // Cidre, diag : CIDRE_DUMP_RIP=<rip invite en hexa> journalise en hexa le code emis pour le bloc qui le couvre.
++  if (CidreDumpRipLu < 0) {
++    const char* E = getenv("CIDRE_DUMP_RIP");
++    CidreDumpRip = E && *E ? strtoull(E, nullptr, 16) : 0;
++    CidreDumpRipLu = 1;
++  }
++  if (CidreDumpRip && CidreDumpRip >= Entry && CidreDumpRip < Entry + Size) {
++    const auto* M = reinterpret_cast<const uint32_t*>(CodeBegin);
++    for (uint64_t i = 0; i < CodeOnlySize / 4; i += 8) {
++      char L[8 * 9 + 1];
++      int N = 0;
++      for (uint64_t j = i; j < i + 8 && j < CodeOnlySize / 4; j++) {
++        N += snprintf(L + N, sizeof(L) - N, " %08x", M[j]);
++      }
++      L[N] = 0;
++      LogMan::Msg::IFmt("cidre : code {:#x} +{:#x} :{}", Entry, i * 4, static_cast<const char*>(L));
++    }
++  }
++
+ #ifdef VIXL_DISASSEMBLER
+   if (Disassemble() & FEXCore::Config::Disassemble::STATS) {
+     auto HeaderOp = IR->GetHeader();
+@@ -1522,6 +1614,21 @@
+       LogMan::Msg::IFmt("haut nul : {} ins supprimes, {} gardes ({:.1f} % supprimes)", S, G, 100.0 * S / N);
+     }
+   }
++  // Cidre, diag R2 (CIDRE_DIAG_SOUS_PAGES) : part du code compile prise par les controles en ligne.
++  if (true) {
++    // Pas de statique locale : son initialisation gardee passerait par le TLS (x18 en ARM64EC).
++    if (CidreDiagR2 < 0) {
++      const char* E = getenv("CIDRE_DIAG_SOUS_PAGES");
++      CidreDiagR2 = E && *E && *E != '0';
++    }
++    const uint64_t T = CidreTotalCompile.fetch_add(CodeData.Size, std::memory_order_relaxed) + CodeData.Size;
++    const uint64_t L = CidreTotalEnLigne.fetch_add(CidreOctetsEnLigne, std::memory_order_relaxed) + CidreOctetsEnLigne;
++    if (CidreDiagR2 > 0 && (T >> 24) != ((T - CodeData.Size) >> 24)) {
++      LogMan::Msg::IFmt("sous-pages : R2 : {} Mio compiles, dont {} Kio de controles en ligne ({:.1f} %)", T >> 20, L >> 10,
++                        T ? 100.0 * L / T : 0.0);
++    }
++    CidreOctetsEnLigne = 0;
++  }
+ 
+   return std::move(CodeData);
+ }
+diff --git a/FEXCore/Source/Interface/Core/JIT/JITClass.h b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+--- a/FEXCore/Source/Interface/Core/JIT/JITClass.h
++++ b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+@@ -91,6 +91,18 @@
+   FEXCore::Context::ContextImpl* CTX {};
+   const FEXCore::IR::IRListView* IR {};
+   uint64_t Entry {};
++  // Cidre : RIP invite de l'instruction en cours d'emission (op GuestOpcode), 0 sinon ; voir EmitMixedCheck.
++  uint64_t CidreGuestRIP {};
++  // Cidre (P) : debut de l'acces en cours d'emission d'un RIP connu, ferme apres l'op (CidrePreSites).
++  uint8_t* CidrePreDebut {};
++  // Cidre : lectures TSO groupees (CIDRE_TSO_GROUPE=1). Les lectures GPR ordonnees deviennent des ldr nus ; un seul
++  // dmb ishld est emis avant la prochaine operation qui doit les voir ordonnees (ecriture TSO, atomique, barriere,
++  // saut, appel). L->S et L->L entre groupes restent garantis, L->L a l'interieur d'un groupe non : ce n'est pas un
++  // TSO exact. -1 : pas encore lu.
++  int8_t CidreLecturesGroupees {-1};
++  // Cidre : sonnette de suspension aussi a l'entree des blocs de retour d'appel (CIDRE_SONNETTE_RETOUR=1). -1 : pas lu.
++  int8_t CidreSonnetteRetour {-1};
++  bool CidreBarriereLd {};
+   CPUBackend::CompiledCode CodeData {};
+ 
+   fextl::vector<ARMEmitter::BiDirectionalLabel> JumpTargets;
+@@ -333,6 +345,28 @@
+   ARMEmitter::Register GuestLowAddr(IR::OpSize AccessSize, ARMEmitter::Register Base, IR::OrderedNodeWrapper Offset,
+                                     IR::MemOffsetType OffsetType, uint8_t OffsetScale);
+   void RebaseGuestLowInPlace(ARMEmitter::Register Reg, ARMEmitter::Register Scratch);
++  // Cidre : controle en ligne d'un acces a une page d'hote mixte (Context::SetGuestMixedSites). Si l'instruction
++  // invite en cours est connue et la forme portee, emet le controle et rend true : TMP1 vaut alors l'adresse par
++  // l'alias, a employer pour l'acces rapide, et Miss est vise si le controle echoue (acces d'origine). Sinon
++  // n'emet rien et rend false. Sans drapeaux ; TMP1-TMP4.
++  bool EmitMixedCheck(IR::OpSize AccessSize, bool Write, ARMEmitter::Register Base, IR::OrderedNodeWrapper Offset,
++                      IR::MemOffsetType OffsetType, uint8_t OffsetScale, ARMEmitter::ForwardLabel* Miss);
++  // Fin du chemin rapide : saut par-dessus le litteral de l'entree (lu par EmitMixedCheck), puis Miss (acces d'origine).
++  void EmitMixedTail(ARMEmitter::ForwardLabel* Fin, ARMEmitter::ForwardLabel* Miss);
++  void* CidreSite {};
++  uint8_t* CidreDebut {};
++  ARMEmitter::ForwardLabel CidreLitteral {};
++  uint64_t CidreOctetsEnLigne {}; // octets de controle en ligne emis par ce fil (diag)
++  // Cidre (Context::SetGuestReadAlias) : lecture a adresse constante dans la page de 4 Kio de l'instruction invite en
++  // cours (relevee par GenerateIR avant l'allocation des registres), sur une page d'hote mixte qui la permet : TMP1 =
++  // adresse par l'alias, rend true ; l'appelant lit [TMP1]. Sinon n'emet rien et rend false.
++  bool CidreLectureDirecte(IR::OpSize AccessSize, IR::Ref Node);
++  // Cidre (CIDRE_LECTURE_DIRECTE=2) : dans un bloc dont la page de 4 Kio de l'instruction est lisible sur une page d'hote
++  // mixte, controle sans drapeaux que l'adresse (registre) tombe dans cette page : TMP1 = adresse par l'alias, rend true,
++  // Miss vise sinon (acces d'origine). Meme contrat qu'EmitMixedCheck ; fin par EmitMixedTail. TMP1-TMP3.
++  bool EmitMemePageCheck(IR::OpSize AccessSize, ARMEmitter::Register Base, IR::OrderedNodeWrapper Offset, IR::MemOffsetType OffsetType,
++                         uint8_t OffsetScale, ARMEmitter::ForwardLabel* Miss);
++  int8_t CidreMemePage {-1};
+   ARMEmitter::ExtendedMemOperand GenerateMemOperand(IR::OpSize AccessSize, ARMEmitter::Register Base, IR::OrderedNodeWrapper Offset,
+                                                     IR::MemOffsetType OffsetType, uint8_t OffsetScale);
+ 
+@@ -635,6 +669,12 @@
+   // au-dela de l'element, le scalaire s'ecrit sans ins (l'ecriture d'un registre H/S/D met le reste a zero).
+   void VFScalarOperation(IR::OpSize OpSize, IR::OpSize ElementSize, bool ZeroUpperBits, ScalarBinaryOpCaller ScalarEmit,
+                          ARMEmitter::VRegister Dst, ARMEmitter::VRegister Vector1, ARMEmitter::VRegister Vector2, bool HautNul = false);
++  // Cidre, diag : compte des RDTSC par fil (CIDRE_COMPTE_RDTSC=1), -1 : pas lu.
++  int8_t CidreCompteRdtsc {-1};
++  // Cidre, diag : CIDRE_DUMP_RIP (rip invite en hexa), 0 : absent ; lu une fois (-1 : pas lu). Avant : getenv a chaque
++  // bloc compile, qui parcourt tout l'environnement (ilot TSO, D2R : strlen/strchr/strncmp de ntdll en tete des releves).
++  int8_t CidreDumpRipLu {-1};
++  uint64_t CidreDumpRip {};
+   using ScalarUnaryOpCaller = std::function<void(ARMEmitter::VRegister Dst, std::variant<ARMEmitter::VRegister, ARMEmitter::Register> SrcVar)>;
+   void VFScalarUnaryOperation(IR::OpSize OpSize, IR::OpSize ElementSize, bool ZeroUpperBits, ScalarUnaryOpCaller ScalarEmit,
+                               ARMEmitter::VRegister Dst, ARMEmitter::VRegister Vector1,
+@@ -652,9 +692,6 @@
+   void EmitSuspendInterruptCheck();
+ 
+   void EmitEntryPoint(ARMEmitter::BackwardLabel& HeaderLabel, bool CheckTF, bool RetourDAppel = false);
+-  // Cidre 0224 : sonnette de suspension aussi a l'entree des blocs de retour d'appel (CIDRE_SONNETTE_RETOUR=1,
+-  // pour comparer). -1 : pas encore lu.
+-  int8_t CidreSonnetteRetour {-1};
+   // Cidre 0226 : lectures TSO rendues nues par dependance d'adresse (CIDRE_TSO_DEP=1). Une lecture ordonnee L devient
+   // un ldr nu si l'acces memoire suivant du bloc est une lecture ordonnee L' (ldapr, ou nue par la meme regle) dont
+   // l'adresse est calculee a partir de la valeur de L. L'ordre L -> tout acces ulterieur reste garanti : dependance
+diff --git a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+@@ -662,6 +662,201 @@
+   asr(ARMEmitter::Size::i64Bit, Scratch, Scratch, 63);
+   and_(ARMEmitter::Size::i64Bit, Scratch, Scratch, FEXCore::IR::Guest64LowBase);
+   orr(ARMEmitter::Size::i64Bit, Reg, Reg, Scratch);
++}
++
++bool Arm64JITCore::EmitMixedCheck(IR::OpSize AccessSize, bool Write, ARMEmitter::Register Base, IR::OrderedNodeWrapper Offset,
++                                  IR::MemOffsetType OffsetType, uint8_t OffsetScale, ARMEmitter::ForwardLabel* Miss) {
++  if (!CTX->GuestMixedSite || FEXCore::IR::Guest64LowBase || !CidreGuestRIP) {
++    return false;
++  }
++  if (CTX->GuestMixedPrewrite) {
++    // P : pas de controle en ligne ; l'acces d'origine d'un RIP connu sera reecrit vers son talon apres compilation.
++    if (CTX->GuestMixedSite(CidreGuestRIP)) {
++      CidrePreDebut = GetCursorAddress<uint8_t*>();
++    }
++    return false;
++  }
++  const uint64_t Size = IR::OpSizeToSize(AccessSize);
++  if (Size == 0 || Size > 8) {
++    return false;
++  }
++  // Forme de l'adresse : base seule, base + immediat (moins de 4 Kio), base + registre etendu.
++  uint64_t Const = 0;
++  bool AvecRegistre = false;
++  if (!Offset.IsInvalid()) {
++    if (IsInlineConstant(Offset, &Const)) {
++      if (static_cast<int64_t>(Const) >= 4096 || static_cast<int64_t>(Const) <= -4096) {
++        return false;
++      }
++    } else {
++      if (OffsetType != IR::MemOffsetType::SXTX && OffsetType != IR::MemOffsetType::UXTW && OffsetType != IR::MemOffsetType::SXTW) {
++        return false;
++      }
++      AvecRegistre = true;
++    }
++  }
++  void* Site = CTX->GuestMixedSite(CidreGuestRIP);
++  if (!Site) {
++    return false;
++  }
++  CidreSite = Site;
++  CidreDebut = GetCursorAddress<uint8_t*>();
++
++  // TMP1 = adresse effective
++  if (AvecRegistre) {
++    const auto RegOffset = GetReg(Offset);
++    const auto Ext = OffsetType == IR::MemOffsetType::SXTX ? ARMEmitter::ExtendedType::SXTX :
++                     OffsetType == IR::MemOffsetType::UXTW ? ARMEmitter::ExtendedType::UXTW :
++                                                             ARMEmitter::ExtendedType::SXTW;
++    add(ARMEmitter::Size::i64Bit, TMP1, Base.X(), RegOffset.X(), Ext, FEXCore::ilog2(OffsetScale));
++  } else if (static_cast<int64_t>(Const) < 0) {
++    sub(ARMEmitter::Size::i64Bit, TMP1, Base.X(), -static_cast<int64_t>(Const));
++  } else {
++    add(ARMEmitter::Size::i64Bit, TMP1, Base.X(), Const);
++  }
++  // Entree du site (litteral pose par EmitMixedTail) : cle (page d'hote, generation), decalage et masques ;
++  // generation courante de Wine.
++  ldr(TMP2, &CidreLitteral);
++  if (*reinterpret_cast<const uint64_t*>(static_cast<const uint8_t*>(Site) + 40)) {
++    // Generation de la case de la page lue : table de Wine, case (adresse >> 14) modulo 4096.
++    ldr(TMP3, TMP2, 16);
++    ubfx(ARMEmitter::Size::i64Bit, TMP4, TMP1, 14, 12);
++    ldr(TMP3.W(), ARMEmitter::ExtendedMemOperand(TMP3, TMP4, ARMEmitter::ExtendedType::LSL_64, 2));
++    ldp<ARMEmitter::IndexType::OFFSET>(TMP2, TMP4, TMP2, 0);
++    eor(ARMEmitter::Size::i64Bit, TMP2, TMP2, TMP1, ARMEmitter::ShiftType::LSR, 14);
++    eor(ARMEmitter::Size::i64Bit, TMP2, TMP2, TMP3, ARMEmitter::ShiftType::LSL, 34);
++    (void)cbnz(ARMEmitter::Size::i64Bit, TMP2, Miss);
++  } else {
++    ldp<ARMEmitter::IndexType::OFFSET>(TMP3, TMP4, TMP2, 0);
++    ldr(TMP2, TMP2, 16);
++    ldr(TMP2.W(), TMP2, 0);
++    eor(ARMEmitter::Size::i64Bit, TMP3, TMP3, TMP1, ARMEmitter::ShiftType::LSR, 14);
++    eor(ARMEmitter::Size::i64Bit, TMP3, TMP3, TMP2, ARMEmitter::ShiftType::LSL, 34);
++    (void)cbnz(ARMEmitter::Size::i64Bit, TMP3, Miss);
++  }
++  // Tout l'acces dans une meme page de 4 Kio (donc une seule sous-page, et une seule page d'hote).
++  if (Size > 1) {
++    add(ARMEmitter::Size::i64Bit, TMP2, TMP1, Size - 1);
++    eor(ARMEmitter::Size::i64Bit, TMP2, TMP2, TMP1);
++    lsr(ARMEmitter::Size::i64Bit, TMP2, TMP2, 12);
++    (void)cbnz(ARMEmitter::Size::i64Bit, TMP2, Miss);
++  }
++  ubfx(ARMEmitter::Size::i64Bit, TMP3, TMP1, 12, 2);
++  lsrv(ARMEmitter::Size::i64Bit, TMP3, TMP4, TMP3);
++  (void)tbz(TMP3, Write ? 4 : 0, Miss);
++  and_(ARMEmitter::Size::i64Bit, TMP4, TMP4, ~uint64_t {0xff});
++  add(ARMEmitter::Size::i64Bit, TMP1, TMP1, TMP4);
++  return true;
++}
++
++void Arm64JITCore::EmitMixedTail(ARMEmitter::ForwardLabel* Fin, ARMEmitter::ForwardLabel* Miss) {
++  (void)b(Fin);
++  if (CidreSite) {
++    (void)Bind(&CidreLitteral);
++    dc64(reinterpret_cast<uint64_t>(CidreSite));
++  }
++  (void)Bind(Miss);
++  CidreLitteral = {};
++  CidreOctetsEnLigne += GetCursorAddress<uint8_t*>() - CidreDebut;
++}
++
++static std::atomic<uint64_t> CidreNbLecturesDirectes, CidreNbHorsPage, CidreNbSansAlias, CidreNbMemePage;
++
++bool Arm64JITCore::EmitMemePageCheck(IR::OpSize AccessSize, ARMEmitter::Register Base, IR::OrderedNodeWrapper Offset,
++                                     IR::MemOffsetType OffsetType, uint8_t OffsetScale, ARMEmitter::ForwardLabel* Miss) {
++  if (CidreMemePage <= 0 || !CTX->GuestReadAlias || FEXCore::IR::Guest64LowBase || !CidreGuestRIP) {
++    return false;
++  }
++  const uint64_t Size = IR::OpSizeToSize(AccessSize);
++  if (Size == 0 || Size > 8) {
++    return false;
++  }
++  // Forme de l'adresse : comme EmitMixedCheck.
++  uint64_t Const = 0;
++  bool AvecRegistre = false;
++  if (!Offset.IsInvalid()) {
++    if (IsInlineConstant(Offset, &Const)) {
++      if (static_cast<int64_t>(Const) >= 4096 || static_cast<int64_t>(Const) <= -4096) {
++        return false;
++      }
++    } else {
++      if (OffsetType != IR::MemOffsetType::SXTX && OffsetType != IR::MemOffsetType::UXTW && OffsetType != IR::MemOffsetType::SXTW) {
++        return false;
++      }
++      AvecRegistre = true;
++    }
++  }
++  // La page de 4 Kio de l'instruction, lisible, sur une page d'hote mixte : sa lisibilite et son alias tiennent pour
++  // toute la vie du bloc (une NtProtect de la page l'invalide).
++  const uint64_t Page = CidreGuestRIP & ~uint64_t {0xfff};
++  const int64_t Delta = CTX->GuestReadAlias(Page, 1);
++  if (!Delta) {
++    return false;
++  }
++  CidreSite = nullptr;
++  CidreDebut = GetCursorAddress<uint8_t*>();
++  if (AvecRegistre) {
++    const auto RegOffset = GetReg(Offset);
++    const auto Ext = OffsetType == IR::MemOffsetType::SXTX ? ARMEmitter::ExtendedType::SXTX :
++                     OffsetType == IR::MemOffsetType::UXTW ? ARMEmitter::ExtendedType::UXTW :
++                                                             ARMEmitter::ExtendedType::SXTW;
++    add(ARMEmitter::Size::i64Bit, TMP1, Base.X(), RegOffset.X(), Ext, FEXCore::ilog2(OffsetScale));
++  } else if (static_cast<int64_t>(Const) < 0) {
++    sub(ARMEmitter::Size::i64Bit, TMP1, Base.X(), -static_cast<int64_t>(Const));
++  } else {
++    add(ARMEmitter::Size::i64Bit, TMP1, Base.X(), Const);
++  }
++  // Sans drapeaux : TMP2 = adresse - page ; debut et fin de l'acces dans [0, 4096), sinon acces d'origine.
++  LoadConstant(ARMEmitter::Size::i64Bit, TMP2, Page);
++  sub(ARMEmitter::Size::i64Bit, TMP2, TMP1, TMP2);
++  add(ARMEmitter::Size::i64Bit, TMP3, TMP2, Size - 1);
++  orr(ARMEmitter::Size::i64Bit, TMP3, TMP3, TMP2);
++  lsr(ARMEmitter::Size::i64Bit, TMP3, TMP3, 12);
++  (void)cbnz(ARMEmitter::Size::i64Bit, TMP3, Miss);
++  LoadConstant(ARMEmitter::Size::i64Bit, TMP3, Page + Delta);
++  add(ARMEmitter::Size::i64Bit, TMP1, TMP3, TMP2);
++  const uint64_t N = CidreNbMemePage.fetch_add(1, std::memory_order_relaxed) + 1;
++  if ((N & (N - 1)) == 0) {
++    LogMan::Msg::IFmt("cidre : controles meme page emis {} (page {:#x}, RIP {:#x})", N, Page, CidreGuestRIP);
++  }
++  return true;
++}
++static void CidreCompterRefus(std::atomic<uint64_t>& N, const char* Quoi, uint64_t A, uint64_t Rip) {
++  const uint64_t V = N.fetch_add(1, std::memory_order_relaxed) + 1;
++  if ((V & (V - 1)) == 0) {
++    LogMan::Msg::IFmt("cidre : lecture directe refusee, {} {} (derniere : {:#x} a RIP {:#x})", Quoi, V, A, Rip);
++  }
++}
++
++bool Arm64JITCore::CidreLectureDirecte(IR::OpSize AccessSize, IR::Ref Node) {
++  if (!CTX->GuestReadAlias || FEXCore::IR::Guest64LowBase || !CidreGuestRIP) {
++    return false;
++  }
++  const uint64_t Size = IR::OpSizeToSize(AccessSize);
++  if (Size == 0 || Size > 16) {
++    return false;
++  }
++  // Adresse relevee avant l'allocation des registres (Core.cpp, GenerateIR).
++  const auto It = CidreAdressesConstantes.find(IR->GetID(Node).Value);
++  if (It == CidreAdressesConstantes.end()) {
++    return false;
++  }
++  const uint64_t A = It->second;
++  if ((A >> 12) != (CidreGuestRIP >> 12) || ((A + Size - 1) >> 12) != (A >> 12)) {
++    CidreCompterRefus(CidreNbHorsPage, "hors de la page du RIP", A, CidreGuestRIP);
++    return false;
++  }
++  const int64_t Delta = CTX->GuestReadAlias(A, Size);
++  if (!Delta) {
++    CidreCompterRefus(CidreNbSansAlias, "page non mixte ou non lisible", A, CidreGuestRIP);
++    return false;
++  }
++  LoadConstant(ARMEmitter::Size::i64Bit, TMP1, A + Delta);
++  const uint64_t N = CidreNbLecturesDirectes.fetch_add(1, std::memory_order_relaxed) + 1;
++  if ((N & (N - 1)) == 0) {
++    LogMan::Msg::IFmt("cidre : lectures directes par l'alias emises {} (derniere : {:#x} a RIP {:#x})", N, A, CidreGuestRIP);
++  }
++  return true;
+ }
+ 
+ ARMEmitter::ExtendedMemOperand Arm64JITCore::GenerateMemOperand(
+@@ -799,8 +994,26 @@
+   const auto Op = IROp->C<IR::IROp_LoadMem>();
+   const auto OpSize = IROp->Size;
+ 
+-  const auto MemReg = GetReg(Op->Addr);
+-  const auto MemSrc = GenerateMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
++  // Lecture directe : l'adresse par l'alias dans TMP1, sans decalage.
++  const bool CidreDirecte = CidreLectureDirecte(OpSize, Node);
++  const auto MemReg = CidreDirecte ? ARMEmitter::Register(TMP1) : GetReg(Op->Addr);
++  const auto MemOffset = CidreDirecte ? IR::OrderedNodeWrapper::WrapOffset(0) : Op->Offset;
++  ARMEmitter::ForwardLabel CidreMiss, CidreFin;
++  const bool CidreEnLigne = !CidreDirecte && Op->Class == IR::RegClass::GPR &&
++                            (EmitMemePageCheck(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale, &CidreMiss) ||
++                             EmitMixedCheck(OpSize, false, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale, &CidreMiss));
++  if (CidreEnLigne) {
++    const auto Dst = GetReg(Node);
++    const auto Rapide = ARMEmitter::ExtendedMemOperand(TMP1, ARMEmitter::IndexType::OFFSET, 0);
++    switch (OpSize) {
++    case IR::OpSize::i8Bit: ldrb(Dst, Rapide); break;
++    case IR::OpSize::i16Bit: ldrh(Dst, Rapide); break;
++    case IR::OpSize::i32Bit: ldr(Dst.W(), Rapide); break;
++    default: ldr(Dst.X(), Rapide); break;
++    }
++    EmitMixedTail(&CidreFin, &CidreMiss);
++  }
++  const auto MemSrc = GenerateMemOperand(OpSize, MemReg, MemOffset, Op->OffsetType, Op->OffsetScale);
+ 
+   if (Op->Class == IR::RegClass::GPR) {
+     const auto Dst = GetReg(Node);
+@@ -823,13 +1036,16 @@
+     case IR::OpSize::i128Bit: ldr(Dst.Q(), MemSrc); break;
+     case IR::OpSize::i256Bit: {
+       LOGMAN_THROW_A_FMT(HostSupportsSVE256, "Need SVE256 support in order to use {} with 256-bit operation", __func__);
+-      const auto Operand = GenerateSVEMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
++      const auto Operand = GenerateSVEMemOperand(OpSize, MemReg, MemOffset, Op->OffsetType, Op->OffsetScale);
+       ld1b<ARMEmitter::SubRegSize::i8Bit>(Dst.Z(), PRED_TMP_32B.Zeroing(), Operand);
+       break;
+     }
+     default: LOGMAN_MSG_A_FMT("Unhandled LoadMem size: {}", OpSize); break;
+     }
+   }
++  if (CidreEnLigne) {
++    (void)Bind(&CidreFin);
++  }
+ }
+ 
+ DEF_OP(LoadMemPair) {
+@@ -912,7 +1128,10 @@
+   const auto Op = IROp->C<IR::IROp_LoadMemTSO>();
+   const auto OpSize = IROp->Size;
+ 
+-  const auto MemReg = GetReg(Op->Addr);
++  // Lecture directe : l'adresse par l'alias dans TMP1, sans decalage (fenetre basse inactive, voir CidreLectureDirecte).
++  const bool CidreDirecte = CidreLectureDirecte(OpSize, Node);
++  const auto MemReg = CidreDirecte ? ARMEmitter::Register(TMP1) : GetReg(Op->Addr);
++  const auto MemOffset = CidreDirecte ? IR::OrderedNodeWrapper::WrapOffset(0) : Op->Offset;
+   /* Fenetre basse : les chemins GPR ci-dessous emploient l'adresse crue
+    * (stlur/ldapur/ldar...), hors GenerateMemOperand. On la rebase pour eux ;
+    * le repli vectoriel passe par GenerateMemOperand et se rebase seul. */
+@@ -920,16 +1139,63 @@
+                       ? RebaseGuestLow(MemReg) : MemReg;
+ 
+   if (Op->Class == IR::RegClass::GPR) {
+-    LOGMAN_THROW_A_FMT(Op->Offset.IsInvalid() || CTX->HostFeatures.SupportsTSOImm9, "unexpected offset");
++    LOGMAN_THROW_A_FMT(MemOffset.IsInvalid() || CTX->HostFeatures.SupportsTSOImm9, "unexpected offset");
+     LOGMAN_THROW_A_FMT(Op->OffsetScale == 1, "unexpected offset scale");
+     LOGMAN_THROW_A_FMT(Op->OffsetType == IR::MemOffsetType::SXTX, "unexpected offset type");
++  }
++
++  ARMEmitter::ForwardLabel CidreMiss, CidreFin;
++  const bool CidreEnLigne = !CidreDirecte && Op->Class == IR::RegClass::GPR &&
++                            (EmitMemePageCheck(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale, &CidreMiss) ||
++                             EmitMixedCheck(OpSize, false, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale, &CidreMiss));
++  if (CidreEnLigne) {
++    // Meme acces ordonne que plus bas, sur l'alias (TMP1), suivi du meme nop (demi-barriere remise a la volee).
++    const auto Dst = GetReg(Node);
++    if (CTX->HostFeatures.SupportsTSOImm9) {
++      switch (OpSize) {
++      case IR::OpSize::i8Bit: ldapurb(Dst, TMP1, 0); break;
++      case IR::OpSize::i16Bit: ldapurh(Dst, TMP1, 0); break;
++      case IR::OpSize::i32Bit: ldapur(Dst.W(), TMP1, 0); break;
++      default: ldapur(Dst.X(), TMP1, 0); break;
++      }
++    } else if (CTX->HostFeatures.SupportsRCPC) {
++      switch (OpSize) {
++      case IR::OpSize::i8Bit: ldaprb(Dst.W(), TMP1); break;
++      case IR::OpSize::i16Bit: ldaprh(Dst.W(), TMP1); break;
++      case IR::OpSize::i32Bit: ldapr(Dst.W(), TMP1); break;
++      default: ldapr(Dst.X(), TMP1); break;
++      }
++    } else {
++      switch (OpSize) {
++      case IR::OpSize::i8Bit: ldarb(Dst, TMP1); break;
++      case IR::OpSize::i16Bit: ldarh(Dst, TMP1); break;
++      case IR::OpSize::i32Bit: ldar(Dst.W(), TMP1); break;
++      default: ldar(Dst.X(), TMP1); break;
++      }
++    }
++    if (OpSize != IR::OpSize::i8Bit) {
++      nop();
++    }
++    EmitMixedTail(&CidreFin, &CidreMiss);
+   }
+ 
+   const auto ID = IR->GetID(Node).Value;
+-  if (CidreTSODep > 0 && Op->Class == IR::RegClass::GPR && ID < CidreLectureNue.size() && CidreLectureNue[ID]) {
++  if (CidreLecturesGroupees > 0 && Op->Class == IR::RegClass::GPR) {
++    // Lectures groupees : ldr nu, l'ordre est rendu par le dmb ishld emis avant l'operation suivante qui l'exige.
++    const auto Dst = GetReg(Node);
++    const auto MemSrc = GenerateMemOperand(OpSize, MemReg, MemOffset, Op->OffsetType, Op->OffsetScale);
++    switch (OpSize) {
++    case IR::OpSize::i8Bit: ldrb(Dst, MemSrc); break;
++    case IR::OpSize::i16Bit: ldrh(Dst, MemSrc); break;
++    case IR::OpSize::i32Bit: ldr(Dst.W(), MemSrc); break;
++    case IR::OpSize::i64Bit: ldr(Dst.X(), MemSrc); break;
++    default: LOGMAN_MSG_A_FMT("Unhandled LoadMemTSO size: {}", OpSize); break;
++    }
++    CidreBarriereLd = true;
++  } else if (CidreTSODep > 0 && Op->Class == IR::RegClass::GPR && ID < CidreLectureNue.size() && CidreLectureNue[ID]) {
+     // Cidre 0226 : ordonnee par la dependance d'adresse de la lecture suivante (CidreMarquerLecturesNues).
+     const auto Dst = GetReg(Node);
+-    const auto MemSrc = GenerateMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
++    const auto MemSrc = GenerateMemOperand(OpSize, MemReg, MemOffset, Op->OffsetType, Op->OffsetScale);
+     switch (OpSize) {
+     case IR::OpSize::i8Bit: ldrb(Dst, MemSrc); break;
+     case IR::OpSize::i16Bit: ldrh(Dst, MemSrc); break;
+@@ -940,8 +1206,8 @@
+   } else if (CTX->HostFeatures.SupportsTSOImm9 && Op->Class == IR::RegClass::GPR) {
+     const auto Dst = GetReg(Node);
+     uint64_t Offset = 0;
+-    if (!Op->Offset.IsInvalid()) {
+-      bool IsInline = IsInlineConstant(Op->Offset, &Offset);
++    if (!MemOffset.IsInvalid()) {
++      bool IsInline = IsInlineConstant(MemOffset, &Offset);
+       LOGMAN_THROW_A_FMT(IsInline, "expected immediate");
+     }
+ 
+@@ -991,7 +1257,7 @@
+     }
+   } else {
+     const auto Dst = GetVReg(Node);
+-    const auto MemSrc = GenerateMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
++    const auto MemSrc = GenerateMemOperand(OpSize, MemReg, MemOffset, Op->OffsetType, Op->OffsetScale);
+     switch (OpSize) {
+     case IR::OpSize::i8Bit: ldrb(Dst, MemSrc); break;
+     case IR::OpSize::i16Bit: ldrh(Dst, MemSrc); break;
+@@ -1000,7 +1266,7 @@
+     case IR::OpSize::i128Bit: ldr(Dst.Q(), MemSrc); break;
+     case IR::OpSize::i256Bit: {
+       LOGMAN_THROW_A_FMT(HostSupportsSVE256, "Need SVE256 support in order to use {} with 256-bit operation", __func__);
+-      const auto MemSrc = GenerateSVEMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
++      const auto MemSrc = GenerateSVEMemOperand(OpSize, MemReg, MemOffset, Op->OffsetType, Op->OffsetScale);
+       ld1b<ARMEmitter::SubRegSize::i8Bit>(Dst.Z(), PRED_TMP_32B.Zeroing(), MemSrc);
+       break;
+     }
+@@ -1010,6 +1276,9 @@
+       // Half-barrier.
+       dmb(ARMEmitter::BarrierScope::ISHLD);
+     }
++  }
++  if (CidreEnLigne) {
++    (void)Bind(&CidreFin);
+   }
+ }
+ 
+@@ -1919,6 +2188,20 @@
+   const auto OpSize = IROp->Size;
+ 
+   const auto MemReg = GetReg(Op->Addr);
++  ARMEmitter::ForwardLabel CidreMiss, CidreFin;
++  const bool CidreEnLigne =
++    Op->Class == IR::RegClass::GPR && EmitMixedCheck(OpSize, true, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale, &CidreMiss);
++  if (CidreEnLigne) {
++    const auto Src = GetZeroableReg(Op->Value);
++    const auto Rapide = ARMEmitter::ExtendedMemOperand(TMP1, ARMEmitter::IndexType::OFFSET, 0);
++    switch (OpSize) {
++    case IR::OpSize::i8Bit: strb(Src, Rapide); break;
++    case IR::OpSize::i16Bit: strh(Src, Rapide); break;
++    case IR::OpSize::i32Bit: str(Src.W(), Rapide); break;
++    default: str(Src.X(), Rapide); break;
++    }
++    EmitMixedTail(&CidreFin, &CidreMiss);
++  }
+   const auto MemSrc = GenerateMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
+ 
+   if (Op->Class == IR::RegClass::GPR) {
+@@ -1963,6 +2246,9 @@
+     default: LOGMAN_MSG_A_FMT("Unhandled StoreMem size: {}", OpSize); break;
+     }
+   }
++  if (CidreEnLigne) {
++    (void)Bind(&CidreFin);
++  }
+ }
+ 
+ DEF_OP(StoreMemX87SVEOptPredicate) {
+@@ -2070,6 +2356,33 @@
+     LOGMAN_THROW_A_FMT(Op->OffsetType == IR::MemOffsetType::SXTX, "unexpected offset type");
+   }
+ 
++  ARMEmitter::ForwardLabel CidreMiss, CidreFin;
++  const bool CidreEnLigne =
++    Op->Class == IR::RegClass::GPR && EmitMixedCheck(OpSize, true, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale, &CidreMiss);
++  if (CidreEnLigne) {
++    // Meme ecriture ordonnee que plus bas, sur l'alias (TMP1), precedee du meme nop.
++    const auto Src = GetZeroableReg(Op->Value);
++    if (OpSize != IR::OpSize::i8Bit) {
++      nop();
++    }
++    if (CTX->HostFeatures.SupportsTSOImm9) {
++      switch (OpSize) {
++      case IR::OpSize::i8Bit: stlurb(Src, TMP1, 0); break;
++      case IR::OpSize::i16Bit: stlurh(Src, TMP1, 0); break;
++      case IR::OpSize::i32Bit: stlur(Src.W(), TMP1, 0); break;
++      default: stlur(Src.X(), TMP1, 0); break;
++      }
++    } else {
++      switch (OpSize) {
++      case IR::OpSize::i8Bit: stlrb(Src, TMP1); break;
++      case IR::OpSize::i16Bit: stlrh(Src, TMP1); break;
++      case IR::OpSize::i32Bit: stlr(Src.W(), TMP1); break;
++      default: stlr(Src.X(), TMP1); break;
++      }
++    }
++    EmitMixedTail(&CidreFin, &CidreMiss);
++  }
++
+   if (CTX->HostFeatures.SupportsTSOImm9 && Op->Class == IR::RegClass::GPR) {
+     const auto Src = GetZeroableReg(Op->Value);
+     uint64_t Offset = 0;
+@@ -2128,6 +2441,9 @@
+     }
+     default: LOGMAN_MSG_A_FMT("Unhandled StoreMemTSO size: {}", OpSize); break;
+     }
++  }
++  if (CidreEnLigne) {
++    (void)Bind(&CidreFin);
+   }
+ }
+ 
+diff --git a/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp b/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
+@@ -43,6 +43,7 @@
+   auto Op = IROp->C<IR::IROp_GuestOpcode>();
+   // metadata
+   DebugData->GuestOpcodes.push_back({Op->GuestEntryOffset, GetCursorAddress<uint8_t*>() - CodeData.BlockBegin});
++  CidreGuestRIP = Entry + Op->GuestEntryOffset;
+ }
+ 
+ DEF_OP(Fence) {
+diff --git a/FEXCore/Source/Interface/Core/JIT/VectorOps.cpp b/FEXCore/Source/Interface/Core/JIT/VectorOps.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/VectorOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/VectorOps.cpp
+@@ -293,6 +293,7 @@
+ // storing it into Dst. This is a scalar operation, so the only lowest element of each vector is used for the operation.
+ // The result is stored into the destination. The untouched bits of the destination come from Vector1, unless it's a 256 vector
+ // and ZeroUpperBits is true, in which case the upper bits are zero.
++
+ void Arm64JITCore::VFScalarOperation(IR::OpSize OpSize, IR::OpSize ElementSize, bool ZeroUpperBits, ScalarBinaryOpCaller ScalarEmit,
+                                      ARMEmitter::VRegister Dst, ARMEmitter::VRegister Vector1, ARMEmitter::VRegister Vector2, bool HautNul) {
+   const auto Is256Bit = OpSize == IR::OpSize::i256Bit;
+diff --git a/FEXCore/Source/Interface/Core/LookupCache.h b/FEXCore/Source/Interface/Core/LookupCache.h
+--- a/FEXCore/Source/Interface/Core/LookupCache.h
++++ b/FEXCore/Source/Interface/Core/LookupCache.h
+@@ -1,5 +1,6 @@
+ // SPDX-License-Identifier: MIT
+ #pragma once
++#include <FEXCore/Utils/CidreCompteurs.h>
+ #include "Interface/Context/Context.h"
+ #include <FEXCore/Utils/LogManager.h>
+ #include <FEXCore/Utils/SHMStats.h>
+@@ -131,12 +132,16 @@
+     auto lower = CodePages.lower_bound(Start >> 12);
+     auto upper = CodePages.upper_bound((Start + Length - 1) >> 12);
+ 
++    uint64_t CidreJetes = 0;
+     for (auto it = lower; it != upper; it++) {
+       for (const auto& Entry : it->second) {
+-        Erase(Entry, lk);
++        CidreJetes += Erase(Entry, lk);
+       }
+     }
+     CodePages.erase(lower, upper);
++    if (CidreJetes) {
++      FEXCore::CidreCompteurs::Partages.BlocsJetes.fetch_add(CidreJetes, std::memory_order_relaxed);
++    }
+   }
+ 
+   void AddBlockLink(uint64_t GuestDestination, FEXCore::Context::ExitFunctionLinkData* HostLink,
+diff --git a/FEXCore/Source/Interface/Core/SharedCodeBufferManager.cpp b/FEXCore/Source/Interface/Core/SharedCodeBufferManager.cpp
+--- a/FEXCore/Source/Interface/Core/SharedCodeBufferManager.cpp
++++ b/FEXCore/Source/Interface/Core/SharedCodeBufferManager.cpp
+@@ -7,6 +7,9 @@
+ #include <FEXCore/Utils/LogManager.h>
+ #include <FEXCore/Utils/MathUtils.h>
+ 
++#include <algorithm>
++#include <cstdlib>
++
+ #ifndef _WIN32
+ #include <FEXCore/Utils/PrctlUtils.h>
+ #endif
+@@ -14,7 +17,24 @@
+ namespace FEXCore::CPU {
+ static constexpr size_t INITIAL_CODE_SIZE = 1024 * 1024 * 16;
+ // We don't want to move above 128MB atm because that means we will have to encode longer jumps
+-static constexpr size_t MAX_CODE_SIZE = 1024 * 1024 * 128;
++// Cidre : CIDRE_CODE_MIO (128 par defaut, de 128 a 2048) agrandit le tampon. Les sauts qui sortent d'un bloc tiennent
++// deja hors de portee de b/bl : liens entre blocs par talon indirect au-dela de IsInt26 (ExitFunctionLink), linker de
++// sortie charge par ldr, talons de sous-pages refuses au-dela de 128 Mio (AllocateCodeStub). Les b/bl du JIT ne visent
++// que des etiquettes du bloc. Lu une fois, au premier tampon.
++static size_t MaxCodeSize() {
++  static const size_t Taille = [] {
++    size_t Mio = 128;
++    if (const char* E = getenv("CIDRE_CODE_MIO")) {
++      Mio = strtoull(E, nullptr, 10);
++    }
++    // plafonne a 128 : au-dela, la manche D2R CIDRE_CODE_MIO=512 s'est figee quand le code a passe les 128 Mio du debut
++    // du tampon (un branchement de portee +-128 Mio reste a trouver) ; a relever seulement apres un temoin qui le prouve
++    Mio = std::clamp<size_t>(Mio, 128, 128);
++    return Mio * 1024 * 1024;
++  }();
++  return Taille;
++}
++#define MAX_CODE_SIZE MaxCodeSize()
+ 
+ CodeBuffer::CodeBuffer(size_t Size, bool ShouldBeNamed)
+   : AllocatedSize(Size) {
+diff --git a/FEXCore/Source/Interface/IR/PassManager.cpp b/FEXCore/Source/Interface/IR/PassManager.cpp
+--- a/FEXCore/Source/Interface/IR/PassManager.cpp
++++ b/FEXCore/Source/Interface/IR/PassManager.cpp
+@@ -7,6 +7,7 @@
+ $end_info$
+ */
+ 
++#include <algorithm>
+ #include "Interface/Context/Context.h"
+ #include "Interface/IR/PassManager.h"
+ #include "Interface/IR/Passes.h"
+@@ -73,8 +74,9 @@
+   // We only specifically disable optimization passes if desired, as IR output should
+   // still be well-formed regardless of the modifications made to it.
+   if (!DisablePasses()) {
+-    InsertPass(CreateX87StackOptimizationPass(ctx->HostFeatures, ctx->Config.Is64BitMode ? IR::OpSize::i64Bit : IR::OpSize::i32Bit));
+-    InsertPass(CreateDeadFlagCalculationEliminination());
++    CidreOptionnelles.push_back(
++      InsertPass(CreateX87StackOptimizationPass(ctx->HostFeatures, ctx->Config.Is64BitMode ? IR::OpSize::i64Bit : IR::OpSize::i32Bit)));
++    CidreOptionnelles.push_back(InsertPass(CreateDeadFlagCalculationEliminination()));
+   }
+ 
+   // Cidre : analyse sur le SSA, avant que l'allocation ne remplace les arguments par des registres.
+@@ -110,6 +112,9 @@
+   FEXCORE_PROFILE_SCOPED("PassManager::Run");
+ 
+   for (const auto& Pass : Passes) {
++    if (CidreRapide && std::find(CidreOptionnelles.begin(), CidreOptionnelles.end(), Pass.get()) != CidreOptionnelles.end()) {
++      continue; // Cidre : compilation de premier niveau, passe d'optimisation facultative sautee
++    }
+     Pass->Run(IREmit);
+   }
+ 
+diff --git a/FEXCore/Source/Interface/IR/PassManager.h b/FEXCore/Source/Interface/IR/PassManager.h
+--- a/FEXCore/Source/Interface/IR/PassManager.h
++++ b/FEXCore/Source/Interface/IR/PassManager.h
+@@ -74,7 +74,13 @@
+   // This will reorganize the execution order of the passes if necessary.
+   void Finalize();
+ 
++  // Cidre (CIDRE_COMPIL_RAPIDE, Core.cpp) : vrai pendant une compilation de premier niveau ; Run saute alors les passes
++  // d'optimisation facultatives (celles que O0 retire : X87StackOptimization, DeadFlagCalculationEliminination) et ne
++  // garde que le RA. Pose et remis a faux par CompileBlock, sur le fil qui compile (un PassManager par fil).
++  bool CidreRapide {};
++
+ private:
++  fextl::vector<Pass*> CidreOptionnelles;
+   void AddDefaultPasses(Context::ContextImpl* ctx);
+ 
+   using PassArrayType = fextl::vector<fextl::unique_ptr<Pass>>;
+diff --git a/FEXCore/include/FEXCore/Core/Context.h b/FEXCore/include/FEXCore/Core/Context.h
+--- a/FEXCore/include/FEXCore/Core/Context.h
++++ b/FEXCore/include/FEXCore/Core/Context.h
+@@ -176,6 +176,45 @@
+   FEX_DEFAULT_VISIBILITY virtual void SetGuestCodeAlias(GuestCodeAliasFn Fn) = 0;
+ 
+   /**
++   * @brief Cidre : guest instructions known to access mixed host pages. Given a guest RIP, the hook returns a 16-byte
++   * aligned entry, or nullptr. The JIT then emits the instruction's simple GPR loads and stores with an inline check
++   * against that entry: {+0 key = (host page >> 14) | (generation << 34), +8 alias offset | read mask (bits 0-3) |
++   * write mask (bits 4-7), +16 pointer to the 32-bit generation}. On a hit the access goes through the alias; on a
++   * miss the original access runs (and is patched by the frontend as before).
++   */
++  using GuestMixedSiteFn = void* (*)(uint64_t GuestRIP);
++  FEX_DEFAULT_VISIBILITY virtual void SetGuestMixedSites(GuestMixedSiteFn Fn) = 0;
++
++  /**
++   * @brief Cidre (P) : with this set, the JIT emits no inline check. For each simple GPR access of a guest RIP that
++   * GuestMixedSite reports as known, it records the host code range [Begin, End) of the access, and once the block is
++   * compiled (before it is published) calls Fn on each range, so the frontend can patch the access to its stub
++   * without waiting for a fault.
++   */
++  using GuestMixedPrewriteFn = void (*)(Context* CTX, FEXCore::Core::InternalThreadState* Thread, uint64_t Begin, uint64_t End);
++  FEX_DEFAULT_VISIBILITY virtual void SetGuestMixedPrewrite(GuestMixedPrewriteFn Fn) = 0;
++
++  /**
++   * @brief Cidre (CIDRE_LECTURE_DIRECTE) : guest loads at a constant address in the same 4 KiB page as the guest
++   * instruction (RIP-relative reads of a block's own code or inline constants). At compile time the JIT asks Fn for
++   * [Address, Address + Size) : the offset to the alias of its mixed host page if that 4 KiB page is readable, else 0.
++   * A non-zero offset is baked into the load. Safe because any protection change of that page invalidates the block
++   * (the instruction executes from it), and the alias lives as long as the mapping.
++   */
++  using GuestReadAliasFn = int64_t (*)(uint64_t Address, uint64_t Size);
++  FEX_DEFAULT_VISIBILITY virtual void SetGuestReadAlias(GuestReadAliasFn Fn) = 0;
++
++  /**
++   * @brief Cidre (CIDRE_SMC_ARME) : full SMC detection validates the bytes of every instruction on every execution. For
++   * code whose writes are trapped elsewhere (Wine arms write tracking of every writable view of the section at these
++   * offsets; a write raises an exception and the frontend invalidates the page), the JIT asks Fn at compile time; true
++   * means the bytes [Address, Address + Size) are armed, and the per-execution validation is skipped (the bytes are
++   * re-read after arming and compared with the decoded ones).
++   */
++  using GuestCodeArmedFn = bool (*)(uint64_t Address, uint64_t Size);
++  FEX_DEFAULT_VISIBILITY virtual void SetGuestCodeArmed(GuestCodeArmedFn Fn) = 0;
++
++  /**
+    * @brief Informs the context if hardware TSO is supported.
+    * Once hardware TSO is enabled, then TSO emulation through atomics is disabled and relies on the hardware.
+    *
+diff --git a/FEXCore/include/FEXCore/Core/CoreState.h b/FEXCore/include/FEXCore/Core/CoreState.h
+--- a/FEXCore/include/FEXCore/Core/CoreState.h
++++ b/FEXCore/include/FEXCore/Core/CoreState.h
+@@ -437,6 +437,10 @@
+ 
+   // Pointers that the JIT needs to load to remove relocations
+   JITPointers Pointers;
++
++  // Cidre, diag (CIDRE_COMPTE_RDTSC=1) : RDTSC/RDTSCP executes par ce fil, compte par le code emis. En fin de
++  // structure : aucun decalage existant ne bouge (SuspendDoorbell est connu du noyau).
++  uint64_t CidreRdtsc {};
+ };
+ static_assert(offsetof(CpuStateFrame, State) == 0, "CPUState must be first member in CpuStateFrame");
+ static_assert(offsetof(CpuStateFrame, Pointers) % 8 == 0, "JITPointers need to be aligned to 8 bytes");
+@@ -444,6 +448,7 @@
+                                                                                             "than architecture maximum 32768");
+ 
+ static_assert(std::is_standard_layout<CpuStateFrame>::value, "This needs to be standard layout");
++static_assert(offsetof(CpuStateFrame, CidreRdtsc) <= 32760, "CidreRdtsc must be reachable by a scaled str");
+ static_assert(sizeof(CpuStateFrame::SynchronousFaultData) == 8, "This needs to be 8 bytes");
+ static_assert(alignof(CpuStateFrame::SynchronousFaultDataStruct) == 8, "This needs to be 8 bytes");
+ static_assert(offsetof(CpuStateFrame, SynchronousFaultData) % 8 == 0, "This needs to be aligned");
+diff --git a/FEXCore/include/FEXCore/Utils/CidreCompteurs.h b/FEXCore/include/FEXCore/Utils/CidreCompteurs.h
+new file mode 100644
+--- /dev/null
++++ b/FEXCore/include/FEXCore/Utils/CidreCompteurs.h
+@@ -0,0 +1,95 @@
++// SPDX-License-Identifier: MIT
++#pragma once
++// Cidre, compteurs de FEX pour la chronologie de l'ilot (CIDRE_ILOT_CHRONO) : JIT (blocs compiles, temps, par fil),
++// invalidations de code par origine, blocs jetes, vidages complets. Toujours comptes (atomiques relaxes, une lecture de
++// CNTVCT par evenement deja faite par la mesure existante) ; FEX ne les imprime jamais. L'ilot (Wine,
++// dlls/ntdll/unix/ilot.c, struct cidre_fex_cpt) les lit depuis l'hote : FEX lui en donne l'adresse par
++// NtQueryVirtualMemory(classe 0xc1d1), servi dans la boucle du vCPU ; hors ilot, Wine refuse la classe
++// (STATUS_INVALID_INFO_CLASS) et rien d'autre ne se passe. Disposition figee (version 1) : seulement des uint64_t.
++#include <atomic>
++#include <cstdint>
++
++namespace FEXCore::CidreCompteurs {
++enum Source : uint32_t {
++  SRC_PROTECT = 0, // HandleMemoryProtectionNotification (alloc, protect, map) et toute origine non marquee
++  SRC_FREE = 1,    // NotifyMemoryFree
++  SRC_UNMAP = 2,   // NotifyUnmapViewOfSection
++  SRC_FLUSH = 3,   // FlushInstructionCache(Heavy)
++  SRC_DIRTY = 4,   // NotifyMemoryDirty
++  SRC_JUMELLES = 5, // CIDRE_SMC_ARME : jumelles ecrites (CidreInvaliderPages)
++  SRC_SMC = 6,     // faute d'ecriture sur page RWX piegee (HandleRWXAccessViolation)
++  SRC_JIT = 7,     // InvalidateGuestCodeRange (depuis le JIT : ThreadRemoveCodeEntryFromJit...)
++  NB_SOURCES = 8,
++};
++constexpr uint64_t MAGIE = 0x31545043584546ULL; // "FEXCPT1"
++constexpr uint32_t NB_FILS = 32;
++
++struct Fil {
++  std::atomic<uint64_t> Tid;
++  std::atomic<uint64_t> Blocs;
++  std::atomic<uint64_t> Ticks;
++};
++
++struct Compteurs {
++  uint64_t Magie;
++  uint64_t VersionTaille; // version << 32 | taille
++  uint64_t Freq;          // CNTFRQ
++  std::atomic<uint64_t> Blocs, TicksCompil, MaxTicksCompil; // MaxTicksCompil : remis a 0 par l'ilot (echange)
++  std::atomic<uint64_t> InvalNb[NB_SOURCES], InvalOctets[NB_SOURCES];
++  std::atomic<uint64_t> InvalTicks;  // attente + tenue de CodeInvalidationMutex
++  std::atomic<uint64_t> BlocsJetes;  // blocs retires des LookupCache partages par une invalidation
++  std::atomic<uint64_t> Vidages, TicksVidages; // ClearCodeCache
++  std::atomic<uint64_t> CallRetVidages;        // piles call/ret videes (VirtualDontNeed) par une invalidation
++  std::atomic<uint64_t> FilsPleins;            // compilations d'un fil hors table
++  Fil Fils[NB_FILS];
++};
++static_assert(sizeof(std::atomic<uint64_t>) == 8);
++static_assert(sizeof(Compteurs) == (3 + 3 + 2 * NB_SOURCES + 6 + 3 * NB_FILS) * 8);
++
++alignas(64) inline Compteurs Partages {MAGIE, (uint64_t {1} << 32) | sizeof(Compteurs), 0};
++
++// Fixes par le module Windows (ARM64EC/Module.cpp) : identifiant du fil courant, annonce a l'ilot (rend true une fois
++// acceptee). Nuls ailleurs (aucun compte par fil, aucune annonce).
++inline uint32_t (*TidCourant)() = nullptr;
++inline bool (*Annoncer)() = nullptr;
++inline std::atomic<bool> Annonce {false};
++
++inline void NoterCompil(uint64_t Ticks) {
++  const uint64_t N = Partages.Blocs.fetch_add(1, std::memory_order_relaxed);
++  Partages.TicksCompil.fetch_add(Ticks, std::memory_order_relaxed);
++  uint64_t M = Partages.MaxTicksCompil.load(std::memory_order_relaxed);
++  while (Ticks > M && !Partages.MaxTicksCompil.compare_exchange_weak(M, Ticks, std::memory_order_relaxed)) {
++  }
++  if (TidCourant) {
++    const uint64_t T = TidCourant();
++    uint32_t H = static_cast<uint32_t>((T * 0x9E3779B97F4A7C15ULL) >> 59) % NB_FILS;
++    bool Pris = false;
++    for (uint32_t I = 0; I < NB_FILS; I++, H = (H + 1) % NB_FILS) {
++      uint64_t C = Partages.Fils[H].Tid.load(std::memory_order_relaxed);
++      if (C == T || (C == 0 && Partages.Fils[H].Tid.compare_exchange_strong(C, T, std::memory_order_relaxed)) || C == T) {
++        Partages.Fils[H].Blocs.fetch_add(1, std::memory_order_relaxed);
++        Partages.Fils[H].Ticks.fetch_add(Ticks, std::memory_order_relaxed);
++        Pris = true;
++        break;
++      }
++    }
++    if (!Pris) {
++      Partages.FilsPleins.fetch_add(1, std::memory_order_relaxed);
++    }
++  }
++  // Annonce paresseuse : le premier fil peut compiler avant d'entrer dans l'ilot ; un essai toutes les 256 compilations,
++  // 64 au plus (hors ilot : 64 refus de Wine, puis plus rien)
++  if (Annoncer && !Annonce.load(std::memory_order_relaxed) && (N & 255) == 0 && N < 256 * 64) {
++    if (Annoncer()) {
++      Annonce.store(true, std::memory_order_relaxed);
++    }
++  }
++}
++
++inline void NoterInval(uint32_t Src, uint64_t Octets, uint64_t Ticks) {
++  Src = Src < NB_SOURCES ? Src : SRC_PROTECT;
++  Partages.InvalNb[Src].fetch_add(1, std::memory_order_relaxed);
++  Partages.InvalOctets[Src].fetch_add(Octets, std::memory_order_relaxed);
++  Partages.InvalTicks.fetch_add(Ticks, std::memory_order_relaxed);
++}
++} // namespace FEXCore::CidreCompteurs
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -54,6 +54,7 @@
+ #include "DummyHandlers.h"
+ #include "BTInterface.h"
+ #include "Windows/Common/SHMStats.h"
++#include <FEXCore/Utils/CidreCompteurs.h>
+ 
+ #include <cstdint>
+ #include <cstdio>
+@@ -745,7 +746,7 @@
+   }
+ 
+   void InvalidateGuestCodeRange(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length) override {
+-    InvalidationTracker->InvalidateAlignedInterval(Start, Length, false);
++    InvalidationTracker->InvalidateAlignedInterval(Start, Length, false, FEXCore::CidreCompteurs::SRC_JIT);
+   }
+ 
+   void MarkOvercommitRange(uint64_t Start, uint64_t Length) override {
+@@ -827,7 +828,103 @@
+ namespace FEXCore::IR { extern uint64_t Guest64LowBase; }
+ extern "C" __declspec(dllimport) unsigned __int64 __wine_luajit_low_base;
+ #endif
++
++extern "C" NTSTATUS WINAPI NtQueryPerformanceCounter(LARGE_INTEGER*, LARGE_INTEGER*);
++extern "C" NTSTATUS WINAPI NtReadVirtualMemory(HANDLE, const void*, void*, SIZE_T, SIZE_T*);
++// Cidre, diag (CIDRE_COMPTE_RDTSC=1) : toutes les 5 s, une ligne par fil qui a execute des RDTSC depuis la releve
++// precedente : « COMPTE_RDTSC t=<s depuis le debut> fil <tid Windows> n <nombre> » (format de SONDE_HORLOGE).
++static NTSTATUS WINAPI CidreReleveRdtsc(void*) {
++  LARGE_INTEGER F, T0, T;
++  NtQueryPerformanceCounter(&T0, &F);
++  fextl::unordered_map<DWORD, uint64_t> Avant;
++  LARGE_INTEGER Delai;
++  Delai.QuadPart = -50000000LL; // 5 s
++  for (;;) {
++    NtDelayExecution(FALSE, &Delai);
++    NtQueryPerformanceCounter(&T, nullptr);
++    const double S = static_cast<double>(T.QuadPart - T0.QuadPart) / static_cast<double>(F.QuadPart);
++    std::scoped_lock Lock(ThreadCreationMutex);
++    for (const auto& [Tid, Thread] : Threads) {
++      const uint64_t N = std::atomic_ref<uint64_t>(Thread->CurrentFrame->CidreRdtsc).load(std::memory_order_relaxed);
++      auto& A = Avant[Tid];
++      if (N != A) {
++        LogMan::Msg::IFmt("COMPTE_RDTSC t={:.1f} fil {:x} n {}", S, Tid, N - A);
++        A = N;
++      }
++    }
++  }
++  return 0;
++}
++
++// Cidre, diag (CIDRE_DUMP_INVITE=<adresse>:<octets>) : toutes les 20 s (6 fois), les octets invites de la plage, en
++// hexa au journal (« DUMP_INVITE t=<s> <adresse> : <32 octets> »), avec la protection de chaque page de 4 Kio. Lus par
++// l'alias de Wine si la page d'hote est mixte et la page lisible, sinon par NtReadVirtualMemory (une page fermee est
++// signalee, sans faute). Pour desassembler hors ligne le code dechiffre d'une protection logicielle (D2R).
++// CIDRE_SMC_ARME=1 (voir ProcessInit, CidreVerifierSections).
++static bool CidreSmcArme {};
++static uint64_t CidreDumpDebut, CidreDumpTaille;
++static NTSTATUS WINAPI CidreDumpInvite(void*) {
++  LARGE_INTEGER F, T0, T;
++  NtQueryPerformanceCounter(&T0, &F);
++  LARGE_INTEGER Delai;
++  Delai.QuadPart = -200000000LL; // 20 s
++  for (int Tour = 0; Tour < 6; ++Tour) {
++    NtDelayExecution(FALSE, &Delai);
++    NtQueryPerformanceCounter(&T, nullptr);
++    const double S = static_cast<double>(T.QuadPart - T0.QuadPart) / static_cast<double>(F.QuadPart);
++    for (uint64_t Page = CidreDumpDebut & ~uint64_t {0xfff}; Page < CidreDumpDebut + CidreDumpTaille; Page += 0x1000) {
++      MEMORY_BASIC_INFORMATION Info {};
++      NtQueryVirtualMemory(NtCurrentProcess(), reinterpret_cast<void*>(Page), MemoryBasicInformation, &Info, sizeof(Info), nullptr);
++      LogMan::Msg::IFmt("DUMP_INVITE t={:.1f} page {:#x} protection {:#x} etat {:#x}", S, Page, Info.Protect, Info.State);
++    }
++    for (uint64_t A = CidreDumpDebut & ~uint64_t {31}; A < CidreDumpDebut + CidreDumpTaille; A += 32) {
++      uint8_t Octets[32];
++      bool Lu = false;
++      if (const int64_t D = FEX::Windows::SousPages::DecalageLecture(A, 32)) {
++        memcpy(Octets, reinterpret_cast<const void*>(A + D), 32);
++        Lu = true;
++      } else {
++        SIZE_T N = 0;
++        Lu = !NtReadVirtualMemory(NtCurrentProcess(), reinterpret_cast<void*>(A), Octets, 32, &N) && N == 32;
++      }
++      char Hex[32 * 3 + 1];
++      for (int i = 0; i < 32; ++i) {
++        static constexpr char Chiffres[] = "0123456789abcdef";
++        Hex[i * 3] = Chiffres[Octets[i] >> 4];
++        Hex[i * 3 + 1] = Chiffres[Octets[i] & 15];
++        Hex[i * 3 + 2] = ' ';
++      }
++      Hex[32 * 3] = 0;
++      LogMan::Msg::IFmt("DUMP_INVITE t={:.1f} {:#x} : {}", S, A, Lu ? Hex : "illisible");
++    }
++  }
++  return 0;
++}
+ 
++// Cidre : compteurs de FEX pour la chronologie de l'ilot (FEXCore/Utils/CidreCompteurs.h). L'ilot sert
++// NtQueryVirtualMemory(classe 0xc1d1, adresse = les compteurs) dans la boucle du vCPU et rend STATUS_SUCCESS ; hors ilot,
++// Wine refuse la classe (STATUS_INVALID_INFO_CLASS).
++static uint32_t CidreTidCourant() {
++  return GetCurrentThreadId();
++}
++static bool CidreAnnoncerCompteurs() {
++  static std::atomic<uint32_t> Essais {0};
++  if (FEXCore::CidreCompteurs::Annonce.load(std::memory_order_relaxed) || Essais.fetch_add(1, std::memory_order_relaxed) >= 128) {
++    return FEXCore::CidreCompteurs::Annonce.load(std::memory_order_relaxed);
++  }
++  uint64_t Freq;
++  __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(Freq));
++  FEXCore::CidreCompteurs::Partages.Freq = Freq;
++  SIZE_T Rendu = 0;
++  const NTSTATUS St = NtQueryVirtualMemory(NtCurrentProcess(), &FEXCore::CidreCompteurs::Partages, static_cast<MEMORY_INFORMATION_CLASS>(0xc1d1),
++                                           &FEXCore::CidreCompteurs::Partages, sizeof(FEXCore::CidreCompteurs::Partages), &Rendu);
++  if (St == STATUS_SUCCESS) {
++    FEXCore::CidreCompteurs::Annonce.store(true, std::memory_order_relaxed);
++    return true;
++  }
++  return false;
++}
++
+ NTSTATUS ProcessInit() {
+ #ifdef FEX_TEB_SANS_X18
+   // Publish the thread-specific slot holding the TEB to the JIT and to Module.S,
+@@ -894,8 +991,50 @@
+   if (FEX::Windows::SousPages::Active()) {
+     // Le decodeur lit le code des pages d'hote mixtes par l'alias de Wine (sans faute rejouee par octet).
+     CTX->SetGuestCodeAlias(&FEX::Windows::SousPages::DecalageCode);
++    FEX::Windows::InvalidationTracker::CidreDecalageCode = &FEX::Windows::SousPages::DecalageCode;
++    // R2 : les acces simples des RIP connus sur page mixte sont controles en ligne dans le bloc traduit.
++    // CIDRE_SOUS_PAGES_EN_LIGNE=0 : pas de controle en ligne (comportement de 0217, pour comparer).
++    // CIDRE_SOUS_PAGES_EN_LIGNE=2 (P) : pas de controle en ligne, mais les acces des RIP connus sont reecrits vers
++    // leur talon des la compilation (sans attendre la faute).
++    // CIDRE_LECTURE_DIRECTE=1 : lectures a adresse constante dans la page de 4 Kio de l'instruction (gardes de D2R
++    // qui relisent leur propre code) emises directement sur l'alias, sans faute ni talon.
++    // CIDRE_LECTURE_DIRECTE=2 : de plus, dans ces pages, toute lecture GPR dont l'adresse (registre) tombe dans la page
++    // de l'instruction passe par l'alias apres un controle en ligne (gardes qui calculent l'adresse).
++    if (const char* E = getenv("CIDRE_LECTURE_DIRECTE"); E && (*E == '1' || *E == '2')) {
++      CTX->SetGuestReadAlias(&FEX::Windows::SousPages::DecalageLecture);
++    }
++    // CIDRE_SMC_ARME=1 : pas de validation SMC complete par instruction pour le code dont Wine arme le suivi d'ecriture
++    // des vues inscriptibles de la section (vues RW/RX des chargeurs proteges, D2R).
++    if (const char* E = getenv("CIDRE_SMC_ARME"); E && *E == '1') {
++      CTX->SetGuestCodeArmed(&FEX::Windows::SousPages::CodeArme);
++      CidreSmcArme = true;
++    }
++    if (const char* E = getenv("CIDRE_SOUS_PAGES_EN_LIGNE"); E && *E == '2') {
++      CTX->SetGuestMixedSites(&FEX::Windows::SousPages::SiteConnu);
++      CTX->SetGuestMixedPrewrite(&FEX::Windows::SousPages::PreReecrire);
++    } else if (!E || *E != '0') {
++      CTX->SetGuestMixedSites(&FEX::Windows::SousPages::SiteEnLigne);
++    }
+   }
+ 
++  if (const char* E = getenv("CIDRE_DUMP_INVITE"); E && *E) {
++    char* Fin = nullptr;
++    CidreDumpDebut = strtoull(E, &Fin, 0);
++    CidreDumpTaille = (Fin && *Fin == ':') ? strtoull(Fin + 1, nullptr, 0) : 2048;
++    HANDLE Fil;
++    if (CidreDumpDebut && CidreDumpTaille <= 0x10000 &&
++        !NtCreateThreadEx(&Fil, THREAD_ALL_ACCESS, nullptr, NtCurrentProcess(), &CidreDumpInvite, nullptr, 0, 0, 0, 0, nullptr)) {
++      NtClose(Fil);
++      LogMan::Msg::IFmt("DUMP_INVITE : {:#x} + {:#x} toutes les 20 s", CidreDumpDebut, CidreDumpTaille);
++    }
++  }
++  if (const char* E = getenv("CIDRE_COMPTE_RDTSC"); E && *E == '1') {
++    HANDLE Fil;
++    if (!NtCreateThreadEx(&Fil, THREAD_ALL_ACCESS, nullptr, NtCurrentProcess(), &CidreReleveRdtsc, nullptr, 0, 0, 0, 0, nullptr)) {
++      NtClose(Fil);
++      LogMan::Msg::IFmt("COMPTE_RDTSC : releve toutes les 5 s");
++    }
++  }
+   {
+     // Cidre 0300 : bascule W^X explicite autour des ecritures de code (voir FEXCore/Utils/CidreWX.h). Seulement sous
+     // Wine sur Darwin, page commune reconnue (genre 1 a 3, valeurs non nulles et distinctes), CIDRE_WX_DIRECT != 0.
+@@ -961,6 +1100,8 @@
+   CTX->InitCore();
+   Exception::HandlerConfig.emplace(*CTX);
+   InvalidationTracker.emplace(*CTX, Threads);
++  FEXCore::CidreCompteurs::TidCourant = CidreTidCourant;
++  FEXCore::CidreCompteurs::Annoncer = CidreAnnoncerCompteurs;
+   ImageTracker.emplace(*CTX, false);
+ 
+   auto MainModule = reinterpret_cast<__TEB*>(NtCurrentTeb())->Peb->ImageBaseAddress;
+@@ -1066,6 +1207,20 @@
+ 
+   if (Exception->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
+     const auto FaultAddress = static_cast<uint64_t>(Exception->ExceptionInformation[1]);
++    if (CidreSmcArme) {
++      // Diag (SMC arme, boucle de fautes « NoExec » de D2R) : nature (0 lecture, 1 ecriture, 8 execution), adresse fautive,
++      // pc hote, et etat de la page vu par FEX et par Wine. Les 64 premieres, puis aux puissances de 2.
++      static std::atomic<uint64_t> CidreNbAV;
++      const uint64_t N = CidreNbAV.fetch_add(1, std::memory_order_relaxed) + 1;
++      if (N <= 64 || !(N & (N - 1))) {
++        MEMORY_BASIC_INFORMATION Info {};
++        NtQueryVirtualMemory(NtCurrentProcess(), reinterpret_cast<void*>(FaultAddress), MemoryBasicInformation, &Info, sizeof(Info), nullptr);
++        LogMan::Msg::IFmt("cidre : AV {} nature {} adresse {:#x} pc {:#x} ; protection {:#x} type {:#x} ; executable pour FEX {} ; alias {:#x}", N,
++                          Exception->ExceptionInformation[0], FaultAddress, NativeContext->Pc, Info.Protect, Info.Type,
++                          InvalidationTracker ? InvalidationTracker->QueryExecutableRange(FaultAddress).Size != 0 : false,
++                          FEX::Windows::SousPages::DecalageCode(FaultAddress & ~uint64_t {0x3fff}));
++      }
++    }
+ 
+     if (FEX::Windows::CallRetStack::HandleAccessViolation(Thread, FaultAddress, NativeContext->X17)) {
+       return true;
+@@ -1159,6 +1314,25 @@
+   } else {
+     LogMan::Msg::EFmt("Unexpected exception in JIT code on guest stack");
+     return false;
++  }
++}
++
++// CIDRE_SMC_ARME : traductions sans validation des pages dont la jumelle a ete ecrite (ThreadCreationMutex non tenu).
++static void CidreInvaliderPages(const fextl::vector<uint64_t>& Pages) {
++  if (Pages.empty() || !InvalidationTracker) {
++    return;
++  }
++  std::scoped_lock Lock(ThreadCreationMutex);
++  for (const uint64_t Page : Pages) {
++    InvalidationTracker->InvalidateAlignedInterval(Page, 0x1000, false, FEXCore::CidreCompteurs::SRC_JUMELLES);
++  }
++}
++
++// Compteur des sections de Wine relu au retour des appels systeme notifies (projection, protection, liberation,
++// lecture de fichier) : une jumelle ecrite par le noyau ou plus suivie ne leve pas d'exception.
++static void CidreVerifierSections() {
++  if (CidreSmcArme) {
++    CidreInvaliderPages(FEX::Windows::SousPages::VerifierSections());
+   }
+ }
+ 
+@@ -1174,6 +1348,26 @@
+     }
+     NtContinueNative(NativeContext, false);
+   }
++  if (Exception->ExceptionCode == FEX::Windows::SousPages::CodeEcritException && FEX::Windows::SousPages::Active()) {
++    // CIDRE_SMC_ARME : ecriture dans une jumelle armee ; Wine a retire le suivi et ne l'a pas faite. Invalider les
++    // traductions sans validation de la page de code, puis reprendre l'instruction, qui ecrit cette fois.
++    static std::atomic<uint64_t> CidreNbEcrit;
++    const uint64_t N = CidreNbEcrit.fetch_add(1, std::memory_order_relaxed) + 1;
++    const bool Trace = N <= 16 || !(N & (N - 1));
++    if (Trace) {
++      LogMan::Msg::IFmt("cidre : CodeEcrit {} entree, pc {:#x}, ecrit {:#x}, code {:#x} + {:#x}, fil FEX {}", N, NativeContext->Pc,
++                        Exception->ExceptionInformation[1], Exception->ExceptionInformation[2], Exception->ExceptionInformation[3],
++                        GetCPUArea().ThreadState() != nullptr);
++    }
++    {
++      ScopedCallbackDisable guard;
++      CidreInvaliderPages(FEX::Windows::SousPages::CodeEcrit(Exception));
++    }
++    if (Trace) {
++      LogMan::Msg::IFmt("cidre : CodeEcrit {} sortie", N);
++    }
++    NtContinueNative(NativeContext, false);
++  }
+   if (Exception->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
+     const auto FaultAddress = static_cast<uint64_t>(Exception->ExceptionInformation[1]);
+ 
+@@ -1231,6 +1425,9 @@
+       InvalidationTracker->HandleMemoryProtectionNotification(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), Prot);
+     }
+   }
++  if (After) {
++    CidreVerifierSections();
++  }
+ }
+ 
+ // Cidre : une reduction de droits (perte de la lecture) est traitee AVANT l'appel. Wine change la protection hote des
+@@ -1295,6 +1492,7 @@
+ 
+   // Voir NotifyMemoryAlloc : traite au retour seulement, verrou non tenu pendant l'appel.
+   if (After && !Status) {
++    FEX::Windows::SousPages::Desarmer(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size));
+     std::scoped_lock Lock(ThreadCreationMutex);
+     CidrePileVivante Pile(GetCPUArea().ThreadState(), CidrePileVivante::HorsJIT(GetCPUArea()));
+     FEXCore::CidreWX::Ecriture CidreWXE(&GetCPUArea().ThreadState()->CidreWXProfondeur); // Cidre 0300 : delinkage
+@@ -1307,20 +1505,23 @@
+     const auto Fin = Debut + static_cast<uint64_t>(Size);
+     uint64_t A = Debut;
+     if (!Debut && !Size) {
+-      InvalidationTracker->InvalidateAlignedInterval(0, 0, true); // sentinelle « tout » (voir InvalidateAlignedInterval)
++      InvalidationTracker->InvalidateAlignedInterval(0, 0, true, FEXCore::CidreCompteurs::SRC_FREE); // sentinelle « tout » (voir InvalidateAlignedInterval)
+       A = Fin;
+     }
+     while (A < Fin) {
+       MEMORY_BASIC_INFORMATION Info;
+       if (NtQueryVirtualMemory(NtCurrentProcess(), reinterpret_cast<void*>(A), MemoryBasicInformation, &Info, sizeof(Info), nullptr)) {
+-        InvalidationTracker->InvalidateAlignedInterval(A, Fin - A, true);
++        InvalidationTracker->InvalidateAlignedInterval(A, Fin - A, true, FEXCore::CidreCompteurs::SRC_FREE);
+         break;
+       }
+       const uint64_t B = std::min(Fin, reinterpret_cast<uint64_t>(Info.BaseAddress) + Info.RegionSize);
+-      InvalidationTracker->InvalidateAlignedInterval(A, B - A, Info.State != MEM_COMMIT);
++      InvalidationTracker->InvalidateAlignedInterval(A, B - A, Info.State != MEM_COMMIT, FEXCore::CidreCompteurs::SRC_FREE);
+       A = B > A ? B : Fin;
+     }
+   }
++  if (After) {
++    CidreVerifierSections();
++  }
+ }
+ 
+ void NotifyMemoryProtect(void* Address, SIZE_T Size, ULONG NewProt, BOOL After, NTSTATUS Status) {
+@@ -1339,11 +1540,15 @@
+ 
+   // Voir NotifyMemoryAlloc : traite au retour seulement, verrou non tenu pendant l'appel.
+   if (After && !Status) {
++    FEX::Windows::SousPages::Desarmer(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size));
+     std::scoped_lock Lock(ThreadCreationMutex);
+     CidrePileVivante Pile(GetCPUArea().ThreadState(), CidrePileVivante::HorsJIT(GetCPUArea()));
+     FEXCore::CidreWX::Ecriture CidreWXE(&GetCPUArea().ThreadState()->CidreWXProfondeur); // Cidre 0300 : delinkage
+     InvalidationTracker->HandleMemoryProtectionNotification(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), NewProt);
+   }
++  if (After) {
++    CidreVerifierSections();
++  }
+ }
+ 
+ NTSTATUS NotifyMapViewOfSection(void* Unk1, void* Address, void* Unk2, SIZE_T Size, ULONG AllocType, ULONG Prot) {
+@@ -1355,8 +1560,21 @@
+     std::scoped_lock Lock(ThreadCreationMutex);
+     HandleImageMap(reinterpret_cast<uint64_t>(Address));
+   }
++  FEX::Windows::SousPages::Desarmer(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size));
++  // Cidre (jumelles v2) : Wine n'appelle NotifyMapViewOfSection que pour une image (signal_arm64ec.c ; une section de
++  // donnees executable passe par NotifyMemoryProtect), et une vue d'image n'a pas de section_ino : jamais jumelle. Le
++  // ToutDesarmer d'ici invalidait toutes les pages armees a chaque DLL chargee (D2R : 500 a 1 700 pages par chargement).
++  // Une seconde vue executable d'un bloc arme est refusee par l'op 6 de Wine (jumelles v2), et CodeEcrit rend l'adresse
++  // de l'armement. CIDRE_SMC_MAP_TOUT=1 : ancien comportement.
++  static const bool CidreMapTout = [] {
++    const char* E = getenv("CIDRE_SMC_MAP_TOUT");
++    return E && E[0] == '1';
++  }();
++  if (CidreSmcArme && CidreMapTout && (Prot & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) {
++    CidreInvaliderPages(FEX::Windows::SousPages::ToutDesarmer());
++  }
++  CidreVerifierSections();
+ 
+-
+   return STATUS_SUCCESS;
+ }
+ 
+@@ -1379,7 +1597,8 @@
+     Data->UnmapSize = Size;
+   } else {
+     if (!Status && Data->UnmapSize) {
+-      InvalidationTracker->InvalidateAlignedInterval(Data->UnmapStart, Data->UnmapSize, true);
++      InvalidationTracker->InvalidateAlignedInterval(Data->UnmapStart, Data->UnmapSize, true, FEXCore::CidreCompteurs::SRC_UNMAP);
++      FEX::Windows::SousPages::Desarmer(Data->UnmapStart, Data->UnmapSize);
+     }
+     Data->UnmapSize = 0;
+   }
+@@ -1391,7 +1610,8 @@
+   }
+ 
+   std::scoped_lock Lock(ThreadCreationMutex);
+-  InvalidationTracker->InvalidateAlignedInterval(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), false);
++  InvalidationTracker->InvalidateAlignedInterval(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), false, FEXCore::CidreCompteurs::SRC_FLUSH);
++  CidreVerifierSections();
+ }
+ 
+ void BTCpu64FlushInstructionCache(const void* Address, SIZE_T Size) {
+@@ -1399,17 +1619,46 @@
+     return;
+   }
+ 
++  FEX::Windows::SousPages::Desarmer(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size));
+   std::scoped_lock Lock(ThreadCreationMutex);
+-  InvalidationTracker->InvalidateAlignedInterval(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), false);
++  InvalidationTracker->InvalidateAlignedInterval(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), false, FEXCore::CidreCompteurs::SRC_FLUSH);
++  CidreVerifierSections();
+ }
+ 
++static std::atomic<uint64_t> CidreNbDirty;
+ void BTCpu64NotifyMemoryDirty(void* Address, SIZE_T Size) {
++  // Cidre, diag (CIDRE_SMC_ARME) : appele par le ntdll PE a chaque ecriture dans une jumelle armee (exception 0xe0c10202).
++  const uint64_t CidreN = CidreNbDirty.fetch_add(1, std::memory_order_relaxed) + 1;
++  const bool CidreTrace = CidreSmcArme && (CidreN <= 16 || !(CidreN & (CidreN - 1)));
++  if (CidreTrace) {
++    LogMan::Msg::IFmt("cidre : NotifyMemoryDirty {} entree {:#x} + {:#x} (fil FEX {})", CidreN, reinterpret_cast<uint64_t>(Address), Size,
++                      GetCPUArea().ThreadState() != nullptr);
++  }
+   if (!InvalidationTracker || !GetCPUArea().ThreadState()) {
+     return;
+   }
+ 
++  // Appele par le ntdll PE hors de tout rappel (exception 0xe0c10202, SMC arme) : le vidage des caches de fils fait des
++  // appels systeme (VirtualDontNeed de la pile d'appels/retours) dont Wine rappellerait FEX (NotifyMemoryAlloc/Free), qui
++  // reprendrait CodeInvalidationMutex deja tenu ici. Comme pour les propositions et le piege RWX : rappels coupes.
++  ScopedCallbackDisable CidrePasDeRappel;
++  FEX::Windows::SousPages::Desarmer(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size));
++  if (CidreTrace) {
++    LogMan::Msg::IFmt("cidre : NotifyMemoryDirty {} desarme, ThreadCreationMutex...", CidreN);
++  }
+   std::scoped_lock Lock(ThreadCreationMutex);
+-  InvalidationTracker->InvalidateAlignedInterval(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), false);
++  if (CidreTrace) {
++    LogMan::Msg::IFmt("cidre : NotifyMemoryDirty {} ThreadCreationMutex pris, CodeInvalidationMutex...", CidreN);
++  }
++  FEX::Windows::InvalidationTracker::CidreTraceInvalidation = CidreTrace;
++  InvalidationTracker->InvalidateAlignedInterval(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), false, FEXCore::CidreCompteurs::SRC_DIRTY);
++  FEX::Windows::InvalidationTracker::CidreTraceInvalidation = false;
++  if (CidreTrace) {
++    LogMan::Msg::IFmt("cidre : NotifyMemoryDirty {} sortie", CidreN);
++  }
++  // Ecriture par un appel systeme (NtWriteVirtualMemory vers une vue RW jumelle) : Wine ne leve pas d'exception mais fait
++  // monter son compteur ; les traductions sans validation de la section doivent tomber ici, avant la reprise.
++  CidreVerifierSections();
+ }
+ 
+ void BTCpu64NotifyReadFile(HANDLE Handle, void* Address, SIZE_T Size, BOOL After, NTSTATUS Status) {
+@@ -1461,8 +1710,11 @@
+ 
+   if (After && Status == STATUS_SUCCESS) {
+     std::scoped_lock Lock(ThreadCreationMutex);
+-    InvalidationTracker->InvalidateAlignedInterval(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), false);
++    InvalidationTracker->InvalidateAlignedInterval(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), false, FEXCore::CidreCompteurs::SRC_DIRTY);
+   }
++  if (After) {
++    CidreVerifierSections();
++  }
+ }
+ 
+ NTSTATUS ThreadInit() {
+@@ -1531,6 +1783,7 @@
+ 
+   CPUArea.ThreadState() = Thread;
+   CPUArea.Area->SuspendDoorbell = reinterpret_cast<ULONG*>(&Thread->CurrentFrame->SuspendDoorbell);
++  CidreAnnoncerCompteurs(); // un fil cree dans l'ilot l'annonce tout de suite (au plus 128 essais en tout)
+   return STATUS_SUCCESS;
+ }
+ 
+diff --git a/Source/Windows/ARM64EC/SousPages.cpp b/Source/Windows/ARM64EC/SousPages.cpp
+--- a/Source/Windows/ARM64EC/SousPages.cpp
++++ b/Source/Windows/ARM64EC/SousPages.cpp
+@@ -4,11 +4,14 @@
+ 
+ #include <FEXCore/Core/Context.h>
+ #include <FEXCore/Utils/LogManager.h>
++#include <FEXCore/fextl/fmt.h>
++#include <fmt/ranges.h>
+ 
+ #include <atomic>
+ #include <cstddef>
+ #include <mutex>
+ #include <FEXCore/fextl/unordered_map.h>
++#include <FEXCore/fextl/unordered_set.h>
+ #include <cstdlib>
+ #include <cstring>
+ #include <windef.h>
+@@ -51,9 +54,13 @@
+   bool Actif {};
+   uint32_t CodeProposition {};
+   const volatile uint32_t* Generation {};
++  const volatile uint32_t* GenPages {}; // table des generations par page d'hote (Wine, op 4), ou nullptr
+   unixlib_handle_t NtdllUnixLib {};
+   decltype(__wine_unix_call_dispatcher) UnixCallDirect {};
+   bool Diag {};
++  // P (CIDRE_SOUS_PAGES_EN_LIGNE=2) : sites des RIP connus reecrits des la compilation (la remise reste : sur une page
++  // uniforme le talon coute ~28 ns par acces, temoin V3 9 -> 38 ns par pas).
++  bool Pre {};
+ 
+   // Comme FEXUnixLib : sur ARM64EC, un appel indirect passe par le verificateur
+   // d'appel de FEX ; on saute directement au repartiteur de Wine.
+@@ -102,12 +109,20 @@
+     uint32_t TailleTalonEffective;
+     uint8_t PostIndexe; // chemin rapide sur [x16] puis avancee de Rn a part : Rn ne vaut jamais l'alias
+     uint32_t InsnRapide; // mot a FastPc : sert a reconnaitre un talon rapide encore en place
++    uint32_t InsnAvant;  // mot a FastPc - 4 (idem)
++    struct EntreeEnLigne* EnLigne; // entree du RIP invite, lue par le controle en ligne du JIT (R2), ou nullptr
+   };
+   static_assert(offsetof(Site, R) == 0);
+ 
+   // Au-dela, le site ne voit plus de page mixte : l'instruction d'origine est
+   // remise (0,6 ns au lieu de ~23 par acces) et Wine pourra la reproposer.
+-  constexpr uint32_t SeuilNormaux = 256;
++  // CIDRE_SEUIL_REMISE change ce seuil (U1).
++  uint32_t SeuilNormaux = 256;
++  // U1 (CIDRE_RAPIDE_UNIFORME=1) : une page d'hote redevenue uniforme entre aussi dans le cache du chemin rapide, avec
++  // un decalage nul (acces natif). Le talon laisse en place ne coute alors plus que le chemin rapide (~3 ns au lieu
++  // de ~28) et n'a plus a etre remis ; une page fermee fait faute dans le chemin rapide et FixupStubFault ramene au
++  // site, comme pour une page mixte. Contre le cycle remise -> faute de D2R (~7 000 fautes/s).
++  bool RapideUniforme {};
+ 
+   // Sites deja reecrits, par Pc : une instruction remise puis reproposee reprend
+   // son talon. Sous verrou (exceptions seulement).
+@@ -364,8 +379,49 @@
+       S.RnDest = 1;
+     }
+     return S.Taille && S.Taille <= 64;
++  }
++
++  // Millisecondes (ntdll seul : xtajit64 est charge avant kernel32, dont GetTickCount64 ne serait pas resolu).
++  uint64_t Millisecondes() {
++    LARGE_INTEGER T;
++    NtQuerySystemTime(&T);
++    return static_cast<uint64_t>(T.QuadPart) / 10000;
+   }
+ 
++  // --- R2 : sites connus par RIP invite --------------------------------------
++  // Le JIT emet les acces simples d'un RIP connu avec un controle en ligne (Context::SetGuestMixedSites) contre
++  // cette entree : {cle = (page d'hote >> 14) | (generation << 34), decalage vers l'alias | masque de lecture (bits
++  // 0-3) | masque d'ecriture (bits 4-7), &generation}. Ecrite d'un coup (stp de 16 octets, atomique avec
++  // FEAT_LSE2) par SousPagesAide, lue par ldp : une entree est toujours une description juste d'une page a une
++  // generation, valide seulement si la generation n'a pas change. Le repli (acces d'origine) est un site ordinaire.
++  struct alignas(16) EntreeEnLigne {
++    uint64_t Cle;
++    uint64_t DecalageMasques;
++    const volatile uint32_t* Gen;
++    uint32_t Remplissages; // par SousPagesAide (relache) : le site voit encore des pages mixtes
++    uint32_t Vus;          // valeur de Remplissages a la derniere decision du JIT
++    uint64_t Instant;      // de cette decision (Millisecondes)
++    uint64_t Mode;         // lu par le JIT a la compilation : 1 = Gen pointe la table des generations par page
++  };
++  static_assert(offsetof(EntreeEnLigne, Mode) == 40);
++  static_assert(offsetof(EntreeEnLigne, Gen) == 16);
++  std::mutex EnLigneVerrou;
++  fextl::unordered_map<uint64_t, EntreeEnLigne*> EnLigneParRip;
++
++  EntreeEnLigne* EnLignePour(uint64_t Rip) {
++    std::scoped_lock Lock(EnLigneVerrou);
++    auto& E = EnLigneParRip[Rip];
++    if (!E) {
++      E = GenPages ? new EntreeEnLigne {0, 0, GenPages, 0, 0, Millisecondes(), 1}
++                   : new EntreeEnLigne {0, 0, Generation, 0, 0, Millisecondes(), 0};
++    }
++    return E;
++  }
++
++  // P : RIP invites deja reecrits sur une page mixte, jamais oublies (un RIP de plus ne coute qu'un talon).
++  std::mutex RipsVerrou;
++  fextl::unordered_set<uint64_t> RipsConnus;
++
+   // --- Talon ----------------------------------------------------------------
+   //  T+0   stp x16, x30, [sp, #-16]!
+   //  T+4   ldr x16, T+48                 Site*
+@@ -382,19 +438,14 @@
+   //  T+48  Site*
+   //  T+56  SousPagesCommun
+   constexpr size_t TailleTalon = 64;
+-  // Talon avec chemin rapide :
+-  //  T+0   sub sp, sp, #32 ; stp x16, x17, [sp] ; str x30, [sp, #16]
+-  //  T+12  x16 = adresse effective (une instruction selon la forme)
+-  //  T+16  ldr x17, Site* ; ldr x30, SousPagesRapide ; blr x30   -> x17 = decalage, ou 0
+-  //  T+28  cbz x17, lent
+-  //  T+32  add Rn, Rn, x17 ; str x17, [sp, #24] ; ldr x30, [sp, #16] ; ldp x16, x17, [sp]
+-  //  T+48  <instruction d'origine>       faute ramenee a Pc (FixupStubFault)
+-  //  T+52  str x16, [sp] ; ldr x16, [sp, #24] ; sub Rn, Rn, x16 (nop si chargee) ; ldr x16, [sp]
+-  //  T+68  add sp, sp, #32 ; b Pc+4
+-  //  T+76  lent : ldr x30, [sp, #16] ; ldp x16, x17, [sp] ; add sp, sp, #32
+-  //  T+88  talon lent ci-dessous (64 octets, inchange)
+-  //  T+152 Site* ; T+160 SousPagesRapide
+-  constexpr size_t TailleTalonRapide = 176;
++  // Talon avec chemin rapide (R1, construit dans HandleProposal) :
++  //  sub sp, sp, #48 ; sauvegarde de x16, x17, x30, x0 ; x16 = adresse effective ; x17 = Site*
++  //  controle en ligne du cache du site (sequence, generation de Wine, page d'hote, a cheval, sous-pages) ;
++  //  echec -> lent ; sinon x17 = decalage, x0 et x30 remis
++  //  add Rn, Rn, x17 ; [sp+24] = decalage ; x16, x17 remis ; <instruction d'origine> (FastPc) ;
++  //  Rn remis ; add sp, sp, #48 ; b Pc+4
++  //  lent : x30, x0, x16, x17 remis ; add sp, sp, #48 ; talon lent (64 octets, inchange) ; litteraux
++  constexpr size_t TailleTalonRapide = 304;
+   std::mutex RapidesVerrou;
+   fextl::unordered_map<uint64_t, Site*> RapidesParFaute;
+ 
+@@ -485,6 +536,7 @@
+     uint64_t Hote;
+     uint64_t Alias;
+     uint32_t Lecture, Ecriture, Mixte;
++    uint32_t GenPage; // generation de la case de la page (R3), si Wine la fournit
+   };
+   constexpr size_t NbEntrees = 1024;
+   Entree Cache[NbEntrees];
+@@ -493,6 +545,7 @@
+     uint32_t Gen;
+     uint64_t Alias;
+     uint32_t Lecture, Ecriture, Mixte;
++    uint32_t GenPage;
+   };
+ 
+   bool LireCache(uint64_t Hote, uint32_t Gen, Etat& E) {
+@@ -507,6 +560,7 @@
+     E.Lecture = std::atomic_ref<uint32_t>(C.Lecture).load(std::memory_order_relaxed);
+     E.Ecriture = std::atomic_ref<uint32_t>(C.Ecriture).load(std::memory_order_relaxed);
+     E.Mixte = std::atomic_ref<uint32_t>(C.Mixte).load(std::memory_order_relaxed);
++    E.GenPage = std::atomic_ref<uint32_t>(C.GenPage).load(std::memory_order_relaxed);
+     std::atomic_thread_fence(std::memory_order_acquire);
+     return C.Seq.load(std::memory_order_relaxed) == S1 && H == Hote && E.Gen == Gen;
+   }
+@@ -523,11 +577,14 @@
+     std::atomic_ref<uint32_t>(C.Lecture).store(E.Lecture, std::memory_order_relaxed);
+     std::atomic_ref<uint32_t>(C.Ecriture).store(E.Ecriture, std::memory_order_relaxed);
+     std::atomic_ref<uint32_t>(C.Mixte).store(E.Mixte, std::memory_order_relaxed);
++    std::atomic_ref<uint32_t>(C.GenPage).store(E.GenPage, std::memory_order_relaxed);
+     C.Seq.store(S + 2, std::memory_order_release);
+   }
+ 
+   // Compteurs (CIDRE_DIAG_SOUS_PAGES)
+-  std::atomic<uint64_t> NbReecrits, NbRefuses, NbAppels, NbAlias, NbRequetes, NbFautes, NbRemis;
++  std::atomic<uint64_t> MemePageParFamille[9];
++  std::atomic<uint32_t> MemePageVus;
++  std::atomic<uint64_t> NbReecrits, NbRefuses, NbAppels, NbAlias, NbRequetes, NbFautes, NbRemis, NbEnLigneEmis, NbOublis, NbPropositions, NbPre, NbUniformes, NbMemePage4K, NbMemePageHote, NbAilleurs, NbPreAppels, NbPreSans, NbPreDeux, NbPreHors;
+ 
+   void Compter(std::atomic<uint64_t>& N, const char* Quoi) {
+     const uint64_t V = N.fetch_add(1, std::memory_order_relaxed) + 1;
+@@ -541,6 +598,15 @@
+ void Init(HMODULE NtDll, bool CodeCaching) {
+   const char* Env = getenv("CIDRE_DIAG_SOUS_PAGES");
+   Diag = Env && *Env && *Env != '0';
++  if (const char* E = getenv("CIDRE_RAPIDE_UNIFORME"); E && *E == '1') {
++    RapideUniforme = true;
++  }
++  if (const char* E = getenv("CIDRE_SEUIL_REMISE"); E && *E) {
++    SeuilNormaux = static_cast<uint32_t>(strtoul(E, nullptr, 0));
++  }
++  if (const char* E = getenv("CIDRE_SOUS_PAGES_EN_LIGNE"); E && *E == '2') {
++    Pre = true;
++  }
+   if (const char* F = getenv("CIDRE_SP8_FAMILLES"); F && *F) {
+     FamillesRapides = static_cast<uint32_t>(strtoul(F, nullptr, 0));
+     LogMan::Msg::IFmt("sous-pages : chemin rapide limite aux familles {:#x}", FamillesRapides);
+@@ -571,6 +637,14 @@
+   }
+   Generation = reinterpret_cast<const volatile uint32_t*>(P.GenPtr);
+   SousPagesGen = Generation;
++  {
++    // Table des generations par page d'hote (Wine recent) ; sinon les entrees en ligne gardent la generation globale.
++    Params Q {};
++    Q.Op = 4;
++    if (!Appel(&Q) && Q.GenPtr) {
++      GenPages = reinterpret_cast<const volatile uint32_t*>(Q.GenPtr);
++    }
++  }
+   CodeProposition = P.Code;
+   Actif = true;
+   if (Diag) {
+@@ -588,6 +662,9 @@
+ 
+ // Wine propose une instruction a chaque rejeu tant qu'on ne la lui a pas refusee :
+ // toute issue sans reecriture (sauf course avec une autre reecriture) la refuse.
++static bool ReecrireNeuf(FEXCore::Context::Context* CTX, FEXCore::Core::InternalThreadState* Thread, uint64_t Pc, uint32_t Insn,
++                         bool Proposition);
++
+ static void Refuser(uint64_t Pc, uint32_t Insn) {
+   Params P {};
+   P.Op = 3;
+@@ -602,6 +679,37 @@
+   }
+   const uint64_t Pc = Rec->ExceptionInformation[0];
+   const uint32_t Insn = static_cast<uint32_t>(Rec->ExceptionInformation[2]);
++  if (Diag) {
++    Compter(NbPropositions, "proposition de Wine");
++    // Piste « lecture RIP-relative dans la page qui s'execute » : ou tombe l'acces propose, par rapport au RIP invite ?
++    if (Thread) {
++      if (const uint64_t Rip = CTX->RestoreRIPFromHostPC(Thread, Rec->ExceptionInformation[0])) {
++        const uint64_t Ea = Rec->ExceptionInformation[1];
++        if ((Ea >> 12) == (Rip >> 12)) {
++          Compter(NbMemePage4K, "acces dans la page 4 Kio du RIP");
++          // Quelles instructions hote (famille) et invitees : les 24 premieres avec 16 octets du code invite.
++          static constexpr const char* NomsFamilles[9] = {"lecture simple", "ecriture simple", "forme registre", "paire",
++                                                          "SIMD/FP", "ordonnee/LSE", "pre-indexe", "post-indexe", "autre"};
++          const uint32_t K = __builtin_ctz(Famille(Insn));
++          const uint64_t V = MemePageParFamille[K].fetch_add(1, std::memory_order_relaxed) + 1;
++          if ((V & (V - 1)) == 0) {
++            LogMan::Msg::IFmt("sous-pages : meme page, famille {} : {}", NomsFamilles[K], V);
++          }
++          if (MemePageVus.fetch_add(1, std::memory_order_relaxed) < 24) {
++            const int64_t D = DecalageCode(Rip & ~HostPageMask);
++            uint8_t Octets[16];
++            memcpy(Octets, reinterpret_cast<const void*>(Rip + D), (Rip & 0xfff) <= 0xff0 ? 16 : 0x1000 - (Rip & 0xfff));
++            LogMan::Msg::IFmt("sous-pages : meme page {:08x} ({}) RIP {:#x} adresse {:#x} code {:02x}", Insn, NomsFamilles[K], Rip, Ea,
++                              fmt::join(Octets, Octets + ((Rip & 0xfff) <= 0xff0 ? 16 : 0x1000 - (Rip & 0xfff)), " "));
++          }
++        } else if ((Ea >> 14) == (Rip >> 14)) {
++          Compter(NbMemePageHote, "acces dans la page d'hote du RIP");
++        } else {
++          Compter(NbAilleurs, "acces hors de la page d'hote du RIP");
++        }
++      }
++    }
++  }
+ 
+   // SiteDuTalon lit les 20 octets qui precedent : ils doivent etre dans un tampon de code projete.
+   if (!Thread || (Pc & 3) || !CTX->IsAddressInCodeBuffer(Thread, Pc) || !CTX->IsAddressInCodeBuffer(Thread, Pc - 20) || SiteDuTalon(Pc)) {
+@@ -623,7 +731,7 @@
+       // pendant le traitement de l'exception, processus tue).
+       const bool TalonVivant = CTX->IsAddressInCodeBuffer(Thread, S->Talon) &&
+                                CTX->IsAddressInCodeBuffer(Thread, S->Talon + S->TailleTalonEffective - 1);
+-      if (TalonVivant && S->Insn == Insn && SiteDuTalon(S->FaultPc) == S && T[0] == (S->FastPc ? 0xd10083ffu : STP_X16_X30_PRE)) {
++      if (TalonVivant && S->Insn == Insn && SiteDuTalon(S->FaultPc) == S && T[0] == (S->FastPc ? 0xd100c3ffu : STP_X16_X30_PRE)) {
+         std::atomic_ref<uint32_t>(S->Normaux).store(0, std::memory_order_relaxed);
+         uint32_t Attendu = Insn;
+         if (std::atomic_ref<uint32_t>(*Code).compare_exchange_strong(Attendu, S->Saut, std::memory_order_release)) {
+@@ -635,14 +743,25 @@
+       Sites.erase(It); // code regenere a cette adresse : talon perime
+     }
+   }
++  ReecrireNeuf(CTX, Thread, Pc, Insn, true);
++}
++
++// Talon neuf pour l'instruction Insn a Pc, et saut ecrit a Pc. Proposition : Wine l'a proposee apres un rejeu (une
++// forme non portee lui est refusee) ; sinon P, juste apres la compilation du bloc, avant sa publication.
++static bool ReecrireNeuf(FEXCore::Context::Context* CTX, FEXCore::Core::InternalThreadState* Thread, uint64_t Pc, uint32_t Insn,
++                         bool Proposition) {
++  auto* Code = reinterpret_cast<uint32_t*>(Pc);
+   Site D {};
+   if (!Decoder(Insn, D)) {
++    if (!Proposition) {
++      return false;
++    }
+     Compter(NbRefuses, "instruction refusee");
+     if (Diag && NbRefuses.load(std::memory_order_relaxed) <= 64) {
+       LogMan::Msg::IFmt("sous-pages : forme non portee {:08x} a {:#x}", Insn, Pc);
+     }
+     Refuser(Pc, Insn);
+-    return;
++    return false;
+   }
+   const uint32_t Fam = Famille(Insn);
+   const bool PostIdx = Fam == 0x80;
+@@ -661,9 +780,21 @@
+     // est definitif cote Wine, par adresse ; un tampon recycle reprend ces adresses pour du code neuf, dont les
+     // acces seraient alors rejoues pour toujours. Wine reproposera au prochain rejeu.
+     Compter(NbRefuses, "pas de place pour un talon");
+-    return;
++    return false;
+   }
+   auto* S = new Site(D);
++  // R2 : le RIP invite de l'acces devient un site connu ; ses blocs recompiles porteront le controle en ligne.
++  // P : il entre dans RipsConnus, ses blocs recompiles seront reecrits d'avance (le RIP d'un site P y est deja).
++  if (Proposition) {
++    if (const uint64_t Rip = CTX->RestoreRIPFromHostPC(Thread, Pc)) {
++      if (Pre) {
++        std::scoped_lock Lock(RipsVerrou);
++        RipsConnus.insert(Rip);
++      } else {
++        S->EnLigne = EnLignePour(Rip);
++      }
++    }
++  }
+   S->Pc = Pc;
+   S->Insn = Insn;
+   S->R.TailleM1 = S->Taille - 1;
+@@ -672,51 +803,103 @@
+   const uint32_t Rn = S->Rn;
+   uint32_t* const Debut = T;
+   if (Ea) {
+-    T[0] = 0xd10083ffu; // sub sp, sp, #32
+-    T[1] = 0xa90047f0u; // stp x16, x17, [sp]
+-    T[2] = 0xf9000bfeu; // str x30, [sp, #16]
+-    T[3] = Ea;
+-    T[4] = 0x58000000u | (34u << 5) | 17; // ldr x17, T+152
+-    T[5] = 0x58000000u | (35u << 5) | 30; // ldr x30, T+160
+-    T[6] = BLR_X30;
+-    T[7] = 0xb4000000u | (12u << 5) | 17;                  // cbz x17, T+76
++    // R1 : le controle du cache du site est dans le talon (sans appel a SousPagesRapide, sans blr ni ret).
++    // Cadre de 48 octets : [sp] x16, [sp+8] x17, [sp+16] x30, [sp+24] sequence puis decalage, [sp+32] x0.
++    // x0, x30 et x17 servent au controle ; tout est remis avant l'acces, que FixupStubFault ramene au site.
++    size_t N = 0;
++    fextl::vector<std::pair<size_t, uint32_t>> VersLent; // (indice, gabarit) : branchements a fixer vers lent
++    auto Mot = [&](uint32_t W) { T[N++] = W; };
++    auto Lent19 = [&](uint32_t Gabarit) { VersLent.emplace_back(N, Gabarit); T[N++] = 0; };      // cbz/cbnz
++    auto Lent14 = [&](uint32_t Gabarit) { VersLent.emplace_back(N, Gabarit | 0x80000000u); T[N++] = 0; }; // tbz/tbnz
++    size_t LitSite, LitGen;
++    Mot(0xd100c3ffu); // sub sp, sp, #48
++    Mot(0xa90047f0u); // stp x16, x17, [sp]
++    Mot(0xf9000bfeu); // str x30, [sp, #16]
++    Mot(0xf90013e0u); // str x0, [sp, #32]
++    Mot(Ea);          // x16 = adresse effective
++    LitSite = N;
++    Mot(0x58000000u | 17); // ldr x17, Site*        (litteral, fixe plus bas)
++    Mot(0x88dffe3eu);      // ldar w30, [x17]       sequence
++    Lent14(0x37000000u | 30); // tbnz w30, #0, lent
++    Mot(0xf9000ffeu);      // str x30, [sp, #24]
++    Mot(0xb9400620u);      // ldr w0, [x17, #4]     generation du site
++    LitGen = N;
++    Mot(0x58000000u | 30); // ldr x30, &generation de Wine (litteral)
++    Mot(0xb94003deu);      // ldr w30, [x30]
++    Mot(0x4a1e0000u);      // eor w0, w0, w30
++    Lent19(0x35000000u);   // cbnz w0, lent
++    Mot(0xf9400620u);      // ldr x0, [x17, #8]     page d'hote
++    Mot(0x9272c61eu);      // and x30, x16, #~0x3fff
++    Mot(0xca1e0000u);      // eor x0, x0, x30
++    Lent19(0xb5000000u);   // cbnz x0, lent
++    Mot(0xb9401e20u);      // ldr w0, [x17, #28]    taille - 1
++    Mot(0x8b000200u);      // add x0, x16, x0
++    Mot(0xca10001eu);      // eor x30, x0, x16
++    Mot(0xd34effdeu);      // lsr x30, x30, #14
++    Lent19(0xb5000000u | 30); // cbnz x30, lent     a cheval sur deux pages d'hote
++    Mot(0xd34c3400u);      // ubfx x0, x0, #12, #2  derniere sous-page
++    Mot(0xb9401a3eu);      // ldr w30, [x17, #24]   masque
++    Mot(0x1ac027c0u);      // lsr w0, w30, w0
++    Lent14(0x36000000u);   // tbz w0, #0, lent
++    Mot(0xd34c3600u);      // ubfx x0, x16, #12, #2 premiere sous-page
++    Mot(0x1ac027c0u);      // lsr w0, w30, w0
++    Lent14(0x36000000u);   // tbz w0, #0, lent
++    Mot(0xf9400a20u);      // ldr x0, [x17, #16]    decalage
++    Mot(0xd50339bfu);      // dmb ishld
++    Mot(0xb940023eu);      // ldr w30, [x17]
++    Mot(0xf9400ff1u);      // ldr x17, [sp, #24]
++    Mot(0x4a1103deu);      // eor w30, w30, w17
++    Lent19(0x35000000u | 30); // cbnz w30, lent     sequence changee pendant la lecture
++    Mot(0xaa0003f1u);      // mov x17, x0
++    Mot(0xf94013e0u);      // ldr x0, [sp, #32]
++    Mot(0xf9400bfeu);      // ldr x30, [sp, #16]
+     if (S->PostIndexe) {
+       // Post-indexe (ldr w12, [x11], #4...) : l'acces se fait sur x16 = Rn + decalage, sans ecriture en
+       // retour, puis Rn avance a part. Rn ne contient jamais que des adresses invitees ; une faute sur
+-      // l'acces (T+48) laisse Rn intact (FixupStubFault remet x16).
++      // l'acces laisse Rn intact (FixupStubFault remet x16).
+       const int64_t Pas = S->Imm;
+-      T[8] = 0x8b000000u | (17u << 16) | (16u << 5) | 16;   // add x16, x16, x17
+-      T[9] = 0xf9000ff1u;                                    // str x17, [sp, #24]
+-      T[10] = 0xf9400bfeu;                                   // ldr x30, [sp, #16]
+-      T[11] = 0xf94007f1u;                                   // ldr x17, [sp, #8]
+-      T[12] = (Insn & ~((0x1ffu << 12) | (3u << 10) | (31u << 5))) | (16u << 5); // meme acces, [x16], sans avancee
+-      T[13] = 0xf94003f0u;                                   // ldr x16, [sp]
+-      T[14] = Pas >= 0 ? (0x91000000u | (static_cast<uint32_t>(Pas) << 10) | (Rn << 5) | Rn)   // add Rn, Rn, #pas
+-                       : (0xd1000000u | (static_cast<uint32_t>(-Pas) << 10) | (Rn << 5) | Rn); // sub Rn, Rn, #pas
+-      T[15] = NOP;
+-      T[16] = NOP;
++      Mot(0x8b000000u | (17u << 16) | (16u << 5) | 16); // add x16, x16, x17
++      Mot(0xf9000ff1u);                                  // str x17, [sp, #24]
++      Mot(0xf94007f1u);                                  // ldr x17, [sp, #8]
++      S->InsnAvant = 0xf94007f1u;
++      S->FastPc = reinterpret_cast<uint64_t>(&T[N]);
++      Mot((Insn & ~((0x1ffu << 12) | (3u << 10) | (31u << 5))) | (16u << 5)); // meme acces, [x16], sans avancee
++      Mot(0xf94003f0u);                                  // ldr x16, [sp]
++      Mot(Pas >= 0 ? (0x91000000u | (static_cast<uint32_t>(Pas) << 10) | (Rn << 5) | Rn)    // add Rn, Rn, #pas
++                   : (0xd1000000u | (static_cast<uint32_t>(-Pas) << 10) | (Rn << 5) | Rn)); // sub Rn, Rn, #pas
+     } else {
+-      T[8] = 0x8b000000u | (17u << 16) | (Rn << 5) | Rn;     // add Rn, Rn, x17
+-      T[9] = 0xf9000ff1u;                                    // str x17, [sp, #24]
+-      T[10] = 0xf9400bfeu;                                   // ldr x30, [sp, #16]
+-      T[11] = 0xa94047f0u;                                   // ldp x16, x17, [sp]
+-      T[12] = Insn;
+-      T[13] = 0xf90003f0u;                                   // str x16, [sp]
+-      T[14] = 0xf9400ff0u;                                   // ldr x16, [sp, #24]
+-      T[15] = S->RnDest ? NOP : (0xcb000000u | (16u << 16) | (Rn << 5) | Rn); // sub Rn, Rn, x16
+-      T[16] = 0xf94003f0u;                                   // ldr x16, [sp]
++      Mot(0x8b000000u | (17u << 16) | (Rn << 5) | Rn);   // add Rn, Rn, x17
++      Mot(0xf9000ff1u);                                  // str x17, [sp, #24]
++      Mot(0xa94047f0u);                                  // ldp x16, x17, [sp]
++      S->InsnAvant = 0xa94047f0u;
++      S->FastPc = reinterpret_cast<uint64_t>(&T[N]);
++      Mot(Insn);                                         // instruction d'origine, base rebasee
++      Mot(0xf90003f0u);                                  // str x16, [sp]
++      Mot(0xf9400ff0u);                                  // ldr x16, [sp, #24]
++      Mot(S->RnDest ? NOP : (0xcb000000u | (16u << 16) | (Rn << 5) | Rn)); // sub Rn, Rn, x16
++      Mot(0xf94003f0u);                                  // ldr x16, [sp]
+     }
+-    T[17] = 0x910083ffu;                                   // add sp, sp, #32
+-    const int64_t RetourRapide = static_cast<int64_t>(Pc + 4) - reinterpret_cast<int64_t>(&T[18]);
+-    T[18] = 0x14000000u | ((static_cast<uint64_t>(RetourRapide) >> 2) & 0x3ffffff);
+-    T[19] = 0xf9400bfeu;                                   // ldr x30, [sp, #16]
+-    T[20] = 0xa94047f0u;                                   // ldp x16, x17, [sp]
+-    T[21] = 0x910083ffu;                                   // add sp, sp, #32
+-    *reinterpret_cast<uint64_t*>(&T[38]) = reinterpret_cast<uint64_t>(S);
+-    *reinterpret_cast<uint64_t*>(&T[40]) = reinterpret_cast<uint64_t>(&SousPagesRapide);
+-    S->FastPc = reinterpret_cast<uint64_t>(&T[12]);
+-    S->InsnRapide = T[12];
+-    T += 22; // talon lent a la suite
++    S->InsnRapide = *reinterpret_cast<const uint32_t*>(S->FastPc);
++    Mot(0x9100c3ffu); // add sp, sp, #48
++    const int64_t RetourRapide = static_cast<int64_t>(Pc + 4) - reinterpret_cast<int64_t>(&T[N]);
++    Mot(0x14000000u | ((static_cast<uint64_t>(RetourRapide) >> 2) & 0x3ffffff));
++    const size_t Lent = N; // lent : remise, puis talon lent a la suite
++    Mot(0xf9400bfeu); // ldr x30, [sp, #16]
++    Mot(0xf94013e0u); // ldr x0, [sp, #32]
++    Mot(0xa94047f0u); // ldp x16, x17, [sp]
++    Mot(0x9100c3ffu); // add sp, sp, #48
++    for (auto [I, G] : VersLent) {
++      const uint32_t D = static_cast<uint32_t>(Lent - I);
++      T[I] = (G & 0x80000000u) ? ((G & 0x7fffffffu) | ((D & 0x3fffu) << 5)) : (G | ((D & 0x7ffffu) << 5));
++    }
++    // Litteraux a la fin du talon (alignes sur 8), apres le talon lent de 64 octets.
++    const size_t Lit = (N + 16 + 1) & ~size_t {1};
++    *reinterpret_cast<uint64_t*>(&T[Lit]) = reinterpret_cast<uint64_t>(S);
++    *reinterpret_cast<uint64_t*>(&T[Lit + 2]) = reinterpret_cast<uint64_t>(Generation);
++    T[LitSite] |= static_cast<uint32_t>(Lit - LitSite) << 5;
++    T[LitGen] |= static_cast<uint32_t>(Lit + 2 - LitGen) << 5;
++    LOGMAN_THROW_A_FMT((Lit + 4) * 4 <= TailleTalonRapide, "talon rapide trop petit");
++    T += N; // talon lent a la suite
+   }
+   S->FaultPc = reinterpret_cast<uint64_t>(&T[5]);
+ 
+@@ -750,18 +933,71 @@
+   uint32_t Attendu = Insn;
+   if (!std::atomic_ref<uint32_t>(*Code).compare_exchange_strong(Attendu, Saut, std::memory_order_release)) {
+     // Un autre fil l'a deja reecrite (ou FEX l'a changee) : le talon reste inutilise.
+-    return;
++    return false;
+   }
+   ClearICache(Code, 4);
+   {
+     std::scoped_lock Lock(SitesVerrou);
+     Sites[Pc] = S;
+   }
+-  Compter(NbReecrits, "instruction reecrite");
++  if (Proposition) {
++    Compter(NbReecrits, "instruction reecrite");
++  } else {
++    Compter(NbPre, "P : instruction reecrite a la compilation");
++  }
+   if (Diag && NbReecrits.load(std::memory_order_relaxed) <= 64) {
+     LogMan::Msg::IFmt("sous-pages : {:08x} a {:#x} -> talon {:#x} (Rn x{}, {} octets, {}{})", Insn, Pc, reinterpret_cast<uint64_t>(T),
+                       Rn, S->Taille, S->Lecture ? "l" : "", S->Ecriture ? "e" : "");
++  }
++  return true;
++}
++
++void PreReecrire(FEXCore::Context::Context* CTX, FEXCore::Core::InternalThreadState* Thread, uint64_t Debut, uint64_t Fin) {
++  if (!Actif || !Pre || !Thread || (Debut & 3) || Fin <= Debut) {
++    return;
++  }
++  if (Diag) {
++    Compter(NbPreAppels, "P : plage a reecrire");
++  }
++  // L'acces est la seule instruction de la plage que le talon sait porter (le reste calcule l'adresse) ; deux
++  // candidates : on ne devine pas.
++  uint64_t Pc = 0;
++  uint32_t Insn = 0;
++  for (uint64_t A = Debut; A + 4 <= Fin; A += 4) {
++    const uint32_t I = *reinterpret_cast<const uint32_t*>(A);
++    Site Essai {};
++    if (Decoder(I, Essai)) {
++      if (Pc) {
++        if (Diag) {
++          Compter(NbPreDeux, "P : deux acces dans la plage");
++        }
++        return;
++      }
++      Pc = A;
++      Insn = I;
++    }
+   }
++  if (!Pc) {
++    if (Diag) {
++      Compter(NbPreSans, "P : aucun acces porte dans la plage");
++      if (NbPreSans.load(std::memory_order_relaxed) <= 8) {
++        LogMan::Msg::IFmt("sous-pages : P : plage {:#x}-{:#x} sans acces porte, premier mot {:08x}", Debut, Fin,
++                          *reinterpret_cast<const uint32_t*>(Debut));
++      }
++    }
++    return;
++  }
++  if (!CTX->IsAddressInCodeBuffer(Thread, Pc) || !CTX->IsAddressInCodeBuffer(Thread, Pc - 20)) {
++    if (Diag) {
++      Compter(NbPreHors, "P : acces hors tampon de code");
++    }
++    return;
++  }
++  {
++    std::scoped_lock Lock(SitesVerrou);
++    Sites.erase(Pc); // un site d'un ancien code a cette adresse : talon perime
++  }
++  ReecrireNeuf(CTX, Thread, Pc, Insn, false);
+ }
+ 
+ bool FixupStubFault(ARM64_NT_CONTEXT* Context, bool Unpatch) {
+@@ -780,9 +1016,9 @@
+     // L'entree peut etre perimee : tampon de code vide puis reutilise, une autre traduction a cette adresse (D2R :
+     // un ldar desaligne d'un bloc neuf pris pour une faute du talon, Pc ramene a l'ancien site, instruction
+     // d'origine remise, desalignement rendu a l'invite). Le talon est reconnu a son acces (Pc) et a son
+-    // cbz x17 (Pc - 20), deux mots dans la plage deja verifiee par l'appelant.
++    // mot d'avant (Pc - 4), deux mots dans la plage deja verifiee par l'appelant.
+     const auto* W = reinterpret_cast<const uint32_t*>(Context->Pc);
+-    if (W[0] != S->InsnRapide || W[-5] != (0xb4000000u | (12u << 5) | 17)) {
++    if (W[0] != S->InsnRapide || W[-1] != S->InsnAvant) {
+       std::scoped_lock Lock(RapidesVerrou);
+       RapidesParFaute.erase(Context->Pc);
+       Compter(NbFautes, "entree de talon rapide perimee, oubliee");
+@@ -794,7 +1030,7 @@
+     const uint64_t SpR = Context->Sp;
+     const uint64_t DeltaR = *reinterpret_cast<const uint64_t*>(SpR + 24);
+     Context->Pc = S->Pc;
+-    Context->Sp = SpR + 32;
++    Context->Sp = SpR + 48;
+     if (S->PostIndexe) {
+       Context->X[16] = *reinterpret_cast<const uint64_t*>(SpR); // x16 portait l'adresse de l'alias ; Rn intact
+     } else if (DeltaR) {
+@@ -829,6 +1065,82 @@
+ }
+ } // namespace FEX::Windows::SousPages
+ 
++namespace FEX::Windows::SousPages {
++namespace {
++  // La page d'hote retenue par une cle d'entree en ligne est-elle encore mixte (avec un alias) ? Cache des pages,
++  // requete a Wine sinon. Cle vide : non.
++  bool PageEncoreMixte(uint64_t Cle) {
++    const uint64_t Hote = (Cle & ((uint64_t {1} << 34) - 1)) << 14;
++    if (!Hote) {
++      return false;
++    }
++    Etat E;
++    if (!LireCache(Hote, *Generation, E)) {
++      Params P {};
++      P.Op = 1;
++      P.Hote = Hote;
++      if (Appel(&P)) {
++        return false;
++      }
++      E = {P.Gen, P.Alias, P.Lecture, P.Ecriture, P.Mixte, P.Code};
++      EcrireCache(Hote, E);
++    }
++    return E.Mixte && E.Alias;
++  }
++} // namespace
++} // namespace FEX::Windows::SousPages
++
++void* FEX::Windows::SousPages::SiteConnu(uint64_t GuestRIP) {
++  if (!Actif) {
++    return nullptr;
++  }
++  std::scoped_lock Lock(RipsVerrou);
++  return RipsConnus.contains(GuestRIP) ? reinterpret_cast<void*>(1) : nullptr;
++}
++
++void* FEX::Windows::SousPages::SiteEnLigne(uint64_t GuestRIP) {
++  if (!Actif) {
++    return nullptr;
++  }
++  // Oubli : un RIP dont l'entree n'a pas ete remplie depuis plus d'une seconde ne voit plus de page mixte ; son
++  // acces redevient natif (comme un talon remis apres 256 acces hors page mixte). S'il refait faute sur une page
++  // mixte, le talon le reinscrit. La fenetre d'une seconde evite d'oublier au milieu d'une meme compilation, qui
++  // interroge plusieurs fois le meme RIP.
++  EntreeEnLigne* E = nullptr;
++  bool Oubli = false;
++  {
++    std::scoped_lock Lock(EnLigneVerrou);
++    auto It = EnLigneParRip.find(GuestRIP);
++    if (It != EnLigneParRip.end()) {
++      E = It->second;
++      const uint32_t R = std::atomic_ref<uint32_t>(E->Remplissages).load(std::memory_order_relaxed);
++      const uint64_t Maintenant = Millisecondes();
++      if (R != E->Vus) {
++        E->Vus = R;
++        E->Instant = Maintenant;
++      } else if (Maintenant - E->Instant > 1000) {
++        // Pas de remplissage recent : soit l'entree reste valide (generation par page inchangee, le cas courant
++        // avec la table), soit le site ne voit plus de page mixte. On tranche sur la page retenue par l'entree.
++        if (PageEncoreMixte(std::atomic_ref<uint64_t>(E->Cle).load(std::memory_order_relaxed))) {
++          E->Instant = Maintenant;
++        } else {
++          EnLigneParRip.erase(It); // l'entree reste allouee : du code deja emis la lit encore
++          E = nullptr;
++          Oubli = true;
++        }
++      }
++    }
++  }
++  if (Diag) {
++    if (Oubli) {
++      Compter(NbOublis, "R2 : RIP oublie");
++    } else if (E) {
++      Compter(NbEnLigneEmis, "R2 : acces emis en ligne");
++    }
++  }
++  return E;
++}
++
+ int64_t FEX::Windows::SousPages::DecalageCode(uint64_t HostPage) {
+   if (!Actif) {
+     return 0;
+@@ -842,12 +1154,178 @@
+     if (Appel(&P)) {
+       return 0;
+     }
+-    E = {P.Gen, P.Alias, P.Lecture, P.Ecriture, P.Mixte};
++    E = {P.Gen, P.Alias, P.Lecture, P.Ecriture, P.Mixte, P.Code};
+     EcrireCache(HostPage, E);
+   }
+   return (E.Mixte && E.Alias) ? static_cast<int64_t>(E.Alias - HostPage) : 0;
++}
++
++int64_t FEX::Windows::SousPages::DecalageLecture(uint64_t Adresse, uint64_t Taille) {
++  const uint64_t Hote = Adresse & ~HostPageMask;
++  if (!Actif || !Taille || ((Adresse + Taille - 1) & ~HostPageMask) != Hote) {
++    return 0;
++  }
++  const uint32_t Gen = *Generation;
++  Etat E;
++  if (!LireCache(Hote, Gen, E)) {
++    Params P {};
++    P.Op = 1;
++    P.Hote = Hote;
++    if (Appel(&P)) {
++      return 0;
++    }
++    E = {P.Gen, P.Alias, P.Lecture, P.Ecriture, P.Mixte, P.Code};
++    EcrireCache(Hote, E);
++  }
++  // Lecture permise sans faute par chaque page de 4 Kio touchee (ni fermee, ni garde, ni execution seule).
++  const uint32_t Premiere = (Adresse >> 12) & 3, Derniere = ((Adresse + Taille - 1) >> 12) & 3;
++  const uint32_t Masque = ((2u << Derniere) - 1) & ~((1u << Premiere) - 1);
++  if (!E.Mixte || !E.Alias || (E.Lecture & Masque) != Masque) {
++    return 0;
++  }
++  return static_cast<int64_t>(E.Alias - Hote);
++}
++
++namespace {
++  // CIDRE_SMC_ARME : pages de 4 Kio de code dont Wine a arme le suivi d'ecriture sur les vues jumelles (autres vues de la
++  // meme section, meme decalage) par l'op 6. Une ecriture dans une jumelle armee leve CodeEcrit (FEX invalide la page et
++  // reprend l'ecriture) ; une ecriture du noyau (appel systeme), une nouvelle vue inscriptible ou une reprotection
++  // inscriptible font seulement monter le compteur de Wine, relu par VerifierSections.
++  constexpr uint32_t OpArmer = 6;
++  std::mutex ArmeesVerrou;
++  fextl::unordered_set<uint64_t> Armees;
++  // Pages dont Wine a refuse l'armement (Code = 0 : delai apres une ecriture, plusieurs vues executables, page d'hote
++  // mixte...) et instant du refus (ms) : l'op 6 parcourt toutes les vues, la redemander a chaque compilation ralentit
++  // tout (demarrage de D2R). Redemande au plus une fois par RefusMs.
++  fextl::unordered_map<uint64_t, uint64_t> Refusees;
++  constexpr uint64_t RefusMs = 200;
++  uint64_t Desarmements {}; // sous ArmeesVerrou : une page desarmee pendant l'appel a Wine n'est pas inscrite
++  const volatile uint32_t* GenSections {};
++  uint32_t GenSectionsVue {}; // sous ArmeesVerrou : compteur de Wine au dernier traitement
++  std::atomic<uint64_t> NbRefusRaison[7];
++  std::atomic<uint64_t> NbArmees, NbArmementsRefuses, NbEcritsArmes, NbGenSections, NbRefusCompteur, NbRefusCourse, NbDejaArmees;
++} // namespace
++
++bool FEX::Windows::SousPages::CodeArme(uint64_t Adresse, uint64_t Taille) {
++  if (!Actif || !Taille) {
++    return false;
++  }
++  for (uint64_t Page = Adresse & ~uint64_t {0xfff}; Page < Adresse + Taille; Page += 0x1000) {
++    uint64_t Avant;
++    {
++      std::scoped_lock Lock(ArmeesVerrou);
++      // Compteur de Wine change et pas encore traite (VerifierSections) : des pages ont pu etre ecrites sans
++      // exception ; ne rien armer de plus d'ici la.
++      if (GenSections && *GenSections != GenSectionsVue) {
++        Compter(NbRefusCompteur, "SMC arme : refus, compteur des sections change (pas encore traite)");
++        return false;
++      }
++      if (Armees.contains(Page)) {
++        Compter(NbDejaArmees, "SMC arme : page deja armee");
++        continue;
++      }
++      if (const auto It = Refusees.find(Page); It != Refusees.end() && Millisecondes() - It->second < RefusMs) {
++        return false; // refus recent : garder la validation sans redemander
++      }
++      Avant = Desarmements;
++    }
++    Params P {};
++    P.Op = OpArmer;
++    P.Hote = Page;
++    P.Alias = 0x1000;
++    if (Appel(&P) || P.Code != 1) {
++      Compter(NbArmementsRefuses, "SMC arme : armement refuse");
++      // Raison rendue par Wine dans Mixte (jumelles 4) : 1 hors vue de section, 2 aucune ou plusieurs vues executables,
++      // 3 vue inscriptible JIT ou systeme, 4 page d'hote mixte cote RW, 5 delai apres une ecriture, 6 table pleine.
++      static constexpr const char* Raisons[7] = {"SMC arme : refus, raison inconnue", "SMC arme : refus, hors vue de section",
++                                                 "SMC arme : refus, aucune ou plusieurs vues executables",
++                                                 "SMC arme : refus, vue inscriptible JIT ou systeme", "SMC arme : refus, page d'hote mixte cote RW",
++                                                 "SMC arme : refus, delai apres une ecriture", "SMC arme : refus, table pleine"};
++      const uint32_t R = P.Mixte < 7 ? P.Mixte : 0;
++      Compter(NbRefusRaison[R], Raisons[R]);
++      std::scoped_lock Lock(ArmeesVerrou);
++      if (Refusees.size() > 65536) {
++        Refusees.clear();
++      }
++      Refusees[Page] = Millisecondes();
++      return false;
++    }
++    std::scoped_lock Lock(ArmeesVerrou);
++    if (!GenSections && P.GenPtr) {
++      GenSections = reinterpret_cast<const volatile uint32_t*>(P.GenPtr);
++      GenSectionsVue = P.Gen;
++    }
++    if (Desarmements != Avant || (GenSections && *GenSections != GenSectionsVue)) {
++      Compter(NbRefusCourse, "SMC arme : refus, desarmement ou compteur pendant l'appel a Wine");
++      return false; // une ecriture ou une projection a pu desarmer la page entre-temps : garder la validation
++    }
++    Armees.insert(Page);
++    Refusees.erase(Page);
++    Compter(NbArmees, "SMC arme : page armee");
++  }
++  return true;
+ }
+ 
++void FEX::Windows::SousPages::Desarmer(uint64_t Adresse, uint64_t Taille) {
++  std::scoped_lock Lock(ArmeesVerrou);
++  ++Desarmements;
++  if (Armees.empty()) {
++    return;
++  }
++  const uint64_t Debut = Adresse & ~uint64_t {0xfff}, Fin = Adresse + Taille;
++  if ((Fin - Debut) / 0x1000 <= 64) {
++    for (uint64_t Page = Debut; Page < Fin; Page += 0x1000) {
++      Armees.erase(Page);
++    }
++  } else {
++    std::erase_if(Armees, [&](uint64_t Page) { return Page >= Debut && Page < Fin; });
++  }
++}
++
++fextl::vector<uint64_t> FEX::Windows::SousPages::VerifierSections() {
++  fextl::vector<uint64_t> Pages;
++  std::scoped_lock Lock(ArmeesVerrou);
++  if (!GenSections || *GenSections == GenSectionsVue) {
++    return Pages;
++  }
++  // Une jumelle a pu etre ecrite sans exception (ou n'est plus suivie) : toutes les pages armees perdent leur traduction
++  // sans validation et seront rearmees a la prochaine compilation.
++  GenSectionsVue = *GenSections;
++  ++Desarmements;
++  Pages.assign(Armees.begin(), Armees.end());
++  Armees.clear();
++  Compter(NbGenSections, "SMC arme : compteur des sections change, pages desarmees");
++  return Pages;
++}
++
++fextl::vector<uint64_t> FEX::Windows::SousPages::ToutDesarmer() {
++  std::scoped_lock Lock(ArmeesVerrou);
++  ++Desarmements;
++  fextl::vector<uint64_t> Pages(Armees.begin(), Armees.end());
++  Armees.clear();
++  return Pages;
++}
++
++fextl::vector<uint64_t> FEX::Windows::SousPages::CodeEcrit(const EXCEPTION_RECORD* Rec) {
++  fextl::vector<uint64_t> Pages;
++  Compter(NbEcritsArmes, "SMC arme : ecriture dans une jumelle armee");
++  const uint64_t Rx = Rec->NumberParameters > 2 ? Rec->ExceptionInformation[2] : 0;
++  std::scoped_lock Lock(ArmeesVerrou);
++  ++Desarmements;
++  if (Rx) {
++    // [3] : taille du bloc desarme (une page d'hote, 0x4000), sinon une page.
++    const uint64_t Taille = Rec->NumberParameters > 3 && Rec->ExceptionInformation[3] ? Rec->ExceptionInformation[3] : 0x1000;
++    for (uint64_t Page = Rx & ~uint64_t {0xfff}; Page < Rx + Taille; Page += 0x1000) {
++      Pages.push_back(Page);
++      Armees.erase(Page);
++    }
++  } else {
++    Pages.assign(Armees.begin(), Armees.end());
++    Armees.clear();
++  }
++  return Pages;
++}
++
+ using namespace FEX::Windows::SousPages;
+ 
+ // Appele par SousPagesCommun (Module.S), registres de l'invite sauves dans
+@@ -890,12 +1368,28 @@
+     if (Appel(&P)) {
+       return 0;
+     }
+-    E = {P.Gen, P.Alias, P.Lecture, P.Ecriture, P.Mixte};
++    E = {P.Gen, P.Alias, P.Lecture, P.Ecriture, P.Mixte, P.Code};
+     EcrireCache(Hote, E);
+   }
+   if (!E.Mixte || !E.Alias) {
+     auto* SM = const_cast<Site*>(S);
+-    if (std::atomic_ref<uint32_t>(SM->Normaux).fetch_add(1, std::memory_order_relaxed) + 1 == SeuilNormaux) {
++    if (RapideUniforme && !E.Mixte && S->FastPc) {
++      // U1 : page uniforme, decalage nul dans le cache du site (meme ecriture que plus bas).
++      std::atomic_ref<uint32_t> Seq(SM->R.Seq);
++      uint32_t Sq = Seq.load(std::memory_order_relaxed);
++      if (!(Sq & 1) && Seq.compare_exchange_strong(Sq, Sq + 1, std::memory_order_acquire)) {
++        std::atomic_thread_fence(std::memory_order_release);
++        SM->R.Gen = E.Gen;
++        SM->R.Hote = Hote;
++        SM->R.Delta = 0;
++        SM->R.Masque = 0xf;
++        Seq.store(Sq + 2, std::memory_order_release);
++      }
++      if (Diag) {
++        Compter(NbUniformes, "U1 : page uniforme dans le cache rapide");
++      }
++    }
++    if (SeuilNormaux && std::atomic_ref<uint32_t>(SM->Normaux).fetch_add(1, std::memory_order_relaxed) + 1 == SeuilNormaux) {
+       uint32_t Attendu = SM->Saut;
+       auto* Code = reinterpret_cast<uint32_t*>(SM->Pc);
+       if (std::atomic_ref<uint32_t>(*Code).compare_exchange_strong(Attendu, SM->Insn, std::memory_order_release)) {
+@@ -908,6 +1402,14 @@
+     }
+     return 0;
+   }
++  if (S->EnLigne) {
++    // R2 : l'entree en ligne du RIP decrit la page d'hote a cette generation (masques de toute la page).
++    // Generation de la case de la page si Wine tient la table (R3), sinon la generation globale.
++    const uint64_t Cle = (Hote >> 14) | (static_cast<uint64_t>(S->EnLigne->Mode ? E.GenPage : E.Gen) << 34);
++    const uint64_t DecalageMasques = (E.Alias - Hote) | (E.Lecture & 0xf) | ((E.Ecriture & 0xf) << 4);
++    __asm__ volatile("stp %0, %1, [%2]" : : "r"(Cle), "r"(DecalageMasques), "r"(S->EnLigne) : "memory");
++    std::atomic_ref<uint32_t>(S->EnLigne->Remplissages).fetch_add(1, std::memory_order_relaxed);
++  }
+   const uint32_t Premiere = (Ea >> 12) & 3, Derniere = ((Ea + S->Taille - 1) >> 12) & 3;
+   const uint32_t Masque = ((2u << Derniere) - 1) & ~((1u << Premiere) - 1);
+   if ((S->Lecture && (E.Lecture & Masque) != Masque) || (S->Ecriture && (E.Ecriture & Masque) != Masque)) {
+diff --git a/Source/Windows/ARM64EC/SousPages.h b/Source/Windows/ARM64EC/SousPages.h
+--- a/Source/Windows/ARM64EC/SousPages.h
++++ b/Source/Windows/ARM64EC/SousPages.h
+@@ -24,6 +24,7 @@
+ #pragma once
+ 
+ #include <cstdint>
++#include <FEXCore/fextl/vector.h>
+ #include <windef.h>
+ #include <winternl.h>
+ 
+@@ -53,4 +54,32 @@
+ // Lecture du code de l'invite par le decodeur (Context::SetGuestCodeAlias) : decalage vers l'alias de la page d'hote
+ // HostPage si elle est mixte, 0 sinon. Le decodeur ne lit qu'apres avoir verifie que la page de 4 Kio est executable.
+ int64_t DecalageCode(uint64_t HostPage);
++
++// Lecture directe (Context::SetGuestReadAlias) : decalage vers l'alias de la page d'hote de [Adresse, Adresse+Taille)
++// si elle est mixte et que chaque page de 4 Kio touchee permet la lecture, 0 sinon (lecture sur place).
++int64_t DecalageLecture(uint64_t Adresse, uint64_t Taille);
++
++// CIDRE_SMC_ARME (Context::SetGuestCodeArmed) : arme chez Wine (op 6) le suivi d'ecriture de toutes les vues inscriptibles
++// de la section pour les pages de [Adresse, Adresse+Taille) ; true si toutes le sont (deja ou maintenant).
++bool CodeArme(uint64_t Adresse, uint64_t Taille);
++// Pages ecrites (BTCpu64NotifyMemoryDirty), liberees, deprojetees ou reprotegees : plus armees.
++void Desarmer(uint64_t Adresse, uint64_t Taille);
++// Compteur des sections de Wine change depuis le dernier appel : pages a invalider (toutes celles qui etaient armees),
++// desarmees. A appeler apres les appels systeme notifies, sans verrou de code tenu.
++fextl::vector<uint64_t> VerifierSections();
++// Nouvelle vue executable projetee : une jumelle deja armee ne designerait plus une seule vue executable (Wine ne saurait
++// pas quelle page invalider) ; toutes les pages armees, a invalider, desarmees.
++fextl::vector<uint64_t> ToutDesarmer();
++// Exception CodeEcrit (ecriture dans une jumelle armee, Wine a deja retire le suivi) : pages de code a invalider.
++constexpr uint32_t CodeEcritException = 0xe0c10202;
++fextl::vector<uint64_t> CodeEcrit(const EXCEPTION_RECORD* Rec);
++
++// R2 (Context::SetGuestMixedSites) : entree du controle en ligne pour un RIP invite deja vu sur une page mixte, ou
++// nullptr. Appele par le JIT a la compilation.
++void* SiteEnLigne(uint64_t GuestRIP);
++
++// P (CIDRE_SOUS_PAGES_EN_LIGNE=2) : RIP invite deja reecrit sur une page mixte (non nul) ou inconnu (nullptr), sans
++// oubli ; et reecriture, juste apres la compilation, de l'acces trouve dans [Debut, Fin) du code hote.
++void* SiteConnu(uint64_t GuestRIP);
++void PreReecrire(FEXCore::Context::Context* CTX, FEXCore::Core::InternalThreadState* Thread, uint64_t Debut, uint64_t Fin);
+ } // namespace FEX::Windows::SousPages
+diff --git a/Source/Windows/Common/InvalidationTracker.cpp b/Source/Windows/Common/InvalidationTracker.cpp
+--- a/Source/Windows/Common/InvalidationTracker.cpp
++++ b/Source/Windows/Common/InvalidationTracker.cpp
+@@ -5,14 +5,29 @@
+ #include <FEXCore/Utils/SignalScopeGuards.h>
+ #include <FEXCore/Core/Context.h>
+ #include <FEXCore/Config/Config.h>
++#include <FEXCore/Utils/CidreCompteurs.h>
+ #include <FEXCore/Debug/InternalThreadState.h>
+ #include "Guest32.h"
+ #include "InvalidationTracker.h"
+ #include <limits>
++#include <atomic>
+ #include <cstdlib>
++#include <mutex>
++#include <unordered_map>
+ #include <windef.h>
+ #include <winternl.h>
+ 
++// Cidre, mesure (Core.cpp, ligne « cidre compil ») : attente et tenue du verrou unique d'invalidation, en ticks CNTVCT
++namespace FEXCore::CidreMesure {
++extern std::atomic<uint64_t> InvalAttente, InvalTenue, InvalNb;
++void NoterInvalidation(uint64_t Address, uint64_t Size); // CIDRE_SMC_BLOC_APRES (Core.cpp)
++static inline uint64_t Tick() {
++  uint64_t v;
++  __asm__ volatile("mrs %0, cntvct_el0" : "=r"(v));
++  return v;
++}
++} // namespace FEXCore::CidreMesure
++
+ namespace FEX::Windows {
+ InvalidationTracker::InvalidationTracker(FEXCore::Context::Context& CTX, const std::unordered_map<DWORD, FEXCore::Core::InternalThreadState*>& Threads)
+   : CTX {CTX}
+@@ -61,10 +76,64 @@
+ constexpr uint64_t TRAP_GRANULE_MASK = ~(TRAP_GRANULE - 1);
+ } // namespace
+ 
++// Cidre, diag (CIDRE_DIAG_SMC=1) : a chaque notification qui rend des pages executables et lisibles, empreinte de
++// chaque page de 4 Kio, comparee a celle de la notification precedente de cette page. Dit combien d'invalidations
++// jetteraient une traduction encore juste (piste : garder la traduction d'une page reprotegee a l'identique).
++namespace {
++std::atomic<int> CidreDiagSMC {-1};
++std::mutex CidreEmpreintesVerrou;
++std::unordered_map<uint64_t, uint64_t>* CidreEmpreintes {};
++std::atomic<uint64_t> CidreNbPages, CidreNbIdentiques, CidreNbChangees, CidreNbNeuves, CidreNbRetraits;
++void CidreCompter(std::atomic<uint64_t>& N, const char* Quoi) {
++  const uint64_t V = N.fetch_add(1, std::memory_order_relaxed) + 1;
++  if ((V & (V - 1)) == 0) {
++    LogMan::Msg::IFmt("cidre smc : {} {} (pages {}, identiques {}, changees {}, neuves {}, retraits {})", Quoi, V,
++                      CidreNbPages.load(), CidreNbIdentiques.load(), CidreNbChangees.load(), CidreNbNeuves.load(), CidreNbRetraits.load());
++  }
++}
++uint64_t CidreEmpreinte(const uint64_t* P) {
++  uint64_t H = 0xcbf29ce484222325ULL;
++  for (size_t i = 0; i < 4096 / 8; i++) {
++    H = (H ^ P[i]) * 0x100000001b3ULL;
++  }
++  return H;
++}
++} // namespace
++
+ void InvalidationTracker::HandleMemoryProtectionNotification(uint64_t Address, uint64_t Size, ULONG Prot) {
+   const auto AlignedBase = Address & FEXCore::Utils::FEX_PAGE_MASK;
+   const auto AlignedSize = (Address - AlignedBase + Size + FEXCore::Utils::FEX_PAGE_SIZE - 1) & FEXCore::Utils::FEX_PAGE_MASK;
+ 
++  if (CidreDiagSMC.load(std::memory_order_relaxed) < 0) {
++    const char* E = getenv("CIDRE_DIAG_SMC");
++    CidreDiagSMC.store(E && *E == '1', std::memory_order_relaxed);
++  }
++  if (CidreDiagSMC.load(std::memory_order_relaxed) > 0) {
++    if (ProtHasExec(Prot) && ProtIsReadable(Prot) && !(Prot & PAGE_GUARD)) {
++      for (uint64_t Page = AlignedBase; Page < AlignedBase + AlignedSize; Page += FEXCore::Utils::FEX_PAGE_SIZE) {
++        const uint64_t Hote = reinterpret_cast<uint64_t>(HostPtr32(Page));
++        const int64_t Decalage = CidreDecalageCode ? CidreDecalageCode(Hote & ~uint64_t {0x3fff}) : 0;
++        const uint64_t H = CidreEmpreinte(reinterpret_cast<const uint64_t*>(Hote + Decalage));
++        CidreCompter(CidreNbPages, "pages rendues executables");
++        std::scoped_lock Lock(CidreEmpreintesVerrou);
++        if (!CidreEmpreintes) {
++          CidreEmpreintes = new std::unordered_map<uint64_t, uint64_t>;
++        }
++        auto [It, Neuve] = CidreEmpreintes->try_emplace(Page, H);
++        if (Neuve) {
++          CidreCompter(CidreNbNeuves, "page neuve");
++        } else if (It->second == H) {
++          CidreCompter(CidreNbIdentiques, "page identique");
++        } else {
++          It->second = H;
++          CidreCompter(CidreNbChangees, "page changee");
++        }
++      }
++    } else if (!ProtHasExec(Prot)) {
++      CidreCompter(CidreNbRetraits, "protection non executable");
++    }
++  }
++
+   // Une vue de section executable sans ecriture ne change que par une autre
+   // vue (un chargeur protege ecrit par une vue RW et execute par une vue RX,
+   // D2R_loader.dll) : mtrack ne le voit pas. Interroge hors du verrou.
+@@ -130,11 +199,11 @@
+ }
+ 
+ bool InvalidationTracker::RetirerExecutableAvant(uint64_t Address, uint64_t Size) {
++  const auto AlignedBase = Address & FEXCore::Utils::FEX_PAGE_MASK;
++  const auto AlignedSize = (Address - AlignedBase + Size + FEXCore::Utils::FEX_PAGE_SIZE - 1) & FEXCore::Utils::FEX_PAGE_MASK;
+   if (!Size) {
+     return false;
+   }
+-  const auto AlignedBase = Address & FEXCore::Utils::FEX_PAGE_MASK;
+-  const auto AlignedSize = (Address - AlignedBase + Size + FEXCore::Utils::FEX_PAGE_SIZE - 1) & FEXCore::Utils::FEX_PAGE_MASK;
+   const bool Retire = [&] {
+     std::unique_lock Lock(IntervalsLock);
+     const FEXCore::IntervalList<uint64_t>::Interval I {AlignedBase, AlignedBase + AlignedSize};
+@@ -260,7 +329,7 @@
+     SectionSize += Info.RegionSize;
+   }
+ 
+-  InvalidateIntervalInternal(SectionBase, SectionSize);
++  InvalidateIntervalInternal(SectionBase, SectionSize, Free ? FEXCore::CidreCompteurs::SRC_UNMAP : FEXCore::CidreCompteurs::SRC_PROTECT);
+ 
+   if (Free) {
+     std::unique_lock Lock(IntervalsLock);
+@@ -272,7 +341,7 @@
+   return {SectionBase, SectionSize};
+ }
+ 
+-void InvalidationTracker::InvalidateAlignedInterval(uint64_t Address, uint64_t Size, bool Free) {
++void InvalidationTracker::InvalidateAlignedInterval(uint64_t Address, uint64_t Size, bool Free, uint32_t CidreSource) {
+   if (!Address && !Size) {
+     /* Match the Windows behaviour when passed a NULL base address.
+      * La taille nulle distingue ce sentinel d'une liberation reelle a l'adresse
+@@ -286,7 +355,7 @@
+   const auto AlignedBase = Address & FEXCore::Utils::FEX_PAGE_MASK;
+   const auto AlignedSize = std::max(Size, (Address - AlignedBase + Size + FEXCore::Utils::FEX_PAGE_SIZE - 1) & FEXCore::Utils::FEX_PAGE_MASK);
+ 
+-  InvalidateIntervalInternal(AlignedBase, AlignedSize);
++  InvalidateIntervalInternal(AlignedBase, AlignedSize, CidreSource);
+ 
+   if (Free) {
+     std::unique_lock Lock(IntervalsLock);
+@@ -328,17 +397,28 @@
+   if (NeedsInvalidate) {
+     // IntervalsLock cannot be held during invalidation
+     {
++      const uint64_t CidreT0 = FEXCore::CidreMesure::Tick();
+       std::scoped_lock Lock(CTX.GetCodeInvalidationMutex());
++      const uint64_t CidreT1 = FEXCore::CidreMesure::Tick();
++      struct CidreFin {
++        uint64_t T0, T1;
++        ~CidreFin() {
++          FEXCore::CidreMesure::InvalAttente.fetch_add(T1 - T0, std::memory_order_relaxed);
++          FEXCore::CidreMesure::InvalTenue.fetch_add(FEXCore::CidreMesure::Tick() - T1, std::memory_order_relaxed);
++          FEXCore::CidreMesure::InvalNb.fetch_add(1, std::memory_order_relaxed);
++          FEXCore::CidreCompteurs::NoterInval(FEXCore::CidreCompteurs::SRC_SMC, TRAP_GRANULE, FEXCore::CidreMesure::Tick() - T0);
++        }
++      } CidreFinFaute {CidreT0, CidreT1};
+ 
+       const uint64_t Granule = FaultAddress & TRAP_GRANULE_MASK;
++      FEXCore::CidreMesure::NoterInvalidation(Granule, TRAP_GRANULE);
+       InvalidateIntervalInternalLocked(Granule, TRAP_GRANULE);
+ 
+       // Invalidate, then unprotect the faulting host page with the compilation lock held to ensure that any racing invalidations are not dropped.
+       // Toutes les pages RWX de la page d'hote : liberer la seule page fautive
+       // laisserait les autres piegees, donc la page d'hote non inscriptible.
+       std::shared_lock IntervalsReadLock(IntervalsLock);
+-      // Cidre 0278 : pages voisines de meme protection liberees en un seul NtProtectVirtualMemory (un appel systeme
+-      // Wine coute ~4 us ; une page d'hote de 16 Kio en avait 4 de 4 Kio a chaque faute SMC).
++      // Cidre 0278 : pages voisines de meme protection liberees en un seul NtProtectVirtualMemory.
+       uint64_t RunStart = 0, RunEnd = 0;
+       ULONG RunProt = 0;
+       const auto Flush = [&]() {
+@@ -475,9 +555,28 @@
+   return PAGE_EXECUTE_READWRITE;
+ }
+ 
+-void InvalidationTracker::InvalidateIntervalInternal(uint64_t Address, uint64_t Size) {
++void InvalidationTracker::InvalidateIntervalInternal(uint64_t Address, uint64_t Size, uint32_t CidreSource) {
++  const uint64_t CidreT0 = FEXCore::CidreMesure::Tick();
+   std::scoped_lock CodeLock(CTX.GetCodeInvalidationMutex());
++  const uint64_t CidreT1 = FEXCore::CidreMesure::Tick();
++  struct CidreFin {
++    uint64_t T0, T1, Taille;
++    uint32_t Source;
++    ~CidreFin() {
++      FEXCore::CidreMesure::InvalAttente.fetch_add(T1 - T0, std::memory_order_relaxed);
++      FEXCore::CidreMesure::InvalTenue.fetch_add(FEXCore::CidreMesure::Tick() - T1, std::memory_order_relaxed);
++      FEXCore::CidreMesure::InvalNb.fetch_add(1, std::memory_order_relaxed);
++      FEXCore::CidreCompteurs::NoterInval(Source, Taille, FEXCore::CidreMesure::Tick() - T0);
++    }
++  } CidreFinInval {CidreT0, CidreT1, Size, CidreSource};
++  FEXCore::CidreMesure::NoterInvalidation(Address, Size);
++  if (CidreTraceInvalidation) {
++    LogMan::Msg::IFmt("cidre : invalidation {:#x} + {:#x} : CodeInvalidationMutex pris", Address, Size);
++  }
+   InvalidateIntervalInternalLocked(Address, Size);
++  if (CidreTraceInvalidation) {
++    LogMan::Msg::IFmt("cidre : invalidation {:#x} : caches des fils vides", Address);
++  }
+ }
+ 
+ void InvalidationTracker::InvalidateIntervalInternalLocked(uint64_t Address, uint64_t Size) {
+diff --git a/Source/Windows/Common/InvalidationTracker.h b/Source/Windows/Common/InvalidationTracker.h
+--- a/Source/Windows/Common/InvalidationTracker.h
++++ b/Source/Windows/Common/InvalidationTracker.h
+@@ -24,6 +24,11 @@
+ public:
+   InvalidationTracker(FEXCore::Context::Context& CTX, const std::unordered_map<DWORD, FEXCore::Core::InternalThreadState*>& Threads);
+   void HandleMemoryProtectionNotification(uint64_t Address, uint64_t Size, ULONG Prot);
++  // Cidre, diag (CIDRE_DIAG_SMC=1) : lecture du code d'une page d'hote mixte par l'alias (SousPages::DecalageCode),
++  // pose par le module ARM64EC ; nul ailleurs.
++  static inline int64_t (*CidreDecalageCode)(uint64_t HostPage) {};
++  // Cidre, diag : trace des etapes de l'invalidation (BTCpu64NotifyMemoryDirty sous CIDRE_SMC_ARME).
++  static inline bool CidreTraceInvalidation {};
+   void HandleProcessExecuteFlagsChange(ULONG Flags);
+   void HandleImageMap(std::string_view Name, uint64_t Address);
+   struct InvalidateContainingSectionResult {
+@@ -31,7 +36,7 @@
+     uint64_t SectionSize;
+   };
+   InvalidateContainingSectionResult InvalidateContainingSection(uint64_t Address, bool Free);
+-  void InvalidateAlignedInterval(uint64_t Address, uint64_t Size, bool Free);
++  void InvalidateAlignedInterval(uint64_t Address, uint64_t Size, bool Free, uint32_t CidreSource = 0);
+   // Cidre : retire [Address, Address + Size) des intervalles executables et invalide son code AVANT un appel qui lui
+   // fera perdre la lecture (PAGE_NOACCESS, PAGE_GUARD, decommission, liberation). L'invalidation prend
+   // CodeInvalidationMutex en exclusif, donc attend la fin des compilations en cours ; ensuite le decodeur ne lit plus
+@@ -51,7 +56,7 @@
+ private:
+   void DetectMonoBackpatcherBlock(FEXCore::Core::InternalThreadState* Thread, uint64_t HostPC);
+   void DisableSMCDetection();
+-  void InvalidateIntervalInternal(uint64_t Address, uint64_t Size);
++  void InvalidateIntervalInternal(uint64_t Address, uint64_t Size, uint32_t CidreSource = 0);
+   // NOTE: This assumed CodeInvalidationMutex is locked by the caller
+   void InvalidateIntervalInternalLocked(uint64_t Address, uint64_t Size);
+ 

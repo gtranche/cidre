@@ -1,0 +1,456 @@
+Generated-by: LLM
+
+KosmicKrisp : compilation de fond par rafales et par etapes, delais, vidage reporte (Diablo IV)
+
+Suite de 0441 (phase 2) : la file de fond prend les pipelines inconnus par rafales, en etapes (frontal, puis
+bibliotheques Metal, puis variante), avec des delais bornes ; le vidage (flush) des archives est reporte hors
+du fil de rendu. Mesure (M1, kk-H5, 07/11) : cas froid ~10 s d'attentes au bind, dont 75 % dans la creation
+du pipeline Metal (~37 ms par paire dans le compilateur de Metal, sans levier KK) ; la rafale de fond reste
+peu utile a D4 (1,2 % des creations liees). Coupe par defaut. Chantier : ~/Dev/cidre-d4-fond.
+
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.h b/src/kosmickrisp/bridge/mtl_compiler.h
+--- a/src/kosmickrisp/bridge/mtl_compiler.h
++++ b/src/kosmickrisp/bridge/mtl_compiler.h
+@@ -109,3 +109,6 @@
+ /* Cidre (0441) : compteurs de la file de fond et des attentes au bind. */
+ extern _Atomic uint32_t kk_stat_fond[16];
+ extern _Atomic uint64_t kk_stat_fond_us[4];
++/* Cidre (0443) : rafale et delais (kk_stat_fond2), temps par etape (ns). */
++extern _Atomic uint32_t kk_stat_fond2[16];
++extern _Atomic uint64_t kk_stat_etape_ns[8];
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.m b/src/kosmickrisp/bridge/mtl_compiler.m
+--- a/src/kosmickrisp/bridge/mtl_compiler.m
++++ b/src/kosmickrisp/bridge/mtl_compiler.m
+@@ -720,6 +720,26 @@
+          continue;
+       if (dirty_since == 0)
+          dirty_since = t;
++      /* Cidre (0443) : le flush tient le verrou d'ecriture et fige toute
++       * compilation (0,1-0,4 s) ; un bind qui attend sa compilation tombe
++       * dessus. Le reporter tant que des binds attendent (moins de 3 s depuis
++       * la derniere attente), 60 s au plus. CIDRE_FLUSH_REPORT=0 : coupe. */
++      {
++         static uint32_t attentes_vues;
++         static uint64_t attente_t;
++         uint32_t w = atomic_load(&kk_stat_fond[4]);
++         if (w != attentes_vues) {
++            attentes_vues = w;
++            attente_t = t;
++         }
++         const char *rv = getenv("CIDRE_FLUSH_REPORT");
++         bool report = !(rv && rv[0] == '0');
++         if (report && attente_t != 0 && t - attente_t < 3000000000ull &&
++             t - dirty_since < 60000000000ull) {
++            atomic_fetch_add(&kk_stat_fond2[5], 1);
++            continue;
++         }
++      }
+       if (t < due ||
+           (pending < KK_FLUSH_BATCH && t - dirty_since < KK_FLUSH_LINGER_NS))
+          continue;
+@@ -938,6 +958,9 @@
+ _Atomic uint32_t kk_stat_disque[16];
+ _Atomic uint32_t kk_stat_fond[16];
+ _Atomic uint64_t kk_stat_fond_us[4];
++_Atomic uint32_t kk_stat_fond2[16];
++_Atomic uint64_t kk_stat_etape_ns[8];
++extern uint64_t vk_cidre_stat_precomp[3];
+ 
+ static void
+ kk_print_compile_stats(void)
+@@ -1006,6 +1029,27 @@
+               atomic_load(&kk_stat_fond[10]) / 1000.0,
+               atomic_load(&kk_stat_fond[13]), atomic_load(&kk_stat_fond_us[3]) / 1048576.0,
+               atomic_load(&kk_stat_fond[14]));
++   /* Cidre (0443) : kk_stat_fond2 [0] rafale enfiles, [1] compiles, [2] expires,
++    * [3] refuses (plafond), [4] prets au bind ; [8..13] delai creation ->
++    * premier bind des paires froides ; kk_stat_etape_ns [0] abaissement NIR +
++    * varyings, [1] kk_compile_shader, [2] frontal complet, [3] prechauffage,
++    * [4] nombre de frontaux, [5] dont kk_nir_to_msl_data (gen). */
++   if (atomic_load(&kk_stat_etape_ns[4]) || vk_cidre_stat_precomp[0])
++      fprintf(stderr, "KK compile: etapes : precomp %u / spirv_to_nir %.1f s + pretraitement %.1f s ; "
++                      "frontaux %u / %.1f s = abaissement+varyings %.1f s + compile_shader %.1f s (dont generation %.1f s) "
++                      "+ prechauffage %.1f s\n",
++              (unsigned)vk_cidre_stat_precomp[0], vk_cidre_stat_precomp[1] / 1e9, vk_cidre_stat_precomp[2] / 1e9,
++              (unsigned)atomic_load(&kk_stat_etape_ns[4]), atomic_load(&kk_stat_etape_ns[2]) / 1e9,
++              atomic_load(&kk_stat_etape_ns[0]) / 1e9, atomic_load(&kk_stat_etape_ns[1]) / 1e9,
++              atomic_load(&kk_stat_etape_ns[5]) / 1e9, atomic_load(&kk_stat_etape_ns[3]) / 1e9);
++   if (atomic_load(&kk_stat_fond2[14]) || atomic_load(&kk_stat_fond2[0]))
++      fprintf(stderr, "KK compile: rafale : %u enfiles, %u compiles, %u expires, %u refuses, %u prets au bind ; "
++                      "delai creation->bind (%u paires) : <10ms %u, <100ms %u, <1s %u, <10s %u, <60s %u, >=60s %u ; flush reportes %u\n",
++              atomic_load(&kk_stat_fond2[0]), atomic_load(&kk_stat_fond2[1]), atomic_load(&kk_stat_fond2[2]),
++              atomic_load(&kk_stat_fond2[3]), atomic_load(&kk_stat_fond2[4]), atomic_load(&kk_stat_fond2[14]),
++              atomic_load(&kk_stat_fond2[8]), atomic_load(&kk_stat_fond2[9]), atomic_load(&kk_stat_fond2[10]),
++              atomic_load(&kk_stat_fond2[11]), atomic_load(&kk_stat_fond2[12]), atomic_load(&kk_stat_fond2[13]),
++              atomic_load(&kk_stat_fond2[5]));
+    if (atomic_load(&kk_stat_relais_msl))
+       fprintf(stderr, "KK compile: relais %u pipelines MSL pris aux archives, %u remplaces par l'AIR direct, "
+                       "%u echecs, %u abandonnes\n",
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -2080,7 +2080,9 @@
+    }
+ 
+    struct msl_compile_data *data = &shader->msl_data[stage];
++   const int64_t t_gen = os_time_get_nano();
+    kk_nir_to_msl_data(nir, &translate_options, data);
++   atomic_fetch_add(&kk_stat_etape_ns[5], (uint64_t)(os_time_get_nano() - t_gen));
+ 
+    if (KK_DEBUG(MSL))
+       mesa_logi("%s\n", data->code);
+@@ -3367,6 +3369,7 @@
+ 
+    /* Lower shaders, notably lowering IO. This is a prerequisite for intershader
+     * optimization. */
++   const int64_t t_abaisse = os_time_get_nano();
+    const struct vk_pipeline_robustness_state *vertex_robustness = &rs_none;
+    for (uint32_t i = 0u; i < shader_count; ++i) {
+       const struct vk_shader_compile_info *info = &infos[i];
+@@ -3402,6 +3405,8 @@
+       nir_opt_varyings_bulk(nir_shaders, total_shaders, true, UINT32_MAX,
+                             UINT32_MAX, nir_opts, NULL);
+    }
++
++   atomic_fetch_add(&kk_stat_etape_ns[0], (uint64_t)(os_time_get_nano() - t_abaisse));
+ 
+    if (passthrough_gs) {
+       nir_shader *gs = kk_build_passthrough_gs(dev, capturing_vs, state);
+@@ -3430,9 +3435,11 @@
+ 
+    for (uint32_t i = 0; i < total_shaders; i++) {
+       struct kk_shader *prev_stage = i > 0 ? shaders[i - 1] : NULL;
++      const int64_t t_cs = os_time_get_nano();
+       result =
+          kk_compile_shader(dev, nir_shaders[i], prev_stage, vertex_robustness,
+                            state, fs_input_comps, pAllocator, &shaders[i]);
++      atomic_fetch_add(&kk_stat_etape_ns[1], (uint64_t)(os_time_get_nano() - t_cs));
+ 
+       if (result != VK_SUCCESS) {
+          /* Clean up all the shaders before this point */
+@@ -3587,6 +3594,9 @@
+     * cree ~17 000 pipelines jamais lies : garder leur NIR coutait ~9 Go. */
+    bool nir_possede;
+    void *precomp[2];
++   /* Cidre (0443) : heure de creation (rafale : age du ticket). */
++   int64_t t_crea;
++   _Atomic bool rafale;
+ };
+ 
+ static void
+@@ -3711,6 +3721,8 @@
+    for (unsigned i = 0; i < 2; i++) {
+       vivant[i] = job->vivant[i];
+       ecrit[i] = job->vivant[i] || job->orphelin[i];
++      if (par_fond && ecrit[i] && atomic_load(&job->rafale))
++         atomic_fetch_or(&job->shells[i]->fond, KK_FOND_RAFALE);
+       if (par_fond && ecrit[i]) {
+          atomic_store(&job->shells[i]->fond_fil, (void *)pthread_self());
+          atomic_fetch_or(&job->shells[i]->fond, KK_FOND_EN_COURS);
+@@ -3733,10 +3745,13 @@
+             nir_ok = false;
+       }
+       if (nir_ok) {
++         const int64_t t_fr = os_time_get_nano();
+          kk_frontal_sync = true;
+          result = kk_compile_shaders_sync(&dev->vk, 2, job->infos, &job->state,
+                                           &job->features, &dev->vk.alloc, out);
+          kk_frontal_sync = false;
++         atomic_fetch_add(&kk_stat_etape_ns[2], (uint64_t)(os_time_get_nano() - t_fr));
++         atomic_fetch_add(&kk_stat_etape_ns[4], 1);
+       } else {
+          result = VK_ERROR_OUT_OF_HOST_MEMORY;
+       }
+@@ -3793,9 +3808,11 @@
+       if (fs->prewarm_key != NULL) {
+          fs->prewarm_key->vs_function = vs->function;
+          fs->prewarm_key->fs_function = fs->function;
++         const int64_t t_pw = os_time_get_nano();
+          if (kk_get_render_pipeline_variant(dev, vs->function, vs, fs,
+                                             fs->prewarm_key) != NULL)
+             atomic_fetch_add(&kk_prewarm_count, 1);
++         atomic_fetch_add(&kk_stat_etape_ns[3], (uint64_t)(os_time_get_nano() - t_pw));
+       }
+    }
+ 
+@@ -4091,6 +4108,84 @@
+       atomic_fetch_add(&kk_stat_fond[8], 1);
+    }
+    simple_mtx_unlock(&kk_chaud_lock);
++}
++
++/* --- rafale (0443) ---
++ * CIDRE_FOND_RAFALE=R : pendant une rafale de creations (>= R pipelines/s sur
++ * la derniere seconde, prolongee de 2 s), les pipelines froids INCONNUS de la
++ * liste chaude partent aussi en fond, dans l'ordre de creation, tant que la
++ * file de fond tient moins de CIDRE_FOND_RAFALE_MAX tickets (1500). Un ticket
++ * de rafale expire s'il sort de file hors rafale ou plus de
++ * CIDRE_FOND_RAFALE_AGE s (30) apres sa creation. */
++static unsigned
++kk_env_u(const char *nom, unsigned defaut)
++{
++   const char *v = getenv(nom);
++   return v != NULL && v[0] != '\0' ? (unsigned)strtoul(v, NULL, 10) : defaut;
++}
++
++static unsigned
++kk_rafale_seuil(void)
++{
++   static int n = -1;
++   if (n < 0)
++      n = (int)kk_env_u("CIDRE_FOND_RAFALE", 0);
++   return (unsigned)n;
++}
++
++static unsigned
++kk_rafale_max(void)
++{
++   static int n = -1;
++   if (n < 0)
++      n = (int)kk_env_u("CIDRE_FOND_RAFALE_MAX", 1500);
++   return (unsigned)n;
++}
++
++static int64_t
++kk_rafale_age_ns(void)
++{
++   static int64_t n = -1;
++   if (n < 0)
++      n = (int64_t)kk_env_u("CIDRE_FOND_RAFALE_AGE", 30) * 1000000000ll;
++   return n;
++}
++
++#define KK_RAFALE_SEAU_NS 125000000ll
++#define KK_RAFALE_TRAINE_NS 2000000000ll
++static simple_mtx_t kk_rafale_lock = SIMPLE_MTX_INITIALIZER;
++static int64_t kk_rafale_seau_t[8];
++static uint32_t kk_rafale_seau_n[8];
++static _Atomic int64_t kk_rafale_derniere;
++
++static bool
++kk_rafale_active(int64_t now)
++{
++   int64_t d = atomic_load(&kk_rafale_derniere);
++   return d != 0 && now - d < KK_RAFALE_TRAINE_NS;
++}
++
++/* Une creation de pipeline : vrai si on est en rafale. */
++static bool
++kk_rafale_noter(int64_t now)
++{
++   const int64_t b = now / KK_RAFALE_SEAU_NS;
++   const unsigned idx = (unsigned)(b & 7);
++   uint32_t total = 0;
++   simple_mtx_lock(&kk_rafale_lock);
++   if (kk_rafale_seau_t[idx] != b) {
++      kk_rafale_seau_t[idx] = b;
++      kk_rafale_seau_n[idx] = 0;
++   }
++   kk_rafale_seau_n[idx]++;
++   for (unsigned k = 0; k < 8; k++) {
++      if (b - kk_rafale_seau_t[k] < 8)
++         total += kk_rafale_seau_n[k];
++   }
++   simple_mtx_unlock(&kk_rafale_lock);
++   if (total >= kk_rafale_seuil())
++      atomic_store(&kk_rafale_derniere, now);
++   return kk_rafale_active(now);
+ }
+ 
+ /* --- file de fond --- */
+@@ -4103,9 +4198,16 @@
+    kk_qos_fil(q != NULL && strcmp(q, "background") == 0 ? QOS_CLASS_BACKGROUND
+                                                         : QOS_CLASS_UTILITY);
+    bool fait = false;
++   const bool rafale = atomic_load(&s->fond) & KK_FOND_RAFALE;
++   bool expire = false;
++   if (rafale) {
++      const int64_t now = os_time_get_nano();
++      expire = !kk_rafale_active(now) ||
++               now - atomic_load(&s->t_crea) > kk_rafale_age_ns();
++   }
+ 
+    /* Seule la reference du ticket : plus personne ne peut le lier. */
+-   if (!atomic_load(&dev->fond_arret) &&
++   if (!expire && !atomic_load(&dev->fond_arret) &&
+        p_atomic_read(&s->vk.pipeline.cache_obj.ref_cnt) > 1) {
+       struct kk_frontal_job *job = atomic_load(&s->lazy_job);
+       if (job != NULL) {
+@@ -4146,7 +4248,10 @@
+       }
+    }
+ 
+-   atomic_fetch_add(&kk_stat_fond[fait ? 1 : 2], 1);
++   if (rafale)
++      atomic_fetch_add(&kk_stat_fond2[fait ? 1 : 2], 1);
++   else
++      atomic_fetch_add(&kk_stat_fond[fait ? 1 : 2], 1);
+    vk_pipeline_cache_object_unref(&dev->vk, &s->vk.pipeline.cache_obj);
+    atomic_fetch_sub(&dev->fond_en_file, 1);
+ }
+@@ -4169,6 +4274,8 @@
+    if (!dev->fond_queue_ok || atomic_load(&dev->fond_arret))
+       return;
+    const bool tout = kk_fond_tout();
++   const bool rafale = kk_rafale_seuil() > 0 &&
++                       kk_rafale_noter(os_time_get_nano());
+    for (uint32_t i = 0; i < count; i++) {
+       struct kk_shader *s = container_of(shaders[i], struct kk_shader, vk);
+       if (s->vk.stage != MESA_SHADER_VERTEX &&
+@@ -4176,17 +4283,36 @@
+          continue;
+       if (!kk_fond_en_attente(s))
+          continue;
+-      if (!tout && !kk_chaud_contient(s->vk.pipeline.cache_key))
+-         continue;
++      struct kk_frontal_job *job = atomic_load(&s->lazy_job);
++      bool par_rafale = false;
++      if (!tout && !kk_chaud_contient(s->vk.pipeline.cache_key)) {
++         /* Inconnu : seulement un travail frontal froid, en rafale, sous le
++          * plafond de tickets en file. */
++         if (!rafale || job == NULL)
++            continue;
++         if (atomic_load(&job->fond_enfile) ||
++             (atomic_load(&s->fond) & KK_FOND_ENFILE))
++            continue;
++         if (atomic_load(&dev->fond_en_file) >= kk_rafale_max()) {
++            atomic_fetch_add(&kk_stat_fond2[3], 1);
++            continue;
++         }
++         par_rafale = true;
++      }
+       if (atomic_fetch_or(&s->fond, KK_FOND_ENFILE) & KK_FOND_ENFILE)
+          continue;
+       /* Un seul ticket par paire VS+FS (meme travail frontal). */
+-      struct kk_frontal_job *job = atomic_load(&s->lazy_job);
+       if (job != NULL && atomic_exchange(&job->fond_enfile, true))
+          continue;
++      if (par_rafale) {
++         /* Ticket (expiration) ; les coquilles vivantes sont marquees par
++          * kk_frontal_execute (l'autre coquille peut etre deja liberee). */
++         atomic_fetch_or(&s->fond, KK_FOND_RAFALE);
++         atomic_store(&job->rafale, true);
++      }
+       vk_pipeline_cache_object_ref(&s->vk.pipeline.cache_obj);
+       atomic_fetch_add(&dev->fond_en_file, 1);
+-      atomic_fetch_add(&kk_stat_fond[0], 1);
++      atomic_fetch_add(par_rafale ? &kk_stat_fond2[0] : &kk_stat_fond[0], 1);
+       util_queue_add_job(&dev->fond_queue, s, NULL, kk_fond_execute, NULL, 0);
+    }
+ }
+@@ -4245,11 +4371,24 @@
+    if (!shader->compile_async)
+       return;
+    kk_shader_kick(shader);
++   /* Delai creation -> premier bind d'une paire froide (compte sur le VS). */
++   uint32_t f0 = atomic_load_explicit(&shader->fond, memory_order_relaxed);
++   if (graphics && shader->vk.stage == MESA_SHADER_VERTEX &&
++       (f0 & KK_FOND_FROID) && !(f0 & KK_FOND_DELAI) &&
++       !(atomic_fetch_or(&shader->fond, KK_FOND_DELAI) & KK_FOND_DELAI)) {
++      const int64_t d = os_time_get_nano() - atomic_load(&shader->t_crea);
++      const unsigned seau = d < 10000000ll ? 8 : d < 100000000ll ? 9 :
++                            d < 1000000000ll ? 10 : d < 10000000000ll ? 11 :
++                            d < 60000000000ll ? 12 : 13;
++      atomic_fetch_add(&kk_stat_fond2[seau], 1);
++      atomic_fetch_add(&kk_stat_fond2[14], 1);
++   }
+    if (util_queue_fence_is_signalled(&shader->compile_ready)) {
+       uint32_t f = atomic_load_explicit(&shader->fond, memory_order_relaxed);
+       if (graphics && (f & KK_FOND_FAIT) && !(f & KK_FOND_COMPTE) &&
+           !(atomic_fetch_or(&shader->fond, KK_FOND_COMPTE) & KK_FOND_COMPTE))
+-         atomic_fetch_add(&kk_stat_fond[3], 1);
++         atomic_fetch_add((f & KK_FOND_RAFALE) ? &kk_stat_fond2[4]
++                                               : &kk_stat_fond[3], 1);
+       return;
+    }
+    const bool sur_fond = atomic_load(&shader->fond) & KK_FOND_EN_COURS;
+@@ -4386,6 +4525,11 @@
+    /* Cidre (0442) : le travail possede maintenant le NIR ; le remplacer par
+     * une reference a la precompilation (NIR serialise, partage). */
+    job->nir_possede = true;
++   job->t_crea = os_time_get_nano();
++   for (unsigned i = 0; i < 2; i++) {
++      atomic_store(&job->shells[i]->t_crea, job->t_crea);
++      atomic_fetch_or(&job->shells[i]->fond, KK_FOND_FROID);
++   }
+    for (unsigned i = 0; i < 2; i++) {
+       if (job->infos[i].cidre_precomp != NULL && !kk_garder_nir()) {
+          job->precomp[i] = vk_cidre_precomp_ref(job->infos[i].cidre_precomp);
+diff --git a/src/kosmickrisp/vulkan/kk_shader.h b/src/kosmickrisp/vulkan/kk_shader.h
+--- a/src/kosmickrisp/vulkan/kk_shader.h
++++ b/src/kosmickrisp/vulkan/kk_shader.h
+@@ -252,6 +252,8 @@
+    /* Cidre (0441) : fil de fond qui compile ce nuanceur (KK_FOND_EN_COURS),
+     * pour lui preter la QoS du bind qui l'attend. */
+    void *_Atomic fond_fil;
++   /* Cidre (0443) : creation d'une coquille froide (os_time_get_nano). */
++   _Atomic int64_t t_crea;
+    _Atomic int lib_etat;
+    struct kk_device *compile_dev;
+    uint32_t compile_local_size;
+@@ -292,6 +294,9 @@
+ #define KK_FOND_FAIT     0x4u /* compile par un fil de fond, fini */
+ #define KK_FOND_NOTE     0x8u /* note dans la liste chaude */
+ #define KK_FOND_COMPTE   0x10u /* compte au premier bind */
++#define KK_FOND_FROID    0x20u /* coquille d'un travail frontal (cache froid) */
++#define KK_FOND_DELAI    0x40u /* delai creation -> bind deja compte */
++#define KK_FOND_RAFALE   0x80u /* enfile en fond pendant une rafale (inconnu) */
+ 
+ /* Vrai sur le fil d'encodage pendant la recherche de variante d'un dessin. */
+ extern _Thread_local bool kk_variante_au_dessin;
+diff --git a/src/vulkan/runtime/vk_pipeline.c b/src/vulkan/runtime/vk_pipeline.c
+--- a/src/vulkan/runtime/vk_pipeline.c
++++ b/src/vulkan/runtime/vk_pipeline.c
+@@ -48,6 +48,8 @@
+ #include "shader_enums.h"
+ 
+ #include "util/mesa-blake3.h"
++#include "util/os_time.h"
++#include "util/u_atomic.h"
+ 
+ struct vk_pipeline_binary {
+    struct vk_object_base base;
+@@ -945,6 +947,8 @@
+    return nir;
+ }
+ 
++uint64_t vk_cidre_stat_precomp[3];
++
+ void *
+ vk_cidre_precomp_ref(void *precomp)
+ {
+@@ -1052,14 +1056,20 @@
+       ops->get_spirv_options(device->physical, stage->stage, &rs);
+ 
+    nir_shader *nir;
++   const int64_t cidre_t0 = os_time_get_nano();
+    result = vk_pipeline_shader_stage_to_nir(device, pipeline_flags, info,
+                                             &spirv_options, nir_options,
+                                             NULL, &nir);
+    if (result != VK_SUCCESS)
+       return result;
++   const int64_t cidre_t1 = os_time_get_nano();
+ 
+    if (ops->preprocess_nir != NULL)
+       ops->preprocess_nir(device->physical, nir, &rs);
++   /* Cidre (0443) : spirv_to_nir puis pretraitement, sur le fil createur. */
++   p_atomic_inc(&vk_cidre_stat_precomp[0]);
++   p_atomic_add(&vk_cidre_stat_precomp[1], (uint64_t)(cidre_t1 - cidre_t0));
++   p_atomic_add(&vk_cidre_stat_precomp[2], (uint64_t)(os_time_get_nano() - cidre_t1));
+ 
+    const VkShaderDescriptorSetAndBindingMappingInfoEXT *desc_map =
+       vk_find_struct_const(info->pNext,
+diff --git a/src/vulkan/runtime/vk_pipeline.h b/src/vulkan/runtime/vk_pipeline.h
+--- a/src/vulkan/runtime/vk_pipeline.h
++++ b/src/vulkan/runtime/vk_pipeline.h
+@@ -236,6 +236,10 @@
+ uint32_t
+ vk_pipeline_get_rt_ray_queries(struct vk_pipeline *pipeline);
+ 
++/* Cidre (0443) : precompilations [0] nombre, [1] ns spirv_to_nir, [2] ns
++ * pretraitement (preprocess_nir). */
++extern uint64_t vk_cidre_stat_precomp[3];
++
+ /* Cidre (0442) : NIR compact (serialise, partage) d'une precompilation. */
+ void *vk_cidre_precomp_ref(void *precomp);
+ void vk_cidre_precomp_unref(struct vk_device *device, void *precomp);

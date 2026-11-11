@@ -1,0 +1,254 @@
+Generated-by: LLM
+
+fex : mesures du surcout multi-fils du service (allocateur, verrous, appels Wine) (0488)
+
+Compteurs des appels a l'OS de rpmalloc par type de page (VirtualAlloc/VirtualFree prennent virtual_mutex de
+Wine et, dans l'ilot, retirent les pages du deuxieme etage), de l'attente du verrou des pages armees
+(CIDRE_DIAG_ARME=1) et des appels a Wine de l'armement, ecrits dans les lignes « cidre disque 0488 »
+(journal FEX). Point d'accroche de la retenue des pages libres (rpmalloc_cidre_retenue, reglee par 0489).
+Resultat : surcout ~10 us par bloc a 4 fils = rpmalloc (retenue nulle, ~3 100 engagements/desengagements) ;
+index, armement et fautes negligeables. Chantier : ~/Dev/cidre-d4-fexdisque (RAPPORT-0488.md).
+
+diff --git a/External/rpmalloc/rpmalloc/rpmalloc.c b/External/rpmalloc/rpmalloc/rpmalloc.c
+--- a/External/rpmalloc/rpmalloc/rpmalloc.c
++++ b/External/rpmalloc/rpmalloc/rpmalloc.c
+@@ -576,6 +576,22 @@
+ //! Number of pages to retain when free page threshold overflows
+ static uint32_t global_page_free_retain[4] = {0, 0, 0, 0};
+ 
++// Cidre 0488 : compteurs des appels a l'OS (Windows : VirtualAlloc/VirtualFree, chacun prend virtual_mutex de Wine et,
++// dans l'ilot, retire les pages du deuxieme etage, refautees ensuite) par type de page (petite, moyenne, grande, enorme),
++// et retenue des pages libres engagees par tas (rpmalloc_cidre_retenue ; 0 = amont : chaque page liberee est desengagee).
++_Atomic uint64_t cidre_rp_engage[4], cidre_rp_desengage[4], cidre_rp_octets_desengages, cidre_rp_projete, cidre_rp_defait;
++_Atomic uint64_t cidre_rp_ticks_os;
++static inline uint64_t
++cidre_rp_tick(void) {
++#if defined(__aarch64__) || defined(_M_ARM64) || defined(_M_ARM64EC)
++	uint64_t v;
++	__asm__ volatile("mrs %0, cntvct_el0" : "=r"(v));
++	return v;
++#else
++	return 0;
++#endif
++}
++
+ //! OS huge page support
+ static int os_huge_pages;
+ //! OS memory map granularity
+@@ -794,8 +810,11 @@
+ #else
+ 	DWORD do_commit = MEM_COMMIT;
+ #endif
++	const uint64_t cidre_t0 = cidre_rp_tick();
+ 	void* ptr =
+ 	    VirtualAlloc(0, map_size, (os_huge_pages ? MEM_LARGE_PAGES : 0) | MEM_RESERVE | do_commit | MEM_TOP_DOWN, PAGE_READWRITE);
++	atomic_fetch_add_explicit(&cidre_rp_ticks_os, cidre_rp_tick() - cidre_t0, memory_order_relaxed);
++	atomic_fetch_add_explicit(&cidre_rp_projete, 1, memory_order_relaxed);
+ 	os_set_page_name(ptr, map_size);
+ #else
+ 	int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED;
+@@ -881,7 +900,10 @@
+ 	if (global_config.disable_decommit)
+ 		return;
+ #if PLATFORM_WINDOWS
+-	if (!VirtualAlloc(address, size, MEM_COMMIT, PAGE_READWRITE)) {
++	const uint64_t cidre_t0 = cidre_rp_tick();
++	const BOOL cidre_ok = VirtualAlloc(address, size, MEM_COMMIT, PAGE_READWRITE) != 0;
++	atomic_fetch_add_explicit(&cidre_rp_ticks_os, cidre_rp_tick() - cidre_t0, memory_order_relaxed);
++	if (!cidre_ok) {
+ 		rpmalloc_assert(0, "Failed to commit virtual memory block");
+ 	}
+ #else
+@@ -914,7 +936,10 @@
+ 	if (global_config.disable_decommit)
+ 		return;
+ #if PLATFORM_WINDOWS
+-	if (!VirtualFree(address, size, MEM_DECOMMIT)) {
++	const uint64_t cidre_t0 = cidre_rp_tick();
++	const BOOL cidre_ok = VirtualFree(address, size, MEM_DECOMMIT);
++	atomic_fetch_add_explicit(&cidre_rp_ticks_os, cidre_rp_tick() - cidre_t0, memory_order_relaxed);
++	if (!cidre_ok) {
+ 		rpmalloc_assert(0, "Failed to decommit virtual memory block");
+ 	}
+ #else
+@@ -960,7 +985,11 @@
+ 	address = pointer_offset(address, -(int32_t)offset);
+ #if ENABLE_UNMAP
+ #if PLATFORM_WINDOWS
+-	if (!VirtualFree(address, 0, MEM_RELEASE)) {
++	atomic_fetch_add_explicit(&cidre_rp_defait, 1, memory_order_relaxed);
++	const uint64_t cidre_t0 = cidre_rp_tick();
++	const BOOL cidre_ok = VirtualFree(address, 0, MEM_RELEASE);
++	atomic_fetch_add_explicit(&cidre_rp_ticks_os, cidre_rp_tick() - cidre_t0, memory_order_relaxed);
++	if (!cidre_ok) {
+ 		rpmalloc_assert(0, "Failed to unmap virtual memory block");
+ 	}
+ #else
+@@ -1059,6 +1088,8 @@
+ 		return;
+ 	void* extra_page = pointer_offset(page, global_config.page_size);
+ 	size_t extra_page_size = page_get_size(page) - global_config.page_size;
++	atomic_fetch_add_explicit(&cidre_rp_desengage[page->page_type & 3], 1, memory_order_relaxed);
++	atomic_fetch_add_explicit(&cidre_rp_octets_desengages, extra_page_size, memory_order_relaxed);
+ 	global_memory_interface->memory_decommit(extra_page, extra_page_size);
+ 	page->is_decommitted = 1;
+ }
+@@ -1069,6 +1100,7 @@
+ 		return;
+ 	void* extra_page = pointer_offset(page, global_config.page_size);
+ 	size_t extra_page_size = page_get_size(page) - global_config.page_size;
++	atomic_fetch_add_explicit(&cidre_rp_engage[page->page_type & 3], 1, memory_order_relaxed);
+ 	global_memory_interface->memory_commit(extra_page, extra_page_size);
+ 	page->is_decommitted = 0;
+ #if ENABLE_DECOMMIT
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -93,6 +93,9 @@
+ // seulement avec CIDRE_COMPTE_COMPIL=1.
+ namespace FEXCore::CidreMesure {
+ std::atomic<uint64_t> InvalAttente, InvalTenue, InvalNb, CompilTicks, ReinstTicks, ArmeTicks, ArmeNb, VidageTicks, VidageNb;
++// Cidre 0488 : attente du verrou des pages armees (SousPages::CodeArme, CIDRE_ARME_RAPIDE=0) et appels a Wine de l'armement
++std::atomic<uint64_t> AttArmees, NbAttArmees, ArmeAppelsWine;
++std::atomic<uint64_t> AppelNb[16], AppelTicks[16];
+ static inline uint64_t Tick() {
+   uint64_t v;
+   __asm__ volatile("mrs %0, cntvct_el0" : "=r"(v));
+@@ -1635,6 +1638,10 @@
+ }
+ } // namespace
+ 
++extern "C" {
++extern _Atomic(uint64_t) cidre_rp_engage[4], cidre_rp_desengage[4], cidre_rp_octets_desengages, cidre_rp_projete, cidre_rp_defait;
++extern _Atomic(uint64_t) cidre_rp_ticks_os;
++}
+ void CidreDisqueJournal(FEXCore::DiskCache::DiskCache& DC) {
+   auto& S = CidreDisque;
+   const uint64_t F = ::FEXCore::CidreMesure::Freq(), T = ::FEXCore::CidreMesure::Tick();
+@@ -1694,6 +1701,28 @@
+                     X(S.TicksRearmHash) * 1000.0 / F, X(S.TicksPoseInterv) * 1000.0 / F, X(S.TicksPoseMap) * 1000.0 / F,
+                     X(DC.CidreEcrits[0]), X(DC.CidreEcrits[1]), X(DC.CidreEcrits[2]), X(DC.CidreEcrits[3]) * 1000.0 / F,
+                     DC.CidreEnFile.load(std::memory_order_relaxed), DC.CidreBaseCourante() ? (int)DC.CidreBaseCourante()->Full() : -1);
++  // 0488 : partage du surcout a plusieurs fils : allocateur (appels a l'OS de rpmalloc, par type de page), attentes de verrous
++  {
++    auto Y = [](_Atomic(uint64_t)& A) { return __c11_atomic_exchange(&A, 0, __ATOMIC_RELAXED); };
++    uint64_t E[4], D[4];
++    for (int i = 0; i < 4; i++) {
++      E[i] = Y(cidre_rp_engage[i]); D[i] = Y(cidre_rp_desengage[i]);
++    }
++    const uint64_t Oct = Y(cidre_rp_octets_desengages), Pr = Y(cidre_rp_projete), De = Y(cidre_rp_defait);
++    LogMan::Msg::IFmt("cidre disque 0488 : allocateur : engagements {} ; desengagements {} ({} Kio) ; projections {}, defaites {} ; {:.1f} ms dans l'OS ; "
++                      "attente index {:.1f} ms ; pages et copie {:.1f} ms ; attente verrou des armees {:.1f} ms ({} prises), appels a Wine pour armer {}",
++                      fmt::join(E, "/"), fmt::join(D, "/"), Oct >> 10, Pr, De, Y(cidre_rp_ticks_os) * 1000.0 / F, X(DC.CidreDet[7]) * 1000.0 / F,
++                      X(DC.CidreDet[8]) * 1000.0 / F, X(::FEXCore::CidreMesure::AttArmees) * 1000.0 / F, X(::FEXCore::CidreMesure::NbAttArmees),
++                      X(::FEXCore::CidreMesure::ArmeAppelsWine));
++    fextl::string L;
++    for (int i = 0; i < 16; i++) {
++      const uint64_t N = X(::FEXCore::CidreMesure::AppelNb[i]), T = X(::FEXCore::CidreMesure::AppelTicks[i]);
++      if (N) {
++        L += fextl::fmt::format(" op{} {} ({:.1f} ms)", i, N, T * 1000.0 / F);
++      }
++    }
++    LogMan::Msg::IFmt("cidre disque 0488 : appels sous-pages a Wine :{}", L);
++  }
+   // 0479 : causes des blocs compiles. Ordre : aucune, cle decodage, cle relecture, intervalle, cle absente, disponible, non
+   // executable, octets, sans support, lecture, rearmement refuse, variante armable, chargement, relus, plein SMC, trampoline (0485)
+   {
+diff --git a/FEXCore/Source/Interface/Core/DiskCache.cpp b/FEXCore/Source/Interface/Core/DiskCache.cpp
+--- a/FEXCore/Source/Interface/Core/DiskCache.cpp
++++ b/FEXCore/Source/Interface/Core/DiskCache.cpp
+@@ -1594,6 +1594,7 @@
+     {
+       CidreFinIndex CidreFI {CidreDet[2], CidreD2, Thread->FrontendDecoder.get()};
+       std::shared_lock Guard(IndexLock); // 0484 : lecture seule
++      Thread->FrontendDecoder->CidreAjouter(CidreDet[7], CidreTick() - CidreD2); // 0488 : attente du verrou
+       auto It = Index.find(LookupKey);
+       if (It == Index.end()) {
+         // definite miss
+@@ -1768,6 +1769,7 @@
+     }
+ 
+     IndexEntry& Entry = *EntryUnderReview;
++    const uint64_t CidreD25 = CidreTick(); // 0488 : pages du bloc et tampon du blob
+ 
+     fextl::vector<uint64_t> GuestPages;
+     for (uint32_t i = 0; i < Entry.GuestExtents.size(); i += 2) {
+@@ -1800,6 +1802,7 @@
+     memcpy(HitData.Blob.data(), GuestPages.data(), GuestPages.size() * sizeof(uint64_t));
+     uint32_t BlobOffset = GuestPages.size() * sizeof(uint64_t);
+     const uint64_t CidreD3 = CidreTick();
++    Thread->FrontendDecoder->CidreAjouter(CidreDet[8], CidreD3 - CidreD25);
+     bool FoundInLRU = false;
+     bool FoundInTranche = false;
+     if (BlobRef && BlobRef->size() >= EntrySizeWithoutGuestCode) {
+diff --git a/Source/Windows/ARM64EC/SousPages.cpp b/Source/Windows/ARM64EC/SousPages.cpp
+--- a/Source/Windows/ARM64EC/SousPages.cpp
++++ b/Source/Windows/ARM64EC/SousPages.cpp
+@@ -31,6 +31,9 @@
+ const volatile uint32_t* SousPagesGen;
+ }
+ 
++namespace FEXCore::CidreMesure {
++extern std::atomic<uint64_t> AppelNb[16], AppelTicks[16];
++}
+ namespace FEX::Windows::SousPages {
+ namespace {
+   // Disposition partagee avec Wine (dlls/ntdll/unix/unix_private.h, struct cidre_sous_pages_params).
+@@ -75,7 +78,15 @@
+   }
+ 
+   NTSTATUS Appel(Params* P) {
+-    return Trampoline(NtdllUnixLib, UnixCallSousPages, P);
++    // Cidre 0488 : appels a Wine par operation (nombre et ticks)
++    uint64_t T0, T1;
++    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(T0));
++    const NTSTATUS R = Trampoline(NtdllUnixLib, UnixCallSousPages, P);
++    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(T1));
++    const uint32_t Op = P->Op & 15;
++    FEXCore::CidreMesure::AppelNb[Op].fetch_add(1, std::memory_order_relaxed);
++    FEXCore::CidreMesure::AppelTicks[Op].fetch_add(T1 - T0, std::memory_order_relaxed);
++    return R;
+   }
+ 
+   // --- Sites reecrits -------------------------------------------------------
+@@ -1357,6 +1368,15 @@
+   }
+ } // namespace
+ 
++namespace FEXCore::CidreMesure {
++extern std::atomic<uint64_t> AttArmees, NbAttArmees, ArmeAppelsWine;
++}
++static int8_t CidreDiag0488 = -1;
++static inline uint64_t CidreTick0488() {
++  uint64_t v;
++  __asm__ volatile("mrs %0, cntvct_el0" : "=r"(v));
++  return v;
++}
+ bool FEX::Windows::SousPages::CodeArme(uint64_t Adresse, uint64_t Taille) {
+   if (!Actif || !Taille) {
+     return false;
+@@ -1364,7 +1384,16 @@
+   for (uint64_t Page = Adresse & ~uint64_t {0xfff}; Page < Adresse + Taille; Page += 0x1000) {
+     uint64_t Avant;
+     {
++      if (CidreDiag0488 < 0) {
++        const char* E = getenv("CIDRE_DIAG_ARME");
++        CidreDiag0488 = E && *E == '1';
++      }
++      const uint64_t CidreT0 = CidreDiag0488 ? CidreTick0488() : 0;
+       std::scoped_lock Lock(ArmeesVerrou);
++      if (CidreDiag0488) { // 0488 : attente du verrou (CIDRE_DIAG_ARME=1)
++        FEXCore::CidreMesure::AttArmees.fetch_add(CidreTick0488() - CidreT0, std::memory_order_relaxed);
++        FEXCore::CidreMesure::NbAttArmees.fetch_add(1, std::memory_order_relaxed);
++      }
+       // Compteur de Wine change et pas encore traite (VerifierSections) : des pages ont pu etre ecrites sans
+       // exception ; ne rien armer de plus d'ici la.
+       if (GenSections && *GenSections != GenSectionsVue) {
+@@ -1392,6 +1421,7 @@
+     P.Op = OpArmer;
+     P.Hote = Page;
+     P.Alias = 0x1000;
++    FEXCore::CidreMesure::ArmeAppelsWine.fetch_add(1, std::memory_order_relaxed);
+     if (Appel(&P) || P.Code != 1) {
+       Compter(NbArmementsRefuses, "SMC arme : armement refuse");
+       // Raison rendue par Wine dans Mixte (jumelles 4) : 1 hors vue de section, 2 aucune ou plusieurs vues executables,

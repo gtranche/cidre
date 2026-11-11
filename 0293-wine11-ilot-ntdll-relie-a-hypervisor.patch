@@ -1,0 +1,31 @@
+Generated-by: LLM
+
+wine11 : ilot, ntdll.so construit avec unix/ilot.c et relie a Hypervisor.framework
+
+0290 ajoute dlls/ntdll/unix/ilot.c ; jusqu'ici ntdll.so de l'ilot etait relie a la main
+(construire_ntdll_ilot_port.sh, contre les objets d'un build 1.5.19). Le Makefile.in de ntdll le compile
+desormais avec les autres sources unix et relie ntdll.so a -framework Hypervisor (IOKit, CoreFoundation et
+CoreServices y sont deja). Hypervisor.framework charge sans droit ne fait rien : l'ilot ne s'ouvre que si le
+chargeur porte com.apple.security.hypervisor et que CIDRE_ILOT=1 (tests/ilot.sh) ; sinon ntdll.so se
+comporte comme avant.
+
+diff --git a/dlls/ntdll/Makefile.in b/dlls/ntdll/Makefile.in
+--- a/dlls/ntdll/Makefile.in
++++ b/dlls/ntdll/Makefile.in
+@@ -5,7 +5,7 @@
+ IMPORTS   = $(SYMCRYPT_PE_LIBS) $(ZLIB_PE_LIBS) $(MUSL_PE_LIBS)
+ EXTRAINCL = $(SYMCRYPT_PE_CFLAGS) $(ZLIB_PE_CFLAGS)
+ UNIX_CFLAGS  = $(HWLOC_CFLAGS)
+-UNIX_LIBS    = $(IOKIT_LIBS) $(COREFOUNDATION_LIBS) $(CORESERVICES_LIBS) $(RT_LIBS) $(PTHREAD_LIBS) $(I386_LIBS) $(PROCSTAT_LIBS) $(HWLOC_LIBS)
++UNIX_LIBS    = $(IOKIT_LIBS) $(COREFOUNDATION_LIBS) $(CORESERVICES_LIBS) $(RT_LIBS) $(PTHREAD_LIBS) $(I386_LIBS) $(PROCSTAT_LIBS) $(HWLOC_LIBS) -framework Hypervisor
+ 
+ EXTRADLLFLAGS = -nodefaultlibs
+ i386_EXTRADLLFLAGS = -Wl,--image-base,0x7bc00000
+@@ -54,6 +54,7 @@
+ 	unix/debug.c \
+ 	unix/env.c \
+ 	unix/file.c \
++	unix/ilot.c \
+ 	unix/loader.c \
+ 	unix/loadorder.c \
+ 	unix/process.c \

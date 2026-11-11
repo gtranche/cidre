@@ -1,0 +1,639 @@
+Generated-by: LLM
+
+KosmicKrisp : pipelines paresseux (CIDRE_PIPELINE_PARESSEUX), v2
+
+Diablo IV cree ~17 600 PSO au demarrage et n'en lie que ~200 jusqu'a l'ecran
+de selection. Sous l'option (avec 0430 et 0431) :
+- un pipeline VS+FS rend ses coquilles sans mettre son frontal en file ; le
+  travail 0431 part au premier vkCmdBindPipeline ;
+- un nuanceur relu du cache disque 0430 ne construit sa bibliotheque Metal
+  qu'au premier bind (compilation differee 0237) ;
+- le travail a sa propre barriere de file ; les deux coquilles sont
+  signalees a la fin.
+Le bind attend (ou, avec 0432, le dessin est saute). Compteur « paresseux :
+pipelines crees/lances, bibliotheques relues/lancees ».
+Limite : un pipeline jamais lie n'est jamais ecrit au cache disque.
+
+v2 (06/11) : la v1 lancait puis attendait, dans kk_shader_destroy, la
+compilation d'un pipeline paresseux jamais lie. Au retour au menu, D4 en
+detruit des milliers : 7 958 compilations en 5 min, fil du jeu fige 5 min 20 s
+(88 % du gel de la partie). Desormais la destruction ne lance ni n'attend
+rien :
+- travail frontal (struct kk_frontal_job) : etat atomique EN_ATTENTE /
+  EN_COURS / FINI / ANNULE (CAS au lancement), references (une par coquille
+  vivante, une pour la file) sous un petit verrou. Coquille detruite avant le
+  lancement : liberee tout de suite ; la derniere annule le travail (NIR,
+  SPIR-V, etats gardes liberes sans compiler). Detruite pendant le travail :
+  orpheline, le travail la libere a sa fin (et ne compile rien si toutes le
+  sont deja a son debut). Valable aussi hors mode paresseux (0431 seul).
+- travail de bibliotheque (0237 et bibliotheque paresseuse) : lib_etat
+  atomique ; EN_ATTENTE -> ANNULE par CAS a la destruction, EN_COURS ->
+  ORPHELIN, liberation dans le rappel de nettoyage util_queue (apres le
+  signal de compile_ready).
+- prechauffage 0237 : un VS detruit pendant qu'un FS lit encore sa fonction
+  est libere par le dernier prechauffage (bit KK_PREWARM_ORPHELIN) au lieu
+  d'une attente active de 10 s sur le fil appelant.
+- vkDestroyDevice attend les travaux en file (compteur, borne 60 s). Pas
+  util_queue_finish : la barriere de repli de u_thread.c (macOS, sans
+  pthread_barrier) rend vrai a chaque fil, qui la detruisent tous ; le temoin
+  s'y est fige (meme defaut, prexistant, dans disk_cache_destroy).
+- lazy_job et lib_etat sont propres a la coquille : kk_frontal_execute ne les
+  ecrase plus en recopiant le nuanceur reel.
+Compteur « destruction : pipelines annules, bibliotheques annulees, nuanceurs
+orphelins, travaux vides ».
+
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.h b/src/kosmickrisp/bridge/mtl_compiler.h
+--- a/src/kosmickrisp/bridge/mtl_compiler.h
++++ b/src/kosmickrisp/bridge/mtl_compiler.h
+@@ -105,4 +105,4 @@
+ 
+ #endif /* MTL_COMPILER_H */
+ 
+-extern _Atomic uint32_t kk_stat_disque[8];
++extern _Atomic uint32_t kk_stat_disque[16];
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.m b/src/kosmickrisp/bridge/mtl_compiler.m
+--- a/src/kosmickrisp/bridge/mtl_compiler.m
++++ b/src/kosmickrisp/bridge/mtl_compiler.m
+@@ -935,7 +935,7 @@
+    }
+ }
+ 
+-_Atomic uint32_t kk_stat_disque[8];
++_Atomic uint32_t kk_stat_disque[16];
+ 
+ static void
+ kk_print_compile_stats(void)
+@@ -972,6 +972,15 @@
+               atomic_load(&kk_stat_disque[0]), atomic_load(&kk_stat_disque[1]), atomic_load(&kk_stat_disque[2]),
+               atomic_load(&kk_stat_disque[3]), atomic_load(&kk_stat_disque[4]), atomic_load(&kk_stat_disque[6]),
+               atomic_load(&kk_stat_disque[5]), atomic_load(&kk_stat_disque[7]));
++   if (atomic_load(&kk_stat_disque[8]) || atomic_load(&kk_stat_disque[10]))
++      fprintf(stderr, "KK compile: paresseux : pipelines %u crees, %u lances ; bibliotheques %u relues, %u lancees\n",
++              atomic_load(&kk_stat_disque[8]), atomic_load(&kk_stat_disque[9]),
++              atomic_load(&kk_stat_disque[10]), atomic_load(&kk_stat_disque[11]));
++   if (atomic_load(&kk_stat_disque[12]) || atomic_load(&kk_stat_disque[13]) || atomic_load(&kk_stat_disque[14]))
++      fprintf(stderr, "KK compile: destruction : %u pipelines annules, %u bibliotheques annulees, "
++                      "%u nuanceurs orphelins, %u travaux vides\n",
++              atomic_load(&kk_stat_disque[12]), atomic_load(&kk_stat_disque[14]),
++              atomic_load(&kk_stat_disque[13]), atomic_load(&kk_stat_disque[15]));
+    if (atomic_load(&kk_stat_relais_msl))
+       fprintf(stderr, "KK compile: relais %u pipelines MSL pris aux archives, %u remplaces par l'AIR direct, "
+                       "%u echecs, %u abandonnes\n",
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -1306,18 +1306,60 @@
+ }
+ 
+ static const struct vk_shader_ops kk_shader_ops;
++
++static bool kk_frontal_detache(struct kk_shader *shell);
+ 
++/* Bit pose dans prewarm_refs quand le VS est detruit pendant qu'un
++ * prechauffage lit encore sa fonction : le dernier prechauffage le libere. */
++#define KK_PREWARM_ORPHELIN 0x80000000u
++
++/* Travaux mis en file et pas encore nettoyes (tous appareils) : attendus par
++ * vkDestroyDevice. Decremente en toute fin de nettoyage. */
++static _Atomic uint32_t kk_travaux_en_file;
++
+ static void
+ kk_shader_destroy(struct vk_device *vk_dev, struct kk_shader *shader,
+                   const VkAllocationCallbacks *pAllocator)
+ {
+    struct kk_device *dev = container_of(vk_dev, struct kk_device, vk);
+ 
+-   /* Cidre : un pipeline detruit avant la fin de sa compilation differee. */
+-   /* Cidre : attente bornee (10 s). Un fil de compilation mort (SIGSEGV dans
+-    * Metal, rattrape par Wine qui le fait tourner en rond) ne rendrait jamais
+-    * la main : on abandonne alors le nuanceur (fuite volontaire, le travail en
+-    * vol peut encore le lire) au lieu de figer le fil du jeu. */
++   /* Cidre (0433 v2) : la destruction ne lance ni n'attend aucune compilation.
++    * Un travail paresseux jamais lance est annule ; un travail en vol garde le
++    * nuanceur, qu'il libere lui-meme a sa fin (ORPHELIN). Diablo IV detruit des
++    * milliers de pipelines jamais lies au retour au menu : la v1 les compilait
++    * tous ici, fil du jeu fige plus de 5 min. */
++   if (kk_frontal_detache(shader))
++      return;
++   for (int e = atomic_load(&shader->lib_etat);;) {
++      if (e == KK_TRAVAIL_EN_ATTENTE) {
++         if (atomic_compare_exchange_weak(&shader->lib_etat, &e,
++                                          KK_TRAVAIL_ANNULE)) {
++            atomic_fetch_add(&kk_stat_disque[14], 1);
++            break;
++         }
++      } else if (e == KK_TRAVAIL_EN_COURS) {
++         if (atomic_compare_exchange_weak(&shader->lib_etat, &e,
++                                          KK_TRAVAIL_ORPHELIN)) {
++            atomic_fetch_add(&kk_stat_disque[13], 1);
++            return;
++         }
++      } else {
++         break;
++      }
++   }
++
++   /* Prechauffage d'un FS qui lit encore la fonction de ce VS (VS partage par
++    * le cache de pipelines, FS d'un autre pipeline encore en file) : le
++    * dernier prechauffage libere le VS (kk_async_compile_execute). */
++   if ((atomic_fetch_or(&shader->prewarm_refs, KK_PREWARM_ORPHELIN) &
++        ~KK_PREWARM_ORPHELIN) != 0)
++      return;
++
++   /* Filet : apres ce qui precede la barriere est signalee (travail fini,
++    * annule ou jamais lance). Attente bornee (10 s) au cas ou : un fil de
++    * compilation mort (SIGSEGV dans Metal, rattrape par Wine qui le fait
++    * tourner en rond) ne rendrait jamais la main ; on abandonne alors le
++    * nuanceur (fuite volontaire) au lieu de figer le fil du jeu. */
+    const int64_t borne_ns = 10ll * 1000 * 1000 * 1000;
+    if (shader->compile_async) {
+       if (!util_queue_fence_wait_timeout(&shader->compile_ready,
+@@ -1328,16 +1370,6 @@
+       }
+       util_queue_fence_destroy(&shader->compile_ready);
+       shader->compile_async = false;
+-   }
+-   /* Prechauffage d'un FS qui lit encore la fonction de ce VS (VS partage par
+-    * le cache de pipelines, FS d'un autre pipeline encore en file). */
+-   for (unsigned n = 0; atomic_load(&shader->prewarm_refs) != 0; n++) {
+-      if (n == 100000) {
+-         fprintf(stderr, "[CIDRE] kk_shader_destroy : prechauffage toujours en "
+-                         "cours apres 10 s, nuanceur abandonne\n");
+-         return;
+-      }
+-      usleep(100);
+    }
+    free(shader->prewarm_key);
+    shader->prewarm_key = NULL;
+@@ -2959,6 +2991,22 @@
+ kk_device_finish_shader_cache(struct kk_device *device)
+ {
+    if (device->compile_queue_ok) {
++      /* Cidre (0433 v2) : vkDestroyDevice attend les travaux en file (ici
++       * l'attente est acceptable) pour que les nuanceurs orphelins soient
++       * liberes et qu'aucune coquille ne reste sans signal ;
++       * util_queue_destroy signalerait les travaux restants sans les executer
++       * ni appeler leur nettoyage. Pas util_queue_finish : sa barriere de
++       * repli (macOS, sans pthread_barrier) est detruite par chaque fil, le
++       * temoin s'y est fige. */
++      for (unsigned n = 0; atomic_load(&kk_travaux_en_file) != 0; n++) {
++         if (n == 60000) {
++            fprintf(stderr, "[CIDRE] vkDestroyDevice : %u travaux de "
++                            "compilation toujours en file apres 60 s\n",
++                    atomic_load(&kk_travaux_en_file));
++            break;
++         }
++         usleep(1000);
++      }
+       util_queue_destroy(&device->compile_queue);
+       device->compile_queue_ok = false;
+       if (getenv("MESA_KK_COMPILE_STATS"))
+@@ -3128,8 +3176,26 @@
+             atomic_fetch_add(&kk_prewarm_count, 1);
+       }
+       s->prewarm_vs = NULL;
+-      atomic_fetch_sub(&vs->prewarm_refs, 1);
++      if (atomic_fetch_sub(&vs->prewarm_refs, 1) == (KK_PREWARM_ORPHELIN | 1u))
++         kk_shader_destroy(&dev->vk, vs, &dev->vk.alloc);
++   }
++}
++
++/* Appele par le fil de file apres le signal de compile_ready : un nuanceur
++ * detruit pendant son travail (ORPHELIN) est libere ici. */
++static void
++kk_async_compile_cleanup(void *job, UNUSED void *gdata,
++                         UNUSED int thread_index)
++{
++   struct kk_shader *s = job;
++   int e = KK_TRAVAIL_EN_COURS;
++   if (!atomic_compare_exchange_strong(&s->lib_etat, &e, KK_TRAVAIL_FINI) &&
++       e == KK_TRAVAIL_ORPHELIN) {
++      struct kk_device *dev = s->compile_dev;
++      atomic_store(&s->lib_etat, KK_TRAVAIL_FINI);
++      kk_shader_destroy(&dev->vk, s, &dev->vk.alloc);
+    }
++   atomic_fetch_sub(&kk_travaux_en_file, 1);
+ }
+ 
+ /* Cidre (0237) : CIDRE_PRECHAUFFAGE=0 coupe le prechauffage des variantes de
+@@ -3169,6 +3235,15 @@
+  * active. Ne sert que pour les cas simples : etape de rendu sans NIR retenu
+  * (pas de vs_nir, pas d'emulation en calcul) et pipeline de calcul. */
+ static _Thread_local bool kk_frontal_sync;
++
++static bool
++kk_paresseux(void)
++{
++   static int enabled = -1;
++   if (enabled < 0)
++      enabled = cidre_env_actif("CIDRE_PIPELINE_PARESSEUX");
++   return enabled;
++}
+ 
+ static bool
+ kk_sans_attente(void)
+@@ -3196,8 +3271,10 @@
+    s->compile_result = VK_SUCCESS;
+    util_queue_fence_init(&s->compile_ready);
+    s->compile_async = true;
++   atomic_store(&s->lib_etat, KK_TRAVAIL_EN_COURS);
++   atomic_fetch_add(&kk_travaux_en_file, 1);
+    util_queue_add_job(&dev->compile_queue, s, &s->compile_ready,
+-                      kk_async_compile_execute, NULL, 0);
++                      kk_async_compile_execute, kk_async_compile_cleanup, 0);
+    return VK_SUCCESS;
+ }
+ 
+@@ -3450,6 +3527,17 @@
+    struct vk_graphics_pipeline_state state;
+    void *state_mem;
+    struct vk_features features;
++   struct util_queue_fence qfence;
++   /* Cidre (0433 v2) : etat (enum kk_travail_etat) et references. Chaque
++    * coquille vivante ou orpheline tient une reference, la file une autre du
++    * lancement au nettoyage. vivant[i] : coquille i non detruite ; orphelin[i] :
++    * detruite pendant le travail, liberee a sa fin. Ni l'un ni l'autre : morte
++    * (liberee avant le lancement), le travail ne l'ecrit pas. */
++   simple_mtx_t lock;
++   _Atomic int etat;
++   unsigned refs;
++   bool vivant[2];
++   bool orphelin[2];
+ };
+ 
+ static void
+@@ -3468,9 +3556,61 @@
+       free(job->samplers[i]);
+    }
+    vk_free(&dev->vk.alloc, job->state_mem);
++   simple_mtx_destroy(&job->lock);
+    free(job);
+ }
+ 
++/* Lache une reference ; libere le travail a la derniere. Verrou tenu. */
++static bool
++kk_frontal_unref_locked(struct kk_frontal_job *job)
++{
++   assert(job->refs > 0);
++   return --job->refs == 0;
++}
++
++/* Destruction d'une coquille : vrai si elle doit etre differee (travail en
++ * vol, la coquille devient orpheline et kk_frontal_execute la libere). */
++static bool
++kk_frontal_detache(struct kk_shader *shell)
++{
++   struct kk_frontal_job *job = atomic_exchange(&shell->lazy_job, NULL);
++   if (job == NULL)
++      return false;
++   const unsigned i = job->shells[0] == shell ? 0 : 1;
++   bool differe = false, libere = false;
++
++   simple_mtx_lock(&job->lock);
++   job->vivant[i] = false;
++   int e = atomic_load(&job->etat);
++   if (e == KK_TRAVAIL_EN_COURS) {
++      /* Garde sa reference : le travail la lache apres l'avoir liberee. */
++      job->orphelin[i] = true;
++      differe = true;
++   } else {
++      if (e == KK_TRAVAIL_EN_ATTENTE && !job->vivant[1 - i]) {
++         /* Plus personne ne peut le lier : annule, sans compiler. */
++         int attendu = KK_TRAVAIL_EN_ATTENTE;
++         atomic_compare_exchange_strong(&job->etat, &attendu,
++                                        KK_TRAVAIL_ANNULE);
++         atomic_fetch_add(&kk_stat_disque[12], 1);
++      }
++      libere = kk_frontal_unref_locked(job);
++   }
++   simple_mtx_unlock(&job->lock);
++
++   if (differe) {
++      atomic_fetch_add(&kk_stat_disque[13], 1);
++      return true;
++   }
++   /* Jamais lancee pour elle (EN_ATTENTE, ANNULE) : sa barriere, posee a la
++    * creation, n'a jamais ete signalee. FINI : deja signalee. */
++   if (e != KK_TRAVAIL_FINI)
++      util_queue_fence_signal(&shell->compile_ready);
++   if (libere)
++      kk_frontal_job_free(job);
++   return false;
++}
++
+ static void
+ kk_frontal_disk_put(struct kk_device *dev, struct kk_shader *shader)
+ {
+@@ -3502,20 +3642,42 @@
+    struct kk_frontal_job *job = data;
+    struct kk_device *dev = job->dev;
+    struct vk_shader *out[2] = {NULL, NULL};
++   bool ecrit[2], vivant[2];
+ 
+-   kk_frontal_sync = true;
+-   VkResult result = kk_compile_shaders_sync(&dev->vk, 2, job->infos,
+-                                             &job->state, &job->features,
+-                                             &dev->vk.alloc, out);
+-   kk_frontal_sync = false;
++   /* Coquilles mortes (liberees avant le lancement) : ni lues ni ecrites. Les
++    * autres ne peuvent plus etre liberees qu'apres ce travail. */
++   simple_mtx_lock(&job->lock);
++   for (unsigned i = 0; i < 2; i++) {
++      vivant[i] = job->vivant[i];
++      ecrit[i] = job->vivant[i] || job->orphelin[i];
++   }
++   simple_mtx_unlock(&job->lock);
+ 
++   /* Toutes detruites avant le debut du travail : rien a compiler. */
++   VkResult result = VK_ERROR_UNKNOWN;
++   if (vivant[0] || vivant[1]) {
++      kk_frontal_sync = true;
++      result = kk_compile_shaders_sync(&dev->vk, 2, job->infos, &job->state,
++                                       &job->features, &dev->vk.alloc, out);
++      kk_frontal_sync = false;
++   } else {
++      atomic_fetch_add(&kk_stat_disque[15], 1);
++   }
++
+    const size_t head = offsetof(struct kk_shader, vk) + sizeof(struct vk_shader);
++   const size_t f0 = offsetof(struct kk_shader, compile_ready);
++   /* compile_ready, lazy_job et lib_etat restent ceux de la coquille. */
++   const size_t f1 = offsetof(struct kk_shader, lib_etat) + sizeof(_Atomic int);
+    for (unsigned i = 0; i < 2; i++) {
+       struct kk_shader *shell = job->shells[i];
+-      if (result == VK_SUCCESS && out[i] != NULL) {
+-         struct kk_shader *real = container_of(out[i], struct kk_shader, vk);
+-         const size_t f0 = offsetof(struct kk_shader, compile_ready);
+-         const size_t f1 = f0 + sizeof(struct util_queue_fence);
++      struct kk_shader *real =
++         out[i] != NULL ? container_of(out[i], struct kk_shader, vk) : NULL;
++      if (!ecrit[i]) {
++         if (real != NULL)
++            kk_shader_destroy(&dev->vk, real, &dev->vk.alloc);
++         continue;
++      }
++      if (result == VK_SUCCESS && real != NULL) {
+          memcpy((char *)shell + head, (char *)real + head, f0 - head);
+          memcpy((char *)shell + f1, (char *)real + f1,
+                 sizeof(struct kk_shader) - f1);
+@@ -3528,13 +3690,16 @@
+          shell->vk.scratch_size = real->vk.scratch_size;
+          shell->vk.stack_size = real->vk.stack_size;
+          vk_shader_free(&dev->vk, &dev->vk.alloc, &real->vk);
++      } else if (real != NULL) {
++         kk_shader_destroy(&dev->vk, real, &dev->vk.alloc);
+       }
+       shell->compile_result = result;
+    }
+ 
+    struct kk_shader *vs = job->shells[0], *fs = job->shells[1];
+-   if (result == VK_SUCCESS && kk_prewarm_enabled() && vs->vs_nir == NULL &&
+-       vs->function != NULL && fs->function != NULL && !vs->info.has_gs) {
++   if (result == VK_SUCCESS && vivant[0] && vivant[1] && kk_prewarm_enabled() &&
++       vs->vs_nir == NULL && vs->function != NULL && fs->function != NULL &&
++       !vs->info.has_gs) {
+       fs->prewarm_key = kk_prewarm_key(vs, fs);
+       if (fs->prewarm_key != NULL) {
+          fs->prewarm_key->vs_function = vs->function;
+@@ -3545,23 +3710,96 @@
+       }
+    }
+ 
+-   if (result != VK_SUCCESS)
++   if (result != VK_SUCCESS && (vivant[0] || vivant[1]))
+       fprintf(stderr, "kk: frontal differe echoue (%d) : les dessins qui "
+                       "l'emploient seront sautes\n", (int)result);
+ 
+    atomic_fetch_add(&kk_stat_disque[0], 1);
+-   atomic_store(&vs->frontal_pending, false);
+-   atomic_store(&fs->frontal_pending, false);
+-   if (result == VK_SUCCESS) {
+-      kk_frontal_disk_put(dev, vs);
+-      kk_frontal_disk_put(dev, fs);
++   for (unsigned i = 0; i < 2; i++) {
++      if (!ecrit[i])
++         continue;
++      atomic_store(&job->shells[i]->frontal_pending, false);
++      if (result == VK_SUCCESS)
++         kk_frontal_disk_put(dev, job->shells[i]);
+    }
+ 
+-   kk_frontal_job_free(job);
+    atomic_fetch_add(&kk_frontal_jobs, 1);
+-   util_queue_fence_signal(&fs->compile_ready);
++   /* Signal avant FINI : une coquille detruite entre les deux devient
++    * orpheline et est liberee ci-dessous ; apres FINI, sa destruction trouve
++    * la barriere deja signalee. Les coquilles vivantes ne sont plus touchees
++    * apres leur signal. */
++   for (int i = 1; i >= 0; i--) {
++      if (ecrit[i])
++         util_queue_fence_signal(&job->shells[i]->compile_ready);
++   }
++
++   struct kk_shader *orphelines[2] = {NULL, NULL};
++   simple_mtx_lock(&job->lock);
++   atomic_store(&job->etat, KK_TRAVAIL_FINI);
++   for (unsigned i = 0; i < 2; i++) {
++      if (job->orphelin[i]) {
++         job->orphelin[i] = false;
++         orphelines[i] = job->shells[i];
++         /* La file tient encore sa reference : jamais la derniere ici. */
++         kk_frontal_unref_locked(job);
++      }
++   }
++   simple_mtx_unlock(&job->lock);
++
++   for (unsigned i = 0; i < 2; i++) {
++      if (orphelines[i] != NULL)
++         kk_shader_destroy(&dev->vk, orphelines[i], &dev->vk.alloc);
++   }
+ }
+ 
++static void
++kk_frontal_cleanup(void *data, UNUSED void *gdata, UNUSED int thread_index)
++{
++   struct kk_frontal_job *job = data;
++   simple_mtx_lock(&job->lock);
++   bool libere = kk_frontal_unref_locked(job);
++   simple_mtx_unlock(&job->lock);
++   if (libere)
++      kk_frontal_job_free(job);
++   atomic_fetch_sub(&kk_travaux_en_file, 1);
++}
++
++/* Lance le travail paresseux d'un nuanceur (premier bind) : CAS
++ * EN_ATTENTE -> EN_COURS, un seul appelant le met en file. */
++void
++kk_shader_kick(struct kk_shader *shader)
++{
++   if (shader == NULL)
++      return;
++   int e = KK_TRAVAIL_EN_ATTENTE;
++   if (atomic_load(&shader->lib_etat) == KK_TRAVAIL_EN_ATTENTE &&
++       atomic_compare_exchange_strong(&shader->lib_etat, &e,
++                                      KK_TRAVAIL_EN_COURS)) {
++      struct kk_device *dev = shader->compile_dev;
++      atomic_fetch_add(&kk_stat_disque[11], 1);
++      atomic_fetch_add(&kk_travaux_en_file, 1);
++      util_queue_add_job(&dev->compile_queue, shader, &shader->compile_ready,
++                         kk_async_compile_execute, kk_async_compile_cleanup, 0);
++   }
++   struct kk_frontal_job *job = atomic_load(&shader->lazy_job);
++   if (job == NULL || atomic_load(&job->etat) != KK_TRAVAIL_EN_ATTENTE)
++      return;
++   bool lance = false;
++   simple_mtx_lock(&job->lock);
++   e = KK_TRAVAIL_EN_ATTENTE;
++   if (atomic_compare_exchange_strong(&job->etat, &e, KK_TRAVAIL_EN_COURS)) {
++      job->refs++;
++      lance = true;
++   }
++   simple_mtx_unlock(&job->lock);
++   if (!lance)
++      return;
++   atomic_fetch_add(&kk_stat_disque[9], 1);
++   atomic_fetch_add(&kk_travaux_en_file, 1);
++   util_queue_add_job(&job->dev->compile_queue, job, &job->qfence,
++                      kk_frontal_execute, kk_frontal_cleanup, 0);
++}
++
+ static bool
+ kk_frontal_copy_info(struct kk_frontal_job *job, unsigned i,
+                      const struct vk_shader_compile_info *info)
+@@ -3626,6 +3864,7 @@
+    if (job == NULL)
+       goto sync;
+    job->dev = dev;
++   simple_mtx_init(&job->lock, mtx_plain);
+    job->features = *enabled_features;
+    if (vk_graphics_pipeline_state_copy(device, &job->state, state,
+                                        &dev->vk.alloc,
+@@ -3652,16 +3891,28 @@
+       shell->compile_result = VK_SUCCESS;
+       atomic_store(&shell->frontal_pending, true);
+       util_queue_fence_init(&shell->compile_ready);
+-      if (i == 1)
+-         util_queue_fence_reset(&shell->compile_ready);
++      util_queue_fence_reset(&shell->compile_ready);
+       shell->compile_async = true;
+       job->shells[i] = shell;
+    }
+ 
+    shaders_out[0] = &job->shells[0]->vk;
+    shaders_out[1] = &job->shells[1]->vk;
+-   util_queue_add_job(&dev->compile_queue, job, &job->shells[0]->compile_ready,
+-                      kk_frontal_execute, NULL, 0);
++   util_queue_fence_init(&job->qfence);
++   job->vivant[0] = job->vivant[1] = true;
++   job->refs = 2;
++   atomic_store(&job->shells[0]->lazy_job, job);
++   atomic_store(&job->shells[1]->lazy_job, job);
++   if (kk_paresseux()) {
++      atomic_store(&job->etat, KK_TRAVAIL_EN_ATTENTE);
++      atomic_fetch_add(&kk_stat_disque[8], 1);
++   } else {
++      atomic_store(&job->etat, KK_TRAVAIL_EN_COURS);
++      job->refs++;
++      atomic_fetch_add(&kk_travaux_en_file, 1);
++      util_queue_add_job(&dev->compile_queue, job, &job->qfence,
++                         kk_frontal_execute, kk_frontal_cleanup, 0);
++   }
+    return VK_SUCCESS;
+ 
+ sync:
+@@ -3831,6 +4082,21 @@
+    return VK_SUCCESS;
+ }
+ 
++static bool
++kk_lazy_library(struct kk_device *dev, struct kk_shader *shader)
++{
++   if (!kk_paresseux() || !dev->compile_queue_ok)
++      return false;
++   shader->compile_dev = dev;
++   shader->compile_local_size = 0;
++   shader->compile_result = VK_SUCCESS;
++   util_queue_fence_init(&shader->compile_ready);
++   shader->compile_async = true;
++   atomic_store(&shader->lib_etat, KK_TRAVAIL_EN_ATTENTE);
++   atomic_fetch_add(&kk_stat_disque[10], 1);
++   return true;
++}
++
+ static VkResult
+ kk_deserialize_shader(struct vk_device *vk_dev, struct blob_reader *blob,
+                       uint32_t binary_version,
+@@ -3902,14 +4168,15 @@
+                        BITFIELD_BIT(MESA_SHADER_TESS_CTRL));
+       if (emulated)
+          result = kk_compile_graphics_vertex_side(dev, shader);
+-      else
++      else if (!kk_lazy_library(dev, shader))
+          result = kk_build_stage_library(dev, shader);
+ 
+       if (result == VK_SUCCESS && shader->info.vs.has_ds)
+          shader->pipeline.gfx.ds_handle =
+             kk_compile_ds_state(dev, &shader->info);
+    } else if (info.stage == MESA_SHADER_FRAGMENT) {
+-      result = kk_build_stage_library(dev, shader);
++      if (!kk_lazy_library(dev, shader))
++         result = kk_build_stage_library(dev, shader);
+    }
+ 
+    if (result != VK_SUCCESS)
+@@ -3975,6 +4242,9 @@
+       struct kk_shader *shader = container_of(shaders[i], struct kk_shader, vk);
+       bool graphics =
+          stages[i] != MESA_SHADER_COMPUTE && stages[i] != MESA_SHADER_KERNEL;
++
++      if (graphics)
++         kk_shader_kick(shader);
+ 
+       if (graphics && shader != NULL && kk_sans_attente() &&
+           shader->compile_async &&
+diff --git a/src/kosmickrisp/vulkan/kk_shader.h b/src/kosmickrisp/vulkan/kk_shader.h
+--- a/src/kosmickrisp/vulkan/kk_shader.h
++++ b/src/kosmickrisp/vulkan/kk_shader.h
+@@ -241,6 +241,12 @@
+     * rendu) ou pipeline.cs (calcul) sont prets, ou NULL apres un echec. */
+    bool compile_async;
+    struct util_queue_fence compile_ready;
++   /* Cidre (0433 v2) : propres a la coquille, jamais recopies depuis le
++    * nuanceur reel par kk_frontal_execute (voir KK_SHADER_PROPRE_FIN). Travail
++    * frontal (struct kk_frontal_job) tenu par cette coquille, et etat du
++    * travail de bibliotheque (enum kk_travail_etat). */
++   void *_Atomic lazy_job;
++   _Atomic int lib_etat;
+    struct kk_device *compile_dev;
+    uint32_t compile_local_size;
+    VkResult compile_result;
+@@ -256,11 +262,28 @@
+    _Atomic bool frontal_pending;
+ };
+ 
++/* Cidre (0433 v2) : etat d'un travail paresseux ou differe. Les transitions
++ * EN_ATTENTE -> EN_COURS (lancement) et EN_ATTENTE -> ANNULE (destruction
++ * avant lancement) se font par CAS ; EN_COURS -> ORPHELIN (destruction pendant
++ * le travail : la liberation passe a la fin du travail) ou -> FINI. */
++enum kk_travail_etat {
++   KK_TRAVAIL_AUCUN = 0,
++   KK_TRAVAIL_EN_ATTENTE,
++   KK_TRAVAIL_EN_COURS,
++   KK_TRAVAIL_FINI,
++   KK_TRAVAIL_ANNULE,
++   KK_TRAVAIL_ORPHELIN,
++};
++
++void kk_shader_kick(struct kk_shader *shader);
++
+ static inline void
+ kk_shader_wait_compiled(struct kk_shader *shader)
+ {
+-   if (shader != NULL && shader->compile_async)
++   if (shader != NULL && shader->compile_async) {
++      kk_shader_kick(shader);
+       util_queue_fence_wait(&shader->compile_ready);
++   }
+ }
+ 
+ /* Vrai si la compilation differee de cette etape a echoue. Appele apres le

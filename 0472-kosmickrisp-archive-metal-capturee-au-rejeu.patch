@@ -1,0 +1,167 @@
+Generated-by: LLM
+
+KosmicKrisp : archive Metal capturee au rejeu seulement (CIDRE_ARCHIVE_REJEU)
+
+Avec 0451 (CIDRE_CACHE_FONCTIONS=1) il n'y a plus de serialiseur, donc plus d'archive (« 0 from archives »).
+Au rejeu seulement (0444), un compilateur de capture ecrit l'archive (CIDRE_ARCHIVE_REJEU=0 coupe ;
+CIDRE_REJEU_JOURNAL=<nom> pour recapturer un cache deja rejoue ; lots de 1 000). La recherche d'archive de
+calcul est sautee en mode fonctions (CIDRE_ARCHIVE_CALCUL=1 la remet). Metal froid 14,5 -> 3,25 s au dessin
+(464 sur 685 servis par l'archive). Chantier : ~/Dev/cidre-d4-variantes.
+
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.m b/src/kosmickrisp/bridge/mtl_compiler.m
+--- a/src/kosmickrisp/bridge/mtl_compiler.m
++++ b/src/kosmickrisp/bridge/mtl_compiler.m
+@@ -28,6 +28,10 @@
+ #include "util/cidre_env.h"
+ 
+ static const void *kk_archives_key = &kk_archives_key;
++/* Cidre (0472) : compilateur de capture du rejeu (voir mtl_new_compiler). */
++static const void *kk_capture_key = &kk_capture_key;
++static bool kk_mode_fonctions;
++static _Atomic uint32_t kk_stat_capture, kk_stat_capture_echecs;
+ 
+ extern void MTLSetShaderCachePath(NSString *path) __attribute__((weak_import));
+ 
+@@ -965,6 +969,37 @@
+       if (compiler == nil) {
+          fprintf(stderr, "Failed to create MTL4Compiler: %s\n", [error.localizedDescription UTF8String]);
+          return compiler;
++      }
++      kk_mode_fonctions = fonctions;
++
++      /* Cidre (0472) : rejeu (CIDRE_REJEU) avec le cache de fonctions : le
++       * compilateur principal n'a pas de serialiseur (0451), donc aucune
++       * archive n'etait ecrite et le jeu n'en relisait aucune (« 0 from
++       * archives » : MESA_KK_PIPELINE_CACHE ne contenait aucune
++       * kk_pipelines.*.mtl4archive). Un second compilateur, avec serialiseur,
++       * recompile chaque pipeline de rendu deja cree par le principal (qui
++       * remplit le cache de fonctions) : ses binaires partent dans les
++       * archives du rejeu, que le jeu interroge avant toute compilation.
++       * Hors jeu seulement (coute une compilation complete par pipeline).
++       * CIDRE_ARCHIVE_REJEU=0 : coupe. */
++      const char *ar = getenv("CIDRE_ARCHIVE_REJEU");
++      if (fonctions && cache_dir && cache_dir[0] && getenv("CIDRE_REJEU") != NULL &&
++          !cidre_env_actif("CIDRE_BANC_BIND") && !(ar && ar[0] == '0')) {
++         MTL4PipelineDataSetSerializerDescriptor *sdesc =
++            [[MTL4PipelineDataSetSerializerDescriptor new] autorelease];
++         sdesc.configuration = MTL4PipelineDataSetSerializerConfigurationCaptureBinaries;
++         id<MTL4PipelineDataSetSerializer> serializer =
++            [dev newPipelineDataSetSerializerWithDescriptor:sdesc];
++         MTL4CompilerDescriptor *cdesc = [[MTL4CompilerDescriptor new] autorelease];
++         cdesc.pipelineDataSetSerializer = serializer;
++         [serializer release];
++         id<MTL4Compiler> capture = [dev newCompilerWithDescriptor:cdesc error:NULL];
++         if (capture != nil) {
++            objc_setAssociatedObject(compiler, kk_capture_key, capture,
++                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
++            [capture release];
++            fprintf(stderr, "KK: rejeu : capture des pipelines de rendu dans les archives (0472)\n");
++         }
+       }
+ 
+       if (cache_dir && cache_dir[0]) {
+@@ -1161,6 +1196,9 @@
+     * [7] bibliotheques prises par ces travaux, [8] travaux mis en file,
+     * [9] variantes attendues en construction sur un autre fil, [10] dont au
+     * dessin ; us : [0] construction en fond. */
++   if (atomic_load(&kk_stat_capture) || atomic_load(&kk_stat_capture_echecs))
++      fprintf(stderr, "KK compile: capture (rejeu, 0472) : %u pipelines de rendu captures, %u echecs\n",
++              atomic_load(&kk_stat_capture), atomic_load(&kk_stat_capture_echecs));
+    if (atomic_load(&kk_stat_var[1]) || atomic_load(&kk_stat_var[2]))
+       fprintf(stderr, "KK compile: variantes : %u chargees (%u paires), %u notees ; fond : %u travaux, "
+                       "%u construites / %.1f ms, %u deja la, %u inaptes, %u bibliotheques prises ; "
+@@ -1189,6 +1227,9 @@
+       id<MTL4Compiler> comp = (id<MTL4Compiler>)compiler;
+       id<MTL4PipelineDataSetSerializer> serializer = comp.pipelineDataSetSerializer;
+       if (serializer == nil)
++         serializer = ((id<MTL4Compiler>)objc_getAssociatedObject(comp, kk_capture_key))
++                         .pipelineDataSetSerializer;
++      if (serializer == nil)
+          return;
+       uint64_t t0 = kk_now_ns();
+       pthread_rwlock_wrlock(&kk_compile_rwlock);
+@@ -1223,6 +1264,9 @@
+       id<MTL4Compiler> comp = (id<MTL4Compiler>)compiler;
+       id<MTL4PipelineDataSetSerializer> serializer = comp.pipelineDataSetSerializer;
+       if (serializer == nil)
++         serializer = ((id<MTL4Compiler>)objc_getAssociatedObject(comp, kk_capture_key))
++                         .pipelineDataSetSerializer;
++      if (serializer == nil)
+          return;
+ 
+       pthread_rwlock_wrlock(&kk_compile_rwlock);
+@@ -1442,13 +1486,23 @@
+       uint64_t t0 = stats ? kk_now_ns() : 0;
+       kk_compile_lock();
+       id<MTLComputePipelineState> pipeline = nil;
+-      KK_ARCHIVE_LOCK();
+-      for (id<MTL4Archive> archive in kk_compiler_archives(comp)) {
+-         pipeline = [archive newComputePipelineStateWithDescriptor:desc error:NULL];
+-         if (pipeline != nil)
+-            break;
++      /* Cidre (0472) : avec le cache de fonctions (0451), les archives ne
++       * viennent que de la capture du rejeu, qui ne contient que des
++       * pipelines de rendu : chaque recherche de calcul y serait un echec
++       * (~33 us par archive, sous le verrou des archives). CIDRE_ARCHIVE_CALCUL=1
++       * : chercher quand meme. */
++      static int calcul = -1;
++      if (calcul < 0)
++         calcul = !kk_mode_fonctions || cidre_env_actif("CIDRE_ARCHIVE_CALCUL");
++      if (calcul) {
++         KK_ARCHIVE_LOCK();
++         for (id<MTL4Archive> archive in kk_compiler_archives(comp)) {
++            pipeline = [archive newComputePipelineStateWithDescriptor:desc error:NULL];
++            if (pipeline != nil)
++               break;
++         }
++         KK_ARCHIVE_UNLOCK();
+       }
+-      KK_ARCHIVE_UNLOCK();
+       bool cached = pipeline != nil;
+       if (!cached && kk_relais_threads() > 0) {
+          MTL4ComputePipelineDescriptor *alt = kk_relais_compute_desc(comp.device, desc);
+@@ -1674,6 +1728,16 @@
+          pipeline = [comp newRenderPipelineStateWithDescriptor:desc compilerTaskOptions:nil
+                                                          error:&error];
+          kk_prof[5] += kk_now_ns() - tp0;
++         /* Cidre (0472) : rejeu : meme descripteur dans le compilateur de
++          * capture (sous le verrou de lecture : jamais pendant un flush). */
++         id<MTL4Compiler> capture = objc_getAssociatedObject(comp, kk_capture_key);
++         if (capture != nil && pipeline != nil) {
++            id<MTLRenderPipelineState> p2 =
++               [capture newRenderPipelineStateWithDescriptor:desc compilerTaskOptions:nil
++                                                       error:NULL];
++            atomic_fetch_add(p2 != nil ? &kk_stat_capture : &kk_stat_capture_echecs, 1);
++            [p2 release];
++         }
+       }
+       kk_compile_unlock();
+       atomic_fetch_add(cached ? &kk_stat_pipe_hits : &kk_pipe_total, 1);
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -5973,7 +5973,9 @@
+    util_queue_add_job(&pc->dev->compile_queue, j, NULL, kk_rejeu_execute,
+                       kk_rejeu_cleanup, 0);
+    /* Archive par lots (CIDRE_REJEU_LOT, 2000) : une archive geante echoue. */
+-   const unsigned lot = kk_env_u("CIDRE_REJEU_LOT", 2000);
++   /* Cidre (0472) : avec la capture, chaque paire donne aussi ses variantes
++    * notees : lots de 1000 paires (une archive de ~10 000 est refusee). */
++   const unsigned lot = kk_env_u("CIDRE_REJEU_LOT", kk_var_table != NULL ? 1000 : 2000);
+    if (lot && pc->lances % lot == 0) {
+       while (atomic_load(&pc->en_vol) != 0)
+          usleep(1000);
+@@ -6211,7 +6213,12 @@
+    pc.max = kk_env_u("CIDRE_REJEU_MAX", 0);
+    pc.fils = kk_compile_async_threads();
+    pc.faits = _mesa_set_create(NULL, kk_chaud_hash, kk_chaud_egal);
+-   snprintf(chemin, sizeof(chemin), "%s/rejoues-kk.bin", dev->pipeline_cache_dir);
++   /* Cidre (0472) : CIDRE_REJEU_JOURNAL=<nom> : autre journal des rejoues
++    * (ex. rejouer pour la capture d'archive un cache deja rejoue). */
++   const char *jn = getenv("CIDRE_REJEU_JOURNAL");
++   if (jn == NULL || jn[0] == '\0' || strchr(jn, '/') != NULL)
++      jn = "rejoues-kk.bin";
++   snprintf(chemin, sizeof(chemin), "%s/%s", dev->pipeline_cache_dir, jn);
+    int fdr = open(chemin, O_RDONLY | O_CLOEXEC);
+    if (fdr >= 0) {
+       uint8_t cle[KK_BASE_CLE];

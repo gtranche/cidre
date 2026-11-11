@@ -1,0 +1,278 @@
+Generated-by: LLM
+
+KosmicKrisp : cache de pipelines en memoire et sur disque (CIDRE_CACHE_DISQUE)
+
+KK ne creait ni dev->vk.mem_cache ni pdev->vk.disk_cache. vkd3d-proton, avec
+son cache disque, impose GLOBAL_PIPELINE_CACHE et passe VK_NULL_HANDLE comme
+VkPipelineCache : vk_pipeline ne cachait alors rien du tout, et chaque PSO,
+meme deja cree dans la session, repassait tout le frontal KK (spirv_to_nir,
+passes NIR, liaison VS/FS, recherche 0386) sur le fil qui le cree.
+Avec CIDRE_CACHE_DISQUE : disk_cache Mesa (identifiant = cle de code 0208)
+et mem_cache du device (references faibles, comme NVK) ; vk_pipeline relit
+alors le kk_shader serialise (MSL, AIR direct) par sa cle Vulkan. Le FS de
+repli d'un VS sans FS est serialise avec lui.
+Valeurs : absente/0 = coupe (rien ne change) ; chemin absolu = dossier ;
+autre = <MESA_KK_PIPELINE_CACHE>/mesa ; MESA_SHADER_CACHE_DIR l'emporte.
+Taille : MESA_SHADER_CACHE_MAX_SIZE (1 Gio par defaut ; D4 ~0,8 Gio).
+Diagnostic : ligne « KK compile: frontal differe..., relus N, relus en echec »
+(MESA_KK_COMPILE_STATS).
+Diablo IV (M1 Max, ilot, ecran de selection, 17 935 PSO crees au demarrage) :
+17 772 pipelines / 35 129 nuanceurs relus du disque, 0 echec, 0 frontal ;
+fin de la creation ~70 s apres le device (0410 : ~300 s).
+Cle des nuanceurs (kk_hash_graphics_state) : bits dynamiques et champs d'etat
+lus par la compilation (alpha-to-coverage/one, echantillons, clip/clamp,
+topologie, carte des attachements, profondeur/stencil...), champ par champ,
+seulement pour un pipeline graphique (state NULL pour le calcul : hacher les
+sous-etats entiers y faisait planter vkd3d a la creation du device). L'ancienne
+cle ne couvrait pas alpha-to-coverage, clip/clamp de profondeur, carte des
+attachements, topologie, alors que le code et kk_shader_info en dependent :
+sans cache c'etait sans effet, avec 0430 un nuanceur d'un autre etat etait
+resservi (tache noire a la selection de D4, 06/11 14:35).
+Limite : un nuanceur relu n'a pas de prechauffage 0237 ; la variante de rendu
+se fait au premier dessin (0,5 ms par variante prise aux archives).
+Base : 0410+0412 (~/Dev/cidre-demono-perte-gpu/mesa) + 0402 ; ordre 0430, 0431, 0432.
+
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.h b/src/kosmickrisp/bridge/mtl_compiler.h
+--- a/src/kosmickrisp/bridge/mtl_compiler.h
++++ b/src/kosmickrisp/bridge/mtl_compiler.h
+@@ -104,3 +104,5 @@
+                         mtl_render_pass_descriptor *descriptor);
+ 
+ #endif /* MTL_COMPILER_H */
++
++extern _Atomic uint32_t kk_stat_disque[8];
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.m b/src/kosmickrisp/bridge/mtl_compiler.m
+--- a/src/kosmickrisp/bridge/mtl_compiler.m
++++ b/src/kosmickrisp/bridge/mtl_compiler.m
+@@ -934,6 +934,8 @@
+       return compiler;
+    }
+ }
++
++_Atomic uint32_t kk_stat_disque[8];
+ 
+ static void
+ kk_print_compile_stats(void)
+@@ -964,6 +966,12 @@
+       fprintf(stderr, "KK compile: AIR direct %u libraries / %.3f s, %u fallbacks to MSL, %u pipeline fallbacks\n",
+               atomic_load(&kk_stat_airdirect_count), atomic_load(&kk_stat_airdirect_ns) / 1.0e9,
+               atomic_load(&kk_stat_airdirect_fallback), atomic_load(&kk_stat_airdirect_pipe_fallback));
++   if (atomic_load(&kk_stat_disque[0]) || atomic_load(&kk_stat_disque[3]) || atomic_load(&kk_stat_disque[4]))
++      fprintf(stderr, "KK compile: frontal differe %u, ecrits %u, sans cle %u ; relus %u, relus en echec %u (raison %u) ; "
++                      "serialisations refusees %u\n",
++              atomic_load(&kk_stat_disque[0]), atomic_load(&kk_stat_disque[1]), atomic_load(&kk_stat_disque[2]),
++              atomic_load(&kk_stat_disque[3]), atomic_load(&kk_stat_disque[4]), atomic_load(&kk_stat_disque[6]),
++              atomic_load(&kk_stat_disque[5]));
+    if (atomic_load(&kk_stat_relais_msl))
+       fprintf(stderr, "KK compile: relais %u pipelines MSL pris aux archives, %u remplaces par l'AIR direct, "
+                       "%u echecs, %u abandonnes\n",
+diff --git a/src/kosmickrisp/vulkan/kk_device.c b/src/kosmickrisp/vulkan/kk_device.c
+--- a/src/kosmickrisp/vulkan/kk_device.c
++++ b/src/kosmickrisp/vulkan/kk_device.c
+@@ -334,6 +334,13 @@
+       }
+    }
+ 
++   if (pdev->vk.disk_cache != NULL) {
++      struct vk_pipeline_cache_create_info cache_info = {
++         .weak_ref = true,
++      };
++      dev->vk.mem_cache = vk_pipeline_cache_create(&dev->vk, &cache_info, NULL);
++   }
++
+    result = kk_device_init_meta(dev);
+    if (result != VK_SUCCESS)
+       goto fail_mem_cache;
+@@ -401,6 +408,10 @@
+ fail_meta:
+    kk_device_finish_meta(dev);
+ fail_mem_cache:
++   if (dev->vk.mem_cache != NULL) {
++      vk_pipeline_cache_destroy(dev->vk.mem_cache, NULL);
++      dev->vk.mem_cache = NULL;
++   }
+    if (dev->has_queue) {
+       for (uint32_t i = 0; i < dev->n_queues_sup; i++)
+          kk_queue_finish(dev, &dev->queues_sup[i]);
+@@ -446,6 +457,10 @@
+    /* Meta first since it may destroy Vulkan objects */
+    kk_device_finish_meta(dev);
+    kk_device_finish_shader_cache(dev);
++   if (dev->vk.mem_cache != NULL) {
++      vk_pipeline_cache_destroy(dev->vk.mem_cache, NULL);
++      dev->vk.mem_cache = NULL;
++   }
+    kk_device_finish_lib(dev);
+    kk_query_table_finish(dev, &dev->occlusion_queries);
+    kk_ts_reserve_finish(dev);
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -25,6 +25,7 @@
+ #include "kosmickrisp/bridge/ns_process_info.h"
+ 
+ #include "util/disk_cache.h"
++#include <limits.h>
+ #include "util/mesa-blake3.h"
+ #include "git_sha1.h"
+ #include "kk_codegen_sources.h"
+@@ -1235,6 +1236,41 @@
+    memcpy(pdev->vk.properties.pipelineCacheUUID, blake3, VK_UUID_SIZE);
+    memcpy(pdev->vk.properties.shaderBinaryUUID, blake3, VK_UUID_SIZE);
+    kk_trad_cache_set_codegen_key(blake3, sizeof(blake3));
++
++#ifdef ENABLE_SHADER_CACHE
++   if (cidre_env_actif("CIDRE_CACHE_DISQUE")) {
++      const char *v = getenv("CIDRE_CACHE_DISQUE");
++      if (getenv("MESA_SHADER_CACHE_DIR") == NULL) {
++         if (v[0] == '/') {
++            setenv("MESA_SHADER_CACHE_DIR", v, 0);
++         } else {
++            const char *pc = getenv("MESA_KK_PIPELINE_CACHE");
++            if (pc != NULL && pc[0] == '/') {
++               char dir[PATH_MAX];
++               snprintf(dir, sizeof(dir), "%s/mesa", pc);
++               setenv("MESA_SHADER_CACHE_DIR", dir, 0);
++            }
++         }
++      }
++      char renderer[24];
++      snprintf(renderer, sizeof(renderer), "KK_A%u", famille);
++      char timestamp[2 * BLAKE3_KEY_LEN + 1];
++      for (unsigned i = 0; i < BLAKE3_KEY_LEN; i++)
++         snprintf(timestamp + 2 * i, 3, "%02x", blake3[i]);
++      pdev->vk.disk_cache = disk_cache_create(renderer, timestamp, 0);
++      if (pdev->vk.disk_cache != NULL) {
++         pdev->vk.properties.pipelineBinaryInternalCache = true;
++         pdev->vk.properties.pipelineBinaryInternalCacheControl = true;
++         pdev->vk.properties.pipelineBinaryPrefersInternalCache = true;
++         pdev->vk.properties.pipelineBinaryPrecompiledInternalCache = true;
++      }
++      if (cidre_env_actif("MESA_KK_COMPILE_STATS"))
++         fprintf(stderr, "KK: cache disque des nuanceurs %s (%s)\n",
++                 pdev->vk.disk_cache ? "actif" : "indisponible",
++                 getenv("MESA_SHADER_CACHE_DIR") ? getenv("MESA_SHADER_CACHE_DIR")
++                                                 : "dossier par defaut");
++   }
++#endif
+ 
+    if (cidre_env_actif("CIDRE_CLE_CACHE_DIAG")) {
+       char hex[2 * VK_UUID_SIZE + 1];
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -230,6 +230,50 @@
+    enum kk_feature_key feature_key = kk_make_feature_key(enabled_features);
+    _mesa_blake3_update(&blake3_ctx, &feature_key, sizeof(feature_key));
+ 
++   if (state != NULL &&
++       (stages & (VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT))) {
++   _mesa_blake3_update(&blake3_ctx, state->dynamic, sizeof(state->dynamic));
++   struct {
++      uint32_t view_mask;
++      uint16_t sample_mask;
++      uint8_t samples, a2c, a2one, sample_shading;
++      uint8_t clamp, clip, topology, restart, rp_colors;
++      uint8_t cal[MESA_VK_MAX_COLOR_ATTACHMENTS];
++      uint8_t has_ds;
++   } extra;
++   memset(&extra, 0, sizeof(extra));
++   if (state->ms) {
++      extra.samples = state->ms->rasterization_samples;
++      extra.sample_mask = state->ms->sample_mask;
++      extra.a2c = state->ms->alpha_to_coverage_enable;
++      extra.a2one = state->ms->alpha_to_one_enable;
++      extra.sample_shading = state->ms->sample_shading_enable;
++   }
++   if (state->rs) {
++      extra.clamp = state->rs->depth_clamp_enable;
++      extra.clip = state->rs->depth_clip_enable;
++   }
++   if (state->ia) {
++      extra.topology = state->ia->primitive_topology;
++      extra.restart = state->ia->primitive_restart_enable;
++   }
++   if (state->rp)
++      extra.rp_colors = state->rp->color_attachment_count;
++   if (state->cal)
++      memcpy(extra.cal, state->cal->color_map, sizeof(extra.cal));
++   if (state->mv)
++      extra.view_mask = state->mv->view_mask;
++   extra.has_ds = state->ds != NULL;
++   _mesa_blake3_update(&blake3_ctx, &extra, sizeof(extra));
++   if (state->ds) {
++      struct vk_depth_stencil_state ds;
++      memset(&ds, 0, sizeof(ds));
++      ds.depth = state->ds->depth;
++      ds.stencil = state->ds->stencil;
++      _mesa_blake3_update(&blake3_ctx, &ds, sizeof(ds));
++   }
++   }
++
+    _mesa_blake3_final(&blake3_ctx, blake3_out);
+ }
+ 
+@@ -3456,6 +3500,12 @@
+    if (shader->info.stage == MESA_SHADER_VERTEX) {
+       u_foreach_bit(stage, shader->info.vs.additional_stages_bits) {
+          kk_msl_serialize(shader, stage, blob);
++      }
++      struct kk_shader *fb = shader->fallback_fs;
++      blob_write_uint32(blob, fb != NULL);
++      if (fb != NULL) {
++         blob_write_bytes(blob, &fb->info, sizeof(fb->info));
++         kk_msl_serialize(fb, MESA_SHADER_FRAGMENT, blob);
+       }
+    }
+ 
+@@ -3545,8 +3595,36 @@
+       u_foreach_bit(stage, shader->info.vs.additional_stages_bits) {
+          result = kk_msl_deserialize(blob, stage, shader);
+          if (result != VK_SUCCESS)
++            goto fail;
++      }
++      if (blob_read_uint32(blob)) {
++         struct kk_shader_info fb_info;
++         blob_copy_bytes(blob, &fb_info, sizeof(fb_info));
++         if (blob->overrun || fb_info.stage != MESA_SHADER_FRAGMENT) {
++            result = VK_ERROR_INCOMPATIBLE_SHADER_BINARY_EXT;
++            goto fail;
++         }
++         struct kk_shader *fb = vk_shader_zalloc(
++            &dev->vk, &kk_shader_ops, MESA_SHADER_FRAGMENT, pAllocator,
++            sizeof(*fb));
++         if (fb == NULL) {
++            result = VK_ERROR_OUT_OF_HOST_MEMORY;
+             goto fail;
++         }
++         result = kk_msl_deserialize(blob, MESA_SHADER_FRAGMENT, fb);
++         fb->info = fb_info;
++         if (result == VK_SUCCESS)
++            result = kk_build_stage_library(dev, fb);
++         if (result != VK_SUCCESS) {
++            kk_shader_destroy(&dev->vk, fb, pAllocator);
++            goto fail;
++         }
++         shader->fallback_fs = fb;
+       }
++      if (blob->overrun) {
++         result = VK_ERROR_INCOMPATIBLE_SHADER_BINARY_EXT;
++         goto fail;
++      }
+    }
+ 
+    if (info.stage == MESA_SHADER_COMPUTE) {
+@@ -3574,10 +3652,13 @@
+       goto fail;
+ 
+    *shader_out = &shader->vk;
++   atomic_fetch_add(&kk_stat_disque[3], 1);
+ 
+    return VK_SUCCESS;
+ 
+ fail:
++   atomic_fetch_add(&kk_stat_disque[4], 1);
++   atomic_store(&kk_stat_disque[6], (uint32_t)-result);
+    kk_shader_destroy(&dev->vk, shader, pAllocator);
+    return vk_error(dev, result);
+ }

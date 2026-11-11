@@ -72,6 +72,16 @@ serie_wine11() {
    ls "$R"/0390-wine11-*.patch 2>/dev/null
    ls "$R"/0391-wine11-*.patch 2>/dev/null
    ls "$R"/0396-wine11-*.patch 2>/dev/null
+   # Ilot TSO (Hypervisor.framework) et pile Diablo IV : voir INTEGRATION_D4.md. Tout est inactif
+   # sans CIDRE_ILOT=1 et sans chargeur signe avec com.apple.security.hypervisor (tests/ilot.sh).
+   ls "$R"/0290-wine11-*.patch 2>/dev/null
+   ls "$R"/0291-wine11-*.patch 2>/dev/null
+   ls "$R"/0293-wine11-*.patch 2>/dev/null
+   ls "$R"/0294-wine11-*.patch 2>/dev/null
+   ls "$R"/0301-wine11-*.patch 2>/dev/null
+   ls "$R"/0355-wine11-*.patch 2>/dev/null
+   ls "$R"/0462-wine11-*.patch 2>/dev/null
+   ls "$R"/0463-wine11-*.patch 2>/dev/null
 }
 
 serie_vkd3d_proton() {
@@ -93,4 +103,9 @@ serie_dxmt() {
 # traitent a part.
 serie_fex() {
    ls "$R"/0070-fex-*.patch "$R"/0118-fex-*.patch "$R"/0161-fex-*.patch "$R"/0179-fex-*.patch "$R"/0194-fex-*.patch "$R"/0197-fex-*.patch "$R"/0198-fex-*.patch "$R"/0199-fex-*.patch "$R"/0200-fex-*.patch "$R"/0203-fex-*.patch "$R"/0211-fex-*.patch "$R"/0217-fex-*.patch "$R"/0219-fex-*.patch "$R"/0224-fex-*.patch "$R"/0226-fex-*.patch "$R"/0225-fex-*.patch "$R"/0229-fex-*.patch "$R"/0230-fex-*.patch "$R"/0233-fex-*.patch "$R"/0234-fex-*.patch "$R"/0235-fex-*.patch "$R"/0236-fex-*.patch "$R"/0278-fex-*.patch "$R"/0279-fex-*.patch "$R"/0281-fex-*.patch "$R"/0282-fex-*.patch "$R"/0283-fex-*.patch "$R"/0284-fex-*.patch "$R"/0287-fex-*.patch "$R"/0288-fex-*.patch "$R"/0289-fex-*.patch "$R"/0296-fex-*.patch "$R"/0298-fex-*.patch "$R"/0299-fex-*.patch "$R"/0300-fex-*.patch "$R"/0306-fex-*.patch "$R"/0307-fex-*.patch "$R"/0310-fex-*.patch "$R"/0313-fex-*.patch 2>/dev/null
+   # Ilot (0292, 0360), jumelles v3e, cache disque de blocs et pile Diablo IV (INTEGRATION_D4.md).
+   # 0488 et 0489 touchent aussi External/rpmalloc (sous-module, patche en place comme le reste).
+   ls "$R"/0292-fex-*.patch "$R"/0360-fex-*.patch "$R"/0365-fex-*.patch "$R"/0366-fex-*.patch \
+      "$R"/0370-fex-*.patch "$R"/0452-fex-*.patch "$R"/0460-fex-*.patch "$R"/047[5-9]-fex-*.patch \
+      "$R"/048[0-9]-fex-*.patch "$R"/049[0-3]-fex-*.patch 2>/dev/null
 }

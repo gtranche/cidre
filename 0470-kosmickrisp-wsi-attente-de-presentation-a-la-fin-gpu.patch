@@ -1,0 +1,42 @@
+Generated-by: LLM
+
+KosmicKrisp WSI : vkWaitForPresentKHR rend a la fin du GPU sur option (CIDRE_WSI_ATTENTE_PRESENT=gpu)
+
+vkWaitForPresentKHR ne rendait qu'a l'affichage (presentedHandler) ; vkd3d-proton libere son
+frame_latency_event apres : le GPU attendait le vblank (Diablo IV cale a 39,8 img/s, GPU 81 %). Sous
+CIDRE_WSI_ATTENTE_PRESENT=gpu, l'attente rend a la fin GPU de l'image ; displaySync est garde. Cube : 40 ->
+49 img/s, GPU 98 %. D4 (09/11) : monde 28-35 img/s, GPU 91 %. Coupe par defaut. Chantier : ~/Dev/cidre-vblank.
+
+diff --git a/src/vulkan/wsi/wsi_common_metal.c b/src/vulkan/wsi/wsi_common_metal.c
+--- a/src/vulkan/wsi/wsi_common_metal.c
++++ b/src/vulkan/wsi/wsi_common_metal.c
+@@ -1081,6 +1081,19 @@
+       fprintf(stderr, "[CIDRE_WSI] presentation sous-optimale : couche %ux%u, chaine %ux%u\n",
+               width, height, chain->extent.width, chain->extent.height);
+    return is_optimal ? VK_SUCCESS : VK_SUBOPTIMAL_KHR;
++}
++
++static bool
++wsi_metal_attente_gpu(void)
++{
++   static int actif = -1;
++   if (actif < 0) {
++      const char *v = getenv("CIDRE_WSI_ATTENTE_PRESENT");
++      actif = v && (!strcmp(v, "gpu") || !strcmp(v, "1"));
++      if (actif)
++         fprintf(stderr, "[CIDRE_WSI] attente de presentation : fin GPU (0470, CIDRE_WSI_ATTENTE_PRESENT=%s)\n", v);
++   }
++   return actif;
+ }
+ 
+ static VkResult
+@@ -1104,6 +1117,9 @@
+    if (result != VK_SUCCESS)
+       return result;
+ 
++   if (wsi_metal_attente_gpu())
++      return VK_SUCCESS;
++
+    timespec_from_nsec(&abs_timespec, abs_timeout);
+ 
+    mtx_lock(&present_info->mutex);

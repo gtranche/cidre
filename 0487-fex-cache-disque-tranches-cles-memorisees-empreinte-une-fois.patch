@@ -1,0 +1,1047 @@
+Generated-by: LLM
+
+Cidre 0487 (FEX, cache disque) : cout par bloc servi.
+- Tranches : un blob de la base courante est lu avec sa tranche de 256 Kio (CIDRE_FEX_DISQUE_TRANCHE_KO, 0 : coupe), gardee
+  dans des cases a correspondance directe (CIDRE_FEX_DISQUE_TRANCHES_MO, defaut 64), sans verrou global (sequence par case,
+  verrou de case tenu pendant la lecture, copie rejetee si la case change pendant). Les blobs voisins (ecrits dans l'ordre
+  de compilation) sont servis par copie. Lecture anticipee de la tranche suivante sur un fil a part, basse priorite
+  (CIDRE_FEX_DISQUE_ANTICIPE=n tranches, defaut 1, 0 : coupe). Adaptation : si moins de 1/32 des octets lus sur 64 tranches
+  sont servis, lecture directe pour les 4096 blobs suivants. Blob servi d'une tranche : pas de copie de plus dans la LRU
+  (CIDRE_FEX_DISQUE_LRU_TRANCHE=1 : si).
+- Cles memorisees : empreinte brute des octets [RIP, RIP + 64) (bornee a la page si la suite n'est pas executable) -> cle
+  decodee, table en memoire (2^18 cases) gardee dans <base>_cles.bin (triplets B, K, controle ; ajouts par l'ecrivain par
+  paquets de 512). La cle ne fait que choisir le seau : l'empreinte des etendues valide toujours le candidat. Cle memorisee
+  sans succes : vraie cle par decodage (la compilation reprend ce decodage et le stockage en a besoin), seconde consultation
+  si elle differe. Jamais pour une cle de bord (0485). CIDRE_FEX_DISQUE_MEMO=0 : coupe.
+- Empreinte vive : une seule relecture de [premiere etendue, fin de la derniere) si elle tient en 8 Kio, etendues rapprochees
+  en place puis XXH3-128 d'un coup (meme valeur qu'en flux). Echec : etendue par etendue comme avant
+  (CIDRE_FEX_DISQUE_EMPREINTE_UNE=0 : toujours).
+- Compteurs du service cumules par fil (Decoder::CidreAjouter) et verses tous les 16 blocs servis et a chaque bloc compile.
+- Ligne « cidre disque rates » : tranches lues (Kio, ms), blobs servis par tranche, requetes d'intervalle, tranches
+  anticipees, attentes, pauses ; cles memorisees chargees, trouvees, ratees (meme cle), fausses (autre cle), notees.
+- Lookup est l'enveloppe des cles memorisees ; CidreLookup la consultation ; CidreCleDecodee la cle decodee (0485 compris).
+Local Cidre.
+
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -1704,11 +1704,16 @@
+     }
+     LogMan::Msg::IFmt("cidre disque rates : premiere {} ; finale {} ; stockes neufs {} ; doublons {} ; seau plein {}, refus {} ; "
+                       "cle simple : consult {}, servis {}, stockes {} ; projection {} Mio, amorce {} Mio ; "
+-                      "cle de bord : calculees {}, servis {}, stockes {} ; trampolines {}",
++                      "cle de bord : calculees {}, servis {}, stockes {} ; trampolines {} ; tranches : lues {} ({} Kio, {:.1f} ms), blobs servis {} ; "
++                      "requetes d'intervalle {} ; tranches anticipees {}, attentes {}, pauses {} ; "
++                      "cles memorisees : chargees {}, trouvees {}, ratees {}, fausses {}, notees {}",
+                       fmt::join(A, "/"), fmt::join(B, "/"), fmt::join(C, "/"), fmt::join(D, "/"), X(S.SeauPlein), X(S.RefusStore),
+                       X(S.SimpleConsult), X(S.SimpleServis), X(S.SimpleStockes), DC.CidreProjetes.load(std::memory_order_relaxed) >> 20,
+                       DC.CidreAmorce.load(std::memory_order_relaxed) >> 20, X(DC.CidreBordCles), X(S.BordServis), X(S.BordStockes),
+-                      X(DC.CidreTrampolines));
++                      X(DC.CidreTrampolines), X(DC.CidreTranchesLues), X(DC.CidreTranchesOctets) >> 10, X(DC.CidreTranchesTicks) * 1000.0 / F,
++                      X(DC.CidreTranchesServis), X(FEXCore::Frontend::CidreIntervNb), X(DC.CidreTranchesAnticipees),
++                      X(DC.CidreTranchesAttentes), X(DC.CidreTranchesPauses), DC.CidreMemoCharges.load(std::memory_order_relaxed),
++                      X(DC.CidreMemoTrouves), X(DC.CidreMemoRates), X(DC.CidreMemoFaux), X(DC.CidreMemoNotes));
+   }
+ }
+ 
+@@ -1722,15 +1727,16 @@
+   }
+   Thread->FrontendDecoder->CidreCauseFin = FEXCore::DiskCache::CAUSE_REARM; // 0479 (rendu vrai : sans effet)
+   if (!C->GuestCodeArmed) {
+-    CidreDisque.RefusArme.fetch_add(1, std::memory_order_relaxed);
+-    CidreDisque.RefusRaison[0].fetch_add(1, std::memory_order_relaxed);
++    Thread->FrontendDecoder->CidreAjouter(CidreDisque.RefusArme, 1);
++    Thread->FrontendDecoder->CidreAjouter(CidreDisque.RefusRaison[0], 1);
+     return false;
+   }
+   const uint64_t CidreTR0 = ::FEXCore::CidreMesure::Tick();
+   struct FinR {
+     uint64_t T;
+-    ~FinR() { CidreDisque.TicksRearm.fetch_add(::FEXCore::CidreMesure::Tick() - T, std::memory_order_relaxed); }
+-  } CidreFinR {CidreTR0};
++    FEXCore::Frontend::Decoder* D;
++    ~FinR() { D->CidreAjouter(CidreDisque.TicksRearm, ::FEXCore::CidreMesure::Tick() - T); }
++  } CidreFinR {CidreTR0, Thread->FrontendDecoder.get()};
+   uint64_t ArmeDebut = 0, ArmeFin = 0;
+   for (size_t i = 0; i + 1 < Hit.CidreArmes.size(); i += 2) {
+     const uint64_t A0 = GuestRIP + Hit.CidreArmes[i], F = A0 + Hit.CidreArmes[i + 1];
+@@ -1738,12 +1744,12 @@
+       const uint64_t FinPage = (A & ~uint64_t {0xfff}) + 0x1000;
+       const uint64_t Fin = std::min(F, FinPage);
+       if (::FEXCore::CidreMesure::PageChaude(A >> 12)) {
+-        CidreDisque.RefusArme.fetch_add(1, std::memory_order_relaxed);
+-        CidreDisque.RefusRaison[1].fetch_add(1, std::memory_order_relaxed);
++        Thread->FrontendDecoder->CidreAjouter(CidreDisque.RefusArme, 1);
++        Thread->FrontendDecoder->CidreAjouter(CidreDisque.RefusRaison[1], 1);
+         return false;
+       }
+       if (!(A >= ArmeDebut && Fin <= ArmeFin)) {
+-        CidreDisque.NbAppelsArme.fetch_add(1, std::memory_order_relaxed);
++        Thread->FrontendDecoder->CidreAjouter(CidreDisque.NbAppelsArme, 1);
+         const uint64_t CidreTA = ::FEXCore::CidreMesure::Tick();
+         bool Ok;
+         if (CidreArmeGroupe() && C->GuestCodeArmed(A, FinPage - A)) {
+@@ -1753,11 +1759,11 @@
+         } else {
+           Ok = C->GuestCodeArmed(A, Fin - A);
+         }
+-        ::FEXCore::CidreMesure::ArmeTicks.fetch_add(::FEXCore::CidreMesure::Tick() - CidreTA, std::memory_order_relaxed);
+-        ::FEXCore::CidreMesure::ArmeNb.fetch_add(1, std::memory_order_relaxed);
++        Thread->FrontendDecoder->CidreAjouter(::FEXCore::CidreMesure::ArmeTicks, ::FEXCore::CidreMesure::Tick() - CidreTA);
++        Thread->FrontendDecoder->CidreAjouter(::FEXCore::CidreMesure::ArmeNb, 1);
+         if (!Ok) {
+-          CidreDisque.RefusArme.fetch_add(1, std::memory_order_relaxed);
+-          CidreDisque.RefusRaison[2].fetch_add(1, std::memory_order_relaxed);
++          Thread->FrontendDecoder->CidreAjouter(CidreDisque.RefusArme, 1);
++          Thread->FrontendDecoder->CidreAjouter(CidreDisque.RefusRaison[2], 1);
+           return false;
+         }
+       }
+@@ -1767,9 +1773,9 @@
+   XXH128_hash_t Vive;
+   const uint64_t CidreTH = ::FEXCore::CidreMesure::Tick();
+   const bool CidreHashOk = FEXCore::DiskCache::DiskCache::CidreEmpreinteVive(Thread, GuestRIP, Hit.CidreEtendues, Vive);
+-  CidreDisque.TicksRearmHash.fetch_add(::FEXCore::CidreMesure::Tick() - CidreTH, std::memory_order_relaxed);
++  Thread->FrontendDecoder->CidreAjouter(CidreDisque.TicksRearmHash, ::FEXCore::CidreMesure::Tick() - CidreTH);
+   if (!CidreHashOk || !XXH128_isEqual(Vive, Hit.CidreEmpreinte)) {
+-    CidreDisque.RefusRelu.fetch_add(1, std::memory_order_relaxed);
++    Thread->FrontendDecoder->CidreAjouter(CidreDisque.RefusRelu, 1);
+     Thread->FrontendDecoder->CidreCauseFin = FEXCore::DiskCache::CAUSE_RELUS;
+     return false;
+   }
+@@ -1976,12 +1982,12 @@
+   if (CidreDisquePermis) {
+     FEXCORE_PROFILE_ACCUMULATION(Thread, AccumulatedDiskCacheLookupTime);
+     const uint64_t CidreTS = ::FEXCore::CidreMesure::Tick();
+-    CidreDisque.Consult.fetch_add(1, std::memory_order_relaxed);
++    Thread->FrontendDecoder->CidreAjouter(CidreDisque.Consult, 1);
+     auto* CidreDec = Thread->FrontendDecoder.get();
+     CidreDec->CidreCauseRIP = GuestRIP;
+     CidreDec->CidreCleBord = false; // 0485
+     Hit = DiskCache.Lookup(Thread, Region, GuestRIP, DiskCacheGuestCodeKey);
+-    CidreDisque.TicksLookup.fetch_add(::FEXCore::CidreMesure::Tick() - CidreTS, std::memory_order_relaxed);
++    Thread->FrontendDecoder->CidreAjouter(CidreDisque.TicksLookup, ::FEXCore::CidreMesure::Tick() - CidreTS);
+     if (Hit && !DiskCache.IsValidating() && !CidreDisqueRearmer(this, Thread, GuestRIP, *Hit)) {
+       Hit.reset();
+     }
+@@ -1992,13 +1998,13 @@
+     if (!Hit && !DiskCache.IsValidating() && CidreDec->CidreCause1 == FEXCore::DiskCache::CAUSE_REARM && DiskCacheGuestCodeKey &&
+         CidreDisqueSimpleActif()) {
+       std::optional<uint64_t> CidreCleS = DiskCacheGuestCodeKey;
+-      CidreDisque.SimpleConsult.fetch_add(1, std::memory_order_relaxed);
++      Thread->FrontendDecoder->CidreAjouter(CidreDisque.SimpleConsult, 1);
+       Hit = DiskCache.Lookup(Thread, Region, GuestRIP, CidreCleS, false, true);
+       if (Hit && !CidreDisqueRearmer(this, Thread, GuestRIP, *Hit)) {
+         Hit.reset();
+       }
+       if (Hit) {
+-        CidreDisque.SimpleServis.fetch_add(1, std::memory_order_relaxed);
++        Thread->FrontendDecoder->CidreAjouter(CidreDisque.SimpleServis, 1);
+       }
+     }
+     if (!Hit && !DiskCache.IsValidating() && CidreDisqueValidesActif() && (GuestCodeArmed || GuestCodeAlias) &&
+@@ -2012,7 +2018,7 @@
+         } else if (!CidreDisqueRearmer(this, Thread, GuestRIP, *Hit)) {
+           Hit.reset();
+         } else {
+-          CidreDisque.VarServis.fetch_add(1, std::memory_order_relaxed);
++          Thread->FrontendDecoder->CidreAjouter(CidreDisque.VarServis, 1);
+         }
+       }
+     }
+@@ -2020,11 +2026,12 @@
+       const uint64_t CidreTCh = ::FEXCore::CidreMesure::Tick();
+       auto LoadedCode = Thread->CPUBackend->LoadCachedCode(Hit->HostCode);
+       const uint64_t CidreTPose = ::FEXCore::CidreMesure::Tick();
+-      CidreDisque.TicksCharge.fetch_add(CidreTPose - CidreTCh, std::memory_order_relaxed);
++      Thread->FrontendDecoder->CidreAjouter(CidreDisque.TicksCharge, CidreTPose - CidreTCh);
+       struct FinPose {
+         uint64_t T;
+-        ~FinPose() { CidreDisque.TicksPose.fetch_add(::FEXCore::CidreMesure::Tick() - T, std::memory_order_relaxed); }
+-      } CidreFinPose {CidreTPose};
++        FEXCore::Frontend::Decoder* D;
++        ~FinPose() { D->CidreAjouter(CidreDisque.TicksPose, ::FEXCore::CidreMesure::Tick() - T); }
++      } CidreFinPose {CidreTPose, Thread->FrontendDecoder.get()};
+       if (LoadedCode.BlockBegin) {
+         for (auto& CodePage : Hit->GuestPages) {
+           if (Thread->LookupCache->AddBlockExecutableRange(Thread, Hit->EntryPointRIPs, CodePage, FEXCore::Utils::FEX_PAGE_SIZE)) {
+@@ -2032,11 +2039,12 @@
+           }
+         }
+         const uint64_t CidreTM = ::FEXCore::CidreMesure::Tick();
+-        CidreDisque.TicksPoseInterv.fetch_add(CidreTM - CidreTPose, std::memory_order_relaxed);
++        Thread->FrontendDecoder->CidreAjouter(CidreDisque.TicksPoseInterv, CidreTM - CidreTPose);
+         struct FinMap {
+           uint64_t T;
+-          ~FinMap() { CidreDisque.TicksPoseMap.fetch_add(::FEXCore::CidreMesure::Tick() - T, std::memory_order_relaxed); }
+-        } CidreFinMap {CidreTM};
++          FEXCore::Frontend::Decoder* D;
++          ~FinMap() { D->CidreAjouter(CidreDisque.TicksPoseMap, ::FEXCore::CidreMesure::Tick() - T); }
++        } CidreFinMap {CidreTM, Thread->FrontendDecoder.get()};
+ 
+         LOGMAN_THROW_A_FMT(Hit->EntryPointRIPs.size() == Hit->EntryPointHostOffsets.size(), "Mismatched Disk Cache entrypoint pairs!");
+ 
+@@ -2052,11 +2060,12 @@
+         LOGMAN_THROW_A_FMT(CachedHostCode != 0, "Couldn't find GuestRIP in Disk Cache entrypoints!");
+ 
+         FEXCORE_PROFILE_INSTANT_INCREMENT(Thread, AccumulatedDiskCacheHitCount, 1);
+-        CidreDisque.Succes[CidreClasse].fetch_add(1, std::memory_order_relaxed);
++        Thread->FrontendDecoder->CidreAjouter(CidreDisque.Succes[CidreClasse], 1);
+         if (CidreDec->CidreCleBord) {
+           CidreDisque.BordServis.fetch_add(1, std::memory_order_relaxed); // 0485
+         }
+-        CidreDisque.SuccesTicks.fetch_add(::FEXCore::CidreMesure::Tick() - CidreTS, std::memory_order_relaxed);
++        Thread->FrontendDecoder->CidreAjouter(CidreDisque.SuccesTicks, ::FEXCore::CidreMesure::Tick() - CidreTS);
++        Thread->FrontendDecoder->CidreBlocServi(); // 0487 : compteurs du fil verses tous les 16 blocs
+         CidreDisqueJournal(DiskCache);
+         Thread->FrontendDecoder->DelayedDisownBuffer();
+ 
+@@ -2071,7 +2080,8 @@
+     CidreDisque.Rate1[CidreDec->CidreCause1].fetch_add(1, std::memory_order_relaxed);
+     CidreDisque.RateFin[CidreDec->CidreCauseFin].fetch_add(1, std::memory_order_relaxed);
+     FEXCORE_PROFILE_INSTANT_INCREMENT(Thread, AccumulatedDiskCacheMissCount, 1);
+-    CidreDisque.TicksLookupEchec.fetch_add(::FEXCore::CidreMesure::Tick() - CidreTS, std::memory_order_relaxed);
++    Thread->FrontendDecoder->CidreAjouter(CidreDisque.TicksLookupEchec, ::FEXCore::CidreMesure::Tick() - CidreTS);
++    Thread->FrontendDecoder->CidreVerser(); // 0487 : bloc a compiler : compteurs du fil verses
+   }
+ 
+   // Accumulate a JIT count now, as even if another thread raced us, it should count as a compile.
+diff --git a/FEXCore/Source/Interface/Core/DiskCache.cpp b/FEXCore/Source/Interface/Core/DiskCache.cpp
+--- a/FEXCore/Source/Interface/Core/DiskCache.cpp
++++ b/FEXCore/Source/Interface/Core/DiskCache.cpp
+@@ -287,6 +287,38 @@
+   bool DiskCache::CidreEmpreinteVive(Core::InternalThreadState* Thread, uint64_t GuestRIP, std::span<const uint32_t> Extents,
+                                      XXH128_hash_t& Out) {
+     XXH3_state_t HashState;
++    // Cidre 0487 : les etendues tiennent souvent dans quelques Kio : une seule relecture de [premiere, fin de la derniere),
++    // puis l'empreinte des seules etendues (memes octets, meme ordre). Echec (trou non executable) : etendue par etendue.
++    if (Extents.size() >= 2) {
++      const uint64_t Debut = Extents[0];
++      const uint64_t Fin = (uint64_t)Extents[Extents.size() - 2] + Extents[Extents.size() - 1];
++      static const bool CidreEnUneFois = [] {
++        const char* E = getenv("CIDRE_FEX_DISQUE_EMPREINTE_UNE");
++        return !(E && *E == '0');
++      }();
++      alignas(64) uint8_t Tout[8192];
++      bool Trie = true;
++      for (size_t i = 2; i + 1 < Extents.size(); i += 2) {
++        Trie = Trie && Extents[i] >= (uint64_t)Extents[i - 2] + Extents[i - 1];
++      }
++      if (CidreEnUneFois && Trie && Fin > Debut && Fin - Debut <= sizeof(Tout)) {
++        if (Thread->FrontendDecoder->CidreRelire(reinterpret_cast<const uint8_t*>(GuestRIP + Debut), Tout, Fin - Debut)) {
++          // etendues rapprochees en place (croissantes : la destination ne depasse jamais la source), puis une empreinte
++          // d'un coup : XXH3 en flux sur des morceaux = XXH3 d'un coup sur leur concatenation
++          uint64_t Octets = 0;
++          for (size_t i = 0; i + 1 < Extents.size(); i += 2) {
++            if (Extents[i] - Debut != Octets) {
++              memmove(Tout + Octets, Tout + (Extents[i] - Debut), Extents[i + 1]);
++            }
++            Octets += Extents[i + 1];
++          }
++          Out = XXH3_128bits(Tout, Octets);
++          Thread->FrontendDecoder->CidreAjouter(CidreOctetsHashes, Octets);
++          Thread->FrontendDecoder->CidreAjouter(CidreRelectures, 1);
++          return true;
++        }
++      }
++    }
+     XXH3_128bits_reset(&HashState);
+     uint8_t Tampon[512];
+     for (size_t i = 0; i + 1 < Extents.size(); i += 2) {
+@@ -294,7 +326,7 @@
+       uint64_t Reste = Extents[i + 1];
+       while (Reste) {
+         const size_t N = std::min<uint64_t>(Reste, sizeof(Tampon));
+-        CidreOctetsHashes.fetch_add(N, std::memory_order_relaxed);
++        Thread->FrontendDecoder->CidreAjouter(CidreOctetsHashes, N);
+         // Cidre 0478 : une seule remise a zero (droits et alias redemandes) par empreinte, comme le decodeur garde l'intervalle
+         // executable pendant tout un bloc ; CIDRE_FEX_DISQUE_RELIRE_GROUPE=0 redemande a chaque morceau (avant 0478)
+         static const bool CidreGroupe = [] {
+@@ -303,7 +335,7 @@
+         }();
+         const bool CidrePremiere = !CidreGroupe || (i == 0 && Reste == Extents[i + 1]);
+         if (CidrePremiere) {
+-          CidreRelectures.fetch_add(1, std::memory_order_relaxed);
++          Thread->FrontendDecoder->CidreAjouter(CidreRelectures, 1);
+         }
+         if (!(CidrePremiere ? Thread->FrontendDecoder->CidreRelire(reinterpret_cast<const uint8_t*>(A), Tampon, N) :
+                               Thread->FrontendDecoder->CidreRelireSuite(reinterpret_cast<const uint8_t*>(A), Tampon, N))) {
+@@ -315,9 +347,173 @@
+       }
+     }
+     Out = XXH3_128bits_digest(&HashState);
++    return true;
++  }
++
++  // Cidre 0487 : tranches de la base courante lues d'un bloc et gardees (voir DiskCache.h).
++  void DiskCache::CidreTranchesInit() {
++    std::lock_guard Guard(CidreTranchesVerrou);
++    if (CidreTranchesPretes) {
++      return;
++    }
++    const char* E = getenv("CIDRE_FEX_DISQUE_TRANCHE_KO");
++    const char* M = getenv("CIDRE_FEX_DISQUE_TRANCHES_MO");
++    const uint64_t T = (E ? strtoull(E, nullptr, 10) : 256ULL) << 10;
++    const uint64_t Budget = (M ? strtoull(M, nullptr, 10) : 64ULL) << 20;
++    if (T >= 4096 && Budget >= T) {
++      const uint32_t N = (uint32_t)std::min<uint64_t>(Budget / T, 1u << 16);
++      auto* Mem = static_cast<uint8_t*>(FEXCore::Allocator::VirtualAlloc(N * T));
++      if (Mem) {
++        CidreCases = new CidreCase[N];
++        CidreCaseVerrous = new std::mutex[N];
++        CidreTranchesMem = Mem;
++        CidreNbCases = N;
++        CidreTailleTranche = T;
++        const char* A = getenv("CIDRE_FEX_DISQUE_ANTICIPE");
++        CidreAnticipe = A ? (uint32_t)strtoul(A, nullptr, 10) : 1;
++        if (CidreAnticipe) {
++          FEXCore::Threads::Flags F = {.LowPriority = true, .Internal = true};
++          CidreLecteur = fextl::make_unique<WorkQueueThread>(F, "FEX:DiskCacheLecture");
++        }
++        LogMan::Msg::IFmt("cidre disque : tranches de {} Kio, {} cases ({} Mio), lecture anticipee de {} tranche(s)", T >> 10, N,
++                          (N * T) >> 20, CidreAnticipe);
++      }
++    }
++    CidreTranchesPretes = true;
++  }
++
++  // Case de la tranche Num : correspondance directe (Num modulo le nombre de cases), sans verrou global. Le verrou de la
++  // case est tenu pendant sa lecture ; la sequence est impaire pendant ce temps.
++  // Prend la case pour y lire Num (verrou de case tenu au retour si Lire). Attendre : bloquer sur le verrou (sinon essai).
++  bool DiskCache::CidreCasePour(uint64_t Num, uint64_t Besoin, uint32_t& Case, uint64_t& Seq, bool& Lire, bool Attendre) {
++    Lire = false;
++    Case = (uint32_t)(Num % CidreNbCases);
++    auto& K = CidreCases[Case];
++    auto& V = CidreCaseVerrous[Case];
++    if (Attendre) {
++      V.lock();
++    } else if (!V.try_lock()) {
++      return false;
++    }
++    Seq = K.Seq.load(std::memory_order_relaxed);
++    if (K.Num.load(std::memory_order_relaxed) == Num && Besoin <= K.Valides.load(std::memory_order_relaxed)) {
++      V.unlock(); // deja la (lue par un autre fil pendant l'attente)
++      return true;
++    }
++    K.Seq.store(Seq + 1, std::memory_order_relaxed);
++    std::atomic_thread_fence(std::memory_order_release);
++    K.Num.store(Num, std::memory_order_relaxed);
++    K.Valides.store(0, std::memory_order_relaxed);
++    Lire = true;
+     return true;
+   }
+ 
++  // Remplit la case prise par CidreCasePour (verrou de case tenu, sequence impaire Seq + 1) ; rend la sequence paire
++  void DiskCache::CidreRemplirCase(IndexedDB* DB, uint32_t Case, uint64_t Num, uint64_t Seq) {
++    const uint64_t T = CidreTailleTranche;
++    auto& K = CidreCases[Case];
++    const uint64_t T0 = CidreTick();
++    const ssize_t Lus = DB->CidreLirePartiel(Num * T, {CidreTranchesMem + (uint64_t)Case * T, T});
++    K.Valides.store(Lus > 0 ? (uint64_t)Lus : 0, std::memory_order_relaxed);
++    K.Seq.store(Seq + 2, std::memory_order_release);
++    CidreCaseVerrous[Case].unlock();
++    CidreTranchesLues.fetch_add(1, std::memory_order_relaxed);
++    CidreTranchesOctets.fetch_add(Lus > 0 ? Lus : 0, std::memory_order_relaxed);
++    CidreTranchesTicks.fetch_add(CidreTick() - T0, std::memory_order_relaxed);
++    // adaptation : sur 64 tranches lues, moins de 1/32 de leurs octets servis : lecture directe pour les 4096 blobs suivants
++    const uint64_t L = CidreFenLues.fetch_add(1, std::memory_order_relaxed) + 1;
++    CidreFenOctets.fetch_add(Lus > 0 ? Lus : 0, std::memory_order_relaxed);
++    if (L % 64 == 0) {
++      const uint64_t Lu = CidreFenOctets.exchange(0, std::memory_order_relaxed), Servi = CidreFenServis.exchange(0, std::memory_order_relaxed);
++      if (Lu && Servi * 32 < Lu) {
++        CidrePause.store(4096, std::memory_order_relaxed);
++        CidreTranchesPauses.fetch_add(1, std::memory_order_relaxed);
++      }
++    }
++  }
++
++  struct DiskCache::CidreAnticipeWorkItem final : WorkQueueThread::WorkItem {
++    DiskCache* Self;
++    IndexedDB* DB;
++    uint64_t Num;
++    CidreAnticipeWorkItem(DiskCache* Self, IndexedDB* DB, uint64_t Num)
++      : Self(Self)
++      , DB(DB)
++      , Num(Num) {}
++    void Run() override {
++      Self->CidreAnticipees.fetch_sub(1, std::memory_order_relaxed);
++      if (Self->CidreArret.load(std::memory_order_relaxed)) {
++        return;
++      }
++      uint32_t Case;
++      uint64_t Seq;
++      bool Lire;
++      if (!Self->CidreCasePour(Num, 1, Case, Seq, Lire, false) || !Lire) {
++        return;
++      }
++      Self->CidreRemplirCase(DB, Case, Num, Seq);
++      Self->CidreTranchesAnticipees.fetch_add(1, std::memory_order_relaxed);
++    }
++  };
++
++  // Faux : lire en direct.
++  bool DiskCache::CidreLireTranche(IndexedDB* DB, uint64_t Offset, std::span<uint8_t> Out) {
++    if (!CidreTranchesPretes) {
++      CidreTranchesInit();
++    }
++    const uint64_t T = CidreTailleTranche;
++    if (!T || DB != RWCacheDB.get() || Out.size() > T / 2 || Out.empty()) {
++      return false;
++    }
++    if (CidrePause.load(std::memory_order_relaxed) > 0 && CidrePause.fetch_sub(1, std::memory_order_relaxed) > 0) {
++      return false;
++    }
++    const uint64_t Num = Offset / T;
++    if ((Offset + Out.size() - 1) / T != Num) {
++      return false;
++    }
++    const uint64_t Rel = Offset - Num * T;
++    const uint32_t Case = (uint32_t)(Num % CidreNbCases);
++    auto& K = CidreCases[Case];
++    const uint8_t* Base = CidreTranchesMem + (uint64_t)Case * T;
++    for (int Essai = 0; Essai < 3; Essai++) {
++      const uint64_t Seq = K.Seq.load(std::memory_order_acquire);
++      if (!(Seq & 1) && K.Num.load(std::memory_order_relaxed) == Num && Rel + Out.size() <= K.Valides.load(std::memory_order_relaxed)) {
++        memcpy(Out.data(), Base + Rel, Out.size());
++        std::atomic_thread_fence(std::memory_order_acquire);
++        if (K.Seq.load(std::memory_order_relaxed) == Seq) {
++          CidreTranchesServis.fetch_add(1, std::memory_order_relaxed);
++          CidreFenServis.fetch_add(Out.size(), std::memory_order_relaxed);
++          return true;
++        }
++        continue;
++      }
++      if ((Seq & 1) && K.Num.load(std::memory_order_relaxed) == Num) {
++        CidreTranchesAttentes.fetch_add(1, std::memory_order_relaxed);
++      }
++      uint32_t C;
++      uint64_t S;
++      bool Lire;
++      if (!CidreCasePour(Num, Rel + Out.size(), C, S, Lire, true)) {
++        return false;
++      }
++      if (Lire) {
++        CidreRemplirCase(DB, C, Num, S);
++        // lecture anticipee des tranches suivantes (blobs ecrits dans l'ordre de compilation), sur un fil a part
++        if (CidreLecteur && CidreAnticipees.load(std::memory_order_relaxed) < 8) {
++          for (uint32_t i = 1; i <= CidreAnticipe; i++) {
++            CidreAnticipees.fetch_add(1, std::memory_order_relaxed);
++            CidreLecteur->QueueWork(fextl::make_unique<CidreAnticipeWorkItem>(this, DB, Num + i));
++          }
++        }
++        if (Rel + Out.size() > K.Valides.load(std::memory_order_relaxed)) {
++          return false; // fin de fichier : blob pas dans la tranche lue
++        }
++      }
++    }
++    return false;
++  }
++
+   bool FOZFile::Open(const fextl::string& FOZFileName, bool ReadOnly) {
+     FileName = FOZFileName;
+     this->ReadOnly = ReadOnly;
+@@ -891,6 +1087,13 @@
+ 
+     WritingDiskCache = (bool)RWCacheDB;
+     ReadingDiskCache = !ROCacheDBs.empty() || RWCacheDB != nullptr;
++    // Cidre 0487 : cles memorisees (CIDRE_FEX_DISQUE_MEMO=0 : coupe), fichier a cote de la base courante
++    if (RWCacheDB) {
++      const char* E = getenv("CIDRE_FEX_DISQUE_MEMO");
++      if (!(E && *E == '0')) {
++        CidreMemoCharger(RWDBBasePath + "_cles.bin");
++      }
++    }
+ 
+     if (IsWritingDiskCache()) {
+       FEXCore::Threads::Flags WriterThreadFlags = {.LowPriority = true, .Internal = true};
+@@ -1001,50 +1204,22 @@
+     }
+   };
+ 
+-  std::optional<CodeHitData> DiskCache::Lookup(Core::InternalThreadState* Thread, std::optional<ExecutableFileSectionInfo> Region,
+-                                               uint64_t GuestRIP, std::optional<uint64_t>& GuestCodeKey, bool CidreVariante, bool CidreSimple) {
+-    if (!IsReadingDiskCache()) {
+-      return std::nullopt;
++  struct DiskCache::CidreMemoWorkItem final : WorkQueueThread::WorkItem {
++    DiskCache* Self;
++    CidreMemoWorkItem(DiskCache* Self)
++      : Self(Self) {}
++    void Run() override {
++      Self->CidreMemoEcrire();
+     }
+-    const uint64_t CidreD0 = CidreTick(); // 0475
+-    // Cidre 0479 : cause de l'echec, lue par Core.cpp (journal « cidre disque rates »)
++  };
++
++  // Cidre 0487 : cle decodee d'un bloc anonyme (64 premiers octets decodes, masques exclus ; cle de bord si le bloc d'entree
++  // s'arrete sur une page non executable). Faux : pas de cle (cause dans CidreCauseFin).
++  bool DiskCache::CidreCleDecodee(Core::InternalThreadState* Thread, uint64_t GuestRIP, std::optional<uint64_t>& GuestCodeKey) {
+     auto Rate = [Thread](uint8_t C) {
+       Thread->FrontendDecoder->CidreCauseFin = C;
+     };
+-    Rate(CAUSE_AUCUNE);
+-    // Cidre 0482 : cle deja calculee par une consultation precedente du meme bloc (variante, cle simple) : pas de second
+-    // decodage des 64 octets (CLE_BRUTE=0 : ~8 us par consultation en jeu)
+-    if (GuestCodeKey.has_value()) {
+-    } else if (Thread->FrontendDecoder->CidreCleBord = false; Region && Region->FileStartVA) {
+-      struct __attribute__((packed)) {
+-        uint64_t GuestOffset;
+-        uint64_t FileId;
+-      } FileBackedKey = {GuestRIP - Region->FileStartVA, Region->FileInfo.FileId};
+-      GuestCodeKey = XXH3_64bits(&FileBackedKey, sizeof(FileBackedKey));
+-    } else {
+-      if (!AnonCaching) {
+-        return std::nullopt;
+-      }
+-      // Cidre (CIDRE_FEX_DISQUE_CLE_BRUTE, actif par defaut) : cle = empreinte des 64 premiers octets bruts (bornes a la page
+-      // de 4 Kio si la suivante n'est pas executable), sans decodage. La cle ne fait que choisir le seau : l'empreinte
+-      // complete des etendues valide toujours le candidat.
+-      static const bool CidreCleBrute = [] {
+-        const char* E = getenv("CIDRE_FEX_DISQUE_CLE_BRUTE");
+-        return !(E && *E == '0');
+-      }();
+-      if (CidreCleBrute) {
+-        uint8_t Octets[AnonPrefixGuestBytes];
+-        size_t N = AnonPrefixGuestBytes;
+-        if (!Thread->FrontendDecoder->CidreRelire(reinterpret_cast<const uint8_t*>(GuestRIP), Octets, N)) {
+-          N = std::min<size_t>(N, 0x1000 - (GuestRIP & 0xfff));
+-          if (!Thread->FrontendDecoder->CidreRelire(reinterpret_cast<const uint8_t*>(GuestRIP), Octets, N)) {
+-            CidreSortieConsult[0].fetch_add(1, std::memory_order_relaxed);
+-            Rate(CAUSE_CLE_RELECTURE);
+-            return std::nullopt;
+-          }
+-        }
+-        GuestCodeKey = XXH3_64bits(Octets, N) ^ (uint64_t {0xC1D4E} << 40) ^ N;
+-      } else {
++    Thread->FrontendDecoder->CidreCleBord = false;
+       Thread->FrontendDecoder->DecodeLoop(reinterpret_cast<const uint8_t*>(GuestRIP), AnonPrefixGuestBytes);
+       const auto* BlockInfo = Thread->FrontendDecoder->GetDecodedBlockInfo();
+ 
+@@ -1070,12 +1245,12 @@
+           CidreBord = &SubBlock;
+           continue;
+         }
+-        CidreSortieConsult[0].fetch_add(1, std::memory_order_relaxed); Rate(CAUSE_CLE_DECODAGE); return std::nullopt;
++        CidreSortieConsult[0].fetch_add(1, std::memory_order_relaxed); Rate(CAUSE_CLE_DECODAGE); return false;
+       }
+       if (CidreBord && CidreCouverts == 0) {
+         CidreTrampolines.fetch_add(1, std::memory_order_relaxed);
+         Rate(CAUSE_TRAMPOLINE);
+-        return std::nullopt;
++        return false;
+       }
+ 
+       XXH3_state_t HashState;
+@@ -1108,13 +1283,13 @@
+         // skip over masked in-block data and data/etc gaps between blocks
+         for (auto& DataMask : SubBlock.DataMasks) {
+           if (!Ajouter(HashStart, DataMask.FieldAddress - HashStart)) {
+-            CidreSortieConsult[0].fetch_add(1, std::memory_order_relaxed); Rate(CAUSE_CLE_RELECTURE); return std::nullopt;
++            CidreSortieConsult[0].fetch_add(1, std::memory_order_relaxed); Rate(CAUSE_CLE_RELECTURE); return false;
+           }
+           HashStart = DataMask.FieldAddress + DataMask.ValueSize;
+         }
+         if (HashStart != SubBlock.Entry + SubBlock.Size) {
+           if (!Ajouter(HashStart, SubBlock.Size - (HashStart - SubBlock.Entry))) {
+-            CidreSortieConsult[0].fetch_add(1, std::memory_order_relaxed); Rate(CAUSE_CLE_RELECTURE); return std::nullopt;
++            CidreSortieConsult[0].fetch_add(1, std::memory_order_relaxed); Rate(CAUSE_CLE_RELECTURE); return false;
+           }
+         }
+       }
+@@ -1143,7 +1318,236 @@
+         Thread->FrontendDecoder->CidreBordFin = Fin;
+         CidreBordCles.fetch_add(1, std::memory_order_relaxed);
+       }
++    return true;
++  }
++
++  // Cidre 0487 : empreinte brute des octets [RIP, RIP + 64), bornee a la page de 4 Kio si la suite n'est pas executable
++  bool DiskCache::CidreEmpreinteBrute(Core::InternalThreadState* Thread, uint64_t GuestRIP, uint64_t& B) {
++    uint8_t Octets[AnonPrefixGuestBytes];
++    size_t N = AnonPrefixGuestBytes;
++    if (!Thread->FrontendDecoder->CidreRelire(reinterpret_cast<const uint8_t*>(GuestRIP), Octets, N)) {
++      N = std::min<size_t>(N, 0x1000 - (GuestRIP & 0xfff));
++      if (!Thread->FrontendDecoder->CidreRelire(reinterpret_cast<const uint8_t*>(GuestRIP), Octets, N)) {
++        return false;
+       }
++    }
++    B = XXH3_64bits_withSeed(Octets, N, 0xC1D4'0485'0000ULL ^ N) | 1;
++    return true;
++  }
++
++  static inline uint64_t CidreMemoMelange(uint64_t B, uint64_t K) {
++    return (B ^ (K * 0x9E37'79B9'7F4A'7C15ULL) ^ 0xC1D4'0485'0485'C1D4ULL) | 1;
++  }
++
++  bool DiskCache::CidreMemoChercher(uint64_t B, uint64_t& K) {
++    const uint32_t H = (uint32_t)(B >> 20) & (CIDRE_MEMO_NB - 1);
++    for (uint32_t i = 0; i < 8; i++) {
++      auto& M = CidreMemos[(H + i) & (CIDRE_MEMO_NB - 1)];
++      const uint64_t C = M.C.load(std::memory_order_acquire);
++      if (!C) {
++        return false;
++      }
++      const uint64_t MB = M.B.load(std::memory_order_relaxed), MK = M.K.load(std::memory_order_relaxed);
++      std::atomic_thread_fence(std::memory_order_acquire);
++      if (MB == B && M.C.load(std::memory_order_relaxed) == C && CidreMemoMelange(MB, MK) == C) {
++        K = MK;
++        return true;
++      }
++    }
++    return false;
++  }
++
++  void DiskCache::CidreMemoNoter(uint64_t B, uint64_t K, bool Persister) {
++    const uint32_t H = (uint32_t)(B >> 20) & (CIDRE_MEMO_NB - 1);
++    uint32_t Choix = H;
++    for (uint32_t i = 0; i < 8; i++) {
++      const uint32_t j = (H + i) & (CIDRE_MEMO_NB - 1);
++      const uint64_t C = CidreMemos[j].C.load(std::memory_order_relaxed);
++      if (!C || CidreMemos[j].B.load(std::memory_order_relaxed) == B) {
++        Choix = j;
++        break;
++      }
++    }
++    auto& M = CidreMemos[Choix];
++    if (M.C.load(std::memory_order_relaxed) == CidreMemoMelange(B, K) && M.B.load(std::memory_order_relaxed) == B &&
++        M.K.load(std::memory_order_relaxed) == K) {
++      return;
++    }
++    // ecrivains concurrents : la case peut finir melangee, alors C ne correspond plus et la lecture l'ignore
++    M.C.store(0, std::memory_order_relaxed);
++    std::atomic_thread_fence(std::memory_order_release);
++    M.B.store(B, std::memory_order_relaxed);
++    M.K.store(K, std::memory_order_relaxed);
++    M.C.store(CidreMemoMelange(B, K), std::memory_order_release);
++    if (!Persister || !CidreMemoFichier) {
++      return;
++    }
++    CidreMemoNotes.fetch_add(1, std::memory_order_relaxed);
++    bool Demander = false;
++    {
++      std::lock_guard Guard(CidreMemoVerrou);
++      CidreMemoNeufs.push_back(B);
++      CidreMemoNeufs.push_back(K);
++      CidreMemoNeufs.push_back(CidreMemoMelange(B, K));
++      if (CidreMemoNeufs.size() >= 3 * 512 && !CidreMemoDemande) {
++        CidreMemoDemande = Demander = true;
++      }
++    }
++    if (Demander && Writer) {
++      Writer->QueueWork(fextl::make_unique<CidreMemoWorkItem>(this));
++    }
++  }
++
++  void DiskCache::CidreMemoEcrire() {
++    fextl::vector<uint64_t> Lot;
++    {
++      std::lock_guard Guard(CidreMemoVerrou);
++      Lot.swap(CidreMemoNeufs);
++      CidreMemoDemande = false;
++    }
++    if (Lot.empty() || !CidreMemoFichier) {
++      return;
++    }
++    const ssize_t Fin = CidreMemoFichier->Size();
++    if (Fin >= 0) {
++      CidreMemoFichier->PWrite(Lot.data(), Lot.size() * sizeof(uint64_t), (uint64_t)Fin);
++    }
++  }
++
++  void DiskCache::CidreMemoCharger(const fextl::string& Chemin) {
++    auto* T = static_cast<CidreMemo*>(FEXCore::Allocator::VirtualAlloc(CIDRE_MEMO_NB * sizeof(CidreMemo)));
++    if (!T) {
++      return;
++    }
++    CidreMemos = T; // memoire neuve : tout a zero
++    CidreMemoFichier = fextl::make_unique<File::File>(Chemin.c_str(), File::FileModes::READ | File::FileModes::WRITE | File::FileModes::CREATE, false);
++    if (!CidreMemoFichier->IsValid()) {
++      CidreMemoFichier.reset();
++      return;
++    }
++    const ssize_t Taille = CidreMemoFichier->Size();
++    if (Taille <= 0 || Taille > (64 << 20)) {
++      return;
++    }
++    fextl::vector<uint64_t> Mots(Taille / sizeof(uint64_t));
++    if (CidreMemoFichier->PRead(Mots.data(), Mots.size() * sizeof(uint64_t), 0) != (ssize_t)(Mots.size() * sizeof(uint64_t))) {
++      return;
++    }
++    uint64_t N = 0, Rejets = 0;
++    for (size_t i = 0; i + 2 < Mots.size();) {
++      if (Mots[i] && Mots[i + 2] == CidreMemoMelange(Mots[i], Mots[i + 1])) {
++        CidreMemoNoter(Mots[i], Mots[i + 1], false);
++        N++;
++        i += 3;
++      } else {
++        Rejets++;
++        i++;
++      }
++    }
++    CidreMemoCharges.store(N, std::memory_order_relaxed);
++    LogMan::Msg::IFmt("cidre disque : cles memorisees : {} chargees ({} mots rejetes)", N, Rejets);
++  }
++
++  // Cidre 0487 : la cle memorisee n'a rien trouve : la vraie cle (decodage), necessaire a la compilation qui reprend le
++  // decodage et au stockage, puis une seconde consultation si elle differe.
++  std::optional<CodeHitData> DiskCache::Lookup(Core::InternalThreadState* Thread, std::optional<ExecutableFileSectionInfo> Region,
++                                               uint64_t GuestRIP, std::optional<uint64_t>& GuestCodeKey, bool CidreVariante, bool CidreSimple) {
++    const bool Neuve = !GuestCodeKey.has_value();
++    auto* Dec = Thread->FrontendDecoder.get();
++    Dec->CidreMemoUtilise = false;
++    auto R = CidreLookup(Thread, Region, GuestRIP, GuestCodeKey, CidreVariante, CidreSimple);
++    if (!Neuve || !Dec->CidreMemoUtilise) {
++      return R;
++    }
++    Dec->CidreMemoUtilise = false;
++    if (R) {
++      CidreMemoTrouves.fetch_add(1, std::memory_order_relaxed);
++      return R;
++    }
++    const uint64_t KMemo = *GuestCodeKey;
++    const uint8_t CauseMemo = Dec->CidreCauseFin;
++    const uint64_t T0 = CidreTick();
++    std::optional<uint64_t> Vraie;
++    const bool Ok = CidreCleDecodee(Thread, GuestRIP, Vraie);
++    CidreDet[0].fetch_add(CidreTick() - T0, std::memory_order_relaxed);
++    if (!Ok) {
++      GuestCodeKey.reset();
++      CidreMemoFaux.fetch_add(1, std::memory_order_relaxed);
++      return std::nullopt;
++    }
++    GuestCodeKey = Vraie;
++    if (*Vraie == KMemo) {
++      Dec->CidreCauseFin = CauseMemo;
++      CidreMemoRates.fetch_add(1, std::memory_order_relaxed);
++      return std::nullopt;
++    }
++    CidreMemoFaux.fetch_add(1, std::memory_order_relaxed);
++    if (!Dec->CidreCleBord) {
++      CidreMemoNoter(Dec->CidreMemoB, *Vraie, true);
++    }
++    return CidreLookup(Thread, Region, GuestRIP, GuestCodeKey, CidreVariante, CidreSimple);
++  }
++
++  std::optional<CodeHitData> DiskCache::CidreLookup(Core::InternalThreadState* Thread, std::optional<ExecutableFileSectionInfo> Region,
++                                                    uint64_t GuestRIP, std::optional<uint64_t>& GuestCodeKey, bool CidreVariante, bool CidreSimple) {
++    if (!IsReadingDiskCache()) {
++      return std::nullopt;
++    }
++    const uint64_t CidreD0 = CidreTick(); // 0475
++    // Cidre 0479 : cause de l'echec, lue par Core.cpp (journal « cidre disque rates »)
++    auto Rate = [Thread](uint8_t C) {
++      Thread->FrontendDecoder->CidreCauseFin = C;
++    };
++    Rate(CAUSE_AUCUNE);
++    // Cidre 0482 : cle deja calculee par une consultation precedente du meme bloc (variante, cle simple) : pas de second
++    // decodage des 64 octets (CLE_BRUTE=0 : ~8 us par consultation en jeu)
++    if (GuestCodeKey.has_value()) {
++    } else if (Thread->FrontendDecoder->CidreCleBord = false; Region && Region->FileStartVA) {
++      struct __attribute__((packed)) {
++        uint64_t GuestOffset;
++        uint64_t FileId;
++      } FileBackedKey = {GuestRIP - Region->FileStartVA, Region->FileInfo.FileId};
++      GuestCodeKey = XXH3_64bits(&FileBackedKey, sizeof(FileBackedKey));
++    } else {
++      if (!AnonCaching) {
++        return std::nullopt;
++      }
++      // Cidre (CIDRE_FEX_DISQUE_CLE_BRUTE, actif par defaut) : cle = empreinte des 64 premiers octets bruts (bornes a la page
++      // de 4 Kio si la suivante n'est pas executable), sans decodage. La cle ne fait que choisir le seau : l'empreinte
++      // complete des etendues valide toujours le candidat.
++      static const bool CidreCleBrute = [] {
++        const char* E = getenv("CIDRE_FEX_DISQUE_CLE_BRUTE");
++        return !(E && *E == '0');
++      }();
++      if (CidreCleBrute) {
++        uint8_t Octets[AnonPrefixGuestBytes];
++        size_t N = AnonPrefixGuestBytes;
++        if (!Thread->FrontendDecoder->CidreRelire(reinterpret_cast<const uint8_t*>(GuestRIP), Octets, N)) {
++          N = std::min<size_t>(N, 0x1000 - (GuestRIP & 0xfff));
++          if (!Thread->FrontendDecoder->CidreRelire(reinterpret_cast<const uint8_t*>(GuestRIP), Octets, N)) {
++            Thread->FrontendDecoder->CidreAjouter(CidreSortieConsult[0], 1);
++            Rate(CAUSE_CLE_RELECTURE);
++            return std::nullopt;
++          }
++        }
++        GuestCodeKey = XXH3_64bits(Octets, N) ^ (uint64_t {0xC1D4E} << 40) ^ N;
++      } else {
++      // Cidre 0487 : cle memorisee (empreinte brute des 64 premiers octets -> cle decodee), sinon decodage
++      uint64_t CidreB = 0, CidreK = 0;
++      const bool CidreAvecB = CidreMemos && CidreEmpreinteBrute(Thread, GuestRIP, CidreB);
++      if (CidreAvecB && CidreMemoChercher(CidreB, CidreK)) {
++        GuestCodeKey = CidreK;
++        Thread->FrontendDecoder->CidreMemoUtilise = true;
++        Thread->FrontendDecoder->CidreMemoB = CidreB;
++      } else {
++        if (!CidreCleDecodee(Thread, GuestRIP, GuestCodeKey)) {
++          return std::nullopt;
++        }
++        if (CidreAvecB && !Thread->FrontendDecoder->CidreCleBord) {
++          CidreMemoNoter(CidreB, *GuestCodeKey, true);
++        }
++      }
++      }
+       // if (TotalSize < AnonPrefixGuestBytes) {
+       //   GuestCodeKey = 0;
+       //   return std::nullopt;
+@@ -1152,7 +1556,7 @@
+     }
+ 
+     const uint64_t CidreD1 = CidreTick();
+-    CidreDet[0].fetch_add(CidreD1 - CidreD0, std::memory_order_relaxed);
++    Thread->FrontendDecoder->CidreAjouter(CidreDet[0], CidreD1 - CidreD0);
+     auto RangeInfo = CTX->SyscallHandler->QueryGuestExecutableRange(Thread, GuestRIP);
+     if (RangeInfo.Size == 0 || RangeInfo.Base > GuestRIP) {
+       CidreSortieConsult[1].fetch_add(1, std::memory_order_relaxed); Rate(CAUSE_INTERVALLE); return std::nullopt;
+@@ -1180,14 +1584,15 @@
+     std::optional<fextl::list<MemoryLRUKey>::iterator> LRUIter;
+     uint64_t CurrentFootprint = 0;
+     const uint64_t CidreD2 = CidreTick();
+-    CidreDet[1].fetch_add(CidreD2 - CidreD1, std::memory_order_relaxed);
++    Thread->FrontendDecoder->CidreAjouter(CidreDet[1], CidreD2 - CidreD1);
+     struct CidreFinIndex {
+       std::atomic<uint64_t>& A;
+       uint64_t T;
+-      ~CidreFinIndex() { A.fetch_add(CidreTick() - T, std::memory_order_relaxed); }
++      Frontend::Decoder* D;
++      ~CidreFinIndex() { D->CidreAjouter(A, CidreTick() - T); }
+     };
+     {
+-      CidreFinIndex CidreFI {CidreDet[2], CidreD2};
++      CidreFinIndex CidreFI {CidreDet[2], CidreD2, Thread->FrontendDecoder.get()};
+       std::shared_lock Guard(IndexLock); // 0484 : lecture seule
+       auto It = Index.find(LookupKey);
+       if (It == Index.end()) {
+@@ -1298,7 +1703,7 @@
+           // Cidre : lecture comme le decodeur ; une etendue non executable = pas de candidat
+           const uint64_t CidreTE = CidreTick();
+           const bool CidreOk = CidreEmpreinteVive(Thread, GuestRIP, Entry.GuestExtents, LiveGuestHash);
+-          CidreTicksConsult.fetch_add(CidreTick() - CidreTE, std::memory_order_relaxed);
++          Thread->FrontendDecoder->CidreAjouter(CidreTicksConsult, CidreTick() - CidreTE);
+           if (!CidreOk) {
+             CidreVuNonExec = true;
+             continue;
+@@ -1356,7 +1761,7 @@
+     }
+ 
+     if (!FoundMatchingHash || !EntryUnderReview) {
+-      CidreSortieConsult[3].fetch_add(1, std::memory_order_relaxed);
++      Thread->FrontendDecoder->CidreAjouter(CidreSortieConsult[3], 1);
+       Rate(CidreVuOctets ? CAUSE_OCTETS : CidreVuNonExec ? CAUSE_NON_EXEC : CidreVuDispo ? CAUSE_DISPONIBLE : CAUSE_SANS_SUPPORT);
+       (void)CidreVuSansSupport;
+       return std::nullopt;
+@@ -1396,6 +1801,7 @@
+     uint32_t BlobOffset = GuestPages.size() * sizeof(uint64_t);
+     const uint64_t CidreD3 = CidreTick();
+     bool FoundInLRU = false;
++    bool FoundInTranche = false;
+     if (BlobRef && BlobRef->size() >= EntrySizeWithoutGuestCode) {
+       FoundInLRU = true;
+       memcpy(HitData.Blob.data() + BlobOffset, BlobRef->data(), EntrySizeWithoutGuestCode);
+@@ -1409,15 +1815,18 @@
+                Entry.Offset + EntrySizeWithoutGuestCode <= CidrePrechargeTaille.load(std::memory_order_acquire)) {
+       // Cidre : blob deja precharge en memoire (lu en bloc, en fond)
+       memcpy(HitData.Blob.data() + BlobOffset, CidrePrechargeBase + Entry.Offset, EntrySizeWithoutGuestCode);
+-      CidreNbLectureMemoire.fetch_add(1, std::memory_order_relaxed);
+-      CidreTicksLecture.fetch_add(CidreTick() - CidreTL, std::memory_order_relaxed);
++      Thread->FrontendDecoder->CidreAjouter(CidreNbLectureMemoire, 1);
++      Thread->FrontendDecoder->CidreAjouter(CidreTicksLecture, CidreTick() - CidreTL);
++    } else if (CidreLireTranche(Entry.DB, Entry.Offset, {HitData.Blob.data() + BlobOffset, EntrySizeWithoutGuestCode})) {
++      FoundInTranche = true; // 0487
++      Thread->FrontendDecoder->CidreAjouter(CidreTicksLecture, CidreTick() - CidreTL);
+     } else if (CidreNbLectureDisque.fetch_add(1, std::memory_order_relaxed),
+                !Entry.DB->ReadCacheBlob(Entry.Offset, {HitData.Blob.data() + BlobOffset, EntrySizeWithoutGuestCode}) ||
+                  (CidreTicksLecture.fetch_add(CidreTick() - CidreTL, std::memory_order_relaxed), false)) {
+       CidreSortieConsult[4].fetch_add(1, std::memory_order_relaxed); Rate(CAUSE_LECTURE); return std::nullopt;
+     }
+ 
+-    CidreDet[3].fetch_add(CidreTick() - CidreD3, std::memory_order_relaxed);
++    Thread->FrontendDecoder->CidreAjouter(CidreDet[3], CidreTick() - CidreD3);
+     if (EntrySizeWithoutGuestCode < sizeof(BlobFixedHeader)) {
+       CidreSortieConsult[5].fetch_add(1, std::memory_order_relaxed); Rate(CAUSE_LECTURE); return std::nullopt;
+     }
+@@ -1446,7 +1855,12 @@
+       CidreSortieConsult[6].fetch_add(1, std::memory_order_relaxed); Rate(CAUSE_LECTURE); return std::nullopt;
+     }
+ 
+-    bool StoreInMemory = !FoundInLRU;
++    // Cidre 0487 : blob servi depuis une tranche gardee : pas de copie de plus dans la LRU (CIDRE_FEX_DISQUE_LRU_TRANCHE=1 : si)
++    static const bool CidreLRUTranche = [] {
++      const char* E = getenv("CIDRE_FEX_DISQUE_LRU_TRANCHE");
++      return E && *E == '1';
++    }();
++    bool StoreInMemory = !FoundInLRU && (!FoundInTranche || CidreLRUTranche);
+     if (EntrySizeWithoutGuestCode > MemoryLRUMaxSize) {
+       StoreInMemory = false;
+     }
+@@ -1470,7 +1884,7 @@
+       Writer->QueueWork(fextl::make_unique<PruneMemoryLRUWorkItem>(this));
+     }
+ 
+-    CidreDet[4].fetch_add(CidreTick() - CidreD4, std::memory_order_relaxed);
++    Thread->FrontendDecoder->CidreAjouter(CidreDet[4], CidreTick() - CidreD4);
+     HitData.HostCode = {HitData.Blob.data() + BlobOffset, Header.HostSize};
+     BlobOffset += Header.HostSize;
+     HitData.EntryPointRIPs = {reinterpret_cast<uint64_t*>(HitData.Blob.data() + BlobOffset), Header.EntryPointCount};
+@@ -1503,15 +1917,15 @@
+       CidreSortieConsult[7].fetch_add(1, std::memory_order_relaxed); Rate(CAUSE_LECTURE); return std::nullopt;
+     }
+     const uint64_t CidreD6 = CidreTick();
+-    CidreDet[5].fetch_add(CidreD6 - CidreD5, std::memory_order_relaxed);
++    Thread->FrontendDecoder->CidreAjouter(CidreDet[5], CidreD6 - CidreD5);
+ #if defined(ARCHITECTURE_arm64ec) && defined(FEX_TEB_SANS_X18)
+     // Cidre 0452 : decalage TSD du TEB propre au processus (voir CidreRecalerTEB)
+     if (!CidreRecalerTEB(HitData.HostCode)) {
+       CidreSortieConsult[7].fetch_add(1, std::memory_order_relaxed); Rate(CAUSE_LECTURE); return std::nullopt;
+     }
+ #endif
+-    CidreDet[6].fetch_add(CidreTick() - CidreD6, std::memory_order_relaxed);
+-    CidreDet[9].fetch_add(1, std::memory_order_relaxed);
++    Thread->FrontendDecoder->CidreAjouter(CidreDet[6], CidreTick() - CidreD6);
++    Thread->FrontendDecoder->CidreAjouter(CidreDet[9], 1);
+ 
+     // Cidre : servi depuis l'ancienne generation : recopie en fond dans la base courante (une fois)
+     if (CidreAncienne && Entry.DB == CidreAncienne && RWCacheDB && !RWCacheDB->Full()) {
+diff --git a/FEXCore/Source/Interface/Core/DiskCache.h b/FEXCore/Source/Interface/Core/DiskCache.h
+--- a/FEXCore/Source/Interface/Core/DiskCache.h
++++ b/FEXCore/Source/Interface/Core/DiskCache.h
+@@ -162,6 +162,10 @@
+     ssize_t Size();
+     bool ReadAll(fextl::vector<uint8_t>& Out); // from first blob
+     bool ReadBlob(uint64_t Offset, std::span<uint8_t> OutBlob);
++    // Cidre 0487 : lecture qui peut etre courte (fin de fichier) : octets lus ou -1
++    ssize_t CidreLirePartiel(uint64_t Offset, std::span<uint8_t> Out) {
++      return FD ? FD->PRead(Out.data(), Out.size(), Offset) : -1;
++    }
+     bool WriteBlob(const MesaFOZ::foz_payload_key& Key, std::span<const std::span<const uint8_t>> BlobChunks, uint64_t& OutBlobOffset);
+     // Cidre 0476 : ecriture brute (lots de l'ecrivain)
+     bool CidreEcrire(const void* Data, size_t Taille, uint64_t Offset) {
+@@ -187,6 +191,9 @@
+     }
+     bool CidreLire(uint64_t Offset, std::span<uint8_t> Out) {
+       return CacheFOZ.ReadBlob(Offset, Out);
++    }
++    ssize_t CidreLirePartiel(uint64_t Offset, std::span<uint8_t> Out) {
++      return CacheFOZ.CidreLirePartiel(Offset, Out);
+     }
+     // Cidre 0483 : base projetee en lecture (MapViewOfFile, taille a l'ouverture) quand amont n'a pas de projecteur (UnixLib
+     // absente sous Wine) : lecture d'un blob = copie memoire au lieu d'un ReadFile (~45 us en jeu, ~3 us page en cache)
+@@ -271,6 +278,56 @@
+     std::atomic<uint64_t> CidreProjetes {}, CidreAmorce {};
+     // Cidre 0485 : cles de bord calculees, trampolines de faute (RIP non executable, hors cache)
+     std::atomic<uint64_t> CidreBordCles {}, CidreTrampolines {};
++    // Cidre 0487 : tranches de la base courante lues d'un bloc (CIDRE_FEX_DISQUE_TRANCHE_KO, defaut 256, 0 : coupe) et
++    // gardees en memoire (CIDRE_FEX_DISQUE_TRANCHES_MO, defaut 64) : un blob voisin d'un blob deja lu est servi par copie.
++    // Cases a sequence (paire : stable, impaire : en lecture) ; la copie est rejetee si la case a change pendant.
++    struct CidreCase {
++      std::atomic<uint64_t> Seq {};
++      std::atomic<uint64_t> Num {~0ULL};
++      std::atomic<uint64_t> Valides {};
++    };
++    bool CidreLireTranche(IndexedDB* DB, uint64_t Offset, std::span<uint8_t> Out);
++    // Cidre 0487 : cles memorisees : empreinte brute des octets [RIP, RIP + 64) (bornes a la page si la suite n'est pas
++    // executable) -> cle decodee. La cle ne fait que choisir le seau (l'empreinte des etendues valide toujours le candidat) :
++    // une cle memorisee fausse ne coute qu'un decodage et une consultation de plus. Gardees dans <base>_cles.bin.
++    struct CidreMemo {
++      std::atomic<uint64_t> B {}, K {}, C {};
++    };
++    static constexpr uint32_t CIDRE_MEMO_NB = 1u << 18;
++    CidreMemo* CidreMemos {};
++    std::atomic<uint64_t> CidreMemoTrouves {}, CidreMemoRates {}, CidreMemoFaux {}, CidreMemoNotes {}, CidreMemoCharges {};
++    bool CidreCleDecodee(Core::InternalThreadState* Thread, uint64_t GuestRIP, std::optional<uint64_t>& GuestCodeKey);
++    bool CidreEmpreinteBrute(Core::InternalThreadState* Thread, uint64_t GuestRIP, uint64_t& B);
++    bool CidreMemoChercher(uint64_t B, uint64_t& K);
++    void CidreMemoNoter(uint64_t B, uint64_t K, bool Persister);
++    void CidreMemoCharger(const fextl::string& Chemin);
++    void CidreMemoEcrire();
++    std::optional<CodeHitData> CidreLookup(Core::InternalThreadState* Thread, std::optional<ExecutableFileSectionInfo> Region, uint64_t GuestRIP,
++                                           std::optional<uint64_t>& GuestCodeKey, bool CidreVariante, bool CidreSimple);
++    std::atomic<uint64_t> CidreTranchesLues {}, CidreTranchesOctets {}, CidreTranchesServis {}, CidreTranchesTicks {};
++    std::atomic<uint64_t> CidreTranchesAnticipees {}, CidreTranchesAttentes {}, CidreTranchesPauses {};
++    std::atomic<int64_t> CidrePause {};
++    std::atomic<uint32_t> CidreAnticipees {};
++    void CidreTranchesInit();
++    bool CidreCasePour(uint64_t Num, uint64_t Besoin, uint32_t& Case, uint64_t& Seq, bool& Lire, bool Attendre);
++    void CidreRemplirCase(IndexedDB* DB, uint32_t Case, uint64_t Num, uint64_t Seq);
++    struct CidreAnticipeWorkItem;
++  private:
++    struct CidreMemoWorkItem;
++    std::mutex CidreMemoVerrou;
++    fextl::vector<uint64_t> CidreMemoNeufs;
++    bool CidreMemoDemande {};
++    fextl::unique_ptr<File::File> CidreMemoFichier;
++    std::mutex CidreTranchesVerrou;
++    CidreCase* CidreCases {};
++    std::mutex* CidreCaseVerrous {};
++    uint8_t* CidreTranchesMem {};
++    uint32_t CidreNbCases {};
++    uint64_t CidreTailleTranche {};
++    std::atomic<bool> CidreTranchesPretes {};
++    uint32_t CidreAnticipe {};
++    std::atomic<uint64_t> CidreFenLues {}, CidreFenOctets {}, CidreFenServis {};
++  public:
+     std::atomic<bool> CidreArret {};
+     void CidreAmorcer();
+     ~DiskCache() {
+@@ -333,6 +390,8 @@
+     fextl::unique_ptr<WorkQueueThread> Writer;
+     // Cidre 0483 : fil d'amorce (pages de la base projetee lues en fond, priorite basse), detruit avant l'ecrivain
+     fextl::unique_ptr<WorkQueueThread> CidreAmorceur;
++    // Cidre 0487 : fil de lecture anticipee des tranches, detruit avant l'ecrivain
++    fextl::unique_ptr<WorkQueueThread> CidreLecteur;
+ 
+     FEX_CONFIG_OPT(EnableDiskCache, DISKCACHE);
+     FEX_CONFIG_OPT(Validation, DISKCACHEVALIDATION);
+diff --git a/FEXCore/Source/Interface/Core/Frontend.h b/FEXCore/Source/Interface/Core/Frontend.h
+--- a/FEXCore/Source/Interface/Core/Frontend.h
++++ b/FEXCore/Source/Interface/Core/Frontend.h
+@@ -228,6 +228,48 @@
+   // NOEXEC/PARTIAL) ; CidreBordFin = adresse de l'instruction non lue. Store n'accepte un sous-bloc en echec que sous cette cle.
+   bool CidreCleBord {};
+   uint64_t CidreBordFin {};
++  // Cidre 0487 : la cle de cette consultation vient des cles memorisees ; empreinte brute correspondante
++  bool CidreMemoUtilise {};
++  uint64_t CidreMemoB {};
++  // Cidre 0487 : compteurs du service cumules par fil et verses aux compteurs partages tous les 16 blocs servis (une
++  // vingtaine d'additions atomiques par bloc sur quelques lignes de cache partagees coutaient cher a plusieurs fils)
++  struct CidreCumul {
++    std::atomic<uint64_t>* A;
++    uint64_t V;
++  };
++  static constexpr uint32_t CIDRE_NB_CUMULS = 64;
++  CidreCumul CidreCumuls[CIDRE_NB_CUMULS] {};
++  uint32_t CidreNbServisCumules {};
++  void CidreAjouter(std::atomic<uint64_t>& A, uint64_t V) {
++    const uint32_t H = (uint32_t)(reinterpret_cast<uintptr_t>(&A) >> 3) & (CIDRE_NB_CUMULS - 1);
++    for (uint32_t i = 0; i < 8; i++) {
++      auto& C = CidreCumuls[(H + i) & (CIDRE_NB_CUMULS - 1)];
++      if (C.A == &A) {
++        C.V += V;
++        return;
++      }
++      if (!C.A) {
++        C.A = &A;
++        C.V = V;
++        return;
++      }
++    }
++    A.fetch_add(V, std::memory_order_relaxed);
++  }
++  void CidreVerser() {
++    for (auto& C : CidreCumuls) {
++      if (C.A && C.V) {
++        C.A->fetch_add(C.V, std::memory_order_relaxed);
++      }
++      C.V = 0;
++    }
++    CidreNbServisCumules = 0;
++  }
++  void CidreBlocServi() {
++    if (++CidreNbServisCumules >= 16) {
++      CidreVerser();
++    }
++  }
+ 
+ private:
+   IR::OpSize GetGPROpSize() const {

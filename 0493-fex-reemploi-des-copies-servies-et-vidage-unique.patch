@@ -1,0 +1,285 @@
+Generated-by: LLM
+
+Cidre 0493 (FEX, cache disque) : vidages du tampon de code de D4. Le tampon (127 Mio, allocateur lineaire jamais
+recycle) se remplissait de copies mortes : chaque bloc que D4 invalide (protect, jumelles, dirty) puis re-execute etait
+re-servi par le cache disque dans une copie NEUVE, l'ancienne restant dans le tampon. Partie 0491 (12 min) : 33 vidages
+pour 152 Mio compiles en tout, soit ~4 Gio de copies servies (588 713 blocs servis).
+- Reemploi : un bloc re-servi a l'identique (meme RIP, meme code hote reloge XXH128, memes points d'entree) dont une copie
+  est deja dans le tampon du plan courant reprend cette copie (table CidreCopies du GuestToHostMap, videe avec lui ; pose
+  des points d'entree sous le meme verrou que la verification). Raisonnement de CIDRE_CACHE_BLOCS : liens entrants coupes
+  a l'invalidation, sortants suivis par leurs delieurs tant que le plan n'est pas vide.
+- Vidage unique : plusieurs fils trouvant le tampon plein ensemble (D4 : jusqu'a 5 dans la meme ms) font un seul vidage ;
+  les suivants passent au tampon neuf.
+- CIDRE_CODE_MIO accepte 16 a 128 (bancs) ; defaut inchange (128).
+CIDRE_FEX_REEMPLOI=0 : comportement 0491 ; =2 : compte les doublons sans reemployer. Journal : « cidre disque 0493 : » (toutes
+les 2 s) et « cidre 0493 : vidage : » (a chaque vidage).
+
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -713,6 +713,13 @@
+       ::FEXCore::CidreCompteurs::Partages.TicksVidages.fetch_add(T1 - T0, std::memory_order_relaxed);
+       LogMan::Msg::IFmt("cidre : cache de code vide ({}) t {} ms, {} us", Nouveau ? "nouveau tampon" : "caches de recherche",
+                         F ? T0 * 1000 / F : 0, F ? (T1 - T0) * 1000000 / F : 0);
++      // Cidre 0493 : ce que le cache disque a pose dans le tampon depuis le vidage precedent
++      namespace C3 = ::FEXCore::Cidre0493;
++      LogMan::Msg::IFmt("cidre 0493 : vidage : depuis le precedent, copies servies {} ({} Mio), reemplois {} ({} Mio evites) ; "
++                        "vidages evites depuis le debut {} ; mode {}",
++                        C3::CopiesVid.exchange(0, std::memory_order_relaxed), C3::OctetsCopiesVid.exchange(0, std::memory_order_relaxed) >> 20,
++                        C3::ReemploisVid.exchange(0, std::memory_order_relaxed), C3::OctetsReemployesVid.exchange(0, std::memory_order_relaxed) >> 20,
++                        C3::VidagesEvites.load(std::memory_order_relaxed), C3::Mode());
+     }
+   } CidreFinVidage {CidreT0, NewCodeBuffer};
+ 
+@@ -1751,6 +1758,14 @@
+     // refusees (champ sur une page non executable ou illisible : bloc compile au lieu d'une faute dans FEX)
+     LogMan::Msg::IFmt("cidre disque 0491 : servis hors intervalle {}, avec page de champ {} ; relocations refusees {}",
+                       X(FEXCore::DiskCache::CidreServisHors), X(FEXCore::DiskCache::CidrePagesChamps), X(FEXCore::DiskCache::CidreRelocRefus));
++    // 0493 : copies posees dans le tampon de code et copies reemployees, depuis le lancement
++    namespace C3 = ::FEXCore::Cidre0493;
++    LogMan::Msg::IFmt("cidre disque 0493 : mode {} ; copies {} ({} Mio), reemplois {} ({} Mio evites), doublons vus {}, reemplois rates {}, "
++                      "vidages evites {}",
++                      C3::Mode(), C3::Copies.load(std::memory_order_relaxed), C3::OctetsCopies.load(std::memory_order_relaxed) >> 20,
++                      C3::Reemplois.load(std::memory_order_relaxed), C3::OctetsReemployes.load(std::memory_order_relaxed) >> 20,
++                      C3::DoublonsVus.load(std::memory_order_relaxed), C3::Rates.load(std::memory_order_relaxed),
++                      C3::VidagesEvites.load(std::memory_order_relaxed));
+   }
+ }
+ 
+@@ -2061,7 +2076,34 @@
+     }
+     if (Hit && !DiskCache.IsValidating()) {
+       const uint64_t CidreTCh = ::FEXCore::CidreMesure::Tick();
+-      auto LoadedCode = Thread->CPUBackend->LoadCachedCode(Hit->HostCode);
++      // Cidre 0493 : un bloc re-servi a l'identique (meme RIP, meme code hote reloge, memes points d'entree) dont une
++      // copie est deja dans le tampon du plan courant reprend cette copie au lieu d'en poser une neuve. Les blocs que D4
++      // invalide sans cesse (protect, jumelles) et re-sert remplissaient le tampon de doublons morts : 33 vidages en 12 min.
++      // Meme raisonnement que CIDRE_CACHE_BLOCS : les liens entrants ont ete coupes a l'invalidation, les sortants sont
++      // restes suivis par leurs delieurs tant que le plan n'a pas ete vide (la table est videe avec lui).
++      const int CidreMode0493 = ::FEXCore::Cidre0493::Mode();
++      uint64_t CidreCle0493 = 0;
++      FEXCore::GuestToHostMap::CidreCopie CidreC0493 {};
++      uintptr_t CidreReemploi = 0;
++      if (CidreMode0493) {
++        const XXH128_hash_t H = XXH3_128bits(Hit->HostCode.data(), Hit->HostCode.size());
++        const uint64_t HR = XXH3_64bits(Hit->EntryPointRIPs.data(), Hit->EntryPointRIPs.size_bytes());
++        const uint64_t HD = XXH3_64bits(Hit->EntryPointHostOffsets.data(), Hit->EntryPointHostOffsets.size_bytes());
++        CidreC0493 = {.Rip = GuestRIP, .Bas = H.low64, .Haut = H.high64 ^ HR ^ (HD * 0x9E3779B97F4A7C15ULL), .Taille = Hit->HostCode.size()};
++        CidreCle0493 = H.low64 ^ (GuestRIP * 0xC2B2AE3D27D4EB4FULL) ^ (Hit->HostCode.size() << 1) ^ HR;
++        CidreReemploi = Thread->LookupCache->CidreCopieTrouver(CidreCle0493, CidreC0493);
++        if (CidreReemploi && CidreMode0493 == 2) {
++          ::FEXCore::Cidre0493::DoublonsVus.fetch_add(1, std::memory_order_relaxed);
++          CidreReemploi = 0;
++        }
++      }
++      CPU::CPUBackend::CompiledCode LoadedCode {};
++      if (CidreReemploi) {
++        LoadedCode.BlockBegin = reinterpret_cast<uint8_t*>(CidreReemploi);
++        LoadedCode.Size = Hit->HostCode.size();
++      } else {
++        LoadedCode = Thread->CPUBackend->LoadCachedCode(Hit->HostCode);
++      }
+       const uint64_t CidreTPose = ::FEXCore::CidreMesure::Tick();
+       Thread->FrontendDecoder->CidreAjouter(CidreDisque.TicksCharge, CidreTPose - CidreTCh);
+       struct FinPose {
+@@ -2086,13 +2128,46 @@
+         LOGMAN_THROW_A_FMT(Hit->EntryPointRIPs.size() == Hit->EntryPointHostOffsets.size(), "Mismatched Disk Cache entrypoint pairs!");
+ 
+         uintptr_t CachedHostCode = 0;
+-        for (size_t i = 0; i < Hit->EntryPointRIPs.size(); i++) {
+-          void* HostAddr = LoadedCode.BlockBegin + Hit->EntryPointHostOffsets[i];
+-          Thread->LookupCache->AddBlockMapping(Thread, Hit->EntryPointRIPs[i], Hit->GuestPages, HostAddr);
+-          if (Hit->EntryPointRIPs[i] == GuestRIP) {
+-            CachedHostCode = reinterpret_cast<uintptr_t>(HostAddr);
++        // Cidre 0493 : copie reemployee posee sous le verrou du plan, sinon (plan vide entre-temps) copie neuve
++        if (CidreReemploi && !Thread->LookupCache->CidreReemployer(CidreCle0493, CidreC0493, CidreReemploi, Hit->EntryPointRIPs,
++                                                                    Hit->EntryPointHostOffsets, Hit->GuestPages)) {
++          ::FEXCore::Cidre0493::Rates.fetch_add(1, std::memory_order_relaxed);
++          CidreReemploi = 0;
++          LoadedCode = Thread->CPUBackend->LoadCachedCode(Hit->HostCode);
++          for (auto& CodePage : Hit->GuestPages) {
++            if (Thread->LookupCache->AddBlockExecutableRange(Thread, Hit->EntryPointRIPs, CodePage, FEXCore::Utils::FEX_PAGE_SIZE)) {
++              SyscallHandler->MarkGuestExecutableRange(Thread, CodePage, FEXCore::Utils::FEX_PAGE_SIZE);
++            }
+           }
+         }
++        if (CidreReemploi) {
++          ::FEXCore::Cidre0493::Reemplois.fetch_add(1, std::memory_order_relaxed);
++          ::FEXCore::Cidre0493::OctetsReemployes.fetch_add(LoadedCode.Size, std::memory_order_relaxed);
++          ::FEXCore::Cidre0493::ReemploisVid.fetch_add(1, std::memory_order_relaxed);
++          ::FEXCore::Cidre0493::OctetsReemployesVid.fetch_add(LoadedCode.Size, std::memory_order_relaxed);
++          for (size_t i = 0; i < Hit->EntryPointRIPs.size(); i++) {
++            if (Hit->EntryPointRIPs[i] == GuestRIP) {
++              CachedHostCode = CidreReemploi + Hit->EntryPointHostOffsets[i];
++            }
++          }
++        } else {
++          for (size_t i = 0; i < Hit->EntryPointRIPs.size(); i++) {
++            void* HostAddr = LoadedCode.BlockBegin + Hit->EntryPointHostOffsets[i];
++            Thread->LookupCache->AddBlockMapping(Thread, Hit->EntryPointRIPs[i], Hit->GuestPages, HostAddr);
++            if (Hit->EntryPointRIPs[i] == GuestRIP) {
++              CachedHostCode = reinterpret_cast<uintptr_t>(HostAddr);
++            }
++          }
++          ::FEXCore::Cidre0493::Copies.fetch_add(1, std::memory_order_relaxed);
++          ::FEXCore::Cidre0493::OctetsCopies.fetch_add(LoadedCode.Size, std::memory_order_relaxed);
++          ::FEXCore::Cidre0493::CopiesVid.fetch_add(1, std::memory_order_relaxed);
++          ::FEXCore::Cidre0493::OctetsCopiesVid.fetch_add(LoadedCode.Size, std::memory_order_relaxed);
++          if (CidreMode0493) {
++            // la copie est dans le tampon du plan courant (LoadCachedCode a mis le fil a jour)
++            CidreC0493.Hote = reinterpret_cast<uintptr_t>(LoadedCode.BlockBegin);
++            Thread->LookupCache->CidreCopieNoter(CidreCle0493, CidreC0493);
++          }
++        }
+ 
+         LOGMAN_THROW_A_FMT(CachedHostCode != 0, "Couldn't find GuestRIP in Disk Cache entrypoints!");
+ 
+diff --git a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -214,6 +214,7 @@
+ // Cidre, diag : octets compiles, de controles en ligne (R2) et de talons (CPUBackend.cpp), vus aux vidages.
+ extern std::atomic<uint64_t> CidreOctetsTalons;
+ static std::atomic<uint64_t> CidreTotalCompile, CidreTotalEnLigne;
++static std::mutex CidreVidageMutex; // Cidre 0493 : vidage unique du tampon de code
+ static int CidreDiagR2 = -1;
+ 
+ void Arm64JITCore::Op_Unhandled(const IR::IROp_Header* IROp, IR::Ref Node) {
+@@ -1130,6 +1131,24 @@
+   while (AllocatedInfo.BufferAllocationOffset == nullptr) {
+     AllocatedInfo = CurrentCodeBuffer->AtomicAllocateBuffer(Size);
+ 
++    if (AllocatedInfo.BufferAllocationOffset == nullptr && ::FEXCore::Cidre0493::Mode() == 1) {
++      // Cidre 0493 : un seul vidage quand plusieurs fils trouvent le tampon plein en meme temps (D4 : jusqu'a 5 vidages
++      // dans la meme milliseconde, chacun jetant le tampon neuf du precedent). Le fil qui arrive apres un vidage passe au
++      // tampon neuf au lieu d'en allouer un autre.
++      std::scoped_lock lkv(CidreVidageMutex);
++      if (auto Prev = CheckCodeBufferUpdate()) {
++        CidreInvaliderPileAppels(ThreadState);
++        auto lk = ThreadState->LookupCache->AcquireWriteLock();
++        ThreadState->LookupCache->ChangeGuestToHostMapping(*Prev, *CurrentCodeBuffer->LookupCache, lk);
++        ::FEXCore::Cidre0493::VidagesEvites.fetch_add(1, std::memory_order_relaxed);
++        continue;
++      }
++      LogMan::Msg::IFmt("cidre : tampon de code plein : demande {} o, tampon {} Mio ; depuis le debut {} Mio compiles, {} Mio de talons",
++                        Size, CurrentCodeBuffer->UsableSize() >> 20, CidreTotalCompile.load() >> 20,
++                        FEXCore::CPU::CidreOctetsTalons.load() >> 20);
++      CTX->ClearCodeCache(ThreadState);
++      continue;
++    }
+     if (AllocatedInfo.BufferAllocationOffset == nullptr) {
+       // Cidre : ce qui remplit les tampons (compile, talons), a chaque vidage.
+       LogMan::Msg::IFmt("cidre : tampon de code plein : demande {} o, tampon {} Mio ; depuis le debut {} Mio compiles, {} Mio de talons",
+diff --git a/FEXCore/Source/Interface/Core/LookupCache.cpp b/FEXCore/Source/Interface/Core/LookupCache.cpp
+--- a/FEXCore/Source/Interface/Core/LookupCache.cpp
++++ b/FEXCore/Source/Interface/Core/LookupCache.cpp
+@@ -128,6 +128,7 @@
+   BlockLinks = BlockLinks_pma->new_object<BlockLinksMapType>();
+   // All code is gone, clear the block list
+   BlockList.clear();
++  CidreCopies.clear(); // Cidre 0493
+ }
+ 
+ } // namespace FEXCore
+diff --git a/FEXCore/Source/Interface/Core/LookupCache.h b/FEXCore/Source/Interface/Core/LookupCache.h
+--- a/FEXCore/Source/Interface/Core/LookupCache.h
++++ b/FEXCore/Source/Interface/Core/LookupCache.h
+@@ -18,7 +18,29 @@
+ #include <stddef.h>
+ #include <utility>
+ #include <mutex>
++#include <atomic>
++#include <cstdlib>
+ 
++// Cidre 0493 : reemploi des copies de blocs servis par le cache disque et vidage unique du tampon de code.
++// CIDRE_FEX_REEMPLOI : 1 (defaut) actif ; 0 = comportement 0491 ; 2 = compte seulement les doublons (aucun reemploi,
++// vidages comme 0491). Lu une fois, sans statique locale (garde d'initialisation : TLS, x18 en ARM64EC).
++namespace FEXCore::Cidre0493 {
++inline std::atomic<int> ModeLu {-1};
++inline int Mode() {
++  int M = ModeLu.load(std::memory_order_relaxed);
++  if (M < 0) {
++    const char* E = getenv("CIDRE_FEX_REEMPLOI");
++    M = (E && E[0] == '0') ? 0 : (E && E[0] == '2') ? 2 : 1;
++    ModeLu.store(M, std::memory_order_relaxed);
++  }
++  return M;
++}
++// depuis le debut (journal du cache disque) et depuis le dernier vidage (ligne de vidage)
++inline std::atomic<uint64_t> Copies {0}, OctetsCopies {0}, Reemplois {0}, OctetsReemployes {0}, DoublonsVus {0}, Rates {0};
++inline std::atomic<uint64_t> VidagesEvites {0};
++inline std::atomic<uint64_t> CopiesVid {0}, OctetsCopiesVid {0}, ReemploisVid {0}, OctetsReemployesVid {0};
++} // namespace FEXCore::Cidre0493
++
+ namespace FEXCore {
+ struct LookupCacheBaseLockToken {
+ protected:
+@@ -89,6 +111,19 @@
+   };
+ 
+   fextl::robin_map<uint64_t, BlockEntry> BlockList;
++
++  // Cidre 0493 : copies de blocs servis par le cache disque posees dans le tampon de ce plan. Cle : RIP, taille et
++  // empreinte XXH128 du code hote reloge et des points d'entree. Videe avec le plan (ClearCache) : apres un vidage les
++  // liens sortants des anciennes copies ne sont plus suivis par les delieurs.
++  struct CidreCopie {
++    uint64_t Rip {}, Bas {}, Haut {};
++    uint64_t Taille {};
++    uintptr_t Hote {};
++    bool operator==(const CidreCopie& o) const {
++      return Rip == o.Rip && Bas == o.Bas && Haut == o.Haut && Taille == o.Taille;
++    }
++  };
++  fextl::robin_map<uint64_t, CidreCopie> CidreCopies;
+ 
+   fextl::map<uint64_t, fextl::vector<uint64_t>> CodePages;
+ 
+@@ -367,6 +402,35 @@
+ 
+   void ClearCache(const LookupCacheWriteLockToken&);
+   void ClearL2Cache(const LookupCacheBaseLockToken&);
++
++  // Cidre 0493 : copie deja posee dans le tampon du plan courant (0 sinon)
++  uintptr_t CidreCopieTrouver(uint64_t Cle, const GuestToHostMap::CidreCopie& C) {
++    auto lk = Shared->AcquireReadLock();
++    auto it = Shared->CidreCopies.find(Cle);
++    if (it == Shared->CidreCopies.end() || !(it->second == C)) {
++      return 0;
++    }
++    return it->second.Hote;
++  }
++  void CidreCopieNoter(uint64_t Cle, const GuestToHostMap::CidreCopie& C) {
++    auto lk = Shared->AcquireWriteLock();
++    Shared->CidreCopies.insert_or_assign(Cle, C);
++  }
++  // Pose des points d'entree d'une copie reemployee, sous le meme verrou que la verification : si le plan a ete vide
++  // entre-temps (copie oubliee), rien n'est pose et l'appelant fait une copie neuve.
++  bool CidreReemployer(uint64_t Cle, const GuestToHostMap::CidreCopie& C, uintptr_t Hote, std::span<const uint64_t> Rips,
++                       std::span<const uint32_t> Decalages, std::span<const uint64_t> Pages) {
++    auto lk = Shared->AcquireWriteLock();
++    auto it = Shared->CidreCopies.find(Cle);
++    if (it == Shared->CidreCopies.end() || !(it->second == C) || it->second.Hote != Hote) {
++      return false;
++    }
++    for (size_t i = 0; i < Rips.size(); i++) {
++      const auto& Entry = Shared->AddBlockMapping(Rips[i], Pages, reinterpret_cast<void*>(Hote + Decalages[i]), lk);
++      CacheBlockMapping(Rips[i], Entry, true, lk);
++    }
++    return true;
++  }
+   void ClearThreadLocalCaches(const LookupCacheWriteLockToken&);
+ 
+   uintptr_t GetL1Pointer() const {
+diff --git a/FEXCore/Source/Interface/Core/SharedCodeBufferManager.cpp b/FEXCore/Source/Interface/Core/SharedCodeBufferManager.cpp
+--- a/FEXCore/Source/Interface/Core/SharedCodeBufferManager.cpp
++++ b/FEXCore/Source/Interface/Core/SharedCodeBufferManager.cpp
+@@ -29,7 +29,8 @@
+     }
+     // plafonne a 128 : au-dela, la manche D2R CIDRE_CODE_MIO=512 s'est figee quand le code a passe les 128 Mio du debut
+     // du tampon (un branchement de portee +-128 Mio reste a trouver) ; a relever seulement apres un temoin qui le prouve
+-    Mio = std::clamp<size_t>(Mio, 128, 128);
++    // Cidre 0493 : plus petit permis (16 a 128), pour les bancs : remplir le tampon sans attendre 127 Mio
++    Mio = std::clamp<size_t>(Mio, 16, 128);
+     return Mio * 1024 * 1024;
+   }();
+   return Taille;

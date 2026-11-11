@@ -1,0 +1,104 @@
+Generated-by: LLM
+
+wine11 : ilot, suspension au seuil d'un appel hote reportee a la sortie (0463)
+
+Un vCPU arrete par hv_vcpus_exit (HV_EXIT_REASON_CANCELED) juste apres le blr x16 du talon d'appel systeme
+a pc = __wine_syscall_dispatcher. Remettre cet etat a wait_suspend donnait un CONTEXT de pc dans ntdll.so ;
+sous ARM64EC, is_emulated_code() est vrai pour toute adresse hors de la carte EC, et le fil repartait par
+KiUserEmulationDispatcher avec Rip = __wine_syscall_dispatcher : FEX compilait du x86-64 a cette adresse
+(« page fault on execute access » a ntdll.so+0x2c980 ; D4 suspend ses fils). La demande reste posee et le
+vCPU est relance : la faute de deuxieme etage suit sans qu'aucune instruction de l'invite ne s'execute, et le
+chemin de sortie (0355) traite la suspension avec la convention native. ilot_pc_code_hote est exporte pour
+la garde de ilot_depuis_contexte. Banc x86-64 24/24 contre 6/6 plantages ; ARM64 6/6 + 8/8.
+Chantier : ~/Dev/cidre-d4-suspfex (rt-0463).
+
+diff --git a/dlls/ntdll/unix/ilot.c b/dlls/ntdll/unix/ilot.c
+--- a/dlls/ntdll/unix/ilot.c
++++ b/dlls/ntdll/unix/ilot.c
+@@ -145,6 +145,7 @@
+ static int wao_tranche = -1;             /* parade wait_on_address (ms, 0 : coupee) ; -1 : pas encore lu */
+ static uint64_t c_wao_tranches, c_wao_rattrapes;
+ static uint64_t c_suspensions_sortie;   /* 0355 */
++static uint64_t c_suspensions_seuil;    /* 0463 */
+ static uint64_t bloques_seuil;           /* en unites mach */
+ /* appels unix par (bibliotheque, fonction) : table ouverte de 512 entrees */
+ #define CHRONO_NB_UNIX 512
+@@ -2751,8 +2752,8 @@
+         { pthread_t t; pthread_create( &t, NULL, vcpu_cache_fil, NULL ); pthread_detach( t ); }
+     ilot_actif = 1;
+     fprintf( stderr, "[CIDRE_ILOT] actif : TSO %s, zone %p, garde controlee, version %s\n", ilot_tso ? "materiel" : "coupe", zone,
+-             sous_pages_exactes ? "ilot19 verrous-0462 rappels journal-exceptions anneau64 reprises sous-pages-5b jumelles appels-rapides compteurs-fex vcpu-souple " __DATE__ " " __TIME__
+-                                : "ilot19 verrous-0462 rappels journal-exceptions anneau64 reprises sous-pages-5a vcpu-souple " __DATE__ " " __TIME__ );
++             sous_pages_exactes ? "ilot19 verrous-0462 seuil-0463 rappels journal-exceptions anneau64 reprises sous-pages-5b jumelles appels-rapides compteurs-fex vcpu-souple " __DATE__ " " __TIME__
++                                : "ilot19 verrous-0462 seuil-0463 rappels journal-exceptions anneau64 reprises sous-pages-5a vcpu-souple " __DATE__ " " __TIME__ );
+     if (ilot_diag) { pthread_t t; pthread_create( &t, NULL, rapport, NULL ); pthread_detach( t ); atexit( bilan ); }
+     if (getenv( "CIDRE_ILOT_XPROC" ) && atoi( getenv( "CIDRE_ILOT_XPROC" ) )) xproc_actif = 1;
+     if (ilot_wao_tranche_ms()) fprintf( stderr, "[CIDRE_ILOT] wait_on_address : sommeil par tranches de %d ms avec relecture de l'adresse (parade)\n", wao_tranche );
+@@ -3067,9 +3068,43 @@
+ 
+ extern void ilot_suspendre( struct ilot_regs *r );
+ extern void ilot_suspendre_appel( struct ilot_regs *r );   /* 0355 */
++
++/* 0463 : pc dans le code de l'hote (les deux repartiteurs, ou une page de code de l'hote deja vue par une faute de
++ * deuxieme etage) : le code PE vient d'y sauter (blr x16 du talon d'appel systeme) et le vCPU a ete arrete par
++ * hv_vcpus_exit a la frontiere de l'instruction, avant la faute de deuxieme etage qui fait la sortie vers l'hote.
++ * Sans verrou ni dladdr (un fil suspendu peut tenir le verrou de dyld) : lectures atomiques des tables seulement.
++ * Exporte : signal_arm64.c (ilot_depuis_contexte) s'en sert aussi. */
++int ilot_pc_code_hote( uint64_t pc )
++{
++    uint64_t ipa;
++    if (pc == (uint64_t)__wine_syscall_dispatcher || pc == (uint64_t)__wine_unix_call_dispatcher) return 1;
++    if (!ilot_actif || !(ipa = ipa_de( pc ))) return 0;
++    return est_code_hote( ipa );
++}
++
+ static void traiter_suspension( void )
+ {
+     struct ilot_regs r;
++    uint64_t pc = 0;
++    /* 0463 (cidre-d4-suspfex) : suspension arrivee au seuil d'un appel hote. Le vCPU s'est arrete (HV_EXIT_REASON_CANCELED)
++     * avec pc = __wine_syscall_dispatcher : le blr x16 du talon a eu lieu, pas encore la faute de deuxieme etage. Remettre
++     * cet etat a wait_suspend tel quel donnait un CONTEXT de pc dans ntdll.so ; sous ARM64EC, is_emulated_code() est vrai
++     * pour toute adresse hors de la carte EC (le code de l'hote compris) et ilot_depuis_contexte reprenait le fil par
++     * KiUserEmulationDispatcher avec Rip = __wine_syscall_dispatcher : FEX compilait du x86-64 a cette adresse et levait
++     * « page fault on execute access » a ntdll.so+0x2c980 (h64susp_verrou, 3/3 ; D4 suspend ses fils). En natif, le
++     * meme instant est pris par usr1_handler -> save_syscall_entry_frame (pc = lr, lr = x9). Ici on laisse la demande
++     * posee et on relance le vCPU : la faute de deuxieme etage suit sans qu'aucune instruction de l'invite ne s'execute,
++     * et le chemin de sortie (0355) traite la suspension avec exactement cette convention, avant l'appel. */
++    hv_vcpu_get_reg( fil.v, HV_REG_PC, &pc );
++    if (ilot_pc_code_hote( pc ))
++    {
++        static int dits_0463;
++        __atomic_fetch_add( &c_suspensions_seuil, 1, __ATOMIC_RELAXED );
++        if (__atomic_fetch_add( &dits_0463, 1, __ATOMIC_RELAXED ) < 20)
++            fprintf( stderr, "[CIDRE_ILOT] 0463 : suspension au seuil d'un appel hote (fil %04x, pc 0x%llx) : reportee a la sortie vers l'hote\n",
++                     tid_courant(), (unsigned long long)pc );
++        return;   /* fil.hote->suspension reste a 1 */
++    }
+     fil.hote->suspension = 0;
+     lire_regs( fil.v, &r );
+     ilot_suspendre( &r );       /* wait_suspend : GetThreadContext et SetThreadContext des autres fils passent ici */
+diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
+--- a/dlls/ntdll/unix/signal_arm64.c
++++ b/dlls/ntdll/unix/signal_arm64.c
+@@ -950,7 +950,10 @@
+ struct ilot_regs_exc { ULONG64 x[31], sp, pc, nzcv, fpcr, fpsr; ARM64_NT_NEON128 v[32]; };
+ C_ASSERT( offsetof( struct ilot_regs_exc, v ) == 0x120 );
+ 
+-/* comme restore_context : un PC de code emule passe par KiUserEmulationDispatcher avec le contexte sous la pile */
++/* comme restore_context : un PC de code emule passe par KiUserEmulationDispatcher avec le contexte sous la pile.
++ * 0463 : un PC dans le code de l'hote n'est jamais du code emule, bien qu'absent de la carte EC (garde-fou : le vCPU y
++ * reprend et la faute de deuxieme etage fait la sortie vers l'hote, comme a l'aller) */
++extern int ilot_pc_code_hote( ULONG64 pc );
+ static void ilot_depuis_contexte( struct thread_data *data, const CONTEXT *context, struct ilot_regs_exc *r )
+ {
+     unsigned int i;
+@@ -958,7 +961,7 @@
+     r->nzcv = context->Cpsr & 0xf0000000;
+     r->fpcr = context->Fpcr; r->fpsr = context->Fpsr;
+     for (i = 0; i < 32; i++) r->v[i] = context->V[i];
+-    if (is_emulated_code( context->Pc ))
++    if (is_emulated_code( context->Pc ) && !ilot_pc_code_hote( context->Pc ))
+     {
+         CONTEXT *user_context = (CONTEXT *)((context->Sp - sizeof(CONTEXT)) & ~15);
+         data->teb->ChpeV2CpuAreaInfo->InSimulation = 1;

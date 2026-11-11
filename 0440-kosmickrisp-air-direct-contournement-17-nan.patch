@@ -1,0 +1,97 @@
+Generated-by: LLM
+
+KosmicKrisp : KK_WORKAROUND_17 dans l'AIR direct (comparaisons et isnan avec tests de NaN entiers)
+
+nir_to_msl entoure chaque comparaison flottante de tests !isnan (KK_WORKAROUND_17 :
+le compilateur de Metal ne respecte pas l'ordre des fcmp, meme en mode sur) et
+ecrit x != x en isnan(x). nir_to_air (0260, CIDRE_AIR_DIRECT) emettait des fcmp
+nus et fcmp uno/ord pour x != x / x == x : un NaN passait les tests.
+
+Diablo IV (M1, ilot) : « zone noire » a l'ecran de selection du personnage
+(tuiles noires etalees par le filtre temporel). Bissection par nuanceur
+(CIDRE_AIR_FILTRE, essai) : un seul nuanceur de calcul 8x8 (56 isnan en MSL)
+suffit, seul en AIR direct, a produire la zone ; tout en MSL (CIDRE_AIR_DIRECT=0,
+caches neufs) : image juste. La zone n'etait pas une regression entre la serie
+0272 et 0410 : sous 0272, une reserve d'AIR remplie en mode MSL passait avant
+l'AIR direct (corrige par 0385) et masquait le defaut ; avec des caches neufs,
+0272 montre la zone.
+
+Correctif : sous KK_WORKAROUND_17 (actif par defaut), feq/flt/fge = !nan(x) &&
+!nan(y) && fcmp ordonne, fneu = nan(x) || nan(y) || fcmp une, x == x / x != x
+= test entier (exposant plein, mantisse non nulle ; 16, 32, 64 bits), hors de
+portee des simplifications « sans NaN ». Le code AIR change -> cle de code et
+caches de traduction renouveles d'eux-memes (sources du compilateur hachees).
+
+diff --git a/src/kosmickrisp/compiler/nir_to_air_emit.inc b/src/kosmickrisp/compiler/nir_to_air_emit.inc
+--- a/src/kosmickrisp/compiler/nir_to_air_emit.inc
++++ b/src/kosmickrisp/compiler/nir_to_air_emit.inc
+@@ -369,7 +369,18 @@
+           (nir_alu_instr_is_inf_preserve(alu) || nir_alu_instr_is_nan_preserve(alu));
+ }
+ 
++/* Vrai par composante si la valeur entiere v (16, 32 ou 64 bits) code un NaN. */
+ static Value *
++air_isnan_bits(air_ctx &c, Value *v)
++{
++   unsigned w = v->getType()->getScalarSizeInBits();
++   uint64_t am = w == 16 ? 0x7fffull : w == 32 ? 0x7fffffffull : 0x7fffffffffffffffull;
++   uint64_t em = w == 16 ? 0x7c00ull : w == 32 ? 0x7f800000ull : 0x7ff0000000000000ull;
++   Value *a = c.B.CreateAnd(v, ConstantInt::get(v->getType(), am));
++   return c.B.CreateICmpUGT(a, ConstantInt::get(v->getType(), em));
++}
++
++static Value *
+ fmath1(air_ctx &c, const char *name, bool has_fast, bool precise, Value *x)
+ {
+    std::string n = "air.";
+@@ -578,16 +589,42 @@
+       Value *x = F(0);
+       return I(B.CreateFDiv(fconst(x->getType(), 1.0), x));
+    }
++   /* Cidre 0440 : KK_WORKAROUND_17 dans l'AIR direct. Le compilateur de Metal
++    * ne respecte pas l'ordre des fcmp (ni fcmp uno/ord pour x != x) : nir_to_msl
++    * entoure chaque comparaison de tests !isnan, nir_to_air ne le faisait pas.
++    * Diablo IV : un nuanceur de calcul (filtre temporel, 56 isnan en MSL) ne
++    * reconnaissait plus ses NaN en AIR direct -> NaN etales en tuiles noires a
++    * la selection du personnage. Tests de NaN entiers (exposant plein, mantisse
++    * non nulle) : hors de portee des simplifications du compilateur. */
+    case nir_op_feq:
+-      if (nir_alu_srcs_equal(alu, alu, 0, 1))
+-         return B.CreateFCmpORD(F(0), F(0));
+-      return B.CreateFCmpOEQ(F(0), F(1));
+    case nir_op_fneu:
+-      if (nir_alu_srcs_equal(alu, alu, 0, 1))
+-         return B.CreateFCmpUNO(F(0), F(0));
+-      return B.CreateFCmpUNE(F(0), F(1));
+-   case nir_op_flt: return B.CreateFCmpOLT(F(0), F(1));
+-   case nir_op_fge: return B.CreateFCmpOGE(F(0), F(1));
++   case nir_op_flt:
++   case nir_op_fge: {
++      Value *x = F(0), *y = F(1);
++      const bool same = nir_alu_srcs_equal(alu, alu, 0, 1);
++      if (!(c.wa & BITFIELD64_BIT(17))) {
++         Value *nx = air_isnan_bits(c, I(x));
++         if (same)
++            return alu->op == nir_op_fneu ? nx : B.CreateNot(nx);
++         Value *ny = air_isnan_bits(c, I(y));
++         Value *nan = B.CreateOr(nx, ny);
++         Value *cmp;
++         switch (alu->op) {
++         case nir_op_feq: cmp = B.CreateFCmpOEQ(x, y); break;
++         case nir_op_fneu: cmp = B.CreateFCmpUNE(x, y); break;
++         case nir_op_flt: cmp = B.CreateFCmpOLT(x, y); break;
++         default: cmp = B.CreateFCmpOGE(x, y); break;
++         }
++         return alu->op == nir_op_fneu ? B.CreateOr(nan, cmp)
++                                       : B.CreateAnd(B.CreateNot(nan), cmp);
++      }
++      switch (alu->op) {
++      case nir_op_feq: return same ? B.CreateFCmpORD(x, x) : B.CreateFCmpOEQ(x, y);
++      case nir_op_fneu: return same ? B.CreateFCmpUNO(x, x) : B.CreateFCmpUNE(x, y);
++      case nir_op_flt: return B.CreateFCmpOLT(x, y);
++      default: return B.CreateFCmpOGE(x, y);
++      }
++   }
+    case nir_op_fabs: return I(fmath1(c, "fabs", true, prec, F(0)));
+    case nir_op_fceil: return I(fmath1(c, "ceil", true, prec, F(0)));
+    case nir_op_ffloor: return I(fmath1(c, "floor", true, prec, F(0)));

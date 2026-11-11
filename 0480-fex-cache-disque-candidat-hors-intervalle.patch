@@ -1,0 +1,29 @@
+Generated-by: LLM
+
+Cidre 0480 (FEX, cache disque) : candidat plus long que l'intervalle executable de RIP. Amont ecartait sans le hasher tout candidat
+dont GuestSize depasse Available (fin de l'intervalle rendu par QueryGuestExecutableRange, borne par les vues jumelles et RWX) :
+un bloc qui deborde sur l'intervalle voisin etait compile a chaque partie, puis refuse comme doublon. CidreEmpreinteVive relit chaque
+etendue comme le decodeur (intervalle redemande, faux si non executable) : le candidat est maintenant hashe. CIDRE_FEX_DISQUE_BORNE_PLAGE=1
+rend l'ecart d'amont. Compte « disponible » de 0479. Local Cidre.
+
+diff --git a/FEXCore/Source/Interface/Core/DiskCache.cpp b/FEXCore/Source/Interface/Core/DiskCache.cpp
+--- a/FEXCore/Source/Interface/Core/DiskCache.cpp
++++ b/FEXCore/Source/Interface/Core/DiskCache.cpp
+@@ -1069,12 +1069,16 @@
+ 
+       // entry not backed by anything right now - todo prune..
+       if (!EntryUnderReview->DB && !BlobRef) {
++        CidreVuSansSupport = true;
+         continue;
+       }
+ 
+       // do we have enough room in our live code to even hash GuestSize worth?
+       if (Available < EntryUnderReview->GuestSize) {
+-        continue;
++        CidreVuDispo = true;
++        if (CidreBornePlage) {
++          continue;
++        }
+       }
+ 
+       // if (Entry.GuestExtents.size()) {

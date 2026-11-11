@@ -157,6 +157,31 @@ if [ -d "$R/third_party/FEX" ]; then
          0307-*) temoin="bool HandleSuspendFault(CONTEXT* Context, uint64_t FaultAddress) {"; ou=Source/Windows/WOW64/Module.cpp ;;
          0310-*) temoin="namespace FEXCore::CidreKuser {"; ou=FEXCore/include/FEXCore/Utils/CidreKuser.h ;;
          0313-*) temoin="Cidre : faute d'execution levee par un bloc NoExec"; ou=Source/Windows/ARM64EC/Module.cpp ;;
+         0292-*) temoin="// Cidre : code JIT de FEX lui-meme. __builtin___clear_cache passe en ARM64EC par FlushInstructionCache, donc par"; ou=CodeEmitter/CodeEmitter/Buffer.h ;;
+         0360-*) temoin="static std::atomic<uint64_t> Dernier {};"; ou=Source/Windows/ARM64EC/Module.cpp ;;
+         0365-*) temoin="#include <FEXCore/Utils/CidreDiagInval.h>"; ou=FEXCore/Source/Interface/Core/Core.cpp ;;
+         0366-*) temoin="std::span<const DiskCache::BlobThunkRelocation> ThunkRelocs, Core::InternalThreadState* CidreFil = nullptr);"; ou=FEXCore/Source/Interface/Context/Context.h ;;
+         0370-*) temoin="// Cidre 0370 (CIDRE_SMC_EN_LIGNE_CHAUD) : page forcee chaude par InvalidationTracker::CidreRendreChaud (SMC en ligne en"; ou=FEXCore/Source/Interface/Core/Core.cpp ;;
+         0452-*) temoin="// Cidre 0452 : constantes propres au processus emises dans le code hote (Arm64Emitter::LoadTEB, MemoryOps)"; ou=FEXCore/Source/Interface/Core/DiskCache.cpp ;;
+         0460-*) temoin="// Diablo IV en leve ~1 300 par seconde en monde (fil de protection, int3 rattrapes par son gestionnaire vectorise) :"; ou=Source/Windows/ARM64EC/Module.cpp ;;
+         0475-*) temoin="std::atomic<uint64_t> TicksRearmHash {}, TicksPoseInterv {}, TicksPoseMap {}; // 0475"; ou=FEXCore/Source/Interface/Core/Core.cpp ;;
+         0476-*) temoin="void IndexedDB::CidreStoreLot(std::span<const CidreAEcrire> Lot, std::span<uint64_t> Offsets) {"; ou=FEXCore/Source/Interface/Core/DiskCache.cpp ;;
+         0477-*) temoin="// abandonner la lecture (« break ») ; le lancement suivant ecrivait a la suite : toutes les entrees posterieures etaient"; ou=FEXCore/Source/Interface/Core/DiskCache.cpp ;;
+         0478-*) temoin="// executable pendant tout un bloc ; CIDRE_FEX_DISQUE_RELIRE_GROUPE=0 redemande a chaque morceau (avant 0478)"; ou=FEXCore/Source/Interface/Core/DiskCache.cpp ;;
+         0479-*) temoin="Thread->FrontendDecoder->CidreCauseFin = FEXCore::DiskCache::CAUSE_REARM; // 0479 (rendu vrai : sans effet)"; ou=FEXCore/Source/Interface/Core/Core.cpp ;;
+         0480-*) temoin="CidreVuDispo = true;"; ou=FEXCore/Source/Interface/Core/DiskCache.cpp ;;
+         0481-*) temoin="// 0479 : blocs compiles par cause de la premiere consultation et de la derniere ; issue du Store par cause premiere"; ou=FEXCore/Source/Interface/Core/Core.cpp ;;
+         0482-*) temoin="auto* CidreDec = Thread->FrontendDecoder.get();"; ou=FEXCore/Source/Interface/Core/Core.cpp ;;
+         0483-*) temoin="// 0479 : causes des blocs compiles. Ordre : aucune, cle decodage, cle relecture, intervalle, cle absente, disponible, non"; ou=FEXCore/Source/Interface/Core/Core.cpp ;;
+         0484-*) temoin="while (Self->MemoryLRUCurrentSize > Self->MemoryLRUMaxSize && !Self->MemoryLRU.empty() && Evinces < 256) {"; ou=FEXCore/Source/Interface/Core/DiskCache.cpp ;;
+         0485-*) temoin="std::atomic<uint64_t> BordServis {}, BordStockes {}; // 0485"; ou=FEXCore/Source/Interface/Core/Core.cpp ;;
+         0486-*) temoin="std::atomic<uint64_t> CidreIntervNb {};"; ou=FEXCore/Source/Interface/Core/Frontend.cpp ;;
+         0487-*) temoin="X(DC.CidreTrampolines), X(DC.CidreTranchesLues), X(DC.CidreTranchesOctets) >> 10, X(DC.CidreTranchesTicks) * 1000.0 / F,"; ou=FEXCore/Source/Interface/Core/Core.cpp ;;
+         0488-*) temoin="// et retenue des pages libres engagees par tas (rpmalloc_cidre_retenue ; 0 = amont : chaque page liberee est desengagee)."; ou=External/rpmalloc/rpmalloc/rpmalloc.c ;;
+         0489-*) temoin="rpmalloc_cidre_retenue(const uint32_t* debordement, const uint32_t* retenue) {"; ou=External/rpmalloc/rpmalloc/rpmalloc.c ;;
+         0490-*) temoin="void SetGuestCodeCopy(GuestCodeCopyFn Fn) override {"; ou=FEXCore/Source/Interface/Context/Context.h ;;
+         0491-*) temoin="static inline int64_t CidreEtendreSigne(uint64_t Raw, uint8_t ValueSize) {"; ou=FEXCore/Source/Interface/Core/CodeCache.cpp ;;
+         0493-*) temoin="// Cidre 0493 : ce que le cache disque a pose dans le tampon depuis le vidage precedent"; ou=FEXCore/Source/Interface/Core/Core.cpp ;;
          *) echo "   correctif FEX sans temoin : $(basename "$f")" >&2; exit 1 ;;
       esac
       # -F : texte litteral (les temoins contiennent . ( * &).

@@ -1,0 +1,164 @@
+Generated-by: LLM
+
+Cidre 0484 (FEX, cache disque) : index en lecture partagee. IndexLock devient un std::shared_mutex : les consultations (recherche
+de la cle, candidats suivants) le prennent en partage ; Store, ecrivain, promotion, garde en memoire en exclusif. Le prune de la LRU
+evince par tranches de 256 et rend les verrous entre deux (il tenait l'index le temps d'evincer ~10 Mio d'entrees). Local Cidre.
+
+diff --git a/FEXCore/Source/Interface/Core/DiskCache.cpp b/FEXCore/Source/Interface/Core/DiskCache.cpp
+--- a/FEXCore/Source/Interface/Core/DiskCache.cpp
++++ b/FEXCore/Source/Interface/Core/DiskCache.cpp
+@@ -948,50 +948,74 @@
+       : Self(Self) {}
+     void Run() override {
+       if (Self->MemoryLRUCurrentSize <= Self->MemoryLRUMaxSize + Self->MemoryLRUEvictThreshold) {
+-        return;
+-      }
+-      std::lock_guard IndexGuard(Self->IndexLock);
+-      std::lock_guard LRUGuard(Self->MemoryLRULock);
+-      if (Self->MemoryLRU.empty()) {
+         return;
+       }
+-      auto Last = std::prev(Self->MemoryLRU.end());
+-
+-      while (Self->MemoryLRUCurrentSize > Self->MemoryLRUMaxSize && !Self->MemoryLRU.empty()) {
+-        auto LastKey = *Last;
+-        auto IndexEntry = Self->LookupLocked(LastKey.LookupKey, LastKey.GuestHash, LastKey.GuestFootprint);
+-        bool AtFront = (Last == Self->MemoryLRU.begin());
+-        if (IndexEntry && IndexEntry->MemoryBlob.use_count() > 1) {
+-          // being read rn, keep moving
+-          if (AtFront) {
+-            break;
++      // Cidre 0484 : par tranches de 256 evictions, verrous rendus entre deux : le prune tenait l'index (et la LRU) le temps
++      // d'evincer ~10 Mio d'entrees, bloquant toutes les consultations des fils du jeu pendant la rafale.
++      for (;;) {
++        size_t Evinces = 0;
++        bool Fini = false;
++        {
++          std::lock_guard IndexGuard(Self->IndexLock);
++          std::lock_guard LRUGuard(Self->MemoryLRULock);
++          if (Self->MemoryLRU.empty()) {
++            return;
+           }
+-          Last--;
+-          continue;
+-        }
+-        if (IndexEntry) {
+-          IndexEntry->MemoryBlob.reset();
+-          IndexEntry->LRUEntry.reset();
++          auto Last = std::prev(Self->MemoryLRU.end());
++          while (Self->MemoryLRUCurrentSize > Self->MemoryLRUMaxSize && !Self->MemoryLRU.empty() && Evinces < 256) {
++            auto LastKey = *Last;
++            auto IndexEntry = Self->LookupLocked(LastKey.LookupKey, LastKey.GuestHash, LastKey.GuestFootprint);
++            bool AtFront = (Last == Self->MemoryLRU.begin());
++            if (IndexEntry && IndexEntry->MemoryBlob.use_count() > 1) {
++              // being read rn, keep moving
++              if (AtFront) {
++                Fini = true;
++                break;
++              }
++              Last--;
++              continue;
++            }
++            if (IndexEntry) {
++              IndexEntry->MemoryBlob.reset();
++              IndexEntry->LRUEntry.reset();
++            }
++            Self->MemoryLRUCurrentSize -= LastKey.Size;
++            Evinces++;
++            auto Deleted = Last;
++            if (AtFront) {
++              Self->MemoryLRU.erase(Deleted);
++              Fini = true;
++              break;
++            }
++            Last--;
++            Self->MemoryLRU.erase(Deleted);
++          }
++          if (Self->MemoryLRUCurrentSize <= Self->MemoryLRUMaxSize || Self->MemoryLRU.empty()) {
++            Fini = true;
++          }
+         }
+-        Self->MemoryLRUCurrentSize -= LastKey.Size;
+-        auto Deleted = Last;
+-        if (AtFront) {
+-          Self->MemoryLRU.erase(Deleted);
+-          break;
++        if (Fini || Evinces == 0) {
++          return;
+         }
+-        Last--;
+-        Self->MemoryLRU.erase(Deleted);
+       }
+     }
+   };
+ 
+   std::optional<CodeHitData> DiskCache::Lookup(Core::InternalThreadState* Thread, std::optional<ExecutableFileSectionInfo> Region,
+-                                               uint64_t GuestRIP, std::optional<uint64_t>& GuestCodeKey, bool CidreVariante) {
++                                               uint64_t GuestRIP, std::optional<uint64_t>& GuestCodeKey, bool CidreVariante, bool CidreSimple) {
+     if (!IsReadingDiskCache()) {
+       return std::nullopt;
+     }
+     const uint64_t CidreD0 = CidreTick(); // 0475
+-    if (Region && Region->FileStartVA) {
++    // Cidre 0479 : cause de l'echec, lue par Core.cpp (journal « cidre disque rates »)
++    auto Rate = [Thread](uint8_t C) {
++      Thread->FrontendDecoder->CidreCauseFin = C;
++    };
++    Rate(CAUSE_AUCUNE);
++    // Cidre 0482 : cle deja calculee par une consultation precedente du meme bloc (variante, cle simple) : pas de second
++    // decodage des 64 octets (CLE_BRUTE=0 : ~8 us par consultation en jeu)
++    if (GuestCodeKey.has_value()) {
++    } else if (Region && Region->FileStartVA) {
+       struct __attribute__((packed)) {
+         uint64_t GuestOffset;
+         uint64_t FileId;
+@@ -1113,7 +1137,7 @@
+     };
+     {
+       CidreFinIndex CidreFI {CidreDet[2], CidreD2};
+-      std::lock_guard Guard(IndexLock);
++      std::shared_lock Guard(IndexLock); // 0484 : lecture seule
+       auto It = Index.find(LookupKey);
+       if (It == Index.end()) {
+         // definite miss
+@@ -1147,10 +1171,19 @@
+     }
+     // found a lookup key match, check for guest hash match now
+     bool FoundMatchingHash = false;
++    // Cidre 0479 : ce qui a ecarte les candidats (cause la plus parlante a la fin)
++    bool CidreVuDispo = false, CidreVuNonExec = false, CidreVuOctets = false, CidreVuSansSupport = false;
++    // Cidre 0480 : CIDRE_FEX_DISQUE_BORNE_PLAGE=1 : candidat plus long que l'intervalle executable de RIP ecarte (amont).
++    // Par defaut, CidreEmpreinteVive relit chaque etendue comme le decodeur (intervalle executable redemande) : un bloc qui
++    // deborde sur l'intervalle voisin (vue jumelle, RWX) est servi s'il est executable et identique, comme il a ete compile.
++    static const bool CidreBornePlage = [] {
++      const char* E = getenv("CIDRE_FEX_DISQUE_BORNE_PLAGE");
++      return E && *E == '1';
++    }();
+     bool Advance = false;
+     while (!FoundMatchingHash) {
+       if (Advance) {
+-        std::lock_guard Guard(IndexLock);
++        std::shared_lock Guard(IndexLock); // 0484
+ 
+         EntryUnderReview = nullptr;
+         if (MapPointer && MoreEntriesIt != MapPointer->end()) {
+diff --git a/FEXCore/Source/Interface/Core/DiskCache.h b/FEXCore/Source/Interface/Core/DiskCache.h
+--- a/FEXCore/Source/Interface/Core/DiskCache.h
++++ b/FEXCore/Source/Interface/Core/DiskCache.h
+@@ -17,6 +17,7 @@
+ #include <FEXCore/fextl/vector.h>
+ #include <stdint.h>
+ #include <mutex>
++#include <shared_mutex>
+ #include <optional>
+ #include <span>
+ #include <xxhash.h>
+@@ -301,7 +302,7 @@
+     fextl::vector<fextl::unique_ptr<IndexedDB>> ROCacheDBs;
+     fextl::unique_ptr<IndexedDB> RWCacheDB;
+     Index Index;
+-    std::mutex IndexLock;
++    std::shared_mutex IndexLock; // Cidre 0484 : consultations en lecture partagee
+     bool FoundMetadata = false;
+     struct CacheStoreWorkItem;
+     // Cidre 0476 : stockages groupes en lots (CIDRE_FEX_DISQUE_LOTS=0 : un a un, comme amont)

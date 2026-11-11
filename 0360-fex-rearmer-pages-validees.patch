@@ -1,0 +1,169 @@
+Generated-by: LLM
+
+fex : ilot, pages validees rearmees (0360)
+
+Dans l'ilot, une page dont le code a ete valide par CRC (SMC complet) restait en validation instruction par
+instruction (« mode lent », ~19 % des manches D2R). Les pages validees sont rearmees (piege d'ecriture remis)
+apres validation. Serie D2R ABBA 15+15 x 240 s avec 0355 (Wine) : incidents 5/15 -> 0/15, intro 30 -> 75
+img/s. Sans objet hors de l'ilot. Chantier : ~/Dev/cidre-d2r-gel (0360-...-sur-ilotr306.diff). Le diagnostic
+0361 (CIDRE_DIAG_VALIDATION) n'est pas repris.
+
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -1333,6 +1333,15 @@
+ static void CidreVerifierSections() {
+   if (CidreSmcArme) {
+     CidreInvaliderPages(FEX::Windows::SousPages::VerifierSections());
++    // 0360 : au plus toutes les 50 ms, reprise des pages compilees avec validation faute d'armement
++    static std::atomic<uint64_t> Dernier {};
++    uint64_t T, F;
++    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(T));
++    __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(F));
++    uint64_t D = Dernier.load(std::memory_order_relaxed);
++    if (T - D >= F / 20 && Dernier.compare_exchange_strong(D, T, std::memory_order_relaxed)) {
++      CidreInvaliderPages(FEX::Windows::SousPages::Rearmer());
++    }
+   }
+ }
+ 
+diff --git a/Source/Windows/ARM64EC/SousPages.cpp b/Source/Windows/ARM64EC/SousPages.cpp
+--- a/Source/Windows/ARM64EC/SousPages.cpp
++++ b/Source/Windows/ARM64EC/SousPages.cpp
+@@ -1204,6 +1204,27 @@
+   uint32_t GenSectionsVue {}; // sous ArmeesVerrou : compteur de Wine au dernier traitement
+   std::atomic<uint64_t> NbRefusRaison[7];
+   std::atomic<uint64_t> NbArmees, NbArmementsRefuses, NbEcritsArmes, NbGenSections, NbRefusCompteur, NbRefusCourse, NbDejaArmees;
++  // 0360 : pages dont le code a ete compile AVEC validation parce que l'armement a echoue (refus de Wine, refus recent en
++  // cache, compteur des sections, course) : premier refus et nombre de reprises. Rearmees plus tard (Rearmer), puis
++  // invalidees une fois pour que la recompilation se fasse sans validation. Sous ArmeesVerrou.
++  struct AReprendre { uint64_t Depuis; uint32_t Reprises; };
++  fextl::unordered_map<uint64_t, AReprendre> ARearmer;
++  constexpr uint32_t RearmerMaxReprises = 6;
++  std::atomic<uint64_t> NbRearmees, NbRearmerEchecs, NbRearmerAbandons;
++  int8_t RearmerActif = -1;
++  bool Rearmer0360() {
++    if (RearmerActif < 0) {
++      const char* E = getenv("CIDRE_SMC_REARMER");
++      RearmerActif = !(E && *E == '0');
++    }
++    return RearmerActif;
++  }
++  void NoterARearmer(uint64_t Page) {   // ArmeesVerrou tenu
++    if (!Rearmer0360() || ARearmer.size() > 65536) {
++      return;
++    }
++    ARearmer.try_emplace(Page, AReprendre {FEX::Windows::SousPages::Millisecondes(), 0});
++  }
+ } // namespace
+ 
+ bool FEX::Windows::SousPages::CodeArme(uint64_t Adresse, uint64_t Taille) {
+@@ -1218,6 +1239,7 @@
+       // exception ; ne rien armer de plus d'ici la.
+       if (GenSections && *GenSections != GenSectionsVue) {
+         Compter(NbRefusCompteur, "SMC arme : refus, compteur des sections change (pas encore traite)");
++        NoterARearmer(Page);
+         return false;
+       }
+       if (Armees.contains(Page)) {
+@@ -1225,6 +1247,7 @@
+         continue;
+       }
+       if (const auto It = Refusees.find(Page); It != Refusees.end() && Millisecondes() - It->second < RefusMs) {
++        NoterARearmer(Page);
+         return false; // refus recent : garder la validation sans redemander
+       }
+       Avant = Desarmements;
+@@ -1248,6 +1271,7 @@
+         Refusees.clear();
+       }
+       Refusees[Page] = Millisecondes();
++      NoterARearmer(Page);
+       return false;
+     }
+     std::scoped_lock Lock(ArmeesVerrou);
+@@ -1257,6 +1281,7 @@
+     }
+     if (Desarmements != Avant || (GenSections && *GenSections != GenSectionsVue)) {
+       Compter(NbRefusCourse, "SMC arme : refus, desarmement ou compteur pendant l'appel a Wine");
++      NoterARearmer(Page);
+       return false; // une ecriture ou une projection a pu desarmer la page entre-temps : garder la validation
+     }
+     Armees.insert(Page);
+@@ -1282,6 +1307,64 @@
+   }
+ }
+ 
++// 0360 : reprend les pages compilees avec validation faute d'armement. Au plus Max pages par appel, chacune au plus
++// RearmerMaxReprises fois, et pas avant DelaiMs apres son dernier echec (le delai de rearmement de Wine apres une
++// ecriture est de l'ordre de la centaine de ms). Rend les pages armees a l'instant : leur code compile avec validation
++// doit etre invalide (CidreInvaliderPages) pour etre recompile sans.
++fextl::vector<uint64_t> FEX::Windows::SousPages::Rearmer() {
++  fextl::vector<uint64_t> Armer, Faites;
++  if (!Actif || !Rearmer0360()) {
++    return Faites;
++  }
++  constexpr uint64_t DelaiMs = 500;
++  constexpr size_t Max = 32;
++  {
++    std::scoped_lock Lock(ArmeesVerrou);
++    if (ARearmer.empty()) {
++      return Faites;
++    }
++    const uint64_t Maintenant = Millisecondes();
++    for (auto It = ARearmer.begin(); It != ARearmer.end() && Armer.size() < Max;) {
++      if (Armees.contains(It->first)) {
++        Armer.push_back(It->first); // deja armee par une autre compilation : son code ancien garde peut-etre la validation
++        It = ARearmer.erase(It);
++        continue;
++      }
++      if (Maintenant - It->second.Depuis >= DelaiMs) {
++        Armer.push_back(It->first);
++      }
++      ++It;
++    }
++  }
++  for (const uint64_t Page : Armer) {
++    bool Deja;
++    {
++      std::scoped_lock Lock(ArmeesVerrou);
++      Deja = Armees.contains(Page);
++      Refusees.erase(Page); // le refus en cache ne doit pas bloquer la reprise
++    }
++    if (Deja || CodeArme(Page, 1)) {
++      std::scoped_lock Lock(ArmeesVerrou);
++      ARearmer.erase(Page);
++      Faites.push_back(Page);
++      Compter(NbRearmees, "SMC arme (0360) : page reprise et rearmee");
++    } else {
++      std::scoped_lock Lock(ArmeesVerrou);
++      auto It = ARearmer.find(Page);
++      if (It != ARearmer.end()) {
++        if (++It->second.Reprises >= RearmerMaxReprises) {
++          ARearmer.erase(It);
++          Compter(NbRearmerAbandons, "SMC arme (0360) : page abandonnee (reprises epuisees)");
++        } else {
++          It->second.Depuis = Millisecondes();
++          Compter(NbRearmerEchecs, "SMC arme (0360) : reprise refusee");
++        }
++      }
++    }
++  }
++  return Faites;
++}
++
+ fextl::vector<uint64_t> FEX::Windows::SousPages::VerifierSections() {
+   fextl::vector<uint64_t> Pages;
+   std::scoped_lock Lock(ArmeesVerrou);
+diff --git a/Source/Windows/ARM64EC/SousPages.h b/Source/Windows/ARM64EC/SousPages.h
+--- a/Source/Windows/ARM64EC/SousPages.h
++++ b/Source/Windows/ARM64EC/SousPages.h
+@@ -67,6 +67,8 @@
+ // Compteur des sections de Wine change depuis le dernier appel : pages a invalider (toutes celles qui etaient armees),
+ // desarmees. A appeler apres les appels systeme notifies, sans verrou de code tenu.
+ fextl::vector<uint64_t> VerifierSections();
++// 0360 : pages reprises et rearmees (leur code compile avec validation est a invalider)
++fextl::vector<uint64_t> Rearmer();
+ // Nouvelle vue executable projetee : une jumelle deja armee ne designerait plus une seule vue executable (Wine ne saurait
+ // pas quelle page invalider) ; toutes les pages armees, a invalider, desarmees.
+ fextl::vector<uint64_t> ToutDesarmer();

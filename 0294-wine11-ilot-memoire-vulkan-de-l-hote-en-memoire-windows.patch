@@ -1,0 +1,282 @@
+Generated-by: LLM
+
+wine11 : ilot, memoire Vulkan visible de l'hote en memoire Windows anonyme (win32u)
+
+Dans le processus de l'ilot (cidre_ilot_actif de ntdll.so), le code PE ne doit toucher que de la memoire que
+la garde admet au deuxieme etage : anonyme privee de virtual.c. La memoire de KosmicKrisp (MTLHeap, contenus
+Metal, imports par fd) ne l'est pas. winevulkan presente donc un type de memoire virtuel, ajoute apres ceux de
+l'hote : les types de l'hote perdent HOST_VISIBLE/COHERENT/CACHED ; le type virtuel (propose aux tampons
+seulement) est alloue en memoire Windows (NtAllocateVirtualMemory) importee dans l'ICD par
+VK_EXT_external_memory_host. Les images restent sur les types de l'hote. CIDRE_ILOT_VULKAN_HOTE=0 coupe ;
+hors ilot, rien ne change. Repris de ~/Dev/cidre-fex-tso/vk13 (win32u.so des runtimes de l'ilot depuis le 24/10).
+
+diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -27,6 +27,8 @@
+ #include <dlfcn.h>
+ #include <pthread.h>
+ #include <unistd.h>
++#include <stdio.h>
++#include <stdlib.h>
+ 
+ #include "ntstatus.h"
+ #include "win32u_private.h"
+@@ -213,7 +215,106 @@
+ {
+     struct vulkan_fence *obj = vulkan_fence_from_handle( handle );
+     return CONTAINING_RECORD( obj, struct fence, obj );
++}
++
++/***********************************************************************
++ *           Cidre, ilot TSO : memoire Vulkan visible de l'hote en memoire Windows anonyme
++ *
++ * Dans le processus de l'ilot (cidre_ilot_actif, ntdll), le code PE ne doit toucher que de la memoire que la garde
++ * admet au deuxieme etage : anonyme privee de virtual.c. La memoire de KosmicKrisp (MTLHeap, contenus Metal, imports
++ * par fd) ne l'est pas. On presente donc a l'application un type de memoire virtuel, ajoute apres ceux de l'hote :
++ *   - les types de l'hote perdent HOST_VISIBLE/COHERENT/CACHED (ils restent pour les images et ce qui n'est pas mappe) ;
++ *   - le type virtuel (index = nombre de types de l'hote) a les drapeaux du premier type visible de l'hote ; il est
++ *     propose aux tampons seulement (memoryTypeBits des tampons), et son allocation est de la memoire Windows
++ *     (NtAllocateVirtualMemory, marquee par ilot_mmap) importee dans l'ICD par VK_EXT_external_memory_host
++ *     (KosmicKrisp : newBufferWithBytesNoCopy ; sonde_hv_dart : admise au deuxieme etage, coherente avec le GPU).
++ * Les images restent sur les types de l'hote (KosmicKrisp n'a qu'un type et lie les images a un MTLHeap).
++ * CIDRE_ILOT_VULKAN_HOTE=0 coupe le mecanisme. Hors ilot, rien ne change.
++ */
++static int ilot_vk = -1;
++static uint32_t ilot_type_virtuel = ~0u, ilot_type_reel = ~0u;
++static PFN_vkGetPhysicalDeviceMemoryProperties ilot_reel_props;
++static PFN_vkGetPhysicalDeviceMemoryProperties2 ilot_reel_props2, ilot_reel_props2khr;
++static PFN_vkGetBufferMemoryRequirements ilot_reel_breq;
++static PFN_vkGetBufferMemoryRequirements2 ilot_reel_breq2, ilot_reel_breq2khr;
++static PFN_vkGetDeviceBufferMemoryRequirements ilot_reel_dbreq, ilot_reel_dbreqkhr;
++static LONG ilot_allocations_hote;
++
++static BOOL ilot_vulkan(void)
++{
++    if (ilot_vk < 0)
++    {
++        int (*actif)(void) = dlsym( RTLD_DEFAULT, "cidre_ilot_actif" );
++        const char *e = getenv( "CIDRE_ILOT_VULKAN_HOTE" );
++        ilot_vk = actif && actif() && !(e && *e == '0');
++        if (ilot_vk) fprintf( stderr, "[CIDRE_ILOT] vulkan : memoire visible de l'hote en memoire Windows anonyme (type virtuel)\n" );
++    }
++    return ilot_vk;
++}
++
++#define ILOT_DRAPEAUX_HOTE (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT)
++
++/* p : proprietes de l'hote ; rend le type visible de l'hote choisi (ou ~0u) et, si virtualiser, ajoute le type virtuel */
++static uint32_t ilot_virtualiser( VkPhysicalDeviceMemoryProperties *p, BOOL virtualiser )
++{
++    const uint32_t vc = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
++    uint32_t i, n = p->memoryTypeCount, h = ~0u;
++    for (i = 0; i < n; i++) if ((p->memoryTypes[i].propertyFlags & vc) == vc) { h = i; break; }
++    if (h == ~0u || n >= VK_MAX_MEMORY_TYPES || n >= 32) return ~0u;
++    if (!virtualiser) return h;
++    p->memoryTypes[n] = p->memoryTypes[h];
++    for (i = 0; i < n; i++) p->memoryTypes[i].propertyFlags &= ~ILOT_DRAPEAUX_HOTE;
++    p->memoryTypeCount = n + 1;
++    return h;
++}
++
++static void ilot_props( VkPhysicalDevice pd, VkPhysicalDeviceMemoryProperties *p )
++{
++    ilot_reel_props( pd, p );
++    ilot_virtualiser( p, TRUE );
++}
++static void ilot_props2( VkPhysicalDevice pd, VkPhysicalDeviceMemoryProperties2 *p )
++{
++    ilot_reel_props2( pd, p );
++    ilot_virtualiser( &p->memoryProperties, TRUE );
++}
++static void ilot_props2khr( VkPhysicalDevice pd, VkPhysicalDeviceMemoryProperties2 *p )
++{
++    ilot_reel_props2khr( pd, p );
++    ilot_virtualiser( &p->memoryProperties, TRUE );
++}
++
++/* tampons : le type virtuel s'ajoute s'ils peuvent aller dans le type visible de l'hote */
++static uint32_t ilot_bits_tampon( uint32_t bits )
++{
++    if (ilot_type_virtuel < 32 && ilot_type_reel < 32 && (bits & (1u << ilot_type_reel))) bits |= 1u << ilot_type_virtuel;
++    return bits;
++}
++static void ilot_breq( VkDevice d, VkBuffer b, VkMemoryRequirements *r )
++{
++    ilot_reel_breq( d, b, r );
++    r->memoryTypeBits = ilot_bits_tampon( r->memoryTypeBits );
++}
++static void ilot_breq2( VkDevice d, const VkBufferMemoryRequirementsInfo2 *i, VkMemoryRequirements2 *r )
++{
++    ilot_reel_breq2( d, i, r );
++    r->memoryRequirements.memoryTypeBits = ilot_bits_tampon( r->memoryRequirements.memoryTypeBits );
++}
++static void ilot_breq2khr( VkDevice d, const VkBufferMemoryRequirementsInfo2 *i, VkMemoryRequirements2 *r )
++{
++    ilot_reel_breq2khr( d, i, r );
++    r->memoryRequirements.memoryTypeBits = ilot_bits_tampon( r->memoryRequirements.memoryTypeBits );
++}
++static void ilot_dbreq( VkDevice d, const VkDeviceBufferMemoryRequirements *i, VkMemoryRequirements2 *r )
++{
++    ilot_reel_dbreq( d, i, r );
++    r->memoryRequirements.memoryTypeBits = ilot_bits_tampon( r->memoryRequirements.memoryTypeBits );
+ }
++static void ilot_dbreqkhr( VkDevice d, const VkDeviceBufferMemoryRequirements *i, VkMemoryRequirements2 *r )
++{
++    ilot_reel_dbreqkhr( d, i, r );
++    r->memoryRequirements.memoryTypeBits = ilot_bits_tampon( r->memoryRequirements.memoryTypeBits );
++}
+ 
+ static VkResult allocate_external_host_memory( struct vulkan_device *device, VkMemoryAllocateInfo *alloc_info, uint32_t mem_flags,
+                                                VkImportMemoryHostPointerInfoEXT *import_info )
+@@ -224,7 +325,7 @@
+         .sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT,
+     };
+     uint32_t i, align = physical_device->external_memory_align - 1;
+-    SIZE_T alloc_size = alloc_info->allocationSize;
++    SIZE_T alloc_size = (alloc_info->allocationSize + align) & ~(SIZE_T)align;   /* Cidre : la memoire importee entiere est a nous */
+     static int once;
+     void *mapping = NULL;
+     VkResult res;
+@@ -504,7 +605,14 @@
+     vulkan_object_init_ptr( &physical_device->obj, (UINT_PTR)host_physical_device, &client_physical_device->obj );
+     physical_device->instance = instance;
+ 
+-    instance->p_vkGetPhysicalDeviceMemoryProperties( host_physical_device, &physical_device->memory_properties );
++    (ilot_reel_props ? ilot_reel_props : instance->p_vkGetPhysicalDeviceMemoryProperties)( host_physical_device, &physical_device->memory_properties );
++    if (ilot_vulkan())
++    {   /* Cidre, ilot TSO : le cache garde les types reels ; le type virtuel vient apres eux */
++        uint32_t h = ilot_virtualiser( &physical_device->memory_properties, FALSE );
++        if (h != ~0u) { ilot_type_reel = h; ilot_type_virtuel = physical_device->memory_properties.memoryTypeCount; }
++        fprintf( stderr, "[CIDRE_ILOT] vulkan : %u type(s) de memoire de l'hote, type visible %d, type virtuel %d\n",
++                 physical_device->memory_properties.memoryTypeCount, (int)ilot_type_reel, (int)ilot_type_virtuel );
++    }
+ 
+     if ((res = instance->p_vkEnumerateDeviceExtensionProperties( host_physical_device, NULL, &count, NULL ))) return res;
+     if (!(properties = calloc( count, sizeof(*properties) ))) return res;
+@@ -543,7 +651,7 @@
+         }
+     }
+ 
+-    if (zero_bits && physical_device->extensions.has_VK_EXT_external_memory_host && !physical_device->map_placed_align)
++    if ((zero_bits || ilot_vulkan()) && physical_device->extensions.has_VK_EXT_external_memory_host && !physical_device->map_placed_align)
+     {
+         VkPhysicalDeviceExternalMemoryHostPropertiesEXT host_mem_props = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
+         VkPhysicalDeviceProperties2 props = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &host_mem_props};
+@@ -646,6 +754,16 @@
+     ALL_VK_INSTANCE_FUNCS
+ #undef USE_VK_FUNC
+ 
++    if (ilot_vulkan())
++    {   /* Cidre, ilot TSO : proprietes de memoire virtualisees pour l'application (le cache de win32u reste reel) */
++        if (!ilot_reel_props) ilot_reel_props = instance->obj.p_vkGetPhysicalDeviceMemoryProperties;
++        if (instance->obj.p_vkGetPhysicalDeviceMemoryProperties) instance->obj.p_vkGetPhysicalDeviceMemoryProperties = ilot_props;
++        if (instance->obj.p_vkGetPhysicalDeviceMemoryProperties2 && instance->obj.p_vkGetPhysicalDeviceMemoryProperties2 != ilot_props2)
++        { ilot_reel_props2 = instance->obj.p_vkGetPhysicalDeviceMemoryProperties2; instance->obj.p_vkGetPhysicalDeviceMemoryProperties2 = ilot_props2; }
++        if (instance->obj.p_vkGetPhysicalDeviceMemoryProperties2KHR && instance->obj.p_vkGetPhysicalDeviceMemoryProperties2KHR != ilot_props2khr)
++        { ilot_reel_props2khr = instance->obj.p_vkGetPhysicalDeviceMemoryProperties2KHR; instance->obj.p_vkGetPhysicalDeviceMemoryProperties2KHR = ilot_props2khr; }
++    }
++
+     /* Cache physical devices for vkEnumeratePhysicalDevices within the instance as each vkPhysicalDevice is a dispatchable
+      * object, which means we need to wrap the host physical devices and present those to the application.
+      */
+@@ -813,8 +931,19 @@
+     if (!(device = calloc( 1, offsetof(struct vulkan_device, queues[queue_count]) ))) return VK_ERROR_OUT_OF_HOST_MEMORY;
+     device->extensions = client_device->extensions;
+ 
+-    if ((res = convert_device_create_info( physical_device, create_info, &pool, device ))) goto failed;
+-    if ((res = instance->p_vkCreateDevice( physical_device->host.physical_device, create_info, NULL /* allocator */, &host_device ))) goto failed;
++    if ((res = convert_device_create_info( physical_device, create_info, &pool, device )))
++    {   /* Cidre, ilot (sortie anticipee de D2R) : visible sans WINEDEBUG */
++        if (ilot_vulkan()) fprintf( stderr, "[CIDRE_ILOT] vulkan : vkCreateDevice en echec a la conversion (convert_device_create_info), res %d\n", res );
++        goto failed;
++    }
++    if ((res = instance->p_vkCreateDevice( physical_device->host.physical_device, create_info, NULL /* allocator */, &host_device )))
++    {
++        if (ilot_vulkan()) fprintf( stderr, "[CIDRE_ILOT] vulkan : vkCreateDevice de l'ICD en echec, res %d (%u extension(s), %u file(s))\n", res,
++                                    create_info->enabledExtensionCount, create_info->queueCreateInfoCount );
++        goto failed;
++    }
++    if (ilot_vulkan()) fprintf( stderr, "[CIDRE_ILOT] vulkan : vkCreateDevice reussi (%u extension(s), %u file(s))\n",
++                                create_info->enabledExtensionCount, create_info->queueCreateInfoCount );
+ 
+     vulkan_object_init_ptr( &device->obj, (UINT_PTR)host_device, &client_device->obj );
+     device->physical_device = physical_device;
+@@ -825,6 +954,18 @@
+     ALL_VK_DEVICE_FUNCS
+ #undef USE_VK_FUNC
+ 
++    if (ilot_vulkan() && ilot_type_virtuel < 32)
++    {   /* Cidre, ilot TSO : le type virtuel est propose aux tampons */
++#define ILOT_ENVELOPPER( nom, reel, enveloppe ) \
++        if (device->p_##nom) { if (!reel) reel = device->p_##nom; device->p_##nom = enveloppe; }
++        ILOT_ENVELOPPER( vkGetBufferMemoryRequirements, ilot_reel_breq, ilot_breq )
++        ILOT_ENVELOPPER( vkGetBufferMemoryRequirements2, ilot_reel_breq2, ilot_breq2 )
++        ILOT_ENVELOPPER( vkGetBufferMemoryRequirements2KHR, ilot_reel_breq2khr, ilot_breq2khr )
++        ILOT_ENVELOPPER( vkGetDeviceBufferMemoryRequirements, ilot_reel_dbreq, ilot_dbreq )
++        ILOT_ENVELOPPER( vkGetDeviceBufferMemoryRequirementsKHR, ilot_reel_dbreqkhr, ilot_dbreqkhr )
++#undef ILOT_ENVELOPPER
++    }
++
+     for (i = 0; i < create_info->queueCreateInfoCount; i++) init_device_queues( device, create_info->pQueueCreateInfos + i, client_device );
+ 
+     TRACE( "Created device %p, host_device %p.\n", device, device->host.device );
+@@ -895,7 +1036,8 @@
+     struct vulkan_device *device = vulkan_device_from_handle( client_device );
+     struct vulkan_physical_device *physical_device = device->physical_device;
+     struct vulkan_instance *instance = device->physical_device->instance;
+-    VkImportMemoryHostPointerInfoEXT host_pointer_info, *pointer_info = NULL;
++    VkImportMemoryHostPointerInfoEXT host_pointer_info = {0}, *pointer_info = NULL;
++    BOOL ilot_hote = FALSE;
+     VkExportMemoryWin32HandleInfoKHR export_win32 = {.dwAccess = GENERIC_ALL};
+     VkImportMemoryWin32HandleInfoKHR *import_win32 = NULL;
+     VkDeviceMemory host_device_memory = VK_NULL_HANDLE;
+@@ -940,13 +1082,32 @@
+         case VK_STRUCTURE_TYPE_MEMORY_PRIORITY_ALLOCATE_INFO_EXT: break;
+         default: FIXME( "Unhandled sType %u.\n", (*next)->sType ); break;
+         }
++    }
++
++    /* Cidre, ilot TSO : le type virtuel devient le type visible de l'hote, en memoire Windows importee (sauf import ou
++     * export, qui gardent le chemin de l'ICD) ; les types de l'hote ne prennent jamais de memoire importee */
++    if (ilot_vulkan() && ilot_type_virtuel < 32 && alloc_info->memoryTypeIndex == ilot_type_virtuel)
++    {
++        alloc_info->memoryTypeIndex = ilot_type_reel;
++        ilot_hote = !pointer_info && !export_info && !import_win32;
+     }
+ 
+     /* For host visible memory, we try to use VK_EXT_external_memory_host on wow64 to ensure that mapped pointer is 32-bit. */
+     mem_flags = physical_device->memory_properties.memoryTypes[alloc_info->memoryTypeIndex].propertyFlags;
+-    if (physical_device->external_memory_align && (mem_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) && !pointer_info &&
++    if ((ilot_vulkan() ? ilot_hote : (physical_device->external_memory_align && (mem_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) && !pointer_info)) &&
+         (res = allocate_external_host_memory( device, alloc_info, mem_flags, &host_pointer_info )))
++    {
++        if (ilot_vulkan()) fprintf( stderr, "[CIDRE_ILOT] vulkan : vkAllocateMemory en echec (memoire Windows importee), res %d, %lu octets, type %u\n",
++                                    res, (unsigned long)alloc_info->allocationSize, alloc_info->memoryTypeIndex );
+         return res;
++    }
++    if (ilot_hote && host_pointer_info.sType == VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT)
++    {
++        mapping = host_pointer_info.pHostPointer;   /* vkMapMemory la rend, vkFreeMemory la libere */
++        if (InterlockedIncrement( &ilot_allocations_hote ) <= 4)
++            fprintf( stderr, "[CIDRE_ILOT] vulkan : allocation %lu octets en memoire Windows %p (type virtuel %u)\n",
++                     (unsigned long)alloc_info->allocationSize, mapping, ilot_type_virtuel );
++    }
+ 
+     if (!(memory = calloc( 1, sizeof(*memory) ))) return VK_ERROR_OUT_OF_HOST_MEMORY;
+ 
+@@ -1043,7 +1204,14 @@
+ 
+ failed:
+     WARN( "Failed to allocate memory, res %d\n", res );
++    if (ilot_vulkan()) fprintf( stderr, "[CIDRE_ILOT] vulkan : vkAllocateMemory en echec, res %d, %lu octets, type %u%s\n", res,
++                                (unsigned long)alloc_info->allocationSize, alloc_info->memoryTypeIndex, ilot_hote ? " (memoire Windows)" : "" );
+     if (host_device_memory) device->p_vkFreeMemory( device->host.device, host_device_memory, NULL );
++    if (ilot_hote && mapping)
++    {
++        SIZE_T taille = 0;
++        NtFreeVirtualMemory( GetCurrentProcess(), &mapping, &taille, MEM_RELEASE );
++    }
+     if (memory->semaphore) device->p_vkDestroySemaphore( device->host.device, memory->semaphore, NULL );
+     d3dkmt_destroy_resource( memory->local );
+     d3dkmt_destroy_mutex( memory->mutex );

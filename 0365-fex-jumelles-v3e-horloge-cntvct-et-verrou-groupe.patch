@@ -1,0 +1,689 @@
+Generated-by: LLM
+
+fex : jumelles v3e (Diablo IV dans l'ilot)
+
+Suite des jumelles v2 (0292) pour Diablo IV :
+- horloge : l'armement relisait NtQuerySystemTime (une sortie de l'ilot) sous ArmeesVerrou a chaque
+  armement ; il lit CNTVCT. Menu de D4 : JIT 85,1 -> 22,7 s, invalidations 6,08 -> 3,17 s (3+3 manches) ;
+- une seule prise du verrou pour un groupe de pages (CIDRE_JUMELLES_GROUPE=0 : une prise par page) ;
+- recul du rearmement (CIDRE_REARMER_RECUL), plage sans intervalle executable (CIDRE_DIRTY_SANS_X=1 pour
+  l'activer), CIDRE_MS_SYSTEME ;
+- diagnostic des invalidations (CidreDiagInval.h, CIDRE_DIAG_INVAL=1, coupe par defaut : une lecture de
+  variable par invalidation). Garde tel quel : il est entremele au code des jumelles.
+Chantier : ~/Dev/cidre-d4-jumelles (jumelles-v3e-sur-0360a.diff).
+
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -85,6 +85,7 @@
+ #include <xxhash.h>
+ #include "Interface/Core/Addressing.h"
+ #include <FEXCore/Utils/CidreCompteurs.h>
++#include <FEXCore/Utils/CidreDiagInval.h>
+ 
+ // Cidre, mesure par etape (ticks CNTVCT, cumules ; imprimes et remis a zero chaque seconde par la ligne « cidre
+ // compil ») : compilation, reinstallation, armement (GuestCodeArmed), invalidation (InvalidationTracker.cpp : attente et
+@@ -1570,6 +1571,15 @@
+   // The backends only check L1 and L2, not L3
+   if (auto HostCode = Thread->LookupCache->FindBlock(Thread, GuestRIP)) {
+     return HostCode;
++  }
++
++  // Cidre, diag (CIDRE_DIAG_INVAL) : compilation en cours, verrou partage tenu
++  struct CidreFenteCompil {
++    uint32_t I = ::FEXCore::CidreDiagInval::NB_FENTES;
++    ~CidreFenteCompil() { ::FEXCore::CidreDiagInval::Rendre(I); }
++  } CidreFente;
++  if (::FEXCore::CidreDiagInval::Actif()) {
++    CidreFente.I = ::FEXCore::CidreDiagInval::Prendre(reinterpret_cast<uint64_t>(Thread), ::FEXCore::CidreMesure::Tick(), GuestRIP);
+   }
+ 
+   // Cidre (CIDRE_COMPIL_RAPIDE) : premiere compilation de ce RIP, premier niveau
+diff --git a/FEXCore/include/FEXCore/Utils/CidreDiagInval.h b/FEXCore/include/FEXCore/Utils/CidreDiagInval.h
+new file mode 100644
+--- /dev/null
++++ b/FEXCore/include/FEXCore/Utils/CidreDiagInval.h
+@@ -0,0 +1,84 @@
++// SPDX-License-Identifier: MIT
++#pragma once
++// Cidre, diag des invalidations (CIDRE_DIAG_INVAL=1, coupe sinon : une lecture de variable par invalidation) :
++// attente du verrou unique / travail sous verrou / blocs jetes, par origine et sous-origine des jumelles (CodeEcrit,
++// VerifierSections, Rearmer 0360, ToutDesarmer) ; compilations en cours a l'instant ou l'invalidation demande le verrou
++// (nombre, la plus ancienne, son RIP) ; evenements lents (CIDRE_DIAG_INVAL_SEUIL ms, 5 par defaut) un par ligne.
++// Pas de thread_local (arm64ec : x18) : fentes a CAS.
++#include <atomic>
++#include <cstdint>
++#include <cstdlib>
++
++namespace FEXCore::CidreDiagInval {
++inline int Actif() {
++  static const int A = [] {
++    const char* E = getenv("CIDRE_DIAG_INVAL");
++    return (E && *E == '1') ? 1 : 0;
++  }();
++  return A;
++}
++inline uint64_t SeuilMs() {
++  static const uint64_t S = [] {
++    const char* E = getenv("CIDRE_DIAG_INVAL_SEUIL");
++    return E ? strtoull(E, nullptr, 10) : 5ULL;
++  }();
++  return S;
++}
++
++enum Sous : uint32_t { SO_AUCUNE = 0, SO_CODEECRIT = 1, SO_VERIFIER = 2, SO_REARMER = 3, SO_TOUT = 4, NB_SOUS = 5 };
++constexpr uint32_t SOUS_DECALAGE = 8; // CidreSource = Source | Sous << 8
++
++constexpr uint32_t NB_FENTES = 64;
++struct Fente {
++  std::atomic<uint64_t> Cle;
++  std::atomic<uint64_t> Debut;
++  std::atomic<uint64_t> Rip;
++};
++inline Fente Fentes[NB_FENTES];
++
++inline uint32_t Prendre(uint64_t Cle, uint64_t T, uint64_t Rip) {
++  uint32_t H = static_cast<uint32_t>((Cle * 0x9E3779B97F4A7C15ULL) >> 58) % NB_FENTES;
++  for (uint32_t I = 0; I < NB_FENTES; I++, H = (H + 1) % NB_FENTES) {
++    uint64_t C = 0;
++    if (Fentes[H].Cle.compare_exchange_strong(C, Cle, std::memory_order_relaxed)) {
++      Fentes[H].Rip.store(Rip, std::memory_order_relaxed);
++      Fentes[H].Debut.store(T, std::memory_order_release);
++      return H;
++    }
++  }
++  return NB_FENTES;
++}
++inline void Rendre(uint32_t I) {
++  if (I < NB_FENTES) {
++    Fentes[I].Debut.store(0, std::memory_order_relaxed);
++    Fentes[I].Cle.store(0, std::memory_order_release);
++  }
++}
++inline void Instantane(uint64_t Maintenant, uint32_t& Nb, uint64_t& PlusVieux, uint64_t& Rip) {
++  Nb = 0;
++  PlusVieux = 0;
++  Rip = 0;
++  for (auto& F : Fentes) {
++    const uint64_t D = F.Debut.load(std::memory_order_acquire);
++    if (D && D <= Maintenant) {
++      Nb++;
++      if (Maintenant - D > PlusVieux) {
++        PlusVieux = Maintenant - D;
++        Rip = F.Rip.load(std::memory_order_relaxed);
++      }
++    }
++  }
++}
++
++struct Agreg {
++  std::atomic<uint64_t> Nb, Octets, Attente, Tenue, Jetes, Lentes, AttenteFils;
++};
++// 0..7 : sources (CidreCompteurs::Source) ; 8 + sous-origine des jumelles
++constexpr uint32_t NB_AGREG = 8 + NB_SOUS;
++inline Agreg Agregs[NB_AGREG];
++inline std::atomic<uint64_t> DernierImprime {0};
++inline std::atomic<uint64_t> NbLignesLentes {0};
++// CodeEcrit : pages du bloc de 16 Kio qui avaient des blocs ; page ecrite ou autre ; contenus identiques au precedent
++inline std::atomic<uint64_t> CeNb, CePagesEcriteAvecBlocs, CePagesAutresAvecBlocs, CeJetesEcrite, CeJetesAutres, CeIdentiques,
++  CeChanges, CeNeufs, CeIllisibles;
++} // namespace FEXCore::CidreDiagInval
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -41,6 +41,7 @@
+ #include "Common/Exception.h"
+ #include "Common/ImageTracker.h"
+ #include "Common/InvalidationTracker.h"
++#include <FEXCore/Utils/CidreDiagInval.h>
+ #include "SousPages.h"
+ #include "Common/Threads.h"
+ #include "Common/OvercommitTracker.h"
+@@ -1318,21 +1319,113 @@
+ }
+ 
+ // CIDRE_SMC_ARME : traductions sans validation des pages dont la jumelle a ete ecrite (ThreadCreationMutex non tenu).
+-static void CidreInvaliderPages(const fextl::vector<uint64_t>& Pages) {
++static void CidreInvaliderPages(const fextl::vector<uint64_t>& Pages, uint32_t Sous = 0, uint64_t* JetesParPage = nullptr) {
+   if (Pages.empty() || !InvalidationTracker) {
+     return;
++  }
++  namespace D = FEXCore::CidreDiagInval;
++  uint64_t T0 = 0;
++  if (D::Actif()) {
++    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(T0));
+   }
+   std::scoped_lock Lock(ThreadCreationMutex);
++  if (T0) {
++    uint64_t T1;
++    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(T1));
++    D::Agregs[8 + (Sous < D::NB_SOUS ? Sous : 0)].AttenteFils.fetch_add(T1 - T0, std::memory_order_relaxed);
++  }
++  // Cidre (jumelles v3, CIDRE_JUMELLES_GROUPE=0 : une prise du verrou par page comme avant) : une seule prise du
++  // verrou unique pour toutes les pages ; le diag par page (JetesParPage) garde l'ancien chemin.
++  static const bool Groupe = [] {
++    const char* E = getenv("CIDRE_JUMELLES_GROUPE");
++    return !(E && *E == '0');
++  }();
++  if (Groupe && !JetesParPage) {
++    InvalidationTracker->InvalidatePages(Pages.data(), Pages.size(), FEXCore::CidreCompteurs::SRC_JUMELLES | (Sous << D::SOUS_DECALAGE));
++    return;
++  }
++  size_t I = 0;
+   for (const uint64_t Page : Pages) {
+-    InvalidationTracker->InvalidateAlignedInterval(Page, 0x1000, false, FEXCore::CidreCompteurs::SRC_JUMELLES);
++    const uint64_t Avant = FEXCore::CidreCompteurs::Partages.BlocsJetes.load(std::memory_order_relaxed);
++    InvalidationTracker->InvalidateAlignedInterval(Page, 0x1000, false, FEXCore::CidreCompteurs::SRC_JUMELLES | (Sous << D::SOUS_DECALAGE));
++    if (JetesParPage && I < 4) {
++      JetesParPage[I] = FEXCore::CidreCompteurs::Partages.BlocsJetes.load(std::memory_order_relaxed) - Avant;
++    }
++    I++;
+   }
+ }
+ 
++// Cidre, diag (CIDRE_DIAG_INVAL) : empreinte du bloc de 16 Kio ecrit (vue executable, avant l'ecriture), comparee a celle
++// de la CodeEcrit precedente du meme bloc : egale = les ecritures d'entre-temps n'ont rien change.
++static void CidreDiagCodeEcrit(const EXCEPTION_RECORD* Exception, const uint64_t* JetesParPage, size_t NbPages, uint64_t Empreinte, bool Lisible) {
++  namespace D = FEXCore::CidreDiagInval;
++  const uint64_t Ecrit = Exception->ExceptionInformation[1];
++  const uint64_t Rx = Exception->NumberParameters > 2 ? Exception->ExceptionInformation[2] : 0;
++  D::CeNb.fetch_add(1, std::memory_order_relaxed);
++  if (!Rx) {
++    return;
++  }
++  const size_t PageEcrite = (Ecrit & 0x3fff) >> 12;
++  for (size_t I = 0; I < NbPages && I < 4; I++) {
++    if (!JetesParPage[I]) {
++      continue;
++    }
++    if (I == PageEcrite) {
++      D::CePagesEcriteAvecBlocs.fetch_add(1, std::memory_order_relaxed);
++      D::CeJetesEcrite.fetch_add(JetesParPage[I], std::memory_order_relaxed);
++    } else {
++      D::CePagesAutresAvecBlocs.fetch_add(1, std::memory_order_relaxed);
++      D::CeJetesAutres.fetch_add(JetesParPage[I], std::memory_order_relaxed);
++    }
++  }
++  if (!Lisible) {
++    D::CeIllisibles.fetch_add(1, std::memory_order_relaxed);
++    return;
++  }
++  static std::mutex Verrou;
++  static fextl::unordered_map<uint64_t, uint64_t> Empreintes;
++  std::scoped_lock Lock(Verrou);
++  if (Empreintes.size() > 100000) {
++    Empreintes.clear();
++  }
++  auto [It, Neuf] = Empreintes.try_emplace(Rx, Empreinte);
++  if (Neuf) {
++    D::CeNeufs.fetch_add(1, std::memory_order_relaxed);
++  } else if (It->second == Empreinte) {
++    D::CeIdentiques.fetch_add(1, std::memory_order_relaxed);
++  } else {
++    D::CeChanges.fetch_add(1, std::memory_order_relaxed);
++    It->second = Empreinte;
++  }
++  static std::atomic<uint64_t> NbTrace;
++  if (NbTrace.fetch_add(1, std::memory_order_relaxed) < 400) {
++    LogMan::Msg::IFmt("cidre ce : ecrit {:#x} (page {} du bloc) rx {:#x} jetes {}/{}/{}/{} empreinte {:#x} {}", Ecrit, PageEcrite, Rx,
++                      JetesParPage[0], JetesParPage[1], JetesParPage[2], JetesParPage[3], Empreinte, Neuf ? "neuf" : "vu");
++  }
++}
++
++static bool CidreEmpreinteBloc(uint64_t Rx, uint64_t& H) {
++  MEMORY_BASIC_INFORMATION Info;
++  if (!Rx || NtQueryVirtualMemory(NtCurrentProcess(), reinterpret_cast<void*>(Rx), MemoryBasicInformation, &Info, sizeof(Info), nullptr) ||
++      Info.State != MEM_COMMIT || (Info.Protect & (PAGE_NOACCESS | PAGE_GUARD)) ||
++      !(Info.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_WRITECOPY)) ||
++      reinterpret_cast<uint64_t>(Info.BaseAddress) + Info.RegionSize < Rx + 0x4000) {
++    return false;
++  }
++  const volatile uint64_t* P = reinterpret_cast<const volatile uint64_t*>(Rx);
++  uint64_t V = 0xcbf29ce484222325ULL;
++  for (size_t I = 0; I < 0x4000 / 8; I++) {
++    V = (V ^ P[I]) * 0x100000001b3ULL;
++  }
++  H = V;
++  return true;
++}
++
+ // Compteur des sections de Wine relu au retour des appels systeme notifies (projection, protection, liberation,
+ // lecture de fichier) : une jumelle ecrite par le noyau ou plus suivie ne leve pas d'exception.
+ static void CidreVerifierSections() {
+   if (CidreSmcArme) {
+-    CidreInvaliderPages(FEX::Windows::SousPages::VerifierSections());
++    CidreInvaliderPages(FEX::Windows::SousPages::VerifierSections(), FEXCore::CidreDiagInval::SO_VERIFIER);
+     // 0360 : au plus toutes les 50 ms, reprise des pages compilees avec validation faute d'armement
+     static std::atomic<uint64_t> Dernier {};
+     uint64_t T, F;
+@@ -1340,7 +1433,7 @@
+     __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(F));
+     uint64_t D = Dernier.load(std::memory_order_relaxed);
+     if (T - D >= F / 20 && Dernier.compare_exchange_strong(D, T, std::memory_order_relaxed)) {
+-      CidreInvaliderPages(FEX::Windows::SousPages::Rearmer());
++      CidreInvaliderPages(FEX::Windows::SousPages::Rearmer(), FEXCore::CidreDiagInval::SO_REARMER);
+     }
+   }
+ }
+@@ -1370,7 +1463,16 @@
+     }
+     {
+       ScopedCallbackDisable guard;
+-      CidreInvaliderPages(FEX::Windows::SousPages::CodeEcrit(Exception));
++      if (FEXCore::CidreDiagInval::Actif()) {
++        const uint64_t Rx = Exception->NumberParameters > 2 ? Exception->ExceptionInformation[2] : 0;
++        uint64_t H = 0, J[4] = {};
++        const bool Lisible = CidreEmpreinteBloc(Rx, H);
++        const auto Pages = FEX::Windows::SousPages::CodeEcrit(Exception);
++        CidreInvaliderPages(Pages, FEXCore::CidreDiagInval::SO_CODEECRIT, J);
++        CidreDiagCodeEcrit(Exception, J, Pages.size(), H, Lisible);
++      } else {
++        CidreInvaliderPages(FEX::Windows::SousPages::CodeEcrit(Exception), FEXCore::CidreDiagInval::SO_CODEECRIT);
++      }
+     }
+     if (Trace) {
+       LogMan::Msg::IFmt("cidre : CodeEcrit {} sortie", N);
+@@ -1580,7 +1682,7 @@
+     return E && E[0] == '1';
+   }();
+   if (CidreSmcArme && CidreMapTout && (Prot & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) {
+-    CidreInvaliderPages(FEX::Windows::SousPages::ToutDesarmer());
++    CidreInvaliderPages(FEX::Windows::SousPages::ToutDesarmer(), FEXCore::CidreDiagInval::SO_TOUT);
+   }
+   CidreVerifierSections();
+ 
+@@ -1655,6 +1757,18 @@
+   if (CidreTrace) {
+     LogMan::Msg::IFmt("cidre : NotifyMemoryDirty {} desarme, ThreadCreationMutex...", CidreN);
+   }
++  // Cidre (jumelles v3, CIDRE_DIRTY_SANS_X=1 pour l'activer) : plage sans aucun intervalle executable (vue RW jumelle,
++  // tas) : aucune traduction ne peut en venir (le decodeur ne lit que des plages de XIntervals ; Desarmer ci-dessus a
++  // deja retire les pages armees, qui sont executables). On n'attend plus les compilations en cours pour rien ; le code
++  // de la vue executable jumelle tombe par CidreVerifierSections. D4 : ~40 000 invalidations en 240 s, 0 bloc jete.
++  static const bool SansX = [] {
++    const char* E = getenv("CIDRE_DIRTY_SANS_X"); // v3d : EXPERIMENTAL, coupe par defaut (D4 : compilation +30 %, saccades +35 %)
++    return E && *E == '1';
++  }();
++  if (SansX && !InvalidationTracker->ContientExecutable(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size))) {
++    CidreVerifierSections();
++    return;
++  }
+   std::scoped_lock Lock(ThreadCreationMutex);
+   if (CidreTrace) {
+     LogMan::Msg::IFmt("cidre : NotifyMemoryDirty {} ThreadCreationMutex pris, CodeInvalidationMutex...", CidreN);
+@@ -1717,7 +1831,14 @@
+     return;
+   }
+ 
+-  if (After && Status == STATUS_SUCCESS) {
++  // Cidre (jumelles v3, CIDRE_DIRTY_SANS_X=1 pour l'activer) : lecture terminee dans une plage sans intervalle executable
++  // (tampon de donnees) : aucune traduction possible, rien a invalider ; on n'attend plus les compilations en cours.
++  static const bool CidreSansX = [] {
++    const char* E = getenv("CIDRE_DIRTY_SANS_X"); // v3d : EXPERIMENTAL, coupe par defaut (D4 : compilation +30 %, saccades +35 %)
++    return E && *E == '1';
++  }();
++  if (After && Status == STATUS_SUCCESS &&
++      !(CidreSansX && !InvalidationTracker->ContientExecutable(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size)))) {
+     std::scoped_lock Lock(ThreadCreationMutex);
+     InvalidationTracker->InvalidateAlignedInterval(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), false, FEXCore::CidreCompteurs::SRC_DIRTY);
+   }
+diff --git a/Source/Windows/ARM64EC/SousPages.cpp b/Source/Windows/ARM64EC/SousPages.cpp
+--- a/Source/Windows/ARM64EC/SousPages.cpp
++++ b/Source/Windows/ARM64EC/SousPages.cpp
+@@ -7,6 +7,7 @@
+ #include <FEXCore/fextl/fmt.h>
+ #include <fmt/ranges.h>
+ 
++#include <algorithm>
+ #include <atomic>
+ #include <cstddef>
+ #include <mutex>
+@@ -382,10 +383,23 @@
+   }
+ 
+   // Millisecondes (ntdll seul : xtajit64 est charge avant kernel32, dont GetTickCount64 ne serait pas resolu).
++  // Cidre (jumelles v3e) : compteur virtuel CNTVCT au lieu de NtQuerySystemTime, un appel systeme (une sortie vers
++  // l'hote dans l'ilot) fait sous ArmeesVerrou a chaque armement refuse (NoterARearmer) ou recul ; seules des differences
++  // sont comparees, la base est sans importance. CIDRE_MS_SYSTEME=1 : NtQuerySystemTime comme avant.
+   uint64_t Millisecondes() {
+-    LARGE_INTEGER T;
+-    NtQuerySystemTime(&T);
+-    return static_cast<uint64_t>(T.QuadPart) / 10000;
++    static const bool Systeme = [] {
++      const char* E = getenv("CIDRE_MS_SYSTEME");
++      return E && *E == '1';
++    }();
++    if (Systeme) {
++      LARGE_INTEGER T;
++      NtQuerySystemTime(&T);
++      return static_cast<uint64_t>(T.QuadPart) / 10000;
++    }
++    uint64_t V, F;
++    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(V));
++    __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(F));
++    return F ? V / (F / 1000) : 0;
+   }
+ 
+   // --- R2 : sites connus par RIP invite --------------------------------------
+@@ -1207,7 +1221,7 @@
+   // 0360 : pages dont le code a ete compile AVEC validation parce que l'armement a echoue (refus de Wine, refus recent en
+   // cache, compteur des sections, course) : premier refus et nombre de reprises. Rearmees plus tard (Rearmer), puis
+   // invalidees une fois pour que la recompilation se fasse sans validation. Sous ArmeesVerrou.
+-  struct AReprendre { uint64_t Depuis; uint32_t Reprises; };
++  struct AReprendre { uint64_t Depuis; uint32_t Reprises; uint64_t Delai = 0; };
+   fextl::unordered_map<uint64_t, AReprendre> ARearmer;
+   constexpr uint32_t RearmerMaxReprises = 6;
+   std::atomic<uint64_t> NbRearmees, NbRearmerEchecs, NbRearmerAbandons;
+@@ -1218,13 +1232,75 @@
+       RearmerActif = !(E && *E == '0');
+     }
+     return RearmerActif;
++  }
++  // Cidre (jumelles v3, recul du rearmement, EXPERIMENTAL : CIDRE_REARMER_RECUL=1 ; coupe par defaut) : une page rearmee par 0360
++  // puis de nouveau ecrite (CodeEcrit) moins de FenetreRecul ms apres fait un aller-retour inutile (invalidation au
++  // rearmement, recompilation sans validation, invalidation a l'ecriture suivante, recompilation avec validation). Son
++  // prochain rearmement attend 500 ms << Niveau (Niveau +1 par aller-retour, 6 au plus : 32 s) ; un rearmement qui tient
++  // au-dela de la fenetre remet le niveau a 0. Sous ArmeesVerrou.
++  struct Cycle { uint64_t Rearme; uint32_t Niveau; uint64_t Prochain = 0; };
++  fextl::unordered_map<uint64_t, Cycle> Cycles;
++  constexpr uint64_t FenetreRecul = 3000;
++  constexpr uint32_t NiveauMax = 6;
++  std::atomic<uint64_t> NbAllersRetours, NbReculs;
++  int8_t ReculActif = -1;
++  bool Recul() {
++    if (ReculActif < 0) {
++      const char* E = getenv("CIDRE_REARMER_RECUL"); // v3c : coupe par defaut (D4 : aucun gain, compilation +45 %)
++      ReculActif = E && *E == '1';
++    }
++    return ReculActif;
++  }
++  uint64_t DelaiRearmement(uint64_t Page) { // ArmeesVerrou tenu
++    if (!Recul()) {
++      return 500;
++    }
++    const auto It = Cycles.find(Page);
++    return It == Cycles.end() ? 500 : (uint64_t {500} << It->second.Niveau);
++  }
++  // v3b : armement refuse tant que le recul de la page court (le code y est compile avec validation, comme apres un refus
++  // de Wine) ; toute compilation de la page passait sinon par l'armement direct, sans passer par Rearmer.
++  bool EnRecul(uint64_t Page, uint64_t Maintenant) { // ArmeesVerrou tenu
++    if (!Recul()) {
++      return false;
++    }
++    const auto It = Cycles.find(Page);
++    return It != Cycles.end() && Maintenant < It->second.Prochain;
++  }
++  void NoterArmement(uint64_t Page, uint64_t Maintenant) { // ArmeesVerrou tenu
++    if (!Recul()) {
++      return;
++    }
++    if (Cycles.size() > 65536) {
++      Cycles.clear();
++    }
++    Cycles[Page].Rearme = Maintenant;
+   }
+   void NoterARearmer(uint64_t Page) {   // ArmeesVerrou tenu
+     if (!Rearmer0360() || ARearmer.size() > 65536) {
+       return;
+     }
+-    ARearmer.try_emplace(Page, AReprendre {FEX::Windows::SousPages::Millisecondes(), 0});
++    ARearmer.try_emplace(Page, AReprendre {FEX::Windows::SousPages::Millisecondes(), 0, DelaiRearmement(Page)});
+   }
++  void NoterEcriture(uint64_t Page, uint64_t Maintenant) { // ArmeesVerrou tenu ; page desarmee par une CodeEcrit
++    if (!Recul()) {
++      return;
++    }
++    const auto It = Cycles.find(Page);
++    if (It == Cycles.end()) {
++      return;
++    }
++    if (Maintenant - It->second.Rearme < FenetreRecul) {
++      if (It->second.Niveau < NiveauMax) {
++        It->second.Niveau++;
++      }
++      It->second.Prochain = Maintenant + (uint64_t {500} << It->second.Niveau);
++      NbAllersRetours.fetch_add(1, std::memory_order_relaxed);
++    } else {
++      It->second.Niveau = 0;
++      It->second.Prochain = 0;
++    }
++  }
+ } // namespace
+ 
+ bool FEX::Windows::SousPages::CodeArme(uint64_t Adresse, uint64_t Taille) {
+@@ -1246,6 +1322,11 @@
+         Compter(NbDejaArmees, "SMC arme : page deja armee");
+         continue;
+       }
++      if (Recul() && EnRecul(Page, Millisecondes())) {
++        NbReculs.fetch_add(1, std::memory_order_relaxed);
++        NoterARearmer(Page);
++        return false; // page reecrite peu apres son dernier armement : validation jusqu'a la fin du recul
++      }
+       if (const auto It = Refusees.find(Page); It != Refusees.end() && Millisecondes() - It->second < RefusMs) {
+         NoterARearmer(Page);
+         return false; // refus recent : garder la validation sans redemander
+@@ -1286,6 +1367,9 @@
+     }
+     Armees.insert(Page);
+     Refusees.erase(Page);
++    if (Recul()) {
++      NoterArmement(Page, Millisecondes());
++    }
+     Compter(NbArmees, "SMC arme : page armee");
+   }
+   return true;
+@@ -1319,6 +1403,19 @@
+   constexpr uint64_t DelaiMs = 500;
+   constexpr size_t Max = 32;
+   {
++    static const bool DiagInval = [] {
++      const char* E = getenv("CIDRE_DIAG_INVAL");
++      return E && *E == '1';
++    }();
++    static std::atomic<uint64_t> DernierDiag {0};
++    const uint64_t M = Millisecondes();
++    uint64_t D = DernierDiag.load(std::memory_order_relaxed);
++    if (DiagInval && M - D >= 5000 && DernierDiag.compare_exchange_strong(D, M, std::memory_order_relaxed)) {
++      LogMan::Msg::IFmt("cidre recul : allers-retours {}, armements refuses par recul {}, rearmees {}, echecs {}, abandons {}",
++                        NbAllersRetours.load(), NbReculs.load(), NbRearmees.load(), NbRearmerEchecs.load(), NbRearmerAbandons.load());
++    }
++  }
++  {
+     std::scoped_lock Lock(ArmeesVerrou);
+     if (ARearmer.empty()) {
+       return Faites;
+@@ -1330,8 +1427,10 @@
+         It = ARearmer.erase(It);
+         continue;
+       }
+-      if (Maintenant - It->second.Depuis >= DelaiMs) {
++      if (Maintenant - It->second.Depuis >= std::max(DelaiMs, It->second.Delai)) {
+         Armer.push_back(It->first);
++      } else if (It->second.Delai > DelaiMs && Maintenant - It->second.Depuis >= DelaiMs) {
++        NbReculs.fetch_add(1, std::memory_order_relaxed);
+       }
+       ++It;
+     }
+@@ -1346,6 +1445,13 @@
+     if (Deja || CodeArme(Page, 1)) {
+       std::scoped_lock Lock(ArmeesVerrou);
+       ARearmer.erase(Page);
++      if (Recul()) {
++        if (Cycles.size() > 65536) {
++          Cycles.clear();
++        }
++        auto& C = Cycles[Page];
++        C.Rearme = Millisecondes();
++      }
+       Faites.push_back(Page);
+       Compter(NbRearmees, "SMC arme (0360) : page reprise et rearmee");
+     } else {
+@@ -1398,9 +1504,11 @@
+   if (Rx) {
+     // [3] : taille du bloc desarme (une page d'hote, 0x4000), sinon une page.
+     const uint64_t Taille = Rec->NumberParameters > 3 && Rec->ExceptionInformation[3] ? Rec->ExceptionInformation[3] : 0x1000;
++    const uint64_t Maintenant = Millisecondes();
+     for (uint64_t Page = Rx & ~uint64_t {0xfff}; Page < Rx + Taille; Page += 0x1000) {
+       Pages.push_back(Page);
+       Armees.erase(Page);
++      NoterEcriture(Page, Maintenant);
+     }
+   } else {
+     Pages.assign(Armees.begin(), Armees.end());
+diff --git a/Source/Windows/Common/InvalidationTracker.cpp b/Source/Windows/Common/InvalidationTracker.cpp
+--- a/Source/Windows/Common/InvalidationTracker.cpp
++++ b/Source/Windows/Common/InvalidationTracker.cpp
+@@ -6,10 +6,12 @@
+ #include <FEXCore/Core/Context.h>
+ #include <FEXCore/Config/Config.h>
+ #include <FEXCore/Utils/CidreCompteurs.h>
++#include <FEXCore/Utils/CidreDiagInval.h>
+ #include <FEXCore/Debug/InternalThreadState.h>
+ #include "Guest32.h"
+ #include "InvalidationTracker.h"
+ #include <limits>
++#include <algorithm>
+ #include <atomic>
+ #include <cstdlib>
+ #include <mutex>
+@@ -555,8 +557,45 @@
+   return PAGE_EXECUTE_READWRITE;
+ }
+ 
+-void InvalidationTracker::InvalidateIntervalInternal(uint64_t Address, uint64_t Size, uint32_t CidreSource) {
++void InvalidationTracker::InvalidatePages(const uint64_t* Pages, size_t N, uint32_t CidreSource) {
++  if (!N) {
++    return;
++  }
++  fextl::vector<uint64_t> Triees(Pages, Pages + N);
++  std::sort(Triees.begin(), Triees.end());
++  fextl::vector<std::pair<uint64_t, uint64_t>> Plages;
++  for (uint64_t P : Triees) {
++    P &= FEXCore::Utils::FEX_PAGE_MASK;
++    if (!Plages.empty() && Plages.back().first + Plages.back().second >= P) {
++      Plages.back().second = std::max(Plages.back().second, P + FEXCore::Utils::FEX_PAGE_SIZE - Plages.back().first);
++    } else {
++      Plages.emplace_back(P, FEXCore::Utils::FEX_PAGE_SIZE);
++    }
++  }
++  InvalidateRangesInternal(Plages.data(), Plages.size(), CidreSource);
++}
++
++void InvalidationTracker::InvalidateIntervalInternal(uint64_t Address, uint64_t Size, uint32_t CidreSourceSous) {
++  const std::pair<uint64_t, uint64_t> Plage {Address, Size};
++  InvalidateRangesInternal(&Plage, 1, CidreSourceSous);
++}
++
++void InvalidationTracker::InvalidateRangesInternal(const std::pair<uint64_t, uint64_t>* Plages, size_t NbPlages, uint32_t CidreSourceSous) {
++  namespace D = FEXCore::CidreDiagInval;
++  const uint64_t Address = Plages[0].first;
++  uint64_t Size = 0;
++  for (size_t I = 0; I < NbPlages; I++) {
++    Size += Plages[I].second;
++  }
++  const uint32_t CidreSource = CidreSourceSous & 0xff, CidreSous = CidreSourceSous >> D::SOUS_DECALAGE;
+   const uint64_t CidreT0 = FEXCore::CidreMesure::Tick();
++  uint32_t DiagNb = 0;
++  uint64_t DiagVieux = 0, DiagRip = 0, DiagJetes = 0, DiagT1 = 0, DiagT2 = 0;
++  const bool Diag = D::Actif();
++  if (Diag) {
++    D::Instantane(CidreT0, DiagNb, DiagVieux, DiagRip);
++  }
++  {
+   std::scoped_lock CodeLock(CTX.GetCodeInvalidationMutex());
+   const uint64_t CidreT1 = FEXCore::CidreMesure::Tick();
+   struct CidreFin {
+@@ -569,14 +608,71 @@
+       FEXCore::CidreCompteurs::NoterInval(Source, Taille, FEXCore::CidreMesure::Tick() - T0);
+     }
+   } CidreFinInval {CidreT0, CidreT1, Size, CidreSource};
+-  FEXCore::CidreMesure::NoterInvalidation(Address, Size);
++  for (size_t I = 0; I < NbPlages; I++) {
++    FEXCore::CidreMesure::NoterInvalidation(Plages[I].first, Plages[I].second);
++  }
+   if (CidreTraceInvalidation) {
+     LogMan::Msg::IFmt("cidre : invalidation {:#x} + {:#x} : CodeInvalidationMutex pris", Address, Size);
+   }
+-  InvalidateIntervalInternalLocked(Address, Size);
++  const uint64_t JetesAvant = FEXCore::CidreCompteurs::Partages.BlocsJetes.load(std::memory_order_relaxed);
++  for (size_t I = 0; I < NbPlages; I++) {
++    InvalidateIntervalInternalLocked(Plages[I].first, Plages[I].second);
++  }
++  DiagJetes = FEXCore::CidreCompteurs::Partages.BlocsJetes.load(std::memory_order_relaxed) - JetesAvant;
+   if (CidreTraceInvalidation) {
+     LogMan::Msg::IFmt("cidre : invalidation {:#x} : caches des fils vides", Address);
+   }
++  DiagT1 = CidreT1;
++  DiagT2 = FEXCore::CidreMesure::Tick();
++  }
++  if (!Diag) {
++    return;
++  }
++  uint64_t F;
++  __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(F));
++  const uint64_t Attente = DiagT1 - CidreT0, Tenue = DiagT2 - DiagT1;
++  const bool Lente = (DiagT2 - CidreT0) * 1000 >= D::SeuilMs() * F;
++  auto Noter = [&](D::Agreg& A) {
++    A.Nb.fetch_add(1, std::memory_order_relaxed);
++    A.Octets.fetch_add(Size, std::memory_order_relaxed);
++    A.Attente.fetch_add(Attente, std::memory_order_relaxed);
++    A.Tenue.fetch_add(Tenue, std::memory_order_relaxed);
++    A.Jetes.fetch_add(DiagJetes, std::memory_order_relaxed);
++    if (Lente) {
++      A.Lentes.fetch_add(1, std::memory_order_relaxed);
++    }
++  };
++  Noter(D::Agregs[CidreSource < 8 ? CidreSource : 0]);
++  if (CidreSource == FEXCore::CidreCompteurs::SRC_JUMELLES && CidreSous < D::NB_SOUS) {
++    Noter(D::Agregs[8 + CidreSous]);
++  }
++  auto Ms = [F](uint64_t T) { return F ? T * 1000.0 / F : 0.0; };
++  if (Lente && D::NbLignesLentes.fetch_add(1, std::memory_order_relaxed) < 4000) {
++    LogMan::Msg::IFmt("cidre inval lente : src {} sous {} adr {:#x} taille {:#x} attente {:.2f} ms tenue {:.2f} ms jetes {} ; "
++                      "compil en cours a la demande {} (plus ancienne {:.2f} ms, RIP {:#x})",
++                      CidreSource, CidreSous, Address, Size, Ms(Attente), Ms(Tenue), DiagJetes, DiagNb, Ms(DiagVieux), DiagRip);
++  }
++  uint64_t Der = D::DernierImprime.load(std::memory_order_relaxed);
++  if (DiagT2 - Der >= F && D::DernierImprime.compare_exchange_strong(Der, DiagT2, std::memory_order_relaxed)) {
++    static const char* Noms[D::NB_AGREG] = {"protect", "free", "unmap", "flush", "dirty", "jumelles", "smc", "jit",
++                                             "j.aucune", "j.codeecrit", "j.verifier", "j.rearmer", "j.tout"};
++    fextl::string L = "cidre inval s :";
++    for (uint32_t I = 0; I < D::NB_AGREG; I++) {
++      auto& A = D::Agregs[I];
++      const uint64_t N = A.Nb.exchange(0, std::memory_order_relaxed);
++      const uint64_t O = A.Octets.exchange(0, std::memory_order_relaxed), At = A.Attente.exchange(0, std::memory_order_relaxed),
++                     Te = A.Tenue.exchange(0, std::memory_order_relaxed), Je = A.Jetes.exchange(0, std::memory_order_relaxed),
++                     Le = A.Lentes.exchange(0, std::memory_order_relaxed), Af = A.AttenteFils.exchange(0, std::memory_order_relaxed);
++      if (N || Af) {
++        L += fextl::fmt::format(" {} n{} ko{} att{:.1f} ten{:.1f} jet{} lent{} fils{:.1f} ;", Noms[I], N, O / 1024, Ms(At), Ms(Te), Je, Le, Ms(Af));
++      }
++    }
++    L += fextl::fmt::format(" ce n{} pages_ecrite_blocs {} pages_autres_blocs {} jetes_ecrite {} jetes_autres {} identiques {} changes {} neufs {} illisibles {}",
++                            D::CeNb.exchange(0), D::CePagesEcriteAvecBlocs.exchange(0), D::CePagesAutresAvecBlocs.exchange(0),
++                            D::CeJetesEcrite.exchange(0), D::CeJetesAutres.exchange(0), D::CeIdentiques.exchange(0), D::CeChanges.exchange(0),
++                            D::CeNeufs.exchange(0), D::CeIllisibles.exchange(0));
++    LogMan::Msg::IFmt("{}", L);
++  }
+ }
+ 
+ void InvalidationTracker::InvalidateIntervalInternalLocked(uint64_t Address, uint64_t Size) {
+diff --git a/Source/Windows/Common/InvalidationTracker.h b/Source/Windows/Common/InvalidationTracker.h
+--- a/Source/Windows/Common/InvalidationTracker.h
++++ b/Source/Windows/Common/InvalidationTracker.h
+@@ -53,10 +53,15 @@
+ 
+   FEXCore::HLE::ExecutableRangeInfo QueryExecutableRange(uint64_t Address);
+ 
++  // Cidre (jumelles v3) : invalide des pages de 4 Kio (plages contigues fusionnees) sous UNE seule prise du verrou
++  // unique : une CodeEcrit (4 pages) ou un rearmement groupe n'attendent plus les compilations en cours une fois par page.
++  void InvalidatePages(const uint64_t* Pages, size_t N, uint32_t CidreSource);
++
+ private:
+   void DetectMonoBackpatcherBlock(FEXCore::Core::InternalThreadState* Thread, uint64_t HostPC);
+   void DisableSMCDetection();
+   void InvalidateIntervalInternal(uint64_t Address, uint64_t Size, uint32_t CidreSource = 0);
++  void InvalidateRangesInternal(const std::pair<uint64_t, uint64_t>* Plages, size_t N, uint32_t CidreSource);
+   // NOTE: This assumed CodeInvalidationMutex is locked by the caller
+   void InvalidateIntervalInternalLocked(uint64_t Address, uint64_t Size);
+ 

@@ -1,0 +1,668 @@
+Generated-by: LLM
+
+KosmicKrisp : variantes de rendu notees et construites en fond (CIDRE_VARIANTES)
+
+Les variantes de rendu (etat Metal d'une paire VS+FS : formats, melange, masques, topologie) construites au
+dessin n'etaient jamais gardees d'une partie a l'autre. Chacune est notee dans
+<MESA_KK_PIPELINE_CACHE>/variantes-kk.bin (CIDRE_VARIANTES=<fichier>|0) et reconstruite des la creation du
+pipeline par une file kkvar (CIDRE_VARIANTES_FILS=3, cede aux binds ; CIDRE_VARIANTES_FOND=0 = noter
+seulement) ; cle normalisee, attente d'une variante deja en construction ; le rejeu (0444) construit aussi les
+variantes notees. Banc (0473, 200 paires x 4 variantes) : Metal chaud 0,30-0,37 s au dessin -> 0,001 s ; Metal
+froid 15,1 -> 1,8 s. Gain a partir de la deuxieme partie. Chantier : ~/Dev/cidre-d4-variantes.
+
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.h b/src/kosmickrisp/bridge/mtl_compiler.h
+--- a/src/kosmickrisp/bridge/mtl_compiler.h
++++ b/src/kosmickrisp/bridge/mtl_compiler.h
+@@ -119,4 +119,7 @@
+ extern _Atomic uint64_t kk_stat_etape_ns[8];
+ /* Cidre (0464) : binds qui ont attendu (categories, prises sur le fil). */
+ extern _Atomic uint32_t kk_stat_bind[16];
++/* Cidre (0471) : variantes notees (voir kk_print_compile_stats). */
++extern _Atomic uint32_t kk_stat_var[16];
++extern _Atomic uint64_t kk_stat_var_us[4];
+ extern _Atomic uint64_t kk_stat_bind_us[8];
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.m b/src/kosmickrisp/bridge/mtl_compiler.m
+--- a/src/kosmickrisp/bridge/mtl_compiler.m
++++ b/src/kosmickrisp/bridge/mtl_compiler.m
+@@ -1035,6 +1035,8 @@
+ _Atomic uint64_t kk_stat_fond_us[4];
+ _Atomic uint32_t kk_stat_fond2[16];
+ _Atomic uint32_t kk_stat_bind[16];
++_Atomic uint32_t kk_stat_var[16];
++_Atomic uint64_t kk_stat_var_us[4];
+ _Atomic uint64_t kk_stat_bind_us[8];
+ _Atomic uint64_t kk_stat_etape_ns[8];
+ extern uint64_t vk_cidre_stat_precomp[3];
+@@ -1153,6 +1155,21 @@
+               atomic_load(&kk_stat_bind[9]), atomic_load(&kk_stat_bind[10]), atomic_load(&kk_stat_bind[11]),
+               atomic_load(&kk_stat_bind[12]), atomic_load(&kk_stat_bind[13]),
+               atomic_load(&kk_stat_bind[14]), atomic_load(&kk_stat_bind_us[7]) / 1000.0);
++   /* Cidre (0471) : [0] variantes chargees, [1] paires, [2] notees cette
++    * session, [3] construites en fond, [4] deja en table, [5] travaux
++    * inaptes ou abandonnes, [6] construites au dessin bien que notees,
++    * [7] bibliotheques prises par ces travaux, [8] travaux mis en file,
++    * [9] variantes attendues en construction sur un autre fil, [10] dont au
++    * dessin ; us : [0] construction en fond. */
++   if (atomic_load(&kk_stat_var[1]) || atomic_load(&kk_stat_var[2]))
++      fprintf(stderr, "KK compile: variantes : %u chargees (%u paires), %u notees ; fond : %u travaux, "
++                      "%u construites / %.1f ms, %u deja la, %u inaptes, %u bibliotheques prises ; "
++                      "au dessin bien que notees %u ; attendues en construction %u (dont au dessin %u)\n",
++              atomic_load(&kk_stat_var[0]), atomic_load(&kk_stat_var[1]), atomic_load(&kk_stat_var[2]),
++              atomic_load(&kk_stat_var[8]), atomic_load(&kk_stat_var[3]),
++              atomic_load(&kk_stat_var_us[0]) / 1000.0, atomic_load(&kk_stat_var[4]),
++              atomic_load(&kk_stat_var[5]), atomic_load(&kk_stat_var[7]), atomic_load(&kk_stat_var[6]),
++              atomic_load(&kk_stat_var[9]), atomic_load(&kk_stat_var[10]));
+    if (atomic_load(&kk_stat_fond2[7]))
+       fprintf(stderr, "KK compile: base : %u pipelines nouveaux notes, %u ecrits\n",
+               atomic_load(&kk_stat_fond2[7]), atomic_load(&kk_stat_fond2[6]));
+diff --git a/src/kosmickrisp/vulkan/kk_device.h b/src/kosmickrisp/vulkan/kk_device.h
+--- a/src/kosmickrisp/vulkan/kk_device.h
++++ b/src/kosmickrisp/vulkan/kk_device.h
+@@ -135,6 +135,8 @@
+ 
+    simple_mtx_t rp_variant_lock;
+    struct hash_table *rp_variant_cache;
++   /* Cidre (0471) : variantes en cours de construction (sous rp_variant_lock). */
++   struct set *rp_en_cours;
+ 
+    simple_mtx_t empty_fs_lock;
+    struct kk_shader *empty_fs;
+@@ -151,6 +153,13 @@
+    bool fond_queue_ok;
+    _Atomic bool fond_arret;
+    _Atomic uint32_t fond_en_file;
++
++   /* Cidre (0471) : variantes de rendu notees, construites des la creation
++    * du pipeline par ces fils (CIDRE_VARIANTES_FILS). */
++   struct util_queue var_queue;
++   bool var_queue_ok;
++   _Atomic bool var_arret;
++   _Atomic uint32_t var_en_file;
+ };
+ 
+ VK_DEFINE_HANDLE_CASTS(kk_device, vk.base, VkDevice, VK_OBJECT_TYPE_DEVICE)
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -2611,6 +2611,15 @@
+    return enabled;
+ }
+ 
++/* Cidre (0471) : variantes de rendu notees (voir plus bas). */
++static void kk_var_noter(struct kk_device *dev, mtl_function_descriptor *vs_function,
++                         struct kk_shader *vs, struct kk_shader *fs,
++                         const struct kk_rp_variant_key *full);
++static void kk_var_init(struct kk_device *dev);
++static void kk_var_finish(struct kk_device *dev);
++static void kk_var_enfiler(struct kk_device *dev, uint32_t count,
++                           struct vk_shader *const *shaders);
++
+ /* Cidre (0441) : variante de rendu construite sur le fil d'encodage. */
+ static void
+ kk_stat_variante_dessin(int64_t ns)
+@@ -2635,11 +2644,23 @@
+    memcpy(full.formats, key->formats, sizeof(full.formats));
+    full.write_disable_mask = key->write_disable_mask;
+    full.topology = key->topology;
+-   memcpy(full.blend, key->blend, sizeof(full.blend));
++   /* Cidre (0471) : champ par champ, pour que les octets de bourrage de
++    * mtl_blend_state restent nuls : la cle est comparee octet par octet (table
++    * des variantes, fichier des variantes notees). */
++   for (uint32_t i = 0u; i < MAX_DRAW_BUFFERS; ++i) {
++      full.blend[i].enable = key->blend[i].enable;
++      full.blend[i].src_rgb = key->blend[i].src_rgb;
++      full.blend[i].dst_rgb = key->blend[i].dst_rgb;
++      full.blend[i].rgb_op = key->blend[i].rgb_op;
++      full.blend[i].src_alpha = key->blend[i].src_alpha;
++      full.blend[i].dst_alpha = key->blend[i].dst_alpha;
++      full.blend[i].alpha_op = key->blend[i].alpha_op;
++   }
+    memcpy(full.blend_write_mask, key->blend_write_mask,
+           sizeof(full.blend_write_mask));
+    full.vs_function = vs_function;
+    full.fs_function = fs->function;
++   const bool au_dessin = kk_variante_au_dessin;
+ 
+    simple_mtx_lock(&device->rp_variant_lock);
+ 
+@@ -2648,6 +2669,36 @@
+    mtl_render_pipeline_state *state = entry ? entry->data : NULL;
+ 
+    if (state == NULL && kk_compile_unlocked()) {
++      /* Cidre (0471) : la meme variante deja en construction sur un autre
++       * fil (file des variantes, prechauffage) : l'attendre plutot que la
++       * construire une seconde fois (attente bornee a 5 s, puis on construit). */
++      bool mienne = false;
++      if (device->rp_en_cours != NULL) {
++         if (_mesa_set_search(device->rp_en_cours, &full) != NULL) {
++            const int64_t t0w = os_time_get_nano();
++            for (unsigned w = 0; w < 25000u; w++) {
++               simple_mtx_unlock(&device->rp_variant_lock);
++               usleep(200);
++               simple_mtx_lock(&device->rp_variant_lock);
++               entry = _mesa_hash_table_search(device->rp_variant_cache, &full);
++               if (entry != NULL ||
++                   _mesa_set_search(device->rp_en_cours, &full) == NULL)
++                  break;
++            }
++            if (entry != NULL) {
++               state = entry->data;
++               simple_mtx_unlock(&device->rp_variant_lock);
++               atomic_fetch_add(&kk_stat_var[9], 1);
++               if (au_dessin) {
++                  kk_stat_variante_dessin(os_time_get_nano() - t0w);
++                  atomic_fetch_add(&kk_stat_var[10], 1);
++               }
++               return state;
++            }
++         }
++         mienne = _mesa_set_search(device->rp_en_cours, &full) == NULL &&
++                  _mesa_set_add(device->rp_en_cours, &full) != NULL;
++      }
+       simple_mtx_unlock(&device->rp_variant_lock);
+       const int64_t t0v = kk_variante_au_dessin ? os_time_get_nano() : 0;
+       mtl_render_pipeline_state *built =
+@@ -2655,6 +2706,8 @@
+       if (kk_variante_au_dessin)
+          kk_stat_variante_dessin(os_time_get_nano() - t0v);
+       simple_mtx_lock(&device->rp_variant_lock);
++      if (mienne)
++         _mesa_set_remove_key(device->rp_en_cours, &full);
+       entry = _mesa_hash_table_search(device->rp_variant_cache, &full);
+       if (entry != NULL) {
+          if (built != NULL)
+@@ -2668,6 +2721,11 @@
+             _mesa_hash_table_insert(device->rp_variant_cache, stored, built);
+          }
+          state = built;
++         if (au_dessin) {
++            simple_mtx_unlock(&device->rp_variant_lock);
++            kk_var_noter(device, vs_function, vs, fs, &full);
++            return state;
++         }
+       }
+    } else if (state == NULL) {
+       const int64_t t0v = kk_variante_au_dessin ? os_time_get_nano() : 0;
+@@ -2681,6 +2739,11 @@
+             *stored = full;
+             _mesa_hash_table_insert(device->rp_variant_cache, stored, state);
+          }
++         if (au_dessin) {
++            simple_mtx_unlock(&device->rp_variant_lock);
++            kk_var_noter(device, vs_function, vs, fs, &full);
++            return state;
++         }
+       }
+    }
+ 
+@@ -3007,6 +3070,13 @@
+    device->empty_fs = NULL;
+    device->rp_variant_cache =
+       _mesa_hash_table_create(NULL, kk_rt_formats_hash, kk_rt_formats_equal);
++   /* Cidre (0471) : variantes en construction (cles sur la pile du fil qui
++    * construit, retirees avant son retour). CIDRE_VARIANTES=0 : sans. */
++   {
++      const char *cv = getenv("CIDRE_VARIANTES");
++      device->rp_en_cours = (cv && cv[0] == '0') ? NULL :
++         _mesa_set_create(NULL, kk_rt_formats_hash, kk_rt_formats_equal);
++   }
+    if (device->rp_variant_cache == NULL) {
+       simple_mtx_destroy(&device->rp_variant_lock);
+       simple_mtx_destroy(&device->empty_fs_lock);
+@@ -3023,6 +3093,7 @@
+          fprintf(stderr, "kk: compilation differee, %u fils\n", threads);
+    }
+    kk_fond_init(device);
++   kk_var_init(device);
+    kk_rejeu(device);
+    return VK_SUCCESS;
+ }
+@@ -3030,6 +3101,7 @@
+ void
+ kk_device_finish_shader_cache(struct kk_device *device)
+ {
++   kk_var_finish(device);
+    kk_fond_finish(device);
+    if (device->compile_queue_ok) {
+       /* Cidre (0433 v2) : vkDestroyDevice attend les travaux en file (ici
+@@ -3065,6 +3137,10 @@
+          mtl_release(entry->data);
+       _mesa_hash_table_destroy(device->rp_variant_cache, NULL);
+       device->rp_variant_cache = NULL;
++      if (device->rp_en_cours != NULL) {
++         _mesa_set_destroy(device->rp_en_cours, NULL);
++         device->rp_en_cours = NULL;
++      }
+       simple_mtx_destroy(&device->rp_variant_lock);
+    }
+    if (device->empty_fs) {
+@@ -4333,6 +4409,8 @@
+    struct kk_device *dev = container_of(vk_dev, struct kk_device, vk);
+    if (kk_base_dossier() != NULL)
+       kk_base_noter(dev, count, shaders);
++   if (dev->var_queue_ok)
++      kk_var_enfiler(dev, count, shaders);
+    if (!dev->fond_queue_ok || atomic_load(&dev->fond_arret))
+       return;
+    const bool tout = kk_fond_tout();
+@@ -4678,8 +4756,396 @@
+    const unsigned seau = us < 1000 ? 9 : us < 5000 ? 10 : us < 20000 ? 11 :
+                          us < 100000 ? 12 : 13;
+    atomic_fetch_add(&kk_stat_bind[seau], 1);
++}
++
++/* Cidre (0471) : variantes de rendu notees et construites hors du fil
++ * d'encodage.
++ *
++ * Une variante de rendu (kk_get_render_pipeline_variant) est un
++ * MTLRenderPipelineState par paire VS+FS et par etat de cibles (formats lies,
++ * melange, masques, topologie). Elle n'existe qu'en memoire : chaque partie
++ * reconstruit au dessin toutes celles qu'elle emploie (Diablo IV, 09/11 :
++ * 869 au dessin / 2,6 s, 264 en 2 s a l'entree dans le monde), et le
++ * prechauffage 0237 ne devine que la cle « formats declares », souvent fausse
++ * (cibles liees en plus, masques) et absente des bibliotheques relues.
++ *
++ * Ici :
++ *  - chaque variante construite au dessin est notee (cles de cache Vulkan du
++ *    VS et du FS, blake3, plus la cle de variante sans les pointeurs) dans un
++ *    fichier par jeu, ajout seul : <MESA_KK_PIPELINE_CACHE>/variantes-kk.bin,
++ *    ou CIDRE_VARIANTES=<fichier> ;
++ *  - a la creation d'un pipeline graphique (crochet cidre_shaders_crees), si
++ *    sa paire a des variantes notees, un travail part dans une file a part
++ *    (kkvar, CIDRE_VARIANTES_FILS=3 fils, QoS utility) : il compile les
++ *    bibliotheques si personne ne l'a fait (meme chemin qu'un bind, sur ce
++ *    fil), puis construit toutes les variantes notees. Il cede aux binds en
++ *    attente comme la file de fond (0464). Le dessin les trouve en table.
++ *
++ * CIDRE_VARIANTES=0 : tout coupe (ni note ni fond). CIDRE_VARIANTES_FOND=0 :
++ * note seulement. Le rejeu (0444) construit aussi les variantes notees de
++ * chaque paire rejouee. Compteurs : ligne « KK compile: variantes ».
++ * Seules les paires a VS non differe (pas de vs_nir, pas d'emulation, pas de
++ * GS) et a vrai FS sont notees : la fonction du VS ne depend que du VS. */
++
++#define KK_BASE_CLE 32u /* (meme definition que la base 0444, plus bas) */
++#define KK_VAR_MAGIC 0x3156524bu /* "KRV1" */
++#define KK_VAR_DEBUT offsetof(struct kk_rp_variant_key, formats)
++#define KK_VAR_OCTETS (sizeof(struct kk_rp_variant_key) - KK_VAR_DEBUT)
++
++struct kk_var_paire {
++   uint8_t cles[2 * KK_BASE_CLE];
++   uint32_t n, cap;
++   struct kk_rp_variant_key *v; /* pointeurs de fonction nuls */
++   const void *dernier_vs;      /* dernier VS mis en file (doublons) */
++};
++
++static simple_mtx_t kk_var_lock = SIMPLE_MTX_INITIALIZER;
++static struct hash_table *kk_var_table;
++static int kk_var_fd = -1;
++
++static uint32_t
++kk_var_hash(const void *k)
++{
++   return _mesa_hash_data(k, 2 * KK_BASE_CLE);
+ }
+ 
++static bool
++kk_var_egal(const void *a, const void *b)
++{
++   return memcmp(a, b, 2 * KK_BASE_CLE) == 0;
++}
++
++/* Vrai si ajoutee (absente jusque-la). */
++static bool
++kk_var_ajouter_locked(const uint8_t *cles, const struct kk_rp_variant_key *k)
++{
++   struct hash_entry *e = _mesa_hash_table_search(kk_var_table, cles);
++   struct kk_var_paire *p = e ? e->data : NULL;
++   if (p == NULL) {
++      p = rzalloc(kk_var_table, struct kk_var_paire);
++      if (p == NULL)
++         return false;
++      memcpy(p->cles, cles, sizeof(p->cles));
++      _mesa_hash_table_insert(kk_var_table, p->cles, p);
++      atomic_fetch_add(&kk_stat_var[1], 1);
++   }
++   for (uint32_t i = 0; i < p->n; i++) {
++      if (memcmp((const char *)&p->v[i] + KK_VAR_DEBUT,
++                 (const char *)k + KK_VAR_DEBUT, KK_VAR_OCTETS) == 0)
++         return false;
++   }
++   if (p->n == p->cap) {
++      uint32_t cap = p->cap ? p->cap * 2 : 4;
++      struct kk_rp_variant_key *v =
++         reralloc(p, p->v, struct kk_rp_variant_key, cap);
++      if (v == NULL)
++         return false;
++      p->v = v;
++      p->cap = cap;
++   }
++   memset(&p->v[p->n], 0, sizeof(p->v[p->n]));
++   memcpy((char *)&p->v[p->n] + KK_VAR_DEBUT, (const char *)k + KK_VAR_DEBUT,
++          KK_VAR_OCTETS);
++   p->n++;
++   return true;
++}
++
++static void
++kk_var_charger(const char *chemin)
++{
++   int fd = open(chemin, O_RDONLY | O_CLOEXEC);
++   if (fd < 0)
++      return;
++   const size_t taille = 8 + 2 * KK_BASE_CLE + KK_VAR_OCTETS;
++   uint8_t buf[8 + 2 * KK_BASE_CLE + KK_VAR_OCTETS];
++   struct kk_rp_variant_key k;
++   unsigned rejetes = 0;
++   for (;;) {
++      ssize_t r = read(fd, buf, 8);
++      if (r != 8)
++         break;
++      uint32_t magic, octets;
++      memcpy(&magic, buf, 4);
++      memcpy(&octets, buf + 4, 4);
++      if (magic != KK_VAR_MAGIC || octets > 4096) {
++         rejetes++;
++         break; /* fichier abime : on garde ce qui precede */
++      }
++      if (octets != 2 * KK_BASE_CLE + KK_VAR_OCTETS) {
++         /* autre version de la cle : sautee */
++         if (lseek(fd, octets, SEEK_CUR) < 0)
++            break;
++         rejetes++;
++         continue;
++      }
++      if (read(fd, buf + 8, octets) != (ssize_t)octets)
++         break;
++      memset(&k, 0, sizeof(k));
++      memcpy((char *)&k + KK_VAR_DEBUT, buf + 8 + 2 * KK_BASE_CLE,
++             KK_VAR_OCTETS);
++      if (kk_var_ajouter_locked(buf + 8, &k))
++         atomic_fetch_add(&kk_stat_var[0], 1);
++   }
++   (void)taille;
++   close(fd);
++   if (rejetes)
++      fprintf(stderr, "kk: variantes notees : %u enregistrements rejetes dans %s\n",
++              rejetes, chemin);
++}
++
++static bool
++kk_var_fond_actif(void)
++{
++   const char *v = getenv("CIDRE_VARIANTES_FOND");
++   return !(v && v[0] == '0');
++}
++
++/* La paire peut-elle etre notee ? (VS non differe, vrai FS) */
++static bool
++kk_var_apte(struct kk_device *dev, mtl_function_descriptor *vs_function,
++            const struct kk_shader *vs, const struct kk_shader *fs)
++{
++   return vs != NULL && fs != NULL && vs_function != NULL &&
++          vs_function == vs->function && vs->vs_nir == NULL &&
++          vs->emu_vs_nir == NULL && !vs->info.has_gs &&
++          vs->vk.stage == MESA_SHADER_VERTEX &&
++          fs->vk.stage == MESA_SHADER_FRAGMENT && fs != vs->fallback_fs &&
++          fs != dev->empty_fs && fs->function != NULL;
++}
++
++static void
++kk_var_noter(struct kk_device *dev, mtl_function_descriptor *vs_function,
++             struct kk_shader *vs, struct kk_shader *fs,
++             const struct kk_rp_variant_key *full)
++{
++   if (kk_var_table == NULL || !kk_var_apte(dev, vs_function, vs, fs))
++      return;
++   uint8_t rec[8 + 2 * KK_BASE_CLE + KK_VAR_OCTETS];
++   const uint32_t magic = KK_VAR_MAGIC, octets = 2 * KK_BASE_CLE + KK_VAR_OCTETS;
++   memcpy(rec, &magic, 4);
++   memcpy(rec + 4, &octets, 4);
++   memcpy(rec + 8, vs->vk.pipeline.cache_key, KK_BASE_CLE);
++   memcpy(rec + 8 + KK_BASE_CLE, fs->vk.pipeline.cache_key, KK_BASE_CLE);
++   memcpy(rec + 8 + 2 * KK_BASE_CLE, (const char *)full + KK_VAR_DEBUT,
++          KK_VAR_OCTETS);
++   simple_mtx_lock(&kk_var_lock);
++   const bool neuve = kk_var_ajouter_locked(rec + 8, full);
++   if (neuve && kk_var_fd >= 0 && write(kk_var_fd, rec, sizeof(rec)) != (ssize_t)sizeof(rec)) {
++      close(kk_var_fd);
++      kk_var_fd = -1;
++   }
++   simple_mtx_unlock(&kk_var_lock);
++   atomic_fetch_add(&kk_stat_var[neuve ? 2 : 6], 1);
++}
++
++/* Copie les variantes notees de la paire (cles VS, FS) ; NULL si aucune.
++ * dernier_vs != NULL : rien si cette paire vient d'etre mise en file pour
++ * ce meme VS. */
++static struct kk_rp_variant_key *
++kk_var_copier(const uint8_t *vs_cle, const uint8_t *fs_cle, uint32_t *n,
++              const void *dernier_vs)
++{
++   *n = 0;
++   if (kk_var_table == NULL)
++      return NULL;
++   uint8_t cles[2 * KK_BASE_CLE];
++   memcpy(cles, vs_cle, KK_BASE_CLE);
++   memcpy(cles + KK_BASE_CLE, fs_cle, KK_BASE_CLE);
++   struct kk_rp_variant_key *v = NULL;
++   simple_mtx_lock(&kk_var_lock);
++   struct hash_entry *e = _mesa_hash_table_search(kk_var_table, cles);
++   struct kk_var_paire *p = e ? e->data : NULL;
++   if (p != NULL && p->n > 0 &&
++       (dernier_vs == NULL || p->dernier_vs != dernier_vs)) {
++      v = malloc(p->n * sizeof(*v));
++      if (v != NULL) {
++         memcpy(v, p->v, p->n * sizeof(*v));
++         *n = p->n;
++         if (dernier_vs != NULL)
++            p->dernier_vs = dernier_vs;
++      }
++   }
++   simple_mtx_unlock(&kk_var_lock);
++   return v;
++}
++
++struct kk_var_job {
++   struct kk_device *dev;
++   struct kk_shader *vs, *fs;
++   uint32_t n;
++   struct kk_rp_variant_key *v;
++};
++
++static void
++kk_var_ceder(struct kk_device *dev)
++{
++   if (!kk_fond_cede())
++      return;
++   while (atomic_load(&kk_binds_en_attente) != 0 && !atomic_load(&dev->var_arret))
++      usleep(500);
++}
++
++static void
++kk_var_execute(void *data, UNUSED void *gdata, UNUSED int thread_index)
++{
++   struct kk_var_job *j = data;
++   struct kk_device *dev = j->dev;
++   struct kk_shader *vs = j->vs, *fs = j->fs;
++   kk_qos_fil(QOS_CLASS_UTILITY);
++   kk_var_ceder(dev);
++   if (atomic_load(&dev->var_arret))
++      goto fin;
++   /* Bibliotheques : prises sur ce fil si personne ne les a lancees, sinon
++    * attendues (bornees : un fil de compilation mort ne fige pas la file). */
++   struct kk_shader *paire[2] = {vs, fs};
++   for (unsigned i = 0; i < 2; i++) {
++      if (kk_travail_en_attente(paire[i]) && kk_shader_prendre(paire[i]))
++         atomic_fetch_add(&kk_stat_var[7], 1);
++   }
++   for (unsigned i = 0; i < 2; i++) {
++      struct kk_shader *s = paire[i];
++      if (!s->compile_async)
++         continue;
++      kk_shader_kick(s);
++      if (!util_queue_fence_wait_timeout(&s->compile_ready,
++                                         os_time_get_absolute_timeout(10ll * 1000000000ll))) {
++         atomic_fetch_add(&kk_stat_var[5], 1);
++         goto fin;
++      }
++   }
++   if (kk_shader_compile_failed(vs) || kk_shader_compile_failed(fs) ||
++       !kk_var_apte(dev, vs->function, vs, fs)) {
++      atomic_fetch_add(&kk_stat_var[5], 1);
++      goto fin;
++   }
++   for (uint32_t k = 0; k < j->n && !atomic_load(&dev->var_arret); k++) {
++      kk_var_ceder(dev);
++      struct kk_rp_variant_key *key = &j->v[k];
++      key->vs_function = vs->function;
++      key->fs_function = fs->function;
++      simple_mtx_lock(&dev->rp_variant_lock);
++      const bool deja = _mesa_hash_table_search(dev->rp_variant_cache, key) != NULL;
++      simple_mtx_unlock(&dev->rp_variant_lock);
++      if (deja) {
++         atomic_fetch_add(&kk_stat_var[4], 1);
++         continue;
++      }
++      const int64_t t0 = os_time_get_nano();
++      if (kk_get_render_pipeline_variant(dev, vs->function, vs, fs, key) != NULL) {
++         atomic_fetch_add(&kk_stat_var[3], 1);
++         atomic_fetch_add(&kk_stat_var_us[0], (uint64_t)(os_time_get_nano() - t0) / 1000u);
++      }
++   }
++fin:
++   vk_pipeline_cache_object_unref(&dev->vk, &vs->vk.pipeline.cache_obj);
++   vk_pipeline_cache_object_unref(&dev->vk, &fs->vk.pipeline.cache_obj);
++   free(j->v);
++   free(j);
++   atomic_fetch_sub(&dev->var_en_file, 1);
++}
++
++/* Crochet de creation : met en file les variantes notees de la paire. */
++static void
++kk_var_enfiler(struct kk_device *dev, uint32_t count,
++               struct vk_shader *const *shaders)
++{
++   if (atomic_load(&dev->var_arret))
++      return;
++   struct kk_shader *vs = NULL, *fs = NULL;
++   for (uint32_t i = 0; i < count; i++) {
++      if (shaders[i]->stage == MESA_SHADER_VERTEX)
++         vs = container_of(shaders[i], struct kk_shader, vk);
++      else if (shaders[i]->stage == MESA_SHADER_FRAGMENT)
++         fs = container_of(shaders[i], struct kk_shader, vk);
++      else if (shaders[i]->stage == MESA_SHADER_GEOMETRY ||
++               shaders[i]->stage == MESA_SHADER_TESS_CTRL ||
++               shaders[i]->stage == MESA_SHADER_TESS_EVAL)
++         return;
++   }
++   if (vs == NULL || fs == NULL)
++      return;
++   uint32_t n;
++   struct kk_rp_variant_key *v =
++      kk_var_copier(vs->vk.pipeline.cache_key, fs->vk.pipeline.cache_key, &n, vs);
++   if (v == NULL)
++      return;
++   struct kk_var_job *j = calloc(1, sizeof(*j));
++   if (j == NULL) {
++      free(v);
++      return;
++   }
++   j->dev = dev;
++   j->vs = vs;
++   j->fs = fs;
++   j->n = n;
++   j->v = v;
++   vk_pipeline_cache_object_ref(&vs->vk.pipeline.cache_obj);
++   vk_pipeline_cache_object_ref(&fs->vk.pipeline.cache_obj);
++   atomic_fetch_add(&dev->var_en_file, 1);
++   atomic_fetch_add(&kk_stat_var[8], 1);
++   util_queue_add_job(&dev->var_queue, j, NULL, kk_var_execute, NULL, 0);
++}
++
++static void
++kk_var_init(struct kk_device *dev)
++{
++   dev->var_queue_ok = false;
++   atomic_store(&dev->var_arret, false);
++   atomic_store(&dev->var_en_file, 0);
++   const char *v = getenv("CIDRE_VARIANTES");
++   if (v != NULL && v[0] == '0')
++      return;
++   simple_mtx_lock(&kk_var_lock);
++   if (kk_var_table == NULL) {
++      char chemin[1024];
++      chemin[0] = '\0';
++      if (v != NULL && v[0] == '/')
++         snprintf(chemin, sizeof(chemin), "%s", v);
++      else if (dev->pipeline_cache_dir != NULL && dev->pipeline_cache_dir[0])
++         snprintf(chemin, sizeof(chemin), "%s/variantes-kk.bin", dev->pipeline_cache_dir);
++      if (chemin[0]) {
++         kk_var_table = _mesa_hash_table_create(NULL, kk_var_hash, kk_var_egal);
++         if (kk_var_table != NULL) {
++            kk_var_charger(chemin);
++            kk_var_fd = open(chemin, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0644);
++            fprintf(stderr, "kk: variantes notees : %u variantes, %u paires (%s)\n",
++                    atomic_load(&kk_stat_var[0]), atomic_load(&kk_stat_var[1]), chemin);
++         }
++      }
++   }
++   const bool table = kk_var_table != NULL;
++   simple_mtx_unlock(&kk_var_lock);
++   /* Le rejeu construit les variantes lui-meme (kk_rejeu_execute). */
++   if (!table || !kk_var_fond_actif() || getenv("CIDRE_REJEU") != NULL)
++      return;
++   const unsigned n = kk_env_u("CIDRE_VARIANTES_FILS", 3);
++   if (n == 0)
++      return;
++   dev->var_queue_ok = util_queue_init(&dev->var_queue, "kkvar", 4096, CLAMP(n, 1, 16),
++                                       UTIL_QUEUE_INIT_RESIZE_IF_FULL, NULL);
++   if (dev->var_queue_ok)
++      dev->vk.cidre_shaders_crees = kk_shaders_crees;
++}
++
++static void
++kk_var_finish(struct kk_device *dev)
++{
++   if (!dev->var_queue_ok)
++      return;
++   atomic_store(&dev->var_arret, true);
++   for (unsigned n = 0; atomic_load(&dev->var_en_file) != 0; n++) {
++      if (n == 60000) {
++         fprintf(stderr, "[CIDRE] vkDestroyDevice : %u travaux de variantes "
++                         "toujours en file apres 60 s\n",
++                 atomic_load(&dev->var_en_file));
++         break;
++      }
++      usleep(1000);
++   }
++   util_queue_destroy(&dev->var_queue);
++   dev->var_queue_ok = false;
++}
++
+ /* Cidre (0444) : base de pipelines par jeu, a la Fossilize, et rejeu hors jeu.
+  *
+  * Enregistrement (CIDRE_BASE_PIPELINES=<dossier>) : chaque pipeline graphique
+@@ -5397,6 +5863,23 @@
+                mtl_release(st);
+             free(key);
+          }
++         /* Cidre (0471) : et les variantes notees en jeu pour cette paire. */
++         uint32_t nv = 0;
++         struct kk_rp_variant_key *v =
++            kk_var_copier(j->vs_cle, j->fs_cle, &nv, NULL);
++         for (uint32_t k = 0; k < nv; k++) {
++            if (!kk_var_apte(dev, vs->function, vs, fs))
++               break;
++            v[k].vs_function = vs->function;
++            v[k].fs_function = fs->function;
++            mtl_render_pipeline_state *st =
++               kk_build_render_pipeline(dev, vs->function, vs, fs, &v[k]);
++            if (st != NULL) {
++               mtl_release(st);
++               atomic_fetch_add(&kk_stat_var[3], 1);
++            }
++         }
++         free(v);
+       }
+       j->ok = true;
+    }

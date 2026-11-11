@@ -1,0 +1,95 @@
+Generated-by: LLM
+
+fex : journal detaille des exceptions coupe par defaut (CIDRE_JOURNAL_EXCEPTIONS=1 le remet)
+
+Le fil de protection de Diablo IV leve des int3 anti-debogage en continu ; chaque exception coutait 32,5 us
+dont deux tiers de journal FEX. Journal coupe par defaut : 10,1 us par int3. Chantier : ~/Dev/cidre-acoups.
+
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -619,6 +619,30 @@
+   ECContext.Fpsr = FPSR;
+ 
+   return ECContext;
++}
++
++// Cidre 0460 : journal detaille des exceptions coupe par defaut. Chaque exception (un int3 de l'invite en fait deux :
++// la faute de lecture du piege 0306, puis le 80000003 remis a l'invite) ecrivait 5 lignes D par __wine_dbg_output, soit
++// 5 appels a l'hote depuis l'ilot : banc int3_veh 32,5 us par int3 avec FEX_SILENTLOG=0 contre 10 us sans journal.
++// Diablo IV en leve ~1 300 par seconde en monde (fil de protection, int3 rattrapes par son gestionnaire vectorise) :
++// ~30 ms de processeur par seconde et ~8 000 lignes par seconde dans le journal, pour rien. Les autres lignes de FEX
++// (I, E, SMC, sonnettes) restent. CIDRE_JOURNAL_EXCEPTIONS=1 remet le journal detaille. Sans lui, un resume aux
++// puissances de 2 (a partir de 1 024) : nombre d'exceptions, derniere code et adresse.
++bool CidreJournalExceptions() {
++  static const bool Actif = [] {
++    const char* E = getenv("CIDRE_JOURNAL_EXCEPTIONS");
++    return E && *E == '1';
++  }();
++  return Actif;
++}
++
++void CidreCompteException(uint32_t Code, uint64_t Adresse) {
++  static std::atomic<uint64_t> Nb;
++  const uint64_t N = Nb.fetch_add(1, std::memory_order_relaxed) + 1;
++  if (N >= 1024 && !(N & (N - 1))) {
++    LogMan::Msg::IFmt("cidre 0460 : {} exceptions sans journal detaille (CIDRE_JOURNAL_EXCEPTIONS=1 pour le remettre) ; "
++                      "derniere : code {:X} adresse {:X}", N, Code, Adresse);
++  }
+ }
+ 
+ static bool CidreNoExecPerime() {
+@@ -633,12 +657,16 @@
+   auto* Thread = GetCPUArea().ThreadState();
+   auto& Fault = Thread->CurrentFrame->SynchronousFaultData;
+ 
+-  LogMan::Msg::DFmt("Reconstructing context");
++  if (CidreJournalExceptions()) {
++    LogMan::Msg::DFmt("Reconstructing context");
++  }
+   if (!IsDispatcherAddress(Context.Pc)) {
+     ReconstructThreadState(Thread, Context);
+   }
+   ARM64_NT_CONTEXT GuestContext = StoreStateToPackedECContext(Thread, Context.Fpcr, Context.Fpsr);
+-  LogMan::Msg::DFmt("pc: {:X} rip: {:X}", Context.Pc, GuestContext.Pc);
++  if (CidreJournalExceptions()) {
++    LogMan::Msg::DFmt("pc: {:X} rip: {:X}", Context.Pc, GuestContext.Pc);
++  }
+ 
+   // X64 Windows always clears TF, DF and AF when handling an exception, restoring after.
+   // Current ARM64EC windows can only restore NZCV+SS when returning from an exception and other flags are left untouched from the handler context.
+@@ -1166,7 +1194,11 @@
+ bool ResetToConsistentStateImpl(const ThreadCPUArea CPUArea, EXCEPTION_RECORD* Exception, CONTEXT* GuestContext, ARM64_NT_CONTEXT* NativeContext) {
+   auto Thread = CPUArea.ThreadState();
+   FEXCORE_PROFILE_ACCUMULATION(Thread, AccumulatedSignalTime);
+-  LogMan::Msg::DFmt("Exception: Code: {:X} Address: {:X}", Exception->ExceptionCode, reinterpret_cast<uintptr_t>(Exception->ExceptionAddress));
++  if (Exception::CidreJournalExceptions()) { // Cidre 0460
++    LogMan::Msg::DFmt("Exception: Code: {:X} Address: {:X}", Exception->ExceptionCode, reinterpret_cast<uintptr_t>(Exception->ExceptionAddress));
++  } else {
++    Exception::CidreCompteException(Exception->ExceptionCode, reinterpret_cast<uintptr_t>(Exception->ExceptionAddress));
++  }
+ 
+   if (NativeContext->Pc == reinterpret_cast<uint64_t>(&ExitFunctionSuspendPoint) ||
+       NativeContext->Pc == reinterpret_cast<uint64_t>(&ExitFunctionSuspendPointBrk)) {
+@@ -1283,7 +1315,9 @@
+   }
+ 
+   if (!IsJIT && !IsDispatcherAddress(NativeContext->Pc)) {
+-    LogMan::Msg::DFmt("Passing through exception");
++    if (Exception::CidreJournalExceptions()) {
++      LogMan::Msg::DFmt("Passing through exception");
++    }
+     return false;
+   }
+ 
+@@ -1312,7 +1346,9 @@
+ 
+   if (IsEmulatorStackAddress(CPUArea, reinterpret_cast<uint64_t>(__builtin_frame_address(0)))) {
+     Exception::RethrowGuestException(*Exception, *NativeContext);
+-    LogMan::Msg::DFmt("Rethrowing onto guest stack: {:X}", NativeContext->Sp);
++    if (Exception::CidreJournalExceptions()) {
++      LogMan::Msg::DFmt("Rethrowing onto guest stack: {:X}", NativeContext->Sp);
++    }
+     return true;
+   } else {
+     LogMan::Msg::EFmt("Unexpected exception in JIT code on guest stack");

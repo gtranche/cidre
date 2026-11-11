@@ -1,0 +1,148 @@
+Generated-by: LLM
+
+KosmicKrisp : dessins sautes tant que leur pipeline n'est pas pret (CIDRE_PIPELINE_SANS_ATTENTE)
+
+Choix de l'utilisateur (D4) : des objets qui apparaissent avec retard plutot
+que des gels. Sous l'option, vkCmdBindPipeline n'attend plus un VS/FS dont la
+compilation differee (0237/0431) n'est pas finie : le nuanceur est note lie,
+sans lire ses champs. kk_draw verifie, sans attendre, les barrieres du VS et
+du FS lies : pas pretes, le dessin est saute ; pretes, la liaison differee
+(etat de profondeur, echantillons) est appliquee puis le dessin part. Aucun
+objet Metal d'un pipeline non fini n'entre donc dans un tampon de commandes.
+Le calcul attend toujours au bind ; requetes, effacements, copies et
+barrieres ne passent pas par kk_draw. Compteur « dessins sautes » dans la
+ligne de diagnostic de 0430. Coupee par defaut.
+Base : 0410+0412 (~/Dev/cidre-demono-perte-gpu/mesa) + 0402 ; ordre 0430, 0431, 0432.
+
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.m b/src/kosmickrisp/bridge/mtl_compiler.m
+--- a/src/kosmickrisp/bridge/mtl_compiler.m
++++ b/src/kosmickrisp/bridge/mtl_compiler.m
+@@ -966,12 +966,12 @@
+       fprintf(stderr, "KK compile: AIR direct %u libraries / %.3f s, %u fallbacks to MSL, %u pipeline fallbacks\n",
+               atomic_load(&kk_stat_airdirect_count), atomic_load(&kk_stat_airdirect_ns) / 1.0e9,
+               atomic_load(&kk_stat_airdirect_fallback), atomic_load(&kk_stat_airdirect_pipe_fallback));
+-   if (atomic_load(&kk_stat_disque[0]) || atomic_load(&kk_stat_disque[3]) || atomic_load(&kk_stat_disque[4]))
++   if (atomic_load(&kk_stat_disque[0]) || atomic_load(&kk_stat_disque[3]) || atomic_load(&kk_stat_disque[4]) || atomic_load(&kk_stat_disque[7]))
+       fprintf(stderr, "KK compile: frontal differe %u, ecrits %u, sans cle %u ; relus %u, relus en echec %u (raison %u) ; "
+-                      "serialisations refusees %u\n",
++                      "serialisations refusees %u ; dessins sautes %u\n",
+               atomic_load(&kk_stat_disque[0]), atomic_load(&kk_stat_disque[1]), atomic_load(&kk_stat_disque[2]),
+               atomic_load(&kk_stat_disque[3]), atomic_load(&kk_stat_disque[4]), atomic_load(&kk_stat_disque[6]),
+-              atomic_load(&kk_stat_disque[5]));
++              atomic_load(&kk_stat_disque[5]), atomic_load(&kk_stat_disque[7]));
+    if (atomic_load(&kk_stat_relais_msl))
+       fprintf(stderr, "KK compile: relais %u pipelines MSL pris aux archives, %u remplaces par l'AIR direct, "
+                       "%u echecs, %u abandonnes\n",
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.h b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+@@ -444,6 +444,7 @@
+       struct kk_compute_state cs;
+       struct kk_conditional_rendering_state cond_render;
+       struct kk_shader *shaders[MESA_SHADER_STAGES];
++      struct kk_shader *sa_applied[MESA_SHADER_STAGES];
+       /* Address of the binding 0 for when compute dispatches modify it.
+        * We are trying to be nice to ourselves. */
+       uint64_t root_addr;
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_draw.c b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -3010,6 +3010,9 @@
+ {
+    struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
+ 
++   if (!kk_cmd_shaders_ready_for_draw(cmd))
++      return;
++
+    /* Cidre : VS ou FS dont la compilation differee a echoue
+     * (CIDRE_COMPILE_DIFFEREE) : le dessin est saute, comme si le pipeline
+     * n'avait pas pu etre cree, au lieu de partir avec l'etat precedent. */
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -3170,6 +3170,15 @@
+  * (pas de vs_nir, pas d'emulation en calcul) et pipeline de calcul. */
+ static _Thread_local bool kk_frontal_sync;
+ 
++static bool
++kk_sans_attente(void)
++{
++   static int enabled = -1;
++   if (enabled < 0)
++      enabled = cidre_env_actif("CIDRE_PIPELINE_SANS_ATTENTE");
++   return enabled;
++}
++
+ static VkResult
+ kk_compile_maybe_async(struct kk_device *dev, struct kk_shader *s,
+                        uint32_t local_size_threads)
+@@ -3964,15 +3973,54 @@
+ 
+    for (uint32_t i = 0; i < stage_count; i++) {
+       struct kk_shader *shader = container_of(shaders[i], struct kk_shader, vk);
++      bool graphics =
++         stages[i] != MESA_SHADER_COMPUTE && stages[i] != MESA_SHADER_KERNEL;
++
++      if (graphics && shader != NULL && kk_sans_attente() &&
++          shader->compile_async &&
++          !util_queue_fence_is_signalled(&shader->compile_ready)) {
++         cmd->state.shaders[stages[i]] = shader;
++         cmd->state.dirty_shaders |= BITFIELD_BIT(stages[i]);
++         continue;
++      }
+ 
+       /* Cidre : la compilation differee doit etre finie avant d'encoder. */
+       kk_shader_wait_compiled(shader);
+ 
+-      if (stages[i] == MESA_SHADER_COMPUTE || stages[i] == MESA_SHADER_KERNEL)
++      if (!graphics) {
+          kk_cmd_bind_compute_shader(cmd, shader);
+-      else
++      } else {
+          kk_cmd_bind_graphics_shader(cmd, stages[i], shader);
++         cmd->state.sa_applied[stages[i]] = shader;
++      }
++   }
++}
++
++bool
++kk_cmd_shaders_ready_for_draw(struct kk_cmd_buffer *cmd)
++{
++   if (!kk_sans_attente())
++      return true;
++
++   static const mesa_shader_stage stages[] = {MESA_SHADER_VERTEX,
++                                              MESA_SHADER_FRAGMENT};
++   for (unsigned i = 0; i < ARRAY_SIZE(stages); i++) {
++      struct kk_shader *s = cmd->state.shaders[stages[i]];
++      if (s == NULL || cmd->state.sa_applied[stages[i]] == s)
++         continue;
++      if (s->compile_async && !util_queue_fence_is_signalled(&s->compile_ready)) {
++         atomic_fetch_add(&kk_stat_disque[7], 1);
++         return false;
++      }
+    }
++   for (unsigned i = 0; i < ARRAY_SIZE(stages); i++) {
++      struct kk_shader *s = cmd->state.shaders[stages[i]];
++      if (s == NULL || cmd->state.sa_applied[stages[i]] == s)
++         continue;
++      kk_cmd_bind_graphics_shader(cmd, stages[i], s);
++      cmd->state.sa_applied[stages[i]] = s;
++   }
++   return true;
+ }
+ 
+ static VkResult
+diff --git a/src/kosmickrisp/vulkan/kk_shader.h b/src/kosmickrisp/vulkan/kk_shader.h
+--- a/src/kosmickrisp/vulkan/kk_shader.h
++++ b/src/kosmickrisp/vulkan/kk_shader.h
+@@ -265,6 +265,9 @@
+ 
+ /* Vrai si la compilation differee de cette etape a echoue. Appele apres le
+  * bind, qui l'a attendue : compile_result est alors fixe. */
++struct kk_cmd_buffer;
++bool kk_cmd_shaders_ready_for_draw(struct kk_cmd_buffer *cmd);
++
+ static inline bool
+ kk_shader_compile_failed(const struct kk_shader *shader)
+ {

@@ -1,0 +1,1008 @@
+Generated-by: LLM
+
+KosmicKrisp : file des variantes a priorites, sans prise de bibliotheques
+
+La file kkvar de 0471 etait FIFO (ordre de creation) et prenait les bibliotheques a QoS utility. Desormais :
+priorite au premier bind du VS ou a une variante notee construite au dessin, sinon rang = ms de premiere
+utilisation (enregistre dans variantes-kk.bin ; les enregistrements plus longs que ceux de 0471 sont sautes
+sans erreur) ; plus de prise de bibliotheques (attente du fond, de kkcomp ou du bind ;
+CIDRE_VARIANTES_PRENDRE=1 = ancien) ; travaux des pipelines detruits abandonnes ; pret de QoS au fil qui
+construit une variante attendue au dessin (CIDRE_VARIANTES_PRET=0 coupe) ; 3 fils utility
+(CIDRE_VARIANTES_FILS, CIDRE_VARIANTES_QOS=background). Banc (usage note du joueur, 1 206 paires) : variantes
+construites au dessin 340 -> 0 a froid. Chantier : ~/Dev/cidre-d4-variantes.
+
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.m b/src/kosmickrisp/bridge/mtl_compiler.m
+--- a/src/kosmickrisp/bridge/mtl_compiler.m
++++ b/src/kosmickrisp/bridge/mtl_compiler.m
+@@ -1202,12 +1202,17 @@
+    if (atomic_load(&kk_stat_var[1]) || atomic_load(&kk_stat_var[2]))
+       fprintf(stderr, "KK compile: variantes : %u chargees (%u paires), %u notees ; fond : %u travaux, "
+                       "%u construites / %.1f ms, %u deja la, %u inaptes, %u bibliotheques prises ; "
+-                      "au dessin bien que notees %u ; attendues en construction %u (dont au dessin %u)\n",
++                      "au dessin bien que notees %u ; attendues en construction %u (dont au dessin %u) ; "
++                      "0474 : %u liees passees devant, %u abandonnees (pipeline detruit), cede %u fois / %.1f ms, "
++                      "processeur %.1f ms\n",
+               atomic_load(&kk_stat_var[0]), atomic_load(&kk_stat_var[1]), atomic_load(&kk_stat_var[2]),
+               atomic_load(&kk_stat_var[8]), atomic_load(&kk_stat_var[3]),
+               atomic_load(&kk_stat_var_us[0]) / 1000.0, atomic_load(&kk_stat_var[4]),
+               atomic_load(&kk_stat_var[5]), atomic_load(&kk_stat_var[7]), atomic_load(&kk_stat_var[6]),
+-              atomic_load(&kk_stat_var[9]), atomic_load(&kk_stat_var[10]));
++              atomic_load(&kk_stat_var[9]), atomic_load(&kk_stat_var[10]),
++              atomic_load(&kk_stat_var[11]), atomic_load(&kk_stat_var[12]),
++              atomic_load(&kk_stat_var[13]), atomic_load(&kk_stat_var_us[2]) / 1000.0,
++              atomic_load(&kk_stat_var_us[1]) / 1000.0);
+    if (atomic_load(&kk_stat_fond2[7]))
+       fprintf(stderr, "KK compile: base : %u pipelines nouveaux notes, %u ecrits\n",
+               atomic_load(&kk_stat_fond2[7]), atomic_load(&kk_stat_fond2[6]));
+diff --git a/src/kosmickrisp/vulkan/kk_device.h b/src/kosmickrisp/vulkan/kk_device.h
+--- a/src/kosmickrisp/vulkan/kk_device.h
++++ b/src/kosmickrisp/vulkan/kk_device.h
+@@ -135,8 +135,9 @@
+ 
+    simple_mtx_t rp_variant_lock;
+    struct hash_table *rp_variant_cache;
+-   /* Cidre (0471) : variantes en cours de construction (sous rp_variant_lock). */
+-   struct set *rp_en_cours;
++   /* Cidre (0471) : variantes en cours de construction (sous rp_variant_lock) ;
++    * 0474 : cle -> fil qui la construit (pret de QoS a qui l'attend). */
++   struct hash_table *rp_en_cours;
+ 
+    simple_mtx_t empty_fs_lock;
+    struct kk_shader *empty_fs;
+@@ -154,9 +155,10 @@
+    _Atomic bool fond_arret;
+    _Atomic uint32_t fond_en_file;
+ 
+-   /* Cidre (0471) : variantes de rendu notees, construites des la creation
+-    * du pipeline par ces fils (CIDRE_VARIANTES_FILS). */
+-   struct util_queue var_queue;
++   /* Cidre (0471, 0474) : variantes de rendu notees, construites des la
++    * creation du pipeline par une reserve de fils a priorites
++    * (CIDRE_VARIANTES_FILS ; struct kk_var_pool, kk_shader.c). */
++   struct kk_var_pool *var_pool;
+    bool var_queue_ok;
+    _Atomic bool var_arret;
+    _Atomic uint32_t var_en_file;
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -47,6 +47,8 @@
+ #include <fcntl.h>
+ #include <sched.h>
+ #include <sys/stat.h>
++#include <sys/resource.h>
++#include <time.h>
+ #include <pthread.h>
+ #include <pthread/qos.h>
+ #include "util/set.h"
+@@ -2619,6 +2621,10 @@
+ static void kk_var_finish(struct kk_device *dev);
+ static void kk_var_enfiler(struct kk_device *dev, uint32_t count,
+                            struct vk_shader *const *shaders);
++/* Cidre (0474) : constructions de variantes en cours sur un fil de dessin. */
++static _Atomic uint32_t kk_var_dessins;
++static bool kk_var_pret_qos(void);
++static void kk_var_urgent(struct kk_shader *vs);
+ 
+ /* Cidre (0441) : variante de rendu construite sur le fil d'encodage. */
+ static void
+@@ -2674,17 +2680,30 @@
+        * construire une seconde fois (attente bornee a 5 s, puis on construit). */
+       bool mienne = false;
+       if (device->rp_en_cours != NULL) {
+-         if (_mesa_set_search(device->rp_en_cours, &full) != NULL) {
++         struct hash_entry *ec = _mesa_hash_table_search(device->rp_en_cours, &full);
++         if (ec != NULL) {
+             const int64_t t0w = os_time_get_nano();
++            /* Cidre (0474) : le fil qui la construit (souvent kkvar, QoS
++             * utility) recoit la QoS de qui l'attend (inversion de priorite).
++             * CIDRE_VARIANTES_PRET=0 : sans. Les fils constructeurs (jeu,
++             * kkcomp, kkvar) vivent au-dela de la construction. */
++            pthread_override_t pret = NULL;
++            if (kk_var_pret_qos() && ec->data != NULL &&
++                (pthread_t)ec->data != pthread_self())
++               pret = pthread_override_qos_class_start_np(
++                  (pthread_t)ec->data, au_dessin ? QOS_CLASS_USER_INTERACTIVE
++                                                 : qos_class_self(), 0);
+             for (unsigned w = 0; w < 25000u; w++) {
+                simple_mtx_unlock(&device->rp_variant_lock);
+                usleep(200);
+                simple_mtx_lock(&device->rp_variant_lock);
+                entry = _mesa_hash_table_search(device->rp_variant_cache, &full);
+                if (entry != NULL ||
+-                   _mesa_set_search(device->rp_en_cours, &full) == NULL)
++                   _mesa_hash_table_search(device->rp_en_cours, &full) == NULL)
+                   break;
+             }
++            if (pret != NULL)
++               pthread_override_qos_class_end_np(pret);
+             if (entry != NULL) {
+                state = entry->data;
+                simple_mtx_unlock(&device->rp_variant_lock);
+@@ -2696,18 +2715,24 @@
+                return state;
+             }
+          }
+-         mienne = _mesa_set_search(device->rp_en_cours, &full) == NULL &&
+-                  _mesa_set_add(device->rp_en_cours, &full) != NULL;
++         mienne = _mesa_hash_table_search(device->rp_en_cours, &full) == NULL &&
++                  _mesa_hash_table_insert(device->rp_en_cours, &full,
++                                          (void *)pthread_self()) != NULL;
+       }
+       simple_mtx_unlock(&device->rp_variant_lock);
+       const int64_t t0v = kk_variante_au_dessin ? os_time_get_nano() : 0;
++      /* Cidre (0474) : un dessin construit : la reserve kkvar cede. */
++      if (au_dessin)
++         atomic_fetch_add(&kk_var_dessins, 1);
+       mtl_render_pipeline_state *built =
+          kk_build_render_pipeline(device, vs_function, vs, fs, &full);
++      if (au_dessin)
++         atomic_fetch_sub(&kk_var_dessins, 1);
+       if (kk_variante_au_dessin)
+          kk_stat_variante_dessin(os_time_get_nano() - t0v);
+       simple_mtx_lock(&device->rp_variant_lock);
+       if (mienne)
+-         _mesa_set_remove_key(device->rp_en_cours, &full);
++         _mesa_hash_table_remove_key(device->rp_en_cours, &full);
+       entry = _mesa_hash_table_search(device->rp_variant_cache, &full);
+       if (entry != NULL) {
+          if (built != NULL)
+@@ -3075,7 +3100,7 @@
+    {
+       const char *cv = getenv("CIDRE_VARIANTES");
+       device->rp_en_cours = (cv && cv[0] == '0') ? NULL :
+-         _mesa_set_create(NULL, kk_rt_formats_hash, kk_rt_formats_equal);
++         _mesa_hash_table_create(NULL, kk_rt_formats_hash, kk_rt_formats_equal);
+    }
+    if (device->rp_variant_cache == NULL) {
+       simple_mtx_destroy(&device->rp_variant_lock);
+@@ -3138,7 +3163,7 @@
+       _mesa_hash_table_destroy(device->rp_variant_cache, NULL);
+       device->rp_variant_cache = NULL;
+       if (device->rp_en_cours != NULL) {
+-         _mesa_set_destroy(device->rp_en_cours, NULL);
++         _mesa_hash_table_destroy(device->rp_en_cours, NULL);
+          device->rp_en_cours = NULL;
+       }
+       simple_mtx_destroy(&device->rp_variant_lock);
+@@ -4507,6 +4532,11 @@
+ {
+    if (shader == NULL)
+       return;
++   /* Cidre (0474) : premier bind d'un VS : ses variantes notees passent devant. */
++   if (graphics && shader->vk.stage == MESA_SHADER_VERTEX &&
++       !(atomic_load_explicit(&shader->fond, memory_order_relaxed) & KK_FOND_VAR) &&
++       !(atomic_fetch_or(&shader->fond, KK_FOND_VAR) & KK_FOND_VAR))
++      kk_var_urgent(shader);
+    if (graphics && kk_chaud_actif &&
+        !(atomic_load_explicit(&shader->fond, memory_order_relaxed) & KK_FOND_NOTE) &&
+        !(atomic_fetch_or(&shader->fond, KK_FOND_NOTE) & KK_FOND_NOTE))
+@@ -4791,17 +4821,50 @@
+ #define KK_VAR_MAGIC 0x3156524bu /* "KRV1" */
+ #define KK_VAR_DEBUT offsetof(struct kk_rp_variant_key, formats)
+ #define KK_VAR_OCTETS (sizeof(struct kk_rp_variant_key) - KK_VAR_DEBUT)
++/* Cidre (0474) : enregistrement suivi du rang (uint32, ms depuis la creation
++ * du peripherique a la premiere construction au dessin). Meme magie, taille
++ * plus grande : un pilote 0471 saute ces enregistrements sans s'arreter ; les
++ * anciens (sans rang) prennent leur position dans le fichier comme rang. */
++#define KK_VAR_REC1 (2 * KK_BASE_CLE + KK_VAR_OCTETS)
++#define KK_VAR_REC2 (KK_VAR_REC1 + 4)
++
++/* Cidre (0474) : ordre et partage du processeur.
++ *
++ * Partie du 09/11 13:44 avec 0471 : la file construisait dans l'ordre de
++ * creation des pipelines (436 variantes construites au dessin avant que la
++ * file y arrive), prenait elle-meme 382 bibliotheques a la QoS utility (un
++ * bind qui les attendait n'y pretait pas sa QoS) et les attentes au bind
++ * passaient de 1,8 a 2,5 s. Ici une reserve de fils (kkvar) remplace la
++ * util_queue :
++ *  - un travail ne part que quand ses deux bibliotheques sont pretes (la
++ *    file de fond, kkcomp ou le bind les compilent) ; plus de prise
++ *    (CIDRE_VARIANTES_PRENDRE=1 : ancienne prise) ; un travail dont le
++ *    pipeline a ete detruit (seule notre reference) est abandonne ;
++ *  - priorite : paire liee (premier bind du VS, ou variante notee
++ *    construite au dessin) d'abord, dans l'ordre des binds ; puis rang noted
++ *    le plus petit (ordre de premiere utilisation des parties precedentes) ;
++ *    CIDRE_VARIANTES_ORDRE=0 : ordre de creation (0471) ;
++ *  - cession : aucun fil ne commence une variante tant qu'un bind attend un
++ *    nuanceur (CIDRE_VARIANTES_CEDE=1 : aussi tant qu'un dessin construit une
++ *    variante ; au banc a froid, cela laisse le dessin tout construire : pire) ;
++ *    QoS utility, ou background (CIDRE_VARIANTES_QOS=background) ; 3 fils
++ *    (CIDRE_VARIANTES_FILS) ;
++ *  - un dessin qui attend une variante en construction prete sa QoS au fil
++ *    qui la construit (CIDRE_VARIANTES_PRET=0 : sans). */
+ 
+ struct kk_var_paire {
+    uint8_t cles[2 * KK_BASE_CLE];
+    uint32_t n, cap;
+    struct kk_rp_variant_key *v; /* pointeurs de fonction nuls */
++   uint32_t *rang;
+    const void *dernier_vs;      /* dernier VS mis en file (doublons) */
+ };
+ 
+ static simple_mtx_t kk_var_lock = SIMPLE_MTX_INITIALIZER;
+ static struct hash_table *kk_var_table;
+ static int kk_var_fd = -1;
++static uint32_t kk_var_rang_fichier; /* position, pour les enregistrements sans rang */
++static int64_t kk_var_t0;            /* creation du peripherique */
+ 
+ static uint32_t
+ kk_var_hash(const void *k)
+@@ -4815,12 +4878,19 @@
+    return memcmp(a, b, 2 * KK_BASE_CLE) == 0;
+ }
+ 
++static struct kk_var_paire *
++kk_var_paire_locked(const uint8_t *cles)
++{
++   struct hash_entry *e = _mesa_hash_table_search(kk_var_table, cles);
++   return e ? e->data : NULL;
++}
++
+ /* Vrai si ajoutee (absente jusque-la). */
+ static bool
+-kk_var_ajouter_locked(const uint8_t *cles, const struct kk_rp_variant_key *k)
++kk_var_ajouter_locked(const uint8_t *cles, const struct kk_rp_variant_key *k,
++                      uint32_t rang)
+ {
+-   struct hash_entry *e = _mesa_hash_table_search(kk_var_table, cles);
+-   struct kk_var_paire *p = e ? e->data : NULL;
++   struct kk_var_paire *p = kk_var_paire_locked(cles);
+    if (p == NULL) {
+       p = rzalloc(kk_var_table, struct kk_var_paire);
+       if (p == NULL)
+@@ -4831,21 +4901,26 @@
+    }
+    for (uint32_t i = 0; i < p->n; i++) {
+       if (memcmp((const char *)&p->v[i] + KK_VAR_DEBUT,
+-                 (const char *)k + KK_VAR_DEBUT, KK_VAR_OCTETS) == 0)
++                 (const char *)k + KK_VAR_DEBUT, KK_VAR_OCTETS) == 0) {
++         p->rang[i] = MIN2(p->rang[i], rang);
+          return false;
++      }
+    }
+    if (p->n == p->cap) {
+       uint32_t cap = p->cap ? p->cap * 2 : 4;
+       struct kk_rp_variant_key *v =
+          reralloc(p, p->v, struct kk_rp_variant_key, cap);
+-      if (v == NULL)
++      uint32_t *r = v ? reralloc(p, p->rang, uint32_t, cap) : NULL;
++      if (v == NULL || r == NULL)
+          return false;
+       p->v = v;
++      p->rang = r;
+       p->cap = cap;
+    }
+    memset(&p->v[p->n], 0, sizeof(p->v[p->n]));
+    memcpy((char *)&p->v[p->n] + KK_VAR_DEBUT, (const char *)k + KK_VAR_DEBUT,
+           KK_VAR_OCTETS);
++   p->rang[p->n] = rang;
+    p->n++;
+    return true;
+ }
+@@ -4856,8 +4931,7 @@
+    int fd = open(chemin, O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+       return;
+-   const size_t taille = 8 + 2 * KK_BASE_CLE + KK_VAR_OCTETS;
+-   uint8_t buf[8 + 2 * KK_BASE_CLE + KK_VAR_OCTETS];
++   uint8_t buf[8 + KK_VAR_REC2];
+    struct kk_rp_variant_key k;
+    unsigned rejetes = 0;
+    for (;;) {
+@@ -4871,7 +4945,7 @@
+          rejetes++;
+          break; /* fichier abime : on garde ce qui precede */
+       }
+-      if (octets != 2 * KK_BASE_CLE + KK_VAR_OCTETS) {
++      if (octets != KK_VAR_REC1 && octets != KK_VAR_REC2) {
+          /* autre version de la cle : sautee */
+          if (lseek(fd, octets, SEEK_CUR) < 0)
+             break;
+@@ -4880,13 +4954,15 @@
+       }
+       if (read(fd, buf + 8, octets) != (ssize_t)octets)
+          break;
++      uint32_t rang = kk_var_rang_fichier++;
++      if (octets == KK_VAR_REC2)
++         memcpy(&rang, buf + 8 + KK_VAR_REC1, 4);
+       memset(&k, 0, sizeof(k));
+       memcpy((char *)&k + KK_VAR_DEBUT, buf + 8 + 2 * KK_BASE_CLE,
+              KK_VAR_OCTETS);
+-      if (kk_var_ajouter_locked(buf + 8, &k))
++      if (kk_var_ajouter_locked(buf + 8, &k, rang))
+          atomic_fetch_add(&kk_stat_var[0], 1);
+    }
+-   (void)taille;
+    close(fd);
+    if (rejetes)
+       fprintf(stderr, "kk: variantes notees : %u enregistrements rejetes dans %s\n",
+@@ -4900,6 +4976,17 @@
+    return !(v && v[0] == '0');
+ }
+ 
++static bool
++kk_var_pret_qos(void)
++{
++   static int v = -1;
++   if (v < 0) {
++      const char *e = getenv("CIDRE_VARIANTES_PRET");
++      v = !(e && e[0] == '0');
++   }
++   return v;
++}
++
+ /* La paire peut-elle etre notee ? (VS non differe, vrai FS) */
+ static bool
+ kk_var_apte(struct kk_device *dev, mtl_function_descriptor *vs_function,
+@@ -4920,32 +5007,41 @@
+ {
+    if (kk_var_table == NULL || !kk_var_apte(dev, vs_function, vs, fs))
+       return;
+-   uint8_t rec[8 + 2 * KK_BASE_CLE + KK_VAR_OCTETS];
+-   const uint32_t magic = KK_VAR_MAGIC, octets = 2 * KK_BASE_CLE + KK_VAR_OCTETS;
++   uint8_t rec[8 + KK_VAR_REC2];
++   const uint32_t magic = KK_VAR_MAGIC, octets = KK_VAR_REC2;
++   const int64_t dt = (os_time_get_nano() - kk_var_t0) / 1000000;
++   const uint32_t rang = dt <= 0 ? 0 : dt > UINT32_MAX - 1 ? UINT32_MAX - 1 : (uint32_t)dt;
+    memcpy(rec, &magic, 4);
+    memcpy(rec + 4, &octets, 4);
+    memcpy(rec + 8, vs->vk.pipeline.cache_key, KK_BASE_CLE);
+    memcpy(rec + 8 + KK_BASE_CLE, fs->vk.pipeline.cache_key, KK_BASE_CLE);
+    memcpy(rec + 8 + 2 * KK_BASE_CLE, (const char *)full + KK_VAR_DEBUT,
+           KK_VAR_OCTETS);
++   memcpy(rec + 8 + KK_VAR_REC1, &rang, 4);
+    simple_mtx_lock(&kk_var_lock);
+-   const bool neuve = kk_var_ajouter_locked(rec + 8, full);
++   const bool neuve = kk_var_ajouter_locked(rec + 8, full, rang);
+    if (neuve && kk_var_fd >= 0 && write(kk_var_fd, rec, sizeof(rec)) != (ssize_t)sizeof(rec)) {
+       close(kk_var_fd);
+       kk_var_fd = -1;
+    }
+    simple_mtx_unlock(&kk_var_lock);
+    atomic_fetch_add(&kk_stat_var[neuve ? 2 : 6], 1);
++   /* Cidre (0474) : la paire sert maintenant : ses autres variantes notees
++    * passent devant. */
++   if (!neuve)
++      kk_var_urgent(vs);
+ }
+ 
+-/* Copie les variantes notees de la paire (cles VS, FS) ; NULL si aucune.
+- * dernier_vs != NULL : rien si cette paire vient d'etre mise en file pour
+- * ce meme VS. */
++/* Copie les variantes notees de la paire (cles VS, FS), triees par rang ;
++ * NULL si aucune. dernier_vs != NULL : rien si cette paire vient d'etre mise
++ * en file pour ce meme VS. */
+ static struct kk_rp_variant_key *
+ kk_var_copier(const uint8_t *vs_cle, const uint8_t *fs_cle, uint32_t *n,
+-              const void *dernier_vs)
++              const void *dernier_vs, uint32_t *rang_min)
+ {
+    *n = 0;
++   if (rang_min)
++      *rang_min = UINT32_MAX;
+    if (kk_var_table == NULL)
+       return NULL;
+    uint8_t cles[2 * KK_BASE_CLE];
+@@ -4953,59 +5049,194 @@
+    memcpy(cles + KK_BASE_CLE, fs_cle, KK_BASE_CLE);
+    struct kk_rp_variant_key *v = NULL;
+    simple_mtx_lock(&kk_var_lock);
+-   struct hash_entry *e = _mesa_hash_table_search(kk_var_table, cles);
+-   struct kk_var_paire *p = e ? e->data : NULL;
++   struct kk_var_paire *p = kk_var_paire_locked(cles);
+    if (p != NULL && p->n > 0 &&
+        (dernier_vs == NULL || p->dernier_vs != dernier_vs)) {
+       v = malloc(p->n * sizeof(*v));
+-      if (v != NULL) {
++      uint32_t *r = malloc(p->n * sizeof(*r));
++      if (v != NULL && r != NULL) {
+          memcpy(v, p->v, p->n * sizeof(*v));
++         memcpy(r, p->rang, p->n * sizeof(*r));
+          *n = p->n;
+          if (dernier_vs != NULL)
+             p->dernier_vs = dernier_vs;
++         /* tri par insertion (quelques variantes par paire) */
++         for (uint32_t i = 1; i < *n; i++) {
++            for (uint32_t j = i; j > 0 && r[j] < r[j - 1]; j--) {
++               struct kk_rp_variant_key tk = v[j];
++               v[j] = v[j - 1];
++               v[j - 1] = tk;
++               uint32_t tr = r[j];
++               r[j] = r[j - 1];
++               r[j - 1] = tr;
++            }
++         }
++         if (rang_min && *n)
++            *rang_min = r[0];
++      } else {
++         free(v);
++         v = NULL;
+       }
++      free(r);
+    }
+    simple_mtx_unlock(&kk_var_lock);
+    return v;
+ }
+ 
++/* Rang le plus petit des variantes notees d'une paire (UINT32_MAX : aucune). */
++static uint32_t
++kk_var_rang_paire(const uint8_t *vs_cle, const uint8_t *fs_cle)
++{
++   uint32_t n, r;
++   free(kk_var_copier(vs_cle, fs_cle, &n, NULL, &r));
++   return r;
++}
++
+ struct kk_var_job {
+    struct kk_device *dev;
+    struct kk_shader *vs, *fs;
+    uint32_t n;
+    struct kk_rp_variant_key *v;
++   uint32_t rang_min;
++   uint64_t seq;    /* ordre de creation */
++   uint64_t urgent; /* 0, ou ordre du premier bind */
+ };
+ 
++struct kk_var_pool {
++   struct kk_device *dev;
++   pthread_mutex_t mtx;
++   pthread_cond_t cnd;
++   struct util_dynarray jobs; /* struct kk_var_job * */
++   struct hash_table *par_vs; /* vs -> job en attente */
++   pthread_t fils[16];
++   unsigned nfils;
++   uint64_t seq, seq_urgent;
++   bool ordre, prendre, cede_dessins;
++   qos_class_t qos;
++};
++
++/* Reserve du peripherique pour le crochet du bind (un seul peripherique
++ * actif a la fois en pratique ; NULL pendant sa destruction). */
++static struct kk_var_pool *_Atomic kk_var_pool_actif;
++
+ static void
+-kk_var_ceder(struct kk_device *dev)
++kk_var_job_liberer(struct kk_var_job *j)
+ {
+-   if (!kk_fond_cede())
++   struct kk_device *dev = j->dev;
++   vk_pipeline_cache_object_unref(&dev->vk, &j->vs->vk.pipeline.cache_obj);
++   vk_pipeline_cache_object_unref(&dev->vk, &j->fs->vk.pipeline.cache_obj);
++   free(j->v);
++   free(j);
++   atomic_fetch_sub(&dev->var_en_file, 1);
++}
++
++static bool
++kk_var_doit_ceder(const struct kk_var_pool *p)
++{
++   if (kk_fond_cede() && atomic_load(&kk_binds_en_attente) != 0)
++      return true;
++   return p->cede_dessins && atomic_load(&kk_var_dessins) != 0;
++}
++
++/* Attend tant qu'il faut ceder ; compte le temps cede. */
++static void
++kk_var_ceder(struct kk_var_pool *p)
++{
++   if (!kk_var_doit_ceder(p))
+       return;
+-   while (atomic_load(&kk_binds_en_attente) != 0 && !atomic_load(&dev->var_arret))
++   const int64_t t0 = os_time_get_nano();
++   while (kk_var_doit_ceder(p) && !atomic_load(&p->dev->var_arret))
+       usleep(500);
++   atomic_fetch_add(&kk_stat_var[13], 1);
++   atomic_fetch_add(&kk_stat_var_us[2], (uint64_t)(os_time_get_nano() - t0) / 1000u);
+ }
+ 
++static bool
++kk_var_biblio_prete(struct kk_shader *s)
++{
++   if (!s->compile_async)
++      return true;
++   return !kk_travail_en_attente(s) && util_queue_fence_is_signalled(&s->compile_ready);
++}
++
++static bool
++kk_var_mort(struct kk_shader *s)
++{
++   return p_atomic_read(&s->vk.pipeline.cache_obj.ref_cnt) <= 1;
++}
++
++/* Choisit le travail a lancer (retire de la reserve), sous p->mtx. Les
++ * travaux morts sont retires et rendus dans *morts. */
++static struct kk_var_job *
++kk_var_choisir_locked(struct kk_var_pool *p, struct util_dynarray *morts)
++{
++   struct kk_var_job **t = util_dynarray_begin(&p->jobs);
++   unsigned n = util_dynarray_num_elements(&p->jobs, struct kk_var_job *);
++   int meilleur = -1;
++   for (unsigned i = 0; i < n; i++) {
++      struct kk_var_job *j = t[i];
++      if (kk_var_mort(j->vs) || kk_var_mort(j->fs)) {
++         util_dynarray_append_typed(morts, struct kk_var_job *, j);
++         t[i] = NULL;
++         continue;
++      }
++      const bool pret = kk_var_biblio_prete(j->vs) && kk_var_biblio_prete(j->fs);
++      if (!pret && !(p->prendre && (j->urgent || !p->ordre)))
++         continue;
++      if (meilleur < 0) {
++         meilleur = (int)i;
++         continue;
++      }
++      const struct kk_var_job *m = t[meilleur];
++      bool mieux;
++      if (!p->ordre)
++         mieux = j->seq < m->seq;
++      else if ((j->urgent != 0) != (m->urgent != 0))
++         mieux = j->urgent != 0;
++      else if (j->urgent != 0)
++         mieux = j->urgent < m->urgent;
++      else
++         mieux = j->rang_min < m->rang_min ||
++                 (j->rang_min == m->rang_min && j->seq < m->seq);
++      if (mieux)
++         meilleur = (int)i;
++   }
++   struct kk_var_job *choisi = meilleur >= 0 ? t[meilleur] : NULL;
++   if (choisi != NULL)
++      t[meilleur] = NULL;
++   /* compacter (ordre conserve) */
++   unsigned k = 0;
++   for (unsigned i = 0; i < n; i++) {
++      if (t[i] != NULL)
++         t[k++] = t[i];
++   }
++   p->jobs.size = k * sizeof(struct kk_var_job *);
++   for (unsigned i = 0; i < util_dynarray_num_elements(morts, struct kk_var_job *); i++) {
++      struct kk_var_job *j = *util_dynarray_element(morts, struct kk_var_job *, i);
++      _mesa_hash_table_remove_key(p->par_vs, j->vs);
++   }
++   if (choisi != NULL)
++      _mesa_hash_table_remove_key(p->par_vs, choisi->vs);
++   return choisi;
++}
++
+ static void
+-kk_var_execute(void *data, UNUSED void *gdata, UNUSED int thread_index)
++kk_var_construire(struct kk_var_pool *p, struct kk_var_job *j)
+ {
+-   struct kk_var_job *j = data;
+    struct kk_device *dev = j->dev;
+    struct kk_shader *vs = j->vs, *fs = j->fs;
+-   kk_qos_fil(QOS_CLASS_UTILITY);
+-   /* banc (CIDRE_BANC_BIND) : comme la file de fond, retenu jusqu'au depart */
+-   while (atomic_load(&kk_banc_retenue) && !atomic_load(&dev->var_arret))
+-      usleep(1000);
+-   kk_var_ceder(dev);
+-   if (atomic_load(&dev->var_arret))
+-      goto fin;
+-   /* Bibliotheques : prises sur ce fil si personne ne les a lancees, sinon
+-    * attendues (bornees : un fil de compilation mort ne fige pas la file). */
++   struct timespec c0, c1;
++   clock_gettime(CLOCK_THREAD_CPUTIME_ID, &c0);
++   if (p->prendre) {
++      /* ancienne prise (0471) : bibliotheques compilees sur ce fil */
++      struct kk_shader *paire[2] = {vs, fs};
++      for (unsigned i = 0; i < 2; i++) {
++         if (kk_travail_en_attente(paire[i]) && kk_shader_prendre(paire[i]))
++            atomic_fetch_add(&kk_stat_var[7], 1);
++      }
++   }
+    struct kk_shader *paire[2] = {vs, fs};
+    for (unsigned i = 0; i < 2; i++) {
+-      if (kk_travail_en_attente(paire[i]) && kk_shader_prendre(paire[i]))
+-         atomic_fetch_add(&kk_stat_var[7], 1);
+-   }
+-   for (unsigned i = 0; i < 2; i++) {
+       struct kk_shader *s = paire[i];
+       if (!s->compile_async)
+          continue;
+@@ -5022,12 +5253,14 @@
+       goto fin;
+    }
+    for (uint32_t k = 0; k < j->n && !atomic_load(&dev->var_arret); k++) {
+-      kk_var_ceder(dev);
++      kk_var_ceder(p);
+       struct kk_rp_variant_key *key = &j->v[k];
+       key->vs_function = vs->function;
+       key->fs_function = fs->function;
+       simple_mtx_lock(&dev->rp_variant_lock);
+-      const bool deja = _mesa_hash_table_search(dev->rp_variant_cache, key) != NULL;
++      const bool deja = _mesa_hash_table_search(dev->rp_variant_cache, key) != NULL ||
++                        (dev->rp_en_cours != NULL &&
++                         _mesa_hash_table_search(dev->rp_en_cours, key) != NULL);
+       simple_mtx_unlock(&dev->rp_variant_lock);
+       if (deja) {
+          atomic_fetch_add(&kk_stat_var[4], 1);
+@@ -5040,19 +5273,71 @@
+       }
+    }
+ fin:
+-   vk_pipeline_cache_object_unref(&dev->vk, &vs->vk.pipeline.cache_obj);
+-   vk_pipeline_cache_object_unref(&dev->vk, &fs->vk.pipeline.cache_obj);
+-   free(j->v);
+-   free(j);
+-   atomic_fetch_sub(&dev->var_en_file, 1);
++   clock_gettime(CLOCK_THREAD_CPUTIME_ID, &c1);
++   atomic_fetch_add(&kk_stat_var_us[1],
++                    (uint64_t)((c1.tv_sec - c0.tv_sec) * 1000000ll +
++                               (c1.tv_nsec - c0.tv_nsec) / 1000));
++   kk_var_job_liberer(j);
+ }
+ 
+-/* Crochet de creation : met en file les variantes notees de la paire. */
++static void *
++kk_var_fil(void *arg)
++{
++   struct kk_var_pool *p = arg;
++   struct kk_device *dev = p->dev;
++   pthread_set_qos_class_self_np(p->qos, 0);
++   pthread_setname_np("kkvar");
++   struct util_dynarray morts;
++   util_dynarray_init(&morts, NULL);
++   pthread_mutex_lock(&p->mtx);
++   while (!atomic_load(&dev->var_arret)) {
++      /* banc (CIDRE_BANC_BIND) : retenu jusqu'au depart, comme la file de fond */
++      if (atomic_load(&kk_banc_retenue) || kk_var_doit_ceder(p)) {
++         pthread_mutex_unlock(&p->mtx);
++         kk_var_ceder(p);
++         if (atomic_load(&kk_banc_retenue))
++            usleep(1000);
++         pthread_mutex_lock(&p->mtx);
++         continue;
++      }
++      struct kk_var_job *j = kk_var_choisir_locked(p, &morts);
++      if (morts.size != 0) {
++         pthread_mutex_unlock(&p->mtx);
++         util_dynarray_foreach(&morts, struct kk_var_job *, m) {
++            atomic_fetch_add(&kk_stat_var[12], 1);
++            kk_var_job_liberer(*m);
++         }
++         util_dynarray_clear(&morts);
++         pthread_mutex_lock(&p->mtx);
++      }
++      if (j == NULL) {
++         /* rien de pret : bibliotheques en cours ailleurs, revoir sous peu */
++         struct timespec ts;
++         clock_gettime(CLOCK_REALTIME, &ts);
++         ts.tv_nsec += 20 * 1000000;
++         if (ts.tv_nsec >= 1000000000) {
++            ts.tv_sec++;
++            ts.tv_nsec -= 1000000000;
++         }
++         pthread_cond_timedwait(&p->cnd, &p->mtx, &ts);
++         continue;
++      }
++      pthread_mutex_unlock(&p->mtx);
++      kk_var_construire(p, j);
++      pthread_mutex_lock(&p->mtx);
++   }
++   pthread_mutex_unlock(&p->mtx);
++   util_dynarray_fini(&morts);
++   return NULL;
++}
++
++/* Crochet de creation : met en reserve les variantes notees de la paire. */
+ static void
+ kk_var_enfiler(struct kk_device *dev, uint32_t count,
+                struct vk_shader *const *shaders)
+ {
+-   if (atomic_load(&dev->var_arret))
++   struct kk_var_pool *p = dev->var_pool;
++   if (p == NULL || atomic_load(&dev->var_arret))
+       return;
+    struct kk_shader *vs = NULL, *fs = NULL;
+    for (uint32_t i = 0; i < count; i++) {
+@@ -5067,9 +5352,9 @@
+    }
+    if (vs == NULL || fs == NULL)
+       return;
+-   uint32_t n;
++   uint32_t n, rang;
+    struct kk_rp_variant_key *v =
+-      kk_var_copier(vs->vk.pipeline.cache_key, fs->vk.pipeline.cache_key, &n, vs);
++      kk_var_copier(vs->vk.pipeline.cache_key, fs->vk.pipeline.cache_key, &n, vs, &rang);
+    if (v == NULL)
+       return;
+    struct kk_var_job *j = calloc(1, sizeof(*j));
+@@ -5082,19 +5367,54 @@
+    j->fs = fs;
+    j->n = n;
+    j->v = v;
++   j->rang_min = rang;
+    vk_pipeline_cache_object_ref(&vs->vk.pipeline.cache_obj);
+    vk_pipeline_cache_object_ref(&fs->vk.pipeline.cache_obj);
+    atomic_fetch_add(&dev->var_en_file, 1);
+    atomic_fetch_add(&kk_stat_var[8], 1);
+-   util_queue_add_job(&dev->var_queue, j, NULL, kk_var_execute, NULL, 0);
++   pthread_mutex_lock(&p->mtx);
++   if (_mesa_hash_table_search(p->par_vs, vs) != NULL) {
++      pthread_mutex_unlock(&p->mtx);
++      kk_var_job_liberer(j);
++      atomic_fetch_sub(&kk_stat_var[8], 1);
++      return;
++   }
++   j->seq = p->seq++;
++   util_dynarray_append_typed(&p->jobs, struct kk_var_job *, j);
++   _mesa_hash_table_insert(p->par_vs, vs, j);
++   pthread_cond_signal(&p->cnd);
++   pthread_mutex_unlock(&p->mtx);
+ }
+ 
++/* Premier bind d'un VS (ou variante notee construite au dessin) : sa paire
++ * passe devant. */
+ static void
++kk_var_urgent(struct kk_shader *vs)
++{
++   struct kk_var_pool *p = atomic_load(&kk_var_pool_actif);
++   if (p == NULL || vs == NULL)
++      return;
++   pthread_mutex_lock(&p->mtx);
++   struct hash_entry *e = _mesa_hash_table_search(p->par_vs, vs);
++   if (e != NULL) {
++      struct kk_var_job *j = e->data;
++      if (j->urgent == 0) {
++         j->urgent = ++p->seq_urgent;
++         atomic_fetch_add(&kk_stat_var[11], 1);
++         pthread_cond_signal(&p->cnd);
++      }
++   }
++   pthread_mutex_unlock(&p->mtx);
++}
++
++static void
+ kk_var_init(struct kk_device *dev)
+ {
+    dev->var_queue_ok = false;
++   dev->var_pool = NULL;
+    atomic_store(&dev->var_arret, false);
+    atomic_store(&dev->var_en_file, 0);
++   kk_var_t0 = os_time_get_nano();
+    const char *v = getenv("CIDRE_VARIANTES");
+    if (v != NULL && v[0] == '0')
+       return;
+@@ -5122,31 +5442,68 @@
+    if (!table || !kk_var_fond_actif() ||
+        (getenv("CIDRE_REJEU") != NULL && kk_env_u("CIDRE_BANC_BIND", 0) == 0))
+       return;
+-   const unsigned n = kk_env_u("CIDRE_VARIANTES_FILS", 3);
++   const unsigned n = MIN2(kk_env_u("CIDRE_VARIANTES_FILS", 3), 16u);
+    if (n == 0)
+       return;
+-   dev->var_queue_ok = util_queue_init(&dev->var_queue, "kkvar", 4096, CLAMP(n, 1, 16),
+-                                       UTIL_QUEUE_INIT_RESIZE_IF_FULL, NULL);
+-   if (dev->var_queue_ok)
+-      dev->vk.cidre_shaders_crees = kk_shaders_crees;
++   struct kk_var_pool *p = calloc(1, sizeof(*p));
++   if (p == NULL)
++      return;
++   p->dev = dev;
++   pthread_mutex_init(&p->mtx, NULL);
++   pthread_cond_init(&p->cnd, NULL);
++   util_dynarray_init(&p->jobs, NULL);
++   p->par_vs = _mesa_pointer_hash_table_create(NULL);
++   p->ordre = kk_env_u("CIDRE_VARIANTES_ORDRE", 1) != 0;
++   p->prendre = kk_env_u("CIDRE_VARIANTES_PRENDRE", 0) != 0;
++   p->cede_dessins = kk_env_u("CIDRE_VARIANTES_CEDE", 0) != 0;
++   const char *q = getenv("CIDRE_VARIANTES_QOS");
++   p->qos = q != NULL && strcmp(q, "background") == 0 ? QOS_CLASS_BACKGROUND
++          : q != NULL && strcmp(q, "interactif") == 0 ? QOS_CLASS_USER_INITIATED
++                                                       : QOS_CLASS_UTILITY;
++   for (unsigned i = 0; i < n; i++) {
++      if (pthread_create(&p->fils[p->nfils], NULL, kk_var_fil, p) == 0)
++         p->nfils++;
++   }
++   if (p->nfils == 0 || p->par_vs == NULL) {
++      atomic_store(&dev->var_arret, true);
++      for (unsigned i = 0; i < p->nfils; i++)
++         pthread_join(p->fils[i], NULL);
++      atomic_store(&dev->var_arret, false);
++      if (p->par_vs)
++         _mesa_hash_table_destroy(p->par_vs, NULL);
++      util_dynarray_fini(&p->jobs);
++      free(p);
++      return;
++   }
++   dev->var_pool = p;
++   dev->var_queue_ok = true;
++   atomic_store(&kk_var_pool_actif, p);
++   dev->vk.cidre_shaders_crees = kk_shaders_crees;
+ }
+ 
+ static void
+ kk_var_finish(struct kk_device *dev)
+ {
+-   if (!dev->var_queue_ok)
++   struct kk_var_pool *p = dev->var_pool;
++   if (p == NULL)
+       return;
++   struct kk_var_pool *attendu = p;
++   atomic_compare_exchange_strong(&kk_var_pool_actif, &attendu, NULL);
+    atomic_store(&dev->var_arret, true);
+-   for (unsigned n = 0; atomic_load(&dev->var_en_file) != 0; n++) {
+-      if (n == 60000) {
+-         fprintf(stderr, "[CIDRE] vkDestroyDevice : %u travaux de variantes "
+-                         "toujours en file apres 60 s\n",
+-                 atomic_load(&dev->var_en_file));
+-         break;
+-      }
+-      usleep(1000);
+-   }
+-   util_queue_destroy(&dev->var_queue);
++   pthread_mutex_lock(&p->mtx);
++   pthread_cond_broadcast(&p->cnd);
++   pthread_mutex_unlock(&p->mtx);
++   for (unsigned i = 0; i < p->nfils; i++)
++      pthread_join(p->fils[i], NULL);
++   /* travaux jamais lances : rendre les references */
++   util_dynarray_foreach(&p->jobs, struct kk_var_job *, j)
++      kk_var_job_liberer(*j);
++   util_dynarray_fini(&p->jobs);
++   _mesa_hash_table_destroy(p->par_vs, NULL);
++   pthread_cond_destroy(&p->cnd);
++   pthread_mutex_destroy(&p->mtx);
++   free(p);
++   dev->var_pool = NULL;
+    dev->var_queue_ok = false;
+ }
+ 
+@@ -5870,7 +6227,7 @@
+          /* Cidre (0471) : et les variantes notees en jeu pour cette paire. */
+          uint32_t nv = 0;
+          struct kk_rp_variant_key *v =
+-            kk_var_copier(j->vs_cle, j->fs_cle, &nv, NULL);
++            kk_var_copier(j->vs_cle, j->fs_cle, &nv, NULL, NULL);
+          for (uint32_t k = 0; k < nv; k++) {
+             if (!kk_var_apte(dev, vs->function, vs, fs))
+                break;
+@@ -6014,6 +6371,8 @@
+    unsigned max, crees, absents, illisibles, vus;
+    struct vk_shader **sh;
+    unsigned cap;
++   bool notees;   /* 0474 : seulement les paires du fichier des variantes */
++   uint32_t *rang;
+ };
+ 
+ static struct vk_shader *
+@@ -6057,6 +6416,8 @@
+       if (taille < sizeof(cles) ||
+           pread(b->fd_p, cles, sizeof(cles), pos) != (ssize_t)sizeof(cles))
+          return;
++      if (b->notees && kk_var_rang_paire(cles, cles + KK_BASE_CLE) == UINT32_MAX)
++         return;
+       out[0] = kk_banc_relire(b->dev, cles);
+       out[1] = out[0] ? kk_banc_relire(b->dev, cles + KK_BASE_CLE) : NULL;
+       if (out[0] == NULL || out[1] == NULL) {
+@@ -6096,8 +6457,17 @@
+    }
+    b->sh[b->crees * 2] = out[0];
+    b->sh[b->crees * 2 + 1] = out[1];
++   if (b->notees) {
++      b->rang = realloc(b->rang, b->cap / 2 * sizeof(uint32_t));
++      b->rang[b->crees] = kk_var_rang_paire(out[0]->pipeline.cache_key,
++                                            out[1]->pipeline.cache_key);
++   }
+    b->crees++;
+-   kk_shaders_crees(&b->dev->vk, 2, out);
++   /* 0474 : en mode notees, crochet de creation apres le parcours, dans un
++    * ordre melange (le jeu cree ses PSO dans un ordre sans rapport avec leur
++    * premiere utilisation). */
++   if (!b->notees)
++      kk_shaders_crees(&b->dev->vk, 2, out);
+ }
+ 
+ /* Cidre (0473) : cles de variantes d'un dessin simule (CIDRE_BANC_VARIANTES=N,
+@@ -6157,6 +6527,11 @@
+    b.ix = ix;
+    b.relus = kk_env_u("CIDRE_BANC_RELUS", 0) != 0;
+    b.max = kk_env_u("CIDRE_REJEU_MAX", 2000);
++   /* Cidre (0474) : CIDRE_BANC_NOTEES=1 : rejoue l'usage d'une partie : les
++    * paires du fichier des variantes (CIDRE_VARIANTES), liees dans l'ordre de
++    * premiere utilisation, chaque dessin cherchant toutes leurs variantes
++    * notees. */
++   b.notees = kk_env_u("CIDRE_BANC_NOTEES", 0) != 0 && kk_var_table != NULL;
+    const unsigned nb = kk_env_u("CIDRE_BANC_BIND", 50);
+    const unsigned pause_ms = kk_env_u("CIDRE_BANC_PAUSE_MS", 20);
+    char chemin[1024];
+@@ -6165,6 +6540,24 @@
+    const int64_t t0 = os_time_get_nano();
+    atomic_store(&kk_banc_retenue, true);
+    kk_base_parcourir(chemin, KK_BASE_MAGIC_P, NULL, kk_banc_un, &b);
++   if (b.notees && b.crees > 0) {
++      unsigned *perm = malloc(b.crees * sizeof(*perm));
++      for (unsigned i = 0; i < b.crees; i++)
++         perm[i] = i;
++      if (kk_env_u("CIDRE_BANC_MELANGE", 1)) {
++         uint32_t x = 12345u;
++         for (unsigned i = b.crees - 1; i > 0; i--) {
++            x = x * 1103515245u + 12345u;
++            const unsigned j = (x >> 8) % (i + 1);
++            unsigned t = perm[i];
++            perm[i] = perm[j];
++            perm[j] = t;
++         }
++      }
++      for (unsigned i = 0; i < b.crees; i++)
++         kk_shaders_crees(&dev->vk, 2, &b.sh[2 * perm[i]]);
++      free(perm);
++   }
+    const int64_t t1 = os_time_get_nano();
+    fprintf(stderr, "kk: banc bind : %u pipelines crees (%s) en %.1f s, %u absents du cache, "
+                    "%u illisibles ; file de fond %u ; prise=%d cede=%d\n",
+@@ -6177,15 +6570,30 @@
+ 
+    uint64_t *dt = calloc(nb ? nb : 1, sizeof(uint64_t));
+    unsigned faits = 0, attendus = 0;
+-   const unsigned nvar = kk_env_u("CIDRE_BANC_VARIANTES", 0);
++   const unsigned nvar = b.notees ? 1u : kk_env_u("CIDRE_BANC_VARIANTES", 0);
++   unsigned *ordre = NULL;
++   if (b.notees && b.crees > 0) {
++      ordre = malloc(b.crees * sizeof(*ordre));
++      for (unsigned i = 0; i < b.crees; i++)
++         ordre[i] = i;
++      for (unsigned i = 1; i < b.crees; i++)
++         for (unsigned j = i; j > 0 && b.rang[ordre[j]] < b.rang[ordre[j - 1]]; j--) {
++            unsigned t = ordre[j];
++            ordre[j] = ordre[j - 1];
++            ordre[j - 1] = t;
++         }
++   }
++   struct rusage ru0;
++   getrusage(RUSAGE_SELF, &ru0);
++   const uint64_t vcpu0 = atomic_load(&kk_stat_var_us[1]);
+    uint64_t dv_somme = 0, dv_max = 0;
+    unsigned dv_paires = 0;
+    const uint32_t var0 = atomic_load(&kk_stat_fond[9]);
+    const uint32_t vfond0 = atomic_load(&kk_stat_var[3]);
+    const unsigned pas = b.crees > nb && nb ? b.crees / nb : 1;
+    const int64_t t2 = os_time_get_nano();
+-   for (unsigned k = 0; k < nb && k * pas < b.crees; k++) {
+-      const unsigned p = b.crees - 1 - k * pas;
++   for (unsigned k = 0; k < nb && (ordre ? k < b.crees : k * pas < b.crees); k++) {
++      const unsigned p = ordre ? ordre[k] : b.crees - 1 - k * pas;
+       struct vk_shader *paire[2] = {b.sh[2 * p], b.sh[2 * p + 1]};
+       const mesa_shader_stage st[2] = {MESA_SHADER_VERTEX, MESA_SHADER_FRAGMENT};
+       const int64_t ta = os_time_get_nano();
+@@ -6205,8 +6613,11 @@
+          struct kk_shader *vsk = container_of(paire[0], struct kk_shader, vk);
+          struct kk_shader *fsk = container_of(paire[1], struct kk_shader, vk);
+          uint32_t nk = 0;
+-         struct kk_rp_variant_key *v =
+-            kk_var_apte(dev, vsk->function, vsk, fsk) ? kk_banc_synth(vsk, fsk, nvar, &nk) : NULL;
++         struct kk_rp_variant_key *v = NULL;
++         if (kk_var_apte(dev, vsk->function, vsk, fsk))
++            v = b.notees ? kk_var_copier(vsk->vk.pipeline.cache_key, fsk->vk.pipeline.cache_key,
++                                         &nk, NULL, NULL)
++                         : kk_banc_synth(vsk, fsk, nvar, &nk);
+          const int64_t tv = os_time_get_nano();
+          kk_variante_au_dessin = true;
+          for (uint32_t k = 0; k < nk; k++)
+@@ -6238,6 +6649,14 @@
+            faits ? dt[faits - 1] / 1000.0 : 0.0,
+            fond1 - fond0, (fond1 - fond0) / ((t3 - t2) / 1e9),
+            atomic_load(&dev->fond_en_file));
++   struct rusage ru1;
++   getrusage(RUSAGE_SELF, &ru1);
++   const double cpu_ms = (ru1.ru_utime.tv_sec - ru0.ru_utime.tv_sec + ru1.ru_stime.tv_sec - ru0.ru_stime.tv_sec) * 1e3 +
++                         (ru1.ru_utime.tv_usec - ru0.ru_utime.tv_usec + ru1.ru_stime.tv_usec - ru0.ru_stime.tv_usec) / 1e3;
++   fprintf(stderr, "kk: banc processeur : processus %.0f ms pendant les binds (%.2f s), dont fils kkvar %.0f ms\n",
++           cpu_ms, (t3 - t2) / 1e9, (atomic_load(&kk_stat_var_us[1]) - vcpu0) / 1000.0);
++   free(ordre);
++   free(b.rang);
+    if (nvar)
+       fprintf(stderr, "kk: banc variantes : %u paires dessinees, %u variantes construites au dessin, "
+                       "temps des dessins %.1f ms (max %.2f ms) ; %u construites en fond pendant le banc\n",
+diff --git a/src/kosmickrisp/vulkan/kk_shader.h b/src/kosmickrisp/vulkan/kk_shader.h
+--- a/src/kosmickrisp/vulkan/kk_shader.h
++++ b/src/kosmickrisp/vulkan/kk_shader.h
+@@ -307,6 +307,7 @@
+ #define KK_FOND_FROID    0x20u /* coquille d'un travail frontal (cache froid) */
+ #define KK_FOND_DELAI    0x40u /* delai creation -> bind deja compte */
+ #define KK_FOND_RAFALE   0x80u /* enfile en fond pendant une rafale (inconnu) */
++#define KK_FOND_VAR      0x100u /* premier bind vu par la reserve kkvar (0474) */
+ 
+ /* Vrai sur le fil d'encodage pendant la recherche de variante d'un dessin. */
+ extern _Thread_local bool kk_variante_au_dessin;

@@ -1,0 +1,64 @@
+Generated-by: LLM
+
+fex : rpmalloc, retenue des pages libres par fil (CIDRE_RPMALLOC_RETENUE)
+
+rpmalloc ne gardait aucune page libre (retenue 0) : chaque bloc servi engageait puis desengageait de la
+memoire (sortie de l'ilot a chaque fois). Retenue de 16 pages / 2 Mio par fil (rpmalloc_cidre_retenue,
+reglable par CIDRE_RPMALLOC_RETENUE). 4 fils sous charge : 21,5 -> 16,6 us par bloc ; 1 fil : 8,8 -> 7,9 us.
+Memoire de D4 : quelques centaines de Mio de plus au pire. Touche External/rpmalloc (sous-module).
+Chantier : ~/Dev/cidre-d4-fexdisque (RAPPORT-0488.md).
+
+diff --git a/External/rpmalloc/rpmalloc/rpmalloc.c b/External/rpmalloc/rpmalloc/rpmalloc.c
+--- a/External/rpmalloc/rpmalloc/rpmalloc.c
++++ b/External/rpmalloc/rpmalloc/rpmalloc.c
+@@ -591,6 +591,13 @@
+ 	return 0;
+ #endif
+ }
++void
++rpmalloc_cidre_retenue(const uint32_t* debordement, const uint32_t* retenue) {
++	for (int i = 0; i < 4; ++i) {
++		global_page_free_overflow[i] = debordement[i];
++		global_page_free_retain[i] = retenue[i];
++	}
++}
+ 
+ //! OS huge page support
+ static int os_huge_pages;
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -70,6 +70,7 @@
+ #include <winnt.h>
+ #include <wine/debug.h>
+ 
++extern "C" void rpmalloc_cidre_retenue(const uint32_t* debordement, const uint32_t* retenue);
+ namespace Exception {
+ class ECSyscallHandler;
+ }
+@@ -1007,6 +1008,25 @@
+   FEX::Windows::SetupEnvironmentVariableValues(NtDll);
+ 
+   FEX::Windows::Allocator::SetupHooks(NtDll);
++  // Cidre 0488 : retenue des pages libres engagees de rpmalloc (CIDRE_RPMALLOC_RETENUE=petites,moyennes,grandes ; 0,0,0 = amont)
++  {
++    // defaut 0489 : 16 petites (64 Kio), 2 moyennes (4 Mio), 0 grande
++    uint32_t Deb[4] = {32, 4, 0, 0}, Ret[4] = {16, 2, 0, 0};
++    const char* E = getenv("CIDRE_RPMALLOC_RETENUE");
++    if (!E || !*E) {
++      rpmalloc_cidre_retenue(Deb, Ret);
++    } else {
++      std::fill(std::begin(Deb), std::end(Deb), 0u);
++      std::fill(std::begin(Ret), std::end(Ret), 0u);
++      char* Fin = nullptr;
++      for (int i = 0; i < 3 && E && *E; i++) {
++        Ret[i] = (uint32_t)strtoul(E, &Fin, 10);
++        Deb[i] = Ret[i] ? 2 * Ret[i] : 0;
++        E = (Fin && *Fin == ',') ? Fin + 1 : nullptr;
++      }
++      rpmalloc_cidre_retenue(Deb, Ret);
++    }
++  }
+   FEX::Windows::UnixLib::Init(NtDll);
+   if (FEX::Windows::UnixLib::Available()) {
+     FEXCore::DiskCache::SetFileMapper(FEX::Windows::UnixLib::MapFile);

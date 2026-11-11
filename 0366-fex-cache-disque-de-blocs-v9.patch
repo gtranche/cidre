@@ -1,0 +1,1451 @@
+Generated-by: LLM
+
+fex : cache disque de blocs (DiskCache amont) sous Wine ARM64EC et dans l'ilot (CIDRE_FEX_DISQUE), v9
+
+Active le cache disque amont de FEX (DiskCache, FEX_DISKCACHE) pour xtajit64 : CIDRE_FEX_DISQUE=1, taille
+CIDRE_FEX_DISQUE_MO, plafond CIDRE_FEX_DISQUE_MAX_MO, prechargement, blocs valides seulement
+(CIDRE_FEX_DISQUE_VALIDES). Les octets du bloc sont relus comme le decodeur (alias des pages mixtes) ;
+l'armement des jumelles reste permis et les intervalles armes sont gardes ; relocations de la sonnette (0306)
+et des talons ; deux defauts amont corriges. Coupe par defaut. Options d'essai coupees dans le reglage de D4 :
+cle anonyme brute (CIDRE_FEX_DISQUE_CLE_BRUTE=0, regression a chaud), repere sans verrou (CIDRE_ARME_RAPIDE=0).
+D4 (M1, menu, 07-08/11) : blocs compiles -72 %, JIT 21,2 -> 8,2 s au menu chaud.
+Chantier : ~/Dev/cidre-d4-fexcache (cache v9).
+
+diff --git a/FEXCore/Source/Interface/Context/Context.h b/FEXCore/Source/Interface/Context/Context.h
+--- a/FEXCore/Source/Interface/Context/Context.h
++++ b/FEXCore/Source/Interface/Context/Context.h
+@@ -132,7 +132,7 @@
+   // Same but on disk cache packed relocations
+   [[nodiscard]]
+   bool ApplyPackedCodeRelocations(uint64_t GuestDelta, std::span<std::byte> Code, std::span<const DiskCache::BlobSmallRelocation> SmallRelocs,
+-                                  std::span<const DiskCache::BlobThunkRelocation> ThunkRelocs);
++                                  std::span<const DiskCache::BlobThunkRelocation> ThunkRelocs, Core::InternalThreadState* CidreFil = nullptr);
+ };
+ 
+ class ContextImpl final : public FEXCore::Context::Context, public CPU::SharedCodeBufferManager {
+diff --git a/FEXCore/Source/Interface/Core/CodeCache.cpp b/FEXCore/Source/Interface/Core/CodeCache.cpp
+--- a/FEXCore/Source/Interface/Core/CodeCache.cpp
++++ b/FEXCore/Source/Interface/Core/CodeCache.cpp
+@@ -6,6 +6,7 @@
+ #include "FEXCore/fextl/memory.h"
+ #include <FEXCore/Utils/Profiler.h>
+ #include <FEXCore/Utils/SpinWaitLock.h>
++#include <FEXCore/Utils/CidreSonnetteFaute.h>
+ 
+ #include <Interface/Context/Context.h>
+ #include <Interface/Core/ArchHelpers/Arm64Emitter.h>
+@@ -575,7 +576,7 @@
+ 
+ bool CodeCache::ApplyPackedCodeRelocations(uint64_t GuestEntry, std::span<std::byte> Code,
+                                            std::span<const DiskCache::BlobSmallRelocation> SmallRelocs,
+-                                           std::span<const DiskCache::BlobThunkRelocation> ThunkRelocs) {
++                                           std::span<const DiskCache::BlobThunkRelocation> ThunkRelocs, Core::InternalThreadState* CidreFil) {
+   CPU::Arm64Emitter Emitter(&CTX, Code.data(), Code.size_bytes());
+   for (auto& Reloc : SmallRelocs) {
+     LOGMAN_THROW_A_FMT(Reloc.Offset < Code.size_bytes(), "Invalid relocation offset");
+@@ -608,11 +609,33 @@
+       break;
+     }
+     case FEXCore::CPU::RelocationTypes::RELOC_GUEST_PATCHABLE_CRC_MOVE: {
++      if (CidreFil) {
++        // Cidre : octets relus comme le decodeur (alias des pages mixtes), jamais en direct
++        uint8_t Octets[16];
++        if (Reloc.PatchableData.ValueSize > sizeof(Octets) ||
++            !CidreFil->FrontendDecoder->CidreRelire(reinterpret_cast<const uint8_t*>(GuestEntry + Reloc.PatchableData.SiteOffset), Octets,
++                                                    Reloc.PatchableData.ValueSize)) {
++          return false;
++        }
++        Emitter.LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Register(Reloc.PatchableData.RegisterIndex),
++                             FEXCore::Utils::crc32(Octets, Reloc.PatchableData.ValueSize), CPU::Arm64Emitter::PadType::DOPAD);
++        break;
++      }
+       ApplyPatchableCRCMoveRelocation(GuestEntry + Reloc.PatchableData.SiteOffset, Reloc.PatchableData.ValueSize,
+                                       Reloc.PatchableData.RegisterIndex, Emitter);
+       break;
+     }
+-    default: ERROR_AND_DIE_FMT("Unknown packed relocation type {}", ToUnderlying((CPU::RelocationTypes)Reloc.Type));
++    case FEXCore::CPU::RelocationTypes::RELOC_CIDRE_SONNETTE_MOVE: {
++      // Cidre : page de la sonnette de CE processus ; sans elle (CIDRE_SONNETTE_FAUTE=0), le bloc garde n'est pas resservi
++      const uint64_t Page = FEXCore::CidreSonnetteFaute::Page;
++      if (!Page) {
++        return false;
++      }
++      Emitter.LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Register(Reloc.PatchableData.RegisterIndex), Page,
++                           CPU::Arm64Emitter::PadType::DOPAD);
++      break;
++    }
++    default: LogMan::Msg::EFmt("cidre disque : relocation inconnue {}", (uint32_t)Reloc.Type); return false;
+     }
+   }
+   for (auto& Reloc : ThunkRelocs) {
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -1061,13 +1061,17 @@
+ ContextImpl::GenerateIRResult
+ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t GuestRIP, bool ExtendedDebugInfo, uint64_t MaxInst) {
+   FEXCORE_PROFILE_SCOPED("GenerateIR");
+-  if (CidreCompte() || CidreCache()) {
+-    // Cidre (CIDRE_COMPTE_COMPIL, CIDRE_CACHE_BLOCS) : empreinte et octets du bloc, instruction par instruction
++  const bool CidreDisqueEcrit = DiskCache.IsWritingDiskCache();
++  if (CidreCompte() || CidreCache() || CidreDisqueEcrit) {
++    // Cidre (CIDRE_COMPTE_COMPIL, CIDRE_CACHE_BLOCS, cache disque) : empreinte et octets du bloc, instruction par instruction
+     Thread->FrontendDecoder->CidreEmpreinte = 0;
+     Thread->FrontendDecoder->CidreSegments.clear();
+-    Thread->FrontendDecoder->CidreCollecte = CidreCache() != nullptr;
++    Thread->FrontendDecoder->CidreCollecte = CidreCache() != nullptr || CidreDisqueEcrit;
+   }
+   Thread->FrontendDecoder->CidreArmeDebut = Thread->FrontendDecoder->CidreArmeFin = 0; // Cidre : armement groupe
++  Thread->FrontendDecoder->CidreDisqueArmes.clear(); // Cidre : cache disque
++  Thread->FrontendDecoder->CidreDisqueValide = false;
++  Thread->FrontendDecoder->CidreDisqueValides.clear();
+ 
+   Thread->OpDispatcher->ResetWorkingList();
+ 
+@@ -1189,7 +1193,7 @@
+         // that more explicitly later.
+         Thread->OpDispatcher->FlushRegisterCache(true);
+ 
+-        if (DecodedInfo->InstSize && (CidreCompte() || CidreCache())) {
++        if (DecodedInfo->InstSize && (CidreCompte() || CidreCache() || CidreDisqueEcrit)) {
+           auto* D = Thread->FrontendDecoder.get();
+           if (DecodedInfo->InstSize > 16) {
+             D->CidreCollecte = false; // ne devrait pas arriver (x86 : 15 octets au plus) : bloc non garde
+@@ -1235,7 +1239,9 @@
+           if (CidreChaude) {
+             ::FEXCore::CidreMesure::ValidationsForcees.fetch_add(1, std::memory_order_relaxed);
+           }
+-          if (GuestCodeArmed && !WantsDiskCachePatching && !CidreChaude) {
++          // Cidre (cache disque) : l'armement reste permis avec le cache disque ; les intervalles armes sont gardes avec le
++          // bloc et rearmes (puis les octets relus) avant de le resservir (CidreDisqueRearmer).
++          if (GuestCodeArmed && !CidreChaude) {
+             auto* DA = Thread->FrontendDecoder.get();
+             const uint64_t Fin = InstAddress + DecodedInfo->InstSize;
+             if (CidreArmeGroupe() && InstAddress >= DA->CidreArmeDebut && Fin <= DA->CidreArmeFin) {
+@@ -1261,6 +1267,14 @@
+             uint8_t Relus[16];
+             Thread->FrontendDecoder->ReadCode(Relus, ExistingCodePtr, DecodedInfo->InstSize);
+             CidreArme = FEXCore::Utils::crc32(Relus, DecodedInfo->InstSize) == Value;
++            if (CidreArme) {
++              auto& A = Thread->FrontendDecoder->CidreDisqueArmes;
++              if (!A.empty() && A.back().first + A.back().second == InstAddress) {
++                A.back().second += DecodedInfo->InstSize;
++              } else {
++                A.emplace_back(InstAddress, DecodedInfo->InstSize);
++              }
++            }
+             if (auto* D = Thread->FrontendDecoder.get(); D->CidreCollecte) {
+               // le cache doit rearmer ces octets et les relire avant de reinstaller ; s'ils different de ceux gardes, le
+               // bloc n'est pas garde (le code compile depend des octets relus)
+@@ -1280,6 +1294,15 @@
+             }
+           }
+           if (!CidreArme) {
++            Thread->FrontendDecoder->CidreDisqueValide = true;
++            {
++              auto& V = Thread->FrontendDecoder->CidreDisqueValides;
++              if (!V.empty() && V.back().first + V.back().second == InstAddress) {
++                V.back().second += DecodedInfo->InstSize;
++              } else {
++                V.emplace_back(InstAddress, DecodedInfo->InstSize);
++              }
++            }
+             auto InstAddressReg = Thread->OpDispatcher->_EntrypointOffset(GPRSize, InstAddress - GuestRIP);
+             auto CRC = WantsDiskCachePatching ?
+                          Thread->OpDispatcher->_PatchableGuestCRC(IR::OpSize::i64Bit, Value, (int64_t)ExistingCodePtr, DecodedInfo->InstSize) :
+@@ -1541,8 +1564,171 @@
+     .Length = Length,
+     .NeedsAddGuestCodeRanges = NeedsAddGuestCodeRanges,
+   };
++}
++
++
++// Cidre (cache disque, FEX_DISKCACHE=1) : compteurs et journal (toutes les 2 s, CNTVCT, une seule ligne a la fois) ;
++// classes 0 = .exe, 1 = autre image (DLL), 2 = code anonyme.
++namespace {
++struct CidreDisqueStats {
++  std::atomic<uint64_t> Consult {}, Succes[3] {}, RefusArme {}, RefusRelu {}, Stockes[3] {}, Compil[3] {}, CompilTicks[3] {};
++  std::atomic<uint64_t> SuccesTicks {}, NonValide {}, NonCollecte {}, NonRelu {}, NonStore {}, Interdit {};
++  std::atomic<uint64_t> TicksLookup {}, TicksLookupEchec {}, TicksPose {}, TicksEmpreinte {};
++  std::atomic<uint64_t> RefusRaison[3] {}, TicksRearm {}, NbAppelsArme {}, TicksCharge {}, VarServis {}, VarArmables {}, VarStockes {};
++  std::atomic<uint64_t> Dernier {};
++  int8_t Valides = -1; // CIDRE_FEX_DISQUE_VALIDES
++  uint64_t TotSucces = 0, TotCompil = 0, TotStockes = 0;
++  uint64_t MinDebut = 0, MinServis = 0, MinCompil = 0, MinStockes = 0; // ligne par minute (partie du joueur)
++  double MinMsCompil = 0, MinMsService = 0;
++  double TotMsCompil = 0;
++};
++CidreDisqueStats CidreDisque;
++int CidreDisqueClasse(const std::optional<FEXCore::ExecutableFileSectionInfo>& Region) {
++  if (!Region || !Region->FileStartVA) {
++    return 2;
++  }
++  const auto& N = Region->FileInfo.Filename;
++  return (N.size() >= 4 && N.compare(N.size() - 4, 4, ".exe") == 0) ? 0 : 1;
++}
++} // namespace
++
++void CidreDisqueJournal(FEXCore::DiskCache::DiskCache& DC) {
++  auto& S = CidreDisque;
++  const uint64_t F = ::FEXCore::CidreMesure::Freq(), T = ::FEXCore::CidreMesure::Tick();
++  uint64_t D = S.Dernier.load(std::memory_order_relaxed);
++  if (!F || T - D < 2 * F || !S.Dernier.compare_exchange_strong(D, T, std::memory_order_relaxed)) {
++    return;
++  }
++  auto X = [](std::atomic<uint64_t>& A) { return A.exchange(0, std::memory_order_relaxed); };
++  uint64_t Su[3], St[3], Co[3];
++  double Ms[3];
++  for (int i = 0; i < 3; i++) {
++    Su[i] = X(S.Succes[i]); St[i] = X(S.Stockes[i]); Co[i] = X(S.Compil[i]); Ms[i] = X(S.CompilTicks[i]) * 1000.0 / F;
++  }
++  const double MsSucces = X(S.SuccesTicks) * 1000.0 / F;
++  S.TotSucces += Su[0] + Su[1] + Su[2];
++  S.TotCompil += Co[0] + Co[1] + Co[2];
++  S.TotStockes += St[0] + St[1] + St[2];
++  S.TotMsCompil += Ms[0] + Ms[1] + Ms[2];
++  S.MinServis += Su[0] + Su[1] + Su[2];
++  S.MinCompil += Co[0] + Co[1] + Co[2];
++  S.MinStockes += St[0] + St[1] + St[2];
++  S.MinMsCompil += Ms[0] + Ms[1] + Ms[2];
++  S.MinMsService += MsSucces;
++  if (!S.MinDebut) {
++    S.MinDebut = T;
++  } else if (T - S.MinDebut >= 60 * F) {
++    LogMan::Msg::IFmt("cidre disque minute : t {} ms ; servis {}, compiles {} ({:.0f} ms de compilation), service {:.0f} ms, stockes {}, "
++                      "recopies de l'ancienne generation {}",
++                      T * 1000 / F, S.MinServis, S.MinCompil, S.MinMsCompil, S.MinMsService, S.MinStockes,
++                      DC.CidrePromotions.load(std::memory_order_relaxed));
++    S.MinDebut = T;
++    S.MinServis = S.MinCompil = S.MinStockes = 0;
++    S.MinMsCompil = S.MinMsService = 0;
++  }
++  LogMan::Msg::IFmt("cidre disque : t {} ms ; consultations {}, servis exe/dll/anon {}/{}/{} ({:.1f} ms), refus rearmement {}, relus differents {} ; "
++                    "compiles exe/dll/anon {}/{}/{} (ms {:.1f}/{:.1f}/{:.1f}) ; stockes {}/{}/{} ; non stockes : valides {}, non collectes {}, "
++                    "relus {}, refus store {} (relocs {}, avant entree {}, type {}), interdits {} ; total : servis {}, compiles {} ({:.0f} ms), stockes {} ; "
++                    "echecs consult {}/{}/{}/{}/{}/{}/{}/{} ; refus rearm (sans/chaude/refuse) {}/{}/{} ; ms rearm {:.1f} ({} appels), charge {:.1f}, "
++                    "lecture {:.1f} (disque {}, memoire {}) ; precharge {} Mio ; variante validee : servis {}, armables {}, stockes {} ; "
++                    "ms consult {:.1f}, consult sans succes {:.1f}, pose {:.1f}, empreintes {:.1f}",
++                    T * 1000 / F, X(S.Consult), Su[0], Su[1], Su[2], MsSucces, X(S.RefusArme), X(S.RefusRelu), Co[0], Co[1], Co[2], Ms[0], Ms[1], Ms[2],
++                    St[0], St[1], St[2], X(S.NonValide), X(S.NonCollecte), X(S.NonRelu), X(S.NonStore), X(DC.CidreRefusStockage[1]),
++                    X(DC.CidreRefusStockage[2]), X(DC.CidreRefusStockage[3]), X(S.Interdit), S.TotSucces, S.TotCompil, S.TotMsCompil, S.TotStockes, X(DC.CidreSortieConsult[0]),
++                    X(DC.CidreSortieConsult[1]), X(DC.CidreSortieConsult[2]), X(DC.CidreSortieConsult[3]), X(DC.CidreSortieConsult[4]),
++                    X(DC.CidreSortieConsult[5]), X(DC.CidreSortieConsult[6]), X(DC.CidreSortieConsult[7]), X(S.RefusRaison[0]),
++                    X(S.RefusRaison[1]), X(S.RefusRaison[2]), X(S.TicksRearm) * 1000.0 / F, X(S.NbAppelsArme), X(S.TicksCharge) * 1000.0 / F,
++                    X(DC.CidreTicksLecture) * 1000.0 / F, X(DC.CidreNbLectureDisque), X(DC.CidreNbLectureMemoire),
++                    DC.CidrePrechargeTaille.load(std::memory_order_relaxed) >> 20, X(S.VarServis), X(S.VarArmables), X(S.VarStockes),
++                    X(S.TicksLookup) * 1000.0 / F, X(S.TicksLookupEchec) * 1000.0 / F, X(S.TicksPose) * 1000.0 / F, X(DC.CidreTicksConsult) * 1000.0 / F);
++}
++
++// Cidre (cache disque) : un bloc garde n'est resservi que si ses instructions compilees sans validation sont rearmees
++// (comme GenerateIR : la fin de page d'un coup si possible, sinon l'intervalle seul ; jamais sur une page chaude), puis
++// leurs octets relus APRES l'armement et l'empreinte recomparee. Tout echec : compilation normale.
++bool CidreDisqueRearmer(FEXCore::Context::ContextImpl* C, FEXCore::Core::InternalThreadState* Thread, uint64_t GuestRIP,
++                        const FEXCore::DiskCache::CodeHitData& Hit) {
++  if (Hit.CidreArmes.empty()) {
++    return true;
++  }
++  if (!C->GuestCodeArmed) {
++    CidreDisque.RefusArme.fetch_add(1, std::memory_order_relaxed);
++    CidreDisque.RefusRaison[0].fetch_add(1, std::memory_order_relaxed);
++    return false;
++  }
++  const uint64_t CidreTR0 = ::FEXCore::CidreMesure::Tick();
++  struct FinR {
++    uint64_t T;
++    ~FinR() { CidreDisque.TicksRearm.fetch_add(::FEXCore::CidreMesure::Tick() - T, std::memory_order_relaxed); }
++  } CidreFinR {CidreTR0};
++  uint64_t ArmeDebut = 0, ArmeFin = 0;
++  for (size_t i = 0; i + 1 < Hit.CidreArmes.size(); i += 2) {
++    const uint64_t A0 = GuestRIP + Hit.CidreArmes[i], F = A0 + Hit.CidreArmes[i + 1];
++    for (uint64_t A = A0; A < F;) {
++      const uint64_t FinPage = (A & ~uint64_t {0xfff}) + 0x1000;
++      const uint64_t Fin = std::min(F, FinPage);
++      if (::FEXCore::CidreMesure::PageChaude(A >> 12)) {
++        CidreDisque.RefusArme.fetch_add(1, std::memory_order_relaxed);
++        CidreDisque.RefusRaison[1].fetch_add(1, std::memory_order_relaxed);
++        return false;
++      }
++      if (!(A >= ArmeDebut && Fin <= ArmeFin)) {
++        CidreDisque.NbAppelsArme.fetch_add(1, std::memory_order_relaxed);
++        const uint64_t CidreTA = ::FEXCore::CidreMesure::Tick();
++        bool Ok;
++        if (CidreArmeGroupe() && C->GuestCodeArmed(A, FinPage - A)) {
++          ArmeDebut = A;
++          ArmeFin = FinPage;
++          Ok = true;
++        } else {
++          Ok = C->GuestCodeArmed(A, Fin - A);
++        }
++        ::FEXCore::CidreMesure::ArmeTicks.fetch_add(::FEXCore::CidreMesure::Tick() - CidreTA, std::memory_order_relaxed);
++        ::FEXCore::CidreMesure::ArmeNb.fetch_add(1, std::memory_order_relaxed);
++        if (!Ok) {
++          CidreDisque.RefusArme.fetch_add(1, std::memory_order_relaxed);
++          CidreDisque.RefusRaison[2].fetch_add(1, std::memory_order_relaxed);
++          return false;
++        }
++      }
++      A = Fin;
++    }
++  }
++  XXH128_hash_t Vive;
++  if (!FEXCore::DiskCache::DiskCache::CidreEmpreinteVive(Thread, GuestRIP, Hit.CidreEtendues, Vive) || !XXH128_isEqual(Vive, Hit.CidreEmpreinte)) {
++    CidreDisque.RefusRelu.fetch_add(1, std::memory_order_relaxed);
++    return false;
++  }
++  return true;
+ }
+ 
++// Cidre (cache disque, CIDRE_FEX_DISQUE_VALIDES=1) : variante validee (CRC) d'un bloc. Resservie seulement si la compilation
++// referait la meme chose : pour chaque intervalle valide, page chaude (jamais armee) ou armement refuse maintenant. Si
++// l'armement reussit, on compile (le bloc arme, sans validation, sera garde sous la cle normale) : 0360 garde son effet.
++bool CidreDisqueValidesActif() {
++  static const bool V = [] {
++    const char* E = getenv("CIDRE_FEX_DISQUE_VALIDES");
++    return E && *E == '1';
++  }();
++  return V;
++}
++bool CidreDisqueVarianteSure(FEXCore::Context::ContextImpl* C, uint64_t GuestRIP, const FEXCore::DiskCache::CodeHitData& Hit) {
++  for (size_t i = 0; i + 1 < Hit.CidreValides.size(); i += 2) {
++    const uint64_t A0 = GuestRIP + Hit.CidreValides[i], F = A0 + Hit.CidreValides[i + 1];
++    for (uint64_t A = A0; A < F;) {
++      const uint64_t Fin = std::min(F, (A & ~uint64_t {0xfff}) + 0x1000);
++      if (C->GuestCodeArmed && !::FEXCore::CidreMesure::PageChaude(A >> 12)) {
++        CidreDisque.NbAppelsArme.fetch_add(1, std::memory_order_relaxed);
++        if (C->GuestCodeArmed(A, Fin - A)) {
++          CidreDisque.VarArmables.fetch_add(1, std::memory_order_relaxed);
++          return false;
++        }
++      }
++      A = Fin;
++    }
++  }
++  return true;
++}
+ 
+ uintptr_t ContextImpl::CompileBlock(FEXCore::Core::CpuStateFrame* Frame, uint64_t GuestRIP, uint64_t MaxInst) {
+   if constexpr (BLOCK_DEBUGGING) {
+@@ -1695,11 +1881,44 @@
+   std::optional<ExecutableFileSectionInfo> Region = SyscallHandler->LookupExecutableFileSection(Thread, GuestRIP);
+   std::optional<DiskCache::CodeHitData> Hit;
+   std::optional<uint64_t> DiskCacheGuestCodeKey;
+-  {
++  // Cidre (cache disque) : jamais pour une compilation bridee (MaxInst, pas a pas, premier niveau, page armee sans multibloc)
++  // ni avec les reecritures de sous-pages a la compilation (sites et talons propres au processus)
++  const bool CidreDisqueLu = DiskCache.IsReadingDiskCache();
++  const bool CidreDisquePermis = CidreDisqueLu && MaxInst == 0 && !Thread->PassManager->CidreRapide &&
++                                 !Thread->FrontendDecoder->CidreSansMultibloc && !GuestMixedSite && !GuestMixedPrewrite && !GuestReadAlias;
++  const int CidreClasse = CidreDisqueLu ? CidreDisqueClasse(Region) : 2;
++  if (CidreDisqueLu && !CidreDisquePermis) {
++    CidreDisque.Interdit.fetch_add(1, std::memory_order_relaxed);
++  }
++  if (CidreDisquePermis) {
+     FEXCORE_PROFILE_ACCUMULATION(Thread, AccumulatedDiskCacheLookupTime);
++    const uint64_t CidreTS = ::FEXCore::CidreMesure::Tick();
++    CidreDisque.Consult.fetch_add(1, std::memory_order_relaxed);
+     Hit = DiskCache.Lookup(Thread, Region, GuestRIP, DiskCacheGuestCodeKey);
++    CidreDisque.TicksLookup.fetch_add(::FEXCore::CidreMesure::Tick() - CidreTS, std::memory_order_relaxed);
++    if (Hit && !DiskCache.IsValidating() && !CidreDisqueRearmer(this, Thread, GuestRIP, *Hit)) {
++      Hit.reset();
++    }
++    if (!Hit && !DiskCache.IsValidating() && CidreDisqueValidesActif() && (GuestCodeArmed || GuestCodeAlias)) {
++      std::optional<uint64_t> CidreCle2;
++      Hit = DiskCache.Lookup(Thread, Region, GuestRIP, CidreCle2, true);
++      if (Hit) {
++        if (!CidreDisqueVarianteSure(this, GuestRIP, *Hit) || !CidreDisqueRearmer(this, Thread, GuestRIP, *Hit)) {
++          Hit.reset();
++        } else {
++          CidreDisque.VarServis.fetch_add(1, std::memory_order_relaxed);
++        }
++      }
++    }
+     if (Hit && !DiskCache.IsValidating()) {
++      const uint64_t CidreTCh = ::FEXCore::CidreMesure::Tick();
+       auto LoadedCode = Thread->CPUBackend->LoadCachedCode(Hit->HostCode);
++      const uint64_t CidreTPose = ::FEXCore::CidreMesure::Tick();
++      CidreDisque.TicksCharge.fetch_add(CidreTPose - CidreTCh, std::memory_order_relaxed);
++      struct FinPose {
++        uint64_t T;
++        ~FinPose() { CidreDisque.TicksPose.fetch_add(::FEXCore::CidreMesure::Tick() - T, std::memory_order_relaxed); }
++      } CidreFinPose {CidreTPose};
+       if (LoadedCode.BlockBegin) {
+         for (auto& CodePage : Hit->GuestPages) {
+           if (Thread->LookupCache->AddBlockExecutableRange(Thread, Hit->EntryPointRIPs, CodePage, FEXCore::Utils::FEX_PAGE_SIZE)) {
+@@ -1721,6 +1940,9 @@
+         LOGMAN_THROW_A_FMT(CachedHostCode != 0, "Couldn't find GuestRIP in Disk Cache entrypoints!");
+ 
+         FEXCORE_PROFILE_INSTANT_INCREMENT(Thread, AccumulatedDiskCacheHitCount, 1);
++        CidreDisque.Succes[CidreClasse].fetch_add(1, std::memory_order_relaxed);
++        CidreDisque.SuccesTicks.fetch_add(::FEXCore::CidreMesure::Tick() - CidreTS, std::memory_order_relaxed);
++        CidreDisqueJournal(DiskCache);
+         Thread->FrontendDecoder->DelayedDisownBuffer();
+ 
+         Thread->FrontendDecoder->ValidateDisownedOrFree();
+@@ -1729,6 +1951,7 @@
+       }
+     }
+     FEXCORE_PROFILE_INSTANT_INCREMENT(Thread, AccumulatedDiskCacheMissCount, 1);
++    CidreDisque.TicksLookupEchec.fetch_add(::FEXCore::CidreMesure::Tick() - CidreTS, std::memory_order_relaxed);
+   }
+ 
+   // Accumulate a JIT count now, as even if another thread raced us, it should count as a compile.
+@@ -1737,6 +1960,10 @@
+   const uint64_t CidreTC = ::FEXCore::CidreMesure::Tick();
+   auto [CompiledCode, DebugData, StartAddr, Length, NeedsAddGuestCodeRanges] = CompileCode(Thread, GuestRIP, MaxInst);
+   const uint64_t CidreDureeCompil = ::FEXCore::CidreMesure::Tick() - CidreTC;
++  if (CidreDisqueLu) {
++    CidreDisque.Compil[CidreClasse].fetch_add(1, std::memory_order_relaxed);
++    CidreDisque.CompilTicks[CidreClasse].fetch_add(CidreDureeCompil, std::memory_order_relaxed);
++  }
+   ::FEXCore::CidreMesure::CompilTicks.fetch_add(CidreDureeCompil, std::memory_order_relaxed);
+   ::FEXCore::CidreCompteurs::NoterCompil(CidreDureeCompil);
+   auto CodePtr = CompiledCode.EntryPoints[GuestRIP];
+@@ -1761,6 +1988,7 @@
+   if (CidreCache() && Thread->FrontendDecoder->CidreCollecte) {
+     CidrePreSitesGardes = Thread->CPUBackend->CidrePreSites;
+   }
++  const bool CidreAvecPreSites = !Thread->CPUBackend->CidrePreSites.empty();
+   Thread->CPUBackend->CidrePreSites.clear();
+ 
+   if (DiskCacheGuestCodeKey && Hit && DiskCache.IsValidating()) {
+@@ -1826,16 +2054,60 @@
+ 
+   // Disk Cache
+   if (!CodeCache.IsGeneratingCache) {
+-    if (DiskCacheGuestCodeKey) {
++    if (DiskCacheGuestCodeKey && DiskCache.IsWritingDiskCache()) {
+       std::span<const FEXCore::CPU::Relocation> Relocations;
+       if (DebugData && DebugData->Relocations) {
+         Relocations = *DebugData->Relocations;
+       }
+-      std::span<const uint8_t> GuestCode = {reinterpret_cast<const uint8_t*>(StartAddr), Length};
+-      const Frontend::Decoder::DecodedBlockInformation* BlockInfo =
+-        NeedsAddGuestCodeRanges ? Thread->FrontendDecoder->GetDecodedBlockInfo() : nullptr;
+-      DiskCache.Store(Thread, Region, GuestRIP, *DiskCacheGuestCodeKey, GuestCode, CompiledCode, Relocations, BlockInfo);
++      // Cidre : octets relus comme le decodeur (alias des pages mixtes) et recompares, instruction par instruction, a ceux
++      // vus pendant GenerateIR (CidreSegments) : une ecriture entre-temps garderait sinon l'empreinte des nouveaux octets
++      // avec le code des anciens. Blocs avec validation CRC non gardes quand l'armement existe (0360 doit pouvoir les
++      // recompiler sans validation), ni avec sites de sous-pages reecrits.
++      auto* Dec = Thread->FrontendDecoder.get();
++      fextl::vector<uint8_t> CidreCopie;
++      bool CidreOk = true;
++      const bool CidreVariante = Dec->CidreDisqueValide && (GuestCodeArmed || GuestCodeAlias);
++      if (CidreAvecPreSites || (CidreVariante && !CidreDisqueValidesActif())) {
++        CidreDisque.NonValide.fetch_add(1, std::memory_order_relaxed);
++        CidreOk = false;
++      } else if (!Dec->CidreCollecte || Dec->CidreSegments.empty() || Length == 0 || Length > 0x100000) {
++        CidreDisque.NonCollecte.fetch_add(1, std::memory_order_relaxed);
++        CidreOk = false;
++      } else {
++        CidreCopie.resize(Length);
++        for (uint64_t Fait = 0; CidreOk && Fait < Length;) {
++          const uint64_t N = std::min<uint64_t>(Length - Fait, 0x1000 - ((StartAddr + Fait) & 0xfff));
++          CidreOk = Dec->CidreRelire(reinterpret_cast<const uint8_t*>(StartAddr + Fait), CidreCopie.data() + Fait, N);
++          Fait += N;
++        }
++        for (const auto& Seg : Dec->CidreSegments) {
++          if (!CidreOk) {
++            break;
++          }
++          CidreOk = Seg.Adresse >= StartAddr && Seg.Adresse + Seg.Taille <= StartAddr + Length &&
++                    !memcmp(CidreCopie.data() + (Seg.Adresse - StartAddr), Seg.Octets, Seg.Taille);
++        }
++        if (!CidreOk) {
++          CidreDisque.NonRelu.fetch_add(1, std::memory_order_relaxed);
++        }
++      }
++      if (CidreOk) {
++        std::span<const uint8_t> GuestCode = {CidreCopie.data(), CidreCopie.size()};
++        const Frontend::Decoder::DecodedBlockInformation* BlockInfo =
++          NeedsAddGuestCodeRanges ? Thread->FrontendDecoder->GetDecodedBlockInfo() : nullptr;
++        if (DiskCache.Store(Thread, Region, GuestRIP, *DiskCacheGuestCodeKey, GuestCode, CompiledCode, Relocations, BlockInfo, CidreVariante)) {
++          CidreDisque.Stockes[CidreClasse].fetch_add(1, std::memory_order_relaxed);
++          if (CidreVariante) {
++            CidreDisque.VarStockes.fetch_add(1, std::memory_order_relaxed);
++          }
++        } else {
++          CidreDisque.NonStore.fetch_add(1, std::memory_order_relaxed);
++        }
++      }
+     }
++    if (CidreDisqueLu) {
++      CidreDisqueJournal(DiskCache);
++    }
+ 
+     if (CodeMapWriter && Region && Region->FileStartVA != 0) {
+       CodeMapWriter->AppendBlock(*Region, GuestRIP);
+diff --git a/FEXCore/Source/Interface/Core/DiskCache.cpp b/FEXCore/Source/Interface/Core/DiskCache.cpp
+--- a/FEXCore/Source/Interface/Core/DiskCache.cpp
++++ b/FEXCore/Source/Interface/Core/DiskCache.cpp
+@@ -3,6 +3,7 @@
+ #define XXH_STATIC_LINKING_ONLY
+ 
+ #include "FEXCore/Utils/TypeDefines.h"
++#include <FEXCore/Utils/Allocator.h>
+ #include "Interface/Core/Frontend.h"
+ #include "FEXCore/Config/Config.h"
+ #include "FEXCore/fextl/string.h"
+@@ -17,6 +18,7 @@
+ #include <cstdint>
+ #include <cstring>
+ #include <atomic>
++#include <filesystem>
+ 
+ namespace FEXCore {
+ 
+@@ -52,6 +54,123 @@
+ 
+   static FileMapperFunc FileMapper = nullptr;
+ 
++  // Cidre : variables d'environnement qui changent le code emis sans passer par la configuration de FEX ; leurs valeurs
++  // entrent dans le seau du processus (un cache ecrit avec d'autres reglages n'est jamais relu).
++  static fextl::string CidreEnvCodegen() {
++    static const char* const Noms[] = {
++      "CIDRE_ARME_GROUPE", "CIDRE_ARME_MAXINST", "CIDRE_COMPIL_RAPIDE", "CIDRE_COMPIL_RAPIDE_MAXINST", "CIDRE_FEUILLES",
++      "CIDRE_GATHER_RAPIDE", "CIDRE_HAUT_NUL", "CIDRE_HAUT_NUL_SELECTION", "CIDRE_ILOT", "CIDRE_ILOT_ATOMIQUES",
++      "CIDRE_LECTURE_DIRECTE", "CIDRE_PILE_CLE", "CIDRE_PILE_TEMOIN_SANS", "CIDRE_SHUF_COPIE", "CIDRE_SMC_BLOC_APRES",
++      "CIDRE_SMC_RAPIDE", "CIDRE_SONNETTE_FROIDE", "CIDRE_SONNETTE_RETOUR", "CIDRE_SONNETTE_FAUTE", "CIDRE_TEST_ANDS",
++      "CIDRE_TSO_DEP", "CIDRE_TSO_GROUPE", "CIDRE_TSO_PAIRES", "CIDRE_SMC_ARME", "CIDRE_SOUS_PAGES_EN_LIGNE",
++      "CIDRE_COMPTE_RDTSC", "CIDRE_VOLATILE_TOUS_BLOCS", "FEX_TSOENABLED", "CIDRE_FEX_DISQUE_CLE_BRUTE",
++    };
++    fextl::string R = "|cidre-env-v1";
++    for (const char* N : Noms) {
++      const char* V = getenv(N);
++      R += fextl::fmt::format("|{}={}", N, V ? V : "-");
++    }
++    return R;
++  }
++
++  static inline uint64_t CidreTick() {
++    uint64_t v;
++    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(v));
++    return v;
++  }
++
++  struct CidrePrechargeWorkItem final : WorkQueueThread::WorkItem {
++    DiskCache* Self;
++    CidrePrechargeWorkItem(DiskCache* Self)
++      : Self(Self) {}
++    void Run() override {
++      Self->CidrePrecharger();
++    }
++  };
++
++  void DiskCache::CidrePrecharger() {
++    const uint64_t T0 = CidreTick();
++    const ssize_t Taille = RWCacheDB ? RWCacheDB->CidreTaille() : -1;
++    if (Taille <= 0) {
++      return;
++    }
++    auto* Base = static_cast<uint8_t*>(FEXCore::Allocator::VirtualAlloc(Taille));
++    if (!Base || Base == reinterpret_cast<uint8_t*>(-1)) {
++      LogMan::Msg::IFmt("cidre disque : prechargement impossible ({} octets)", Taille);
++      return;
++    }
++    CidrePrechargeBase = Base;
++    constexpr uint64_t BLOC = 8ULL << 20;
++    for (uint64_t Off = 0; Off < (uint64_t)Taille;) {
++      const uint64_t N = std::min<uint64_t>(BLOC, Taille - Off);
++      if (!RWCacheDB->CidreLire(Off, {Base + Off, N})) {
++        break;
++      }
++      Off += N;
++      CidrePrechargeTaille.store(Off, std::memory_order_release);
++    }
++    CidrePrechargeTicks.store(CidreTick() - T0, std::memory_order_relaxed);
++    uint64_t F;
++    __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(F));
++    LogMan::Msg::IFmt("cidre disque : precharge {} Mio en {} ms", CidrePrechargeTaille.load() >> 20, F ? (CidreTick() - T0) * 1000 / F : 0);
++  }
++
++  struct DiskCache::CidrePromotionWorkItem final : WorkQueueThread::WorkItem {
++    DiskCache* Self;
++    IndexedDB* Source;
++    uint64_t Offset, LookupKey, Footprint;
++    uint32_t Taille;
++    XXH128_hash_t GuestHash;
++    fextl::vector<uint8_t> IndexBlob;
++    void Run() override {
++      fextl::vector<uint8_t> Blob(Taille);
++      if (!Source->ReadCacheBlob(Offset, Blob)) {
++        return;
++      }
++      MesaFOZ::foz_payload_key Key = {};
++      {
++        XXH3_state_t HashState;
++        XXH3_128bits_reset(&HashState);
++        XXH3_128bits_update(&HashState, &GuestHash, sizeof(GuestHash));
++        XXH3_128bits_update(&HashState, &LookupKey, sizeof(LookupKey));
++        XXH128_hash_t UniqueKey = XXH3_128bits_digest(&HashState);
++        fextl::string BlobName = fextl::fmt::format("{:016x}{:016x}", UniqueKey.high64, UniqueKey.low64);
++        memcpy(Key.bytes, BlobName.data(), BlobName.size());
++      }
++      MesaFOZ::mesa_index_db_file_entry IE {};
++      if (Self->RWCacheDB->StoreCacheBlob(Key, LookupKey, Blob, IE, IndexBlob)) {
++        std::lock_guard Guard(Self->IndexLock);
++        if (auto* E = Self->LookupLocked(LookupKey, GuestHash, Footprint); E && E->DB == Source) {
++          E->DB = Self->RWCacheDB.get();
++          E->Offset = IE.cache_db_file_offset;
++        }
++        Self->CidrePromotions.fetch_add(1, std::memory_order_relaxed);
++      }
++    }
++  };
++
++  bool DiskCache::CidreEmpreinteVive(Core::InternalThreadState* Thread, uint64_t GuestRIP, std::span<const uint32_t> Extents,
++                                     XXH128_hash_t& Out) {
++    XXH3_state_t HashState;
++    XXH3_128bits_reset(&HashState);
++    uint8_t Tampon[512];
++    for (size_t i = 0; i + 1 < Extents.size(); i += 2) {
++      uint64_t A = GuestRIP + Extents[i];
++      uint64_t Reste = Extents[i + 1];
++      while (Reste) {
++        const size_t N = std::min<uint64_t>(Reste, sizeof(Tampon));
++        if (!Thread->FrontendDecoder->CidreRelire(reinterpret_cast<const uint8_t*>(A), Tampon, N)) {
++          return false;
++        }
++        XXH3_128bits_update(&HashState, Tampon, N);
++        A += N;
++        Reste -= N;
++      }
++    }
++    Out = XXH3_128bits_digest(&HashState);
++    return true;
++  }
++
+   bool FOZFile::Open(const fextl::string& FOZFileName, bool ReadOnly) {
+     FileName = FOZFileName;
+     this->ReadOnly = ReadOnly;
+@@ -359,11 +478,21 @@
+   void DiskCache::Init(FEXCore::Context::ContextImpl* CTX) {
+     this->CTX = CTX;
+ 
+-    if (!EnableDiskCache) {
++    // Cidre : CIDRE_FEX_DISQUE=1 active le cache disque pour xtajit64 seul (FEX_DISKCACHE serait lu aussi par le xtajit
++    // WOW64 du client Battle.net, qui ne lance alors plus le jeu) ; CIDRE_FEX_DISQUE_MO = memoire du cache, en Mio.
++    bool CidreActif = EnableDiskCache;
++    if (const char* E = getenv("CIDRE_FEX_DISQUE"); E && *E == '1') {
++      CidreActif = true;
++      const char* M = getenv("CIDRE_FEX_DISQUE_MO");
++      MemoryLRUMaxSize = uint32_t((M ? strtoull(M, nullptr, 10) : 256ULL) << 20);
++      MemoryLRUEvictThreshold = MemoryLRUMaxSize / 25;
++    }
++    if (!CidreActif) {
+       return;
+     }
+ 
+     fextl::string SerializedConfig = FEXCore::Config::SerializeForCache();
++    SerializedConfig += CidreEnvCodegen();
+ 
+     struct __attribute__((packed)) {
+       uint16_t FormatVersion;
+@@ -393,7 +522,30 @@
+     }
+ 
+     const auto RWDBBasePath = fextl::fmt::format("{}RWCacheDB_{:016x}", BasePath, ProcessBucketHash);
++    // Cidre : plafond (CIDRE_FEX_DISQUE_MAX_MO, defaut 768 ; 0 = sans) : au lancement, une base courante au-dela devient
++    // l'ancienne generation (lecture seule, la precedente est effacee) et une base neuve est ouverte. Les blocs encore servis
++    // depuis l'ancienne sont recopies dans la neuve : les blocs chauds survivent, le reste disparait au tour suivant.
++    const auto CidreAncienChemin = fextl::fmt::format("{}ANCIEN_{:016x}", BasePath, ProcessBucketHash);
++    uint64_t CidreMaxMo = 0;
++    if (const char* E = getenv("CIDRE_FEX_DISQUE"); E && *E == '1') {
++      const char* M = getenv("CIDRE_FEX_DISQUE_MAX_MO");
++      CidreMaxMo = M ? strtoull(M, nullptr, 10) : 768;
++    }
++    if (CidreMaxMo) {
++      std::error_code ec;
++      const auto Taille = std::filesystem::file_size(std::filesystem::path(RWDBBasePath + ".foz"), ec);
++      if (!ec && Taille > (CidreMaxMo << 20)) {
++        for (const char* Suffixe : {".foz", "_idx.foz"}) {
++          std::filesystem::remove(std::filesystem::path(CidreAncienChemin + Suffixe), ec);
++          std::filesystem::rename(std::filesystem::path(RWDBBasePath + Suffixe), std::filesystem::path(CidreAncienChemin + Suffixe), ec);
++        }
++        LogMan::Msg::IFmt("cidre disque : base de {} Mio au-dela du plafond ({} Mio) : nouvelle generation", Taille >> 20, CidreMaxMo);
++      }
++    }
+     OpenCacheDB(RWDBBasePath, false);
++    if (CidreMaxMo && OpenCacheDB(CidreAncienChemin, true)) {
++      CidreAncienne = ROCacheDBs.back().get();
++    }
+ 
+     if (RWCacheDB && !FoundMetadata) {
+       // we just opened a fresh cache, add a metadata blob
+@@ -428,10 +580,13 @@
+     if (IsWritingDiskCache()) {
+       FEXCore::Threads::Flags WriterThreadFlags = {.LowPriority = true, .Internal = true};
+       Writer = fextl::make_unique<WorkQueueThread>(WriterThreadFlags, "FEX:DiskCache");
++      if (const char* E = getenv("CIDRE_FEX_DISQUE_PRECHARGE"); E && *E == '1') {
++        Writer->QueueWork(fextl::make_unique<CidrePrechargeWorkItem>(this));
++      }
+     }
+   }
+ 
+-  uint64_t DiskCache::MakeLookupKey(Core::InternalThreadState* Thread, const uint64_t CodeKey, bool Writable, bool MonoBackpatcher) {
++  uint64_t DiskCache::MakeLookupKey(Core::InternalThreadState* Thread, const uint64_t CodeKey, bool Writable, bool MonoBackpatcher, bool CidreVariante) {
+     struct __attribute__((packed)) {
+       uint64_t CodeKey;
+       XXH128_hash_t BucketHash;
+@@ -450,6 +605,9 @@
+     if (MonoBackpatcher) {
+       BlobKeyBytes.Flags |= 1 << 3;
+     }
++    if (CidreVariante) {
++      BlobKeyBytes.Flags |= 1 << 4; // Cidre : variante validee (CRC) d'un bloc d'invite
++    }
+ 
+     return XXH3_64bits(&BlobKeyBytes, sizeof(BlobKeyBytes));
+   }
+@@ -498,7 +656,7 @@
+   };
+ 
+   std::optional<CodeHitData> DiskCache::Lookup(Core::InternalThreadState* Thread, std::optional<ExecutableFileSectionInfo> Region,
+-                                               uint64_t GuestRIP, std::optional<uint64_t>& GuestCodeKey) {
++                                               uint64_t GuestRIP, std::optional<uint64_t>& GuestCodeKey, bool CidreVariante) {
+     if (!IsReadingDiskCache()) {
+       return std::nullopt;
+     }
+@@ -512,6 +670,25 @@
+       if (!AnonCaching) {
+         return std::nullopt;
+       }
++      // Cidre (CIDRE_FEX_DISQUE_CLE_BRUTE, actif par defaut) : cle = empreinte des 64 premiers octets bruts (bornes a la page
++      // de 4 Kio si la suivante n'est pas executable), sans decodage. La cle ne fait que choisir le seau : l'empreinte
++      // complete des etendues valide toujours le candidat.
++      static const bool CidreCleBrute = [] {
++        const char* E = getenv("CIDRE_FEX_DISQUE_CLE_BRUTE");
++        return !(E && *E == '0');
++      }();
++      if (CidreCleBrute) {
++        uint8_t Octets[AnonPrefixGuestBytes];
++        size_t N = AnonPrefixGuestBytes;
++        if (!Thread->FrontendDecoder->CidreRelire(reinterpret_cast<const uint8_t*>(GuestRIP), Octets, N)) {
++          N = std::min<size_t>(N, 0x1000 - (GuestRIP & 0xfff));
++          if (!Thread->FrontendDecoder->CidreRelire(reinterpret_cast<const uint8_t*>(GuestRIP), Octets, N)) {
++            CidreSortieConsult[0].fetch_add(1, std::memory_order_relaxed);
++            return std::nullopt;
++          }
++        }
++        GuestCodeKey = XXH3_64bits(Octets, N) ^ (uint64_t {0xC1D4E} << 40) ^ N;
++      } else {
+       Thread->FrontendDecoder->DecodeLoop(reinterpret_cast<const uint8_t*>(GuestRIP), AnonPrefixGuestBytes);
+       const auto* BlockInfo = Thread->FrontendDecoder->GetDecodedBlockInfo();
+ 
+@@ -519,19 +696,38 @@
+       XXH3_64bits_reset(&HashState);
+       for (auto& SubBlock : BlockInfo->Blocks) {
+         if (SubBlock.BlockStatus != Frontend::Decoder::DecodedBlockStatus::SUCCESS) {
+-          return std::nullopt;
++          CidreSortieConsult[0].fetch_add(1, std::memory_order_relaxed); return std::nullopt;
+         }
+         uint64_t HashStart = SubBlock.Entry;
++        // Cidre : octets lus comme le decodeur (alias des pages mixtes), jamais en direct
++        uint8_t Tampon[256];
++        auto Ajouter = [&](uint64_t A, uint64_t N) {
++          while (N) {
++            const size_t K = std::min<uint64_t>(N, sizeof(Tampon));
++            if (!Thread->FrontendDecoder->CidreRelire(reinterpret_cast<const uint8_t*>(A), Tampon, K)) {
++              return false;
++            }
++            XXH3_64bits_update(&HashState, Tampon, K);
++            A += K;
++            N -= K;
++          }
++          return true;
++        };
+         // skip over masked in-block data and data/etc gaps between blocks
+         for (auto& DataMask : SubBlock.DataMasks) {
+-          XXH3_64bits_update(&HashState, reinterpret_cast<const uint8_t*>(HashStart), DataMask.FieldAddress - HashStart);
++          if (!Ajouter(HashStart, DataMask.FieldAddress - HashStart)) {
++            CidreSortieConsult[0].fetch_add(1, std::memory_order_relaxed); return std::nullopt;
++          }
+           HashStart = DataMask.FieldAddress + DataMask.ValueSize;
+         }
+         if (HashStart != SubBlock.Entry + SubBlock.Size) {
+-          XXH3_64bits_update(&HashState, reinterpret_cast<const uint8_t*>(HashStart), SubBlock.Size - (HashStart - SubBlock.Entry));
++          if (!Ajouter(HashStart, SubBlock.Size - (HashStart - SubBlock.Entry))) {
++            CidreSortieConsult[0].fetch_add(1, std::memory_order_relaxed); return std::nullopt;
++          }
+         }
+       }
+       GuestCodeKey = XXH3_64bits_digest(&HashState);
++      }
+       // if (TotalSize < AnonPrefixGuestBytes) {
+       //   GuestCodeKey = 0;
+       //   return std::nullopt;
+@@ -541,12 +737,12 @@
+ 
+     auto RangeInfo = CTX->SyscallHandler->QueryGuestExecutableRange(Thread, GuestRIP);
+     if (RangeInfo.Size == 0 || RangeInfo.Base > GuestRIP) {
+-      return std::nullopt;
++      CidreSortieConsult[1].fetch_add(1, std::memory_order_relaxed); return std::nullopt;
+     }
+     uint64_t Available = RangeInfo.Base + RangeInfo.Size - GuestRIP;
+ 
+-    uint64_t LookupKey =
+-      MakeLookupKey(Thread, *GuestCodeKey, RangeInfo.Writable, GuestRIP == CTX->GetMonoBackPatcherBlock().load(std::memory_order_relaxed));
++    uint64_t LookupKey = MakeLookupKey(Thread, *GuestCodeKey, RangeInfo.Writable,
++                                       GuestRIP == CTX->GetMonoBackPatcherBlock().load(std::memory_order_relaxed), CidreVariante);
+ 
+     XXH128_hash_t LiveGuestHash;
+     uint64_t LastFootprintHashed = 0;
+@@ -565,7 +761,7 @@
+       auto It = Index.find(LookupKey);
+       if (It == Index.end()) {
+         // definite miss
+-        return std::nullopt;
++        CidreSortieConsult[2].fetch_add(1, std::memory_order_relaxed); return std::nullopt;
+       }
+ 
+       MainEntry = It->second.MainEntry;
+@@ -649,12 +845,13 @@
+         IndexEntry& Entry = *EntryUnderReview;
+         // only renew the hash if the candidate footprint is different than previous
+         if (FirstHash || LastFootprintHashed != CurrentFootprint) {
+-          XXH3_state_t HashState;
+-          XXH3_128bits_reset(&HashState);
+-          for (uint32_t i = 0; i < Entry.GuestExtents.size(); i += 2) {
+-            XXH3_128bits_update(&HashState, reinterpret_cast<uint8_t*>(GuestRIP) + Entry.GuestExtents[i], Entry.GuestExtents[i + 1]);
++          // Cidre : lecture comme le decodeur ; une etendue non executable = pas de candidat
++          const uint64_t CidreTE = CidreTick();
++          const bool CidreOk = CidreEmpreinteVive(Thread, GuestRIP, Entry.GuestExtents, LiveGuestHash);
++          CidreTicksConsult.fetch_add(CidreTick() - CidreTE, std::memory_order_relaxed);
++          if (!CidreOk) {
++            continue;
+           }
+-          LiveGuestHash = XXH3_128bits_digest(&HashState);
+           LastFootprintHashed = CurrentFootprint;
+           FirstHash = false;
+         }
+@@ -706,7 +903,7 @@
+     }
+ 
+     if (!FoundMatchingHash || !EntryUnderReview) {
+-      return std::nullopt;
++      CidreSortieConsult[3].fetch_add(1, std::memory_order_relaxed); return std::nullopt;
+     }
+ 
+     IndexEntry& Entry = *EntryUnderReview;
+@@ -738,25 +935,43 @@
+         // LogMan::Msg::IFmt("lru hit! {}", MemoryLRUCurrentSize);
+         MemoryLRU.splice(MemoryLRU.begin(), MemoryLRU, *LRUIter);
+       }
+-    } else if (!Entry.DB->ReadCacheBlob(Entry.Offset, {HitData.Blob.data() + BlobOffset, EntrySizeWithoutGuestCode})) {
+-      return std::nullopt;
++    } else if (const uint64_t CidreTL = CidreTick(); Entry.DB == RWCacheDB.get() &&
++               Entry.Offset + EntrySizeWithoutGuestCode <= CidrePrechargeTaille.load(std::memory_order_acquire)) {
++      // Cidre : blob deja precharge en memoire (lu en bloc, en fond)
++      memcpy(HitData.Blob.data() + BlobOffset, CidrePrechargeBase + Entry.Offset, EntrySizeWithoutGuestCode);
++      CidreNbLectureMemoire.fetch_add(1, std::memory_order_relaxed);
++      CidreTicksLecture.fetch_add(CidreTick() - CidreTL, std::memory_order_relaxed);
++    } else if (CidreNbLectureDisque.fetch_add(1, std::memory_order_relaxed),
++               !Entry.DB->ReadCacheBlob(Entry.Offset, {HitData.Blob.data() + BlobOffset, EntrySizeWithoutGuestCode}) ||
++                 (CidreTicksLecture.fetch_add(CidreTick() - CidreTL, std::memory_order_relaxed), false)) {
++      CidreSortieConsult[4].fetch_add(1, std::memory_order_relaxed); return std::nullopt;
+     }
+ 
+     if (EntrySizeWithoutGuestCode < sizeof(BlobFixedHeader)) {
+-      return std::nullopt;
++      CidreSortieConsult[5].fetch_add(1, std::memory_order_relaxed); return std::nullopt;
+     }
+     BlobFixedHeader Header;
+     memcpy(&Header, HitData.Blob.data() + BlobOffset, sizeof(Header));
++    // Cidre : debut de l'entree (en-tete compris) pour la copie en memoire ci-dessous ; amont copiait depuis BlobOffset deja
++    // avance de l'en-tete : l'entree gardee en memoire commencait au code hote (en-tetes aberrants a la consultation suivante)
++    const uint32_t CidreDebutEntree = BlobOffset;
+     BlobOffset += sizeof(Header);
+ 
+     uint32_t SizeNeeded = sizeof(Header) + Header.HostSize + Header.EntryPointCount * (sizeof(uint64_t) + sizeof(uint32_t));
+     SizeNeeded += Header.SmallRelocCount * sizeof(BlobSmallRelocation) + Header.ThunkRelocCount * sizeof(BlobThunkRelocation);
++    SizeNeeded += (Header.CidreArmCount + Header.CidreValCount) * 2 * sizeof(uint32_t);
+     if (EntrySizeWithoutGuestCode != SizeNeeded) {
++      if (CidreSortieConsult[5].fetch_add(1, std::memory_order_relaxed) < 30) {
++        LogMan::Msg::IFmt("cidre disque diag taille : rip {:#x} cle {:x} lru {} db {} off {:#x} taille {} invite {} sans {} besoin {} ; entete invite {} hote {} pe {} petites {} thunk {} armes {} ; extents {}",
++                          GuestRIP, LookupKey, FoundInLRU, (void*)Entry.DB, Entry.Offset, Entry.Size, Entry.GuestSize, EntrySizeWithoutGuestCode,
++                          SizeNeeded, Header.GuestSize, Header.HostSize, Header.EntryPointCount, Header.SmallRelocCount, Header.ThunkRelocCount,
++                          Header.CidreArmCount, Entry.GuestExtents.size());
++      }
+       return std::nullopt;
+     }
+ 
+     if (Entry.GuestSize != Header.GuestSize || !XXH128_isEqual(Header.GuestHash, Entry.GuestHash)) {
+-      return std::nullopt;
++      CidreSortieConsult[6].fetch_add(1, std::memory_order_relaxed); return std::nullopt;
+     }
+ 
+     bool StoreInMemory = !FoundInLRU;
+@@ -766,7 +981,7 @@
+ 
+     if (StoreInMemory) {
+       auto NewBlobRef = fextl::make_shared<fextl::vector<uint8_t>>(EntrySizeWithoutGuestCode);
+-      memcpy(NewBlobRef->data(), HitData.Blob.data() + BlobOffset, EntrySizeWithoutGuestCode);
++      memcpy(NewBlobRef->data(), HitData.Blob.data() + CidreDebutEntree, EntrySizeWithoutGuestCode);
+       std::lock_guard Guard(IndexLock);
+       auto CurrentIndexEntry = LookupLocked(LookupKey, Header.GuestHash, LastFootprintHashed);
+       if (CurrentIndexEntry && !CurrentIndexEntry->MemoryBlob) {
+@@ -794,6 +1009,14 @@
+     std::span<const BlobThunkRelocation> ThunkRelocs = {reinterpret_cast<const BlobThunkRelocation*>(HitData.Blob.data() + BlobOffset),
+                                                         Header.ThunkRelocCount};
+     BlobOffset += Header.ThunkRelocCount * sizeof(BlobThunkRelocation);
++    HitData.CidreArmes.resize(Header.CidreArmCount * 2);
++    memcpy(HitData.CidreArmes.data(), HitData.Blob.data() + BlobOffset, Header.CidreArmCount * 2 * sizeof(uint32_t));
++    BlobOffset += Header.CidreArmCount * 2 * sizeof(uint32_t);
++    HitData.CidreValides.resize(Header.CidreValCount * 2);
++    memcpy(HitData.CidreValides.data(), HitData.Blob.data() + BlobOffset, Header.CidreValCount * 2 * sizeof(uint32_t));
++    BlobOffset += Header.CidreValCount * 2 * sizeof(uint32_t);
++    HitData.CidreEtendues = Entry.GuestExtents;
++    HitData.CidreEmpreinte = Entry.GuestHash;
+ 
+     HitData.GuestPages = {reinterpret_cast<uint64_t*>(HitData.Blob.data()), GuestPages.size()};
+ 
+@@ -801,10 +1024,35 @@
+       EntryPointRip += GuestRIP;
+     }
+ 
+-    if (!CTX->CodeCache.ApplyPackedCodeRelocations(GuestRIP, std::as_writable_bytes(HitData.HostCode), SmallRelocs, ThunkRelocs)) {
+-      return std::nullopt;
++    if (!CTX->CodeCache.ApplyPackedCodeRelocations(GuestRIP, std::as_writable_bytes(HitData.HostCode), SmallRelocs, ThunkRelocs, Thread)) {
++      CidreSortieConsult[7].fetch_add(1, std::memory_order_relaxed); return std::nullopt;
+     }
+ 
++    // Cidre : servi depuis l'ancienne generation : recopie en fond dans la base courante (une fois)
++    if (CidreAncienne && Entry.DB == CidreAncienne && RWCacheDB && !RWCacheDB->Full()) {
++      bool Demander = false;
++      {
++        std::lock_guard Guard(IndexLock);
++        if (auto* E = LookupLocked(LookupKey, Entry.GuestHash, LastFootprintHashed); E && E->DB == CidreAncienne && !E->CidrePromu) {
++          E->CidrePromu = Demander = true;
++        }
++      }
++      if (Demander) {
++        auto W = fextl::make_unique<CidrePromotionWorkItem>();
++        W->Self = this;
++        W->Source = CidreAncienne;
++        W->Offset = Entry.Offset;
++        W->LookupKey = LookupKey;
++        W->Footprint = LastFootprintHashed;
++        W->Taille = Entry.Size;
++        W->GuestHash = Entry.GuestHash;
++        IndexExtraBlobHeader H {Entry.GuestHash, LastFootprintHashed, Entry.GuestSize, (uint32_t)Entry.GuestExtents.size()};
++        W->IndexBlob.resize(sizeof(H) + Entry.GuestExtents.size() * sizeof(uint32_t));
++        memcpy(W->IndexBlob.data(), &H, sizeof(H));
++        memcpy(W->IndexBlob.data() + sizeof(H), Entry.GuestExtents.data(), Entry.GuestExtents.size() * sizeof(uint32_t));
++        Writer->QueueWork(std::move(W));
++      }
++    }
+     return HitData;
+   }
+ 
+@@ -873,15 +1121,20 @@
+     std::span<uint8_t> Blob;
+     fextl::vector<uint8_t> IndexBlob;
+     bool StoreDisk;
++    // Cidre : le travail garde le tampon en vie ; sans cela, PruneMemoryLRU pouvait liberer MemoryBlob avant l'ecriture
++    // (le travail n'avait qu'un span) : octets liberes ecrits sur le disque, puis resservis (en-tetes aberrants).
++    fextl::shared_ptr<fextl::vector<uint8_t>> Garde;
+     CacheStoreWorkItem(DiskCache* Self, IndexedDB* DB, const MesaFOZ::foz_payload_key& UniqueKey, uint64_t LookupKey,
+-                       std::span<uint8_t> Blob, fextl::vector<uint8_t>&& IndexBlob, bool StoreDisk)
++                       std::span<uint8_t> Blob, fextl::vector<uint8_t>&& IndexBlob, bool StoreDisk,
++                       fextl::shared_ptr<fextl::vector<uint8_t>> Garde)
+       : Self(Self)
+       , DB(DB)
+       , UniqueKey(UniqueKey)
+       , LookupKey(LookupKey)
+       , Blob(Blob)
+       , IndexBlob(std::move(IndexBlob))
+-      , StoreDisk(StoreDisk) {}
++      , StoreDisk(StoreDisk)
++      , Garde(std::move(Garde)) {}
+     void Run() override {
+       struct MesaFOZ::mesa_index_db_file_entry IndexHeader;
+       bool DiskSuccess = !StoreDisk || DB->StoreCacheBlob(UniqueKey, LookupKey, Blob, IndexHeader, IndexBlob);
+@@ -927,12 +1180,35 @@
+ 
+   bool DiskCache::Store(Core::InternalThreadState* Thread, std::optional<ExecutableFileSectionInfo> Region, uint64_t GuestRIP,
+                         uint64_t GuestCodeKey, std::span<const uint8_t> GuestCode, const CPU::CPUBackend::CompiledCode& CompiledCode,
+-                        std::span<const FEXCore::CPU::Relocation> Relocations, const Frontend::Decoder::DecodedBlockInformation* DecodedBlockInfo) {
++                        std::span<const FEXCore::CPU::Relocation> Relocations, const Frontend::Decoder::DecodedBlockInformation* DecodedBlockInfo,
++                        bool CidreVariante) {
+     if (!IsWritingDiskCache()) {
+       return false;
+     }
+     if (!DecodedBlockInfo) {
+       return false;
++    }
++    // Cidre : sous-blocs avant l'entree (decalages uint32 negatifs) ou intervalles armes hors de [entree, entree + 4 Gio) :
++    // non gardes
++    for (auto& SubBlock : DecodedBlockInfo->Blocks) {
++      if (SubBlock.Entry < GuestRIP) {
++        CidreRefusStockage[2].fetch_add(1, std::memory_order_relaxed);
++        return false;
++      }
++    }
++    const auto& CidreArmesVives = Thread->FrontendDecoder->CidreDisqueArmes;
++    const auto& CidreValidesVives = Thread->FrontendDecoder->CidreDisqueValides;
++    for (auto [A, N] : CidreValidesVives) {
++      if (A < GuestRIP || A - GuestRIP + N > 0xffff'ffffULL) {
++        CidreRefusStockage[2].fetch_add(1, std::memory_order_relaxed);
++        return false;
++      }
++    }
++    for (auto [A, N] : CidreArmesVives) {
++      if (A < GuestRIP || A - GuestRIP + N > 0xffff'ffffULL) {
++        CidreRefusStockage[2].fetch_add(1, std::memory_order_relaxed);
++        return false;
++      }
+     }
+     // check for any reloc targets outside of our jurisdiction
+     // todo what are they exactly? caching those blocks is great when it works, so need to figure this out and make finer-grained if we can
+@@ -953,6 +1229,7 @@
+         auto TargetSection = CTX->SyscallHandler->LookupExecutableFileSection(Thread, Target);
+         if (!TargetSection || TargetSection->FileInfo.FileId != Region->FileInfo.FileId) {
+           // we don't know where it's pointing, so we don't know how to encode the offset, so we can't cache atm
++          CidreRefusStockage[1].fetch_add(1, std::memory_order_relaxed);
+           return false;
+         }
+       }
+@@ -976,7 +1253,9 @@
+     const size_t EntryPointHostOffsetsOffset = EntryPointRIPsOffset + EntryPointCount * sizeof(uint64_t);
+     const size_t SmallRelocsOffset = EntryPointHostOffsetsOffset + EntryPointCount * sizeof(uint32_t);
+     const size_t ThunkRelocsOffset = SmallRelocsOffset + SmallRelocCount * sizeof(BlobSmallRelocation);
+-    const size_t GuestCodeOffset = ThunkRelocsOffset + ThunkRelocCount * sizeof(BlobThunkRelocation);
++    const size_t CidreArmesOffset = ThunkRelocsOffset + ThunkRelocCount * sizeof(BlobThunkRelocation);
++    const size_t CidreValidesOffset = CidreArmesOffset + CidreArmesVives.size() * 2 * sizeof(uint32_t);
++    const size_t GuestCodeOffset = CidreValidesOffset + CidreValidesVives.size() * 2 * sizeof(uint32_t);
+     const size_t TotalSize = GuestCodeOffset + GuestCode.size();
+ 
+     // we'll copy everything into here and pass it to the Writer, then return to caller quickly
+@@ -990,7 +1269,23 @@
+       .EntryPointCount = EntryPointCount,
+       .SmallRelocCount = SmallRelocCount,
+       .ThunkRelocCount = ThunkRelocCount,
++      .CidreArmCount = (uint32_t)CidreArmesVives.size(),
++      .CidreValCount = (uint32_t)CidreValidesVives.size(),
+     };
++    {
++      auto* Valides = reinterpret_cast<uint32_t*>(BlobData + CidreValidesOffset);
++      for (size_t i = 0; i < CidreValidesVives.size(); i++) {
++        Valides[2 * i] = uint32_t(CidreValidesVives[i].first - GuestRIP);
++        Valides[2 * i + 1] = CidreValidesVives[i].second;
++      }
++    }
++    {
++      auto* Armes = reinterpret_cast<uint32_t*>(BlobData + CidreArmesOffset);
++      for (size_t i = 0; i < CidreArmesVives.size(); i++) {
++        Armes[2 * i] = uint32_t(CidreArmesVives[i].first - GuestRIP);
++        Armes[2 * i + 1] = CidreArmesVives[i].second;
++      }
++    }
+ 
+     memcpy(BlobData + HostCodeOffset, CompiledCode.BlockBegin, CompiledCode.Size);
+ 
+@@ -1058,6 +1353,14 @@
+ 
+         break;
+       }
++      case CPU::RelocationTypes::RELOC_CIDRE_SONNETTE_MOVE: {
++        BlobSmallRelocation SmallReloc = {};
++        SmallReloc.Offset = Reloc.Header.Offset;
++        SmallReloc.Type = uint8_t(Reloc.Header.Type);
++        SmallReloc.PatchableData.RegisterIndex = Reloc.GuestPatchableData.RegisterIndex;
++        SmallRelocs[SmallIdx++] = SmallReloc;
++        break;
++      }
+       case CPU::RelocationTypes::RELOC_NAMED_THUNK_MOVE: {
+         BlobThunkRelocation BigReloc = {};
+         BigReloc.Offset = Reloc.Header.Offset;
+@@ -1066,6 +1369,10 @@
+         ThunkRelocs[ThunkIdx++] = BigReloc;
+         break;
+       }
++      default:
++        // Cidre : type inconnu ici, la case resterait a zero (lue comme un symbole a l'apres-coup) : bloc non garde
++        CidreRefusStockage[3].fetch_add(1, std::memory_order_relaxed);
++        return false;
+       }
+     }
+ 
+@@ -1132,8 +1439,8 @@
+     memcpy(BlobData + HeaderOffset, &Header, sizeof(Header));
+ 
+     auto RangeInfo = CTX->SyscallHandler->QueryGuestExecutableRange(Thread, GuestRIP);
+-    uint64_t LookupKey =
+-      MakeLookupKey(Thread, GuestCodeKey, RangeInfo.Writable, GuestRIP == CTX->GetMonoBackPatcherBlock().load(std::memory_order_relaxed));
++    uint64_t LookupKey = MakeLookupKey(Thread, GuestCodeKey, RangeInfo.Writable,
++                                       GuestRIP == CTX->GetMonoBackPatcherBlock().load(std::memory_order_relaxed), CidreVariante);
+ 
+     // blob done, publish to index as in-memory for now, flush to disk below
+     auto BlobRef = fextl::make_shared<fextl::vector<uint8_t>>(std::move(Blob));
+@@ -1198,7 +1505,7 @@
+ 
+     // hand the rest off to the writer thread
+     Writer->QueueWork(fextl::make_unique<CacheStoreWorkItem>(this, RWCacheDB.get(), Key, LookupKey, std::span(BlobData, TotalSize),
+-                                                             std::move(IndexBlob), StoreDisk));
++                                                             std::move(IndexBlob), StoreDisk, BlobRef));
+     return true;
+   }
+ 
+diff --git a/FEXCore/Source/Interface/Core/DiskCache.h b/FEXCore/Source/Interface/Core/DiskCache.h
+--- a/FEXCore/Source/Interface/Core/DiskCache.h
++++ b/FEXCore/Source/Interface/Core/DiskCache.h
+@@ -66,6 +66,7 @@
+     fextl::shared_ptr<fextl::vector<uint8_t>> MemoryBlob;
+     fextl::vector<uint32_t> GuestExtents;
+     std::optional<fextl::list<MemoryLRUKey>::iterator> LRUEntry;
++    bool CidrePromu = false; // Cidre : recopie de l'ancienne generation vers la base courante deja demandee
+   };
+ 
+   struct IndexCacheHead {
+@@ -81,6 +82,10 @@
+     uint32_t SmallRelocCount;
+     uint32_t ThunkRelocCount;
+     XXH128_hash_t GuestHash;
++    // Cidre : nombre d'intervalles armes (paires uint32 decalage depuis l'entree, longueur), apres les relocations
++    uint32_t CidreArmCount;
++    // Cidre : puis les intervalles valides (CRC), meme forme (variante validee)
++    uint32_t CidreValCount;
+   };
+ 
+   // packed struct for types 0, 2 and 3. type 1 is bigger and separate below
+@@ -119,6 +124,11 @@
+     std::span<const uint64_t> GuestPages;
+     std::span<uint64_t> EntryPointRIPs;
+     std::span<const uint32_t> EntryPointHostOffsets;
++    // Cidre : intervalles compiles sans validation (a rearmer), etendues et empreinte des octets (a recomparer apres)
++    fextl::vector<uint32_t> CidreArmes;
++    fextl::vector<uint32_t> CidreValides;
++    fextl::vector<uint32_t> CidreEtendues;
++    XXH128_hash_t CidreEmpreinte {};
+ 
+     // the spans above point to memory owned by the Blob vec, so it's important this can't be copied
+     CodeHitData() = default;
+@@ -166,6 +176,13 @@
+     bool Open(const fextl::string& CacheDBName, bool ReadOnly);
+     void PopulateIndex(Index& CacheIndex, bool& FoundMetadata);
+     bool ReadCacheBlob(uint64_t Offset, std::span<uint8_t> OutBlob);
++    // Cidre (prechargement) : taille du fichier et lecture brute
++    ssize_t CidreTaille() {
++      return CacheFOZ.Size();
++    }
++    bool CidreLire(uint64_t Offset, std::span<uint8_t> Out) {
++      return CacheFOZ.ReadBlob(Offset, Out);
++    }
+     bool StoreCacheBlob(const MesaFOZ::foz_payload_key& UniqueKey, uint64_t LookupKey, std::span<const uint8_t> Blob,
+                         MesaFOZ::mesa_index_db_file_entry& IndexEntry, std::span<const uint8_t> IndexBlob);
+     bool Full() const {
+@@ -192,12 +209,13 @@
+     void Init(FEXCore::Context::ContextImpl* CTX);
+ 
+     std::optional<CodeHitData> Lookup(Core::InternalThreadState* Thread, std::optional<ExecutableFileSectionInfo> Region, uint64_t GuestRIP,
+-                                      std::optional<uint64_t>& GuestCodeKey);
++                                      std::optional<uint64_t>& GuestCodeKey, bool CidreVariante = false);
+     void Validate(uint64_t GuestCodeKey, const CodeHitData& Hit, const CPU::CPUBackend::CompiledCode& CompiledCode,
+                   std::optional<ExecutableFileSectionInfo> Region);
+     bool Store(Core::InternalThreadState* Thread, std::optional<ExecutableFileSectionInfo> Region, uint64_t GuestRIP, uint64_t GuestCodeKey,
+                std::span<const uint8_t> GuestCode, const CPU::CPUBackend::CompiledCode& CompiledCode,
+-               std::span<const FEXCore::CPU::Relocation> Relocations, const Frontend::Decoder::DecodedBlockInformation* DecodedBlockInfo);
++               std::span<const FEXCore::CPU::Relocation> Relocations, const Frontend::Decoder::DecodedBlockInformation* DecodedBlockInfo,
++               bool CidreVariante = false);
+ 
+     bool IsWritingDiskCache() const {
+       return WritingDiskCache;
+@@ -207,11 +225,36 @@
+     }
+     bool IsValidating() const {
+       return Validation;
++    }
++
++    // Cidre : empreinte des octets d'invite des etendues, lus comme le decodeur (alias des pages mixtes, intervalle
++    // executable redemande) ; faux si une etendue n'est plus executable.
++    static bool CidreEmpreinteVive(Core::InternalThreadState* Thread, uint64_t GuestRIP, std::span<const uint32_t> Extents, XXH128_hash_t& Out);
++    // Cidre : compteurs de refus du stockage (journal de Core.cpp)
++    std::atomic<uint64_t> CidreRefusStockage[4] {};
++    // Cidre : sorties sans succes de Lookup (0 decodage anon, 1 intervalle, 2 cle absente, 3 empreinte, 4 lecture, 5 taille, 6 entete, 7 relocations)
++    std::atomic<uint64_t> CidreSortieConsult[8] {};
++    // Cidre : mesures du chemin de service (ticks) : lecture disque / memoire du blob, nombre de lectures disque
++    std::atomic<uint64_t> CidreTicksLecture {}, CidreNbLectureDisque {}, CidreNbLectureMemoire {}, CidreTicksConsult {};
++    // Cidre (CIDRE_FEX_DISQUE_PRECHARGE=1) : fichier du cache lu en bloc, en fond, dans la memoire du processus
++    void CidrePrecharger();
++    std::atomic<uint64_t> CidrePrechargeTaille {};
++    uint8_t* CidrePrechargeBase {};
++    std::atomic<uint64_t> CidrePrechargeTicks {};
++    // Cidre : generations (plafond CIDRE_FEX_DISQUE_MAX_MO) : base courante RW et ancienne en lecture seule, entrees servies
++    // depuis l'ancienne recopiees dans la courante
++    IndexedDB* CidreAncienne {};
++    std::atomic<uint64_t> CidrePromotions {};
++    struct CidrePromotionWorkItem;
++  public:
++    IndexedDB* CidreBaseCourante() const {
++      return RWCacheDB.get();
+     }
++  private:
+ 
+   private:
+     bool OpenCacheDB(const fextl::string& CacheDBName, bool ReadOnly);
+-    uint64_t MakeLookupKey(Core::InternalThreadState* Thread, const uint64_t ModuleOffset, bool Writable, bool MonoBackpatcher);
++    uint64_t MakeLookupKey(Core::InternalThreadState* Thread, const uint64_t ModuleOffset, bool Writable, bool MonoBackpatcher, bool CidreVariante = false);
+     IndexEntry* LookupLocked(const uint64_t LookupKey, const XXH128_hash_t& GuestHash, const uint64_t GuestFootprint);
+ 
+     bool ReadingDiskCache {};
+@@ -240,7 +283,8 @@
+     FEX_CONFIG_OPT(AnonCaching, DISKCACHEANONCACHING);
+     FEX_CONFIG_OPT(BasePathOverride, DISKCACHEPATH);
+     FEX_CONFIG_OPT(RODBNames, DISKCACHERODBNAMES);
+-    FEX_CONFIG_OPT(MemoryLRUMaxSize, DISKCACHEMEMORYSIZE);
++    FEX_CONFIG_OPT(MemoryLRUMaxSizeOpt, DISKCACHEMEMORYSIZE);
++    uint32_t MemoryLRUMaxSize = MemoryLRUMaxSizeOpt; // Cidre : reglable (CIDRE_FEX_DISQUE_MO)
+ 
+     uint64_t MemoryLRUEvictThreshold = MemoryLRUMaxSize / 25;
+   };
+@@ -249,7 +293,7 @@
+   // The current version of the diskcache.
+   // This must be changed any time codegen changes occur!
+   // Be aware of the impact of changing this frequently!
+-  static constexpr uint16_t FormatVersion = 28;
++  static constexpr uint16_t FormatVersion = 28 + 0x4001; // Cidre : +0x4000 (intervalles armes, sonnette relogeable)
+ 
+   static constexpr uint32_t LOOKUP_KEY_MAX_BUCKET_DEPTH = 500;
+ 
+diff --git a/FEXCore/Source/Interface/Core/Frontend.h b/FEXCore/Source/Interface/Core/Frontend.h
+--- a/FEXCore/Source/Interface/Core/Frontend.h
++++ b/FEXCore/Source/Interface/Core/Frontend.h
+@@ -205,6 +205,13 @@
+   bool CidreSansMultibloc {};
+   // relit Size octets de code a P hors decodage : intervalle executable et alias redemandes, refus si non executable
+   bool CidreRelire(const uint8_t* P, void* Dst, size_t Size);
++  // Cidre (cache disque, Core.cpp/DiskCache.cpp) : instructions compilees sans validation (armees) pendant ce GenerateIR,
++  // [adresse, taille) fusionnees si contigues. Le cache disque les garde avec le bloc et les rearme avant de le resservir.
++  fextl::vector<std::pair<uint64_t, uint32_t>> CidreDisqueArmes;
++  // Cidre (cache disque) : au moins une instruction de ce GenerateIR est validee (CRC) : bloc non garde si l'armement existe
++  bool CidreDisqueValide {};
++  // Cidre (cache disque) : instructions compilees AVEC validation (CRC) pendant ce GenerateIR, [adresse, taille) fusionnees
++  fextl::vector<std::pair<uint64_t, uint32_t>> CidreDisqueValides;
+ 
+ private:
+   IR::OpSize GetGPROpSize() const {
+diff --git a/FEXCore/Source/Interface/Core/JIT/Arm64Relocations.cpp b/FEXCore/Source/Interface/Core/JIT/Arm64Relocations.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/Arm64Relocations.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/Arm64Relocations.cpp
+@@ -134,6 +134,18 @@
+   Relocations.emplace_back(MoveABI);
+ }
+ 
++void Arm64JITCore::CidreChargerSonnette(ARMEmitter::Register Reg, uint64_t Page) {
++  if (!SupportCodeRelocations) {
++    LoadConstant(ARMEmitter::Size::i64Bit, Reg, Page);
++    return;
++  }
++  Relocation MoveABI = Relocation::Default();
++  MoveABI.GuestPatchableData.Header = {.Offset = GetCursorOffset(), .Type = RelocationTypes::RELOC_CIDRE_SONNETTE_MOVE};
++  MoveABI.GuestPatchableData.RegisterIndex = Reg.Idx();
++  LoadConstant(ARMEmitter::Size::i64Bit, Reg, Page, FEXCore::CPU::Arm64Emitter::PadType::DOPAD);
++  Relocations.emplace_back(MoveABI);
++}
++
+ fextl::vector<FEXCore::CPU::Relocation> Arm64JITCore::TakeRelocations(uint64_t GuestBaseAddress) {
+   // Rebase relocations to library base address
+   for (auto& Relocation : Relocations) {
+diff --git a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -933,7 +933,7 @@
+     (void)cbz(ARMEmitter::Size::i32Bit, TMP2, &l_NoSuspend);
+     if (const uint64_t Page = FEXCore::CidreSonnetteFaute::Page) {
+       // Cidre 0306 : faute de lecture au lieu du brk (SIGTRAP peut etre ignore par du code tiers)
+-      LoadConstant(ARMEmitter::Size::i64Bit, TMP2, Page);
++      CidreChargerSonnette(TMP2, Page);
+       ldr(TMP2.W(), TMP2, FEXCore::CidreSonnetteFaute::EN_LIGNE);
+     } else {
+       brk(SuspendMagic);
+@@ -1413,7 +1413,7 @@
+     uint64_t Talon;
+     if (const uint64_t Page = FEXCore::CidreSonnetteFaute::Page) {
+       // Cidre 0306 : la lecture fautive tient lieu de brk ; le decalage se compte depuis elle.
+-      LoadConstant(ARMEmitter::Size::i64Bit, TMP2, Page);
++      CidreChargerSonnette(TMP2, Page);
+       Talon = GetCursorAddress<uint64_t>();
+       ldr(TMP2.W(), TMP2, FEXCore::CidreSonnetteFaute::FROIDE);
+     } else {
+diff --git a/FEXCore/Source/Interface/Core/JIT/JITClass.h b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+--- a/FEXCore/Source/Interface/Core/JIT/JITClass.h
++++ b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+@@ -610,6 +610,8 @@
+    */
+   void InsertGuestRIPMove(ARMEmitter::Register Reg, uint64_t Constant);
+ 
++  // Cidre (cache disque) : charge la page de la sonnette par faute ; relogeable si le cache disque ecrit
++  void CidreChargerSonnette(ARMEmitter::Register Reg, uint64_t Page);
+   void InsertGuestPatchableMove(FEXCore::CPU::RelocationTypes Type, ARMEmitter::Register Reg, uint64_t Value, uint64_t SiteAddress,
+                                 uint8_t ValueSize);
+ 
+diff --git a/FEXCore/Source/Interface/Core/JIT/Relocations.h b/FEXCore/Source/Interface/Core/JIT/Relocations.h
+--- a/FEXCore/Source/Interface/Core/JIT/Relocations.h
++++ b/FEXCore/Source/Interface/Core/JIT/Relocations.h
+@@ -41,6 +41,10 @@
+   // Patchable guest CRC
+   // Aligned to struct RelocGuestPatchableData
+   RELOC_GUEST_PATCHABLE_CRC_MOVE,
++
++  // Cidre (cache disque) : adresse de la page de la sonnette par faute (0306, CidreSonnetteFaute::Page), propre au
++  // processus. 4 instructions (DOPAD). Aligned to struct RelocGuestPatchableData (RegisterIndex seul)
++  RELOC_CIDRE_SONNETTE_MOVE = 0x40,
+ };
+ 
+ struct FEX_PACKED RelocationHeader final {
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -1007,7 +1007,8 @@
+     // CIDRE_SMC_ARME=1 : pas de validation SMC complete par instruction pour le code dont Wine arme le suivi d'ecriture
+     // des vues inscriptibles de la section (vues RW/RX des chargeurs proteges, D2R).
+     if (const char* E = getenv("CIDRE_SMC_ARME"); E && *E == '1') {
+-      CTX->SetGuestCodeArmed(&FEX::Windows::SousPages::CodeArme);
++      const char* R = getenv("CIDRE_ARME_RAPIDE");
++      CTX->SetGuestCodeArmed(R && *R == '0' ? &FEX::Windows::SousPages::CodeArme : &FEX::Windows::SousPages::CodeArmeRapide);
+       CidreSmcArme = true;
+     }
+     if (const char* E = getenv("CIDRE_SOUS_PAGES_EN_LIGNE"); E && *E == '2') {
+diff --git a/Source/Windows/ARM64EC/SousPages.cpp b/Source/Windows/ARM64EC/SousPages.cpp
+--- a/Source/Windows/ARM64EC/SousPages.cpp
++++ b/Source/Windows/ARM64EC/SousPages.cpp
+@@ -1216,6 +1216,32 @@
+   uint64_t Desarmements {}; // sous ArmeesVerrou : une page desarmee pendant l'appel a Wine n'est pas inscrite
+   const volatile uint32_t* GenSections {};
+   uint32_t GenSectionsVue {}; // sous ArmeesVerrou : compteur de Wine au dernier traitement
++  // Cidre (cache disque) : repere « page armee » lisible sans verrou (CodeArmeRapide). Ecrit sous ArmeesVerrou : pose a
++  // l'armement (ou « deja armee »), retire au desarmement de la page ; un desarmement de masse change l'epoque. Une case
++  // par page (table directe, 2^16 cases) : numero de page sur 36 bits, epoque sur 28 bits.
++  constexpr size_t NB_MEMO = size_t {1} << 16;
++  std::atomic<uint64_t> MemoArmees[NB_MEMO];
++  std::atomic<uint32_t> EpoqueMasse {1};
++  std::atomic<uint32_t> GenVuePub {};
++  std::atomic<uint64_t> NbArmeRapide, NbArmeLent;
++  inline size_t MemoCase(uint64_t Page) {
++    return ((Page >> 12) * 0x9E3779B97F4A7C15ULL) >> 48;
++  }
++  inline uint64_t MemoValeur(uint64_t Page, uint32_t Epoque) {
++    return ((Page >> 12) << 28) | (Epoque & 0x0fff'ffffU);
++  }
++  void MemoPoser(uint64_t Page) { // sous ArmeesVerrou
++    MemoArmees[MemoCase(Page)].store(MemoValeur(Page, EpoqueMasse.load(std::memory_order_relaxed)), std::memory_order_release);
++  }
++  void MemoRetirer(uint64_t Page) { // sous ArmeesVerrou
++    auto& C = MemoArmees[MemoCase(Page)];
++    if ((C.load(std::memory_order_relaxed) >> 28) == (Page >> 12)) {
++      C.store(0, std::memory_order_release);
++    }
++  }
++  void MemoMasse() { // sous ArmeesVerrou
++    EpoqueMasse.fetch_add(1, std::memory_order_acq_rel);
++  }
+   std::atomic<uint64_t> NbRefusRaison[7];
+   std::atomic<uint64_t> NbArmees, NbArmementsRefuses, NbEcritsArmes, NbGenSections, NbRefusCompteur, NbRefusCourse, NbDejaArmees;
+   // 0360 : pages dont le code a ete compile AVEC validation parce que l'armement a echoue (refus de Wine, refus recent en
+@@ -1320,6 +1346,7 @@
+       }
+       if (Armees.contains(Page)) {
+         Compter(NbDejaArmees, "SMC arme : page deja armee");
++        MemoPoser(Page);
+         continue;
+       }
+       if (Recul() && EnRecul(Page, Millisecondes())) {
+@@ -1359,6 +1386,7 @@
+     if (!GenSections && P.GenPtr) {
+       GenSections = reinterpret_cast<const volatile uint32_t*>(P.GenPtr);
+       GenSectionsVue = P.Gen;
++      GenVuePub.store(GenSectionsVue, std::memory_order_release);
+     }
+     if (Desarmements != Avant || (GenSections && *GenSections != GenSectionsVue)) {
+       Compter(NbRefusCourse, "SMC arme : refus, desarmement ou compteur pendant l'appel a Wine");
+@@ -1366,6 +1394,7 @@
+       return false; // une ecriture ou une projection a pu desarmer la page entre-temps : garder la validation
+     }
+     Armees.insert(Page);
++    MemoPoser(Page);
+     Refusees.erase(Page);
+     if (Recul()) {
+       NoterArmement(Page, Millisecondes());
+@@ -1385,9 +1414,11 @@
+   if ((Fin - Debut) / 0x1000 <= 64) {
+     for (uint64_t Page = Debut; Page < Fin; Page += 0x1000) {
+       Armees.erase(Page);
++      MemoRetirer(Page);
+     }
+   } else {
+     std::erase_if(Armees, [&](uint64_t Page) { return Page >= Debut && Page < Fin; });
++    MemoMasse();
+   }
+ }
+ 
+@@ -1480,7 +1511,9 @@
+   // Une jumelle a pu etre ecrite sans exception (ou n'est plus suivie) : toutes les pages armees perdent leur traduction
+   // sans validation et seront rearmees a la prochaine compilation.
+   GenSectionsVue = *GenSections;
++  GenVuePub.store(GenSectionsVue, std::memory_order_release);
+   ++Desarmements;
++  MemoMasse();
+   Pages.assign(Armees.begin(), Armees.end());
+   Armees.clear();
+   Compter(NbGenSections, "SMC arme : compteur des sections change, pages desarmees");
+@@ -1490,6 +1523,7 @@
+ fextl::vector<uint64_t> FEX::Windows::SousPages::ToutDesarmer() {
+   std::scoped_lock Lock(ArmeesVerrou);
+   ++Desarmements;
++  MemoMasse();
+   fextl::vector<uint64_t> Pages(Armees.begin(), Armees.end());
+   Armees.clear();
+   return Pages;
+@@ -1508,15 +1542,41 @@
+     for (uint64_t Page = Rx & ~uint64_t {0xfff}; Page < Rx + Taille; Page += 0x1000) {
+       Pages.push_back(Page);
+       Armees.erase(Page);
++      MemoRetirer(Page);
+       NoterEcriture(Page, Maintenant);
+     }
+   } else {
+     Pages.assign(Armees.begin(), Armees.end());
+     Armees.clear();
++    MemoMasse();
+   }
+   return Pages;
+ }
+ 
++// Cidre (cache disque) : CodeArme sans verrou quand toutes les pages sont deja armees (repere MemoArmees, epoque et
++// compteur de Wine inchanges) ; sinon CodeArme. Meme resultat : une page « deja armee » ne fait rien d'autre chez CodeArme.
++bool FEX::Windows::SousPages::CodeArmeRapide(uint64_t Adresse, uint64_t Taille) {
++  if (!Actif || !Taille) {
++    return false;
++  }
++  if (GenSections && *GenSections != GenVuePub.load(std::memory_order_acquire)) {
++    NbArmeLent.fetch_add(1, std::memory_order_relaxed);
++    return CodeArme(Adresse, Taille);
++  }
++  const uint32_t E = EpoqueMasse.load(std::memory_order_acquire);
++  for (uint64_t Page = Adresse & ~uint64_t {0xfff}; Page < Adresse + Taille; Page += 0x1000) {
++    if (MemoArmees[MemoCase(Page)].load(std::memory_order_acquire) != MemoValeur(Page, E)) {
++      NbArmeLent.fetch_add(1, std::memory_order_relaxed);
++      return CodeArme(Adresse, Taille);
++    }
++  }
++  const uint64_t N = NbArmeRapide.fetch_add(1, std::memory_order_relaxed) + 1;
++  if (!(N & (N - 1)) && N >= 1024) {
++    LogMan::Msg::IFmt("cidre : armement rapide (sans verrou) {} , lent {}", N, NbArmeLent.load(std::memory_order_relaxed));
++  }
++  return true;
++}
++
+ using namespace FEX::Windows::SousPages;
+ 
+ // Appele par SousPagesCommun (Module.S), registres de l'invite sauves dans
+diff --git a/Source/Windows/ARM64EC/SousPages.h b/Source/Windows/ARM64EC/SousPages.h
+--- a/Source/Windows/ARM64EC/SousPages.h
++++ b/Source/Windows/ARM64EC/SousPages.h
+@@ -62,6 +62,8 @@
+ // CIDRE_SMC_ARME (Context::SetGuestCodeArmed) : arme chez Wine (op 6) le suivi d'ecriture de toutes les vues inscriptibles
+ // de la section pour les pages de [Adresse, Adresse+Taille) ; true si toutes le sont (deja ou maintenant).
+ bool CodeArme(uint64_t Adresse, uint64_t Taille);
++// Cidre (cache disque) : meme chose, sans verrou si toutes les pages sont deja armees (CIDRE_ARME_RAPIDE=0 : coupe)
++bool CodeArmeRapide(uint64_t Adresse, uint64_t Taille);
+ // Pages ecrites (BTCpu64NotifyMemoryDirty), liberees, deprojetees ou reprotegees : plus armees.
+ void Desarmer(uint64_t Adresse, uint64_t Taille);
+ // Compteur des sections de Wine change depuis le dernier appel : pages a invalider (toutes celles qui etaient armees),

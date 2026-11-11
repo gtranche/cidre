@@ -1,0 +1,178 @@
+Generated-by: LLM
+
+Cidre 0481 (FEX, cache disque) : cle « simple ». Un bloc garde arme (vue jumelle, SMC complet) puis consulte la ou Wine refuse
+l'armement (memoire RW reprotegee RX, hors vue de section) est recompile sans armement ni validation ; ce bloc simple a la meme cle et
+la meme empreinte que le bloc arme : Store le prenait pour un doublon et ne l'ecrivait jamais (rate a chaque partie). Il est garde sous
+une cle a part (drapeau 1 << 5), seulement hors SMC complet (Lookup et Store refusent la cle simple si RangeInfo.FullSMC), et cherche
+apres un rearmement refuse. La cle de la consultation precedente est reprise (pas de second decodage, voir aussi 0482).
+CIDRE_FEX_DISQUE_SIMPLE=0 : coupee. Banc (cache du joueur 10/11 + banc mode 0, puis mode 1 trois fois) : ref 12 806 compiles a chaque
+lancement ; 0481 12 649 au 1er (stockes), 0 aux suivants (12 806 servis par la cle simple), phase 212 -> 146-157 ms. Local Cidre.
+
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -1614,6 +1614,10 @@
+   std::atomic<uint64_t> RefusRaison[3] {}, TicksRearm {}, NbAppelsArme {}, TicksCharge {}, VarServis {}, VarArmables {}, VarStockes {};
+   std::atomic<uint64_t> Dernier {};
+   std::atomic<uint64_t> TicksRearmHash {}, TicksPoseInterv {}, TicksPoseMap {}; // 0475
++  // 0479 : blocs compiles par cause de la premiere consultation et de la derniere ; issue du Store par cause premiere
++  std::atomic<uint64_t> Rate1[FEXCore::DiskCache::CAUSE_NB] {}, RateFin[FEXCore::DiskCache::CAUSE_NB] {};
++  std::atomic<uint64_t> Neufs[FEXCore::DiskCache::CAUSE_NB] {}, Doublons[FEXCore::DiskCache::CAUSE_NB] {}, SeauPlein {}, RefusStore {};
++  std::atomic<uint64_t> SimpleServis {}, SimpleStockes {}, SimpleConsult {}; // 0481
+   int8_t Valides = -1; // CIDRE_FEX_DISQUE_VALIDES
+   uint64_t TotSucces = 0, TotCompil = 0, TotStockes = 0;
+   uint64_t MinDebut = 0, MinServis = 0, MinCompil = 0, MinStockes = 0; // ligne par minute (partie du joueur)
+@@ -1758,6 +1762,14 @@
+ // Cidre (cache disque, CIDRE_FEX_DISQUE_VALIDES=1) : variante validee (CRC) d'un bloc. Resservie seulement si la compilation
+ // referait la meme chose : pour chaque intervalle valide, page chaude (jamais armee) ou armement refuse maintenant. Si
+ // l'armement reussit, on compile (le bloc arme, sans validation, sera garde sous la cle normale) : 0360 garde son effet.
++// Cidre 0481 : cle « simple » (CIDRE_FEX_DISQUE_SIMPLE=0 : coupee)
++bool CidreDisqueSimpleActif() {
++  static const bool V = [] {
++    const char* E = getenv("CIDRE_FEX_DISQUE_SIMPLE");
++    return !(E && *E == '0');
++  }();
++  return V;
++}
+ bool CidreDisqueValidesActif() {
+   static const bool V = [] {
+     const char* E = getenv("CIDRE_FEX_DISQUE_VALIDES");
+@@ -2160,11 +2172,26 @@
+         std::span<const uint8_t> GuestCode = {CidreCopie.data(), CidreCopie.size()};
+         const Frontend::Decoder::DecodedBlockInformation* BlockInfo =
+           NeedsAddGuestCodeRanges ? Thread->FrontendDecoder->GetDecodedBlockInfo() : nullptr;
+-        if (DiskCache.Store(Thread, Region, GuestRIP, *DiskCacheGuestCodeKey, GuestCode, CompiledCode, Relocations, BlockInfo, CidreVariante)) {
++        // 0481 : bloc simple (ni arme ni valide) compile juste apres un rearmement refuse de ce RIP
++        const bool CidreSimple = !CidreVariante && CidreDisqueSimpleActif() && Dec->CidreCause1 == FEXCore::DiskCache::CAUSE_REARM &&
++                                 Dec->CidreCauseRIP == GuestRIP && Dec->CidreDisqueArmes.empty() && !Dec->CidreDisqueValide;
++        const bool CidreGarde =
++          DiskCache.Store(Thread, Region, GuestRIP, *DiskCacheGuestCodeKey, GuestCode, CompiledCode, Relocations, BlockInfo, CidreVariante, CidreSimple);
++        const uint8_t CidreC1 = Dec->CidreCauseRIP == GuestRIP ? Dec->CidreCause1 : 0;
++        switch (Dec->CidreIssueStore) {
++        case 0: CidreDisque.Neufs[CidreC1].fetch_add(1, std::memory_order_relaxed); break;
++        case 1: CidreDisque.Doublons[CidreC1].fetch_add(1, std::memory_order_relaxed); break;
++        case 2: CidreDisque.SeauPlein.fetch_add(1, std::memory_order_relaxed); break;
++        default: CidreDisque.RefusStore.fetch_add(1, std::memory_order_relaxed); break;
++        }
++        if (CidreGarde) {
+           CidreDisque.Stockes[CidreClasse].fetch_add(1, std::memory_order_relaxed);
+           if (CidreVariante) {
+             CidreDisque.VarStockes.fetch_add(1, std::memory_order_relaxed);
+           }
++          if (CidreSimple && Dec->CidreIssueStore == 0) {
++            CidreDisque.SimpleStockes.fetch_add(1, std::memory_order_relaxed);
++          }
+         } else {
+           CidreDisque.NonStore.fetch_add(1, std::memory_order_relaxed);
+         }
+diff --git a/FEXCore/Source/Interface/Core/DiskCache.cpp b/FEXCore/Source/Interface/Core/DiskCache.cpp
+--- a/FEXCore/Source/Interface/Core/DiskCache.cpp
++++ b/FEXCore/Source/Interface/Core/DiskCache.cpp
+@@ -823,6 +823,9 @@
+     if (CidreVariante) {
+       BlobKeyBytes.Flags |= 1 << 4; // Cidre : variante validee (CRC) d'un bloc d'invite
+     }
++    if (CidreSimple) {
++      BlobKeyBytes.Flags |= 1 << 5; // Cidre 0481 : bloc sans armement ni validation, compile apres un rearmement refuse
++    }
+ 
+     return XXH3_64bits(&BlobKeyBytes, sizeof(BlobKeyBytes));
+   }
+@@ -965,12 +968,17 @@
+     CidreDet[0].fetch_add(CidreD1 - CidreD0, std::memory_order_relaxed);
+     auto RangeInfo = CTX->SyscallHandler->QueryGuestExecutableRange(Thread, GuestRIP);
+     if (RangeInfo.Size == 0 || RangeInfo.Base > GuestRIP) {
+-      CidreSortieConsult[1].fetch_add(1, std::memory_order_relaxed); return std::nullopt;
++      CidreSortieConsult[1].fetch_add(1, std::memory_order_relaxed); Rate(CAUSE_INTERVALLE); return std::nullopt;
++    }
++    // Cidre 0481 : la cle « simple » (bloc sans armement ni validation) n'est jamais servie dans un intervalle a SMC complet
++    if (CidreSimple && RangeInfo.FullSMC) {
++      Rate(CAUSE_PLEIN_SMC);
++      return std::nullopt;
+     }
+     uint64_t Available = RangeInfo.Base + RangeInfo.Size - GuestRIP;
+ 
+     uint64_t LookupKey = MakeLookupKey(Thread, *GuestCodeKey, RangeInfo.Writable,
+-                                       GuestRIP == CTX->GetMonoBackPatcherBlock().load(std::memory_order_relaxed), CidreVariante);
++                                       GuestRIP == CTX->GetMonoBackPatcherBlock().load(std::memory_order_relaxed), CidreVariante, CidreSimple);
+ 
+     XXH128_hash_t LiveGuestHash;
+     uint64_t LastFootprintHashed = 0;
+@@ -1594,7 +1602,8 @@
+   bool DiskCache::Store(Core::InternalThreadState* Thread, std::optional<ExecutableFileSectionInfo> Region, uint64_t GuestRIP,
+                         uint64_t GuestCodeKey, std::span<const uint8_t> GuestCode, const CPU::CPUBackend::CompiledCode& CompiledCode,
+                         std::span<const FEXCore::CPU::Relocation> Relocations, const Frontend::Decoder::DecodedBlockInformation* DecodedBlockInfo,
+-                        bool CidreVariante) {
++                        bool CidreVariante, bool CidreSimple) {
++    Thread->FrontendDecoder->CidreIssueStore = 3; // 0479 : refus par defaut
+     if (!IsWritingDiskCache()) {
+       return false;
+     }
+@@ -1852,8 +1861,11 @@
+     memcpy(BlobData + HeaderOffset, &Header, sizeof(Header));
+ 
+     auto RangeInfo = CTX->SyscallHandler->QueryGuestExecutableRange(Thread, GuestRIP);
++    if (CidreSimple && RangeInfo.FullSMC) {
++      return false; // 0481 : meme regle que Lookup
++    }
+     uint64_t LookupKey = MakeLookupKey(Thread, GuestCodeKey, RangeInfo.Writable,
+-                                       GuestRIP == CTX->GetMonoBackPatcherBlock().load(std::memory_order_relaxed), CidreVariante);
++                                       GuestRIP == CTX->GetMonoBackPatcherBlock().load(std::memory_order_relaxed), CidreVariante, CidreSimple);
+ 
+     {
+       static const bool CidreDiagCle = getenv("CIDRE_DIAG_CLE") != nullptr;
+diff --git a/FEXCore/Source/Interface/Core/DiskCache.h b/FEXCore/Source/Interface/Core/DiskCache.h
+--- a/FEXCore/Source/Interface/Core/DiskCache.h
++++ b/FEXCore/Source/Interface/Core/DiskCache.h
+@@ -222,13 +222,13 @@
+     void Init(FEXCore::Context::ContextImpl* CTX);
+ 
+     std::optional<CodeHitData> Lookup(Core::InternalThreadState* Thread, std::optional<ExecutableFileSectionInfo> Region, uint64_t GuestRIP,
+-                                      std::optional<uint64_t>& GuestCodeKey, bool CidreVariante = false);
++                                      std::optional<uint64_t>& GuestCodeKey, bool CidreVariante = false, bool CidreSimple = false);
+     void Validate(uint64_t GuestCodeKey, const CodeHitData& Hit, const CPU::CPUBackend::CompiledCode& CompiledCode,
+                   std::optional<ExecutableFileSectionInfo> Region);
+     bool Store(Core::InternalThreadState* Thread, std::optional<ExecutableFileSectionInfo> Region, uint64_t GuestRIP, uint64_t GuestCodeKey,
+                std::span<const uint8_t> GuestCode, const CPU::CPUBackend::CompiledCode& CompiledCode,
+                std::span<const FEXCore::CPU::Relocation> Relocations, const Frontend::Decoder::DecodedBlockInformation* DecodedBlockInfo,
+-               bool CidreVariante = false);
++               bool CidreVariante = false, bool CidreSimple = false);
+ 
+     bool IsWritingDiskCache() const {
+       return WritingDiskCache;
+@@ -274,7 +274,7 @@
+ 
+   private:
+     bool OpenCacheDB(const fextl::string& CacheDBName, bool ReadOnly);
+-    uint64_t MakeLookupKey(Core::InternalThreadState* Thread, const uint64_t ModuleOffset, bool Writable, bool MonoBackpatcher, bool CidreVariante = false);
++    uint64_t MakeLookupKey(Core::InternalThreadState* Thread, const uint64_t ModuleOffset, bool Writable, bool MonoBackpatcher, bool CidreVariante = false, bool CidreSimple = false);
+     IndexEntry* LookupLocked(const uint64_t LookupKey, const XXH128_hash_t& GuestHash, const uint64_t GuestFootprint);
+ 
+     bool ReadingDiskCache {};
+@@ -327,6 +327,26 @@
+ 
+   // Cidre 0475 : octets hashes et relectures par CidreEmpreinteVive
+   extern std::atomic<uint64_t> CidreOctetsHashes, CidreRelectures;
++
++  // Cidre 0479 : cause d'un echec de consultation (Decoder::CidreCause1 / CidreCauseFin), journal « cidre disque rates »
++  enum CidreCause : uint8_t {
++    CAUSE_AUCUNE = 0,
++    CAUSE_CLE_DECODAGE,   // cle anonyme : sous-bloc mal decode
++    CAUSE_CLE_RELECTURE,  // cle anonyme : octets illisibles (non executables)
++    CAUSE_INTERVALLE,     // QueryGuestExecutableRange vide
++    CAUSE_CLE_ABSENTE,    // aucun seau pour la cle de recherche
++    CAUSE_DISPONIBLE,     // seuls candidats : plus longs que l'intervalle executable de RIP (Available < GuestSize)
++    CAUSE_NON_EXEC,       // une etendue d'un candidat n'est pas executable (CidreEmpreinteVive faux)
++    CAUSE_OCTETS,         // empreinte vive differente de tous les candidats
++    CAUSE_SANS_SUPPORT,   // candidat sans base ni memoire
++    CAUSE_LECTURE,        // lecture, taille, en-tete, relocations (sorties 4-7)
++    CAUSE_REARM,          // trouve, rearmement refuse par Wine
++    CAUSE_VARIANTE_ARMABLE, // variante validee trouvee, armement possible : compilation voulue
++    CAUSE_CHARGE,         // LoadCachedCode a echoue
++    CAUSE_RELUS,          // octets relus differents apres armement
++    CAUSE_PLEIN_SMC,      // 0481 : cle « simple » demandee dans un intervalle a SMC complet
++    CAUSE_NB
++  };
+ 
+   static constexpr uint16_t AnonPrefixGuestBytes = 64;
+   // The current version of the diskcache.

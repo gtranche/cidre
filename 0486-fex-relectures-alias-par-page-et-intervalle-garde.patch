@@ -1,0 +1,254 @@
+Generated-by: LLM
+
+Cidre 0486 (FEX, decodeur et sous-pages) : relectures du code invite sans requete inutile a Wine ni a l'InvalidationTracker.
+- Cache d'alias (SousPages::DecalageCode) valide par la generation de la case de la page d'hote (table R3 de Wine,
+  op 4/op 1) au lieu de la generation globale. Wine change la generation globale a chaque changement de droits de page, dont
+  un par page de 4 Kio du tampon de chaque lecture de fichier faite dans l'ilot : toutes les relectures du code (cle,
+  empreintes, rearmement) repassaient alors par un appel a Wine (~6-13 us, contendu pendant une lecture). Wine augmente la
+  case de chaque page touchee a chaque changement, sous virtual_mutex avec l'etat lu : jamais une entree tenue a tort pour
+  valide. CIDRE_ALIAS_PAR_PAGE=0 : generation globale (avant).
+- Intervalle executable garde par le decodeur entre deux relectures (CidreRelire le redemandait a chaque fois : ~52 000
+  requetes par phase du banc, verrou partage des intervalles) tant que la generation des intervalles n'a pas bouge.
+  L'InvalidationTracker avance cette generation a chaque liberation de sa prise exclusive (apres les modifications) ;
+  SyscallHandler::CidreGenIntervalles la donne (nullptr ailleurs que sous ARM64EC : comportement d'avant).
+  CIDRE_FEX_DISQUE_INTERV_GARDE=0 : toujours redemande.
+- Decoder::ReadCode copie par morceau de page d'hote (16 Kio) au lieu d'octet par octet (meme alias par page).
+Local Cidre.
+
+diff --git a/FEXCore/Source/Interface/Core/Frontend.cpp b/FEXCore/Source/Interface/Core/Frontend.cpp
+--- a/FEXCore/Source/Interface/Core/Frontend.cpp
++++ b/FEXCore/Source/Interface/Core/Frontend.cpp
+@@ -28,6 +28,8 @@
+ #include <FEXCore/fextl/set.h>
+ 
+ namespace FEXCore::Frontend {
++// Cidre 0486 (mesure) : requetes de l'intervalle executable faites par le decodeur et les relectures
++std::atomic<uint64_t> CidreIntervNb {};
+ #include "Interface/Core/VSyscall/VSyscall.inc"
+ 
+ using namespace FEXCore::X86Tables;
+@@ -100,8 +102,17 @@
+     return false;
+   }
+ 
++  if (Address < ExecutableRangeBase || Address + Size > ExecutableRangeEnd) {
++    // 0486 : generation lue AVANT la requete (une modification pendant la requete la fera refaire)
++    if (!CidreGenPret) {
++      CidreGenPtr = CTX->SyscallHandler ? CTX->SyscallHandler->CidreGenIntervalles() : nullptr;
++      CidreGenPret = true;
++    }
++    CidreRangeGen = CidreGenPtr ? CidreGenPtr->load(std::memory_order_acquire) : 0;
++  }
+   while (Address < ExecutableRangeBase || Address + Size > ExecutableRangeEnd) {
+     auto RangeInfo = CTX->SyscallHandler->QueryGuestExecutableRange(Thread, Address);
++    CidreIntervNb.fetch_add(1, std::memory_order_relaxed); // 0486 : requetes faites (rares, intervalle garde)
+     ExecutableRangeBase = RangeInfo.Base;
+     ExecutableRangeEnd = RangeInfo.Base + RangeInfo.Size;
+     ExecutableRangeWritable = RangeInfo.Writable;
+@@ -140,20 +151,37 @@
+     std::memcpy(D, P, Size);
+     return;
+   }
+-  for (size_t i = 0; i < Size; ++i) {
+-    const auto A = reinterpret_cast<uint64_t>(P + i);
++  // Cidre 0486 : copie par morceau de page d'hote (16 Kio) au lieu d'octet par octet (meme alias par page)
++  uint64_t A = reinterpret_cast<uint64_t>(P);
++  while (Size) {
+     const auto Page = A & ~uint64_t {0x3fff};
+     if (Page != AliasPage) {
+       AliasPage = Page;
+       AliasDelta = CTX->GuestCodeAlias(Page);
+     }
+-    D[i] = *reinterpret_cast<const uint8_t*>(A + AliasDelta);
++    const size_t N = std::min<uint64_t>(Size, Page + 0x4000 - A);
++    if (N == 1) {
++      *D = *reinterpret_cast<const uint8_t*>(A + AliasDelta);
++    } else {
++      std::memcpy(D, reinterpret_cast<const void*>(A + AliasDelta), N);
++    }
++    D += N;
++    A += N;
++    Size -= N;
+   }
+ }
+ 
+ bool Decoder::CidreRelire(const uint8_t* P, void* Dst, size_t Size) {
+-  ExecutableRangeBase = ExecutableRangeEnd = 0; // les droits ont pu changer depuis le decodage
+-  AliasPage = ~0ULL;                            // l'alias aussi
++  // les droits ont pu changer depuis le decodage : l'intervalle en cache n'est garde que si aucune modification des
++  // intervalles n'a eu lieu depuis sa requete (0486 ; CIDRE_FEX_DISQUE_INTERV_GARDE=0 : toujours redemande)
++  static const bool CidreGarde = [] {
++    const char* E = getenv("CIDRE_FEX_DISQUE_INTERV_GARDE");
++    return !(E && *E == '0');
++  }();
++  if (!CidreGarde || !CidreGenPtr || !CidreRangeGen || CidreGenPtr->load(std::memory_order_acquire) != CidreRangeGen) {
++    ExecutableRangeBase = ExecutableRangeEnd = 0;
++  }
++  AliasPage = ~0ULL; // l'alias aussi (cache de Wine valide par page, 0486)
+   if (!CheckRangeExecutable(reinterpret_cast<uint64_t>(P), Size)) {
+     return false;
+   }
+diff --git a/FEXCore/Source/Interface/Core/Frontend.h b/FEXCore/Source/Interface/Core/Frontend.h
+--- a/FEXCore/Source/Interface/Core/Frontend.h
++++ b/FEXCore/Source/Interface/Core/Frontend.h
+@@ -21,6 +21,7 @@
+ }
+ 
+ namespace FEXCore::Frontend {
++extern std::atomic<uint64_t> CidreIntervNb; // Cidre 0486 (mesure)
+ class Decoder final {
+ public:
+   enum class DecodedBlockStatus {
+@@ -87,6 +88,7 @@
+ 
+   void ResetExecutableRangeCache() {
+     ExecutableRangeBase = ExecutableRangeEnd = 0;
++    CidreRangeGen = 0;
+   }
+ 
+ private:
+@@ -148,6 +150,10 @@
+   uint8_t LastFieldReadOffset;
+   uint8_t LastFieldReadSize;
+ 
++  // Cidre 0486 : generation des intervalles executables lue avant la requete qui a donne l'intervalle en cache (0 : aucune)
++  uint64_t CidreRangeGen {};
++  const std::atomic<uint64_t>* CidreGenPtr {};
++  bool CidreGenPret {};
+   uint64_t ExecutableRangeBase {};
+   uint64_t ExecutableRangeEnd {};
+   bool ExecutableRangeWritable {};
+diff --git a/FEXCore/include/FEXCore/HLE/SyscallHandler.h b/FEXCore/include/FEXCore/HLE/SyscallHandler.h
+--- a/FEXCore/include/FEXCore/HLE/SyscallHandler.h
++++ b/FEXCore/include/FEXCore/HLE/SyscallHandler.h
+@@ -2,6 +2,7 @@
+ #pragma once
+ #include <cstdint>
+ #include <optional>
++#include <atomic>
+ 
+ #include <FEXCore/Core/CodeCache.h>
+ #include <FEXCore/IR/IR.h>
+@@ -41,6 +42,10 @@
+   virtual void MarkOvercommitRange(uint64_t Start, uint64_t Length) {}
+   virtual void UnmarkOvercommitRange(uint64_t Start, uint64_t Length) {}
+   virtual ExecutableRangeInfo QueryGuestExecutableRange(FEXCore::Core::InternalThreadState* Thread, uint64_t Address) = 0;
++  // Cidre 0486 : generation des intervalles executables (avance a chaque modification), ou nullptr si inconnue
++  virtual const std::atomic<uint64_t>* CidreGenIntervalles() {
++    return nullptr;
++  }
+   virtual std::optional<ExecutableFileSectionInfo> LookupExecutableFileSection(Core::InternalThreadState* Thread, uint64_t GuestAddr) = 0;
+ 
+   virtual void PreCompile() {}
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -788,6 +788,10 @@
+ 
+   FEXCore::HLE::ExecutableRangeInfo QueryGuestExecutableRange(FEXCore::Core::InternalThreadState* Thread, uint64_t Address) override {
+     return InvalidationTracker->QueryExecutableRange(Address);
++  }
++
++  const std::atomic<uint64_t>* CidreGenIntervalles() override {
++    return InvalidationTracker ? InvalidationTracker->CidreGenIntervalles() : nullptr;
+   }
+ 
+   void PreCompile() override {
+diff --git a/Source/Windows/ARM64EC/SousPages.cpp b/Source/Windows/ARM64EC/SousPages.cpp
+--- a/Source/Windows/ARM64EC/SousPages.cpp
++++ b/Source/Windows/ARM64EC/SousPages.cpp
+@@ -577,6 +577,27 @@
+     E.GenPage = std::atomic_ref<uint32_t>(C.GenPage).load(std::memory_order_relaxed);
+     std::atomic_thread_fence(std::memory_order_acquire);
+     return C.Seq.load(std::memory_order_relaxed) == S1 && H == Hote && E.Gen == Gen;
++  }
++
++  // Cidre 0486 : meme cache, valide par la generation de la case de la page d'hote (R3, table de Wine) au lieu de la
++  // generation globale : un changement de droits ailleurs (Wine en fait un par page de 4 Kio du tampon de chaque
++  // lecture de fichier dans l'ilot) ne perime plus l'alias des pages de code. Wine augmente la case de chaque page
++  // touchee a chaque changement (sous_pages_changement) : jamais une entree tenue a tort pour valide.
++  bool LireCacheParPage(uint64_t Hote, uint32_t GenCase, Etat& E) {
++    auto& C = Cache[(Hote >> 14) & (NbEntrees - 1)];
++    const uint32_t S1 = C.Seq.load(std::memory_order_acquire);
++    if (S1 & 1) {
++      return false;
++    }
++    const uint64_t H = std::atomic_ref<uint64_t>(C.Hote).load(std::memory_order_relaxed);
++    E.Gen = std::atomic_ref<uint32_t>(C.Gen).load(std::memory_order_relaxed);
++    E.Alias = std::atomic_ref<uint64_t>(C.Alias).load(std::memory_order_relaxed);
++    E.Lecture = std::atomic_ref<uint32_t>(C.Lecture).load(std::memory_order_relaxed);
++    E.Ecriture = std::atomic_ref<uint32_t>(C.Ecriture).load(std::memory_order_relaxed);
++    E.Mixte = std::atomic_ref<uint32_t>(C.Mixte).load(std::memory_order_relaxed);
++    E.GenPage = std::atomic_ref<uint32_t>(C.GenPage).load(std::memory_order_relaxed);
++    std::atomic_thread_fence(std::memory_order_acquire);
++    return C.Seq.load(std::memory_order_relaxed) == S1 && H == Hote && E.GenPage == GenCase;
+   }
+ 
+   void EcrireCache(uint64_t Hote, const Etat& E) {
+@@ -1160,8 +1181,15 @@
+     return 0;
+   }
+   const uint32_t Gen = *Generation;
++  // 0486 : par case de page si Wine tient la table (CIDRE_ALIAS_PAR_PAGE=0 : generation globale, comme avant)
++  static const bool CidreParPage = [] {
++    const char* V = getenv("CIDRE_ALIAS_PAR_PAGE");
++    return !(V && *V == '0');
++  }();
++  const volatile uint32_t* CidreGP = CidreParPage ? GenPages : nullptr;
++  const uint32_t GenCase = CidreGP ? CidreGP[(HostPage >> 14) & 4095] : 0;
+   Etat E;
+-  if (!LireCache(HostPage, Gen, E)) {
++  if (!(CidreGP ? LireCacheParPage(HostPage, GenCase, E) : LireCache(HostPage, Gen, E))) {
+     Params P {};
+     P.Op = 1;
+     P.Hote = HostPage;
+diff --git a/Source/Windows/Common/InvalidationTracker.h b/Source/Windows/Common/InvalidationTracker.h
+--- a/Source/Windows/Common/InvalidationTracker.h
++++ b/Source/Windows/Common/InvalidationTracker.h
+@@ -5,6 +5,7 @@
+ #include <FEXCore/HLE/SyscallHandler.h>
+ #include <mutex>
+ #include <shared_mutex>
++#include <atomic>
+ #include <unordered_map>
+ #include <string_view>
+ 
+@@ -86,7 +87,37 @@
+   // vue de la meme section peut y ecrire sans faute ici, le JIT y valide donc
+   // chaque instruction (ForceFullSMCDetection). Protected by IntervalsLock.
+   FEXCore::IntervalList<uint64_t> AliasXIntervals;
+-  std::shared_mutex IntervalsLock;
++  // Cidre 0486 : chaque prise exclusive avance une generation a la liberation (apres les modifications) ; le decodeur la
++  // lit sans verrou pour garder son intervalle executable entre deux relectures (CidreRelire) tant qu'elle ne bouge pas.
++  struct CidreVerrouIntervalles {
++    std::shared_mutex M;
++    std::atomic<uint64_t> Gen {1};
++    void lock() {
++      M.lock();
++    }
++    bool try_lock() {
++      return M.try_lock();
++    }
++    void unlock() {
++      Gen.fetch_add(1, std::memory_order_release);
++      M.unlock();
++    }
++    void lock_shared() {
++      M.lock_shared();
++    }
++    bool try_lock_shared() {
++      return M.try_lock_shared();
++    }
++    void unlock_shared() {
++      M.unlock_shared();
++    }
++  };
++  CidreVerrouIntervalles IntervalsLock;
++public:
++  const std::atomic<uint64_t>* CidreGenIntervalles() const {
++    return &IntervalsLock.Gen;
++  }
++private:
+   FEXCore::Context::Context& CTX;
+   const std::unordered_map<DWORD, FEXCore::Core::InternalThreadState*>& Threads;
+   bool SMCDetectionDisabled {false};                    // Protected by IntervalsLock

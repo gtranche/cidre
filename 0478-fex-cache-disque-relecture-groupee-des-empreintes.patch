@@ -1,0 +1,82 @@
+Generated-by: LLM
+
+Cidre 0478 (FEX, cache disque) : relecture groupee. CidreEmpreinteVive (consultation et rearmement) et la cle anonyme
+(CLE_BRUTE=0) remettaient a zero l'intervalle executable et l'alias a CHAQUE etendue (QueryExecutableRange sous verrou partage +
+DecalageCode) : ~75 relectures par bloc servi, contention entre fils (banc 4 fils + charge : empreintes 390 -> 39 ms, rearmement
+454 -> 74 ms). Une remise a zero par empreinte, comme le decodeur. Coupure : CIDRE_FEX_DISQUE_RELIRE_GROUPE=0. Apres 0477.
+
+diff --git a/FEXCore/Source/Interface/Core/DiskCache.cpp b/FEXCore/Source/Interface/Core/DiskCache.cpp
+--- a/FEXCore/Source/Interface/Core/DiskCache.cpp
++++ b/FEXCore/Source/Interface/Core/DiskCache.cpp
+@@ -226,7 +226,19 @@
+       uint64_t Reste = Extents[i + 1];
+       while (Reste) {
+         const size_t N = std::min<uint64_t>(Reste, sizeof(Tampon));
+-        if (!Thread->FrontendDecoder->CidreRelire(reinterpret_cast<const uint8_t*>(A), Tampon, N)) {
++        CidreOctetsHashes.fetch_add(N, std::memory_order_relaxed);
++        // Cidre 0478 : une seule remise a zero (droits et alias redemandes) par empreinte, comme le decodeur garde l'intervalle
++        // executable pendant tout un bloc ; CIDRE_FEX_DISQUE_RELIRE_GROUPE=0 redemande a chaque morceau (avant 0478)
++        static const bool CidreGroupe = [] {
++          const char* E = getenv("CIDRE_FEX_DISQUE_RELIRE_GROUPE");
++          return !(E && *E == '0');
++        }();
++        const bool CidrePremiere = !CidreGroupe || (i == 0 && Reste == Extents[i + 1]);
++        if (CidrePremiere) {
++          CidreRelectures.fetch_add(1, std::memory_order_relaxed);
++        }
++        if (!(CidrePremiere ? Thread->FrontendDecoder->CidreRelire(reinterpret_cast<const uint8_t*>(A), Tampon, N) :
++                              Thread->FrontendDecoder->CidreRelireSuite(reinterpret_cast<const uint8_t*>(A), Tampon, N))) {
+           return false;
+         }
+         XXH3_128bits_update(&HashState, Tampon, N);
+@@ -905,10 +917,19 @@
+         uint64_t HashStart = SubBlock.Entry;
+         // Cidre : octets lus comme le decodeur (alias des pages mixtes), jamais en direct
+         uint8_t Tampon[256];
++        // Cidre 0478 : une seule remise a zero des droits/alias par cle (CIDRE_FEX_DISQUE_RELIRE_GROUPE=0 : a chaque morceau)
++        static const bool CidreGroupeCle = [] {
++          const char* E = getenv("CIDRE_FEX_DISQUE_RELIRE_GROUPE");
++          return !(E && *E == '0');
++        }();
++        bool CidrePremiereCle = true;
+         auto Ajouter = [&](uint64_t A, uint64_t N) {
+           while (N) {
+             const size_t K = std::min<uint64_t>(N, sizeof(Tampon));
+-            if (!Thread->FrontendDecoder->CidreRelire(reinterpret_cast<const uint8_t*>(A), Tampon, K)) {
++            const bool Premiere = !CidreGroupeCle || CidrePremiereCle;
++            CidrePremiereCle = false;
++            if (!(Premiere ? Thread->FrontendDecoder->CidreRelire(reinterpret_cast<const uint8_t*>(A), Tampon, K) :
++                             Thread->FrontendDecoder->CidreRelireSuite(reinterpret_cast<const uint8_t*>(A), Tampon, K))) {
+               return false;
+             }
+             XXH3_64bits_update(&HashState, Tampon, K);
+diff --git a/FEXCore/Source/Interface/Core/Frontend.cpp b/FEXCore/Source/Interface/Core/Frontend.cpp
+--- a/FEXCore/Source/Interface/Core/Frontend.cpp
++++ b/FEXCore/Source/Interface/Core/Frontend.cpp
+@@ -154,6 +154,14 @@
+ bool Decoder::CidreRelire(const uint8_t* P, void* Dst, size_t Size) {
+   ExecutableRangeBase = ExecutableRangeEnd = 0; // les droits ont pu changer depuis le decodage
+   AliasPage = ~0ULL;                            // l'alias aussi
++  if (!CheckRangeExecutable(reinterpret_cast<uint64_t>(P), Size)) {
++    return false;
++  }
++  ReadCode(Dst, P, Size);
++  return true;
++}
++
++bool Decoder::CidreRelireSuite(const uint8_t* P, void* Dst, size_t Size) {
+   if (!CheckRangeExecutable(reinterpret_cast<uint64_t>(P), Size)) {
+     return false;
+   }
+diff --git a/FEXCore/Source/Interface/Core/Frontend.h b/FEXCore/Source/Interface/Core/Frontend.h
+--- a/FEXCore/Source/Interface/Core/Frontend.h
++++ b/FEXCore/Source/Interface/Core/Frontend.h
+@@ -205,6 +205,8 @@
+   bool CidreSansMultibloc {};
+   // relit Size octets de code a P hors decodage : intervalle executable et alias redemandes, refus si non executable
+   bool CidreRelire(const uint8_t* P, void* Dst, size_t Size);
++  // Cidre 0478 : relecture suivante d'une meme empreinte : intervalle executable et alias gardes depuis CidreRelire
++  bool CidreRelireSuite(const uint8_t* P, void* Dst, size_t Size);
+   // Cidre (cache disque, Core.cpp/DiskCache.cpp) : instructions compilees sans validation (armees) pendant ce GenerateIR,
+   // [adresse, taille) fusionnees si contigues. Le cache disque les garde avec le bloc et les rearme avant de le resservir.
+   fextl::vector<std::pair<uint64_t, uint32_t>> CidreDisqueArmes;

@@ -1,0 +1,1049 @@
+Generated-by: LLM
+
+KosmicKrisp : base de pipelines et rejeu hors jeu (CIDRE_BASE_PIPELINES)
+
+CIDRE_BASE_PIPELINES=<dossier> enregistre chaque pipeline froid (SPIR-V et etat, facon Fossilize ; menu de
+Diablo IV : 17 594 pipelines = 127 Mo, sans cout mesurable en jeu). L'outil de rejeu (kk_rejeu, sous
+CIDRE_REJEU) remplit hors jeu le cache disque (0430), la reserve d'AIR et l'archive Metal, par lots de 2 000
+(macOS 27 refuse ~10 000 pipelines par archive, MDB_MAP_FULL). Menu froid apres rejeu : attentes au bind
+86-175 ms contre 9,8 s sans. Rejeu ~60 pipelines/s sur M1 ; la base d'un M1 se rejoue telle quelle sur un M4.
+Limites : une zone jamais vue reste froide a la premiere visite ; format lie a la version de Mesa.
+Coupe par defaut. Chantier : ~/Dev/cidre-d4-fond (kk-H8).
+
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.h b/src/kosmickrisp/bridge/mtl_compiler.h
+--- a/src/kosmickrisp/bridge/mtl_compiler.h
++++ b/src/kosmickrisp/bridge/mtl_compiler.h
+@@ -18,6 +18,9 @@
+ /* Compiler */
+ mtl_compiler *mtl_new_compiler(mtl_device *device, const char *cache_dir);
+ void mtl_compiler_flush_archive(mtl_compiler *compiler, const char *cache_dir);
++/* Cidre (0444) : ecrit l'archive maintenant (rejeu par lots : macOS 27 refuse
++ * une serialisation de ~10 000 pipelines, MDB_MAP_FULL). */
++void mtl_compiler_flush_maintenant(mtl_compiler *compiler, const char *cache_dir);
+ 
+ /* Library */
+ mtl_library *
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.m b/src/kosmickrisp/bridge/mtl_compiler.m
+--- a/src/kosmickrisp/bridge/mtl_compiler.m
++++ b/src/kosmickrisp/bridge/mtl_compiler.m
+@@ -1050,11 +1050,33 @@
+               atomic_load(&kk_stat_fond2[8]), atomic_load(&kk_stat_fond2[9]), atomic_load(&kk_stat_fond2[10]),
+               atomic_load(&kk_stat_fond2[11]), atomic_load(&kk_stat_fond2[12]), atomic_load(&kk_stat_fond2[13]),
+               atomic_load(&kk_stat_fond2[5]));
++   if (atomic_load(&kk_stat_fond2[7]))
++      fprintf(stderr, "KK compile: base : %u pipelines nouveaux notes, %u ecrits\n",
++              atomic_load(&kk_stat_fond2[7]), atomic_load(&kk_stat_fond2[6]));
+    if (atomic_load(&kk_stat_relais_msl))
+       fprintf(stderr, "KK compile: relais %u pipelines MSL pris aux archives, %u remplaces par l'AIR direct, "
+                       "%u echecs, %u abandonnes\n",
+               atomic_load(&kk_stat_relais_msl), atomic_load(&kk_stat_relais_up),
+               atomic_load(&kk_stat_relais_fail), atomic_load(&kk_stat_relais_dropped));
++}
++
++void
++mtl_compiler_flush_maintenant(mtl_compiler *compiler, const char *cache_dir)
++{
++   if (compiler == NULL || cache_dir == NULL || cache_dir[0] == '\0')
++      return;
++   @autoreleasepool {
++      id<MTL4Compiler> comp = (id<MTL4Compiler>)compiler;
++      id<MTL4PipelineDataSetSerializer> serializer = comp.pipelineDataSetSerializer;
++      if (serializer == nil)
++         return;
++      uint64_t t0 = kk_now_ns();
++      pthread_rwlock_wrlock(&kk_compile_rwlock);
++      bool ok = kk_serialize_to_dir(serializer, cache_dir);
++      pthread_rwlock_unlock(&kk_compile_rwlock);
++      fprintf(stderr, "KK flush (rejeu): %.2f s%s\n", (kk_now_ns() - t0) / 1e9,
++              ok ? "" : ", rien ecrit");
++   }
+ }
+ 
+ void
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -46,9 +46,12 @@
+ #include "util/cidre_env.h"
+ #include <fcntl.h>
+ #include <sched.h>
++#include <sys/stat.h>
+ #include <pthread.h>
+ #include <pthread/qos.h>
+ #include "util/set.h"
++
++static bool kk_msl_restaurer(struct kk_shader *shader, mesa_shader_stage stage);
+ 
+ static const nir_shader_compiler_options *
+ kk_get_nir_options(struct vk_physical_device *vk_pdev, mesa_shader_stage stage,
+@@ -2850,6 +2853,8 @@
+ kk_build_stage_library(struct kk_device *device, struct kk_shader *shader)
+ {
+    struct kk_physical_device *pdev = kk_device_physical(device);
++   if (!kk_msl_restaurer(shader, shader->info.stage))
++      return VK_ERROR_INVALID_SHADER_NV;
+    const struct msl_compile_data *data = &shader->msl_data[shader->info.stage];
+ 
+    (void)pdev;
+@@ -2985,6 +2990,10 @@
+ static unsigned kk_compile_async_threads(void);
+ static void kk_fond_init(struct kk_device *device);
+ static void kk_fond_finish(struct kk_device *device);
++static void kk_rejeu(struct kk_device *device);
++static const char *kk_base_dossier(void);
++static void kk_base_noter(struct kk_device *dev, uint32_t count,
++                          struct vk_shader *const *shaders);
+ static void kk_qos_fil_comp(void);
+ static _Atomic uint32_t kk_prewarm_count;
+ static _Atomic uint32_t kk_frontal_jobs, kk_frontal_disk_puts,
+@@ -3014,6 +3023,7 @@
+          fprintf(stderr, "kk: compilation differee, %u fils\n", threads);
+    }
+    kk_fond_init(device);
++   kk_rejeu(device);
+    return VK_SUCCESS;
+ }
+ 
+@@ -4271,6 +4281,8 @@
+                  struct vk_shader *const *shaders)
+ {
+    struct kk_device *dev = container_of(vk_dev, struct kk_device, vk);
++   if (kk_base_dossier() != NULL)
++      kk_base_noter(dev, count, shaders);
+    if (!dev->fond_queue_ok || atomic_load(&dev->fond_arret))
+       return;
+    const bool tout = kk_fond_tout();
+@@ -4324,6 +4336,9 @@
+    atomic_store(&device->fond_arret, false);
+    atomic_store(&device->fond_en_file, 0);
+    unsigned n = kk_fond_fils();
++   /* Cidre (0444) : la base de pipelines passe par le meme crochet. */
++   if (kk_base_dossier() != NULL && device->compile_queue_ok)
++      device->vk.cidre_shaders_crees = kk_shaders_crees;
+    if (n == 0 || !device->compile_queue_ok || !kk_paresseux())
+       return;
+    kk_chaud_charger(device);
+@@ -4416,9 +4431,785 @@
+       atomic_fetch_add(&kk_stat_fond[11], 1);
+       atomic_fetch_add(&kk_stat_fond_us[2], us);
+       kk_stat_max(&kk_stat_fond[12], us32);
++   }
++}
++
++/* Cidre (0444) : base de pipelines par jeu, a la Fossilize, et rejeu hors jeu.
++ *
++ * Enregistrement (CIDRE_BASE_PIPELINES=<dossier>) : chaque pipeline graphique
++ * froid (travail frontal VS+FS) cree par le jeu, lie ou non, est ecrit dans
++ * <dossier>/pipelines.bin (ajout seul, dedoublonne par la cle de cache du VS,
++ * qui couvre toute la partition), avec ses NIR pretraites dans nuanceurs.bin
++ * (dedoublonnes par la cle de precompilation, compresses zstd) et les
++ * fonctionnalites du peripherique dans fonctions.bin. Sur le fil du jeu : un
++ * blob de quelques Ko et deux references ; l'ecriture et la compression se
++ * font sur un fil a part (kkbase, QoS utility).
++ *
++ * Rejeu (CIDRE_REJEU=<dossier>, dans vkCreateDevice d'un programme sans Wine,
++ * outil kk_rejeu) : chaque pipeline de la base est compile par le meme chemin
++ * que le frontal differe (kk_compile_shaders_sync), avec les cles de cache
++ * enregistrees, puis ecrit au cache disque (kk_frontal_disk_put), au cache AIR
++ * local (bibliotheque) et a l'archive Metal (pipeline de rendu prechauffe).
++ * Les cles VS rejouees sont ajoutees a <MESA_KK_PIPELINE_CACHE>/rejoues-kk.bin :
++ * le rejeu s'interrompt et reprend. CIDRE_REJEU_MAX=N borne le nombre. */
++
++#define KK_BASE_CLE 32u
++#define KK_BASE_MAGIC_P 0x31504b4bu /* "KKP1" */
++#define KK_BASE_MAGIC_N 0x314e4b4bu /* "KKN1" */
++#define KK_BASE_MAGIC_F 0x31464b4bu /* "KKF1" */
++#define KK_BASE_MAX_LAYOUTS 32u
++
++/* Signature des structures copiees brutes : un rejeu par un pilote dont les
++ * structures different refuse la base (format lie a la version de Mesa). */
++static uint32_t
++kk_base_signature(void)
++{
++   uint32_t s = 2166136261u;
++#define KK_SIG(x) s = (s ^ (uint32_t)sizeof(x)) * 16777619u
++   KK_SIG(struct vk_vertex_input_state); KK_SIG(struct vk_input_assembly_state);
++   KK_SIG(struct vk_tessellation_state); KK_SIG(struct vk_viewport_state);
++   KK_SIG(struct vk_discard_rectangles_state); KK_SIG(struct vk_rasterization_state);
++   KK_SIG(struct vk_fragment_shading_rate_state); KK_SIG(struct vk_multisample_state);
++   KK_SIG(struct vk_sample_locations_state); KK_SIG(struct vk_depth_stencil_state);
++   KK_SIG(struct vk_color_blend_state); KK_SIG(struct vk_input_attachment_location_state);
++   KK_SIG(struct vk_color_attachment_location_state); KK_SIG(struct vk_multiview_state);
++   KK_SIG(struct vk_render_pass_state); KK_SIG(struct vk_graphics_pipeline_state);
++   KK_SIG(struct vk_pipeline_robustness_state); KK_SIG(struct vk_sampler_state);
++   KK_SIG(struct vk_features); KK_SIG(VkPushConstantRange);
++#undef KK_SIG
++   return s;
++}
++
++static const char *
++kk_base_dossier(void)
++{
++   static const char *d = (const char *)1;
++   if (d == (const char *)1) {
++      const char *v = getenv("CIDRE_BASE_PIPELINES");
++      d = v != NULL && v[0] == '/' ? v : NULL;
+    }
++   return d;
+ }
+ 
++struct kk_base_set {
++   struct set *set;
++   int fd;
++};
++
++static simple_mtx_t kk_base_lock = SIMPLE_MTX_INITIALIZER;
++static bool kk_base_pret;
++static struct kk_base_set kk_base_p, kk_base_n, kk_base_f;
++static struct util_queue kk_base_queue;
++static bool kk_base_queue_ok;
++
++static void
++kk_base_set_ajouter_locked(struct kk_base_set *bs, const uint8_t *cle)
++{
++   uint8_t *c = ralloc_size(bs->set, KK_BASE_CLE);
++   if (c == NULL)
++      return;
++   memcpy(c, cle, KK_BASE_CLE);
++   _mesa_set_add(bs->set, c);
++}
++
++/* Parcourt un fichier de la base : en-tete (magic, taille) puis la cle en tete
++ * de charge utile. rappel(cle, decalage de la charge, taille) facultatif. */
++static void
++kk_base_parcourir(const char *chemin, uint32_t magic, struct kk_base_set *bs,
++                  void (*rappel)(void *, const uint8_t *, off_t, uint32_t),
++                  void *data)
++{
++   int fd = open(chemin, O_RDONLY | O_CLOEXEC);
++   if (fd < 0)
++      return;
++   off_t pos = 0;
++   for (;;) {
++      uint32_t h[2];
++      uint8_t cle[KK_BASE_CLE];
++      if (pread(fd, h, sizeof(h), pos) != sizeof(h) || h[0] != magic ||
++          h[1] < KK_BASE_CLE)
++         break;
++      if (pread(fd, cle, sizeof(cle), pos + 8) != sizeof(cle))
++         break;
++      struct stat st;
++      if (fstat(fd, &st) == 0 && pos + 8 + (off_t)h[1] > st.st_size)
++         break; /* enregistrement tronque (jeu tue pendant l'ecriture) */
++      if (bs != NULL && _mesa_set_search(bs->set, cle) == NULL)
++         kk_base_set_ajouter_locked(bs, cle);
++      if (rappel != NULL)
++         rappel(data, cle, pos + 8, h[1]);
++      pos += 8 + h[1];
++   }
++   close(fd);
++}
++
++static void
++kk_base_ouvrir_locked(void)
++{
++   if (kk_base_pret)
++      return;
++   kk_base_pret = true;
++   const char *d = kk_base_dossier();
++   mkdir(d, 0755);
++   char chemin[1024];
++   struct { struct kk_base_set *bs; const char *nom; uint32_t magic; } f[] = {
++      {&kk_base_p, "pipelines.bin", KK_BASE_MAGIC_P},
++      {&kk_base_n, "nuanceurs.bin", KK_BASE_MAGIC_N},
++      {&kk_base_f, "fonctions.bin", KK_BASE_MAGIC_F},
++   };
++   for (unsigned i = 0; i < ARRAY_SIZE(f); i++) {
++      f[i].bs->set = _mesa_set_create(NULL, kk_chaud_hash, kk_chaud_egal);
++      snprintf(chemin, sizeof(chemin), "%s/%s", d, f[i].nom);
++      kk_base_parcourir(chemin, f[i].magic, f[i].bs, NULL, NULL);
++      f[i].bs->fd = open(chemin, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0644);
++   }
++   /* Environnement du jeu : le rejeu doit tourner avec les memes options
++    * (la cle du cache disque les contient : sinon il ne sert pas). */
++   snprintf(chemin, sizeof(chemin), "%s/env.txt", d);
++   FILE *fe = fopen(chemin, "w");
++   if (fe != NULL) {
++      extern char **environ;
++      for (char **e = environ; *e != NULL; e++) {
++         if (!strncmp(*e, "CIDRE_", 6) || !strncmp(*e, "MESA_", 5))
++            fprintf(fe, "%s\n", *e);
++      }
++      fclose(fe);
++   }
++   kk_base_queue_ok = util_queue_init(&kk_base_queue, "kkbase", 4096, 1,
++                                      UTIL_QUEUE_INIT_RESIZE_IF_FULL, NULL);
++   fprintf(stderr, "kk: base de pipelines %s : %u pipelines, %u nuanceurs\n", d,
++           kk_base_p.set->entries, kk_base_n.set->entries);
++}
++
++/* Ecrit un enregistrement complet d'un seul write (O_APPEND). */
++static void
++kk_base_ecrire(int fd, uint32_t magic, const void *a, size_t na,
++               const void *b, size_t nb)
++{
++   if (fd < 0)
++      return;
++   size_t n = 8 + na + nb;
++   uint8_t *buf = malloc(n);
++   if (buf == NULL)
++      return;
++   uint32_t h[2] = {magic, (uint32_t)(na + nb)};
++   memcpy(buf, h, 8);
++   memcpy(buf + 8, a, na);
++   if (nb)
++      memcpy(buf + 8 + na, b, nb);
++   if (write(fd, buf, n) != (ssize_t)n)
++      fprintf(stderr, "kk: base de pipelines : ecriture incomplete\n");
++   free(buf);
++}
++
++struct kk_base_enreg {
++   struct kk_device *dev;
++   struct blob blob;
++   void *precomp[2];
++   struct vk_features features;
++   uint8_t features_cle[KK_BASE_CLE];
++};
++
++static void
++kk_base_ecrivain(void *data, UNUSED void *gdata, UNUSED int thread_index)
++{
++   struct kk_base_enreg *e = data;
++   kk_qos_fil(QOS_CLASS_UTILITY);
++   simple_mtx_lock(&kk_base_lock);
++   if (_mesa_set_search(kk_base_f.set, e->features_cle) == NULL) {
++      kk_base_ecrire(kk_base_f.fd, KK_BASE_MAGIC_F, e->features_cle,
++                     KK_BASE_CLE, &e->features, sizeof(e->features));
++      kk_base_set_ajouter_locked(&kk_base_f, e->features_cle);
++   }
++   simple_mtx_unlock(&kk_base_lock);
++   for (unsigned i = 0; i < 2; i++) {
++      const uint8_t *cle = vk_cidre_precomp_cle(e->precomp[i]);
++      simple_mtx_lock(&kk_base_lock);
++      bool connu = _mesa_set_search(kk_base_n.set, cle) != NULL;
++      if (!connu)
++         kk_base_set_ajouter_locked(&kk_base_n, cle);
++      simple_mtx_unlock(&kk_base_lock);
++      if (!connu) {
++         size_t taille;
++         const uint8_t *nir = vk_cidre_precomp_blob(e->precomp[i], &taille);
++         size_t max = util_compress_max_compressed_len(taille);
++         uint8_t *buf = malloc(KK_BASE_CLE + 4 + max);
++         if (buf != NULL) {
++            memcpy(buf, cle, KK_BASE_CLE);
++            uint32_t brut = (uint32_t)taille;
++            memcpy(buf + KK_BASE_CLE, &brut, 4);
++            size_t c = util_compress_deflate(nir, taille, buf + KK_BASE_CLE + 4, max);
++            if (c > 0) {
++               simple_mtx_lock(&kk_base_lock);
++               kk_base_ecrire(kk_base_n.fd, KK_BASE_MAGIC_N, buf,
++                              KK_BASE_CLE + 4 + c, NULL, 0);
++               simple_mtx_unlock(&kk_base_lock);
++            }
++            free(buf);
++         }
++      }
++      vk_cidre_precomp_unref(&e->dev->vk, e->precomp[i]);
++   }
++   simple_mtx_lock(&kk_base_lock);
++   kk_base_ecrire(kk_base_p.fd, KK_BASE_MAGIC_P, e->blob.data, e->blob.size,
++                  NULL, 0);
++   simple_mtx_unlock(&kk_base_lock);
++   atomic_fetch_add(&kk_stat_fond2[6], 1);
++   blob_finish(&e->blob);
++   free(e);
++}
++
++static void
++kk_base_ecrire_layout(struct blob *b, const struct vk_descriptor_set_layout *vl)
++{
++   blob_write_uint32(b, vl != NULL);
++   if (vl == NULL)
++      return;
++   const struct kk_descriptor_set_layout *l =
++      container_of(vl, struct kk_descriptor_set_layout, vk);
++   blob_write_uint32(b, l->binding_count);
++   blob_write_uint32(b, l->vk.dynamic_descriptor_count);
++   blob_write_uint32(b, l->vk.flags);
++   for (uint32_t i = 0; i < l->binding_count; i++) {
++      const struct kk_descriptor_set_binding_layout *bl = &l->binding[i];
++      bool ycbcr = false;
++      if (bl->immutable_samplers != NULL) {
++         for (uint32_t a = 0; a < bl->array_size; a++)
++            ycbcr |= bl->immutable_samplers[a] != NULL &&
++                     bl->immutable_samplers[a]->vk.ycbcr_conversion != NULL;
++      }
++      blob_write_uint32(b, bl->type);
++      blob_write_uint32(b, bl->flags);
++      blob_write_uint32(b, bl->array_size);
++      blob_write_uint32(b, bl->offset);
++      blob_write_uint8(b, bl->stride);
++      blob_write_uint8(b, bl->dynamic_buffer_index);
++      blob_write_uint8(b, ycbcr);
++   }
++}
++
++#define KK_ETAT_SOUS(X) \
++   X(vi) X(ia) X(ts) X(vp) X(dr) X(rs) X(fsr) X(ms) X(ds) X(cb) X(ial) X(cal) X(mv) X(rp)
++
++static void
++kk_base_ecrire_etat(struct blob *b, const struct vk_graphics_pipeline_state *st)
++{
++   uint32_t masque = 0, bit = 0;
++#define X(n) if (st->n != NULL) masque |= 1u << bit; bit++;
++   KK_ETAT_SOUS(X)
++#undef X
++   if (st->ms != NULL && st->ms->sample_locations != NULL)
++      masque |= 1u << 31;
++   blob_write_uint32(b, masque);
++   blob_write_bytes(b, st->dynamic, sizeof(st->dynamic));
++   blob_write_uint32(b, st->shader_stages);
++   blob_write_uint64(b, st->pipeline_flags);
++   blob_write_uint8(b, st->feedback_loop_not_input_only);
++   blob_write_uint32(b, st->rasterization_order_access);
++#define X(n) if (st->n != NULL) blob_write_bytes(b, st->n, sizeof(*st->n));
++   KK_ETAT_SOUS(X)
++#undef X
++   if (masque & (1u << 31))
++      blob_write_bytes(b, st->ms->sample_locations,
++                       sizeof(*st->ms->sample_locations));
++}
++
++/* Crochet : un pipeline cree. Ne note que les travaux frontaux froids dont
++ * les deux NIR viennent d'une precompilation. */
++static void
++kk_base_noter(struct kk_device *dev, uint32_t count,
++              struct vk_shader *const *shaders)
++{
++   struct kk_shader *vs = NULL;
++   for (uint32_t i = 0; i < count; i++) {
++      if (shaders[i]->stage == MESA_SHADER_VERTEX)
++         vs = container_of(shaders[i], struct kk_shader, vk);
++   }
++   if (vs == NULL)
++      return;
++   struct kk_frontal_job *job = atomic_load(&vs->lazy_job);
++   if (job == NULL || job->precomp[0] == NULL || job->precomp[1] == NULL ||
++       job->shells[0] != vs)
++      return;
++   simple_mtx_lock(&kk_base_lock);
++   kk_base_ouvrir_locked();
++   bool connu = _mesa_set_search(kk_base_p.set, vs->vk.pipeline.cache_key) != NULL;
++   if (!connu)
++      kk_base_set_ajouter_locked(&kk_base_p, vs->vk.pipeline.cache_key);
++   simple_mtx_unlock(&kk_base_lock);
++   if (connu || !kk_base_queue_ok)
++      return;
++
++   struct kk_base_enreg *e = calloc(1, sizeof(*e));
++   if (e == NULL)
++      return;
++   e->dev = dev;
++   e->features = job->features;
++   _mesa_blake3_compute(&e->features, sizeof(e->features), e->features_cle);
++   struct blob *b = &e->blob;
++   blob_init(b);
++   blob_write_bytes(b, vs->vk.pipeline.cache_key, KK_BASE_CLE);
++   blob_write_bytes(b, job->shells[1]->vk.pipeline.cache_key, KK_BASE_CLE);
++   blob_write_uint32(b, kk_base_signature());
++   blob_write_bytes(b, e->features_cle, KK_BASE_CLE);
++   for (unsigned i = 0; i < 2; i++) {
++      const struct vk_shader_compile_info *in = &job->infos[i];
++      blob_write_uint32(b, in->stage);
++      blob_write_uint32(b, in->flags);
++      blob_write_uint32(b, in->next_stage_mask);
++      blob_write_bytes(b, vk_cidre_precomp_cle(job->precomp[i]), KK_BASE_CLE);
++      struct vk_pipeline_robustness_state rs;
++      memset(&rs, 0, sizeof(rs));
++      if (in->robustness != NULL)
++         rs = *in->robustness;
++      blob_write_bytes(b, &rs, sizeof(rs));
++      blob_write_uint32(b, in->push_constant_range_count);
++      if (in->push_constant_range_count)
++         blob_write_bytes(b, in->push_constant_ranges,
++                          in->push_constant_range_count * sizeof(VkPushConstantRange));
++      blob_write_uint32(b, in->embedded_sampler_count);
++      if (in->embedded_sampler_count)
++         blob_write_bytes(b, in->embedded_samplers,
++                          in->embedded_sampler_count * sizeof(struct vk_sampler_state));
++      blob_write_uint32(b, in->set_layout_count);
++      for (uint32_t l = 0; l < in->set_layout_count; l++)
++         kk_base_ecrire_layout(b, in->set_layouts[l]);
++   }
++   kk_base_ecrire_etat(b, &job->state);
++   if (b->out_of_memory) {
++      blob_finish(b);
++      free(e);
++      return;
++   }
++   e->precomp[0] = vk_cidre_precomp_ref(job->precomp[0]);
++   e->precomp[1] = vk_cidre_precomp_ref(job->precomp[1]);
++   atomic_fetch_add(&kk_stat_fond2[7], 1);
++   util_queue_add_job(&kk_base_queue, e, NULL, kk_base_ecrivain, NULL, 0);
++}
++
++/* --- rejeu --- */
++struct kk_rejeu_index {
++   struct hash_table *nuanceurs; /* cle -> decalage (off_t + 1) */
++   struct hash_table *fonctions; /* cle -> struct vk_features * */
++   int fd_n;
++   int fd_f;
++   void *ctx;
++};
++
++static void
++kk_rejeu_noter_n(void *data, const uint8_t *cle, off_t pos, UNUSED uint32_t taille)
++{
++   struct kk_rejeu_index *ix = data;
++   uint8_t *c = ralloc_size(ix->ctx, KK_BASE_CLE);
++   memcpy(c, cle, KK_BASE_CLE);
++   _mesa_hash_table_insert(ix->nuanceurs, c, (void *)(uintptr_t)(pos + 1));
++}
++
++static void
++kk_rejeu_noter_f(void *data, const uint8_t *cle, off_t pos, uint32_t taille)
++{
++   struct kk_rejeu_index *ix = data;
++   if (taille != KK_BASE_CLE + sizeof(struct vk_features))
++      return;
++   struct vk_features *f = ralloc(ix->ctx, struct vk_features);
++   if (pread(ix->fd_f, f, sizeof(*f), pos + KK_BASE_CLE) != sizeof(*f))
++      return;
++   uint8_t *c = ralloc_size(ix->ctx, KK_BASE_CLE);
++   memcpy(c, cle, KK_BASE_CLE);
++   _mesa_hash_table_insert(ix->fonctions, c, f);
++}
++
++static nir_shader *
++kk_rejeu_nir(struct kk_device *dev, struct kk_rejeu_index *ix, const uint8_t *cle,
++             mesa_shader_stage stage, const struct vk_pipeline_robustness_state *rs)
++{
++   struct hash_entry *he = _mesa_hash_table_search(ix->nuanceurs, cle);
++   if (he == NULL)
++      return NULL;
++   off_t pos = (off_t)(uintptr_t)he->data - 1;
++   uint32_t h[2];
++   if (pread(ix->fd_n, h, 8, pos - 8) != 8)
++      return NULL;
++   uint32_t taille = h[1] - KK_BASE_CLE - 4, brut;
++   if (pread(ix->fd_n, &brut, 4, pos + KK_BASE_CLE) != 4)
++      return NULL;
++   uint8_t *c = malloc(taille), *d = malloc(brut);
++   nir_shader *nir = NULL;
++   if (c != NULL && d != NULL &&
++       pread(ix->fd_n, c, taille, pos + KK_BASE_CLE + 4) == (ssize_t)taille &&
++       util_compress_inflate(c, taille, d, brut)) {
++      const struct nir_shader_compiler_options *opts =
++         dev->vk.shader_ops->get_nir_options(dev->vk.physical, stage, rs);
++      struct blob_reader r;
++      blob_reader_init(&r, d, brut);
++      nir = nir_deserialize(NULL, opts, &r);
++      if (r.overrun) {
++         ralloc_free(nir);
++         nir = NULL;
++      }
++   }
++   free(c);
++   free(d);
++   return nir;
++}
++
++static void
++kk_rejeu_layout_detruire(struct vk_device *device,
++                         struct vk_descriptor_set_layout *layout)
++{
++   vk_descriptor_set_layout_destroy(device, layout);
++}
++
++static struct vk_descriptor_set_layout *
++kk_rejeu_lire_layout(struct kk_device *dev, struct blob_reader *r, bool *ycbcr)
++{
++   if (!blob_read_uint32(r))
++      return NULL;
++   uint32_t n = blob_read_uint32(r);
++   uint32_t dyn = blob_read_uint32(r);
++   uint32_t flags = blob_read_uint32(r);
++   if (r->overrun || n > 4096)
++      return NULL;
++   VkDescriptorSetLayoutCreateInfo ci = {
++      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
++      .flags = flags,
++   };
++   struct kk_descriptor_set_layout *l = vk_descriptor_set_layout_zalloc(
++      &dev->vk, sizeof(*l) + n * sizeof(l->binding[0]), &ci);
++   if (l == NULL)
++      return NULL;
++   l->vk.destroy = kk_rejeu_layout_detruire;
++   l->vk.dynamic_descriptor_count = dyn;
++   l->binding_count = n;
++   for (uint32_t i = 0; i < n; i++) {
++      struct kk_descriptor_set_binding_layout *bl = &l->binding[i];
++      bl->type = blob_read_uint32(r);
++      bl->flags = blob_read_uint32(r);
++      bl->array_size = blob_read_uint32(r);
++      bl->offset = blob_read_uint32(r);
++      bl->stride = blob_read_uint8(r);
++      bl->dynamic_buffer_index = blob_read_uint8(r);
++      *ycbcr |= blob_read_uint8(r) != 0;
++   }
++   return &l->vk;
++}
++
++struct kk_rejeu_job {
++   struct kk_device *dev;
++   uint8_t vs_cle[KK_BASE_CLE], fs_cle[KK_BASE_CLE];
++   struct vk_shader_compile_info infos[2];
++   struct vk_pipeline_robustness_state rs[2];
++   VkPushConstantRange *pcr[2];
++   struct vk_sampler_state *samplers[2];
++   struct vk_descriptor_set_layout *layouts[2][KK_BASE_MAX_LAYOUTS];
++   struct vk_graphics_pipeline_state state;
++   void *etat_mem;
++   const struct vk_features *features;
++   int fd_fait;
++   _Atomic uint32_t *en_vol;
++   bool ok;
++};
++
++static void
++kk_rejeu_job_free(struct kk_rejeu_job *j)
++{
++   for (unsigned i = 0; i < 2; i++) {
++      for (uint32_t l = 0; l < j->infos[i].set_layout_count; l++) {
++         if (j->layouts[i][l] != NULL)
++            vk_descriptor_set_layout_unref(&j->dev->vk, j->layouts[i][l]);
++      }
++      free(j->pcr[i]);
++      free(j->samplers[i]);
++      if (j->infos[i].nir != NULL)
++         ralloc_free(j->infos[i].nir);
++   }
++   free(j->etat_mem);
++   free(j);
++}
++
++static struct kk_rejeu_job *
++kk_rejeu_lire(struct kk_device *dev, struct kk_rejeu_index *ix,
++              const uint8_t *data, size_t taille)
++{
++   struct blob_reader r;
++   blob_reader_init(&r, data, taille);
++   struct kk_rejeu_job *j = calloc(1, sizeof(*j));
++   if (j == NULL)
++      return NULL;
++   j->dev = dev;
++   blob_copy_bytes(&r, j->vs_cle, KK_BASE_CLE);
++   blob_copy_bytes(&r, j->fs_cle, KK_BASE_CLE);
++   if (blob_read_uint32(&r) != kk_base_signature())
++      goto echec;
++   uint8_t fcle[KK_BASE_CLE];
++   blob_copy_bytes(&r, fcle, KK_BASE_CLE);
++   struct hash_entry *fe = _mesa_hash_table_search(ix->fonctions, fcle);
++   if (fe == NULL)
++      goto echec;
++   j->features = fe->data;
++   bool ycbcr = false;
++   uint8_t pcle[2][KK_BASE_CLE];
++   for (unsigned i = 0; i < 2; i++) {
++      struct vk_shader_compile_info *in = &j->infos[i];
++      in->stage = blob_read_uint32(&r);
++      in->flags = blob_read_uint32(&r);
++      in->next_stage_mask = blob_read_uint32(&r);
++      blob_copy_bytes(&r, pcle[i], KK_BASE_CLE);
++      blob_copy_bytes(&r, &j->rs[i], sizeof(j->rs[i]));
++      in->robustness = &j->rs[i];
++      in->push_constant_range_count = blob_read_uint32(&r);
++      if (in->push_constant_range_count > 64)
++         goto echec;
++      if (in->push_constant_range_count) {
++         size_t sz = in->push_constant_range_count * sizeof(VkPushConstantRange);
++         j->pcr[i] = malloc(sz);
++         blob_copy_bytes(&r, j->pcr[i], sz);
++         in->push_constant_ranges = j->pcr[i];
++      }
++      in->embedded_sampler_count = blob_read_uint32(&r);
++      if (in->embedded_sampler_count > 4096)
++         goto echec;
++      if (in->embedded_sampler_count) {
++         size_t sz = in->embedded_sampler_count * sizeof(struct vk_sampler_state);
++         j->samplers[i] = malloc(sz);
++         blob_copy_bytes(&r, j->samplers[i], sz);
++         in->embedded_samplers = j->samplers[i];
++      }
++      in->set_layout_count = blob_read_uint32(&r);
++      if (in->set_layout_count > KK_BASE_MAX_LAYOUTS)
++         goto echec;
++      for (uint32_t l = 0; l < in->set_layout_count; l++)
++         j->layouts[i][l] = kk_rejeu_lire_layout(dev, &r, &ycbcr);
++      in->set_layouts = j->layouts[i];
++   }
++   /* etat */
++   uint32_t masque = blob_read_uint32(&r);
++   blob_copy_bytes(&r, j->state.dynamic, sizeof(j->state.dynamic));
++   j->state.shader_stages = blob_read_uint32(&r);
++   j->state.pipeline_flags = blob_read_uint64(&r);
++   j->state.feedback_loop_not_input_only = blob_read_uint8(&r);
++   j->state.rasterization_order_access = blob_read_uint32(&r);
++   size_t total = 0, bit = 0;
++#define X(n) if (masque & (1u << bit)) total += sizeof(*j->state.n); bit++;
++   KK_ETAT_SOUS(X)
++#undef X
++   total += sizeof(struct vk_sample_locations_state);
++   j->etat_mem = calloc(1, total);
++   if (j->etat_mem == NULL)
++      goto echec;
++   uint8_t *p = j->etat_mem;
++   bit = 0;
++#define X(n) if (masque & (1u << bit)) { blob_copy_bytes(&r, p, sizeof(*j->state.n)); \
++      j->state.n = (const void *)p; p += sizeof(*j->state.n); } bit++;
++   KK_ETAT_SOUS(X)
++#undef X
++   if (masque & (1u << 31)) {
++      blob_copy_bytes(&r, p, sizeof(struct vk_sample_locations_state));
++      if (j->state.ms != NULL)
++         ((struct vk_multisample_state *)j->state.ms)->sample_locations = (const void *)p;
++   } else if (j->state.ms != NULL) {
++      ((struct vk_multisample_state *)j->state.ms)->sample_locations = NULL;
++   }
++   if (r.overrun || ycbcr)
++      goto echec;
++   for (unsigned i = 0; i < 2; i++) {
++      j->infos[i].nir = kk_rejeu_nir(dev, ix, pcle[i], j->infos[i].stage, &j->rs[i]);
++      if (j->infos[i].nir == NULL)
++         goto echec;
++   }
++   return j;
++echec:
++   kk_rejeu_job_free(j);
++   return NULL;
++}
++
++static void
++kk_rejeu_execute(void *data, UNUSED void *gdata, UNUSED int thread_index)
++{
++   struct kk_rejeu_job *j = data;
++   struct kk_device *dev = j->dev;
++   kk_qos_fil(QOS_CLASS_UTILITY);
++   struct vk_shader *out[2] = {NULL, NULL};
++   kk_frontal_sync = true;
++   VkResult res = kk_compile_shaders_sync(&dev->vk, 2, j->infos, &j->state,
++                                          j->features, &dev->vk.alloc, out);
++   kk_frontal_sync = false;
++   j->infos[0].nir = j->infos[1].nir = NULL; /* consommes */
++   if (res == VK_SUCCESS && out[0] != NULL && out[1] != NULL) {
++      vk_cidre_shader_init_cache_obj(&dev->vk, out[0], j->vs_cle);
++      vk_cidre_shader_init_cache_obj(&dev->vk, out[1], j->fs_cle);
++      struct kk_shader *vs = container_of(out[0], struct kk_shader, vk);
++      struct kk_shader *fs = container_of(out[1], struct kk_shader, vk);
++      kk_frontal_disk_put(dev, vs);
++      kk_frontal_disk_put(dev, fs);
++      /* Pipeline de rendu prechauffe : il part dans l'archive Metal. */
++      if (vs->vs_nir == NULL && vs->function != NULL && fs->function != NULL &&
++          !vs->info.has_gs) {
++         struct kk_rp_variant_key *key = kk_prewarm_key(vs, fs);
++         if (key != NULL) {
++            key->vs_function = vs->function;
++            key->fs_function = fs->function;
++            mtl_render_pipeline_state *st =
++               kk_build_render_pipeline(dev, vs->function, vs, fs, key);
++            if (st != NULL)
++               mtl_release(st);
++            free(key);
++         }
++      }
++      j->ok = true;
++   }
++   for (unsigned i = 0; i < 2; i++) {
++      if (out[i] != NULL)
++         vk_pipeline_cache_object_unref(&dev->vk, &out[i]->pipeline.cache_obj);
++   }
++}
++
++static _Atomic uint32_t kk_rejeu_ok, kk_rejeu_echecs;
++static struct blob kk_rejeu_attente;
++
++/* Ecrit l'archive Metal puis le journal des rejoues du lot. */
++static void
++kk_rejeu_vider(struct kk_device *dev, int fd_fait)
++{
++   mtl_compiler_flush_maintenant(dev->mtl_compiler_handle, dev->pipeline_cache_dir);
++   simple_mtx_lock(&kk_base_lock);
++   if (fd_fait >= 0 && kk_rejeu_attente.size > 0 &&
++       write(fd_fait, kk_rejeu_attente.data, kk_rejeu_attente.size) < 0)
++      fprintf(stderr, "kk: rejeu : journal des rejoues non ecrit\n");
++   kk_rejeu_attente.size = 0;
++   simple_mtx_unlock(&kk_base_lock);
++}
++
++static void
++kk_rejeu_cleanup(void *data, UNUSED void *gdata, UNUSED int thread_index)
++{
++   struct kk_rejeu_job *j = data;
++   if (j->ok) {
++      /* Journal ecrit apres l'ecriture de l'archive du lot (kk_rejeu_vider) :
++       * une interruption ne marque pas fait un pipeline absent de l'archive. */
++      simple_mtx_lock(&kk_base_lock);
++      blob_write_bytes(&kk_rejeu_attente, j->vs_cle, KK_BASE_CLE);
++      simple_mtx_unlock(&kk_base_lock);
++      atomic_fetch_add(&kk_rejeu_ok, 1);
++   } else {
++      atomic_fetch_add(&kk_rejeu_echecs, 1);
++   }
++   atomic_fetch_sub(j->en_vol, 1);
++   kk_rejeu_job_free(j);
++}
++
++struct kk_rejeu_parcours {
++   struct kk_device *dev;
++   struct kk_rejeu_index *ix;
++   struct set *faits;
++   int fd_p, fd_fait;
++   unsigned max, lances, sautes, illisibles, fils;
++   _Atomic uint32_t en_vol;
++};
++
++static void
++kk_rejeu_un(void *data, const uint8_t *cle, off_t pos, uint32_t taille)
++{
++   struct kk_rejeu_parcours *pc = data;
++   if (pc->max && pc->lances >= pc->max)
++      return;
++   if (_mesa_set_search(pc->faits, cle) != NULL) {
++      pc->sautes++;
++      return;
++   }
++   uint8_t *buf = malloc(taille);
++   if (buf == NULL || pread(pc->fd_p, buf, taille, pos) != (ssize_t)taille) {
++      free(buf);
++      return;
++   }
++   struct kk_rejeu_job *j = kk_rejeu_lire(pc->dev, pc->ix, buf, taille);
++   free(buf);
++   if (j == NULL) {
++      pc->illisibles++;
++      return;
++   }
++   _mesa_set_add(pc->faits, ralloc_memdup(pc->faits, cle, KK_BASE_CLE));
++   j->fd_fait = pc->fd_fait;
++   j->en_vol = &pc->en_vol;
++   /* Au plus 4 travaux par fil en vol : memoire bornee. */
++   while (atomic_load(&pc->en_vol) >= 4 * pc->fils)
++      usleep(1000);
++   atomic_fetch_add(&pc->en_vol, 1);
++   pc->lances++;
++   util_queue_add_job(&pc->dev->compile_queue, j, NULL, kk_rejeu_execute,
++                      kk_rejeu_cleanup, 0);
++   /* Archive par lots (CIDRE_REJEU_LOT, 2000) : une archive geante echoue. */
++   const unsigned lot = kk_env_u("CIDRE_REJEU_LOT", 2000);
++   if (lot && pc->lances % lot == 0) {
++      while (atomic_load(&pc->en_vol) != 0)
++         usleep(1000);
++      kk_rejeu_vider(pc->dev, pc->fd_fait);
++   }
++}
++
++static void
++kk_rejeu(struct kk_device *dev)
++{
++   const char *d = getenv("CIDRE_REJEU");
++   if (d == NULL || d[0] != '/' || !dev->compile_queue_ok ||
++       dev->pipeline_cache_dir == NULL)
++      return;
++   const int64_t t0 = os_time_get_nano();
++   struct kk_rejeu_index ix = {0};
++   ix.ctx = ralloc_context(NULL);
++   ix.nuanceurs = _mesa_hash_table_create(ix.ctx, kk_chaud_hash, kk_chaud_egal);
++   ix.fonctions = _mesa_hash_table_create(ix.ctx, kk_chaud_hash, kk_chaud_egal);
++   char chemin[1024];
++   snprintf(chemin, sizeof(chemin), "%s/nuanceurs.bin", d);
++   ix.fd_n = open(chemin, O_RDONLY | O_CLOEXEC);
++   kk_base_parcourir(chemin, KK_BASE_MAGIC_N, NULL, kk_rejeu_noter_n, &ix);
++   snprintf(chemin, sizeof(chemin), "%s/fonctions.bin", d);
++   ix.fd_f = open(chemin, O_RDONLY | O_CLOEXEC);
++   kk_base_parcourir(chemin, KK_BASE_MAGIC_F, NULL, kk_rejeu_noter_f, &ix);
++
++   struct kk_rejeu_parcours pc = {0};
++   pc.dev = dev;
++   pc.ix = &ix;
++   pc.max = kk_env_u("CIDRE_REJEU_MAX", 0);
++   pc.fils = kk_compile_async_threads();
++   pc.faits = _mesa_set_create(NULL, kk_chaud_hash, kk_chaud_egal);
++   snprintf(chemin, sizeof(chemin), "%s/rejoues-kk.bin", dev->pipeline_cache_dir);
++   int fdr = open(chemin, O_RDONLY | O_CLOEXEC);
++   if (fdr >= 0) {
++      uint8_t cle[KK_BASE_CLE];
++      while (read(fdr, cle, KK_BASE_CLE) == KK_BASE_CLE)
++         _mesa_set_add(pc.faits, ralloc_memdup(pc.faits, cle, KK_BASE_CLE));
++      close(fdr);
++   }
++   pc.fd_fait = open(chemin, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0644);
++   blob_init(&kk_rejeu_attente);
++   snprintf(chemin, sizeof(chemin), "%s/pipelines.bin", d);
++   pc.fd_p = open(chemin, O_RDONLY | O_CLOEXEC);
++   fprintf(stderr, "kk: rejeu de %s : %u nuanceurs, %u jeux de fonctions, %u deja rejoues\n",
++           d, _mesa_hash_table_num_entries(ix.nuanceurs),
++           _mesa_hash_table_num_entries(ix.fonctions), pc.faits->entries);
++   kk_base_parcourir(chemin, KK_BASE_MAGIC_P, NULL, kk_rejeu_un, &pc);
++   while (atomic_load(&pc.en_vol) != 0)
++      usleep(10000);
++   kk_rejeu_vider(dev, pc.fd_fait);
++   blob_finish(&kk_rejeu_attente);
++   fprintf(stderr, "kk: rejeu fini en %.1f s : %u lances, %u reussis, %u echecs, "
++                   "%u deja faits, %u illisibles\n",
++           (os_time_get_nano() - t0) / 1e9, pc.lances,
++           atomic_load(&kk_rejeu_ok), atomic_load(&kk_rejeu_echecs),
++           pc.sautes, pc.illisibles);
++   if (pc.fd_p >= 0)
++      close(pc.fd_p);
++   if (pc.fd_fait >= 0)
++      close(pc.fd_fait);
++   if (ix.fd_n >= 0)
++      close(ix.fd_n);
++   if (ix.fd_f >= 0)
++      close(ix.fd_f);
++   ralloc_free(pc.faits);
++   ralloc_free(ix.ctx);
++}
++
+ static bool
+ kk_frontal_copy_info(struct kk_frontal_job *job, unsigned i,
+                      const struct vk_shader_compile_info *info)
+@@ -4593,6 +5384,8 @@
+    uint8_t *packed = __atomic_load_n((uint8_t **)&shader->cache_packed[stage],
+                                      __ATOMIC_ACQUIRE);
+    size_t packed_length = 0;
++   if (packed != NULL && shader->msl_brut_length[stage] != 0)
++      code_length = shader->msl_brut_length[stage];
+    if (packed != NULL) {
+       packed_length = shader->cache_packed_length[stage];
+    } else if (!kk_cache_brut()) {
+@@ -4697,6 +5490,7 @@
+          if (copy != NULL) {
+             memcpy(copy, packed, packed_length);
+             shader->cache_packed_length[stage] = packed_length;
++            shader->msl_brut_length[stage] = code_length;
+             shader->cache_packed[stage] = copy;
+          }
+       }
+@@ -4721,11 +5515,56 @@
+    return VK_SUCCESS;
+ }
+ 
++/* Cidre (0444) : bibliotheque paresseuse relue du cache : ne garder que le
++ * MSL compresse jusqu'a la construction. */
++static void
++kk_msl_compacter(struct kk_shader *shader, mesa_shader_stage stage)
++{
++   struct msl_compile_data *data = &shader->msl_data[stage];
++   if (shader->cache_packed[stage] == NULL || shader->cache_packed_length[stage] == 0 ||
++       shader->msl_brut_length[stage] == 0 || data->code == NULL ||
++       cidre_env_actif("CIDRE_GARDER_MSL"))
++      return;
++   char *tenant = ralloc_size(NULL, 1);
++   if (tenant == NULL)
++      return;
++   tenant[0] = '\0';
++   if (data->air != NULL)
++      ralloc_steal(tenant, (void *)data->air);
++   ralloc_free((void *)data->code);
++   data->code = tenant;
++   shader->msl_differe[stage] = true;
++}
++
+ static bool
++kk_msl_restaurer(struct kk_shader *shader, mesa_shader_stage stage)
++{
++   if (!shader->msl_differe[stage])
++      return true;
++   struct msl_compile_data *data = &shader->msl_data[stage];
++   const uint32_t n = shader->msl_brut_length[stage];
++   char *code = ralloc_array(NULL, char, n);
++   if (code == NULL ||
++       !util_compress_inflate(shader->cache_packed[stage],
++                              shader->cache_packed_length[stage],
++                              (uint8_t *)code, n)) {
++      ralloc_free(code);
++      return false;
++   }
++   if (data->air != NULL)
++      ralloc_steal(code, (void *)data->air);
++   ralloc_free((void *)data->code);
++   data->code = code;
++   shader->msl_differe[stage] = false;
++   return true;
++}
++
++static bool
+ kk_lazy_library(struct kk_device *dev, struct kk_shader *shader)
+ {
+    if (!kk_paresseux() || !dev->compile_queue_ok)
+       return false;
++   kk_msl_compacter(shader, shader->info.stage);
+    shader->compile_dev = dev;
+    shader->compile_local_size = 0;
+    shader->compile_result = VK_SUCCESS;
+diff --git a/src/kosmickrisp/vulkan/kk_shader.h b/src/kosmickrisp/vulkan/kk_shader.h
+--- a/src/kosmickrisp/vulkan/kk_shader.h
++++ b/src/kosmickrisp/vulkan/kk_shader.h
+@@ -233,6 +233,12 @@
+     * recompresser (NULL = pas encore calcule, longueur 0 = stocke brut). */
+    void *cache_packed[MESA_SHADER_STAGES];
+    uint32_t cache_packed_length[MESA_SHADER_STAGES];
++   /* Cidre (0444) : longueur du MSL brut de cache_packed ; msl_differe : le
++    * MSL brut n'est pas en memoire (bibliotheque paresseuse relue du cache),
++    * code est un tenant-lieu, decompresse a la construction. Sans cela les
++    * ~35 000 nuanceurs relus d'un cache rempli gardaient ~3 Go de MSL. */
++   uint32_t msl_brut_length[MESA_SHADER_STAGES];
++   bool msl_differe[MESA_SHADER_STAGES];
+    /* The programs poly_nir_lower_gs() produces alongside the main one. */
+    struct msl_compile_data gs_msl_data[KK_GS_PROGRAM_MAX];
+ 
+diff --git a/src/vulkan/runtime/vk_pipeline.c b/src/vulkan/runtime/vk_pipeline.c
+--- a/src/vulkan/runtime/vk_pipeline.c
++++ b/src/vulkan/runtime/vk_pipeline.c
+@@ -969,6 +969,28 @@
+    const struct nir_shader_compiler_options *nir_options =
+       device->shader_ops->get_nir_options(device->physical, p->stage, &p->rs);
+    return vk_pipeline_precomp_shader_get_nir(p, nir_options);
++}
++
++const void *
++vk_cidre_precomp_cle(const void *precomp)
++{
++   const struct vk_pipeline_precomp_shader *p = precomp;
++   return p->cache_key;
++}
++
++const void *
++vk_cidre_precomp_blob(const void *precomp, size_t *size)
++{
++   const struct vk_pipeline_precomp_shader *p = precomp;
++   *size = p->nir_blob.size;
++   return p->nir_blob.data;
++}
++
++void
++vk_cidre_shader_init_cache_obj(struct vk_device *device, struct vk_shader *shader,
++                               const void *key)
++{
++   vk_shader_init_cache_obj(device, shader, key, sizeof(shader->pipeline.cache_key));
+ }
+ 
+ size_t
+diff --git a/src/vulkan/runtime/vk_pipeline.h b/src/vulkan/runtime/vk_pipeline.h
+--- a/src/vulkan/runtime/vk_pipeline.h
++++ b/src/vulkan/runtime/vk_pipeline.h
+@@ -246,6 +246,12 @@
+ struct nir_shader *vk_cidre_precomp_get_nir(struct vk_device *device,
+                                             void *precomp);
+ size_t vk_cidre_precomp_taille(const void *precomp);
++/* Cidre (0444) : base de pipelines (enregistrement / rejeu). */
++const void *vk_cidre_precomp_cle(const void *precomp);
++const void *vk_cidre_precomp_blob(const void *precomp, size_t *size);
++struct vk_shader;
++void vk_cidre_shader_init_cache_obj(struct vk_device *device,
++                                    struct vk_shader *shader, const void *key);
+ 
+ #ifdef __cplusplus
+ }

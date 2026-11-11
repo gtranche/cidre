@@ -1,0 +1,175 @@
+Generated-by: LLM
+
+KosmicKrisp : nuanceurs froids lances en fond (Diablo IV)
+
+Les nuanceurs relus du cache disque et absents de la liste chaude n'etaient compiles qu'au bind. Ils partent
+desormais en file de fond des leur creation, apres un delai, pour qu'un bind proche les trouve prets. Banc
+(~/Dev/cidre-d4-kkcompil, 11/11) : attentes des froids 680 -> 0 ms a 1 s de delai, empreintes identiques.
+Code produit inchange (cle KK_CODEGEN 1-fe23de31 conservee). Chantier : ~/Dev/cidre-d4-kkcompil (RAPPORT-0492.md).
+
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.h b/src/kosmickrisp/bridge/mtl_compiler.h
+--- a/src/kosmickrisp/bridge/mtl_compiler.h
++++ b/src/kosmickrisp/bridge/mtl_compiler.h
+@@ -116,6 +116,7 @@
+ extern _Atomic uint64_t kk_stat_fond_us[4];
+ /* Cidre (0443) : rafale et delais (kk_stat_fond2), temps par etape (ns). */
+ extern _Atomic uint32_t kk_stat_fond2[16];
++extern _Atomic uint32_t kk_stat_froid[4];
+ extern _Atomic uint64_t kk_stat_etape_ns[8];
+ /* Cidre (0464) : binds qui ont attendu (categories, prises sur le fil). */
+ extern _Atomic uint32_t kk_stat_bind[16];
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.m b/src/kosmickrisp/bridge/mtl_compiler.m
+--- a/src/kosmickrisp/bridge/mtl_compiler.m
++++ b/src/kosmickrisp/bridge/mtl_compiler.m
+@@ -1069,6 +1069,7 @@
+ _Atomic uint32_t kk_stat_fond[16];
+ _Atomic uint64_t kk_stat_fond_us[4];
+ _Atomic uint32_t kk_stat_fond2[16];
++_Atomic uint32_t kk_stat_froid[4];
+ _Atomic uint32_t kk_stat_bind[16];
+ _Atomic uint32_t kk_stat_var[16];
+ _Atomic uint64_t kk_stat_var_us[4];
+@@ -1156,6 +1157,10 @@
+               (unsigned)atomic_load(&kk_stat_etape_ns[4]), atomic_load(&kk_stat_etape_ns[2]) / 1e9,
+               atomic_load(&kk_stat_etape_ns[0]) / 1e9, atomic_load(&kk_stat_etape_ns[1]) / 1e9,
+               atomic_load(&kk_stat_etape_ns[5]) / 1e9, atomic_load(&kk_stat_etape_ns[3]) / 1e9);
++   if (atomic_load(&kk_stat_froid[0]) || atomic_load(&kk_stat_froid[2]))
++      fprintf(stderr, "KK compile: froids en fond (0492) : %u enfiles, %u compiles, %u refuses (plafond), %u prets au bind\n",
++              atomic_load(&kk_stat_froid[0]), atomic_load(&kk_stat_froid[1]),
++              atomic_load(&kk_stat_froid[2]), atomic_load(&kk_stat_froid[3]));
+    if (atomic_load(&kk_stat_fond2[14]) || atomic_load(&kk_stat_fond2[0]))
+       fprintf(stderr, "KK compile: rafale : %u enfiles, %u compiles, %u expires, %u refuses, %u prets au bind ; "
+                       "delai creation->bind (%u paires) : <10ms %u, <100ms %u, <1s %u, <10s %u, <60s %u, >=60s %u ; flush reportes %u\n",
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -3710,6 +3710,7 @@
+    /* Cidre (0443) : heure de creation (rafale : age du ticket). */
+    int64_t t_crea;
+    _Atomic bool rafale;
++   _Atomic bool froid;
+ };
+ 
+ static void
+@@ -3836,6 +3837,8 @@
+       ecrit[i] = job->vivant[i] || job->orphelin[i];
+       if (par_fond && ecrit[i] && atomic_load(&job->rafale))
+          atomic_fetch_or(&job->shells[i]->fond, KK_FOND_RAFALE);
++      if (par_fond && ecrit[i] && atomic_load(&job->froid))
++         atomic_fetch_or(&job->shells[i]->fond, KK_FOND_FROIDF);
+       if (par_fond && ecrit[i]) {
+          atomic_store(&job->shells[i]->fond_fil, (void *)pthread_self());
+          atomic_fetch_or(&job->shells[i]->fond, KK_FOND_EN_COURS);
+@@ -4254,8 +4257,32 @@
+       atomic_fetch_add(&kk_stat_fond[8], 1);
+    }
+    simple_mtx_unlock(&kk_chaud_lock);
++}
++
++static bool
++kk_fond_froids(void)
++{
++   static int enabled = -1;
++   if (enabled < 0) {
++      const char *v = getenv("CIDRE_FOND_FROIDS");
++      enabled = !(v && v[0] == '0');
++   }
++   return enabled;
++}
++
++static unsigned
++kk_fond_froids_max(void)
++{
++   static int n = -1;
++   if (n < 0) {
++      const char *v = getenv("CIDRE_FOND_FROIDS_MAX");
++      n = v != NULL && v[0] != '\0' ? (int)strtoul(v, NULL, 10) : 512;
++   }
++   return (unsigned)n;
+ }
+ 
++static _Atomic uint32_t kk_froids_en_file;
++
+ /* --- rafale (0443) ---
+  * CIDRE_FOND_RAFALE=R : pendant une rafale de creations (>= R pipelines/s sur
+  * la derniere seconde, prolongee de 2 s), les pipelines froids INCONNUS de la
+@@ -4409,6 +4436,11 @@
+       }
+    }
+ 
++   if (atomic_load(&s->fond) & KK_FOND_FROIDF) {
++      if (fait)
++         atomic_fetch_add(&kk_stat_froid[1], 1);
++      atomic_fetch_sub(&kk_froids_en_file, 1);
++   }
+    if (rafale)
+       atomic_fetch_add(&kk_stat_fond2[fait ? 1 : 2], 1);
+    else
+@@ -4449,26 +4481,40 @@
+       if (!kk_fond_en_attente(s))
+          continue;
+       struct kk_frontal_job *job = atomic_load(&s->lazy_job);
+-      bool par_rafale = false;
++      bool par_rafale = false, par_froid = false;
+       if (!tout && !kk_chaud_contient(s->vk.pipeline.cache_key)) {
+          /* Inconnu : seulement un travail frontal froid, en rafale, sous le
+           * plafond de tickets en file. */
+-         if (!rafale || job == NULL)
++         if (job == NULL || !(rafale || kk_fond_froids()))
+             continue;
+          if (atomic_load(&job->fond_enfile) ||
+              (atomic_load(&s->fond) & KK_FOND_ENFILE))
+             continue;
+-         if (atomic_load(&dev->fond_en_file) >= kk_rafale_max()) {
+-            atomic_fetch_add(&kk_stat_fond2[3], 1);
+-            continue;
++         if (rafale) {
++            if (atomic_load(&dev->fond_en_file) >= kk_rafale_max()) {
++               atomic_fetch_add(&kk_stat_fond2[3], 1);
++               continue;
++            }
++            par_rafale = true;
++         } else {
++            if (atomic_load(&kk_froids_en_file) >= kk_fond_froids_max()) {
++               atomic_fetch_add(&kk_stat_froid[2], 1);
++               continue;
++            }
++            par_froid = true;
+          }
+-         par_rafale = true;
+       }
+       if (atomic_fetch_or(&s->fond, KK_FOND_ENFILE) & KK_FOND_ENFILE)
+          continue;
+       /* Un seul ticket par paire VS+FS (meme travail frontal). */
+       if (job != NULL && atomic_exchange(&job->fond_enfile, true))
+          continue;
++      if (par_froid) {
++         atomic_fetch_add(&kk_froids_en_file, 1);
++         atomic_fetch_add(&kk_stat_froid[0], 1);
++         atomic_store(&job->froid, true);
++         atomic_fetch_or(&s->fond, KK_FOND_FROIDF);
++      }
+       if (par_rafale) {
+          /* Ticket (expiration) ; les coquilles vivantes sont marquees par
+           * kk_frontal_execute (l'autre coquille peut etre deja liberee). */
+@@ -4560,7 +4606,8 @@
+       uint32_t f = atomic_load_explicit(&shader->fond, memory_order_relaxed);
+       if (graphics && (f & KK_FOND_FAIT) && !(f & KK_FOND_COMPTE) &&
+           !(atomic_fetch_or(&shader->fond, KK_FOND_COMPTE) & KK_FOND_COMPTE))
+-         atomic_fetch_add((f & KK_FOND_RAFALE) ? &kk_stat_fond2[4]
++         atomic_fetch_add((f & KK_FOND_RAFALE) ? &kk_stat_fond2[4] :
++                          (f & KK_FOND_FROIDF) ? &kk_stat_froid[3]
+                                                : &kk_stat_fond[3], 1);
+       return;
+    }
+diff --git a/src/kosmickrisp/vulkan/kk_shader.h b/src/kosmickrisp/vulkan/kk_shader.h
+--- a/src/kosmickrisp/vulkan/kk_shader.h
++++ b/src/kosmickrisp/vulkan/kk_shader.h
+@@ -308,6 +308,7 @@
+ #define KK_FOND_DELAI    0x40u /* delai creation -> bind deja compte */
+ #define KK_FOND_RAFALE   0x80u /* enfile en fond pendant une rafale (inconnu) */
+ #define KK_FOND_VAR      0x100u /* premier bind vu par la reserve kkvar (0474) */
++#define KK_FOND_FROIDF   0x200u
+ 
+ /* Vrai sur le fil d'encodage pendant la recherche de variante d'un dessin. */
+ extern _Thread_local bool kk_variante_au_dessin;

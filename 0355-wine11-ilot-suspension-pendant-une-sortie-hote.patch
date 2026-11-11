@@ -1,0 +1,104 @@
+Generated-by: LLM
+
+wine11 : ilot, suspension demandee pendant une sortie vers l'hote traitee a la reprise (0355)
+
+Sous CIDRE_SYNC_LOCAL, un SIGUSR1 (APC systeme, suspension) arrive pendant qu'un fil de l'ilot est sorti vers
+l'hote : la suspension etait posee mais jamais traitee, et le fil qui l'attendait restait dans
+NtWaitForSingleObject pour toujours (gel de D2R). Elle est traitee au retour de la sortie, avant de relancer
+le vCPU. Temoin : 3/3 gels -> 0/3 ; serie naturelle D2R 16 manches sans gel ; avec 0360 (FEX), ABBA 15+15 :
+incidents 5/15 -> 0/15. Chantier : ~/Dev/cidre-d2r-gel (0355-ilot-suspension-pendant-sortie.diff).
+
+diff --git a/dlls/ntdll/unix/ilot.c b/dlls/ntdll/unix/ilot.c
+--- a/dlls/ntdll/unix/ilot.c
++++ b/dlls/ntdll/unix/ilot.c
+@@ -126,6 +126,7 @@
+ static int bloques_actif, xproc_actif;   /* CIDRE_ILOT_BLOQUES=<s>, CIDRE_ILOT_XPROC=1 */
+ static int wao_tranche = -1;             /* parade wait_on_address (ms, 0 : coupee) ; -1 : pas encore lu */
+ static uint64_t c_wao_tranches, c_wao_rattrapes;
++static uint64_t c_suspensions_sortie;   /* 0355 */
+ static uint64_t bloques_seuil;           /* en unites mach */
+ /* appels unix par (bibliotheque, fonction) : table ouverte de 512 entrees */
+ #define CHRONO_NB_UNIX 512
+@@ -3017,6 +3018,7 @@
+ }
+ 
+ extern void ilot_suspendre( struct ilot_regs *r );
++extern void ilot_suspendre_appel( struct ilot_regs *r );   /* 0355 */
+ static void traiter_suspension( void )
+ {
+     struct ilot_regs r;
+@@ -3385,7 +3387,40 @@
+                                     : h.pc == (uint64_t)__wine_unix_call_dispatcher ? CHRONO_UNIX : CHRONO_AUTRE );
+                     if (h.pc == (uint64_t)__wine_syscall_dispatcher) xproc_sortie( &h ); else fil.xp_num = 0;
+                 }
+-                fil.dans_boucle = 0; fil.en_appel_hote = 1;
++                /* 0355 (cidre-d2r-gel) : un SIGUSR1 (suspension, APC systeme : fin d'E/S asynchrone...) arrive pendant le
++                 * traitement de la sortie trouve dans_boucle a 1 : usr1_handler le remet a la boucle (suspension = 1) et
++                 * rend la main ; mais le fil part ici dans un appel hote, souvent une attente infinie que seul cet APC
++                 * aurait satisfaite, et ne revient jamais dans la boucle : gel definitif. On quitte la boucle d'abord
++                 * (apres le passage a 0, usr1_handler prend le chemin ordinaire), puis on regarde la demande : posee
++                 * entre-temps, on la traite ici comme usr1_handler a l'entree du dispatcher (save_syscall_entry_frame) :
++                 * le fil est vu dans son appel systeme, pc = lr de l'appel, lr = x9 ; un contexte change par un autre
++                 * fil (SetThreadContext) est reporte dans les registres non volatils, pc et sp du retour, comme le
++                 * ferait le cadre natif. */
++                for (;;)
++                {
++                    static int dits_0355;
++                    struct ilot_regs r;
++                    uint64_t pc0 = h.x[30];
++                    fil.dans_boucle = 0;
++                    __atomic_thread_fence( __ATOMIC_SEQ_CST );
++                    if (!__atomic_load_n( &fil.hote->suspension, __ATOMIC_SEQ_CST )) break;
++                    fil.dans_boucle = 1;   /* une demande de plus pendant le traitement : reprise par ce tour */
++                    fil.hote->suspension = 0;
++                    r = h;
++                    if (!copie_complete)
++                        for (int i = 0; i < 32; i++) { hv_simd_fp_uchar16_t q; hv_vcpu_get_simd_fp_reg( v, HV_SIMD_FP_REG_Q0 + i, &q ); memcpy( &r.v[i], &q, 16 ); }
++                    r.pc = h.x[30]; r.x[30] = h.x[9];
++                    ilot_suspendre_appel( &r );
++                    /* fil.sx garde l'etat du vCPU : le retour court y repousse ce qui a change */
++                    for (int i = 18; i < 30; i++) h.x[i] = r.x[i];
++                    h.x[9] = r.x[30]; h.x[30] = r.pc; h.sp = r.sp; h.nzcv = r.nzcv;
++                    __atomic_fetch_add( &c_suspensions_sortie, 1, __ATOMIC_RELAXED );
++                    if (__atomic_fetch_add( &dits_0355, 1, __ATOMIC_RELAXED ) < 20)
++                        fprintf( stderr, "[CIDRE_ILOT] 0355 : demande de suspension arrivee pendant la sortie vers l'hote (fil %04x, appel 0x%llx) : traitee avant l'appel%s\n",
++                                 tid_courant(), (unsigned long long)(h.pc == (uint64_t)__wine_syscall_dispatcher ? (h.x[8] & 0x3fff) : 0x2000 + h.x[1]),
++                                 r.pc != pc0 ? " ; contexte change par un autre fil" : "" );
++                }
++                fil.en_appel_hote = 1;
+                 ilot_sauter( &h );
+             }
+             if (p < 0 && refus_livrable)
+diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
+--- a/dlls/ntdll/unix/signal_arm64.c
++++ b/dlls/ntdll/unix/signal_arm64.c
+@@ -1003,8 +1003,29 @@
+     wait_suspend( &context );
+     ilot_depuis_contexte( data, &context, r );
+ }
++
+ 
++/* 0355 (cidre-d2r-gel) : demande de suspension (SIGUSR1) arrivee pendant que l'ilot traitait une sortie vers un appel
++ * hote : le fil est vu a l'entree de son appel systeme (pc = adresse de retour, comme save_syscall_entry_frame) ; au
++ * retour, registres et pc tels que wait_suspend les rend, sans passage par KiUserEmulationDispatcher (le fil n'est pas
++ * dans l'emulation : InSimulation n'est pas touche). */
++void ilot_suspendre_appel( struct ilot_regs_exc *r )
++{
++    CONTEXT context;
++    unsigned int i;
+ 
++    memset( &context, 0, sizeof(context) );
++    context.ContextFlags = CONTEXT_FULL | CONTEXT_ARM64_X18 | CONTEXT_EXCEPTION_REPORTING;
++    for (i = 0; i < 31; i++) context.X[i] = r->x[i];
++    context.Sp = r->sp; context.Pc = r->pc; context.Cpsr = r->nzcv & 0xf0000000;
++    context.Fpcr = r->fpcr; context.Fpsr = r->fpsr;
++    for (i = 0; i < 32; i++) context.V[i] = r->v[i];
++    wait_suspend( &context );
++    for (i = 0; i < 31; i++) r->x[i] = context.X[i];
++    r->sp = context.Sp; r->pc = context.Pc; r->nzcv = context.Cpsr & 0xf0000000;
++}
++
++
+ /***********************************************************************
+  *           ilot_retour_emulation
+  *

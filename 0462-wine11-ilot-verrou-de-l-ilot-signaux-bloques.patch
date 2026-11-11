@@ -1,0 +1,416 @@
+Generated-by: LLM
+
+wine11 : ilot, verrou de l'ilot pris signaux bloques (0462)
+
+Gel de Diablo IV (08/11 21:08) : interblocage ABBA entre ilot_mutex (pris sans bloquer les signaux du
+serveur) et virtual_mutex. Un fil tient ilot_mutex dans rendre_vcpu, recoit SIGUSR1 -> wait_suspend -> APC
+irp_completion -> virtual_locked_server_call attend virtual_mutex ; NtFreeVirtualMemory tient virtual_mutex
+et projection_de attend ilot_mutex. Correctif : ilot_verrouiller bloque les signaux du serveur,
+hv_vcpu_create/destroy aussi ; getenv lus a l'initialisation ; trylock pour les fils de journal. Banc de
+suspension 14/14 + 8/8 sans gel (avant : 3/3 + 2/2 gels). Chantier : ~/Dev/cidre-d4-verrous.
+Pose sur ~/Dev/cidre-d4-verrous/orig, qui contenait aussi le journal de mort des fils (CIDRE_MORT_FILS,
+instrumentation non reprise) : le correctif s'applique sans lui.
+
+diff --git a/dlls/ntdll/unix/ilot.c b/dlls/ntdll/unix/ilot.c
+--- a/dlls/ntdll/unix/ilot.c
++++ b/dlls/ntdll/unix/ilot.c
+@@ -91,7 +91,25 @@
+ #define PAGE_HOTE 0x4000ull
+ #define NB_TRANCHES 1024
+ static pthread_mutex_t ilot_mutex = PTHREAD_MUTEX_INITIALIZER;
+-static uint8_t *zone;                    /* tables de l'invite et vecteurs */
++/* 0462 : un fil Wine prend ilot_mutex signaux du serveur bloques, comme virtual_mutex (server_enter_uninterrupted_section).
++ * Sinon un SIGUSR1 (suspension) livre au fil qui le tient lance usr1_handler -> wait_suspend -> server_select -> APC
++ * systeme (irp_completion -> virtual_locked_server_call) -> virtual_mutex, tandis qu'un fil qui tient virtual_mutex
++ * attend ilot_mutex (NtFreeVirtualMemory -> decommit_pages -> projection_de) : interblocage ABBA, tout le processus
++ * fige derriere les deux verrous (D4, 08/11 21:08:48, fil tenant dans rendre_vcpu). L'ordre reste virtual_mutex puis
++ * ilot_mutex ; les sections deja sous virtual_mutex (signaux deja bloques) gardent pthread_mutex_lock. Les fils
++ * d'aide de l'ilot (kuser, echantillonneurs, journal) ne recoivent pas les signaux du serveur. */
++extern sigset_t server_block_set;
++static inline void ilot_verrouiller( sigset_t *ancien )
++{
++    pthread_sigmask( SIG_BLOCK, &server_block_set, ancien );
++    pthread_mutex_lock( &ilot_mutex );
++}
++static inline void ilot_deverrouiller( const sigset_t *ancien )
++{
++    pthread_mutex_unlock( &ilot_mutex );
++    pthread_sigmask( SIG_SETMASK, ancien, NULL );
++}
++static uint8_t *zone;                   /* tables de l'invite et vecteurs */
+ #define ZONE_TAILLE (8ull << 20)
+ #define ZONE_VECTEURS 0x0                /* 2 Kio */
+ #define ZONE_HORLOGE 0x800               /* horloge privee de l'invite (time.c du ntdll PE) */
+@@ -848,7 +866,8 @@
+     if (!ilot_actif || !size) return;
+     t0 = mach_absolute_time();
+     uint64_t a = (uint64_t)start & ~(PAGE_HOTE - 1), fin = (uint64_t)start + size;
+-    pthread_mutex_lock( &ilot_mutex );
++    sigset_t ancien;
++    ilot_verrouiller( &ancien );   /* 0462 : appele aussi hors virtual_mutex (ilot_mmap MAP_FIXED) */
+     while (a < fin)
+     {
+         uint64_t gfin = (a & ~(GIO - 1)) + GIO, ipa = ipa_de( a );
+@@ -872,7 +891,7 @@
+     }
+     if (ilot_diag && c_retraits != avant) compter_retrait( ra, c_retraits - avant );
+     if (chrono_actif && c_retraits != avant) chrono_retrait( ra, c_retraits - avant );
+-    pthread_mutex_unlock( &ilot_mutex );
++    ilot_deverrouiller( &ancien );
+     __atomic_fetch_add( &t_proj_de, mach_absolute_time() - t0, __ATOMIC_RELAXED );
+     __atomic_fetch_add( &c_proj_de, 1, __ATOMIC_RELAXED );
+ }
+@@ -1037,6 +1056,7 @@
+ static void releve_lr( int top )
+ {
+     extern int ilot_vue_base( const void *addr, uint64_t *base, uint64_t *taille, int *image );
++    extern int ilot_vue_base_essai( const void *addr, uint64_t *base, uint64_t *taille, int *image );   /* 0462 */
+     for (int r = 0; r < top; r++)
+     {
+         int m = -1;
+@@ -1046,7 +1066,7 @@
+         for (int k = 0; k < 3; k++)
+         {
+             b[k] = 0; im[k] = 0;
+-            if (a[k] > 0x10000 && ilot_vue_base( (void *)a[k], &b[k], &t, &im[k] ))
++            if (a[k] > 0x10000 && ilot_vue_base_essai( (void *)a[k], &b[k], &t, &im[k] ) > 0)
+                 snprintf( d[k], sizeof(d[k]), "%s 0x%llx+0x%llx", im[k] ? "image" : "vue", (unsigned long long)b[k], (unsigned long long)(a[k] - b[k]) );
+             else snprintf( d[k], sizeof(d[k]), "0x%llx", (unsigned long long)a[k] );
+         }
+@@ -1231,6 +1251,7 @@
+ static void releve_appels_systeme( void )
+ {
+     extern int ilot_vue_base( const void *addr, uint64_t *base, uint64_t *taille, int *image );
++    extern int ilot_vue_base_essai( const void *addr, uint64_t *base, uint64_t *taille, int *image );   /* 0462 */
+     uint64_t tot = 0;
+     for (int i = 0; i < NB_NUMEROS; i++) tot += appels_par_numero[i];
+     if (!tot) return;
+@@ -1250,7 +1271,7 @@
+         for (int i = 0; i < NB_APPELANTS; i++) if (appelants[i].n && (m < 0 || appelants[i].n > appelants[m].n)) m = i;
+         if (m < 0) break;
+         uint64_t base = 0, taille = 0; int image = 0;
+-        ilot_vue_base( (void *)appelants[m].pc, &base, &taille, &image );
++        ilot_vue_base_essai( (void *)appelants[m].pc, &base, &taille, &image );   /* 0462 */
+         fprintf( stderr, "[CIDRE_ILOT] releve appelant : %10llu (%5.1f %%) 0x%llx : %s base 0x%llx +0x%llx\n", (unsigned long long)appelants[m].n,
+                  100.0 * appelants[m].n / tot, (unsigned long long)appelants[m].pc,
+                  image ? "image" : base ? "vue (JIT ?)" : "hors vue", (unsigned long long)base, (unsigned long long)(appelants[m].pc - base) );
+@@ -1328,6 +1349,7 @@
+     if (echantillon)
+     {
+         extern int ilot_vue_base( const void *addr, uint64_t *base, uint64_t *taille, int *image );
++    extern int ilot_vue_base_essai( const void *addr, uint64_t *base, uint64_t *taille, int *image );   /* 0462 */
+         fprintf( stderr, "[CIDRE_ILOT] bilan echantillons : %llu\n", (unsigned long long)c_ech );
+         for (int r = 0; r < 25; r++)
+         {
+@@ -1354,6 +1376,7 @@
+ static void releve_pc( int top )
+ {
+     extern int ilot_vue_base( const void *addr, uint64_t *base, uint64_t *taille, int *image );
++    extern int ilot_vue_base_essai( const void *addr, uint64_t *base, uint64_t *taille, int *image );   /* 0462 */
+     uint64_t tot = 0;
+     for (int i = 0; i < NB_ECH; i++) tot += ech[i].n;
+     fprintf( stderr, "[CIDRE_ILOT] releve echantillons : %llu (ecartes, vCPU pas en cours : %llu)\n", (unsigned long long)tot,
+@@ -1364,7 +1387,7 @@
+         for (int i = 0; i < NB_ECH; i++) if (ech[i].n && (m < 0 || ech[i].n > ech[m].n)) m = i;
+         if (m < 0) break;
+         uint64_t base = 0, taille = 0; int image = 0;
+-        ilot_vue_base( (void *)ech[m].pc, &base, &taille, &image );
++        ilot_vue_base_essai( (void *)ech[m].pc, &base, &taille, &image );   /* 0462 */
+         fprintf( stderr, "[CIDRE_ILOT] releve pc %6.2f %% 0x%llx : %s base 0x%llx taille 0x%llx +0x%llx\n",
+                  100.0 * ech[m].n / (tot ? tot : 1), (unsigned long long)ech[m].pc,
+                  image ? "image" : base ? "vue (JIT ?)" : "hors vue", (unsigned long long)base, (unsigned long long)taille,
+@@ -1474,6 +1497,7 @@
+ static void chrono_par_fil( const char *quand )
+ {
+     extern int ilot_vue_base( const void *addr, uint64_t *base, uint64_t *taille, int *image );
++    extern int ilot_vue_base_essai( const void *addr, uint64_t *base, uint64_t *taille, int *image );   /* 0462 */
+     int n = __atomic_load_n( &nb_diag_fils, __ATOMIC_RELAXED );
+     static uint64_t dv[NB_DIAG_FILS], dh[NB_DIAG_FILS], da[NB_DIAG_FILS];
+     if (n > NB_DIAG_FILS) n = NB_DIAG_FILS;
+@@ -1502,7 +1526,7 @@
+             for (int j = 0; j < 16; j++) if (d->pcs[j].n && (b < 0 || d->pcs[j].n > d->pcs[b].n)) b = j;
+             if (b < 0) break;
+             uint64_t base = 0, taille = 0; int image = 0;
+-            if (ilot_vue_base( (void *)d->pcs[b].pc, &base, &taille, &image ))
++            if (ilot_vue_base_essai( (void *)d->pcs[b].pc, &base, &taille, &image ) > 0)
+                 l += snprintf( pcs + l, sizeof(pcs) - l, " %s 0x%llx+0x%llx x%u", image ? "image" : "vue", (unsigned long long)base,
+                                (unsigned long long)(d->pcs[b].pc - base), d->pcs[b].n );
+             else l += snprintf( pcs + l, sizeof(pcs) - l, " 0x%llx x%u", (unsigned long long)d->pcs[b].pc, d->pcs[b].n );
+@@ -1631,9 +1655,11 @@
+ }
+ static const char *decrire_pc( uint64_t pc, char *b, size_t n )
+ {
+-    extern int ilot_vue_base( const void *addr, uint64_t *base, uint64_t *taille, int *image );
+-    uint64_t base = 0, taille = 0; int image = 0; Dl_info di;
+-    if (pc > 0x10000 && ilot_vue_base( (void *)pc, &base, &taille, &image ))
++    extern int ilot_vue_base_essai( const void *addr, uint64_t *base, uint64_t *taille, int *image );   /* 0462 */
++    uint64_t base = 0, taille = 0; int image = 0, vu = 0; Dl_info di;
++    if (pc > 0x10000 && (vu = ilot_vue_base_essai( (void *)pc, &base, &taille, &image )) < 0)
++        snprintf( b, n, "0x%llx (vues verrouillees)", (unsigned long long)pc );
++    else if (vu > 0)
+         snprintf( b, n, "%s 0x%llx+0x%llx", image ? "image" : "vue", (unsigned long long)base, (unsigned long long)(pc - base) );
+     else if (pc > 0x10000 && dladdr( (void *)pc, &di ) && di.dli_fname)
+         snprintf( b, n, "%s+0x%llx", strrchr( di.dli_fname, '/' ) ? strrchr( di.dli_fname, '/' ) + 1 : di.dli_fname,
+@@ -2100,6 +2126,7 @@
+          * ntdll.dll) : coherence des liens, rang de ce fil parmi les dormeurs de la meme adresse (FIFO : le premier est
+          * reveille le premier par RtlWakeAddressSingle), et dormeurs de cette adresse */
+         extern int ilot_vue_base( const void *addr, uint64_t *base, uint64_t *taille, int *image );
++    extern int ilot_vue_base_essai( const void *addr, uint64_t *base, uint64_t *taille, int *image );   /* 0462 */
+         uint64_t n = d->wa_entree, tete = 0, base, taille; int image, total = 0, meme = 0, rang = -1, rompu = 0;
+         char l[700]; int k = 0;
+         for (int i = 0; i < 1024; i++)
+@@ -2661,6 +2688,9 @@
+ }
+ 
+ /* signal_init_process : tables de l'invite ; l'hote n'execute deja plus la memoire Windows, donc tout echec est fatal */
++/* 0462 : lus une fois a l'initialisation ; getenv prend le verrou d'environnement de la libc, et un fil suspendu
++ * (SIGUSR1 -> wait_suspend) en le tenant figeait les autres creer_vcpu (temoin h64susp_verrou max8) */
++static int actlr_ecraser, horloge_privee = 1;
+ void ilot_init( void )
+ {
+     hv_memory_flags_t f; const char *pq;
+@@ -2710,6 +2740,8 @@
+         sys_icache_invalidate( zone, ZONE_L0 );   /* vecteurs et talon : code de l'invite ecrit par l'hote */
+     }
+     if (getenv( "CIDRE_ILOT_SOUS_PAGES" )) sous_pages_exactes = atoi( getenv( "CIDRE_ILOT_SOUS_PAGES" ) ) != 0;
++    actlr_ecraser = getenv( "CIDRE_ILOT_ACTLR" ) && !strcmp( getenv( "CIDRE_ILOT_ACTLR" ), "ecraser" );   /* 0462 */
++    horloge_privee = getenv( "CIDRE_ILOT_HORLOGE" ) == NULL || atoi( getenv( "CIDRE_ILOT_HORLOGE" ) );   /* 0462 */
+     kuser_copier( 1, 1 );
+     { pthread_t t; pthread_create( &t, NULL, kuser_fil, NULL ); pthread_detach( t ); }
+     echantillon = getenv( "CIDRE_ILOT_ECHANTILLON" ) && atoi( getenv( "CIDRE_ILOT_ECHANTILLON" ) );
+@@ -2719,8 +2751,8 @@
+         { pthread_t t; pthread_create( &t, NULL, vcpu_cache_fil, NULL ); pthread_detach( t ); }
+     ilot_actif = 1;
+     fprintf( stderr, "[CIDRE_ILOT] actif : TSO %s, zone %p, garde controlee, version %s\n", ilot_tso ? "materiel" : "coupe", zone,
+-             sous_pages_exactes ? "ilot19 rappels journal-exceptions anneau64 reprises sous-pages-5b jumelles appels-rapides compteurs-fex vcpu-souple " __DATE__ " " __TIME__
+-                                : "ilot19 rappels journal-exceptions anneau64 reprises sous-pages-5a vcpu-souple " __DATE__ " " __TIME__ );
++             sous_pages_exactes ? "ilot19 verrous-0462 rappels journal-exceptions anneau64 reprises sous-pages-5b jumelles appels-rapides compteurs-fex vcpu-souple " __DATE__ " " __TIME__
++                                : "ilot19 verrous-0462 rappels journal-exceptions anneau64 reprises sous-pages-5a vcpu-souple " __DATE__ " " __TIME__ );
+     if (ilot_diag) { pthread_t t; pthread_create( &t, NULL, rapport, NULL ); pthread_detach( t ); atexit( bilan ); }
+     if (getenv( "CIDRE_ILOT_XPROC" ) && atoi( getenv( "CIDRE_ILOT_XPROC" ) )) xproc_actif = 1;
+     if (ilot_wao_tranche_ms()) fprintf( stderr, "[CIDRE_ILOT] wait_on_address : sommeil par tranches de %d ms avec relecture de l'adresse (parade)\n", wao_tranche );
+@@ -2744,6 +2776,7 @@
+ {
+     uint64_t v;
+     hv_return_t rc;
++    sigset_t ancien;   /* 0462 */
+     if (fil.pret) return;   /* le fil a deja son vCPU (rendre_vcpu refuse) : un 2e hv_vcpu_create rendrait HV_BUSY */
+     if (!fil.hote)
+     {
+@@ -2756,7 +2789,7 @@
+      * sont forces a sortir et cedent apres leur quantum */
+     for (;;)
+     {
+-    pthread_mutex_lock( &ilot_mutex );
++    ilot_verrouiller( &ancien );
+     while ((uint32_t)nb_vcpus >= max_vcpus)
+     {
+         struct timespec ts; clock_gettime( CLOCK_REALTIME, &ts );
+@@ -2764,22 +2797,32 @@
+         en_attente++; __atomic_store_n( &pression, 1, __ATOMIC_RELEASE );
+         if (nb_vcpus) hv_vcpus_exit( vcpus, nb_vcpus );
+         pthread_cond_timedwait( &place_cond, &ilot_mutex, &ts );
++        /* 0462 : signaux du serveur bloques sous le verrou ; l'attente d'une place peut durer : les livrer toutes les
++         * 2 ms, verrou lache (en_attente nous compte encore) */
++        ilot_deverrouiller( &ancien );
++        ilot_verrouiller( &ancien );
+         en_attente--;
+     }
+     if (!en_attente) __atomic_store_n( &pression, 0, __ATOMIC_RELEASE );
+     vcpus[nb_vcpus] = 0; fils[nb_vcpus] = NULL; nb_vcpus++;   /* place reservee */
+-    pthread_mutex_unlock( &ilot_mutex );
+-    if (!(rc = hv_vcpu_create( &fil.v, &fil.e, NULL ))) break;
++    ilot_deverrouiller( &ancien );
++    /* 0462 : hv_vcpu_create et hv_vcpu_destroy prennent un verrou interne de Hypervisor.framework (os_unfair_lock),
++     * que hv_vcpus_exit prend aussi (sous ilot_mutex) : un SIGUSR1 livre la (wait_suspend) fige tout le monde ; le
++     * temoin h64susp_verrou max8 l'a montre. Signaux du serveur bloques pendant l'appel. */
++    pthread_sigmask( SIG_BLOCK, &server_block_set, &ancien );
++    rc = hv_vcpu_create( &fil.v, &fil.e, NULL );
++    pthread_sigmask( SIG_SETMASK, &ancien, NULL );
++    if (!rc) break;
+     /* HV_NO_RESOURCES sous le plafond compte : des vCPU vivants pour HVF ne sont pas comptes ici (fuite : destroy
+      * refuse, fil sorti sans destructeur). Le plafond effectif descend au compte actuel et le fil attend une place
+      * comme sous pression, au lieu d'arreter le processus. Tout autre refus, ou un plafond devenu trop bas, reste fatal. */
+-    pthread_mutex_lock( &ilot_mutex );
++    ilot_verrouiller( &ancien );
+     for (int i = 0; i < nb_vcpus; i++)
+         if (!fils[i]) { vcpus[i] = vcpus[nb_vcpus - 1]; fils[i] = fils[nb_vcpus - 1]; nb_vcpus--; break; }   /* place rendue */
+     if (rc != HV_NO_RESOURCES || nb_vcpus < 8)
+     {
+         int n = nb_vcpus; uint32_t m = max_vcpus;
+-        pthread_mutex_unlock( &ilot_mutex );
++        ilot_deverrouiller( &ancien );
+         fatal( "hv_vcpu_create", rc, n, m );
+     }
+     if ((uint32_t)nb_vcpus < max_vcpus)
+@@ -2791,13 +2834,13 @@
+         c_plafond_abaisse++;
+     }
+     pthread_cond_broadcast( &place_cond );
+-    pthread_mutex_unlock( &ilot_mutex );
++    ilot_deverrouiller( &ancien );
+     }
+-    pthread_mutex_lock( &ilot_mutex );
++    ilot_verrouiller( &ancien );
+     for (int i = 0; i < nb_vcpus; i++) if (!fils[i]) { vcpus[i] = fil.v; fils[i] = fil.hote; break; }   /* la place reservee */
+     fil.hote->v = fil.v; fil.hote->vivant = 1;
+     c_vcpus_crees++;
+-    pthread_mutex_unlock( &ilot_mutex );
++    ilot_deverrouiller( &ancien );
+     fil.t_entree = mach_absolute_time();
+     hv_vcpu_set_sys_reg( fil.v, HV_SYS_REG_MAIR_EL1, 0xff );
+     /* T0SZ 16 (48 bits, depart au niveau 0), granule 4 Kio, WB WA, partage interne, TTBR1 coupe, IPS 40 bits */
+@@ -2809,9 +2852,8 @@
+     {   /* EnTSO (bit 1) ajoute a la valeur par defaut du vCPU, sans effacer ses autres bits (propres a Apple) ;
+          * CIDRE_ILOT_ACTLR=ecraser rend l'ancien reglage (ACTLR = 2 ou 0) pour comparer */
+         static int vu; uint64_t a0 = 0;
+-        const char *e = getenv( "CIDRE_ILOT_ACTLR" );
+         hv_vcpu_get_sys_reg( fil.v, HV_SYS_REG_ACTLR_EL1, &a0 );
+-        uint64_t a = (e && !strcmp( e, "ecraser" )) ? (ilot_tso ? 2 : 0) : ilot_tso ? (a0 | 2) : (a0 & ~2ull);
++        uint64_t a = actlr_ecraser ? (ilot_tso ? 2 : 0) : ilot_tso ? (a0 | 2) : (a0 & ~2ull);
+         hv_vcpu_set_sys_reg( fil.v, HV_SYS_REG_ACTLR_EL1, a );
+         if (ilot_diag && !__atomic_exchange_n( &vu, 1, __ATOMIC_RELAXED ))
+             fprintf( stderr, "[CIDRE_ILOT] ACTLR_EL1 par defaut 0x%llx, pose 0x%llx\n", (unsigned long long)a0, (unsigned long long)a );
+@@ -2825,10 +2867,10 @@
+         if ((uint64_t)cle_teb_globale * 8 >= MIROIR_TAILLE) fatal( "cle TEB hors du miroir TSD", cle_teb_globale, 0, 0 );
+         if (!m)
+         {   /* miroir du fil : recycle d'un fil fini, sinon pris dans la zone ; garde quand le vCPU est rendu */
+-            pthread_mutex_lock( &ilot_mutex );
++            ilot_verrouiller( &ancien );
+             if (nb_miroirs_libres) m = miroirs_libres[--nb_miroirs_libres];
+             else if (zone_miroirs_pris + MIROIR_TAILLE <= ZONE_MIROIRS_FIN) { m = (uint64_t *)(zone + zone_miroirs_pris); zone_miroirs_pris += MIROIR_TAILLE; }
+-            pthread_mutex_unlock( &ilot_mutex );
++            ilot_deverrouiller( &ancien );
+             if (!m) fatal( "miroirs TSD epuises", 0, 0, 0 );
+             memset( m, 0, MIROIR_TAILLE );
+             fil.hote->miroir = m;
+@@ -2836,7 +2878,7 @@
+         m[cle_teb_globale] = (uint64_t)pthread_getspecific( cle_teb_globale );
+         if (!m[cle_teb_globale]) fatal( "TEB absent du TSD du fil", cle_teb_globale, 0, 0 );
+         /* horloge privee pour RtlQueryPerformanceCounter (ntdll PE) : nulle sur l'hote, donc appel systeme ailleurs */
+-        if (getenv( "CIDRE_ILOT_HORLOGE" ) == NULL || atoi( getenv( "CIDRE_ILOT_HORLOGE" ) ))
++        if (horloge_privee)   /* 0462 : plus de getenv ici */
+             *(volatile uint64_t *)(m[cle_teb_globale] + TEB_HORLOGE) = (uint64_t)horloge();
+         hv_vcpu_set_sys_reg( fil.v, HV_SYS_REG_TPIDRRO_EL0, (uint64_t)m );
+     }
+@@ -2932,25 +2974,31 @@
+ static void rendre_vcpu( int depuis_appel_hote )
+ {
+     __uint128_t q[32]; uint64_t fpcr = 0, fpsr = 0; hv_return_t rc;
++    sigset_t ancien;   /* 0462 */
+     if (!fil.pret) return;
+     if (depuis_appel_hote)
+     {
+         for (int i = 0; i < 32; i++) { hv_simd_fp_uchar16_t x; hv_vcpu_get_simd_fp_reg( fil.v, HV_SIMD_FP_REG_Q0 + i, &x ); memcpy( &q[i], &x, 16 ); }
+         hv_vcpu_get_reg( fil.v, HV_REG_FPCR, &fpcr ); hv_vcpu_get_reg( fil.v, HV_REG_FPSR, &fpsr );
+     }
+-    if ((rc = hv_vcpu_destroy( fil.v )))
++    pthread_sigmask( SIG_BLOCK, &server_block_set, &ancien );   /* 0462 : verrou interne de HVF (voir creer_vcpu) */
++    rc = hv_vcpu_destroy( fil.v );
++    pthread_sigmask( SIG_SETMASK, &ancien, NULL );
++    if (rc)
+     {   /* refuse : le vCPU reste vivant et au fil, qui le garde (rien n'est retire du compte) */
+         if (__atomic_fetch_add( &c_destroy_refuses, 1, __ATOMIC_RELAXED ) < 10)
+             fprintf( stderr, "[CIDRE_ILOT] rendre_vcpu : hv_vcpu_destroy refuse 0x%x (fil %04x) : le fil garde son vCPU\n", rc, tid_courant() );
+         return;
+     }
++    /* 0462 : le vCPU n'est plus au fil des sa destruction ; un signal livre ici (wait_suspend -> server_select ->
++     * ilot_avant_attente) ne doit pas le detruire une 2e fois, ni ilot_demander_suspension le faire sortir */
++    fil.pret = 0; fil.sortie_ok = 0;
+     if (depuis_appel_hote) ilot_sauver_fp_cadre( q, fpcr, fpsr );
+-    pthread_mutex_lock( &ilot_mutex );
++    ilot_verrouiller( &ancien );
+     registre_retirer( fil.hote );
+     fil.hote->vivant = 0;
+     c_rendus++;
+-    pthread_mutex_unlock( &ilot_mutex );
+-    fil.pret = 0; fil.sortie_ok = 0;
++    ilot_deverrouiller( &ancien );
+ }
+ 
+ /* server_select, futex_wait : un fil qui va se bloquer dans un appel hote rend son vCPU s'il y a pression, ou des que
+@@ -2971,9 +3019,8 @@
+     {
+         uint32_t seuil = max_vcpus - max_vcpus / 4;
+         if (seuil < 1) seuil = 1;
+-        pthread_mutex_lock( &ilot_mutex );
+-        rendre = (uint32_t)nb_vcpus >= seuil;
+-        pthread_mutex_unlock( &ilot_mutex );
++        /* 0462 : lecture seule d'un compte, heuristique : sans verrou (chemin de chaque attente) */
++        rendre = (uint32_t)__atomic_load_n( &nb_vcpus, __ATOMIC_ACQUIRE ) >= seuil;
+         if (rendre) __atomic_fetch_add( &c_rendus_seuil, 1, __ATOMIC_RELAXED );
+     }
+     if (rendre) rendre_vcpu( 1 );
+@@ -2984,10 +3031,11 @@
+ static void detruire_fil( void *p )
+ {
+     struct fil_hote *h = p;
++    sigset_t ancien;   /* 0462 (local : pas de __thread ici) */
+     /* destructeur de cle : pas de __thread ici (le stockage TLV peut deja etre rendu), l'indice est dans h */
+     if (h->diag > 0 && h->diag <= NB_DIAG_FILS) { diag_fils[h->diag - 1].mort = 1; __atomic_store_n( &diag_fils[h->diag - 1].blq_t0, 0, __ATOMIC_RELEASE ); }
+     if (xproc_actif) fprintf( stderr, "[ILOT_XPROC] pid %d fil %04x : fin du fil hote\n", getpid(), h->diag > 0 && h->diag <= NB_DIAG_FILS ? diag_fils[h->diag - 1].tid : 0 );
+-    pthread_mutex_lock( &ilot_mutex );
++    ilot_verrouiller( &ancien );
+     if (h->vivant)
+     {
+         hv_return_t rc = hv_vcpu_destroy( h->v );
+@@ -3003,7 +3051,7 @@
+         }
+     }
+     if (h->miroir && nb_miroirs_libres < 256) miroirs_libres[nb_miroirs_libres++] = h->miroir;
+-    pthread_mutex_unlock( &ilot_mutex );
++    ilot_deverrouiller( &ancien );
+     free( h );
+ }
+ 
+@@ -3178,6 +3226,7 @@
+             if (t0 < __atomic_load_n( &t_ech_demande, __ATOMIC_ACQUIRE ))
+             {
+                 extern int ilot_vue_base( const void *addr, uint64_t *base, uint64_t *taille, int *image );
++    extern int ilot_vue_base_essai( const void *addr, uint64_t *base, uint64_t *taille, int *image );   /* 0462 */
+                 uint64_t pc, base = 0, taille = 0; int image = 0; struct diag_fil *d = diag_fil();
+                 hv_vcpu_get_reg( v, HV_REG_PC, &pc );
+                 noter_pc( pc );
+@@ -3224,10 +3273,11 @@
+             }
+             if ((ec1 == 0x21 || ec1 == 0x25) && fsc >= 4 && fsc <= 7)
+             {
+-                pthread_mutex_lock( &ilot_mutex );
++                sigset_t ancien;   /* 0462 */
++                ilot_verrouiller( &ancien );
+                 deja = ipa_de( far ) != 0;   /* deja servie : entree L3 invalide, AV (sinon servir_gio rebouclerait) */
+                 if (!deja) ok = servir_gio( far );
+-                pthread_mutex_unlock( &ilot_mutex );
++                ilot_deverrouiller( &ancien );
+             }
+             if (!ok && (ec1 == 0x21 || ec1 == 0x25) && ((fsc & 0x3c) == 0x0c || deja))
+             {   /* faute de permission du premier etage (ecriture sur le miroir KUSER, en lecture seule ; sous-page de
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -9491,6 +9491,25 @@
+     return view != NULL;
+ }
+ 
++/* 0462 : ilot_vue_base sans attente, pour les fils de journal de l'ilot (decrire_pc : bloques_fil, chrono_fil) : -1 si
++ * virtual_mutex est pris (un journal ne doit jamais attendre le verrou des vues ; pendant un gel, il doit encore parler) */
++int ilot_vue_base_essai( const void *addr, UINT64 *base, UINT64 *taille, int *image )
++{
++    struct file_view *view;
++    sigset_t sigset;
++    pthread_sigmask( SIG_BLOCK, &server_block_set, &sigset );
++    if (pthread_mutex_trylock( &virtual_mutex ))
++    {
++        pthread_sigmask( SIG_SETMASK, &sigset, NULL );
++        return -1;
++    }
++    view = find_view( addr, 0 );
++    if (view) { *base = (UINT_PTR)view->base; *taille = view->size; *image = (view->protect & SEC_IMAGE) != 0; }
++    pthread_mutex_unlock( &virtual_mutex );
++    pthread_sigmask( SIG_SETMASK, &sigset, NULL );
++    return view != NULL;
++}
++
+ /* Cidre, ilot (pile a la sortie du processus) : addr est-elle dans une page executable d'une vue ? base de la vue,
+  * image ou non. Prend virtual_mutex. */
+ int ilot_pc_executable( const void *addr, UINT64 *base, int *image )

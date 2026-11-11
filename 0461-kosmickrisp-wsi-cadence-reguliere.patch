@@ -1,0 +1,98 @@
+Generated-by: LLM
+
+KosmicKrisp WSI : cadence reguliere sur option (CIDRE_WSI_CADENCE=<Hz>)
+
+Chaque image reste affichee au moins 1/Hz s (-[MTLDrawable presentAfterMinimumDuration:]) : a 120 Hz,
+30 = pas regulier de 4 periodes (33,3 ms) tant que l'image est prete a temps, 40 = 3 periodes ; supprime
+l'alternance 25/33/42/50 ms d'un jeu qui tourne entre deux pas. Present simple seulement (pas MetalFX).
+Coupe par defaut (variable absente ou 0).
+Reprise de 0461 (~/Dev/cidre-acoups) SANS sa partie instrumentation : l'histogramme des intervalles
+d'affichage vivait dans les lignes [CIDRE_FEN] (CIDRE_FENETRE, journal de mesure des parties D4), qui ne
+sont pas reprises dans la serie.
+
+diff --git a/src/vulkan/wsi/wsi_common_metal.c b/src/vulkan/wsi/wsi_common_metal.c
+--- a/src/vulkan/wsi/wsi_common_metal.c
++++ b/src/vulkan/wsi/wsi_common_metal.c
+@@ -752,6 +752,30 @@
+    return enabled;
+ }
+ 
++/* Cidre 0461 (CIDRE_WSI_CADENCE=<Hz>, defaut 0 = coupe) : chaque image reste
++ * affichee au moins 1/Hz s (presentAfterMinimumDuration). A 120 Hz, 30 = pas
++ * regulier de 4 periodes (33,3 ms) tant que l'image est prete a temps, 40 = 3
++ * periodes (25 ms) ; supprime l'alternance 25/33/42/50 ms d'un jeu qui tourne
++ * entre deux pas. La duree demandee est 1/Hz - 1 ms : Metal arrondit a la
++ * periode suivante, une duree exacte de 4 periodes en donnerait parfois 5.
++ * Present simple seulement (pas MetalFX). Lu une fois. */
++static double
++wsi_metal_cadence_s(void)
++{
++   static double s = -1.0;
++   if (s < 0.0) {
++      const char *v = getenv("CIDRE_WSI_CADENCE");
++      double hz = v ? atof(v) : 0.0;
++      s = hz >= 1.0 && hz <= 240.0 ? 1.0 / hz - 0.001 : 0.0;
++      if (s < 0.0)
++         s = 0.0;
++      if (s > 0.0)
++         fprintf(stderr, "[CIDRE_WSI] cadence reguliere : %.1f Hz (duree minimale %.2f ms par image)\n",
++                 hz, s * 1000.0);
++   }
++   return s;
++}
++
+ static bool
+ wsi_metal_stats_enabled(void)
+ {
+@@ -1042,8 +1066,9 @@
+       wsi_metal_layer_present_with_command_buffer(chain->present_context,
+                                                   &image->drawable, mtl4_queue);
+    } else {
+-      /* Blit is already recorded, just present now */
+-      wsi_metal_layer_present(&image->drawable);
++      /* Blit is already recorded, just present now (Cidre 0461 : duree
++       * minimale par image si CIDRE_WSI_CADENCE) */
++      wsi_metal_layer_present_min(&image->drawable, wsi_metal_cadence_s());
+    }
+ 
+    if (wsi_metal_stats_enabled())
+diff --git a/src/vulkan/wsi/wsi_common_metal_layer.h b/src/vulkan/wsi/wsi_common_metal_layer.h
+--- a/src/vulkan/wsi/wsi_common_metal_layer.h
++++ b/src/vulkan/wsi/wsi_common_metal_layer.h
+@@ -95,6 +95,12 @@
+ void
+ wsi_metal_layer_present(CAMetalDrawable **drawable_ptr);
+ 
++/* Cidre 0461 (CIDRE_WSI_CADENCE) : comme wsi_metal_layer_present, mais l'image
++ * precedente reste affichee au moins min_duration secondes
++ * (-[MTLDrawable presentAfterMinimumDuration:]) ; 0 = present simple. */
++void
++wsi_metal_layer_present_min(CAMetalDrawable **drawable_ptr, double min_duration);
++
+ /* Presents through a Metal 3 MTLCommandBuffer (presentDrawable: + commit)
+  * instead of -[CAMetalDrawable present]. This is the only presentation path
+  * in-process overlays hook (Steam's gameoverlayrenderer swizzles
+diff --git a/src/vulkan/wsi/wsi_common_metal_layer.m b/src/vulkan/wsi/wsi_common_metal_layer.m
+--- a/src/vulkan/wsi/wsi_common_metal_layer.m
++++ b/src/vulkan/wsi/wsi_common_metal_layer.m
+@@ -427,6 +427,20 @@
+    @autoreleasepool {
+       id<CAMetalDrawable> drawable = [(id<CAMetalDrawable>)*drawable_ptr autorelease];
+       [drawable present];
++
++      *drawable_ptr = nil;
++   }
++}
++
++void
++wsi_metal_layer_present_min(CAMetalDrawable **drawable_ptr, double min_duration)
++{
++   @autoreleasepool {
++      id<CAMetalDrawable> drawable = [(id<CAMetalDrawable>)*drawable_ptr autorelease];
++      if (min_duration > 0.0)
++         [drawable presentAfterMinimumDuration:min_duration];
++      else
++         [drawable present];
+ 
+       *drawable_ptr = nil;
+    }
