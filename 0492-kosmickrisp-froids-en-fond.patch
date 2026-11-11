@@ -7,6 +7,10 @@ desormais en file de fond des leur creation, apres un delai, pour qu'un bind pro
 (~/Dev/cidre-d4-kkcompil, 11/11) : attentes des froids 680 -> 0 ms a 1 s de delai, empreintes identiques.
 Code produit inchange (cle KK_CODEGEN 1-fe23de31 conservee). Chantier : ~/Dev/cidre-d4-kkcompil (RAPPORT-0492.md).
 
+COUPE PAR DEFAUT (12/11, coordination) : en partie D4 du 12/11 00:22, 4 691 froids compiles en fond pour 1 seul pret
+au bind, fils de compilation qui saturent le processeur : 51 sauts > 250 ms par 10 min contre 6,9 avec 0491.
+Actif seulement avec CIDRE_FOND_FROIDS=1.
+
 diff --git a/src/kosmickrisp/bridge/mtl_compiler.h b/src/kosmickrisp/bridge/mtl_compiler.h
 --- a/src/kosmickrisp/bridge/mtl_compiler.h
 +++ b/src/kosmickrisp/bridge/mtl_compiler.h
@@ -72,7 +76,7 @@ diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shad
 +   static int enabled = -1;
 +   if (enabled < 0) {
 +      const char *v = getenv("CIDRE_FOND_FROIDS");
-+      enabled = !(v && v[0] == '0');
++      enabled = v && v[0] == '1';
 +   }
 +   return enabled;
 +}

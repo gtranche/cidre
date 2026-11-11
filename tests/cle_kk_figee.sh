@@ -12,7 +12,9 @@
 #   cle_kk_figee.sh verifier <build>    apres ninja : l'empreinte calculee est-elle celle qui a ete verifiee ?
 #                                       (code 3 et message sinon)
 FIGEE=fe23de315cfc449df36f16d2b4403b2b4a878b55b525ef4a820858646fa9c728
-CALCULEE_VERIFIEE=1fbdc5544a5560ca8529c9ded6961b76643fa32fc4a0f4db3a1a019a64b4f7df
+# 12/11 : 0492 coupe par defaut (CIDRE_FOND_FROIDS=1 pour l'activer) : seul changement des sources hachees depuis
+# kk-0494 (1fbdc554...), une ligne d'ordonnancement de kk_shader.c, sans effet sur le MSL ni le format serialise.
+CALCULEE_VERIFIEE=38af2befa362612a9fbd91e757ed4b4e07c923309a116d1bbbf7c9db29f5646e
 case ${1:-} in
    valeur)
       case ${CIDRE_KK_CODEGEN_FIGE:-$FIGEE} in 0) echo "" ;; *) echo "${CIDRE_KK_CODEGEN_FIGE:-$FIGEE}" ;; esac ;;

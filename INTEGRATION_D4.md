@@ -97,7 +97,7 @@ Tous les arbres partent de la série de main (0410 et 0412 compris).
 | 0464 | le bind prend le travail en file ; `KK_CODEGEN_FIGE` | porté |
 | 0470 | `CIDRE_WSI_ATTENTE_PRESENT=gpu` | porté |
 | 0471-0474 | variantes notées, archive au rejeu, banc, réserve à priorités | porté |
-| 0492, 0494 | froids en fond, relais économe | porté |
+| 0492, 0494 | froids en fond (**coupé par défaut** depuis le 12/11 : `CIDRE_FOND_FROIDS=1` pour l'activer), relais économe | porté |
 
 Le 0434 a été renommé `0434-kosmickrisp-util-…` : la série Mesa ne prend que les fichiers `kosmickrisp-*`.
 
