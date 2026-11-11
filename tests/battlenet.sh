@@ -52,7 +52,7 @@
 # se connecter), puis sa fin : trois releves vides de suite, a 2 s (D2R se
 # relance en un second processus). Le client reste ouvert apres le jeu. Codes :
 # 0 = le jeu a tourne puis est sorti ; 1 = jamais vu ; 2 = jeu sans code de
-# lancement ; 6 = le client s'est ferme avant le jeu. On ne tue jamais un jeu :
+# lancement ; 6 = le client s'est ferme avant le jeu ; 7 = jamais vu, le client demandait une connexion. On ne tue jamais un jeu :
 # seul `arreter --force` (cidre stop) arrete le wineserver pendant une partie.
 # Tout le corps est entre accolades, ferme par `exit` (cf. lancer_depuis_steam.sh).
 {
@@ -244,6 +244,25 @@ sans_demarrage_auto() {
       echo "    battlenet : demarrage automatique du client retire (wineboot l'ouvrait hors du jeu)"
 }
 
+# Ilot TSO (option ilot de la fiche, tests/ilot.sh) : le jeu lit sur le disque des DLL (ntdll.dll, FEX) qui
+# different entre le runtime de l'ilot et celui de Cidre ; le prefixe est aligne sur le runtime qui va servir,
+# wineserver arrete. « Jouer » du client, ouvert seul, part du runtime de Cidre : aligne sur lui.
+# Le client demande-t-il une connexion (identifiants) depuis <debut> ? Son journal le dit : jeton refuse
+# (« Login failed », « Tassadar token rejected ») ou page d'identifiants affichee. Un prefixe clone qui s'est
+# connecte au meme compte fait tourner le jeton : l'original voit alors le sien refuse (manche du 25/10 02:40).
+connexion_demandee() { # <debut, epoch>
+   # (chaque --exec ouvre un court journal « another instance » : on lit tous ceux ecrits depuis <debut>)
+   for cd_f in "$PFX/drive_c/users/"*/AppData/Local/Battle.net/Logs/battle.net-*.log; do
+      [ -f "$cd_f" ] && [ "$(stat -f %m "$cd_f" 2>/dev/null || echo 0)" -ge "$1" ] || continue
+      grep -aq 'Login failed\|token rejected\|browser state changed: LoginCredential' "$cd_f" && return 0
+   done
+   return 1
+}
+aligner_ilot() { # ilot|normal
+   [ -f "$R/tests/ilot.sh" ] || return 0
+   sh "$R/tests/ilot.sh" aligner "$PFX" "$1" || echo "    battlenet : prefixe non aligne pour l'ilot ($1)"
+}
+
 # L'environnement qui passera au jeu (variables de la pile), en empreinte.
 empreinte() {
    env | grep -E '^(FEX_|DXVK_|VKD3D_|MESA_|DXMT_|VK_|WINE|QT_|GST_|DYLD_|PROTON_OUVERT_|CIDRE_|LC_ALL=|LANG=)' \
@@ -382,7 +401,8 @@ case ${1:-} in
          [ $J_ = non ] || echo '{"evenement":"ouvert","deja":true}'
          dire_ "Battle.net est deja ouvert."; exit 0
       fi
-      serveur_vivant || sans_demarrage_auto
+      # (CIDRE_ILOT_ALIGNEMENT=ilot : client ouvert a la main dans le runtime de l'ilot, essais pas a pas)
+      serveur_vivant || { sans_demarrage_auto; aligner_ilot "${CIDRE_ILOT_ALIGNEMENT:-normal}" >&2; }
       WINEPREFIX=$PFX sh "$R/tests/prefixe_a_jour.sh" >&2
       config_lancement >&2
       printf 'pour=client\n' >"$MARQUE"
@@ -434,6 +454,8 @@ case ${1:-} in
          if [ "$(marque pour)" = "$id" ] && [ "$(marque empreinte)" = "$emp" ]; then garde=oui
          else arreter_client "ouvert avec un autre environnement"; fi
       fi
+      # (client ferme ici, sauf s'il est garde : aligne a son ouverture pour ce meme environnement)
+      [ $garde = oui ] || aligner_ilot "${CIDRE_ILOT_ALIGNEMENT:-normal}"
       debut=$(date +%s)
       if [ $garde = oui ]; then
          echo "    battlenet : client deja ouvert pour ce jeu, lancement de $code demande"
@@ -445,15 +467,22 @@ case ${1:-} in
       fi
       # Le jeu. Une demande qui se perd (client encore a la connexion) est
       # refaite deux fois, tant que le jeu n'est pas la.
-      ATT=${CIDRE_BNET_ATTENTE:-900}; relance=150; vu_client=non
+      ATT=${CIDRE_BNET_ATTENTE:-900}; relance=150; vu_client=non; connexion=non
       while :; do
          p=$(jeu_vu "$nexe"); [ -z "$p" ] || break
          t=$(( $(date +%s) - debut ))
+         if [ $connexion = non ] && connexion_demandee "$debut"; then
+            connexion=oui
+            echo "    battlenet : connexion demandee : le client attend tes identifiants (jeton de session refuse ou expire) ; connecte-toi dans sa fenetre, le jeu partira ensuite"
+         fi
          if [ -n "$(du_client)" ]; then vu_client=oui
          elif [ $vu_client = oui ] || [ $t -ge 60 ]; then
             echo "    battlenet : le client s'est ferme avant $nexe (apres $t s)"; exit 6
          fi
-         [ $t -lt "$ATT" ] || { echo "    battlenet : $nexe pas vu apres $ATT s (connexion faite ? jeu a jour ?) ; client laisse ouvert"; exit 1; }
+         if [ $t -ge "$ATT" ]; then
+            if [ $connexion = oui ]; then echo "    battlenet : $nexe pas vu apres $ATT s : connexion demandee et pas faite ; client laisse ouvert"; exit 7; fi
+            echo "    battlenet : $nexe pas vu apres $ATT s (connexion faite ? jeu a jour ?) ; client laisse ouvert"; exit 1
+         fi
          if [ $t -ge $relance ] && [ $relance -le 400 ] && [ $vu_client = oui ]; then
             echo "    battlenet : $nexe pas encore la apres $t s : lancement de $code redemande"
             lancer_client "$J" "--exec=launch $code"; relance=$((relance + 250))
@@ -469,6 +498,8 @@ case ${1:-} in
       echo "    battlenet : $nexe sorti apres $(( $(date +%s) - debut )) s ; client laisse ouvert (cidre battlenet arreter)"
       exit 0 ;;
    creer) creer ;;
+   # (le client demande-t-il une connexion depuis <epoch> ? essais)
+   connexion) if connexion_demandee "${2:-0}"; then echo oui; else echo non; fi ;;
    # (la locale Blizzard de la langue du Mac : essais)
    locale) locale_blizzard ;;
    installer)

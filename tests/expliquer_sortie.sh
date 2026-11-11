@@ -88,6 +88,18 @@ if a "import_dll" && a " not found"; then
    exit 0
 fi
 
+# Battle.net : le client n'a pas lance le jeu (avant les signatures de Wine : le journal du client porte des
+# « failed » de son navigateur qui ne disent rien du prefixe)
+if a "battlenet : connexion demandee"; then
+   dire "le client Battle.net attend que tu te connectes : il n'a pas lance le jeu" \
+        "\`cidre battlenet ouvrir\`, connecte-toi (coche « Rester connecte »), puis relance le jeu"
+   exit 0
+fi
+if a "battlenet : " && a " pas vu apres "; then
+   dire "le client Battle.net n'a pas lance le jeu (connexion, mise a jour ou fenetre du client en attente)" \
+        "\`cidre battlenet ouvrir\` pour voir ce que le client attend, puis relance le jeu"
+   exit 0
+fi
 if a "Could not load wine-gecko" || a "could not load kernel32.dll" || a "wine: failed to initialize" || { a "wineboot" && a "failed"; }; then
    dire "le prefixe Wine (le faux Windows du jeu) est incomplet ou abime" \
         "relancer \`cidre setup\` ; si cela ne suffit pas, \`cidre doctor\`"
