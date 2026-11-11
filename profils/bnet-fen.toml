@@ -31,8 +31,24 @@ fex_multiblock = false
 # en 29 min. Dans l'ilot (sous-pages exactes, sans talons) : 49 a 60 img/s (M1, 24/10, bnet_d4_ilot.sh).
 # (dans l'ilot, le multibloc reste celui de FEX : fex_multiblock = false ne vaut que hors ilot)
 ilot = true
+# Reglages des parties D4 du 08-11/11 sur le M1 (~/Dev/cidre-d4-combo/scripts/partie_combo.sh, pile 0463/0493/0494),
+# sans leur instrumentation (CIDRE_FENETRE, GPU_STATS, guetteur, journaux de mesure) ; detail dans INTEGRATION_D4.md.
+# Code de KosmicKrisp : horodatages CPU (0272), passes sans attachement bornees (0270), CBV sans bornes (0271),
+# fusion a la soumission (0263). MINMAX_ZERO_ENTIER et TEXTURES_NULLES_SANS_BRANCHE sont deja ceux de tout jeu dx12.
+code_kk = "horodatages_cpu sans_attachement_borne cbv_sans_bornes fusion_soumission"
+# Compilation des nuanceurs : D4 cree ~18 000 PSO au chargement et n'en lie que quelques centaines ; Metal compile
+# sur 8 fils (0237), cache disque des nuanceurs (0430), frontal differe (0431), pipelines paresseux (0433), file de
+# fond avec liste chaude (0441), base de pipelines pour le rejeu (0444), cache de fonctions Metal (0451), variantes
+# notees (0471-0474). Caches sous le cache de pipelines du jeu.
+compile_differee = 8
+compilation_kk = "cache_disque frontal_differe pipeline_paresseux fond base_pipelines cache_fonctions variantes"
+# vkWaitForPresentKHR rend a la fin du GPU (0470) : sans lui, D4 calait a 39,8 img/s, GPU 81 %.
+attente_present = "gpu"
+# FEX : cache disque de blocs de Cidre (0366-0493) et SMC en ligne valide par CRC apres 64 ecritures (0370).
+fex_disque = true
+fex_smc_chaud = 64
 
 [compat]
 etat = "non-teste"
-date = "2026-10-24"
-notes = "Pas encore lance par Cidre : les deux parties du 24/10 sont parties de « Jouer » du client Battle.net, sans la fiche. 15:07 : vkd3d-proton (KnownDLLs de D2R), « Created Dx12 device », fenetre 1728x1117, puis violation d'acces dans diablo_iv_loader.dll. 15:47 : d3d12 de Wine, D3D12CreateDevice E_NOINTERFACE, « Echec de l'initialisation des systemes graphiques ». Tourne chez l'utilisateur sous Whisky/GPTK (D3DMetal, exclu ici). Saison 14 (3.1.0) : exige l'export FindNextFileNameW, present dans Wine 11.18."
+date = "2026-11-11"
+notes = "Jamais lance par `cidre play` : la fiche reprend le reglage des parties de developpement du 08 au 11/11 (partie_combo.sh, M1 Max : monde 28-42 img/s, GPU-bound, sauts > 250 ms 6,9 par 10 min ; joueur : « bien jouable »), a valider par cidre play (INTEGRATION_D4.md). Avant : les deux parties du 24/10 sont parties de « Jouer » du client Battle.net, sans la fiche. 15:07 : vkd3d-proton (KnownDLLs de D2R), « Created Dx12 device », fenetre 1728x1117, puis violation d'acces dans diablo_iv_loader.dll. 15:47 : d3d12 de Wine, D3D12CreateDevice E_NOINTERFACE, « Echec de l'initialisation des systemes graphiques ». Tourne chez l'utilisateur sous Whisky/GPTK (D3DMetal, exclu ici). Saison 14 (3.1.0) : exige l'export FindNextFileNameW, present dans Wine 11.18."

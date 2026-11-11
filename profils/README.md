@@ -217,6 +217,13 @@ lanceur les pose (variables `CIDRE_*`, dites au journal sur la ligne `kk`) :
 | `calcul_avant_passe` | `false` | `CIDRE_CALCUL_AVANT_PASSE=1` (0242) : calcul interne des dessins hissé avant la passe de rendu (ELDEN RING M1 +18 %) |
 | `compile_differee` | `false` | `CIDRE_COMPILE_DIFFEREE=1` (0237) : compilation Metal sur une file de fils |
 | `code_kk` | `""` | options de génération de code, noms séparés par des espaces : `lectures_cachees`, `w10_sans_court_circuit`, `images_nulles_sans_branche`, `ssbo_sans_bornes`, `ssbo_nul_puits`, `contraction_malgre_precis`, `reductions_simd`, `minmax_zero_entier`, `textures_nulles_sans_branche` |
+| `compile_differee` (nombre) | — | `CIDRE_COMPILE_DIFFEREE=<n>` : n fils de compilation Metal (Diablo IV : 8) |
+| `compilation_kk` | `""` | pile de compilation des nuanceurs de Diablo IV, noms séparés par des espaces : `cache_disque` (0430), `frontal_differe` (0431), `sans_attente` (0432), `pipeline_paresseux` (0433), `fond` (0441, liste chaude dans le cache du jeu), `base_pipelines` (0444), `cache_fonctions` (0451), `variantes` (0471-0474 ; sans ce mot le lanceur les coupe, `CIDRE_VARIANTES=0`) |
+| `attente_present` | `""` | `"gpu"` : `vkWaitForPresentKHR` rend à la fin du GPU (0470, `CIDRE_WSI_ATTENTE_PRESENT=gpu`) |
+| `cadence` | `0` | `CIDRE_WSI_CADENCE=<Hz>` : chaque image affichée au moins 1/Hz s (0461) |
+
+Côté FEX : `fex_disque = true` (cache disque de blocs de Cidre, 0366-0493, `CIDRE_FEX_DISQUE=1`) et
+`fex_smc_chaud = N` (0370, `CIDRE_SMC_EN_LIGNE_CHAUD`). Voir `INTEGRATION_D4.md` et la fiche `bnet-fen`.
 
 Les options de code et `calcul_avant_passe` se mesurent jeu par jeu
 (`ssbo_sans_bornes` seul fait fauter Unreal 5 au démarrage ; avec
@@ -283,6 +290,7 @@ lanceur = "steam"                  # steam, epic, gog, battlenet (id bnet-<code>
 # langue, journal_detaille, maj_avant_lancement, tso, tso_sans, tso_msvc, sync_local, vsync, hud, overlay, async, narrow_barriers,
 # garde_index, fils_compilation, eac_untrusted, luajit, plein_ecran, mode_emule, gamemode,
 # dx12, d3d11, d3d9, metalfx, dlss, generation_images, clavier, deck, fex_cache_disque, fex_x87_reduit, fex_maxinst, fex_multiblock, ilot,
+# fex_disque, fex_smc_chaud, compilation_kk, attente_present, cadence,
 # arguments, exe_sans_anticheat, dll_overrides, windows_version, knowndlls, sortie_normale, sortie_normale_apres, dependances
 # (dependances : NON appliquee, aucun installeur ; le lanceur la nomme au journal).
 # On n'y met que ce qui diffère de [defaut].

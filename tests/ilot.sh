@@ -17,13 +17,17 @@
 #                                      « export VAR='valeur' » (CIDRE_ILOT_JOURNAL=1 : chronologie et fils bloques)
 #   ilot.sh aligner <prefixe> ilot|normal
 #                                      met dans system32 du prefixe les DLL que le jeu lit sur le disque et qui
-#                                      different d'un runtime a l'autre (ntdll.dll, xtajit64.dll, xtajit.dll), celles
-#                                      du runtime de l'ilot ou celles du runtime de Cidre ; refuse (code 4) si le
-#                                      wineserver du prefixe tourne
+#                                      different d'un runtime a l'autre (les cinq DLL ci-dessous, et xtajit64.dll),
+#                                      celles du runtime de l'ilot ou celles du runtime de Cidre ; refuse (code 4) si
+#                                      le wineserver du prefixe tourne
 #
-# Les fichiers de l'ilot (ceux qui different du runtime de Cidre) : lib/wine/aarch64-unix/ntdll.so (ilot, garde),
-# win32u.so (type de memoire Vulkan virtuel), lib/wine/aarch64-windows/ntdll.dll, xtajit64.dll, xtajit.dll. Le reste
-# est le runtime de Cidre lui-meme, clone : une mise a jour de Cidre refait le runtime de l'ilot au lancement suivant.
+# Depuis la serie D4 (wine11 0290-0294, 0301, 0355, 0462, 0463 ; FEX 0292-0493 ; INTEGRATION_D4.md), le runtime de
+# Cidre porte lui-meme l'ilot : ntdll.so (ilot.c, garde des regions, relie a Hypervisor.framework), win32u.so
+# (memoire Vulkan de l'hote en memoire Windows) et xtajit64.dll (FEX de l'ilot), tout inactif sans CIDRE_ILOT=1.
+# Les fichiers propres au runtime de l'ilot sont les cinq DLL PE reconstruites sans ldp q (un ldp q coute 11 a 14
+# fois plus sous le TSO materiel ; thunks d'entree recousus, 0309) : ntdll, kernelbase, kernel32, ucrtbase, msvcrt
+# (tests/construire_pile_d4.sh pe puis ilot). Le reste est le runtime de Cidre lui-meme, clone, chargeurs re-signes
+# avec le droit hyperviseur : une mise a jour de Cidre refait le runtime de l'ilot au lancement suivant.
 # Corps entre accolades, ferme par `exit` : lu en entier avant d'etre execute.
 {
 set -u
@@ -33,8 +37,9 @@ REL=${CIDRE_ILOT_REL:-$R/wine/wine11-arm64}
 SRC=${CIDRE_ILOT_SOURCE:-$R/wine/ilot}
 RT=${CIDRE_ILOT_RUNTIME:-$CIDRE_DIR/ilot/wine11-arm64}
 PLIST=$R/outils/hyperviseur.plist
-FICHIERS="lib/wine/aarch64-unix/ntdll.so lib/wine/aarch64-unix/win32u.so lib/wine/aarch64-windows/ntdll.dll lib/wine/aarch64-windows/xtajit64.dll lib/wine/aarch64-windows/xtajit.dll"
-DLL_DISQUE="ntdll.dll xtajit64.dll xtajit.dll"
+FICHIERS="lib/wine/aarch64-windows/ntdll.dll lib/wine/aarch64-windows/kernelbase.dll lib/wine/aarch64-windows/kernel32.dll lib/wine/aarch64-windows/ucrtbase.dll lib/wine/aarch64-windows/msvcrt.dll"
+# (xtajit.dll, le FEX des invites 32 bits du client Battle.net, reste celui du runtime de Cidre : jamais aligne)
+DLL_DISQUE="ntdll.dll kernelbase.dll kernel32.dll ucrtbase.dll msvcrt.dll xtajit64.dll"
 
 # l'empreinte qui oblige a refaire le runtime : le runtime de Cidre (ses .so, son chargeur, ses DLL) et le manifeste
 empreinte() {
@@ -50,7 +55,7 @@ case ${1:-} in
    chemin) printf '%s\n' "$RT" ;;
    importer)
       d=${2:?usage: ilot.sh importer <runtime de dev de l ilot>}
-      grep -aq 'garde controlee' "$d/lib/wine/aarch64-unix/ntdll.so" 2>/dev/null || { echo "$d : ntdll.so sans la garde de l'ilot" >&2; exit 2; }
+      grep -aq 'garde controlee' "$REL/lib/wine/aarch64-unix/ntdll.so" 2>/dev/null || { echo "$REL : ntdll.so sans la garde de l'ilot (serie 0290 absente)" >&2; exit 2; }
       for f in $FICHIERS; do
          [ -f "$d/$f" ] || { echo "$d : $f absent" >&2; exit 2; }
          mkdir -p "$SRC/$(dirname "$f")"
@@ -97,10 +102,17 @@ case ${1:-} in
       # partagees de fichier en copie reecrite, sous-pages exactes (defaut de l'ilot), sommeil de wait_on_address
       # par tranches (defaut de l'ilot, parade aux reveils perdus). La compilation Metal hors verrou de KosmicKrisp
       # est deja le defaut du lanceur pour tous les jeux (CIDRE_COMPILE_HORS_VERROU).
+      # Depuis les parties D4 (partie_combo.sh, 11/11) : appels entre processus de l'ilot (CIDRE_ILOT_XPROC=1),
+      # pages validees rearmees (FEX 0360, CIDRE_SMC_REARMER=1), extensions de l'hote donnees a FEX limitees a crypto
+      # comme dans ces parties (flagm/flagm2 jamais validees dans un vCPU ; CIDRE_ILOT_FEX_HOSTFEATURES les remet).
+      # Chaque valeur deja posee dans l'environnement garde la main.
       for v in "CIDRE_ILOT=1" "CIDRE_ILOT_EXE=$x" "CIDRE_ILOT_UNIQUE=1" "CIDRE_ILOT_VUES_PARTAGEES=copie" "CIDRE_SMC_ARME=1" \
-               "CIDRE_SOUS_PAGES_EN_LIGNE=0" "CIDRE_DIAG_SOUS_PAGES=0"; do
-         printf "export %s='%s'\n" "${v%%=*}" "${v#*=}"
+               "CIDRE_SOUS_PAGES_EN_LIGNE=0" "CIDRE_DIAG_SOUS_PAGES=0" "CIDRE_ILOT_XPROC=1" "CIDRE_SMC_REARMER=1"; do
+         n=${v%%=*}
+         case $n in CIDRE_ILOT|CIDRE_ILOT_EXE) val=${v#*=} ;; *) eval "val=\${$n:-${v#*=}}" ;; esac
+         printf "export %s='%s'\n" "$n" "$val"
       done
+      printf "export FEX_HOSTFEATURES='%s'\n" "${CIDRE_ILOT_FEX_HOSTFEATURES:-enablecrypto}"
       # diagnostic seulement (journal detaille) : chronologie par 100 ms et fils bloques plus de 5 s
       if [ "${CIDRE_ILOT_JOURNAL:-0}" = 1 ]; then printf "export CIDRE_ILOT_CHRONO='1'\nexport CIDRE_ILOT_BLOQUES='5'\n"; fi ;;
    aligner)

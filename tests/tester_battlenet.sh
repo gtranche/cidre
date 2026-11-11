@@ -397,7 +397,11 @@ contient "env : un seul processus" "export CIDRE_ILOT_UNIQUE='1'" "$e"
 contient "env : jumelles armees" "export CIDRE_SMC_ARME='1'" "$e"
 contient "env : vues partagees en copie" "export CIDRE_ILOT_VUES_PARTAGEES='copie'" "$e"
 absent "env : pas de chronologie en production" "CIDRE_ILOT_CHRONO" "$e"
-absent "env : pas de XPROC en production" "CIDRE_ILOT_XPROC" "$e"
+contient "env : appels entre processus (parties D4)" "export CIDRE_ILOT_XPROC='1'" "$e"
+contient "env : pages validees rearmees (0360)" "export CIDRE_SMC_REARMER='1'" "$e"
+contient "env : extensions FEX des parties D4" "export FEX_HOSTFEATURES='enablecrypto'" "$e"
+contient "env : valeur de l'environnement gardee" "export CIDRE_SMC_REARMER='0'" "$(CIDRE_SMC_REARMER=0 sh "$IL" env D2R.exe)"
+absent "env : pas de fils bloques en production" "CIDRE_ILOT_BLOQUES" "$e"
 contient "env : chronologie au journal detaille" "CIDRE_ILOT_CHRONO='1'" "$(CIDRE_ILOT_JOURNAL=1 sh "$IL" env D2R.exe)"
 sh "$IL" env "a'b" >/dev/null 2>&1; verif "env : nom avec apostrophe refuse" 2 "$?"
 # runtimes factices : celui de Cidre et un runtime de dev de l'ilot ; chargeurs Mach-O (copies de /bin/echo)
@@ -406,19 +410,22 @@ for d in "$FR" "$FD"; do
    mkdir -p "$d/bin" "$d/lib/wine/aarch64-unix" "$d/lib/wine/aarch64-windows"
    cp /bin/echo "$d/bin/wine"; cp /bin/echo "$d/lib/wine/aarch64-unix/wine"
 done
-printf 'ntdll de cidre' >"$FR/lib/wine/aarch64-unix/ntdll.so"; printf 'win32u de cidre' >"$FR/lib/wine/aarch64-unix/win32u.so"
+# (serie D4 : le runtime de Cidre porte l'ilot dans ntdll.so, win32u.so et xtajit64.dll ; les artefacts de l'ilot
+# sont les cinq DLL PE sans ldp q)
+PE5="ntdll.dll kernelbase.dll kernel32.dll ucrtbase.dll msvcrt.dll"
+printf 'ntdll de cidre garde controlee' >"$FR/lib/wine/aarch64-unix/ntdll.so"; printf 'win32u de cidre' >"$FR/lib/wine/aarch64-unix/win32u.so"
 printf 'winemac' >"$FR/lib/wine/aarch64-unix/winemac.so"
-for f in ntdll.dll xtajit64.dll xtajit.dll user32.dll; do printf "$f de cidre" >"$FR/lib/wine/aarch64-windows/$f"; done
-printf 'ntdll ilot garde controlee' >"$FD/lib/wine/aarch64-unix/ntdll.so"; printf 'win32u ilot' >"$FD/lib/wine/aarch64-unix/win32u.so"
-for f in ntdll.dll xtajit64.dll xtajit.dll; do printf "$f de l'ilot" >"$FD/lib/wine/aarch64-windows/$f"; done
+for f in $PE5 xtajit64.dll xtajit.dll user32.dll; do printf "$f de cidre" >"$FR/lib/wine/aarch64-windows/$f"; done
+for f in $PE5; do printf "$f de l'ilot" >"$FD/lib/wine/aarch64-windows/$f"; done
 export CIDRE_ILOT_REL="$FR" CIDRE_ILOT_SOURCE="$T/ilot-src" CIDRE_ILOT_RUNTIME="$T/cidre/ilot/wine11-arm64"
 r=$(sh "$IL" disponible); verif "disponible : runtime absent" "non : runtime de l'ilot absent ($CIDRE_ILOT_RUNTIME)" "$r"
 r=$(sh "$IL" preparer 2>&1); verif "preparer : sans artefacts, code 3" "ilot : artefacts absents ($T/ilot-src)" "$r"
-printf 'pas de garde' >"$T/sans-garde.so"; mkdir -p "$T/dev-sans/lib/wine/aarch64-unix"; cp "$T/sans-garde.so" "$T/dev-sans/lib/wine/aarch64-unix/ntdll.so"
-sh "$IL" importer "$T/dev-sans" >/dev/null 2>&1; verif "importer : ntdll sans garde refuse" 2 "$?"
+mkdir -p "$T/rel-sans/lib/wine/aarch64-unix"; printf 'pas de garde' >"$T/rel-sans/lib/wine/aarch64-unix/ntdll.so"
+CIDRE_ILOT_REL="$T/rel-sans" sh "$IL" importer "$FD" >/dev/null 2>&1; verif "importer : runtime de Cidre sans l'ilot refuse" 2 "$?"
 sh "$IL" importer "$FD" >/dev/null 2>&1; verif "importer : manifeste" 5 "$(wc -l <"$T/ilot-src/ilot.manifeste" | tr -d ' ')"
 r=$(sh "$IL" preparer 2>&1); contient "preparer : runtime fait" "runtime prepare" "$r"
-verif "runtime : ntdll.so de l'ilot" "ntdll ilot garde controlee" "$(cat "$CIDRE_ILOT_RUNTIME/lib/wine/aarch64-unix/ntdll.so")"
+verif "runtime : ntdll.so de Cidre (ilot dans la serie)" "ntdll de cidre garde controlee" "$(cat "$CIDRE_ILOT_RUNTIME/lib/wine/aarch64-unix/ntdll.so")"
+verif "runtime : DLL PE de l'ilot" "ntdll.dll de l'ilot msvcrt.dll de l'ilot" "$(cat "$CIDRE_ILOT_RUNTIME/lib/wine/aarch64-windows/ntdll.dll") $(cat "$CIDRE_ILOT_RUNTIME/lib/wine/aarch64-windows/msvcrt.dll")"
 verif "runtime : le reste vient de Cidre" "winemac user32.dll de cidre" "$(cat "$CIDRE_ILOT_RUNTIME/lib/wine/aarch64-unix/winemac.so") $(cat "$CIDRE_ILOT_RUNTIME/lib/wine/aarch64-windows/user32.dll")"
 codesign -d --entitlements - "$CIDRE_ILOT_RUNTIME/lib/wine/aarch64-unix/wine" 2>/dev/null | grep -q com.apple.security.hypervisor \
    && ok "runtime : chargeur signe avec le droit hyperviseur" || echec "runtime : chargeur sans le droit hyperviseur"
@@ -427,19 +434,21 @@ codesign -d --entitlements - "$FR/lib/wine/aarch64-unix/wine" 2>/dev/null | grep
 verif "preparer : deja a jour" "ilot : runtime a jour ($CIDRE_ILOT_RUNTIME)" "$(sh "$IL" preparer 2>&1)"
 if [ "$(sysctl -n kern.hv_support 2>/dev/null)" = 1 ]; then verif "disponible : oui" oui "$(sh "$IL" disponible)"
 else contient "disponible : sans hyperviseur" "hyperviseur indisponible" "$(sh "$IL" disponible)"; fi
-printf 'ntdll de cidre, mise a jour' >"$FR/lib/wine/aarch64-unix/ntdll.so"
+printf 'ntdll de cidre garde controlee, mise a jour' >"$FR/lib/wine/aarch64-unix/ntdll.so"
 contient "runtime de Cidre change : perime" "perime" "$(sh "$IL" disponible)"
 contient "runtime de Cidre change : refait" "runtime prepare" "$(sh "$IL" preparer 2>&1)"
-verif "runtime refait : ntdll.so de l'ilot garde" "ntdll ilot garde controlee" "$(cat "$CIDRE_ILOT_RUNTIME/lib/wine/aarch64-unix/ntdll.so")"
-# prefixe aligne : DLL lues sur le disque, d'un runtime a l'autre
+verif "runtime refait : ntdll.so de Cidre mis a jour" "ntdll de cidre garde controlee, mise a jour" "$(cat "$CIDRE_ILOT_RUNTIME/lib/wine/aarch64-unix/ntdll.so")"
+verif "runtime refait : ntdll.dll de l'ilot" "ntdll.dll de l'ilot" "$(cat "$CIDRE_ILOT_RUNTIME/lib/wine/aarch64-windows/ntdll.dll")"
+# prefixe aligne : DLL lues sur le disque, d'un runtime a l'autre (xtajit.dll, FEX du client 32 bits, jamais)
 AP="$T/pfx-aligne"; mkdir -p "$AP/drive_c/windows/system32"
-for f in ntdll.dll xtajit64.dll xtajit.dll; do cp "$FR/lib/wine/aarch64-windows/$f" "$AP/drive_c/windows/system32/"; done
-r=$(sh "$IL" aligner "$AP" ilot); contient "aligner ilot : dit" "3 DLL" "$r"
+for f in $PE5 xtajit64.dll xtajit.dll; do cp "$FR/lib/wine/aarch64-windows/$f" "$AP/drive_c/windows/system32/"; done
+r=$(sh "$IL" aligner "$AP" ilot); contient "aligner ilot : dit" "5 DLL" "$r"
+verif "aligner ilot : xtajit.dll du client intact" "xtajit.dll de cidre" "$(cat "$AP/drive_c/windows/system32/xtajit.dll")"
 verif "aligner ilot : ntdll.dll de l'ilot" "ntdll.dll de l'ilot" "$(cat "$AP/drive_c/windows/system32/ntdll.dll")"
 verif "aligner ilot : marque" ilot "$(cat "$AP/.cidre-ilot-alignement")"
 verif "aligner ilot : relance sans rien" "" "$(sh "$IL" aligner "$AP" ilot)"
 sh "$IL" aligner "$AP" normal >/dev/null
-verif "aligner normal : retour au runtime de Cidre" "xtajit64.dll de cidre" "$(cat "$AP/drive_c/windows/system32/xtajit64.dll")"
+verif "aligner normal : retour au runtime de Cidre" "ntdll.dll de cidre kernelbase.dll de cidre" "$(cat "$AP/drive_c/windows/system32/ntdll.dll") $(cat "$AP/drive_c/windows/system32/kernelbase.dll")"
 sh "$IL" aligner "$AP" autre >/dev/null 2>&1; verif "aligner : mode inconnu" 2 "$?"
 # lanceur : bloc de l'ilot (choix du runtime et de l'environnement)
 IB=$(awk '/^# --- ilot : debut ---/,/^# --- ilot : fin ---/' "$R/tests/lancer_depuis_steam.sh")
@@ -494,6 +503,44 @@ fi
 mkdir -p "$T/pfx-tso3/.cidre-fex/AppConfig"; printf '{"Config":{"TSOEnabled":"0"}}\n' >"$T/pfx-tso3/.cidre-fex/AppConfig/D2R.exe.json"
 ( WINEPREFIX="$T/pfx-tso3" JOURNAL="$T/fex.log" PROG="D2R.exe" BNET=oui ILOT_JEU=non; unset FEX_MAXINST FEX_MULTIBLOCK; eval "$FB" )
 [ ! -e "$T/pfx-tso3/.cidre-fex/AppConfig/D2R.exe.json" ] && ok "AppConfig perime (TSO coupe) retire hors ilot" || echec "AppConfig perime reste"
+echo "== lanceur : pile Diablo IV (KosmicKrisp 0430-0494, FEX 0366-0493 ; INTEGRATION_D4.md)"
+KB=$(awk '/^# --- pile kk d4 : debut ---/,/^# --- pile kk d4 : fin ---/' "$R/tests/lancer_depuis_steam.sh")
+[ -n "$KB" ] && ok "bloc pile kk d4 trouve" || echec "bloc pile kk d4 absent de lancer_depuis_steam.sh"
+CDB=$(awk '/^# compile_differee = <n>/,/^esac$/' "$R/tests/lancer_depuis_steam.sh")
+[ -n "$CDB" ] && ok "cas compile_differee trouve" || echec "cas compile_differee absent de lancer_depuis_steam.sh"
+KB="$CDB
+$KB"
+XB=$(awk '/^# --- reglages FEX : debut ---/,/^# --- reglages FEX : fin ---/' "$R/tests/lancer_depuis_steam.sh")
+KD=$(awk '/^kk_defaut\(\) \{/,/^}/' "$R/tests/lancer_depuis_steam.sh")
+# pile_d4 <bloc> <fiche : cle=valeur ...> : variables CIDRE_* posees par le bloc, triees, sur une ligne
+pile_d4() {
+   ( B=$1; shift; FICHE="$*"
+     for v in $(env | sed -n 's/^\(CIDRE_[A-Z0-9_]*\)=.*/\1/p'); do case " ${GARDER:-} " in *" $v "*) ;; *) unset "$v" ;; esac; done
+     unset MESA_KK_PIPELINE_CACHE FEX_DISKCACHE FEX_X87REDUCEDPRECISION FEX_MAXINST FEX_MULTIBLOCK
+     MESA_KK_PIPELINE_CACHE="$T/kkcache"; DOSSIER="$T"; PROG="x.exe"; JOURNAL="$T/d4.log"; KK_OPTIONS=
+     profil() { for kv in $FICHE; do [ "${kv%%=*}" = "$1" ] && { printf '%s\n' "${kv#*=}" | tr '+' ' '; return; }; done; echo ""; }
+     opt() { eval "v=\${$2:-}"; case $v in 1) echo true; return ;; 0) echo false; return ;; '') ;; *) echo "$v"; return ;; esac; profil "$1"; }
+     est_pe32() { return 1; }
+     eval "$KD"; eval "$B"
+     env | grep -E '^CIDRE_' | grep -v -e '^CIDRE_HAUT_NUL=' -e '^CIDRE_SONNETTE_RETOUR=' | LC_ALL=C sort | tr '\n' ' ' )
+}
+e=$(pile_d4 "$KB" compilation_kk=cache_disque+frontal_differe+pipeline_paresseux+fond+base_pipelines+cache_fonctions+variantes attente_present=gpu compile_differee=8)
+verif "kk d4 : reglage de la fiche bnet-fen" "CIDRE_BASE_PIPELINES=$T/kkcache/base-pipelines CIDRE_CACHE_DISQUE=1 CIDRE_CACHE_FONCTIONS=1 CIDRE_COMPILE_DIFFEREE=8 CIDRE_COMPILE_FOND=4 CIDRE_FRONTAL_DIFFERE=1 CIDRE_PIPELINE_PARESSEUX=1 CIDRE_WSI_ATTENTE_PRESENT=gpu " "$e"
+[ -d "$T/kkcache/base-pipelines" ] && ok "kk d4 : dossier de la base cree" || echec "kk d4 : dossier de la base absent"
+verif "kk d4 : fiche sans option : variantes coupees, rien d'autre" "CIDRE_VARIANTES=0 " "$(pile_d4 "$KB")"
+verif "kk d4 : compile_differee = true" "CIDRE_COMPILE_DIFFEREE=1 CIDRE_VARIANTES=0 " "$(pile_d4 "$KB" compile_differee=true)"
+verif "kk d4 : cadence et sans_attente" "CIDRE_PIPELINE_SANS_ATTENTE=1 CIDRE_VARIANTES=0 CIDRE_WSI_CADENCE=30 " "$(pile_d4 "$KB" compilation_kk=sans_attente cadence=30)"
+verif "kk d4 : CIDRE_COMPILE_FOND=0 retire le fond de la fiche" "CIDRE_CACHE_DISQUE=1 CIDRE_VARIANTES=0 " \
+   "$(export CIDRE_COMPILE_FOND=0; GARDER=CIDRE_COMPILE_FOND pile_d4 "$KB" compilation_kk=cache_disque+fond)"
+verif "kk d4 : CIDRE_VARIANTES explicite garde la main" "CIDRE_VARIANTES=/tmp/v.bin " "$(export CIDRE_VARIANTES=/tmp/v.bin; GARDER=CIDRE_VARIANTES pile_d4 "$KB")"
+e=$(pile_d4 "$XB" fex_disque=true fex_smc_chaud=64)
+verif "fex d4 : cache disque de Cidre et SMC chaud" "CIDRE_ARME_RAPIDE=0 CIDRE_FEX_DISQUE=1 CIDRE_FEX_DISQUE_CLE_BRUTE=0 CIDRE_FEX_DISQUE_MAX_MO=0 CIDRE_FEX_DISQUE_MO=256 CIDRE_FEX_DISQUE_VALIDES=1 CIDRE_SMC_EN_LIGNE_CHAUD=64 " "$e"
+verif "fex d4 : rien par defaut" "" "$(pile_d4 "$XB")"
+verif "fex d4 : CIDRE_FEX_DISQUE=0 coupe la fiche" "" "$(export CIDRE_FEX_DISQUE=0; GARDER=CIDRE_FEX_DISQUE pile_d4 "$XB" fex_disque=true)"
+F4=$(sh "$R/tests/profil_cidre.sh" bnet-fen 2>/dev/null)
+verif "fiche bnet-fen : compilation_kk" 'cache_disque frontal_differe pipeline_paresseux fond base_pipelines cache_fonctions variantes' "$(printf '%s\n' "$F4" | sed -n 's/^compilation_kk=//p' | head -1)"
+verif "fiche bnet-fen : fex_disque, fex_smc_chaud, compile_differee" "true 64 8" "$(printf '%s\n' "$F4" | sed -n 's/^fex_disque=//p' | head -1) $(printf '%s\n' "$F4" | sed -n 's/^fex_smc_chaud=//p' | head -1) $(printf '%s\n' "$F4" | sed -n 's/^compile_differee=//p' | head -1)"
+
 # connexion demandee par le client (journal du client depuis le debut du lancement)
 LG="$P/drive_c/users/joueur/AppData/Local/Battle.net/Logs"; mkdir -p "$LG"
 printf 'I 2026-10-25 00:40:25 [LoginController] Tassadar token rejected by BGS: web_auth_url\nE 2026-10-25 [BNLogin] Login failed. error=ERROR_TOKEN_NOT_FOUND (49)\n' >"$LG/battle.net-20261025T004011.log"

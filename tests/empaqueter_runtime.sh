@@ -135,13 +135,13 @@ FICHES=$(git -C "$R" ls-files profils 2>/dev/null)
 [ -n "$FICHES" ] || FICHES=$(ls "$R"/profils/* | sed "s#^$R/##")
 for f in $FICHES; do livrer "$f"; done
 # L'ilot TSO (option ilot, tests/ilot.sh) : le droit hyperviseur des chargeurs re-signes, et les fichiers de l'ilot
-# (wine/ilot, faits par `ilot.sh importer`, en attendant leur construction par la release) avec leur manifeste.
+# (wine/ilot : les cinq DLL PE sans ldp q, faites par `construire_pile_d4.sh pe` puis `ilot`) avec leur manifeste.
 livrer outils/hyperviseur.plist
 if [ -f "$R/wine/ilot/ilot.manifeste" ]; then
    mkdir -p "$STAGE/wine/ilot" && ( cd "$R/wine/ilot" && tar cf - . ) | ( cd "$STAGE/wine/ilot" && tar xf - )
    echo "  wine/ilot : fichiers de l'ilot livres"
 else
-   echo "  wine/ilot : absent, l'option ilot retombera hors ilot (ilot.sh importer)"
+   echo "  wine/ilot : absent, l'option ilot retombera hors ilot (construire_pile_d4.sh pe puis ilot)"
 fi
 # La CLI `cidre` : le contrat que pilote Verger (list/info --json, play, dl, sync).
 livrer cidre

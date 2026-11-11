@@ -355,7 +355,11 @@ fi
 #                               seul : Unreal 5 faute au demarrage).
 # Elles changent la cle du cache de pipelines. CIDRE_<option>=0 en retire une.
 [ "$(opt calcul_avant_passe CIDRE_CALCUL_AVANT_PASSE)" = true ] && kk_defaut CIDRE_CALCUL_AVANT_PASSE 1
-[ "$(opt compile_differee CIDRE_COMPILE_DIFFEREE)" = true ] && kk_defaut CIDRE_COMPILE_DIFFEREE 1
+# compile_differee = <n> : n fils de compilation Metal (Diablo IV : 8) ; true = 1.
+case $(opt compile_differee CIDRE_COMPILE_DIFFEREE) in
+   true) kk_defaut CIDRE_COMPILE_DIFFEREE 1 ;;
+   [1-9]|[1-9][0-9]) kk_defaut CIDRE_COMPILE_DIFFEREE "$(opt compile_differee CIDRE_COMPILE_DIFFEREE)" ;;
+esac
 for o in $(profil code_kk | tr -d '"'); do
    case $o in
       lectures_cachees|w10_sans_court_circuit|images_nulles_sans_branche|ssbo_sans_bornes|ssbo_nul_puits|contraction_malgre_precis|reductions_simd|minmax_zero_entier|textures_nulles_sans_branche|fusion_soumission|tess_phases|strip_sans_deroule|cbv_sans_bornes|min_lod_txf_libre|sans_attachement_borne|horodatages_cpu|sans_tampon_vide|fences_utiles|atomiques_nulles_sans_branche|couches_sans_test|mul_sans_garde|ecritures_groupees|demi_precision)
@@ -364,6 +368,38 @@ for o in $(profil code_kk | tr -d '"'); do
       *) echo "code_kk : option inconnue ignoree : $o" >&2 ;;
    esac
 done
+# --- pile kk d4 : debut ---
+# Pile de compilation des nuanceurs de Diablo IV (INTEGRATION_D4.md), coupee par defaut :
+#   compilation_kk = "nom ..."  cache_disque (0430, CIDRE_CACHE_DISQUE=1 : cache Mesa sous le cache du jeu),
+#                               frontal_differe (0431), sans_attente (0432, dessins sautes plutot qu'un gel),
+#                               pipeline_paresseux (0433), fond (0441 : CIDRE_COMPILE_FOND=4 fils, liste chaude
+#                               <cache>/liste-chaude-kk.bin), base_pipelines (0444 : <cache>/base-pipelines, pour le
+#                               rejeu hors jeu), cache_fonctions (0451 : cache de fonctions Metal sans serialiseur),
+#                               variantes (0471-0474 : <cache>/variantes-kk.bin, file kkvar).
+#   Les variantes notees sont actives dans le pilote des qu'il a un cache de pipelines : le lanceur les coupe
+#   (CIDRE_VARIANTES=0) pour un jeu qui ne les demande pas. CIDRE_<option>=0 en retire une, une valeur garde la main.
+#   attente_present = "gpu"     (0470) vkWaitForPresentKHR rend a la fin du GPU, pas a l'affichage
+#   cadence = <Hz>              (0461) chaque image affichee au moins 1/Hz s (CIDRE_WSI_CADENCE)
+VARIANTES=non
+for o in $(profil compilation_kk | tr -d '"'); do
+   case $o in
+      cache_disque|frontal_differe|pipeline_paresseux|cache_fonctions)
+         kk_defaut "CIDRE_$(printf '%s' "$o" | tr '[:lower:]' '[:upper:]')" 1 ;;
+      sans_attente) kk_defaut CIDRE_PIPELINE_SANS_ATTENTE 1 ;;
+      fond) kk_defaut CIDRE_COMPILE_FOND 4 ;;
+      base_pipelines) [ -z "${MESA_KK_PIPELINE_CACHE:-}" ] || kk_defaut CIDRE_BASE_PIPELINES "$MESA_KK_PIPELINE_CACHE/base-pipelines" ;;
+      variantes) VARIANTES=oui ;;
+      *) echo "compilation_kk : option inconnue ignoree : $o" >&2 ;;
+   esac
+done
+[ -n "${CIDRE_BASE_PIPELINES:-}" ] && mkdir -p "$CIDRE_BASE_PIPELINES" 2>/dev/null
+[ $VARIANTES = oui ] || [ -n "${CIDRE_VARIANTES:-}" ] || export CIDRE_VARIANTES=0
+[ "${CIDRE_VARIANTES:-}" = 0 ] || KK_OPTIONS="${KK_OPTIONS:+$KK_OPTIONS }VARIANTES=${CIDRE_VARIANTES:-notees}"
+[ "$(profil attente_present | tr -d '"')" = gpu ] && kk_defaut CIDRE_WSI_ATTENTE_PRESENT gpu
+CADENCE=$(profil cadence)
+case $CADENCE in ''|0|*[!0-9]*) : ;; *) kk_defaut CIDRE_WSI_CADENCE "$CADENCE" ;; esac
+[ "${CIDRE_WSI_CADENCE:-}" != 0 ] || unset CIDRE_WSI_CADENCE
+# --- pile kk d4 : fin ---
 
 # Overrides DLL propres au jeu (base de compat, cf. profils.toml). Format Wine
 # "a,b=n;c=b" (n=natif, b=builtin, =disable). etape2 les AJOUTE aux overrides par
@@ -1112,6 +1148,23 @@ fi
 # fex 0230 : scalaires SSE sans ins quand la moitie haute du xmm est connue nulle (multibloc) ; banc flottant
 # 61 -> 98 % de Rosetta, temoins 30/30, PEAK sans changement ni defaut (23/10). CIDRE_HAUT_NUL=0 le coupe.
 [ -n "${CIDRE_HAUT_NUL:-}" ] || export CIDRE_HAUT_NUL=2
+# Pile FEX de Diablo IV (INTEGRATION_D4.md), par fiche ; une variable deja posee garde la main :
+#   fex_disque = true (CIDRE_FEX_DISQUE=1/0) : cache disque de blocs de Cidre (0366, 0452, 0475-0493), x86-64
+#     seulement (ARM64EC : le client Battle.net 32 bits n'y entre pas, ce que FEX_DISKCACHE global cassait) ;
+#     reglage des parties D4 du 11/11 : 256 Mio en memoire, blocs valides seulement, cle normale (la cle anonyme
+#     brute recompilait tout a chaud), sans plafond de base, repere des pages armees sous verrou.
+#   fex_smc_chaud = N (CIDRE_SMC_EN_LIGNE_CHAUD) : apres N SMC en ligne sur une page, elle est validee par CRC au
+#     lieu d'etre piegee (0370 ; le fil de protection de D4 ecrit un octet par tour dans sa page RWX). D4 : 64.
+if [ "$(opt fex_disque CIDRE_FEX_DISQUE)" = true ]; then
+   export CIDRE_FEX_DISQUE=1
+   export CIDRE_FEX_DISQUE_MO=${CIDRE_FEX_DISQUE_MO:-256} CIDRE_FEX_DISQUE_VALIDES=${CIDRE_FEX_DISQUE_VALIDES:-1}
+   export CIDRE_FEX_DISQUE_CLE_BRUTE=${CIDRE_FEX_DISQUE_CLE_BRUTE:-0} CIDRE_FEX_DISQUE_MAX_MO=${CIDRE_FEX_DISQUE_MAX_MO:-0}
+   export CIDRE_ARME_RAPIDE=${CIDRE_ARME_RAPIDE:-0}
+else
+   unset CIDRE_FEX_DISQUE
+fi
+SMC_CHAUD=${CIDRE_SMC_EN_LIGNE_CHAUD:-$(profil fex_smc_chaud)}
+case $SMC_CHAUD in ''|0|*[!0-9]*) unset CIDRE_SMC_EN_LIGNE_CHAUD ;; *) export CIDRE_SMC_EN_LIGNE_CHAUD=$SMC_CHAUD ;; esac
 # --- reglages FEX : fin ---
 
 # Ilot TSO (option ilot ; CIDRE_JOUER_ILOT=1/0 pour un essai) : l'executable du jeu tourne dans un vCPU de
@@ -1150,7 +1203,7 @@ if [ "$(opt ilot CIDRE_JOUER_ILOT)" = true ]; then
 fi
 [ $BNET != oui ] || export CIDRE_ILOT_ALIGNEMENT=$([ $ILOT_JEU = oui ] && echo ilot || echo normal)
 # --- ilot : fin ---
-echo "    fex     : tso ${FEX_TSOENABLED:-1}${FEX_EXTENDEDVOLATILEMETADATA:+ sauf $FEX_EXTENDEDVOLATILEMETADATA}${FEX_VOLATILEMETADATAALLBLOCKS:+, metadonnee MSVC prise au mot}, cache disque ${FEX_DISKCACHE:-0}, x87 reduit ${FEX_X87REDUCEDPRECISION:-0}, MaxInst ${FEX_MAXINST:-5000}, multiblock ${FEX_MULTIBLOCK:-1}, sonnette retour ${CIDRE_SONNETTE_RETOUR}, haut nul ${CIDRE_HAUT_NUL}, hote ${FEX_HOSTFEATURES}" >>"$JOURNAL"
+echo "    fex     : tso ${FEX_TSOENABLED:-1}${FEX_EXTENDEDVOLATILEMETADATA:+ sauf $FEX_EXTENDEDVOLATILEMETADATA}${FEX_VOLATILEMETADATAALLBLOCKS:+, metadonnee MSVC prise au mot}, cache disque ${FEX_DISKCACHE:-0}${CIDRE_FEX_DISQUE:+, cache disque cidre ${CIDRE_FEX_DISQUE_MO} Mio}${CIDRE_SMC_EN_LIGNE_CHAUD:+, smc chaud $CIDRE_SMC_EN_LIGNE_CHAUD}, x87 reduit ${FEX_X87REDUCEDPRECISION:-0}, MaxInst ${FEX_MAXINST:-5000}, multiblock ${FEX_MULTIBLOCK:-1}, sonnette retour ${CIDRE_SONNETTE_RETOUR}, haut nul ${CIDRE_HAUT_NUL}, hote ${FEX_HOSTFEATURES}" >>"$JOURNAL"
 # Battle.net : le jeu part du client, qui herite de cet environnement -- et avec
 # lui son CEF (page de connexion, controle de securite de Blizzard). Les blocs
 # FEX de la fiche (MaxInst, multibloc), voulus pour le chargeur protege du jeu,

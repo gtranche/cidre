@@ -73,6 +73,10 @@
 #   fex_multiblock   false = un bloc traduit par FEX s'arrete au premier saut
 #                    (FEX_MULTIBLOCK=0). true (defaut) = celui de FEX. Pour un jeu
 #                    qui reprotege son code sans cesse (D2R) : moins de retraduction.
+#   fex_disque       true = cache disque de blocs de Cidre (FEX 0366-0493, CIDRE_FEX_DISQUE=1, 256 Mio
+#                    en memoire) pour les processus x86-64 ; false (defaut). APPLIQUE.
+#   fex_smc_chaud    N > 0 : une page ecrite N fois en ligne est validee par CRC au lieu d'etre piegee
+#                    (FEX 0370, CIDRE_SMC_EN_LIGNE_CHAUD). 0 (defaut) = coupe. Diablo IV : 64. APPLIQUE.
 #   ilot             true = l'executable du jeu tourne dans l'ilot TSO (tests/ilot.sh) : un vCPU de
 #                    Hypervisor.framework, TSO materiel, sous-pages exactes de 4 Kio, au lieu du TSO
 #                    logiciel de FEX et de ses talons de sous-pages. Pour les jeux que FEX seul ne fait
@@ -282,6 +286,8 @@ fex_cache_disque = false
 fex_x87_reduit = false
 fex_maxinst = 0
 fex_multiblock = true
+fex_disque = false
+fex_smc_chaud = 0
 ilot = false
 vsync = true
 hud = false
@@ -314,5 +320,12 @@ demi_precision = true
 calcul_avant_passe = false
 compile_differee = false
 code_kk = ""
+# Pile de compilation des nuanceurs et presentation de Diablo IV (INTEGRATION_D4.md), coupees par defaut :
+# compilation_kk (cache_disque, frontal_differe, sans_attente, pipeline_paresseux, fond, base_pipelines,
+# cache_fonctions, variantes), attente_present ("gpu" : 0470), cadence (Hz : 0461). compile_differee accepte
+# aussi un nombre de fils (D4 : 8).
+compilation_kk = ""
+attente_present = ""
+cadence = 0
 
 # (plus de section par jeu ici : profils/<appid>.toml, section [cidre])
