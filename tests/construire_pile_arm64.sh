@@ -30,7 +30,14 @@ echo "== Mesa / KosmicKrisp (arm64) -> prefix/ =="
    -Degl=disabled -Dgallium-drivers= -Dgbm=disabled -Dglx=disabled \
    -Dinstall-mesa-clc=true -Dinstall-precomp-compiler=true -Dopengl=false \
    -Dplatforms=macos -Dprefix="$R/prefix" -Dvulkan-drivers=kosmickrisp
+# Cle de code des caches de nuanceurs figee a celle du pilote de Diablo IV (kk-0494), garde verifiee ensuite :
+# tests/cle_kk_figee.sh (CIDRE_KK_CODEGEN_FIGE=0 pour la calculer). Une cle figee qui ne correspond plus aux
+# sources arrete la construction : de vieux nuanceurs seraient servis.
+KK_CODEGEN_FIGE=$(sh "$R/tests/cle_kk_figee.sh" valeur)
+if [ -n "$KK_CODEGEN_FIGE" ]; then export KK_CODEGEN_FIGE; else unset KK_CODEGEN_FIGE; fi
 ninja -C "$R/build/mesa" -j"$J"
+sh "$R/tests/cle_kk_figee.sh" verifier "$R/build/mesa"
+unset KK_CODEGEN_FIGE
 ninja -C "$R/build/mesa" install >/dev/null
 
 echo "== Wine 11 arm64 -> wine/wine11-arm64 =="
@@ -101,3 +108,4 @@ ninja -C "$R/build/vkd3d-winarm64ec" -j"$J"
 echo
 echo "Pile arm64 construite. Ensuite : FEX (construire_fex.sh --installer), le"
 echo "prefixe (wineboot -u), deployer DXVK, et brancher_jeux_steam.sh."
+echo "Ilot TSO (Diablo IV, D2R) : construire_pile_d4.sh pe puis ilot (DLL PE sans ldp q -> wine/ilot)."

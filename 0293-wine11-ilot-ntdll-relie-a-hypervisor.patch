@@ -7,7 +7,8 @@ wine11 : ilot, ntdll.so construit avec unix/ilot.c et relie a Hypervisor.framewo
 desormais avec les autres sources unix et relie ntdll.so a -framework Hypervisor (IOKit, CoreFoundation et
 CoreServices y sont deja). Hypervisor.framework charge sans droit ne fait rien : l'ilot ne s'ouvre que si le
 chargeur porte com.apple.security.hypervisor et que CIDRE_ILOT=1 (tests/ilot.sh) ; sinon ntdll.so se
-comporte comme avant.
+comporte comme avant. ilot.c recoit le « #pragma makedep unix » des autres sources unix : sans lui, makedep
+le compilait aussi en PE (i386-windows/unix/ilot.o : Hypervisor.h introuvable).
 
 diff --git a/dlls/ntdll/Makefile.in b/dlls/ntdll/Makefile.in
 --- a/dlls/ntdll/Makefile.in
@@ -29,3 +30,18 @@ diff --git a/dlls/ntdll/Makefile.in b/dlls/ntdll/Makefile.in
  	unix/loader.c \
  	unix/loadorder.c \
  	unix/process.c \
+diff --git a/dlls/ntdll/unix/ilot.c b/dlls/ntdll/unix/ilot.c
+--- a/dlls/ntdll/unix/ilot.c
++++ b/dlls/ntdll/unix/ilot.c
+@@ -36,6 +36,11 @@
+  *    executable de l'hote est un appel hote (aucun hv_vm_map) ; tout le reste est fatal pour le processus ;
+  *  - les pages d'invite sont retirees AVANT tout changement de projection ou de droits de l'hote.
+  */
++
++#if 0
++#pragma makedep unix
++#endif
++
+ #include <Hypervisor/Hypervisor.h>
+ #include <mach/mach.h>
+ #include <mach/mach_vm.h>
