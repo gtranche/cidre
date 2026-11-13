@@ -14,7 +14,9 @@
 FIGEE=fe23de315cfc449df36f16d2b4403b2b4a878b55b525ef4a820858646fa9c728
 # 12/11 : 0492 coupe par defaut (CIDRE_FOND_FROIDS=1 pour l'activer) : seul changement des sources hachees depuis
 # kk-0494 (1fbdc554...), une ligne d'ordonnancement de kk_shader.c, sans effet sur le MSL ni le format serialise.
-CALCULEE_VERIFIEE=38af2befa362612a9fbd91e757ed4b4e07c923309a116d1bbbf7c9db29f5646e
+# 13/11 : 0495 (NAN_STRICT) : sous CIDRE_NAN_STRICT=1, code et UUID de cache de pipelines identiques a avant (verifie
+# par vulkaninfo : c1f4526f... des deux cotes) ; sans lui, bit 63 des contournements : cles nouvelles.
+CALCULEE_VERIFIEE=4559397b3d5cfe1df5430a40d8027150395d72e6ed7912515c8cf6710d1cefad
 case ${1:-} in
    valeur)
       case ${CIDRE_KK_CODEGEN_FIGE:-$FIGEE} in 0) echo "" ;; *) echo "${CIDRE_KK_CODEGEN_FIGE:-$FIGEE}" ;; esac ;;

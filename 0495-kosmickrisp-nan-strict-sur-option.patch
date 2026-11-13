@@ -1,0 +1,64 @@
+Generated-by: LLM
+
+KosmicKrisp : comparaisons NaN strictes de l'AIR direct (0440) et selection des txf sur poignee nulle (0402) sur option
+
+0440 (KK_WORKAROUND_17 dans l'AIR direct) et 0402 (txf garde le select sur poignee nulle) corrigent les tuiles noires
+de Diablo IV, mais ils sont actifs pour tous les jeux et coutent au GPU. Non-regression du candidat d4 (M1 Max, 13/11,
+Demonologist, lobby, D3D12/KK, manches entrelacees de 180 s) : 1.5.22 38,6 img/s (mediane 33,0), candidat 37,0
+(31,3), soit -4 %. Bissection : la KK de 1.5.22 avec le reste du candidat = 1.5.22 ; MESA_KK_DISABLE_WORKAROUNDS=17
+rend l'essentiel ; KK sans 0440 seul : moitie de l'ecart ; sans 0402, 0434 ou 0440 : ecart nul.
+
+Les deux ne valent plus que sous CIDRE_NAN_STRICT=1 (option de fiche nan_strict = true, posee pour bnet-fen).
+Coupees, le bit 63 des contournements coupes est pose : il entre dans l'UUID du cache de pipelines et dans la cle du
+cache de traduction, donc rien de compile sous l'autre reglage n'est resservi. Posees, ni le code produit ni les
+cles ne changent par rapport a 0494 : les caches de Diablo IV (cle KK_CODEGEN 1-fe23de31) restent valables.
+
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -1401,6 +1401,14 @@
+       int index = atoi(list);
+       settings->disabled_workarounds |= BITFIELD64_BIT(index);
+    }
++
++   /* Cidre 0495 : les comparaisons NaN strictes de l'AIR direct (KK_WORKAROUND_17, 0440) et la selection des txf
++    * sur poignee nulle (0402) corrigent les tuiles noires de Diablo IV, mais coutent ~4 % a un jeu limite par le GPU
++    * (Demonologist, M1, lobby : 38,6 -> 37,0 img/s). Coupees sauf CIDRE_NAN_STRICT=1 (fiche : nan_strict = true).
++    * Coupees, le bit 63 entre dans les cles (UUID du cache de pipelines, cache de traduction) : rien de compile sous
++    * l'autre reglage n'est resservi ; posees, les cles restent celles d'avant 0495 (caches de Diablo IV valables). */
++   if (!cidre_env_actif("CIDRE_NAN_STRICT"))
++      settings->disabled_workarounds |= BITFIELD64_BIT(63);
+ 
+    /* Workarounds resolved on macOS 27 */
+    if (ns_is_os_version_at_least(27, 0, 0)) {
+diff --git a/src/kosmickrisp/compiler/nir_to_air_emit.inc b/src/kosmickrisp/compiler/nir_to_air_emit.inc
+--- a/src/kosmickrisp/compiler/nir_to_air_emit.inc
++++ b/src/kosmickrisp/compiler/nir_to_air_emit.inc
+@@ -602,7 +602,8 @@
+    case nir_op_fge: {
+       Value *x = F(0), *y = F(1);
+       const bool same = nir_alu_srcs_equal(alu, alu, 0, 1);
+-      if (!(c.wa & BITFIELD64_BIT(17))) {
++      /* 0495 : seulement sous CIDRE_NAN_STRICT=1 (bit 63 des contournements = coupe) */
++      if (!(c.wa & BITFIELD64_BIT(17)) && !(c.wa & BITFIELD64_BIT(63))) {
+          Value *nx = air_isnan_bits(c, I(x));
+          if (same)
+             return alu->op == nir_op_fneu ? nx : B.CreateNot(nx);
+diff --git a/src/kosmickrisp/vulkan/kk_nir_lower_null_images.c b/src/kosmickrisp/vulkan/kk_nir_lower_null_images.c
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_null_images.c
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_null_images.c
+@@ -168,7 +168,14 @@
+     * minimale retiree des txf) et cette option sont posees ensemble ; chacune
+     * seule est saine. Hypothese : txf par une poignee nulle ne rend pas 0 dans
+     * tous les cas. txf garde donc la selection sur poignee nulle (sans branche). */
++   /* 0495 : seulement sous CIDRE_NAN_STRICT=1 (cle : bit 63 des contournements, kk_physical_device.c) ; sinon txf
++    * reste brut comme sample/gather (0138). */
++   static int strict = -1;
++   if (strict < 0)
++      strict = cidre_env_actif("CIDRE_NAN_STRICT");
+    const nir_tex_instr *tex = nir_instr_as_tex(instr);
++   if (!strict)
++      return !tex->is_sparse;
+    return tex->op != nir_texop_txf_ms && tex->op != nir_texop_txf &&
+           !tex->is_sparse;
+ }

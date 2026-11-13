@@ -524,8 +524,9 @@ pile_d4() {
      eval "$KD"; eval "$B"
      env | grep -E '^CIDRE_' | grep -v -e '^CIDRE_HAUT_NUL=' -e '^CIDRE_SONNETTE_RETOUR=' | LC_ALL=C sort | tr '\n' ' ' )
 }
-e=$(pile_d4 "$KB" compilation_kk=cache_disque+frontal_differe+pipeline_paresseux+fond+base_pipelines+cache_fonctions+variantes attente_present=gpu compile_differee=8)
-verif "kk d4 : reglage de la fiche bnet-fen" "CIDRE_BASE_PIPELINES=$T/kkcache/base-pipelines CIDRE_CACHE_DISQUE=1 CIDRE_CACHE_FONCTIONS=1 CIDRE_COMPILE_DIFFEREE=8 CIDRE_COMPILE_FOND=4 CIDRE_FRONTAL_DIFFERE=1 CIDRE_PIPELINE_PARESSEUX=1 CIDRE_WSI_ATTENTE_PRESENT=gpu " "$e"
+e=$(pile_d4 "$KB" compilation_kk=cache_disque+frontal_differe+pipeline_paresseux+fond+base_pipelines+cache_fonctions+variantes attente_present=gpu nan_strict=true compile_differee=8)
+verif "kk d4 : reglage de la fiche bnet-fen" "CIDRE_BASE_PIPELINES=$T/kkcache/base-pipelines CIDRE_CACHE_DISQUE=1 CIDRE_CACHE_FONCTIONS=1 CIDRE_COMPILE_DIFFEREE=8 CIDRE_COMPILE_FOND=4 CIDRE_FRONTAL_DIFFERE=1 CIDRE_NAN_STRICT=1 CIDRE_PIPELINE_PARESSEUX=1 CIDRE_WSI_ATTENTE_PRESENT=gpu " "$e"
+verif "kk d4 : CIDRE_NAN_STRICT=0 coupe nan_strict de la fiche (0495)" "CIDRE_VARIANTES=0 " "$(export CIDRE_NAN_STRICT=0; GARDER=CIDRE_NAN_STRICT pile_d4 "$KB" nan_strict=true)"
 [ -d "$T/kkcache/base-pipelines" ] && ok "kk d4 : dossier de la base cree" || echec "kk d4 : dossier de la base absent"
 verif "kk d4 : fiche sans option : variantes coupees, rien d'autre" "CIDRE_VARIANTES=0 " "$(pile_d4 "$KB")"
 verif "kk d4 : compile_differee = true" "CIDRE_COMPILE_DIFFEREE=1 CIDRE_VARIANTES=0 " "$(pile_d4 "$KB" compile_differee=true)"
@@ -540,6 +541,7 @@ verif "fex d4 : CIDRE_FEX_DISQUE=0 coupe la fiche" "" "$(export CIDRE_FEX_DISQUE
 F4=$(sh "$R/tests/profil_cidre.sh" bnet-fen 2>/dev/null)
 verif "fiche bnet-fen : compilation_kk" 'cache_disque frontal_differe pipeline_paresseux fond base_pipelines cache_fonctions variantes' "$(printf '%s\n' "$F4" | sed -n 's/^compilation_kk=//p' | head -1)"
 verif "fiche bnet-fen : fex_disque, fex_smc_chaud, compile_differee" "true 64 8" "$(printf '%s\n' "$F4" | sed -n 's/^fex_disque=//p' | head -1) $(printf '%s\n' "$F4" | sed -n 's/^fex_smc_chaud=//p' | head -1) $(printf '%s\n' "$F4" | sed -n 's/^compile_differee=//p' | head -1)"
+verif "fiche bnet-fen : nan_strict (0495)" "true" "$(printf '%s\n' "$F4" | sed -n 's/^nan_strict=//p' | head -1)"
 
 # connexion demandee par le client (journal du client depuis le debut du lancement)
 LG="$P/drive_c/users/joueur/AppData/Local/Battle.net/Logs"; mkdir -p "$LG"

@@ -87,9 +87,9 @@ Tous les arbres partent de la série de main (0410 et 0412 compris).
 
 | Correctif | Rôle | Catégorie |
 |---|---|---|
-| 0402 | txf sur poignée nulle garde la sélection | porté |
+| 0402 | txf sur poignée nulle garde la sélection ; **sur option depuis 0495** | porté |
 | 0430-0434 | cache disque des nuanceurs, frontal différé, dessins sautés, pipelines paresseux v2, barrière de repli `u_thread` | porté |
-| 0440 | AIR direct : contournement 17 (NaN) | porté |
+| 0440 | AIR direct : contournement 17 (NaN) ; **sur option depuis 0495** (`nan_strict`, `CIDRE_NAN_STRICT=1`) | porté |
 | 0441, 0443, 0444 | file de fond et liste chaude, rafales, base de pipelines et rejeu | porté |
 | 0450-0451 | profil du pipeline froid et cache de fonctions Metal (un seul fichier, comme dans le chantier) | porté |
 | 0461 | `CIDRE_WSI_CADENCE` | porté **sans** l'histogramme `[CIDRE_FEN]` |
@@ -218,7 +218,7 @@ Runtime de l'îlot fait depuis la branche :
    - winedbg n'est pas coupé ;
    - liste chaude et base de pipelines sous le cache du jeu, et non dans `cidre-d4-fond`.
 6. **Défauts actifs pour tous les jeux**, à vérifier hors îlot :
-   - 0440 : NaN en AIR direct, code AIR changé pour tout jeu dx12 ;
+   - 0440 : NaN en AIR direct, code AIR changé pour tout jeu dx12 : **coupé hors fiche par 0495** (−4 % sur Demonologist), avec 0402 ;
    - 0434 : barrière `u_thread` ;
    - 0460 : journal des exceptions FEX coupé ;
    - 0489 : retenue rpmalloc ;

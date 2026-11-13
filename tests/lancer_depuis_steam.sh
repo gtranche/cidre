@@ -380,6 +380,8 @@ done
 #   (CIDRE_VARIANTES=0) pour un jeu qui ne les demande pas. CIDRE_<option>=0 en retire une, une valeur garde la main.
 #   attente_present = "gpu"     (0470) vkWaitForPresentKHR rend a la fin du GPU, pas a l'affichage
 #   cadence = <Hz>              (0461) chaque image affichee au moins 1/Hz s (CIDRE_WSI_CADENCE)
+#   nan_strict = true           (0495) comparaisons NaN strictes de l'AIR direct (0440) et select des txf sur poignee
+#                               nulle (0402), CIDRE_NAN_STRICT=1 : tuiles noires de Diablo IV ; ~4 % de GPU ailleurs
 VARIANTES=non
 for o in $(profil compilation_kk | tr -d '"'); do
    case $o in
@@ -396,6 +398,7 @@ done
 [ $VARIANTES = oui ] || [ -n "${CIDRE_VARIANTES:-}" ] || export CIDRE_VARIANTES=0
 [ "${CIDRE_VARIANTES:-}" = 0 ] || KK_OPTIONS="${KK_OPTIONS:+$KK_OPTIONS }VARIANTES=${CIDRE_VARIANTES:-notees}"
 [ "$(profil attente_present | tr -d '"')" = gpu ] && kk_defaut CIDRE_WSI_ATTENTE_PRESENT gpu
+[ "$(profil nan_strict)" = true ] && kk_defaut CIDRE_NAN_STRICT 1
 CADENCE=$(profil cadence)
 case $CADENCE in ''|0|*[!0-9]*) : ;; *) kk_defaut CIDRE_WSI_CADENCE "$CADENCE" ;; esac
 [ "${CIDRE_WSI_CADENCE:-}" != 0 ] || unset CIDRE_WSI_CADENCE
