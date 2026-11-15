@@ -17,7 +17,7 @@ champ() { sed -n -E "s/^($1)=//p"; }
 
 # Le vrai outil, construit dans le temporaire (rien dans build/)
 VRAI="$T/prepa-shaders"
-cc -arch arm64 -O1 -I/Users/gtranche/Dev/proton-ouvert/prefix/include -I"$B/prefix/include" \
+cc -arch arm64 -O1 \
    -o "$VRAI" "$B/tests/prepa_shaders.c" || { echo "construction de prepa-shaders impossible"; exit 1; }
 # Le faux : rejouer = ajoute au journal chaque cle de la base filtree (FAUX_PAUSE
 # s entre deux, FAUX_ECHEC = rang qui echoue), comme KosmicKrisp lot par lot.
@@ -67,6 +67,9 @@ verif "jeu en cours : inactive (en_cours)" "en_cours" "$(sh "$P" etat $ID | cham
 rm -f "$CIDRE_DIR/en-cours/$ID"
 E=$(sh "$P" etat $ID)
 verif "10 pipelines lies sur 20 : a preparer" "a_preparer 10 10" "$(printf '%s\n' "$E" | champ 'etat|a_faire|connus' | tr '\n' ' ' | sed 's/ $//')"
+rm -f "$C/preparation/chaud"
+verif "outil absent : construit a la demande (sans en-tetes Vulkan)" "a_preparer oui" \
+   "$(CIDRE_PREPARATION_OUTIL="$T/construit/prepa-shaders" sh "$P" etat $ID | champ etat) $( [ -x "$T/construit/prepa-shaders" ] && echo oui || echo non)"
 verif "identite : cle KK, famille, build de macOS" "1-0123456789abcdef-apple7-25A100" "$(printf '%s\n' "$E" | champ identite)"
 verif "premiere rencontre sans cache : non adoptee" "non" "$(cut -d' ' -f2 "$C/preparation/adoption")"
 

@@ -35,8 +35,74 @@
  *       vkDestroyDevice ecrit l'archive Metal (reprise de kk_rejeu.c,
  *       ~/Dev/cidre-d4-fond/outils)
  * Codes : 0 bien ; 2 usage ; 3 fichier illisible ; 4-5 Vulkan. */
+#include <stdint.h>
+/* Les en-tetes Vulkan s'il y en a (prefix/include du depot) ; sinon le peu qui
+ * sert ici, recopie de vulkan_core.h : l'outil se construit avec le seul cc du
+ * systeme (preparer_shaders.sh le construit a la demande dans un arbre de dev). */
+#if __has_include(<vulkan/vulkan.h>)
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
+#else
+typedef struct VkInstance_T *VkInstance;
+typedef struct VkPhysicalDevice_T *VkPhysicalDevice;
+typedef struct VkDevice_T *VkDevice;
+typedef uint32_t VkFlags;
+typedef int32_t VkResult;
+typedef int32_t VkStructureType;
+#define VK_SUCCESS 0
+#define VK_INCOMPLETE 5
+#define VK_STRUCTURE_TYPE_APPLICATION_INFO 0
+#define VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO 1
+#define VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO 2
+#define VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO 3
+#define VK_API_VERSION_1_3 ((1u << 22) | (3u << 12))
+typedef struct {
+   VkStructureType sType;
+   const void *pNext;
+   const char *pApplicationName;
+   uint32_t applicationVersion;
+   const char *pEngineName;
+   uint32_t engineVersion;
+   uint32_t apiVersion;
+} VkApplicationInfo;
+typedef struct {
+   VkStructureType sType;
+   const void *pNext;
+   VkFlags flags;
+   const VkApplicationInfo *pApplicationInfo;
+   uint32_t enabledLayerCount;
+   const char *const *ppEnabledLayerNames;
+   uint32_t enabledExtensionCount;
+   const char *const *ppEnabledExtensionNames;
+} VkInstanceCreateInfo;
+typedef struct {
+   VkStructureType sType;
+   const void *pNext;
+   VkFlags flags;
+   uint32_t queueFamilyIndex;
+   uint32_t queueCount;
+   const float *pQueuePriorities;
+} VkDeviceQueueCreateInfo;
+typedef struct {
+   VkStructureType sType;
+   const void *pNext;
+   VkFlags flags;
+   uint32_t queueCreateInfoCount;
+   const VkDeviceQueueCreateInfo *pQueueCreateInfos;
+   uint32_t enabledLayerCount;
+   const char *const *ppEnabledLayerNames;
+   uint32_t enabledExtensionCount;
+   const char *const *ppEnabledExtensionNames;
+   const void *pEnabledFeatures;
+} VkDeviceCreateInfo;
+typedef void (*PFN_vkVoidFunction)(void);
+typedef VkResult (*PFN_vkCreateInstance)(const VkInstanceCreateInfo *, const void *, VkInstance *);
+typedef VkResult (*PFN_vkEnumeratePhysicalDevices)(VkInstance, uint32_t *, VkPhysicalDevice *);
+typedef VkResult (*PFN_vkCreateDevice)(VkPhysicalDevice, const VkDeviceCreateInfo *, const void *, VkDevice *);
+typedef void (*PFN_vkDestroyDevice)(VkDevice, const void *);
+typedef void (*PFN_vkDestroyInstance)(VkInstance, const void *);
+typedef PFN_vkVoidFunction (*PFN_vkGetDeviceProcAddr)(VkDevice, const char *);
+#endif
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <stdint.h>
