@@ -81,16 +81,19 @@ candidat, § 2.
    - le cache disque FEX à 256 Mio et le SMC chaud à 64.
 
    Ensuite : aucune tuile noire à l'écran de sélection du personnage, et des sauts comparables à `partie_combo.sh`.
-3. **Archive à refaire avec la version définitive** :
+3. **Archive à refaire avec la version définitive**, depuis le commit de la branche (`6286ee3`). L'archive actuelle
+   (`1.5.23-d4rc3`) porte les binaires de cette version. Ses 1 317 scripts et fiches sont ceux de `1621681` : ils ne
+   diffèrent que par `profils/index.toml`, dont l'empreinte de bnet-fen est périmée. Ne pas avancer le depot pendant
+   une série qui l'utilise.
 
    ```sh
-   cd ~/Dev/cidre-release-d4/depot   # worktree de 1621681 (= release-1.5.23), binaires construits
+   cd ~/Dev/cidre-release-d4/depot && git merge --ff-only release-1.5.23
    CIDRE_VERSION=1.5.23 sh tests/empaqueter_runtime.sh ~/Dev/cidre-release-d4/cidre-runtime.tar.zst
    shasum -a 256 ~/Dev/cidre-release-d4/cidre-runtime.tar.zst ~/Dev/cidre-release-d4/cidre-runtime.tar.xz > ~/Dev/cidre-release-d4/SHA256SUMS
    ```
 
-   L'archive actuelle (`1.5.23-d4rc3`) porte exactement ces sources : 1 317 scripts et fiches identiques à la
-   branche, et les mêmes binaires. Seul `VERSION` change. Compression lourde : jamais pendant une manche.
+   Les binaires n'ont pas à être reconstruits : aucune source de Wine, FEX ou KosmicKrisp n'a changé. La compression
+   est lourde : jamais pendant une manche.
 4. **Marqueurs dans l'archive** :
    - `strings` sur le pilote KK : `KK_CODEGEN=1-fe23de315cfc449d` et `CIDRE_NAN_STRICT` ;
    - `xtajit64.dll` : « cache de code vide » et « 0493 » ;
