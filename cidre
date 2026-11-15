@@ -1560,6 +1560,15 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
                                   installe | absent | sans_reseau | echoue
   cidre precompil <id> etat [--json]    installe | disponible | absent | sans_reseau, architecture, taille
   cidre precompil <id> retirer    les supprime
+  cidre preparation <id> [--json] prepare les shaders du jeu comme avant un lancement (cidre play le fait) :
+                                  les pipelines qu'il a lies lors des parties precedentes et que ce KosmicKrisp,
+                                  ce GPU ou ce macOS n'ont pas encore compiles (D3D12/Vulkan, fiche avec
+                                  compilation_kk fond et base_pipelines) ; rien si tout est chaud. --json :
+                                  {"evenement":"preparation","etat":"debut"|"en_cours","fait","total"} puis
+                                  "finie" | "passee" | "echouee" (+ "echecs", "duree")
+  cidre preparation <id> etat [--json]   inactive (raison) | chaude | a_preparer, a_faire, connus
+  cidre preparation <id> passer   arrete la preparation en cours : le jeu part, le reste se compile en jeu
+                                  (bouton Passer de Verger ; Ctrl-C au terminal)
   cidre bottles [--json]          les jeux Steam Windows deja installes par CrossOver, Whisky ou Heroic
   cidre import <appid> [<bouteille>] [--move] [--vers <emplacement>] [--json]
                                   reprend un de ces jeux dans le dossier Cidre sans le retelecharger : clone
@@ -1750,8 +1759,21 @@ case "$cmd" in
         [ -z "$sm" ] || echo "$sm"
       fi
     }
+    # Puis, avant le jeu et hors de son processus, la preparation de ses shaders
+    # (tests/preparer_shaders.sh, PREPARATION_SHADERS.md) : les pipelines qu'il a
+    # lies lors des parties precedentes et qui ne sont pas compiles pour ce
+    # KosmicKrisp, ce GPU et ce macOS. Rien (aucun evenement) si tout est chaud.
+    # En --json, {"evenement":"preparation","etat":...,"fait","total"} ; Passer
+    # (`cidre preparation <id> passer`, Verger) ou Ctrl-C : le jeu part tout de suite.
+    preparer_shaders() {
+      # (un Ctrl-C arrete la preparation, pas `cidre play`)
+      trap ':' INT
+      sh "$R/tests/preparer_shaders.sh" preparer "$id" $( [ "$JSON" = oui ] && echo --json) || true
+      trap - INT
+    }
     partir() {
       annoncer_shaders
+      preparer_shaders
       if [ "$JSON" = oui ] && [ "${CIDRE_SANS_STEAM:-}" != 1 ]; then
         sc=$(sh "$R/tests/client_steam_natif.sh" cpu 2>/dev/null) || true
         sc_p=$(printf '%s\n' "$sc" | sed -n 1p); sc_m=$(printf '%s\n' "$sc" | sed -n 2p)
@@ -2152,6 +2174,16 @@ FIN_ARGS_STEAM
       ''|--json) sh "$R/tests/precompil_kk.sh" telecharger "$id" $( [ "$JSON" = oui ] && echo --json) ;;
       *) echo "usage: cidre precompil <id> [etat|retirer] [--json]" >&2; exit 2 ;;
     esac ;;
+  preparation|preparer-shaders)
+    # Preparation des shaders d'avant lancement (tests/preparer_shaders.sh).
+    id=${1:?usage: cidre preparation <id> [etat|passer] [--json]}
+    connu "$id" || { echo "jeu inconnu : $id" >&2; exit 1; }
+    case ${2:-} in
+      etat) sh "$R/tests/preparer_shaders.sh" etat "$id" $( [ "$JSON" = oui ] && echo --json) ;;
+      passer) sh "$R/tests/preparer_shaders.sh" passer "$id" ;;
+      ''|--json) sh "$R/tests/preparer_shaders.sh" preparer "$id" $( [ "$JSON" = oui ] && echo --json) ;;
+      *) echo "usage: cidre preparation <id> [etat|passer] [--json]" >&2; exit 2 ;;
+    esac ;;
   bottles|bouteilles)
     # Les jeux qu'un autre outil a deja installes, et que `cidre import` reprend.
     export CIDRE_JEUX_CONNUS="$IDS_EMPL"
@@ -2269,7 +2301,7 @@ FIN_ARGS_STEAM
     [ -n "$id" ] && [ -n "$cle" ] && [ -n "$val" ] || { echo "usage: cidre set <id|defaut> <option> <valeur>" >&2; exit 2; }
     [ "$id" = defaut ] || connu "$id" || { echo "jeu inconnu : $id" >&2; exit 1; }
     case $cle in
-      journal_detaille|tso|vsync|hud|overlay|async|narrow_barriers|garde_index|dx12|sm66|eac_untrusted|luajit|plein_ecran|mode_emule|retina|gamemode|maj_avant_lancement|reglages_jeu_appliques|deck|sync_local|pile_kk|calcul_avant_passe|compile_differee|demi_precision)
+      journal_detaille|tso|vsync|hud|overlay|async|narrow_barriers|garde_index|dx12|sm66|eac_untrusted|luajit|plein_ecran|mode_emule|retina|gamemode|maj_avant_lancement|reglages_jeu_appliques|deck|sync_local|pile_kk|calcul_avant_passe|compile_differee|demi_precision|preparation_shaders)
         case $val in true|false) ;; *) echo "$cle attend true ou false" >&2; exit 2 ;; esac ;;
       metalfx)
         # agrandissement MetalFX a la presentation : true, ou un facteur de
@@ -2347,7 +2379,7 @@ FIN_ARGS_STEAM
         # une chaine : ecrite entre guillemets dans le profil (TOML)
         case $val in auto|fr|en|de|es|it|pt|ru|pl|ja|ko|zh) val="\"$val\"" ;;
           *) echo "langue attend auto ou un code : fr, en, de, es, it, pt, ru, pl, ja, ko, zh" >&2; exit 2 ;; esac ;;
-      *) echo "option inconnue : $cle (journal_detaille, tso, sync_local, vsync, hud, overlay, async, narrow_barriers, garde_index, dx12, sm66, d3d11, d3d9, metalfx, dlss, dlss_repli, generation_images, fils_compilation, eac_untrusted, luajit, plein_ecran, mode_emule, retina, gamemode, maj_avant_lancement, langue, clavier, windows_version, knowndlls, arguments, reglages_jeu_appliques, deck, fex_cache_disque, fex_x87_reduit, fex_maxinst, fex_multiblock, pile_kk, calcul_avant_passe, compile_differee, demi_precision, code_kk)" >&2; exit 2 ;;
+      *) echo "option inconnue : $cle (journal_detaille, tso, sync_local, vsync, hud, overlay, async, narrow_barriers, garde_index, dx12, sm66, d3d11, d3d9, metalfx, dlss, dlss_repli, generation_images, fils_compilation, eac_untrusted, luajit, plein_ecran, mode_emule, retina, gamemode, maj_avant_lancement, langue, clavier, windows_version, knowndlls, arguments, reglages_jeu_appliques, deck, fex_cache_disque, fex_x87_reduit, fex_maxinst, fex_multiblock, pile_kk, calcul_avant_passe, compile_differee, demi_precision, code_kk, preparation_shaders)" >&2; exit 2 ;;
     esac
     CIDRE_PROFILS=${CIDRE_PROFILS:-$CIDRE_DIR/profils.toml} sh "$R/tests/profil_cidre.sh" "$id" set "$cle" "$val" ;;
   unset)
