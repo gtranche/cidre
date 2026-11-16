@@ -107,5 +107,5 @@ serie_fex() {
    # 0488 et 0489 touchent aussi External/rpmalloc (sous-module, patche en place comme le reste).
    ls "$R"/0292-fex-*.patch "$R"/0360-fex-*.patch "$R"/0365-fex-*.patch "$R"/0366-fex-*.patch \
       "$R"/0370-fex-*.patch "$R"/0452-fex-*.patch "$R"/0460-fex-*.patch "$R"/047[5-9]-fex-*.patch \
-      "$R"/048[0-9]-fex-*.patch "$R"/049[0-3]-fex-*.patch 2>/dev/null
+      "$R"/048[0-9]-fex-*.patch "$R"/049[0-3]-fex-*.patch "$R"/0497-fex-*.patch 2>/dev/null
 }

@@ -182,6 +182,7 @@ if [ -d "$R/third_party/FEX" ]; then
          0490-*) temoin="void SetGuestCodeCopy(GuestCodeCopyFn Fn) override {"; ou=FEXCore/Source/Interface/Context/Context.h ;;
          0491-*) temoin="static inline int64_t CidreEtendreSigne(uint64_t Raw, uint8_t ValueSize) {"; ou=FEXCore/Source/Interface/Core/CodeCache.cpp ;;
          0493-*) temoin="// Cidre 0493 : ce que le cache disque a pose dans le tampon depuis le vidage precedent"; ou=FEXCore/Source/Interface/Core/Core.cpp ;;
+         0497-*) temoin="static bool CidreIlotAtomiques(bool TSOLogiciel) {"; ou=FEXCore/Source/Interface/Core/JIT/JIT.cpp ;;
          *) echo "   correctif FEX sans temoin : $(basename "$f")" >&2; exit 1 ;;
       esac
       # -F : texte litteral (les temoins contiennent . ( * &).

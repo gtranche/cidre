@@ -1,0 +1,107 @@
+Generated-by: LLM
+
+Cidre 0497 (FEX, ilot) : les garde-fous de l'ilot suivent le TSOEnabled effectif de la configuration de FEX, AppConfig du
+programme compris, et non plus la seule variable FEX_TSOENABLED. 0288 (dmb autour des atomiques, JIT.cpp) et 0289 (pas de
+ldp q sous TSO materiel, ARM64EC/Module.cpp) testaient getenv("FEX_TSOENABLED") == "0" ; le lanceur coupe le TSO du seul
+jeu de l'ilot par son AppConfig, et l'environnement (variables de FEX au-dessus de l'AppConfig) est partage avec le client
+Battle.net. Il fallait donc soit perdre les garde-fous (b1a145b), soit FEX_TSOENABLED=0 pour tout le prefixe (43e2094),
+ce qui coupe aussi le TSO logiciel du client 32 bits WOW64, hors ilot : 16/11 18:2x, un rendu CEF de Battle.net.exe
+tombe (« Unhandled page fault », fenetre de winedbg) ; litmus MP 32 bits sous WOW64, FEX de la 1.5.23 : 0 inversion avec
+TSO, ~45 000 sur 30 M sans (et des publications de pointeur vues avant l'objet).
+- 0288 : CidreIlotAtomiques(CTX->Config.TSOEnabled()) ; journal « ilot : atomiques en barrieres completes (0288 ...) »
+  quand il s'active (temoin).
+- 0289 : lu apres ReloadMetaLayer (configuration effective) et Logging::Init (le message sort enfin) : « ilot : TSO
+  logiciel coupe|actif (configuration effective), ldp q emis en ldr q|garde » des que CIDRE_ILOT=1.
+- seau du cache disque de Cidre (CidreEnvCodegen) : un TSO effectif coupe compte comme FEX_TSOENABLED=0 (le code emis
+  est le meme) ; seau inchange pour une variable posee a 0 (parties de dev, 43e2094) et pour un TSO actif. Le jeu de
+  l'ilot, variable retiree, retrouve donc le seau des parties de dev.
+Verifie hors ilot (prefixe neuf, runtime 1.5.23 + ce FEX, CIDRE_ILOT=1 sans CIDRE_ILOT_EXE, AppConfig « Diablo IV.exe »
+TSOEnabled 0, FEX_TSOENABLED absent) : client 32 bits litmus MP 0 inversion (3/3) ; « jeu » : TSO coupe, 0288 et 0289
+actifs ; seau du cache disque b39d21ff... = celui de FEX_TSOENABLED=0 (FEX 1.5.23 sans 0497 : 184ee526..., autre seau).
+Hors ilot (sans CIDRE_ILOT) : aucun garde-fou, comme avant.
+
+diff --git a/FEXCore/Source/Interface/Core/DiskCache.cpp b/FEXCore/Source/Interface/Core/DiskCache.cpp
+--- a/FEXCore/Source/Interface/Core/DiskCache.cpp
++++ b/FEXCore/Source/Interface/Core/DiskCache.cpp
+@@ -90,8 +90,15 @@
+       "CIDRE_COMPTE_RDTSC", "CIDRE_VOLATILE_TOUS_BLOCS", "FEX_TSOENABLED", "CIDRE_FEX_DISQUE_CLE_BRUTE",
+     };
+     fextl::string R = "|cidre-env-v1";
++    // Cidre 0497 : 0288/0289 suivent le TSOEnabled effectif (AppConfig compris) et non plus la seule variable ; un TSO
++    // coupe compte donc comme FEX_TSOENABLED=0 (le code emis est le meme). Seau inchange pour une variable posee a 0
++    // (parties de dev de l'ilot) ou un TSO actif.
++    const bool TSOCoupe = !FEXCore::Config::Get_TSOENABLED()();
+     for (const char* N : Noms) {
+       const char* V = getenv(N);
++      if (TSOCoupe && strcmp(N, "FEX_TSOENABLED") == 0) {
++        V = "0";
++      }
+       R += fextl::fmt::format("|{}={}", N, V ? V : "-");
+     }
+ #ifdef FEX_TEB_SANS_X18
+diff --git a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -123,13 +123,18 @@
+ // pas passer devant l'ecriture verrouillee (Dekker par xchg). LL/SC (ldaxr/stlxr) ne le garantit pas, meme sous TSO
+ // materiel (temoin litmus DXCHG/DLOCK : ~60 000 inversions sur 200 000). dmb ish avant et apres chaque atomique quand
+ // CIDRE_ILOT=1 et le TSO logiciel est coupe ; CIDRE_ILOT_ATOMIQUES=0 le retire.
+-static bool CidreIlotAtomiques() {
++// Cidre 0497 : « TSO logiciel coupe » = TSOEnabled effectif de la configuration de FEX (environnement ET AppConfig du
++// programme), et non plus getenv("FEX_TSOENABLED") seul : le lanceur coupe le TSO du seul jeu de l'ilot par son AppConfig, et le
++// client Battle.net (WOW64, hors ilot, meme environnement) garde le sien.
++static bool CidreIlotAtomiques(bool TSOLogiciel) {
+   static int8_t V = -1;
+   if (V < 0) {
+     const char* I = getenv("CIDRE_ILOT");
+-    const char* T = getenv("FEX_TSOENABLED");
+     const char* A = getenv("CIDRE_ILOT_ATOMIQUES");
+-    V = I && *I == '1' && T && *T == '0' && !(A && *A == '0');
++    V = I && *I == '1' && !TSOLogiciel && !(A && *A == '0');
++    if (V) {
++      LogMan::Msg::IFmt("ilot : atomiques en barrieres completes (0288, TSO logiciel coupe)");
++    }
+   }
+   return V;
+ }
+@@ -1390,7 +1395,7 @@
+         default: break;
+         }
+       }
+-      const bool CidreAtomiqueIlot = CidreIlotAtomiques() && CidreEstAtomiqueIlot(IROp->Op);
++      const bool CidreAtomiqueIlot = CidreIlotAtomiques(CTX->Config.TSOEnabled()) && CidreEstAtomiqueIlot(IROp->Op);
+       if (CidreAtomiqueIlot) {
+         dmb(ARMEmitter::BarrierScope::ISH);
+       }
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -1008,19 +1008,21 @@
+   const auto ExecutablePath = FEX::Windows::GetExecutableFilePath();
+   AppConfigName = FEX::Windows::BaseName(ExecutablePath);
+   FEX::Config::LoadConfig(AppConfigName, _environ, FEX::ReadPortabilityInformation());
++  FEXCore::Config::ReloadMetaLayer();
++  FEX::Windows::Logging::Init();
+   {
+     // Cidre (ilot TSO) : pas de ldp q ni de ld1 a plusieurs registres sous le TSO materiel (CodeEmitter/Emitter.h).
+-    // CIDRE_ILOT_LDPQ=1 les garde (pour comparer).
++    // CIDRE_ILOT_LDPQ=1 les garde (pour comparer). Cidre 0497 : TSO logiciel coupe = TSOEnabled effectif (environnement
++    // et AppConfig du programme, d'ou la lecture apres ReloadMetaLayer), et non plus getenv("FEX_TSOENABLED") seul.
+     const char* I = getenv("CIDRE_ILOT");
+-    const char* T = getenv("FEX_TSOENABLED");
+     const char* L = getenv("CIDRE_ILOT_LDPQ");
+-    ARMEmitter::CidreSansLdpQ = I && *I == '1' && T && *T == '0' && !(L && *L == '1');
+-    if (ARMEmitter::CidreSansLdpQ) {
+-      LogMan::Msg::IFmt("ilot : ldp q et ld1 multiples emis en ldr q");
++    const bool TSOLogiciel = FEXCore::Config::Get_TSOENABLED()();
++    ARMEmitter::CidreSansLdpQ = I && *I == '1' && !TSOLogiciel && !(L && *L == '1');
++    if (I && *I == '1') {
++      LogMan::Msg::IFmt("ilot : TSO logiciel {} (configuration effective), ldp q {}", TSOLogiciel ? "actif" : "coupe",
++                        ARMEmitter::CidreSansLdpQ ? "emis en ldr q" : "garde");
+     }
+   }
+-  FEXCore::Config::ReloadMetaLayer();
+-  FEX::Windows::Logging::Init();
+   FEXCore::Config::Set(FEXCore::Config::CONFIG_APP_FILENAME, ExecutablePath);
+   FEXCore::Config::Set(FEXCore::Config::CONFIG_APP_CONFIG_NAME, AppConfigName);
+ 

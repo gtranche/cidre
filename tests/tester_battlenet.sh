@@ -468,8 +468,18 @@ ilot_bloc() { # <BNET> <ilot de la fiche> [runtime de l'ilot] : env apres le blo
 if [ "$(sysctl -n kern.hv_support 2>/dev/null)" = 1 ]; then
    e=$(ilot_bloc oui true)
    contient "lanceur : jeu dans l'ilot" "JEU=oui" "$e"
-   # 0288/0289 (garde-fous de FEX dans l'ilot) ne lisent que FEX_TSOENABLED=0 de l'environnement, pas l'AppConfig
-   contient "lanceur : FEX_TSOENABLED=0 dans l'ilot (FEX 0288/0289)" "TSO=0" "$e"
+   # FEX sans 0497 : 0288/0289 (garde-fous de FEX dans l'ilot) ne lisent que FEX_TSOENABLED=0 de l'environnement
+   contient "lanceur : FEX sans 0497, FEX_TSOENABLED=0 dans l'ilot (0288/0289)" "TSO=0" "$e"
+   contient "lanceur : FEX sans 0497 dit au journal" "FEX sans 0497" "$(cat "$T/ilot.log")"
+   # FEX 0497 : 0288/0289 suivent le TSO effectif (AppConfig du jeu) ; le client Battle.net garde son TSO logiciel
+   XJ="$CIDRE_ILOT_RUNTIME/lib/wine/aarch64-windows/xtajit64.dll"; cp "$XJ" "$T/xtajit64.sauve"
+   printf 'ilot : TSO logiciel {} (configuration effective), ldp q {}' >>"$XJ"
+   e97=$(ilot_bloc oui true)
+   cp "$T/xtajit64.sauve" "$XJ"
+   contient "lanceur : FEX 0497, FEX_TSOENABLED retire (client Battle.net avec TSO)" "TSO=
+" "$e97
+"
+   contient "lanceur : FEX 0497, toujours dans l'ilot" "JEU=oui" "$e97"
    contient "lanceur : client par le runtime de l'ilot" "WINE=$CIDRE_ILOT_RUNTIME/bin/wine" "$e"
    contient "lanceur : wineserver et FEX du runtime de l'ilot" "BNETW=$CIDRE_ILOT_RUNTIME
 ARM64=$CIDRE_ILOT_RUNTIME" "$e"

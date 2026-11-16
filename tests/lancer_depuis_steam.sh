@@ -1210,13 +1210,23 @@ if [ "$(opt ilot CIDRE_JOUER_ILOT)" = true ]; then
          # WINE : etape2 lance le client par lui ; CIDRE_BNET_WINE : wineserver du prefixe ; WINE_ARM64 : installer_fex
          # (etape2, a chaque lancement) pose dans le prefixe le FEX de ce runtime, celui de l'ilot
          export WINE="$ILOT_RT/bin/wine" CIDRE_BNET_WINE="$ILOT_RT" WINE_ARM64="$ILOT_RT"
-         # TSO logiciel coupe pour le jeu par son AppConfig, MAIS les garde-fous de FEX propres a l'ilot, 0288 (dmb
-         # autour des atomiques : sans eux, ~60 000 inversions Dekker sur 200 000 au litmus) et 0289 (pas de ldp q sous
-         # TSO materiel), ne lisent que l'environnement (getenv("FEX_TSOENABLED") == "0", JIT.cpp et ARM64EC/Module.cpp),
-         # jamais l'AppConfig : depuis b1a145b (11/11), le jeu tournait dans l'ilot sans eux. FEX_TSOENABLED=0 pour tout
-         # le prefixe, comme toutes les parties de dev dans l'ilot (D4 : partie_combo.sh ; D2R : manche.sh) : le client
-         # Battle.net, hors ilot, y perd aussi le TSO logiciel, comme dans ces parties. CIDRE_TSO explicite garde la main.
-         [ -n "${CIDRE_TSO:-}" ] || export FEX_TSOENABLED=0
+         # TSO logiciel coupe pour le seul jeu par son AppConfig (plus bas) ; le client Battle.net (WOW64, hors ilot,
+         # meme environnement) garde le sien. Les garde-fous de FEX propres a l'ilot, 0288 (dmb autour des atomiques :
+         # sans eux, ~60 000 inversions Dekker sur 200 000 au litmus) et 0289 (pas de ldp q sous TSO materiel), suivent
+         # depuis FEX 0497 le TSOEnabled effectif (AppConfig compris) ; le seau du cache disque de FEX compte un TSO coupe
+         # comme FEX_TSOENABLED=0 (seau des parties de dev inchange). Un xtajit64.dll sans 0497 (temoin « configuration
+         # effective ») ne lit que getenv("FEX_TSOENABLED") == "0" : FEX_TSOENABLED=0 pour tout le prefixe, comme
+         # 43e2094, au prix du TSO du client (16/11 18:2x : un rendu CEF 32 bits de Battle.net tombe, « Unhandled page
+         # fault » ; litmus MP 32 bits sous WOW64 sans TSO : ~45 000 inversions sur 30 M, 0 avec). CIDRE_TSO explicite
+         # garde la main.
+         if [ -z "${CIDRE_TSO:-}" ]; then
+            if grep -aqF '(configuration effective)' "$ILOT_RT/lib/wine/aarch64-windows/xtajit64.dll" 2>/dev/null; then
+               unset FEX_TSOENABLED
+            else
+               export FEX_TSOENABLED=0
+               echo "    ilot    : FEX sans 0497, TSO logiciel coupe pour tout le prefixe (client Battle.net compris)" >>"$JOURNAL"
+            fi
+         fi
          # Dans l'ilot, le bon reglage FEX est MaxInst 500 AVEC le multibloc (manches D2R du 24/10 : 6 a 13 trous de
          # plus de 150 ms contre 23 a 31 sans) ; fex_multiblock = false de la fiche ne vaut que hors ilot.
          # CIDRE_FEX_MULTIBLOCK explicite garde la main.
