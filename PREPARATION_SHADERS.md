@@ -87,6 +87,8 @@ Sous `<cache>` = `MESA_KK_PIPELINE_CACHE` = `~/Library/Application Support/Cidre
 | `preparation/chaud` | `evaluer` | tampon : identité et tailles de la liste, de la base, du journal, des échecs au dernier compte nul |
 | `preparation/adoption` | `evaluer`, une fois | issue de la première rencontre (§ 3.5) |
 | `preparation/journal.txt` | `preparer` | déroulé et sortie du rejeu (stderr de KK) |
+| `kk_pipelines.*.mtl4archive.index` | KK (0496) à chaque archive | paires VS/FS de l'archive (§ 12) |
+| `preparation/index-<identité>`, `archives-sans-index/`, `rejoues-prep-<identité>.bin.sans-index` | `evaluer` (0496, une fois) | archives sans index mises de côté et journal d'avant ; effacés quand une préparation finit |
 | `preparation/verrou/`, `preparation/passer`, `preparation/travail.<pid>/` | `preparer` | transitoires ; `travail` = base filtrée (`pipelines.bin` + liens vers `nuanceurs.bin`/`fonctions.bin`) |
 
 Sélection (`prepa-shaders compter|filtrer`) : un enregistrement de la base est **connu** si sa clé VS **ou** FS
@@ -340,3 +342,49 @@ Plan proposé :
    avec le cache Mesa de la famille (~800 Mo), le premier lancement serait chaud sans préparation. Coût : un paquet
    par (arch, macOS) à refaire à chaque `KK_CODEGEN` : à réserver aux versions stables.
 3. Ne pas publier l'AIR, le cache de fonctions ni la traduction.
+
+## 12. Micro-saccades apres la preparation « tout » : decomposition et 0496 (16/11)
+
+Partie du joueur a 18:25 (1.5.23 candidate, preparation « tout » complete, 960 s, journal
+`~/Dev/cidre-release-d4/journaux/partie-d4-prepa-tout-1816.log`). Sur le fil du jeu : attentes au bind 2,2 s
+(max 258 ms) **et** variantes de rendu au dessin 4,4 s (752, max 53 ms) — les variantes pesaient plus que le bind.
+
+| poste (fil du jeu) | mesure en jeu | cause |
+|---|---|---|
+| variantes au dessin : recherche dans les archives | 2 326 ms / 683 (3,4 ms) | 35 archives essayees l'une apres l'autre (8 vieilles + 27 lots de preparation), sous le verrou des archives que les fils kkvar tiennent aussi (12,6 s de recherche sur les autres fils) |
+| variantes au dessin : relais MSL | ~1 500 ms | sur echec, 2e tour de toutes les archives avec les bibliotheques MSL (`newLibraryWithURL`) : 8 succes sur 577 (14,8 ms par relais rate) |
+| binds « relus » (595 / 1 033 ms) | ~1,7 ms | `access()` de deux chemins AIR par bibliotheque pour le relais (« chemins relais » 9 989 ms sur tous les fils, 3,7 ms chacun en jeu), puis la bibliotheque (0,4 ms) |
+| binds froids (60 / 1 179 ms, 20 ms chacun) | frontal au bind | (a) **817 pipelines neufs** (zone neuve : aucun de leurs nuanceurs dans la base ni jamais lie), dont 36 nuanceurs lies ; (b) **1 104 pipelines prepares absents du cache Mesa** (5 %, banc sur copie) : cache disque a la borne de 1 Gio (`index` : 1 023,7 Mio), chaque ecriture du rejeu ou du jeu en evince une autre |
+| « jamais en file » 177 / 1 298 ms, « sur fond en cours » 258 / 577 ms | — | les memes binds, classes par l'etat du ticket de fond : froids et relus hors liste chaude |
+
+Pointes > 50 ms : les variantes (max 52,8 ms) viennent de la file d'attente du verrou des archives (recherches de
+35 archives par kkvar devant) ; les binds >= 100 ms (1) d'un frontal froid.
+
+Correctif :
+- **0496** (pont Metal seul, `KK_CODEGEN` inchange `1-fe23de315cfc449d`) : index par archive, une archive par
+  recherche ; relais saute quand aucune archive ne peut l'aider ; chemins du relais sondes seulement au relais.
+- **Preparation** : une fois par identite, les archives sans index sont mises de cote (`archives-sans-index/`,
+  effacees a la fin de la preparation) et la preparation refaite (journal `.sans-index`) : chez le joueur
+  ~1,5 min (87 s sur la copie : Mesa, AIR et cache de fonctions deja chauds) ; elle reecrit aussi les nuanceurs
+  evinces du cache Mesa (0 absent apres) et prepare les 817 pipelines neufs de la derniere partie.
+- **Cache Mesa borne a 4 Gio** (`MESA_SHADER_CACHE_MAX_SIZE=4G` si absent) pour le rejeu et pour le jeu
+  (`cidre play`, `partir`). Un jeu lance depuis le client Steam sans `cidre play` garde 1 Gio : a poser dans le
+  lanceur (`tests/lancer_depuis_steam.sh`, laisse a l'agent qui y travaille).
+
+Banc du bind (M1 Max, copies APFS du cache du joueur, base de 22 061 pipelines, 300 binds relus + dessin de la
+variante de prechauffage, passes entrelacees) :
+
+| | dessins (300) | recherche archives | archives / recherche | binds (300) | chemins relais |
+|---|---|---|---|---|---|
+| kk-0495, cache du joueur (35 sans index) | 752 / 762 ms (max 11,6) | 677 / 681 ms | 12,2 | 257 / 288 ms | 149 ms |
+| 0496, meme cache | 772 / 881 ms | 703 / 812 ms | 12,2 | 197 / 214 ms | 17 ms |
+| 0496, cache re-prepare (23 indexees) | **138 / 148 / 277 ms** (max 2,9 / 5,0 / 30) | **129-155 ms** | **1,00** | **89-94 ms** | 4 ms |
+
+Variantes absentes (3 de plus par paire, compilees) : recherche 1,3 s et 770 relais (1,1 s) avec kk-0495 ; 0,22 s
+et 0 relais avec 0496 (index coupe : 1,0 s). Les binds plus courts du cache re-prepare viennent aussi d'un cache
+plus chaud (la preparation venait de tourner) : gain du seul correctif sur le bind = chemins relais (-25 %).
+
+Reste a valider en jeu : `KK compile: index des archives (0496)` ≈ 1 archive par recherche, relais sautes, « chemins
+relais » ~0, variantes au dessin ~0,5-1 ms en moyenne, pointes ; attentes au bind froides restantes = pipelines
+vraiment neufs (zone jamais vue : seule une base publiee, § 11, les couvrirait) ; premier lancement apres la mise a
+jour : ecran de preparation ~1,5 min (re-preparation avec index).

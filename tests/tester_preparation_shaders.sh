@@ -10,7 +10,7 @@ P="$B/tests/preparer_shaders.sh"
 T=$(mktemp -d "${TMPDIR:-/tmp}/tester-prepa.XXXXXX")
 export CIDRE_DIR="$T/cidre"; mkdir -p "$CIDRE_DIR"
 export CIDRE_PRECOMPIL_FAMILLE=apple7 CIDRE_PREPARATION_MACOS=25A100 CIDRE_PRECOMPIL_SANS_RESEAU=1
-unset MESA_KK_PIPELINE_CACHE CIDRE_BASE_PIPELINES CIDRE_LISTE_CHAUDE CIDRE_PREPARATION_SHADERS CIDRE_PIPELINE_CACHE
+unset MESA_SHADER_CACHE_MAX_SIZE MESA_KK_PIPELINE_CACHE CIDRE_BASE_PIPELINES CIDRE_LISTE_CHAUDE CIDRE_PREPARATION_SHADERS CIDRE_PIPELINE_CACHE
 ok=0; ko=0
 verif() { if [ "$2" = "$3" ]; then ok=$((ok + 1)); echo "  ok   $1"; else ko=$((ko + 1)); echo "  KO   $1 : attendu « $2 », obtenu « $3 »"; fi; }
 champ() { sed -n -E "s/^($1)=//p"; }
@@ -159,6 +159,40 @@ printf 'KKP1\110\000\000\000%s%sETAT%04d' "$(cle 21 V)" "$(cle 21 F)" 21 >>"$C4/
 verif "tout : un pipeline cree de plus (jamais lie) est a preparer" "a_preparer 1 21" \
    "$(CIDRE_PREPARATION_SHADERS=tout sh "$P" etat $ID4 | champ 'etat|a_faire|connus' | tr '\n' ' ' | sed 's/ $//')"
 verif "lies : ce pipeline-la n'est pas a preparer" chaude "$(sh "$P" etat $ID4 | champ etat)"
+verif "rejeu : cache disque Mesa borne a 4 Gio (1 Gio par defaut : evictions)" "MESA_SHADER_CACHE_MAX_SIZE=4G" "$(grep '^MESA_SHADER_CACHE_MAX_SIZE=' "$T/env-rejeu.txt")"
+: >"$C4/kk_pipelines.1.0.mtl4archive"
+verif "pilote sans index (avant 0496) : archives sans index laissees" "chaude 1" \
+   "$(sh "$P" etat $ID4 | champ etat) $(ls "$C4" | grep -c '^kk_pipelines.*mtl4archive$')"
+
+# Index des archives (0496) : une fois par identite, les archives sans index sont mises de cote et la preparation refaite
+ID5=999005; C5="$CIDRE_DIR/vkd3d-cache/$ID5"
+base "$C5/base-pipelines" 6; mkdir -p "$C5/mesa"
+KK0=$CIDRE_KK_DYLIB
+export CIDRE_KK_DYLIB=$(pilote 0496049604960496 'CIDRE_REJEU_JOURNAL kk-index 1 msl=')
+verif "0496 : premiere preparation (tout)" '"finie",6,6,0' \
+   "$(CIDRE_PREPARATION_SHADERS=tout sh "$P" preparer $ID5 --json 2>/dev/null | tail -1 | sed -E 's/.*"etat":("[a-z]+"),"fait":([0-9]+),"total":([0-9]+),"echecs":([0-9]+).*/\1,\2,\3,\4/')"
+J5="$C5/rejoues-prep-1-0496049604960496-apple7-25A100.bin"
+verif "0496 : marque une fois par identite" 1 "$(ls "$C5/preparation" | grep -c '^index-1-0496049604960496-apple7-25A100$')"
+verif "0496 : chaude" chaude "$(CIDRE_PREPARATION_SHADERS=tout sh "$P" etat $ID5 | champ etat)"
+# un cache d'avant 0496 : deux archives sans index, une indexee, le journal d'une preparation complete
+rm -f "$C5/preparation/index-1-0496049604960496-apple7-25A100" "$C5/preparation/chaud"
+: >"$C5/kk_pipelines.7.0.mtl4archive"; : >"$C5/kk_pipelines.7.1.mtl4archive"
+: >"$C5/kk_pipelines.8.0.mtl4archive"; echo 'kk-index 1 msl=0' >"$C5/kk_pipelines.8.0.mtl4archive.index"
+verif "0496 : archives sans index -> tout est a refaire" "a_preparer 6" \
+   "$(CIDRE_PREPARATION_SHADERS=tout sh "$P" etat $ID5 | champ 'etat|a_faire' | tr '\n' ' ' | sed 's/ $//')"
+verif "0496 : archives sans index mises de cote, l'indexee reste" "2 kk_pipelines.8.0.mtl4archive" \
+   "$(ls "$C5/archives-sans-index" | grep -c mtl4archive) $(ls "$C5" | grep 'mtl4archive$' | tr '\n' ' ' | sed 's/ $//')"
+verif "0496 : journal d'avant mis de cote" "192" "$(stat -f %z "$J5.sans-index" 2>/dev/null)"
+verif "0496 : relance de l'etat : rien de plus deplace" "a_preparer 6" \
+   "$(CIDRE_PREPARATION_SHADERS=tout sh "$P" etat $ID5 | champ 'etat|a_faire' | tr '\n' ' ' | sed 's/ $//')"
+verif "0496 : preparation refaite" '"finie",6,6,0' \
+   "$(CIDRE_PREPARATION_SHADERS=tout sh "$P" preparer $ID5 --json 2>/dev/null | tail -1 | sed -E 's/.*"etat":("[a-z]+"),"fait":([0-9]+),"total":([0-9]+),"echecs":([0-9]+).*/\1,\2,\3,\4/')"
+verif "0496 : finie : archives mises de cote et vieux journal effaces" "non non" \
+   "$( [ -e "$C5/archives-sans-index" ] && echo oui || echo non) $( [ -e "$J5.sans-index" ] && echo oui || echo non)"
+: >"$C5/kk_pipelines.9.0.mtl4archive"
+verif "0496 : une archive sans index plus tard (fait une fois) : laissee, chaude" "chaude oui" \
+   "$(CIDRE_PREPARATION_SHADERS=tout sh "$P" etat $ID5 | champ etat) $( [ -f "$C5/kk_pipelines.9.0.mtl4archive" ] && echo oui || echo non)"
+export CIDRE_KK_DYLIB=$KK0
 
 # Adoption : un jeu dont les shaders sont deja en cache (etat_shaders) n'est pas recompile a la premiere rencontre
 ID2=999002; C2="$CIDRE_DIR/vkd3d-cache/$ID2"
@@ -172,7 +206,7 @@ verif "adoption notee" adoptee "$(cut -d' ' -f2 "$C2/preparation/adoption")"
 export HOME="$T/home" CIDRE_PROFILS="$T/perso.toml" CIDRE_PROFILS_BASE="$T/profils-base" CIDRE_LANCEUR="$T/lanceur.sh" \
        CIDRE_MAJ_AVANT_LANCEMENT=0 CIDRE_SANS_STEAM=1 CIDRE_PROTONDB_URL="file://$T/rien/"
 mkdir -p "$HOME" "$CIDRE_DIR/games/9020/steamapps"
-printf '#!/bin/sh\necho "lance $*"\n' >"$T/lanceur.sh"; chmod +x "$T/lanceur.sh"
+printf '#!/bin/sh\necho "lance $*"\necho "${MESA_SHADER_CACHE_MAX_SIZE:-}" >"%s/borne-jeu"\n' "$T" >"$T/lanceur.sh"; chmod +x "$T/lanceur.sh"
 printf 'MZ\n' >"$CIDRE_DIR/games/9020/Jeu.exe"
 printf '"AppState"\n{\n\t"appid"\t\t"9020"\n\t"name"\t\t"Jeu 9020"\n\t"StateFlags"\t\t"4"\n\t"installdir"\t\t"Jeu"\n\t"SizeOnDisk"\t\t"1000"\n\t"buildid"\t\t"100"\n}\n' \
    >"$CIDRE_DIR/games/9020/steamapps/appmanifest_9020.acf"
@@ -185,6 +219,7 @@ verif "cidre play --json : shaders, preparation debut puis finie, lancement" "sh
    "$(sed -E 's/^\{"evenement":"([a-z]+)"(,"etat":"([a-z_]+)")?.*/\1:\3/; s/^shaders:.*/shaders/; s/^lancement:$/lancement/' "$T/evts" | grep -v ':en_cours' | tr '\n' ' ' | sed 's/ $//')"
 verif "cidre play --json : rien que du JSON sur la sortie" 0 "$(grep -vc '^{.*}$' "$T/evts")"
 verif "cidre play : le jeu part apres la preparation" 1 "$(grep -c '^lance ' "$T/err")"
+verif "cidre play : cache disque Mesa du jeu borne a 4 Gio" 4G "$(cat "$T/borne-jeu" 2>/dev/null)"
 sh "$B/cidre" play 9020 --json --sans-maj >"$T/evts2" 2>/dev/null
 verif "cidre play suivant : aucun evenement de preparation" 0 "$(grep -c '"evenement":"preparation"' "$T/evts2")"
 verif "cidre help : preparation documentee" 3 "$(sh "$B/cidre" help 2>/dev/null | grep -c '^  cidre preparation <id>')"
