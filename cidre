@@ -1776,6 +1776,10 @@ case "$cmd" in
     partir() {
       annoncer_shaders
       preparer_shaders
+      # Cache disque des nuanceurs de KosmicKrisp (0430, MESA_SHADER_CACHE_DIR du jeu) : 1 Gio par defaut, a la
+      # borne pour Diablo IV prepare (16/11) : chaque ecriture evincait un nuanceur prepare. Meme borne que la
+      # preparation (tests/preparer_shaders.sh).
+      [ -n "${MESA_SHADER_CACHE_MAX_SIZE:-}" ] || export MESA_SHADER_CACHE_MAX_SIZE=4G
       if [ "$JSON" = oui ] && [ "${CIDRE_SANS_STEAM:-}" != 1 ]; then
         sc=$(sh "$R/tests/client_steam_natif.sh" cpu 2>/dev/null) || true
         sc_p=$(printf '%s\n' "$sc" | sed -n 1p); sc_m=$(printf '%s\n' "$sc" | sed -n 2p)

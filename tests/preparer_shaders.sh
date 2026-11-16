@@ -110,15 +110,17 @@ identite() {
    [ -f "$DYLIB" ] || return 1
    B=${CIDRE_PREPARATION_MACOS:-$(sw_vers -buildVersion 2>/dev/null || echo inconnu)}
    empreinte="$DYLIB $(stat -f '%z %m' "$DYLIB") $(sysctl -n hw.model 2>/dev/null) $B ${CIDRE_PRECOMPIL_FAMILLE:-}"
-   if [ "$(sed -n 1p "$PREP/identite" 2>/dev/null)" = "$empreinte" ]; then
-      IDENT=$(sed -n 2p "$PREP/identite"); REJEU=$(sed -n 3p "$PREP/identite")
+   if [ "$(sed -n 1p "$PREP/identite" 2>/dev/null)" = "$empreinte" ] && [ -n "$(sed -n 4p "$PREP/identite")" ]; then
+      IDENT=$(sed -n 2p "$PREP/identite"); REJEU=$(sed -n 3p "$PREP/identite"); INDEX=$(sed -n 4p "$PREP/identite")
    else
       K=$(CIDRE_KK_DYLIB=$DYLIB sh "$R/tests/precompil_kk.sh" kk 2>/dev/null)
       F=$(sh "$R/tests/precompil_kk.sh" famille 2>/dev/null)
       case $K in ''|inconnu|*[!A-Za-z0-9.-]*) return 1 ;; esac
       IDENT="$K-${F:-inconnu}-$B"
       if LC_ALL=C grep -q 'CIDRE_REJEU_JOURNAL' "$DYLIB" 2>/dev/null; then REJEU=oui; else REJEU=non; fi
-      mkdir -p "$PREP" && printf '%s\n%s\n%s\n' "$empreinte" "$IDENT" "$REJEU" >"$PREP/identite.$$" &&
+      # 0496 : le pilote ecrit un index a cote de chaque archive et ne cherche que la ou est la paire
+      if LC_ALL=C grep -q 'kk-index 1 msl=' "$DYLIB" 2>/dev/null; then INDEX=oui; else INDEX=non; fi
+      mkdir -p "$PREP" && printf '%s\n%s\n%s\n%s\n' "$empreinte" "$IDENT" "$REJEU" "$INDEX" >"$PREP/identite.$$" &&
          mv "$PREP/identite.$$" "$PREP/identite"
    fi
    JOURNAL_NOM="rejoues-prep-$IDENT.bin"; JOURNAL="$CACHE/$JOURNAL_NOM"
@@ -141,6 +143,27 @@ evaluer() {
    # Cache disque des nuanceurs vide (0430) : ce qui a ete fait est perdu.
    if [ -f "$JOURNAL" ] && grep -q '^CIDRE_CACHE_DISQUE=[^0]' "$BASE/env.txt" 2>/dev/null && [ ! -d "$CACHE/mesa" ]; then
       mv "$JOURNAL" "$JOURNAL.perime" 2>/dev/null; rm -f "$PREP/chaud" "$ECHECS"
+   fi
+   # Archives sans index (0496), une fois par identite : un pilote qui indexe ses
+   # archives ne cherche un pipeline que dans celle qui contient sa paire, mais
+   # consulte toujours, pour tout pipeline, chaque archive sans index (Diablo IV,
+   # 16/11 : 35 archives, 3,4 ms de recherche par variante au dessin, pointes a
+   # 53 ms). Elles sont mises de cote (archives-sans-index/, effacees quand une
+   # preparation finit) et ce que la preparation avait fait est refait, avec index
+   # (le rejeu les trouverait sinon dans les vieilles archives et n'ecrirait rien).
+   if [ "$INDEX" = oui ] && [ ! -f "$PREP/index-$IDENT" ]; then
+      n=0
+      for a in "$CACHE"/kk_pipelines.*.mtl4archive; do
+         [ -f "$a" ] && [ ! -f "$a.index" ] || continue
+         mkdir -p "$CACHE/archives-sans-index" && mv "$a" "$CACHE/archives-sans-index/" && n=$((n + 1))
+      done
+      if [ $n -gt 0 ]; then
+         [ ! -f "$JOURNAL" ] || mv "$JOURNAL" "$JOURNAL.sans-index" 2>/dev/null
+         rm -f "$PREP/chaud" "$ECHECS"
+         # (pas d'adoption : ce qui a ete lie n'est dans aucune archive indexee)
+         mkdir -p "$PREP"; [ -f "$PREP/adoption" ] || echo "$IDENT non adoptee (index) $(date +%s)" >"$PREP/adoption"
+      fi
+      mkdir -p "$PREP" && echo "$n archives sans index mises de cote $(date +%s)" >"$PREP/index-$IDENT"
    fi
    # Premiere rencontre (une fois par jeu) : si ses shaders sont deja en cache
    # (etat_shaders.sh : meme macOS, meme Mac, meme Cidre qu'a la derniere partie,
@@ -217,6 +240,10 @@ preparer() {
    (
       for v in $(env | sed -n -E 's/^((CIDRE|MESA)_[A-Za-z0-9_]*)=.*/\1/p'); do unset "$v"; done
       while IFS= read -r l; do export "$l"; done <"$W/env"
+      # Cache disque Mesa (0430) : 1 Gio par defaut ; Diablo IV en remplit ~0,9 a lui seul et le cache du joueur
+      # (16/11) etait a la borne : chaque ecriture du rejeu en evincait une autre, des pipelines prepares
+      # redevenaient froids (frontal au bind). `cidre play` pose la meme borne pour le jeu.
+      [ -n "${MESA_SHADER_CACHE_MAX_SIZE:-}" ] || export MESA_SHADER_CACHE_MAX_SIZE=4G
       export CIDRE_REJEU="$W" CIDRE_REJEU_JOURNAL="$JOURNAL_NOM" CIDRE_REJEU_LOT="$LOT" \
              CIDRE_COMPILE_DIFFEREE="$FILS" CIDRE_REJEU_QOS_HAUTE=1 MESA_KK_COMPILE_STATS=1 \
              MESA_KK_PIPELINE_CACHE="$CACHE"
@@ -269,6 +296,11 @@ preparer() {
    dire "Preparation des shaders finie en $D s ($FAIT / $N${E:+, $E en echec})"
    evenement "\"etat\":\"finie\",\"fait\":$FAIT,\"total\":$N,\"echecs\":${E:-0},\"duree\":$D"
    rm -f "$PREP/chaud"
+   # Les archives sans index mises de cote (0496) sont refaites : place rendue.
+   if [ -d "$CACHE/archives-sans-index" ]; then
+      rm -rf "$CACHE/archives-sans-index" "$JOURNAL.sans-index"
+      echo "   archives sans index effacees (refaites avec index)" >>"$JRN"
+   fi
 }
 
 case $ACTION in

@@ -1,0 +1,441 @@
+Generated-by: LLM
+
+KosmicKrisp : index des archives Metal (une archive par recherche) et chemins du relais sondes seulement au relais
+
+Diablo IV prepare en mode « tout » (joueur, 16/11, 1.5.23 candidate, 960 s) : micro-saccades restantes. Sur le fil du
+jeu, 683 variantes de rendu au dessin = 3 988 ms, dont 2 326 ms de recherche dans les archives et ~1 500 ms de relais
+MSL ; attentes au bind 2 176 ms (max 258 ms), « chemins relais » 9 989 ms (access() de deux chemins par bibliotheque).
+Cause : mtl_new_render_pipeline essayait les 35 archives du cache (8 anciennes + 27 lots de preparation) l'une apres
+l'autre sous le verrou des archives, puis toutes encore avec les bibliotheques MSL du relais (8 succes sur 577).
+
+- Chaque archive ecrite (flush du jeu ou lot du rejeu, kk_serialize_to_dir, sous le verrou exclusif de compilation)
+  recoit <archive>.index : « kk-index 1 msl=0|1 » puis une ligne par paire VS/FS (cle 0171 et nom de fonction) des
+  pipelines de rendu compiles pour elle depuis l'archive precedente (notes sous le verrou de compilation). Un
+  pipeline sans cle rend l'archive non indexee.
+- Au chargement des archives, les index forment une table paire -> archives. Une recherche ne consulte que les
+  archives indexees qui contiennent sa paire, puis celles sans index (anciennes, paquets 0165) ; le relais MSL
+  seulement les archives ou une bibliotheque MSL a ete capturee (msl=1) et celles sans index, et il est saute s'il
+  n'en reste aucune (pas de newLibraryWithURL). Une archive ne rend que le pipeline exact du descripteur : seules
+  sont sautees celles qui ne peuvent pas le contenir ; rendu inchange.
+- mtl_new_library_air : les chemins AIR du relais ne sont plus sondes (access) a chaque bibliotheque, seulement
+  quand un relais est tente (kk_relais_msl_fd), dans le meme ordre ; aucun fichier : comme avant, pas de relais.
+- CIDRE_INDEX_ARCHIVES=0 : toutes les archives comme avant (les index s'ecrivent quand meme).
+- MESA_KK_COMPILE_STATS : « KK: index des archives (0496) : N indexees (P paires), M sans index » au chargement,
+  « KK compile: index des archives (0496) : recherches, archives consultees (par recherche), relais sautes, index
+  ecrits ».
+
+Seul src/kosmickrisp/bridge change (neutre pour l'empreinte 0208) : KK_CODEGEN reste 1-fe23de315cfc449d, garde
+tests/cle_kk_figee.sh passee (sources hachees 4559397b...), caches des joueurs valables.
+tests/preparer_shaders.sh met de cote une fois les archives sans index et refait la preparation avec index.
+
+Banc du bind de KK (CIDRE_BANC_BIND=300 CIDRE_BANC_RELUS=1, base du joueur 22 061 pipelines, copies APFS du cache
+du joueur, M1 Max, passes entrelacees) :
+- variante = cle de prechauffage (dans les archives), cache du joueur (35 archives sans index), kk-0495 : dessins
+  752 / 762 ms pour 300 (max 11,6 ms), recherche 677 / 681 ms (12,2 archives par recherche), binds 257 / 288 ms ;
+- meme cache, 0496 : chemins relais 149 -> 17 ms, binds 197 / 214 ms ; dessins inchanges (aucun index) ;
+- cache re-prepare par 0496 (23 archives indexees, 87 s) : dessins 138 / 148 / 277 ms (max 2,9 / 5,0 / 30 ms),
+  recherche 129 / 133 / 155 ms (1,00 archive par recherche), 300 / 300 depuis les archives, binds 89 / 91 / 94 ms ;
+- 3 variantes absentes par paire (CIDRE_BANC_VARIANTES=4, compilees) : recherche 1 293-1 349 ms et 770 relais
+  1,1 s (kk-0495) ; 0496 indexe : 215-239 ms (1,02 archive), 768 relais sautes (3 ms) ; index coupe : 980-1 010 ms.
+
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.m b/src/kosmickrisp/bridge/mtl_compiler.m
+--- a/src/kosmickrisp/bridge/mtl_compiler.m
++++ b/src/kosmickrisp/bridge/mtl_compiler.m
+@@ -374,6 +374,8 @@
+    [job->slot release];
+    free(job);
+ }
++
++static void kk_index_noter(MTL4RenderPipelineDescriptor *desc);
+ 
+ static void *
+ kk_relais_main(void *arg)
+@@ -402,6 +404,8 @@
+             pipe = [job->comp newRenderPipelineStateWithDescriptor:(MTL4RenderPipelineDescriptor *)job->desc
+                                                compilerTaskOptions:nil
+                                                              error:NULL];
++         if (pipe != nil && !job->compute && job->comp.pipelineDataSetSerializer != nil)
++            kk_index_noter((MTL4RenderPipelineDescriptor *)job->desc);
+          kk_compile_unlock();
+          if (pipe != nil)
+             atomic_fetch_add(&kk_pipe_total, 1);
+@@ -614,12 +618,25 @@
+       return fd;
+    MTL4LibraryFunctionDescriptor *lfd = (MTL4LibraryFunctionDescriptor *)fd;
+    id air = lfd.library;
+-   NSString *path = objc_getAssociatedObject(air, kk_lib_msl_path_key);
+-   if (path == nil)
++   NSArray<NSString *> *paths = objc_getAssociatedObject(air, kk_lib_msl_path_key);
++   if (paths == nil)
+       return fd;
+    pthread_mutex_lock(&kk_relais_lib_mutex);
+    id<MTLLibrary> msl = objc_getAssociatedObject(air, kk_lib_msl_lib_key);
+    if (msl == nil) {
++      NSString *path = nil;
++      for (NSString *p in paths) {
++         if (access(p.fileSystemRepresentation, R_OK) == 0) {
++            path = p;
++            break;
++         }
++      }
++      if (path == nil) {
++         /* aucun AIR sur disque : comme avant 0496 (chemin jamais pose) */
++         objc_setAssociatedObject(air, kk_lib_msl_path_key, nil, OBJC_ASSOCIATION_RETAIN);
++         pthread_mutex_unlock(&kk_relais_lib_mutex);
++         return fd;
++      }
+       msl = [dev newLibraryWithURL:[NSURL fileURLWithPath:path] error:NULL];
+       if (msl != nil) {
+          objc_setAssociatedObject(msl, kk_lib_key_key, objc_getAssociatedObject(air, kk_lib_key_key),
+@@ -669,6 +686,208 @@
+    alt.vertexFunctionDescriptor = vs;
+    alt.fragmentFunctionDescriptor = fs;
+    return alt;
++}
++
++/* Cidre (0496) : index des archives.
++ *
++ * Une recherche de pipeline de rendu essayait chaque archive l'une apres
++ * l'autre, sous le verrou des archives, puis toutes encore pour le relais MSL.
++ * Diablo IV prepare (mode tout, 16/11) : 35 archives ; au dessin, 3,4 ms de
++ * recherche par variante et 2,2 ms de relais (683 variantes : 3,8 s sur le fil
++ * du jeu, pointes a 53 ms), 14,8 ms par relais rate (577 / 8,6 s).
++ *
++ * Chaque archive ecrite (jeu ou rejeu) recoit a cote <archive>.index : la
++ * paire de bibliotheques (cle 0171 et nom de fonction, VS puis FS) de chaque
++ * pipeline de rendu compile pour elle depuis l'archive precedente (sous le
++ * verrou de compilation : une archive s'ecrit sous le verrou exclusif). Une
++ * archive sans index (ancienne, paquet 0165, ou dont un pipeline n'avait pas de
++ * cle) reste consultee pour tout. Une recherche consulte alors les archives
++ * indexees qui contiennent sa paire, puis les archives sans index ; le relais
++ * MSL seulement celles ou une bibliotheque MSL a ete capturee, et rien s'il
++ * n'y en a aucune. CIDRE_INDEX_ARCHIVES=0 : toutes les archives, comme avant
++ * (les index s'ecrivent quand meme). Rendu inchange : une archive ne rend que
++ * le pipeline exact du descripteur ; seules les archives qui ne peuvent pas
++ * le contenir sont sautees. */
++static const void *kk_lib_air_key;
++static const void *kk_index_key = &kk_index_key;
++static pthread_mutex_t kk_index_mutex = PTHREAD_MUTEX_INITIALIZER;
++static NSMutableSet<NSString *> *kk_index_attente;
++static bool kk_index_attente_msl, kk_index_incomplet;
++static _Atomic uint32_t kk_stat_index[4]; /* recherches, archives consultees, relais sautes, index ecrits */
++
++@interface KKIndexArchives : NSObject {
++@public
++   NSDictionary<NSString *, NSArray *> *paires;
++   NSArray *libres;
++   NSSet *msl;
++   unsigned indexees, nb_paires;
++}
++@end
++
++@implementation KKIndexArchives
++- (void)dealloc
++{
++   [paires release];
++   [libres release];
++   [msl release];
++   [super dealloc];
++}
++@end
++
++static bool
++kk_index_actif(void)
++{
++   static int v = -1;
++   if (v < 0) {
++      const char *e = getenv("CIDRE_INDEX_ARCHIVES");
++      v = !(e && e[0] == '0');
++   }
++   return v;
++}
++
++static NSString *
++kk_index_fonction(MTL4FunctionDescriptor *fd, bool *msl)
++{
++   if (fd == nil)
++      return @"-";
++   if (![fd isKindOfClass:[MTL4LibraryFunctionDescriptor class]])
++      return nil;
++   MTL4LibraryFunctionDescriptor *lfd = (MTL4LibraryFunctionDescriptor *)fd;
++   NSString *key = objc_getAssociatedObject(lfd.library, kk_lib_key_key);
++   if (key == nil)
++      return nil;
++   if (msl != NULL && objc_getAssociatedObject(lfd.library, &kk_lib_air_key) == nil)
++      *msl = true;
++   return [NSString stringWithFormat:@"%@/%@", key, lfd.name ? lfd.name : @""];
++}
++
++static NSString *
++kk_index_paire(MTL4RenderPipelineDescriptor *desc, bool *msl)
++{
++   NSString *v = kk_index_fonction(desc.vertexFunctionDescriptor, msl);
++   NSString *f = kk_index_fonction(desc.fragmentFunctionDescriptor, msl);
++   if (v == nil || f == nil)
++      return nil;
++   return [NSString stringWithFormat:@"%@ %@", v, f];
++}
++
++/* Un pipeline de rendu vient d'etre compile par un compilateur qui serialise. */
++static void
++kk_index_noter(MTL4RenderPipelineDescriptor *desc)
++{
++   bool msl = false;
++   NSString *p = kk_index_paire(desc, &msl);
++   pthread_mutex_lock(&kk_index_mutex);
++   if (p == nil) {
++      kk_index_incomplet = true;
++   } else {
++      if (kk_index_attente == nil)
++         kk_index_attente = [NSMutableSet new];
++      [kk_index_attente addObject:p];
++      kk_index_attente_msl |= msl;
++   }
++   pthread_mutex_unlock(&kk_index_mutex);
++}
++
++/* Sous le verrou exclusif de compilation, l'archive <chemin> vient d'etre
++ * ecrite : son index, puis l'attente repart a vide. */
++static void
++kk_index_ecrire(NSString *chemin)
++{
++   pthread_mutex_lock(&kk_index_mutex);
++   /* (index vide compris : une archive de pipelines de calcul seulement n'a
++    * aucune paire de rendu, et rien a y chercher pour le rendu) */
++   if (!kk_index_incomplet) {
++      NSMutableString *s = [NSMutableString stringWithFormat:@"kk-index 1 msl=%d\n",
++                                                             kk_index_attente_msl ? 1 : 0];
++      for (NSString *p in kk_index_attente) {
++         [s appendString:p];
++         [s appendString:@"\n"];
++      }
++      NSString *tmp = [chemin stringByAppendingString:@".index.tmp"];
++      if ([s writeToFile:tmp atomically:NO encoding:NSUTF8StringEncoding error:NULL] &&
++          rename(tmp.fileSystemRepresentation,
++                 [chemin stringByAppendingString:@".index"].fileSystemRepresentation) == 0)
++         atomic_fetch_add(&kk_stat_index[3], 1);
++      else
++         unlink(tmp.fileSystemRepresentation);
++   }
++   [kk_index_attente removeAllObjects];
++   kk_index_attente_msl = false;
++   kk_index_incomplet = false;
++   pthread_mutex_unlock(&kk_index_mutex);
++}
++
++static void
++kk_index_charger(id<MTL4Compiler> compiler, NSArray *archives, NSArray<NSString *> *chemins)
++{
++   NSMutableDictionary<NSString *, NSMutableArray *> *paires = [NSMutableDictionary dictionary];
++   NSMutableArray *libres = [NSMutableArray array];
++   NSMutableSet *msl = [NSMutableSet set];
++   unsigned indexees = 0;
++   for (NSUInteger i = 0; i < archives.count; i++) {
++      id archive = archives[i];
++      NSString *chemin = i < chemins.count ? chemins[i] : nil;
++      NSString *s = chemin.length == 0 ? nil :
++         [NSString stringWithContentsOfFile:[chemin stringByAppendingString:@".index"]
++                                   encoding:NSUTF8StringEncoding
++                                      error:NULL];
++      NSArray<NSString *> *lignes = [s componentsSeparatedByString:@"\n"];
++      if (lignes.count < 2 || ![lignes[0] hasPrefix:@"kk-index 1 msl="]) {
++         [libres addObject:archive];
++         continue;
++      }
++      indexees++;
++      if ([lignes[0] hasSuffix:@"msl=1"])
++         [msl addObject:archive];
++      for (NSUInteger l = 1; l < lignes.count; l++) {
++         NSString *p = lignes[l];
++         if (p.length == 0)
++            continue;
++         NSMutableArray *a = paires[p];
++         if (a == nil) {
++            a = [NSMutableArray arrayWithCapacity:1];
++            paires[p] = a;
++         }
++         [a addObject:archive];
++      }
++   }
++   if (indexees == 0)
++      return;
++   KKIndexArchives *ix = [KKIndexArchives new];
++   ix->paires = [paires copy];
++   ix->libres = [libres copy];
++   ix->msl = [msl copy];
++   ix->indexees = indexees;
++   ix->nb_paires = (unsigned)paires.count;
++   objc_setAssociatedObject(compiler, kk_index_key, ix, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
++   [ix release];
++   if (kk_compile_stats_enabled())
++      fprintf(stderr, "KK: index des archives (0496) : %u indexees (%u paires), %u sans index%s\n",
++              indexees, (unsigned)paires.count, (unsigned)libres.count,
++              kk_index_actif() ? "" : " ; CIDRE_INDEX_ARCHIVES=0 : non consulte");
++}
++
++/* Archives a consulter pour ce descripteur (relais : celles ou une bibliotheque
++ * MSL a pu etre capturee). */
++static NSArray<id<MTL4Archive>> *
++kk_archives_pour(id<MTL4Compiler> comp, MTL4RenderPipelineDescriptor *desc, bool relais)
++{
++   NSArray *toutes = kk_compiler_archives(comp);
++   KKIndexArchives *ix = toutes.count ? objc_getAssociatedObject(comp, kk_index_key) : nil;
++   if (ix == nil || !kk_index_actif())
++      return toutes;
++   NSString *p = kk_index_paire(desc, NULL);
++   if (p == nil)
++      return toutes;
++   NSArray *a = ix->paires[p];
++   NSMutableArray *r = [NSMutableArray arrayWithCapacity:a.count + ix->libres.count];
++   for (id x in a) {
++      if (!relais || [ix->msl containsObject:x])
++         [r addObject:x];
++   }
++   [r addObjectsFromArray:ix->libres];
++   return r;
+ }
+ 
+ static bool
+@@ -695,7 +914,10 @@
+                                                      (int)getpid(),
+                                                      atomic_fetch_add(&kk_flush_seq, 1)]];
+       } while ([fm fileExistsAtPath:final]);
+-      return [fm moveItemAtPath:tmp toPath:final error:NULL];
++      if (![fm moveItemAtPath:tmp toPath:final error:NULL])
++         return false;
++      kk_index_ecrire(final);
++      return true;
+    }
+ }
+ 
+@@ -1035,6 +1257,7 @@
+                            : sa < sb ? NSOrderedDescending : NSOrderedSame;
+          }];
+          NSMutableArray *archives = [NSMutableArray array];
++         NSMutableArray<NSString *> *chemins = [NSMutableArray array];
+          const char *pre = kk_env_dir("MESA_KK_PRECOMPIL");
+          if (pre) {
+             NSString *adir = [[NSString stringWithUTF8String:pre] stringByAppendingPathComponent:@"archives"];
+@@ -1047,6 +1270,7 @@
+                                    error:NULL];
+                if (archive != nil) {
+                   [archives addObject:archive];
++                  [chemins addObject:@""];
+                   [archive release];
+                }
+             }
+@@ -1056,13 +1280,16 @@
+                [dev newArchiveWithURL:[NSURL fileURLWithPath:path] error:NULL];
+             if (archive != nil) {
+                [archives addObject:archive];
++               [chemins addObject:path];
+                [archive release];
+             }
+          }
+-         if (archives.count > 0)
++         if (archives.count > 0) {
+             objc_setAssociatedObject(compiler, kk_archives_key,
+                                      [NSArray arrayWithArray:archives],
+                                      OBJC_ASSOCIATION_RETAIN_NONATOMIC);
++            kk_index_charger(compiler, archives, chemins);
++         }
+ 
+          if (compiler.pipelineDataSetSerializer != nil &&
+              !atomic_exchange(&kk_flusher_running, true)) {
+@@ -1254,6 +1481,13 @@
+    if (atomic_load(&kk_stat_fond2[7]))
+       fprintf(stderr, "KK compile: base : %u pipelines nouveaux notes, %u ecrits\n",
+               atomic_load(&kk_stat_fond2[7]), atomic_load(&kk_stat_fond2[6]));
++   if (atomic_load(&kk_stat_index[0]) || atomic_load(&kk_stat_index[3]))
++      fprintf(stderr, "KK compile: index des archives (0496) : %u recherches de rendu, %u archives consultees "
++                      "(%.2f par recherche), %u relais sautes, %u index ecrits\n",
++              atomic_load(&kk_stat_index[0]), atomic_load(&kk_stat_index[1]),
++              atomic_load(&kk_stat_index[0]) ? (double)atomic_load(&kk_stat_index[1]) /
++                                                  atomic_load(&kk_stat_index[0]) : 0.0,
++              atomic_load(&kk_stat_index[2]), atomic_load(&kk_stat_index[3]));
+    if (atomic_load(&kk_stat_relais_msl))
+       fprintf(stderr, "KK compile: relais %u pipelines MSL pris aux archives, %u remplaces par l'AIR direct, "
+                       "%u echecs, %u abandonnes\n",
+@@ -1406,16 +1640,21 @@
+       id<MTLLibrary> lib = nil;
+       const char *pre = kk_env_dir("MESA_KK_PRECOMPIL");
+       const char *local = kk_env_dir("MESA_KK_AIR_LOCAL");
+-      NSString *msl_path = nil;
++      id msl_path = nil;
+       if (kk_relais_threads() > 0) {
+-         for (unsigned i = 0; i < 2 && msl_path == nil && kk_relais_utile(comp); i++) {
++         /* Cidre (0496) : chemins candidats du relais, sondes seulement si un
++          * relais est tente (kk_relais_msl_fd) : un access() par dossier et par
++          * bibliotheque coutait 3,7 ms en jeu (9,99 s pour 2 716, Diablo IV). */
++         NSMutableArray<NSString *> *cand = nil;
++         for (unsigned i = 0; i < 2 && kk_relais_utile(comp); i++) {
+             const char *dir = i == 0 ? pre : local;
+             if (dir == NULL)
+                continue;
+-            NSString *p = [NSString stringWithFormat:@"%s/air/%@.metallib", dir, key];
+-            if (access(p.fileSystemRepresentation, R_OK) == 0)
+-               msl_path = p;
++            if (cand == nil)
++               cand = [NSMutableArray arrayWithCapacity:2];
++            [cand addObject:[NSString stringWithFormat:@"%s/air/%@.metallib", dir, key]];
+          }
++         msl_path = cand;
+          atomic_fetch_add(&kk_stat_mesure[19], kk_now_ns() - m1);
+       } else {
+          if (pre) {
+@@ -1747,8 +1986,11 @@
+       kk_compile_lock();
+       id<MTLRenderPipelineState> pipeline = nil;
+       uint64_t ta0 = kk_now_ns();
++      NSArray<id<MTL4Archive>> *candidates = kk_archives_pour(comp, desc, false);
++      atomic_fetch_add(&kk_stat_index[0], 1);
+       KK_ARCHIVE_LOCK();
+-      for (id<MTL4Archive> archive in kk_compiler_archives(comp)) {
++      for (id<MTL4Archive> archive in candidates) {
++         atomic_fetch_add(&kk_stat_index[1], 1);
+          pipeline = [archive newRenderPipelineStateWithDescriptor:desc error:NULL];
+          if (pipeline != nil)
+             break;
+@@ -1757,12 +1999,20 @@
+       kk_prof[9] += kk_now_ns() - ta0;
+       bool cached = pipeline != nil;
+       const uint64_t tr0 = kk_now_ns();
++      NSArray<id<MTL4Archive>> *relais = nil;
+       if (!cached && kk_relais_utile(comp)) {
++         relais = kk_archives_pour(comp, desc, true);
++         if (relais.count == 0) {
++            atomic_fetch_add(&kk_stat_index[2], 1);
++            relais = nil;
++         }
++      }
++      if (relais != nil) {
+          atomic_fetch_add(&kk_stat_mesure[23], 1);
+          MTL4RenderPipelineDescriptor *alt = kk_relais_render_desc(comp.device, desc);
+          if (alt != nil) {
+             KK_ARCHIVE_LOCK();
+-            for (id<MTL4Archive> archive in kk_compiler_archives(comp)) {
++            for (id<MTL4Archive> archive in relais) {
+                pipeline = [archive newRenderPipelineStateWithDescriptor:alt error:NULL];
+                if (pipeline != nil)
+                   break;
+@@ -1789,7 +2039,11 @@
+                [capture newRenderPipelineStateWithDescriptor:desc compilerTaskOptions:nil
+                                                        error:NULL];
+             atomic_fetch_add(p2 != nil ? &kk_stat_capture : &kk_stat_capture_echecs, 1);
++            if (p2 != nil)
++               kk_index_noter(desc);
+             [p2 release];
++         } else if (pipeline != nil && comp.pipelineDataSetSerializer != nil) {
++            kk_index_noter(desc);
+          }
+       }
+       kk_compile_unlock();
+@@ -1810,6 +2064,8 @@
+             kk_compile_lock();
+             pipeline = [comp newRenderPipelineStateWithDescriptor:desc compilerTaskOptions:nil
+                                                             error:&error];
++            if (pipeline != nil && comp.pipelineDataSetSerializer != nil)
++               kk_index_noter(desc);
+             kk_compile_unlock();
+          }
+       }
