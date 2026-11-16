@@ -1158,8 +1158,16 @@ fi
 #     brute recompilait tout a chaud), sans plafond de base, repere des pages armees sous verrou.
 #   fex_smc_chaud = N (CIDRE_SMC_EN_LIGNE_CHAUD) : apres N SMC en ligne sur une page, elle est validee par CRC au
 #     lieu d'etre piegee (0370 ; le fil de protection de D4 ecrit un octet par tour dans sa page RWX). D4 : 64.
+# Jeu Battle.net : le client herite de l'environnement, et le xtajit.dll WOW64 du runtime 1.5.23 porte lui aussi le
+# cache disque de Cidre (les parties D4 du 11/11 avaient un xtajit.dll sans lui) ; avec la cle normale
+# (CLE_BRUTE=0), le client 32 bits se fige des son premier bloc (RtlWaitOnAddress, explorer jamais lance ; 16/11,
+# temoin hors jeu : CIDRE_FEX_DISQUE=1 CIDRE_FEX_DISQUE_CLE_BRUTE=0 wine syswow64\notepad.exe). Le cache n'est donc
+# pas allume par CIDRE_FEX_DISQUE, lu par tous les processus, mais par l'AppConfig de FEX du seul exe du jeu
+# (DiskCache, DiskCacheMemorySize ; plus bas) ; ses autres reglages CIDRE_FEX_DISQUE_* restent dans l'environnement,
+# inertes hors cache. Une variable CIDRE_FEX_DISQUE posee a la main garde la main.
+FEX_DISQUE_JEU=non
 if [ "$(opt fex_disque CIDRE_FEX_DISQUE)" = true ]; then
-   export CIDRE_FEX_DISQUE=1
+   if [ $BNET = oui ] && [ -z "${CIDRE_FEX_DISQUE:-}" ]; then FEX_DISQUE_JEU=oui; else export CIDRE_FEX_DISQUE=1; fi
    export CIDRE_FEX_DISQUE_MO=${CIDRE_FEX_DISQUE_MO:-256} CIDRE_FEX_DISQUE_VALIDES=${CIDRE_FEX_DISQUE_VALIDES:-1}
    export CIDRE_FEX_DISQUE_CLE_BRUTE=${CIDRE_FEX_DISQUE_CLE_BRUTE:-0} CIDRE_FEX_DISQUE_MAX_MO=${CIDRE_FEX_DISQUE_MAX_MO:-0}
    export CIDRE_ARME_RAPIDE=${CIDRE_ARME_RAPIDE:-0}
@@ -1217,17 +1225,19 @@ echo "    fex     : tso ${FEX_TSOENABLED:-1}${FEX_EXTENDEDVOLATILEMETADATA:+ sau
 # jeu (FEX_APP_CONFIG_LOCATION : un dossier du prefixe, en chemin Windows).
 # --- fex du jeu battle.net : debut ---
 # Dans l'ilot, le TSO est materiel : FEX sans TSO logiciel, pour le seul exe du jeu (le client, hors ilot, le garde).
-if [ $BNET = oui ] && { [ -n "${FEX_MAXINST:-}" ] || [ -n "${FEX_MULTIBLOCK:-}" ] || [ "${ILOT_JEU:-non}" = oui ]; }; then
+if [ $BNET = oui ] && { [ -n "${FEX_MAXINST:-}" ] || [ -n "${FEX_MULTIBLOCK:-}" ] || [ "${ILOT_JEU:-non}" = oui ] || [ $FEX_DISQUE_JEU = oui ]; }; then
    FEXCFG=$WINEPREFIX/.cidre-fex
    mkdir -p "$FEXCFG/AppConfig"
    FEXSEP=
    { printf '{"Config":{'
      [ -z "${FEX_MAXINST:-}" ] || { printf '"MaxInst":"%s"' "$FEX_MAXINST"; FEXSEP=,; }
      [ -z "${FEX_MULTIBLOCK:-}" ] || { printf '%s"Multiblock":"%s"' "$FEXSEP" "$FEX_MULTIBLOCK"; FEXSEP=,; }
-     [ "${ILOT_JEU:-non}" != oui ] || printf '%s"TSOEnabled":"0"' "$FEXSEP"
+     [ "${ILOT_JEU:-non}" != oui ] || { printf '%s"TSOEnabled":"0"' "$FEXSEP"; FEXSEP=,; }
+     # (cache disque de Cidre pour le jeu seul : DiskCacheMemorySize en octets, comme CIDRE_FEX_DISQUE_MO en Mio)
+     [ $FEX_DISQUE_JEU != oui ] || printf '%s"DiskCache":"1","DiskCacheMemorySize":"%s"' "$FEXSEP" "$((CIDRE_FEX_DISQUE_MO << 20))"
      printf '}}\n'; } >"$FEXCFG/AppConfig/$PROG.json"
    export FEX_APP_CONFIG_LOCATION="Z:$(printf '%s' "$FEXCFG/" | tr '/' '\\')"
-   echo "    fex     : MaxInst ${FEX_MAXINST:-5000}, multiblock ${FEX_MULTIBLOCK:-1}$([ "${ILOT_JEU:-non}" != oui ] || echo ', TSO logiciel coupe (ilot)') pour $PROG seul (AppConfig de FEX) ; le client Battle.net garde ceux de FEX" >>"$JOURNAL"
+   echo "    fex     : MaxInst ${FEX_MAXINST:-5000}, multiblock ${FEX_MULTIBLOCK:-1}$([ "${ILOT_JEU:-non}" != oui ] || echo ', TSO logiciel coupe (ilot)')$([ $FEX_DISQUE_JEU != oui ] || echo ", cache disque ${CIDRE_FEX_DISQUE_MO} Mio") pour $PROG seul (AppConfig de FEX) ; le client Battle.net garde ceux de FEX" >>"$JOURNAL"
    unset FEX_MAXINST FEX_MULTIBLOCK
 elif [ $BNET = oui ]; then
    # rien a dire a FEX pour ce jeu : un AppConfig d'un lancement precedent (TSOEnabled 0 de l'ilot, dangereux hors
