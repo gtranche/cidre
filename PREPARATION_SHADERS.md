@@ -19,7 +19,8 @@ pour 1 servi au bind, des fils de compilation qui saturent le processeur, 51 sau
 
 - **avant** la partie, jamais pendant : le jeu n'a aucun fil de préparation à côté de lui ;
 - **seulement l'utile** : les pipelines de la base que le jeu a effectivement liés (liste chaude), pas les ~17 600
-  qu'il crée au chargement. Sur la base de D4 : 27 424 pipelines notés, **1 719** liés.
+  qu'il crée au chargement. Sur la base de D4 : 27 424 pipelines notés, **1 719** liés. (Le mode « tout », § 10,
+  prépare toute la base, mais toujours avant la partie.)
 
 ## 2. Ce qui existait, et ce qui est repris
 
@@ -252,3 +253,90 @@ avec son `.git`, sources modifiées non commitées) et en rustine **`verger/0001
 10. **Base d'un autre Mesa** (signature des structures, 0444) : ses enregistrements sont « illisibles », notés en
     échec ; KK ne les réécrit pas (clé VS déjà connue). Si cela arrive, mettre la base de côté pour qu'elle se
     refasse (à automatiser : base entièrement illisible → renommée).
+
+## 10. Mode « tout » (16/11)
+
+Constat du joueur (D4, 1.5.23 candidate) : fluide là où il est déjà passé, saccades à chaque zone neuve. La
+liste chaude ne couvre que ce qui a déjà été lié ; les pipelines d'une zone jamais vue sont dans la base (créés au
+chargement) mais froids. Le mode « tout » prépare **toute la base**, toujours **avant** la partie (la règle de 0492
+tient : rien pendant la partie).
+
+- Fiche : `preparation_shaders = "tout"` (`true` = liés seulement, défaut ; `false` = rien) ; `cidre set <id>
+  preparation_shaders tout` ; un lancement : `CIDRE_PREPARATION_SHADERS=tout` (ou `lies`, `0`, `1` = mode de la fiche).
+  **`profils/bnet-fen.toml` passe à `"tout"`.**
+- Outil : `prepa-shaders compter|filtrer <base> - …` (liste « - » = toute la base). Pas besoin de liste chaude.
+  Même journal par identité (`rejoues-prep-<identité>.bin`) : passer de `lies` à `tout` ne refait pas ce qui est
+  fait ; un pipeline créé dans une partie suivante (zone neuve, saison) est préparé au lancement suivant.
+- `etat` dit le mode (`mode=`, `"mode"` en JSON) ; le tampon « chaud » le contient.
+
+### Mesures (M1 Max 10 cœurs, macOS 26.5.2 25F84, kk-0494 du candidat `KK_CODEGEN=1-fe23de315cfc449d`)
+
+Copie de la base du joueur (16/11 17:46 : **22 061 pipelines**, 19 074 nuanceurs, 153 Mo) dans un dossier à part,
+cache vide (ni Mesa, ni Metal, ni archives, ni AIR), environnement d'`env.txt` du candidat (NAN_STRICT=1, code_kk de
+bnet-fen, AIR direct, cache de fonctions, variantes notées : 546).
+
+| | 10 fils (défaut) | 6 fils |
+|---|---|---|
+| durée totale | **211 s** (rejeu 208,8 s) | 246 s |
+| réussis / échecs | 22 061 / 0 | 22 061 / 0 |
+| processeur du rejeu | 306 s util. + 50 s sys. | 281 + 42 s |
+| charge (loadavg 1 min) | 12 à 19 | 19 à 21 |
+| RSS max | 0,70 Go | 0,61 Go |
+
+La compilation Metal se fait surtout dans `MTLCompilerService` (hors du processus) : réduire les fils de KK
+allonge la durée sans soulager la machine. QoS user-interactive (le joueur attend devant l'écran).
+
+Produit (Mo) : archives Metal 22 × ~40 = **~920** ; cache disque Mesa (0430) **~910** ; cache de fonctions Metal
+(0451) **~800** ; cache de traduction NIR (0386) **~404** ; réserve d'AIR (0171) **~310** ; total **~3,3 Gio**
+(+ la base, 153 Mo). Attention : le cache Mesa approche la borne par défaut de `MESA_SHADER_CACHE_MAX_SIZE` (1 Gio).
+
+### Le jeu sert-il ce qui est préparé ?
+
+Vérifié hors jeu par le banc du bind de KK (0464/0473, `CIDRE_BANC_BIND=300 CIDRE_BANC_RELUS=1
+CIDRE_BANC_VARIANTES=1`, même dylib, même environnement) : chemin du jeu (nuanceurs relus du cache disque par la
+clé Vulkan notée en jeu, bibliothèques paresseuses, variante de rendu au dessin) :
+
+| cache | absents du cache | bind p50 / max | dessin (variante) moy. / max | pipelines Metal |
+|---|---|---|---|---|
+| préparé (tout) | **0 / 22 061** (44 122 nuanceurs relus) | 0,13 / 0,86 ms | 0,83 / 3,8 ms | **300 / 300 depuis les archives** |
+| sans binaires Metal (Mesa + AIR seulement) | 0 | 0,44 / 2,2 ms | **55 / 284 ms** | 0 depuis les archives |
+| archives sans cache de fonctions | 0 | 0,41 / 13,9 ms | 0,86 / 7,3 ms | 300 / 300 |
+
+Les clés concordent (disque Mesa : identifiant 0208 calculé avec les options d'`env.txt` ; archive : 300/300
+variantes dessinées = clé de préchauffage). Ce sont les binaires Metal (archives) qui suppriment les saccades.
+
+### Réglages proposés
+
+- Écran avant le **premier** lancement d'une identité (nouveau KK, nouveau macOS, cache vidé) : ~3,5 min sur M1 Max,
+  à estimer ~6-7 min sur un M1 8 cœurs ; acceptable (Steam fait de même), avec Passer. Ensuite : seulement les
+  pipelines nouveaux de la base (quelques secondes), rien si tout est chaud.
+- Garder 10 fils (tous les cœurs) : 6 fils = +17 % de durée pour la même charge.
+- Disque : ~3,3 Gio par jeu et par identité. À étudier : `CIDRE_AIR_LOCAL=0` pendant la préparation (310 Mo et
+  27,7 s d'écriture d'AIR que l'AIR direct ne relit pas, 0385 — à vérifier en jeu), `MESA_SHADER_CACHE_MAX_SIZE=2G`
+  pour D4 (sinon évictions), purge des archives d'une identité périmée (la clé KK change à chaque mise à jour du MSL).
+
+## 11. Paquets par famille (0165) pour D4 — plan, rien de publié
+
+Ce que chaque morceau vaut et ce qui en casse la clé :
+
+| morceau | taille (zstd) | clé | sert à |
+|---|---|---|---|
+| base (`base-pipelines/`) | **~100 Mo** | format 0444 (`kk_base_signature`, NIR sérialisé) ≈ version de Mesa ; prudence : `KK_CODEGEN` | tout recompiler localement (« tout »), quelle que soit la machine |
+| cache disque Mesa (0430) | ~806 Mo (déjà compressé) | `KK_CODEGEN` (version + empreinte des sources) **+ famille** (apple7/apple8) + macOS ≥ 27 + options `CIDRE_*` qui changent le code (NAN_STRICT, code_kk, AIR direct...) | supprime le frontal ; **ne supprime pas** la compilation Metal (55 ms/dessin) |
+| archives Metal | ~287 Mo | architecture GPU exacte (g13g/g13s/g13c/g13d pour M1, g14x M2...) + **version majeure de macOS** + `KK_CODEGEN` (l'AIR change) | supprime les saccades (binaires) |
+| réserve d'AIR (0171) | — | MSL + options | peu utile en AIR direct (0385) |
+| cache de fonctions Metal, traduction | — | privés à la machine / au processus | à ne pas publier |
+
+Ce qui casse : toute mise à jour de KosmicKrisp qui change `KK_CODEGEN` (tout), un macOS majeur (archives), une
+option de fiche qui entre dans la clé 0208 (cache Mesa), une saison de D4 qui ajoute des pipelines (les nouveaux
+restent froids : la préparation locale les rattrape).
+
+Plan proposé :
+1. **Publier la base** de D4 (~100 Mo, une par `KK_CODEGEN`, toutes familles) avec le runtime ou par `cidre precompil` :
+   le premier lancement prépare « tout » localement (3,5 min M1 Max) sans avoir jamais joué. Le plus rentable :
+   indépendant de l'architecture et de macOS.
+2. Plus tard, pour les Mac les plus courants : **archives par architecture et macOS majeur** (~290 Mo chacune),
+   faites par rejeu sur la machine de cette architecture (ou metal-tt depuis le script d'une archive, 0165) ;
+   avec le cache Mesa de la famille (~800 Mo), le premier lancement serait chaud sans préparation. Coût : un paquet
+   par (arch, macOS) à refaire à chaque `KK_CODEGEN` : à réserver aux versions stables.
+3. Ne pas publier l'AIR, le cache de fonctions ni la traduction.

@@ -1563,10 +1563,12 @@ cidre — launcher Cidre (jeux Steam ou non, natifs ou via Cidre)
   cidre preparation <id> [--json] prepare les shaders du jeu comme avant un lancement (cidre play le fait) :
                                   les pipelines qu'il a lies lors des parties precedentes et que ce KosmicKrisp,
                                   ce GPU ou ce macOS n'ont pas encore compiles (D3D12/Vulkan, fiche avec
-                                  compilation_kk fond et base_pipelines) ; rien si tout est chaud. --json :
+                                  compilation_kk fond et base_pipelines) ; rien si tout est chaud ; avec
+                                  preparation_shaders = "tout" (ou CIDRE_PREPARATION_SHADERS=tout) : toute la
+                                  base du jeu, zones jamais visitees comprises. --json :
                                   {"evenement":"preparation","etat":"debut"|"en_cours","fait","total"} puis
                                   "finie" | "passee" | "echouee" (+ "echecs", "duree")
-  cidre preparation <id> etat [--json]   inactive (raison) | chaude | a_preparer, a_faire, connus
+  cidre preparation <id> etat [--json]   inactive (raison) | chaude | a_preparer, mode, a_faire, connus
   cidre preparation <id> passer   arrete la preparation en cours : le jeu part, le reste se compile en jeu
                                   (bouton Passer de Verger ; Ctrl-C au terminal)
   cidre bottles [--json]          les jeux Steam Windows deja installes par CrossOver, Whisky ou Heroic
@@ -2301,8 +2303,13 @@ FIN_ARGS_STEAM
     [ -n "$id" ] && [ -n "$cle" ] && [ -n "$val" ] || { echo "usage: cidre set <id|defaut> <option> <valeur>" >&2; exit 2; }
     [ "$id" = defaut ] || connu "$id" || { echo "jeu inconnu : $id" >&2; exit 1; }
     case $cle in
-      journal_detaille|tso|vsync|hud|overlay|async|narrow_barriers|garde_index|dx12|sm66|eac_untrusted|luajit|plein_ecran|mode_emule|retina|gamemode|maj_avant_lancement|reglages_jeu_appliques|deck|sync_local|pile_kk|calcul_avant_passe|compile_differee|demi_precision|preparation_shaders)
+      journal_detaille|tso|vsync|hud|overlay|async|narrow_barriers|garde_index|dx12|sm66|eac_untrusted|luajit|plein_ecran|mode_emule|retina|gamemode|maj_avant_lancement|reglages_jeu_appliques|deck|sync_local|pile_kk|calcul_avant_passe|compile_differee|demi_precision)
         case $val in true|false) ;; *) echo "$cle attend true ou false" >&2; exit 2 ;; esac ;;
+      preparation_shaders)
+        # true : ce que le jeu a deja lie ; tout : toute sa base de pipelines
+        # (zones jamais visitees comprises) ; false : rien
+        case $val in true|false) ;; tout) val='"tout"' ;;
+          *) echo "preparation_shaders attend true, false ou tout" >&2; exit 2 ;; esac ;;
       metalfx)
         # agrandissement MetalFX a la presentation : true, ou un facteur de
         # definition (0.75, 0.67, 0.5) vise pour le jeu

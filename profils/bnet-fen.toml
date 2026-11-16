@@ -47,6 +47,10 @@ attente_present = "gpu"
 # Comparaisons NaN strictes de l'AIR direct (0440) et select des txf sur poignee nulle (0402) : sans elles, tuiles
 # noires a l'ecran de selection du personnage. Coupees pour les autres jeux (0495 : -4 % sur Demonologist).
 nan_strict = true
+# Preparation des shaders (PREPARATION_SHADERS.md) : toute la base de pipelines (~22 000 crees au chargement), pas
+# seulement ceux deja lies : sans elle, saccades a chaque zone neuve (joueur, 16/11, 1.5.23 candidate). M1 Max, cache
+# froid : 3 min 31 s, 0 echec, ~3,3 Gio ; ensuite, au bind, 0 absent du cache et 300/300 pipelines depuis l'archive.
+preparation_shaders = "tout"
 # FEX : cache disque de blocs de Cidre (0366-0493) et SMC en ligne valide par CRC apres 64 ecritures (0370).
 fex_disque = true
 fex_smc_chaud = 64

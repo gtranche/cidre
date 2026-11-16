@@ -34,7 +34,8 @@
 #   preparer_shaders.sh debut <id>              (lanceur, au lancement) la taille de la liste chaude
 #   preparer_shaders.sh noter <id> <debut>      (lanceur, a la sortie) pipelines lies pendant la partie -> faits
 # Options : preparation_shaders = false (fiche, profils.toml) ou CIDRE_PREPARATION_SHADERS=0 la coupent
-# (=1 l'impose) ; CIDRE_PREPARATION_FILS (fils de compilation, defaut : tous les coeurs).
+# (=1 l'impose) ; preparation_shaders = "tout" ou CIDRE_PREPARATION_SHADERS=tout : toute la base, pas
+# seulement ce qui a ete lie (=lies revient au defaut) ; CIDRE_PREPARATION_FILS (fils de compilation, defaut : tous les coeurs).
 # Essais : CIDRE_DIR, CIDRE_KK_DYLIB (le pilote), CIDRE_PRECOMPIL_FAMILLE, CIDRE_PREPARATION_MACOS (build),
 # CIDRE_PREPARATION_OUTIL (build/prepa-shaders). Teste par tests/tester_preparation_shaders.sh.
 set -u
@@ -55,14 +56,30 @@ dire() { if [ "$JSON" = oui ]; then printf '%s\n' "$*" >&2; else printf '%s\n' "
 evenement() { [ "$JSON" != oui ] || printf '{"evenement":"preparation",%s}\n' "$1"; }
 taille() { stat -f %z "$1" 2>/dev/null || echo 0; }
 
+# Active ? et MODE : « lies » (defaut : base ∩ liste chaude, ce que le jeu a
+# deja lie) ou « tout » (toute la base : aussi les pipelines crees mais jamais
+# lies, pour qu'une zone jamais visitee soit chaude des la premiere fois ; plus
+# long, une fois par identite). Fiche : preparation_shaders = true | false |
+# "tout" ; un lancement : CIDRE_PREPARATION_SHADERS=0 | 1 | lies | tout.
+MODE=lies
 active() {
-   case ${CIDRE_PREPARATION_SHADERS:-} in 0) return 1 ;; 1) return 0 ;; esac
    p=$(sh "$R/tests/profil_cidre.sh" "$ID" 2>/dev/null || true)
-   [ "$(printf '%s\n' "$p" | sed -n 's/^preparation_shaders=//p' | head -1)" != false ] || return 1
+   v=$(printf '%s\n' "$p" | sed -n 's/^preparation_shaders=//p' | head -1)
+   case $v in tout) MODE=tout ;; *) MODE=lies ;; esac
+   case ${CIDRE_PREPARATION_SHADERS:-} in
+      0) return 1 ;;
+      1) return 0 ;;
+      tout) MODE=tout; return 0 ;;
+      lies) MODE=lies; return 0 ;;
+   esac
+   [ "$v" != false ] || return 1
    [ "$(printf '%s\n' "$p" | sed -n 's/^cache_pipelines=//p' | head -1)" != false ] || return 1
    case ${CIDRE_PIPELINE_CACHE:-} in 0) return 1 ;; esac
    return 0
 }
+
+# La liste qui choisit dans la base : « - » = toute la base (mode tout).
+liste_choix() { if [ "$MODE" = tout ]; then echo -; else echo "$LISTE"; fi; }
 
 # Le pilote que le jeu chargera : celui de l'ICD que pose etape2_pile_arm64ec.sh.
 dylib() {
@@ -114,8 +131,8 @@ evaluer() {
    # (d'abord les fichiers : un jeu sans base ne coute que deux stat)
    [ -f "$BASE/pipelines.bin" ] && [ -f "$BASE/nuanceurs.bin" ] && [ -f "$BASE/fonctions.bin" ] &&
       [ -f "$BASE/env.txt" ] || { RAISON=sans_base; return; }
-   [ -s "$LISTE" ] || { RAISON=sans_liste; return; }
    active || { RAISON=option; return; }
+   [ -s "$LISTE" ] || [ "$MODE" = tout ] || { RAISON=sans_liste; return; }
    identite || { RAISON=pilote; return; }
    [ "$REJEU" = oui ] || { RAISON=pilote; return; }
    if [ -f "$CIDRE_DIR/en-cours/$ID" ] && kill -0 "$(cat "$CIDRE_DIR/en-cours/$ID" 2>/dev/null)" 2>/dev/null; then
@@ -140,10 +157,10 @@ evaluer() {
       mkdir -p "$PREP" && echo "$IDENT $r $(date +%s)" >"$PREP/adoption"
    fi
    # Cout nul si tout est chaud : rien n'a bouge depuis la derniere evaluation.
-   tampon="$IDENT $(taille "$LISTE") $(taille "$BASE/pipelines.bin") $(taille "$JOURNAL") $(taille "$ECHECS")"
+   tampon="$IDENT $MODE $(taille "$LISTE") $(taille "$BASE/pipelines.bin") $(taille "$JOURNAL") $(taille "$ECHECS")"
    if [ "$(cat "$PREP/chaud" 2>/dev/null)" = "$tampon" ]; then ETAT=chaude; return; fi
    outil || { RAISON=outil; return; }
-   c=$("$OUTIL" compter "$BASE/pipelines.bin" "$LISTE" "$JOURNAL" "$ECHECS" 2>/dev/null) || { RAISON=illisible; return; }
+   c=$("$OUTIL" compter "$BASE/pipelines.bin" "$(liste_choix)" "$JOURNAL" "$ECHECS" 2>/dev/null) || { RAISON=illisible; return; }
    A_FAIRE=${c% *}; CONNUS=${c#* }
    if [ "$A_FAIRE" = 0 ]; then
       ETAT=chaude
@@ -180,7 +197,7 @@ preparer() {
    trap 'INTERROMPU=passer' INT
    trap 'INTERROMPU=fin' TERM HUP
    rm -rf "$W"; mkdir -p "$W"
-   N=$("$OUTIL" filtrer "$BASE/pipelines.bin" "$LISTE" "$W/pipelines.bin" "$JOURNAL" "$ECHECS" 2>/dev/null) || N=0
+   N=$("$OUTIL" filtrer "$BASE/pipelines.bin" "$(liste_choix)" "$W/pipelines.bin" "$JOURNAL" "$ECHECS" 2>/dev/null) || N=0
    [ "$N" -gt 0 ] 2>/dev/null && [ -z "$INTERROMPU" ] || return 0
    ln -s "$BASE/nuanceurs.bin" "$W/nuanceurs.bin"; ln -s "$BASE/fonctions.bin" "$W/fonctions.bin"
    environnement "$W/env"
@@ -193,7 +210,7 @@ preparer() {
    LOT=$(( (N + 9) / 10 )); [ $LOT -ge 50 ] || LOT=50; [ $LOT -le 1000 ] || LOT=1000
    J0=$(taille "$JOURNAL"); T0=$(date +%s)
    JRN="$PREP/journal.txt"
-   { echo "== $(date '+%F %T') preparation de $ID : $N pipelines, identite $IDENT, $FILS fils, lots de $LOT"
+   { echo "== $(date '+%F %T') preparation ($MODE) de $ID : $N pipelines, identite $IDENT, $FILS fils, lots de $LOT"
      echo "   pilote $DYLIB ; base $BASE ; liste $LISTE"; } >>"$JRN"
    dire "Preparation des shaders : $N pipelines a compiler pour ce Mac ($( [ "$JSON" = oui ] && echo "Passer : cidre preparation $ID passer" || echo "Ctrl-C : passer, le reste se compilera en jeu"))"
    evenement "\"etat\":\"debut\",\"fait\":0,\"total\":$N"
@@ -259,10 +276,10 @@ case $ACTION in
       evaluer
       if [ "$JSON" = oui ]; then
          r=null; [ -z "$RAISON" ] || r="\"$RAISON\""
-         printf '{"etat":"%s","raison":%s,"a_faire":%s,"connus":%s,"identite":%s}\n' "$ETAT" "$r" "$A_FAIRE" "$CONNUS" \
+         printf '{"etat":"%s","mode":"%s","raison":%s,"a_faire":%s,"connus":%s,"identite":%s}\n' "$ETAT" "$MODE" "$r" "$A_FAIRE" "$CONNUS" \
             "$( [ -n "${IDENT:-}" ] && printf '"%s"' "$IDENT" || echo null)"
       else
-         echo "etat=$ETAT"; echo "raison=$RAISON"; echo "a_faire=$A_FAIRE"; echo "connus=$CONNUS"; echo "identite=${IDENT:-}"
+         echo "etat=$ETAT"; echo "mode=$MODE"; echo "raison=$RAISON"; echo "a_faire=$A_FAIRE"; echo "connus=$CONNUS"; echo "identite=${IDENT:-}"
       fi ;;
    preparer) preparer ;;
    passer)

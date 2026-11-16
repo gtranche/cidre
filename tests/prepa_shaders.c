@@ -15,7 +15,9 @@
  *   prepa-shaders compter <pipelines.bin> <liste> [<exclus>...]
  *       ecrit « <a_faire> <connus> » : connus = enregistrements de la base dont
  *       le VS ou le FS est dans la liste chaude ; a_faire = ceux-la, moins ceux
- *       dont le VS est dans un fichier <exclus>
+ *       dont le VS est dans un fichier <exclus>. <liste> = « - » : toute la
+ *       base est connue (preparation « tout » : y compris les pipelines crees
+ *       mais jamais lies)
  *   prepa-shaders filtrer <pipelines.bin> <liste> <sortie> [<exclus>...]
  *       ecrit les enregistrements a faire dans <sortie> (pipelines.bin d'une base
  *       filtree, meme format) et leur nombre sur la sortie standard
@@ -257,6 +259,7 @@ parcourir(const char *chemin, rappel_fn rappel, void *data)
 struct choix {
    struct ensemble liste, exclus, vus;
    unsigned a_faire, connus;
+   int tout; /* liste « - » : toute la base est connue (preparation « tout ») */
    int sortie; /* -1 : compter seulement */
 };
 
@@ -264,7 +267,7 @@ static int
 choisir(void *data, int fd, off_t pos, uint32_t taille, const uint8_t *vs, const uint8_t *fs)
 {
    struct choix *c = data;
-   if (!ens_contient(&c->liste, vs) && !ens_contient(&c->liste, fs))
+   if (!c->tout && !ens_contient(&c->liste, vs) && !ens_contient(&c->liste, fs))
       return 0;
    int r = ens_ajouter(&c->vus, vs); /* la base est dedoublonnee par le VS ; au cas ou */
    if (r < 0)
@@ -295,7 +298,8 @@ cmd_choisir(int argc, char **argv, int filtrer)
       return 2;
    struct choix c = {0};
    c.sortie = -1;
-   if (ens_charger(&c.liste, argv[3], 0) != 0)
+   c.tout = strcmp(argv[3], "-") == 0;
+   if (!c.tout && ens_charger(&c.liste, argv[3], 0) != 0)
       return 3;
    for (int i = premier_exclus; i < argc; i++) {
       if (ens_charger(&c.exclus, argv[i], 0) != 0)
@@ -309,7 +313,7 @@ cmd_choisir(int argc, char **argv, int filtrer)
          return 3;
    }
    int r = 0;
-   if (c.liste.n > 0 && access(argv[2], R_OK) == 0)
+   if ((c.tout || c.liste.n > 0) && access(argv[2], R_OK) == 0)
       r = parcourir(argv[2], choisir, &c);
    if (filtrer) {
       if (close(c.sortie) != 0 || r != 0 || rename(tmp, argv[4]) != 0) {

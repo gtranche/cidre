@@ -331,7 +331,9 @@ cadence = 0
 # les pipelines que le jeu a LIES lors des parties precedentes (compilation_kk fond + base_pipelines)
 # et qui ne sont pas compiles pour ce KosmicKrisp, ce GPU et ce macOS sont recompiles avant le jeu,
 # hors de son processus ; Passer dans Verger (ou Ctrl-C) lance tout de suite. Rien si tout est chaud.
-# false = jamais (CIDRE_PREPARATION_SHADERS=0 pour un lancement).
+# false = jamais (CIDRE_PREPARATION_SHADERS=0 pour un lancement). "tout" (fiche) = toute la base du jeu,
+# pipelines crees mais jamais lies compris : les zones jamais visitees sont chaudes des la premiere fois
+# (Diablo IV, M1 Max, cache froid : 22 061 pipelines en 3 min 31, ~3,3 Gio ; une fois par identite).
 preparation_shaders = true
 
 # (plus de section par jeu ici : profils/<appid>.toml, section [cidre])

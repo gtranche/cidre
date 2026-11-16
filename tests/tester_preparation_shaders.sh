@@ -137,6 +137,29 @@ sleep 1.5
 verif "parent disparu : le rejeu ne survit pas" non "$(kill -0 "$(cat "$T/pid-rejeu")" 2>/dev/null && echo oui || echo non)"
 verif "parent disparu : verrou nettoye" "" "$(ls "$C/preparation" | grep -E '^travail|^verrou')"
 
+# Mode « tout » : toute la base, pipelines jamais lies compris (zones jamais visitees)
+ID4=999004; C4="$CIDRE_DIR/vkd3d-cache/$ID4"
+base "$C4/base-pipelines" 20; mkdir -p "$C4/mesa"
+verif "tout : sans liste chaude, toute la base a preparer" "a_preparer tout 20 20" \
+   "$(CIDRE_PREPARATION_SHADERS=tout sh "$P" etat $ID4 | champ 'etat|mode|a_faire|connus' | tr '\n' ' ' | sed 's/ $//')"
+verif "lies (defaut) : sans liste chaude, inactive" "lies sans_liste" "$(sh "$P" etat $ID4 | champ 'raison|mode' | tr '\n' ' ' | sed 's/ $//')"
+chaude "$(cle 1 V)" "$(cle 2 F)" "$(cle 3 V)" >"$C4/liste-chaude-kk.bin"
+verif "lies : 3 sur 20" "a_preparer 3" "$(sh "$P" etat $ID4 | champ 'etat|a_faire' | tr '\n' ' ' | sed 's/ $//')"
+verif "CIDRE_PREPARATION_SHADERS=1 garde le mode de la fiche (lies)" "lies 3" "$(CIDRE_PREPARATION_SHADERS=1 sh "$P" etat $ID4 | champ 'mode|a_faire' | tr '\n' ' ' | sed 's/ $//')"
+S=$(CIDRE_PREPARATION_SHADERS=tout sh "$P" preparer $ID4 --json 2>/dev/null)
+verif "tout : evenement debut sur toute la base" '{"evenement":"preparation","etat":"debut","fait":0,"total":20}' "$(printf '%s\n' "$S" | sed -n 1p)"
+verif "tout : finie 20 / 20" '"finie",20,20,0' "$(printf '%s\n' "$S" | tail -1 | sed -E 's/.*"etat":("[a-z]+"),"fait":([0-9]+),"total":([0-9]+),"echecs":([0-9]+).*/\1,\2,\3,\4/')"
+verif "tout : base filtree = toute la base" 640 "$(stat -f %z "$T/cles-rejeu")"
+verif "tout : lots de 50 au moins (une dizaine pour une grosse base)" "50" "$(sed -n 's/^CIDRE_REJEU_LOT=//p' "$T/env-rejeu.txt")"
+verif "tout : mode au journal de la preparation" 1 "$(grep -c 'preparation (tout) de 999004 : 20 pipelines' "$C4/preparation/journal.txt")"
+verif "tout : relance chaude" chaude "$(CIDRE_PREPARATION_SHADERS=tout sh "$P" etat $ID4 | champ etat)"
+verif "apres tout : lies chaude aussi" chaude "$(sh "$P" etat $ID4 | champ etat)"
+verif "tout : relance sans evenement" "" "$(CIDRE_PREPARATION_SHADERS=tout sh "$P" preparer $ID4 --json 2>&1)"
+printf 'KKP1\110\000\000\000%s%sETAT%04d' "$(cle 21 V)" "$(cle 21 F)" 21 >>"$C4/base-pipelines/pipelines.bin"
+verif "tout : un pipeline cree de plus (jamais lie) est a preparer" "a_preparer 1 21" \
+   "$(CIDRE_PREPARATION_SHADERS=tout sh "$P" etat $ID4 | champ 'etat|a_faire|connus' | tr '\n' ' ' | sed 's/ $//')"
+verif "lies : ce pipeline-la n'est pas a preparer" chaude "$(sh "$P" etat $ID4 | champ etat)"
+
 # Adoption : un jeu dont les shaders sont deja en cache (etat_shaders) n'est pas recompile a la premiere rencontre
 ID2=999002; C2="$CIDRE_DIR/vkd3d-cache/$ID2"
 base "$C2/base-pipelines" 5; mkdir -p "$C2/mesa"
@@ -155,7 +178,7 @@ printf '"AppState"\n{\n\t"appid"\t\t"9020"\n\t"name"\t\t"Jeu 9020"\n\t"StateFlag
    >"$CIDRE_DIR/games/9020/steamapps/appmanifest_9020.acf"
 C3="$CIDRE_DIR/vkd3d-cache/9020"; base "$C3/base-pipelines" 4
 chaude "$(cle 1 V)" "$(cle 3 F)" >"$C3/liste-chaude-kk.bin"
-verif "cidre preparation etat --json" '{"etat":"a_preparer","raison":null,"a_faire":2,"connus":2,"identite":"1-fedcba9876543210-apple7-25A100"}' \
+verif "cidre preparation etat --json" '{"etat":"a_preparer","mode":"lies","raison":null,"a_faire":2,"connus":2,"identite":"1-fedcba9876543210-apple7-25A100"}' \
    "$(sh "$B/cidre" preparation 9020 etat --json 2>/dev/null)"
 sh "$B/cidre" play 9020 --json --sans-maj >"$T/evts" 2>"$T/err"
 verif "cidre play --json : shaders, preparation debut puis finie, lancement" "shaders preparation:debut preparation:finie lancement" \
@@ -167,6 +190,11 @@ verif "cidre play suivant : aucun evenement de preparation" 0 "$(grep -c '"evene
 verif "cidre help : preparation documentee" 3 "$(sh "$B/cidre" help 2>/dev/null | grep -c '^  cidre preparation <id>')"
 verif "cidre set : option preparation_shaders reconnue" 0 "$(sh "$B/cidre" set 9020 preparation_shaders false >/dev/null 2>&1; echo $?)"
 verif "option coupee par cidre set : inactive" option "$(sh "$P" etat 9020 | champ raison)"
+verif "cidre set preparation_shaders tout" 0 "$(sh "$B/cidre" set 9020 preparation_shaders tout >/dev/null 2>&1; echo $?)"
+verif "fiche a tout : toute la base (2 faits, 2 jamais lies)" "a_preparer tout 2 4" \
+   "$(sh "$P" etat 9020 | champ 'etat|mode|a_faire|connus' | tr '\n' ' ' | sed 's/ $//')"
+verif "cidre set preparation_shaders : valeur refusee" 2 "$(sh "$B/cidre" set 9020 preparation_shaders tous >/dev/null 2>&1; echo $?)"
+verif "CIDRE_PREPARATION_SHADERS=lies l'emporte sur la fiche" "chaude lies" "$(CIDRE_PREPARATION_SHADERS=lies sh "$P" etat 9020 | champ 'mode|etat' | tr '\n' ' ' | sed 's/ $//')"
 
 pkill -f "$FAUX" 2>/dev/null
 rm -rf "${T:?}"
