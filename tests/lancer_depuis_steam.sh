@@ -519,6 +519,10 @@ DEBUT_EPOCH=$(date +%s)
 # chaude au lancement ; a la sortie, les pipelines lies pendant la partie sont
 # notes faits pour ce KosmicKrisp, ce GPU et ce macOS (le jeu les a compiles).
 PREP_DEBUT=
+# Cache disque des nuanceurs de KosmicKrisp : 1 Gio par defaut, a la borne pour Diablo IV prepare (16/11 : chaque
+# ecriture evincait un nuanceur prepare). Meme borne que `cidre play` (partir) et la preparation, pour un jeu lance
+# depuis le client Steam.
+[ -n "${MESA_SHADER_CACHE_MAX_SIZE:-}" ] || export MESA_SHADER_CACHE_MAX_SIZE=4G
 [ -z "$JEU" ] || [ -z "${MESA_KK_PIPELINE_CACHE:-}" ] || PREP_DEBUT=$(sh "$R/tests/preparer_shaders.sh" debut "$JEU" 2>/dev/null)
 {
    echo "=== $(date '+%F %T')  appid=${SteamAppId:-?}  jeu=$PROG"
