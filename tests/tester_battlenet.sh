@@ -359,6 +359,9 @@ contient "hors ligne : evenement" '"code":"telechargement"' "$r"
 
 echo "== lanceur : options FEX de la fiche pour le seul exe du jeu (AppConfig)"
 FB=$(awk '/^# --- fex du jeu battle.net : debut ---/,/^# --- fex du jeu battle.net : fin ---/' "$R/tests/lancer_depuis_steam.sh")
+# (FEX_DISQUE_JEU : pose plus haut par les reglages FEX ; f5f0b1f)
+FB="FEX_DISQUE_JEU=\${FEX_DISQUE_JEU:-non}
+$FB"
 [ -n "$FB" ] && ok "bloc trouve dans lancer_depuis_steam.sh" || echec "bloc absent de lancer_depuis_steam.sh"
 fex_bnet() { # <BNET> <MAXINST> <MULTIBLOCK> : env apres le bloc, une variable par ligne
    ( WINEPREFIX="$T/pfx-fex" JOURNAL="$T/fex.log" PROG="Diablo IV.exe" BNET=$1
@@ -457,14 +460,16 @@ ilot_bloc() { # <BNET> <ilot de la fiche> [runtime de l'ilot] : env apres le blo
    ( JOURNAL="$T/ilot.log" PROG="Diablo IV.exe" BNET=$1 V=$2; : >"$JOURNAL"
      [ -z "${3:-}" ] || export CIDRE_ILOT_RUNTIME=$3 CIDRE_ILOT_SOURCE=$3-artefacts   # (ni runtime ni artefacts)
      opt() { case $1 in ilot) echo "$V" ;; *) echo false ;; esac; }
-     unset WINE CIDRE_BNET_WINE WINE_ARM64 CIDRE_ILOT CIDRE_ILOT_EXE CIDRE_ILOT_ALIGNEMENT
+     unset WINE CIDRE_BNET_WINE WINE_ARM64 CIDRE_ILOT CIDRE_ILOT_EXE CIDRE_ILOT_ALIGNEMENT CIDRE_TSO; export FEX_TSOENABLED=1
      eval "$IB"
-     printf 'JEU=%s\nWINE=%s\nBNETW=%s\nARM64=%s\nEXE=%s\nALIGN=%s\n' "$ILOT_JEU" "${WINE:-}" "${CIDRE_BNET_WINE:-}" "${WINE_ARM64:-}" \
-        "${CIDRE_ILOT_EXE:-}" "${CIDRE_ILOT_ALIGNEMENT:-}" )
+     printf 'JEU=%s\nWINE=%s\nBNETW=%s\nARM64=%s\nEXE=%s\nALIGN=%s\nTSO=%s\n' "$ILOT_JEU" "${WINE:-}" "${CIDRE_BNET_WINE:-}" "${WINE_ARM64:-}" \
+        "${CIDRE_ILOT_EXE:-}" "${CIDRE_ILOT_ALIGNEMENT:-}" "${FEX_TSOENABLED:-}" )
 }
 if [ "$(sysctl -n kern.hv_support 2>/dev/null)" = 1 ]; then
    e=$(ilot_bloc oui true)
    contient "lanceur : jeu dans l'ilot" "JEU=oui" "$e"
+   # 0288/0289 (garde-fous de FEX dans l'ilot) ne lisent que FEX_TSOENABLED=0 de l'environnement, pas l'AppConfig
+   contient "lanceur : FEX_TSOENABLED=0 dans l'ilot (FEX 0288/0289)" "TSO=0" "$e"
    contient "lanceur : client par le runtime de l'ilot" "WINE=$CIDRE_ILOT_RUNTIME/bin/wine" "$e"
    contient "lanceur : wineserver et FEX du runtime de l'ilot" "BNETW=$CIDRE_ILOT_RUNTIME
 ARM64=$CIDRE_ILOT_RUNTIME" "$e"
@@ -477,6 +482,7 @@ contient "lanceur : ilot indisponible, hors ilot" "JEU=non
 WINE=
 " "$e"
 contient "lanceur : indisponible, prefixe remis au runtime de Cidre" "ALIGN=normal" "$e"
+contient "lanceur : hors ilot, TSO logiciel garde" "TSO=1" "$e"
 contient "lanceur : indisponible dit au journal" "indisponible" "$(cat "$T/ilot.log")"
 verif "lanceur : fiche sans ilot" "JEU=non ALIGN=normal" "$(ilot_bloc oui false | grep -E '^(JEU|ALIGN)=' | paste -sd ' ' -)"
 verif "lanceur : Steam, pas d'ilot ni d'alignement" "JEU=non ALIGN=" "$(ilot_bloc non true | grep -E '^(JEU|ALIGN)=' | paste -sd ' ' -)"
@@ -517,12 +523,13 @@ pile_d4() {
    ( B=$1; shift; FICHE="$*"
      for v in $(env | sed -n 's/^\(CIDRE_[A-Z0-9_]*\)=.*/\1/p'); do case " ${GARDER:-} " in *" $v "*) ;; *) unset "$v" ;; esac; done
      unset MESA_KK_PIPELINE_CACHE FEX_DISKCACHE FEX_X87REDUCEDPRECISION FEX_MAXINST FEX_MULTIBLOCK
-     MESA_KK_PIPELINE_CACHE="$T/kkcache"; DOSSIER="$T"; PROG="x.exe"; JOURNAL="$T/d4.log"; KK_OPTIONS=
+     MESA_KK_PIPELINE_CACHE="$T/kkcache"; DOSSIER="$T"; PROG="x.exe"; JOURNAL="$T/d4.log"; KK_OPTIONS=; BNET=${BNET:-non}
      profil() { for kv in $FICHE; do [ "${kv%%=*}" = "$1" ] && { printf '%s\n' "${kv#*=}" | tr '+' ' '; return; }; done; echo ""; }
      opt() { eval "v=\${$2:-}"; case $v in 1) echo true; return ;; 0) echo false; return ;; '') ;; *) echo "$v"; return ;; esac; profil "$1"; }
      est_pe32() { return 1; }
      eval "$KD"; eval "$B"
-     env | grep -E '^CIDRE_' | grep -v -e '^CIDRE_HAUT_NUL=' -e '^CIDRE_SONNETTE_RETOUR=' | LC_ALL=C sort | tr '\n' ' ' )
+     if [ -n "${MOTIF:-}" ]; then env | grep -E "$MOTIF" | LC_ALL=C sort | tr '\n' ' '
+     else env | grep -E '^CIDRE_' | grep -v -e '^CIDRE_HAUT_NUL=' -e '^CIDRE_SONNETTE_RETOUR=' | LC_ALL=C sort | tr '\n' ' '; fi )
 }
 e=$(pile_d4 "$KB" compilation_kk=cache_disque+frontal_differe+pipeline_paresseux+fond+base_pipelines+cache_fonctions+variantes attente_present=gpu nan_strict=true compile_differee=8)
 verif "kk d4 : reglage de la fiche bnet-fen" "CIDRE_BASE_PIPELINES=$T/kkcache/base-pipelines CIDRE_CACHE_DISQUE=1 CIDRE_CACHE_FONCTIONS=1 CIDRE_COMPILE_DIFFEREE=8 CIDRE_COMPILE_FOND=4 CIDRE_FRONTAL_DIFFERE=1 CIDRE_NAN_STRICT=1 CIDRE_PIPELINE_PARESSEUX=1 CIDRE_WSI_ATTENTE_PRESENT=gpu " "$e"
@@ -537,6 +544,12 @@ verif "kk d4 : CIDRE_VARIANTES explicite garde la main" "CIDRE_VARIANTES=/tmp/v.
 e=$(pile_d4 "$XB" fex_disque=true fex_smc_chaud=64)
 verif "fex d4 : cache disque de Cidre et SMC chaud" "CIDRE_ARME_RAPIDE=0 CIDRE_FEX_DISQUE=1 CIDRE_FEX_DISQUE_CLE_BRUTE=0 CIDRE_FEX_DISQUE_MAX_MO=0 CIDRE_FEX_DISQUE_MO=256 CIDRE_FEX_DISQUE_VALIDES=1 CIDRE_SMC_EN_LIGNE_CHAUD=64 " "$e"
 verif "fex d4 : rien par defaut" "" "$(pile_d4 "$XB")"
+# jeu Battle.net : cache par l'AppConfig du seul exe (f5f0b1f), pas par CIDRE_FEX_DISQUE
+verif "fex d4 battle.net : cache par l'AppConfig, pas par CIDRE_FEX_DISQUE" "CIDRE_ARME_RAPIDE=0 CIDRE_FEX_DISQUE_CLE_BRUTE=0 CIDRE_FEX_DISQUE_MAX_MO=0 CIDRE_FEX_DISQUE_MO=256 CIDRE_FEX_DISQUE_VALIDES=1 CIDRE_SMC_EN_LIGNE_CHAUD=64 " "$(BNET=oui pile_d4 "$XB" fex_disque=true fex_smc_chaud=64)"
+# pile FEX de D4 : ni haut nul ni sonnette de retour (parties de dev ; ils entrent dans le seau du cache disque)
+verif "fex d4 : sans CIDRE_HAUT_NUL ni CIDRE_SONNETTE_RETOUR" "" "$(MOTIF='^CIDRE_(HAUT_NUL|SONNETTE_RETOUR)=' pile_d4 "$XB" fex_disque=true)"
+verif "fex : haut nul et sonnette de retour hors pile D4" "CIDRE_HAUT_NUL=2 CIDRE_SONNETTE_RETOUR=1 " "$(MOTIF='^CIDRE_(HAUT_NUL|SONNETTE_RETOUR)=' pile_d4 "$XB")"
+verif "fex d4 : CIDRE_HAUT_NUL explicite garde la main" "CIDRE_HAUT_NUL=1 " "$(export CIDRE_HAUT_NUL=1; GARDER=CIDRE_HAUT_NUL MOTIF='^CIDRE_(HAUT_NUL|SONNETTE_RETOUR)=' pile_d4 "$XB" fex_disque=true)"
 verif "fex d4 : CIDRE_FEX_DISQUE=0 coupe la fiche" "" "$(export CIDRE_FEX_DISQUE=0; GARDER=CIDRE_FEX_DISQUE pile_d4 "$XB" fex_disque=true)"
 F4=$(sh "$R/tests/profil_cidre.sh" bnet-fen 2>/dev/null)
 verif "fiche bnet-fen : compilation_kk" 'cache_disque frontal_differe pipeline_paresseux fond base_pipelines cache_fonctions variantes' "$(printf '%s\n' "$F4" | sed -n 's/^compilation_kk=//p' | head -1)"

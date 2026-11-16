@@ -1147,10 +1147,15 @@ fi
 # par defaut : avec lui, Detroit place mal les yeux de ses personnages (M4, 22/10 :
 # faux 3 passes sur 5, bon 4 sur 4 avec la sonnette remise). CIDRE_SONNETTE_RETOUR=0
 # le reactive pour un essai.
-[ -n "${CIDRE_SONNETTE_RETOUR:-}" ] || export CIDRE_SONNETTE_RETOUR=1
 # fex 0230 : scalaires SSE sans ins quand la moitie haute du xmm est connue nulle (multibloc) ; banc flottant
 # 61 -> 98 % de Rosetta, temoins 30/30, PEAK sans changement ni defaut (23/10). CIDRE_HAUT_NUL=0 le coupe.
-[ -n "${CIDRE_HAUT_NUL:-}" ] || export CIDRE_HAUT_NUL=2
+# Pile FEX de Diablo IV (fex_disque = true) : ni l'un ni l'autre, comme aux parties D4 du 08-11/11
+# (partie_combo.sh, jamais avec eux) ; ils changent le code emis et entrent dans le seau du cache disque (CidreEnvCodegen) :
+# 16/11, avec eux, D4 gele au demarrage sur un cache froid (STATUS_STACK_OVERFLOW du fil principal). Une valeur posee garde la main.
+if [ "$(opt fex_disque CIDRE_FEX_DISQUE)" != true ]; then
+   [ -n "${CIDRE_SONNETTE_RETOUR:-}" ] || export CIDRE_SONNETTE_RETOUR=1
+   [ -n "${CIDRE_HAUT_NUL:-}" ] || export CIDRE_HAUT_NUL=2
+fi
 # Pile FEX de Diablo IV (INTEGRATION_D4.md), par fiche ; une variable deja posee garde la main :
 #   fex_disque = true (CIDRE_FEX_DISQUE=1/0) : cache disque de blocs de Cidre (0366, 0452, 0475-0493), x86-64
 #     seulement (ARM64EC : le client Battle.net 32 bits n'y entre pas, ce que FEX_DISKCACHE global cassait) ;
@@ -1200,8 +1205,13 @@ if [ "$(opt ilot CIDRE_JOUER_ILOT)" = true ]; then
          # WINE : etape2 lance le client par lui ; CIDRE_BNET_WINE : wineserver du prefixe ; WINE_ARM64 : installer_fex
          # (etape2, a chaque lancement) pose dans le prefixe le FEX de ce runtime, celui de l'ilot
          export WINE="$ILOT_RT/bin/wine" CIDRE_BNET_WINE="$ILOT_RT" WINE_ARM64="$ILOT_RT"
-         # (TSO logiciel coupe pour le jeu par son AppConfig ; une variable FEX_TSOENABLED le primerait)
-         [ -n "${CIDRE_TSO:-}" ] || unset FEX_TSOENABLED
+         # TSO logiciel coupe pour le jeu par son AppConfig, MAIS les garde-fous de FEX propres a l'ilot, 0288 (dmb
+         # autour des atomiques : sans eux, ~60 000 inversions Dekker sur 200 000 au litmus) et 0289 (pas de ldp q sous
+         # TSO materiel), ne lisent que l'environnement (getenv("FEX_TSOENABLED") == "0", JIT.cpp et ARM64EC/Module.cpp),
+         # jamais l'AppConfig : depuis b1a145b (11/11), le jeu tournait dans l'ilot sans eux. FEX_TSOENABLED=0 pour tout
+         # le prefixe, comme toutes les parties de dev dans l'ilot (D4 : partie_combo.sh ; D2R : manche.sh) : le client
+         # Battle.net, hors ilot, y perd aussi le TSO logiciel, comme dans ces parties. CIDRE_TSO explicite garde la main.
+         [ -n "${CIDRE_TSO:-}" ] || export FEX_TSOENABLED=0
          # Dans l'ilot, le bon reglage FEX est MaxInst 500 AVEC le multibloc (manches D2R du 24/10 : 6 a 13 trous de
          # plus de 150 ms contre 23 a 31 sans) ; fex_multiblock = false de la fiche ne vaut que hors ilot.
          # CIDRE_FEX_MULTIBLOCK explicite garde la main.
@@ -1214,7 +1224,7 @@ if [ "$(opt ilot CIDRE_JOUER_ILOT)" = true ]; then
 fi
 [ $BNET != oui ] || export CIDRE_ILOT_ALIGNEMENT=$([ $ILOT_JEU = oui ] && echo ilot || echo normal)
 # --- ilot : fin ---
-echo "    fex     : tso ${FEX_TSOENABLED:-1}${FEX_EXTENDEDVOLATILEMETADATA:+ sauf $FEX_EXTENDEDVOLATILEMETADATA}${FEX_VOLATILEMETADATAALLBLOCKS:+, metadonnee MSVC prise au mot}, cache disque ${FEX_DISKCACHE:-0}${CIDRE_FEX_DISQUE:+, cache disque cidre ${CIDRE_FEX_DISQUE_MO} Mio}${CIDRE_SMC_EN_LIGNE_CHAUD:+, smc chaud $CIDRE_SMC_EN_LIGNE_CHAUD}, x87 reduit ${FEX_X87REDUCEDPRECISION:-0}, MaxInst ${FEX_MAXINST:-5000}, multiblock ${FEX_MULTIBLOCK:-1}, sonnette retour ${CIDRE_SONNETTE_RETOUR}, haut nul ${CIDRE_HAUT_NUL}, hote ${FEX_HOSTFEATURES}" >>"$JOURNAL"
+echo "    fex     : tso ${FEX_TSOENABLED:-1}${FEX_EXTENDEDVOLATILEMETADATA:+ sauf $FEX_EXTENDEDVOLATILEMETADATA}${FEX_VOLATILEMETADATAALLBLOCKS:+, metadonnee MSVC prise au mot}, cache disque ${FEX_DISKCACHE:-0}${CIDRE_FEX_DISQUE:+, cache disque cidre ${CIDRE_FEX_DISQUE_MO} Mio}${CIDRE_SMC_EN_LIGNE_CHAUD:+, smc chaud $CIDRE_SMC_EN_LIGNE_CHAUD}, x87 reduit ${FEX_X87REDUCEDPRECISION:-0}, MaxInst ${FEX_MAXINST:-5000}, multiblock ${FEX_MULTIBLOCK:-1}, sonnette retour ${CIDRE_SONNETTE_RETOUR:-0}, haut nul ${CIDRE_HAUT_NUL:-0}, hote ${FEX_HOSTFEATURES}" >>"$JOURNAL"
 # Battle.net : le jeu part du client, qui herite de cet environnement -- et avec
 # lui son CEF (page de connexion, controle de securite de Blizzard). Les blocs
 # FEX de la fiche (MaxInst, multibloc), voulus pour le chargeur protege du jeu,
