@@ -58,9 +58,9 @@ candidat, § 2.
   Hors D4, 0495 change aussi les clés de cache. Les nuanceurs de chaque jeu sont donc recompilés une fois, puis le
   cache sert de nouveau.
 - **PEAK peut tomber au démarrage, environ 1,5 % des lancements** : faute d'exécution dans le JIT Mono de Unity,
-  sortie sur le code 5 ou écran figé sans image. Relancer le jeu suffit ; aucune sauvegarde n'est touchée. La cause
-  n'est pas attribuée à cette version : 0 cas sur 175 en 1.5.22, mais ce n'est pas statistiquement exclu. Le suivi
-  continue.
+  sortie sur le code 5 ou écran figé sans image. Relancer le jeu suffit ; aucune sauvegarde n'est touchée. Ce défaut
+  n'est pas nouveau : la 1.5.22 pure tombe aussi, avec la même signature (1 cas sur 193), et remettre le FEX, le
+  ntdll ou le KosmicKrisp de la 1.5.22 dans cette version ne le fait pas disparaître. Le suivi continue hors release.
 - **Arrêt forcé (`cidre stop`)** : un jeu tué pendant qu'il encode dans Metal peut laisser un rapport de plantage
   macOS. Exemples : `os_unfair_lock is corrupt`, ou « Command encoder released without endEncoding ». Le jeu était
   arrêté de toute façon, et la 1.5.22 le fait au même taux.
