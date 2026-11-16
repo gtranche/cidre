@@ -1,0 +1,364 @@
+Binary files verger-origine/.git/index and verger/.git/index differ
+diff --git a/Resources/en.lproj/Localizable.strings b/Resources/en.lproj/Localizable.strings
+--- a/Resources/en.lproj/Localizable.strings
++++ b/Resources/en.lproj/Localizable.strings
+@@ -716,3 +716,11 @@
+ "Suis l'installeur dans sa fenêtre…" = "Follow the installer in its window…";
+ "Ouverture du client…" = "Opening the client…";
+ "Cidre lance le jeu par le client Battle.net, connecté, avec les réglages de sa fiche. Ouvre le client pour installer ou mettre à jour un jeu ; « Jouer » dans le client le lancerait sans ces réglages." = "Cidre launches the game through the signed-in Battle.net client, with the settings from its profile. Open the client to install or update a game; « Play » in the client would launch it without those settings.";
++
++/* Preparation des shaders avant le lancement (ShaderPreparationSheet) */
++"Préparation des shaders" = "Preparing shaders";
++"Avant de lancer %@, Cidre compile pour ce Mac les shaders utilisés lors de tes dernières parties : le jeu les trouvera prêts, sans saccades." = "Before launching %@, Cidre compiles for this Mac the shaders used in your last sessions: the game will find them ready, without stutter.";
++"%lld sur %lld" = "%lld of %lld";
++"Passer lance le jeu tout de suite : le reste se compilera pendant la partie." = "Skip launches the game right away: the rest will be compiled while you play.";
++"Lancement…" = "Launching…";
++"Passer" = "Skip";
+diff --git a/Tests/CidreBridgeTests/ShaderPreparationTests.swift b/Tests/CidreBridgeTests/ShaderPreparationTests.swift
+new file mode 100644
+--- /dev/null
++++ b/Tests/CidreBridgeTests/ShaderPreparationTests.swift
+@@ -0,0 +1,63 @@
++import Foundation
++import Testing
++
++@testable import CidreBridge
++
++/// La preparation des shaders d'avant lancement : l'evenement `preparation` de
++/// `cidre play --json` (Cidre tests/preparer_shaders.sh), ecrit avant
++/// l'evenement `lancement`, et rien du tout quand tout est deja compile.
++struct ShaderPreparationTests {
++    @Test func debutEtAvancement() throws {
++        guard case let .preparation(debut)? = PlayEvent.parse(line: #"{"evenement":"preparation","etat":"debut","fait":0,"total":1719}"#) else {
++            Issue.record("evenement preparation non reconnu"); return
++        }
++        #expect(debut.state == .started)
++        #expect(debut.done == 0)
++        #expect(debut.total == 1719)
++        #expect(debut.fraction == 0)
++        #expect(!debut.isFinished)
++        guard case let .preparation(cours)? = PlayEvent.parse(line: #"{"evenement":"preparation","etat":"en_cours","fait":860,"total":1719}"#) else {
++            Issue.record("evenement preparation non reconnu"); return
++        }
++        #expect(cours.state == .running)
++        #expect(abs(cours.fraction - 860.0 / 1719.0) < 1e-9)
++        #expect(!cours.isFinished)
++    }
++
++    @Test func finPasseeEchouee() throws {
++        guard case let .preparation(fin)? = PlayEvent.parse(line: #"{"evenement":"preparation","etat":"finie","fait":1718,"total":1719,"echecs":1,"duree":31}"#) else {
++            Issue.record("evenement preparation non reconnu"); return
++        }
++        #expect(fin.state == .done)
++        #expect(fin.failures == 1)
++        #expect(fin.duration == 31)
++        #expect(fin.isFinished)
++        guard case let .preparation(passee)? = PlayEvent.parse(line: #"{"evenement":"preparation","etat":"passee","fait":120,"total":1719,"echecs":0,"duree":4}"#) else {
++            Issue.record("evenement preparation non reconnu"); return
++        }
++        #expect(passee.state == .skipped)
++        #expect(passee.isFinished)
++        guard case let .preparation(echec)? = PlayEvent.parse(line: #"{"evenement":"preparation","etat":"echouee","fait":0,"total":3,"echecs":0,"duree":1}"#) else {
++            Issue.record("evenement preparation non reconnu"); return
++        }
++        #expect(echec.state == .failed)
++        #expect(echec.isFinished)
++    }
++
++    @Test func etatDeDemainEtChampsManquants() throws {
++        // un Cidre plus recent : rien ne tombe ; un total nul ne divise pas par zero
++        guard case let .preparation(p)? = PlayEvent.parse(line: #"{"evenement":"preparation","etat":"en_pause"}"#) else {
++            Issue.record("evenement preparation non reconnu"); return
++        }
++        #expect(p.state == .unknown)
++        #expect(p.total == 0)
++        #expect(p.fraction == 0)
++        #expect(!p.isFinished)
++        // trop fait (journal plus long que la base filtree) : borne a 1
++        #expect(ShaderPreparation(state: .running, done: 12, total: 10).fraction == 1)
++    }
++
++    @Test func lancementSuitToujours() {
++        #expect(PlayEvent.parse(line: #"{"evenement":"lancement"}"#) == .launching)
++    }
++}
+diff --git a/Verger/CidreBridge/CidreCLI.swift b/Verger/CidreBridge/CidreCLI.swift
+--- a/Verger/CidreBridge/CidreCLI.swift
++++ b/Verger/CidreBridge/CidreCLI.swift
+@@ -139,6 +139,13 @@
+         _ = try await checked(["stop"] + (id.map { [$0] } ?? []))
+     }
+ 
++    /// `cidre preparation <id> passer` : arrete la preparation des shaders que
++    /// `cidre play` fait avant de lancer le jeu ; le jeu part tout de suite et
++    /// le reste se compile en jeu. Sans effet s'il n'y en a pas en cours.
++    public func skipShaderPreparation(id: String) async throws {
++        _ = try await checked(["preparation", id, "passer"])
++    }
++
+     /// `cidre running --json` : les identifiants des jeux en cours, qu'ils aient
+     /// ete lances par Verger, par Steam ou au Terminal.
+     public func running() async throws -> [String] {
+diff --git a/Verger/CidreBridge/Game.swift b/Verger/CidreBridge/Game.swift
+--- a/Verger/CidreBridge/Game.swift
++++ b/Verger/CidreBridge/Game.swift
+@@ -613,6 +613,70 @@
+     }
+ }
+ 
++/// La preparation des shaders d'avant lancement : l'evenement `preparation` de
++/// `cidre play --json` (Cidre `tests/preparer_shaders.sh`). Avant le jeu, et
++/// hors de son processus, Cidre recompile les pipelines que le jeu a lies lors
++/// des parties precedentes et que ce KosmicKrisp, ce GPU ou ce macOS n'ont pas
++/// encore compiles, comme « Traitement des shaders Vulkan » de Steam. Rien
++/// n'est ecrit quand tout est deja compile. `cidre preparation <id> passer`
++/// (`CidreCLI.skipShaderPreparation`) l'arrete : le jeu part tout de suite.
++public struct ShaderPreparation: Decodable, Equatable, Sendable {
++    public enum State: String, Sendable {
++        case started = "debut"
++        case running = "en_cours"
++        /// Tout est fait (`failures` : pipelines que KosmicKrisp n'a pas pu compiler).
++        case done = "finie"
++        /// Passee : le reste se compilera en jeu.
++        case skipped = "passee"
++        /// Le rejeu a echoue : le jeu compilera lui-meme, comme sans preparation.
++        case failed = "echouee"
++        /// Un etat que ce Verger ne connait pas (Cidre plus recent).
++        case unknown = "inconnu"
++    }
++
++    public let state: State
++    /// Pipelines prets / a preparer.
++    public let done: Int
++    public let total: Int
++    public let failures: Int?
++    /// En secondes, a la fin.
++    public let duration: Int?
++
++    enum CodingKeys: String, CodingKey {
++        case state = "etat", done = "fait", total, failures = "echecs", duration = "duree"
++    }
++
++    public init(state: State, done: Int, total: Int, failures: Int? = nil, duration: Int? = nil) {
++        self.state = state
++        self.done = done
++        self.total = total
++        self.failures = failures
++        self.duration = duration
++    }
++
++    public init(from decoder: Decoder) throws {
++        let c = try decoder.container(keyedBy: CodingKeys.self)
++        state = (try? c.decode(String.self, forKey: .state)).flatMap(State.init(rawValue:)) ?? .unknown
++        done = ((try? c.decodeIfPresent(Int.self, forKey: .done)) ?? nil) ?? 0
++        total = ((try? c.decodeIfPresent(Int.self, forKey: .total)) ?? nil) ?? 0
++        failures = (try? c.decodeIfPresent(Int.self, forKey: .failures)) ?? nil
++        duration = (try? c.decodeIfPresent(Int.self, forKey: .duration)) ?? nil
++    }
++
++    /// La part faite, de 0 a 1.
++    public var fraction: Double {
++        total > 0 ? min(1, max(0, Double(done) / Double(total))) : 0
++    }
++
++    /// Plus rien ne suivra pour cette preparation : la feuille se ferme.
++    public var isFinished: Bool {
++        switch state {
++        case .done, .skipped, .failed: true
++        case .started, .running, .unknown: false
++        }
++    }
++}
++
+ /// Ce que `cidre play <id> --json` ecrit sur sa sortie standard avant de lancer
+ /// le jeu, un objet JSON par ligne.
+ public enum PlayEvent: Equatable, Sendable {
+@@ -620,6 +684,8 @@
+     case update(UpdateStatus)
+     /// Les shaders du jeu sont-ils deja compiles sur ce Mac ?
+     case shaders(ShaderCacheStatus)
++    /// La preparation des shaders d'avant lancement avance.
++    case preparation(ShaderPreparation)
+     /// Le jeu part : plus rien ne suivra.
+     case launching
+     /// Cidre refuse de lancer : `hors_ligne` (disque debranche), `deplacement`
+@@ -639,6 +705,7 @@
+             guard let refusal = try? JSONDecoder().decode(Refusal.self, from: data) else { return nil }
+             return .refused(code: refusal.code, message: refusal.message ?? "")
+         case "shaders": return (try? JSONDecoder().decode(ShaderCacheStatus.self, from: data)).map(PlayEvent.shaders)
++        case "preparation": return (try? JSONDecoder().decode(ShaderPreparation.self, from: data)).map(PlayEvent.preparation)
+         default: return nil
+         }
+     }
+diff --git a/Verger/Library/LibraryModel.swift b/Verger/Library/LibraryModel.swift
+--- a/Verger/Library/LibraryModel.swift
++++ b/Verger/Library/LibraryModel.swift
+@@ -102,6 +102,12 @@
+     /// Ce que Cidre a annonce au lancement sur les shaders du jeu (premier
+     /// lancement, cache a refaire), par id de jeu : dit tant que le jeu tourne.
+     private(set) var shaderNotices: [String: String] = [:]
++    /// La preparation des shaders que Cidre fait avant de lancer un jeu
++    /// (evenement `preparation` de `cidre play --json`), par id de jeu, tant
++    /// qu'elle tourne : la feuille « Preparation des shaders » la montre.
++    private(set) var preparations: [String: ShaderPreparationRequest] = [:]
++    /// Les jeux dont on a demande de passer la preparation (bouton Passer).
++    private(set) var skippingPreparation: Set<String> = []
+     /// Les jeux que « Jouer » est en train de mettre a jour avant de les lancer.
+     private var updatingBeforeLaunch: Set<Int> = []
+     private var playTasks: [String: Task<Void, Never>] = [:]
+@@ -589,6 +595,7 @@
+                 lastErrorGame = game
+             }
+             if let appid = game.appid, updatingBeforeLaunch.remove(appid) != nil { downloads[appid] = nil }
++            endPreparation(for: game)
+             playTasks[game.id] = nil
+             // Un jeu du client Steam : `cidre play` rend la main tout de suite,
+             // et Steam met quelques secondes a le demarrer. On le garde « en
+@@ -628,12 +635,22 @@
+             shaderNotices[game.id] = status.announcement
+             return
+         }
++        // (avant l'appid : un jeu Battle.net n'en a pas, et se prepare aussi)
++        if case let .preparation(progress) = event {
++            if progress.isFinished {
++                endPreparation(for: game)
++            } else {
++                preparations[game.id] = ShaderPreparationRequest(game: game, progress: progress, skipping: false)
++            }
++            return
++        }
++        if case .launching = event { endPreparation(for: game) }
+         guard let appid = game.appid else { return }
+         switch event {
+         case .refused:
+             // (l'erreur arrive a la fin de la commande, avec la phrase de Cidre)
+             break
+-        case .shaders:
++        case .shaders, .preparation:
+             break
+         case .launching:
+             if updatingBeforeLaunch.remove(appid) != nil { downloads[appid] = nil }
+@@ -665,6 +682,35 @@
+         }
+     }
+ 
++    /// La preparation des shaders a montrer : la premiere en cours (un seul jeu
++    /// se lance a la fois, en pratique).
++    var shaderPreparationRequest: ShaderPreparationRequest? {
++        guard let request = preparations.values.min(by: { $0.id < $1.id }) else { return nil }
++        return ShaderPreparationRequest(game: request.game, progress: request.progress,
++                                        skipping: skippingPreparation.contains(request.id))
++    }
++
++    /// Bouton Passer : Cidre arrete la preparation et lance le jeu tout de
++    /// suite ; le reste des shaders se compilera en jeu, comme sans elle.
++    func skipPreparation(_ game: Game) {
++        guard let cli, preparations[game.id] != nil else { return }
++        skippingPreparation.insert(game.id)
++        Task {
++            do {
++                try await cli.skipShaderPreparation(id: game.id)
++            } catch {
++                // (un Cidre sans `preparation passer` : la preparation va a son terme)
++                skippingPreparation.remove(game.id)
++                lastError = error.localizedDescription
++            }
++        }
++    }
++
++    private func endPreparation(for game: Game) {
++        preparations[game.id] = nil
++        skippingPreparation.remove(game.id)
++    }
++
+     // MARK: Jeux en cours, et Discord
+ 
+     /// Demande a Cidre ce qui tourne, et met Discord a jour. Appelee toutes les
+@@ -1406,6 +1452,19 @@
+ /// Ce que Verger montre quand Cidre refuse un lancement pour proteger le nuage
+ /// Steam : quelles sauvegardes manquent, qu'elles restent dans le nuage, et ce
+ /// que « Lancer quand meme » ferait.
++/// La feuille « Preparation des shaders » : le jeu, ou en est sa preparation,
++/// et si Passer a deja ete demande.
++struct ShaderPreparationRequest: Identifiable, Equatable {
++    let game: Game
++    let progress: ShaderPreparation
++    let skipping: Bool
++    var id: String { game.id }
++
++    static func == (a: Self, b: Self) -> Bool {
++        a.game.id == b.game.id && a.progress == b.progress && a.skipping == b.skipping
++    }
++}
++
+ struct CloudGuardRequest {
+     let game: Game
+     let files: [String]
+diff --git a/Verger/Library/LibraryView.swift b/Verger/Library/LibraryView.swift
+--- a/Verger/Library/LibraryView.swift
++++ b/Verger/Library/LibraryView.swift
+@@ -92,6 +92,10 @@
+             .sheet(item: $reporting) { ReportSheet(request: $0).environment(library) }
+             .sheet(item: $sharing) { GameReportSheet(game: $0).environment(library) }
+             .sheet(item: $diagnosing) { DiagnosticSendSheet(game: $0).environment(library) }
++            // Cidre prepare les shaders du jeu avant de le lancer (`cidre play --json`)
++            .sheet(item: Binding(get: { library.shaderPreparationRequest }, set: { _ in })) {
++                ShaderPreparationSheet(request: $0).environment(library)
++            }
+             .confirmationDialog(
+                 "Forcer l'arrêt de \(stoppingName) ?",
+                 isPresented: Binding(get: { stopping != nil }, set: { if !$0 { stopping = nil } }),
+diff --git a/Verger/Library/ShaderPreparationSheet.swift b/Verger/Library/ShaderPreparationSheet.swift
+new file mode 100644
+--- /dev/null
++++ b/Verger/Library/ShaderPreparationSheet.swift
+@@ -0,0 +1,49 @@
++import CidreBridge
++import SwiftUI
++
++/// « Preparation des shaders » : avant de lancer un jeu D3D12/Vulkan, Cidre
++/// recompile hors du jeu les shaders que celui-ci a utilises lors des parties
++/// precedentes et qui ne sont pas encore compiles pour ce Mac (mise a jour de
++/// Cidre ou de macOS, cache vide), comme « Traitement des shaders Vulkan » de
++/// Steam. Passer lance le jeu tout de suite : le reste se compilera en jeu.
++struct ShaderPreparationSheet: View {
++    @Environment(LibraryModel.self) private var library
++    let request: ShaderPreparationRequest
++
++    private var progress: ShaderPreparation { request.progress }
++
++    var body: some View {
++        VStack(alignment: .leading, spacing: 14) {
++            Label("Préparation des shaders", systemImage: "cpu")
++                .font(.title2.bold())
++            Text(L10n.format("Avant de lancer %@, Cidre compile pour ce Mac les shaders utilisés lors de tes dernières parties : le jeu les trouvera prêts, sans saccades.", request.game.name))
++                .fixedSize(horizontal: false, vertical: true)
++            ProgressView(value: progress.fraction) {
++                Text(verbatim: L10n.format("%lld sur %lld", progress.done, progress.total))
++                    .monospacedDigit()
++            }
++            Text("Passer lance le jeu tout de suite : le reste se compilera pendant la partie.")
++                .font(.callout)
++                .foregroundStyle(.secondary)
++                .fixedSize(horizontal: false, vertical: true)
++            HStack {
++                Spacer()
++                Button {
++                    library.skipPreparation(request.game)
++                } label: {
++                    if request.skipping {
++                        Text("Lancement…")
++                    } else {
++                        Text("Passer")
++                    }
++                }
++                .keyboardShortcut(.defaultAction)
++                .disabled(request.skipping)
++            }
++        }
++        .padding(20)
++        .frame(width: 440)
++        // la feuille se ferme d'elle-meme quand le jeu part ; Passer seul la quitte
++        .interactiveDismissDisabled()
++    }
++}

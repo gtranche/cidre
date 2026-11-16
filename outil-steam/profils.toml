@@ -327,5 +327,11 @@ code_kk = ""
 compilation_kk = ""
 attente_present = ""
 cadence = 0
+# Preparation des shaders avant le lancement (tests/preparer_shaders.sh, PREPARATION_SHADERS.md) :
+# les pipelines que le jeu a LIES lors des parties precedentes (compilation_kk fond + base_pipelines)
+# et qui ne sont pas compiles pour ce KosmicKrisp, ce GPU et ce macOS sont recompiles avant le jeu,
+# hors de son processus ; Passer dans Verger (ou Ctrl-C) lance tout de suite. Rien si tout est chaud.
+# false = jamais (CIDRE_PREPARATION_SHADERS=0 pour un lancement).
+preparation_shaders = true
 
 # (plus de section par jeu ici : profils/<appid>.toml, section [cidre])

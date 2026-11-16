@@ -219,6 +219,7 @@ lanceur les pose (variables `CIDRE_*`, dites au journal sur la ligne `kk`) :
 | `code_kk` | `""` | options de génération de code, noms séparés par des espaces : `lectures_cachees`, `w10_sans_court_circuit`, `images_nulles_sans_branche`, `ssbo_sans_bornes`, `ssbo_nul_puits`, `contraction_malgre_precis`, `reductions_simd`, `minmax_zero_entier`, `textures_nulles_sans_branche` |
 | `compile_differee` (nombre) | — | `CIDRE_COMPILE_DIFFEREE=<n>` : n fils de compilation Metal (Diablo IV : 8) |
 | `compilation_kk` | `""` | pile de compilation des nuanceurs de Diablo IV, noms séparés par des espaces : `cache_disque` (0430), `frontal_differe` (0431), `sans_attente` (0432), `pipeline_paresseux` (0433), `fond` (0441, liste chaude dans le cache du jeu), `base_pipelines` (0444), `cache_fonctions` (0451), `variantes` (0471-0474 ; sans ce mot le lanceur les coupe, `CIDRE_VARIANTES=0`) |
+| `preparation_shaders` | `true` | préparation des shaders avant le lancement (`tests/preparer_shaders.sh`, `PREPARATION_SHADERS.md`) : les pipelines liés lors des parties précédentes (`compilation_kk` avec `fond` et `base_pipelines`) et pas encore compilés pour ce KosmicKrisp, ce GPU et ce macOS ; `false` ou `CIDRE_PREPARATION_SHADERS=0` la coupent ; rien si tout est chaud |
 | `attente_present` | `""` | `"gpu"` : `vkWaitForPresentKHR` rend à la fin du GPU (0470, `CIDRE_WSI_ATTENTE_PRESENT=gpu`) |
 | `nan_strict` | `false` | `true` : comparaisons NaN strictes de l'AIR direct (0440) et select des txf sur poignée nulle (0402), `CIDRE_NAN_STRICT=1` (0495) ; Diablo IV seulement, ~4 % de GPU ailleurs |
 | `cadence` | `0` | `CIDRE_WSI_CADENCE=<Hz>` : chaque image affichée au moins 1/Hz s (0461) |
@@ -291,7 +292,7 @@ lanceur = "steam"                  # steam, epic, gog, battlenet (id bnet-<code>
 # langue, journal_detaille, maj_avant_lancement, tso, tso_sans, tso_msvc, sync_local, vsync, hud, overlay, async, narrow_barriers,
 # garde_index, fils_compilation, eac_untrusted, luajit, plein_ecran, mode_emule, gamemode,
 # dx12, d3d11, d3d9, metalfx, dlss, generation_images, clavier, deck, fex_cache_disque, fex_x87_reduit, fex_maxinst, fex_multiblock, ilot,
-# fex_disque, fex_smc_chaud, compilation_kk, attente_present, nan_strict, cadence,
+# fex_disque, fex_smc_chaud, compilation_kk, preparation_shaders, attente_present, nan_strict, cadence,
 # arguments, exe_sans_anticheat, dll_overrides, windows_version, knowndlls, sortie_normale, sortie_normale_apres, dependances
 # (dependances : NON appliquee, aucun installeur ; le lanceur la nomme au journal).
 # On n'y met que ce qui diffère de [defaut].

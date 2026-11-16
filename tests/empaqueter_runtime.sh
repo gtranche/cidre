@@ -125,7 +125,7 @@ for f in etape2_pile_arm64ec.sh lancer_depuis_steam.sh brancher_jeux_steam.sh \
          majs_steam.awk brancher_jeux_steam.awk configurer_cidre.sh langue_jeu.sh langue_cidre.sh depots_langue.awk \
          installer_steamcmd.sh installer_client_steam_windows.sh diagnostic_cidre.sh \
          fiche_profil.sh reglages_jeu.sh arguments_jeu.sh version_windows.sh knowndlls.sh machine.sh client_steam_natif.sh expliquer_sortie.sh sortie_normale.sh deviner_saves.sh repli_dxmt.sh lier_saves_steam.sh prefixe_a_jour.sh etat_shaders.sh \
-         precompil_kk.sh diag_cidre.sh masquer_diag.awk envoyer_diag.sh fin_de_partie.sh extensions_fex.sh battlenet.sh vcruntime_registre.sh ilot.sh; do
+         precompil_kk.sh preparer_shaders.sh diag_cidre.sh masquer_diag.awk envoyer_diag.sh fin_de_partie.sh extensions_fex.sh battlenet.sh vcruntime_registre.sh ilot.sh; do
    livrer "tests/$f"
 done
 # La base de profils par jeu (profils/README.md) : la copie livree, repli de
@@ -183,6 +183,11 @@ rm "$STAGE/tests/sonde_wx.c"
 cc -arch arm64 -mmacosx-version-min=13.0 -O1 -Wall -Wextra -fobjc-arc -framework Foundation -framework Metal \
    -o "$STAGE/build/puce-gpu" "$R/tests/puce_gpu.m"
 sh "$R/tests/precompil_kk.sh" kk >"$STAGE/kk-msl.txt"
+# Preparation des shaders avant le lancement (tests/preparer_shaders.sh) : filtre
+# de la base de pipelines par la liste chaude et rejeu de KosmicKrisp hors jeu,
+# livre construit (un Mac de joueur n'a pas de compilateur).
+cc -arch arm64 -mmacosx-version-min=13.0 -O1 -Wall -Wextra -I"$R/prefix/include" \
+   -o "$STAGE/build/prepa-shaders" "$R/tests/prepa_shaders.c"
 # Garde-fou : rien de ce qu'on livre ne doit appeler python3.
 if grep -rnE '(^|[^[:alnum:]_/.-])python3?([^[:alnum:]_.-]|$)' "$STAGE/cidre" "$STAGE/tests" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#'; then
    echo "un script livre appelle python : un Mac sans outils de developpement ne l'a pas" >&2; exit 1

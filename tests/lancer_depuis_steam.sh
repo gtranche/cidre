@@ -515,6 +515,11 @@ case $EXE in
 esac
 
 DEBUT_EPOCH=$(date +%s)
+# Preparation des shaders (tests/preparer_shaders.sh) : la taille de la liste
+# chaude au lancement ; a la sortie, les pipelines lies pendant la partie sont
+# notes faits pour ce KosmicKrisp, ce GPU et ce macOS (le jeu les a compiles).
+PREP_DEBUT=
+[ -z "$JEU" ] || [ -z "${MESA_KK_PIPELINE_CACHE:-}" ] || PREP_DEBUT=$(sh "$R/tests/preparer_shaders.sh" debut "$JEU" 2>/dev/null)
 {
    echo "=== $(date '+%F %T')  appid=${SteamAppId:-?}  jeu=$PROG"
    echo "    dossier : $DOSSIER"
@@ -1458,6 +1463,7 @@ fi
 # macOS et le Cidre du moment (tests/etat_shaders.sh), pour annoncer au
 # prochain lancement s'il faudra encore compiler (`cidre play --json`, Verger).
 [ -z "$JEU" ] || sh "$R/tests/etat_shaders.sh" noter "$JEU" "$VOIE_TEMOIN" "$DEBUT_EPOCH" >>"$JOURNAL" 2>&1 || true
+[ -z "$PREP_DEBUT" ] || sh "$R/tests/preparer_shaders.sh" noter "$JEU" "$PREP_DEBUT" >>"$JOURNAL" 2>&1 || true
 # Sorti sur une erreur : le code seul n'aide personne. tests/expliquer_sortie.sh
 # lit le journal de ce lancement, reconnait les signatures connues (client Steam
 # ferme, pas d'affichage, DLL manquante, prefixe abime, plantage...) et ecrit
