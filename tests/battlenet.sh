@@ -244,6 +244,26 @@ sans_demarrage_auto() {
       echo "    battlenet : demarrage automatique du client retire (wineboot l'ouvrait hors du jeu)"
 }
 
+# Debogueur des processus 32 bits (client, CEF) : un rendu CEF (Battle.net.exe --type=renderer) plante
+# a chaque session dans le free() PartitionAlloc de libcef.dll (RVA 0x37329ae/0x37329d8) sur un pointeur
+# qui vise l'image meme de libcef ; `winedbg --auto` ouvrait alors sa fenetre devant le joueur, sans effet
+# sur le jeu (le navigateur recree le rendu). Seule la cle Wow6432Node est touchee : les jeux 64 bits
+# (D4, D2R) gardent winedbg. CIDRE_BNET_DEBOGUEUR : silencieux (defaut, aucun debogueur : le rendu meurt
+# sans fenetre), minidump (C:\users\Public\cidre-cef32.mdmp, pile et modules pour l'analyse, sans
+# boite de dialogue), winedbg (comportement de Wine). Prefixe ferme seulement (reglages_jeu.sh le verifie).
+debogueur_32() {
+   case ${CIDRE_BNET_DEBOGUEUR:-silencieux} in
+      silencieux) d='""' ;;
+      minidump) d='"winedbg --minidump C:\\users\\Public\\cidre-cef32.mdmp %ld %ld"' ;;
+      *) d='"winedbg --auto %ld %ld"' ;;
+   esac
+   awk -v d="$d" 'tolower($0) ~ /^\[software\\\\wow6432node\\\\microsoft\\\\windows nt\\\\currentversion\\\\aedebug\]/ { k = 1; next }
+      /^\[/ { k = 0 } k && index($0, "\"Debugger\"=" d) == 1 { t = 1 } END { exit !t }' "$PFX/system.reg" 2>/dev/null && return 0
+   printf 'Debugger\t%s\nAuto\t"1"\n' "$d" | WINEPREFIX=$PFX sh "$R/tests/reglages_jeu.sh" - ruche system.reg \
+      'Software\Wow6432Node\Microsoft\Windows NT\CurrentVersion\AeDebug' >/dev/null &&
+      echo "    battlenet : debogueur des processus 32 bits : ${CIDRE_BNET_DEBOGUEUR:-silencieux} (plantage connu du rendu CEF)"
+}
+
 # Ilot TSO (option ilot de la fiche, tests/ilot.sh) : le jeu lit sur le disque des DLL (ntdll.dll, FEX) qui
 # different entre le runtime de l'ilot et celui de Cidre ; le prefixe est aligne sur le runtime qui va servir,
 # wineserver arrete. « Jouer » du client, ouvert seul, part du runtime de Cidre : aligne sur lui.
@@ -404,7 +424,7 @@ case ${1:-} in
       # (CIDRE_ILOT_ALIGNEMENT=ilot : client ouvert a la main dans le runtime de l'ilot, essais pas a pas)
       # (cle Run retiree avant prefixe_a_jour : wineboot -u l'executerait ; prefixe_a_jour avant l'alignement : sa
       # copie des DLL de Wine remettrait celles du runtime de Cidre)
-      serveur_vivant || sans_demarrage_auto
+      serveur_vivant || { sans_demarrage_auto; debogueur_32; }
       WINEPREFIX=$PFX sh "$R/tests/prefixe_a_jour.sh" >&2
       serveur_vivant || aligner_ilot "${CIDRE_ILOT_ALIGNEMENT:-normal}" >&2
       config_lancement >&2
@@ -442,7 +462,7 @@ case ${1:-} in
             arreter_client "ouvert ${pour:+pour $pour }; il sera rouvert pour ce jeu, avec son environnement"
          fi
       fi
-      serveur_vivant || { config_lancement; sans_demarrage_auto; regler_args "$id" "$@"; }
+      serveur_vivant || { config_lancement; sans_demarrage_auto; debogueur_32; regler_args "$id" "$@"; }
       exit 0 ;;
    jouer)
       id=${2:?usage: battlenet.sh jouer <id> [arguments]}; shift 2
