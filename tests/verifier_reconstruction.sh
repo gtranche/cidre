@@ -6,15 +6,52 @@
 # que git ne suit pas et qui n'ont rien a voir avec la serie. Pour chaque arbre
 # amont : plan de travail a la revision figee, application de la serie, puis
 # comparaison de « git diff » des deux cotes.
+#
+# Sous-modules : un « git worktree add » ne les extrait pas. Ceux que la serie
+# touche (FEX : External/rpmalloc, 0488/0489) sont extraits dans le plan de
+# travail depuis le sous-module de l'arbre de travail, et compares a part (le
+# superprojet n'en voit qu'un pointeur « -dirty »).
 set -e
 R=$(cd "$(dirname "$0")/.." && pwd)
 . "$R/tests/series.sh"
 TMP=${TMPDIR:-/tmp}/reconstruction-$$
+SOUS="$R/third_party/FEX/External/rpmalloc"
 trap 'rm -rf "$TMP"; for t in mesa wine wine11 vkd3d-proton dxvk dxmt; do
         git -C "$R/src/$t" worktree prune 2>/dev/null || true; done
+        git -C "$SOUS" worktree prune 2>/dev/null || true
         git -C "$R/third_party/FEX" worktree prune 2>/dev/null || true' EXIT
 mkdir -p "$TMP"
 rc=0
+
+# comparer <nom> <plan de travail patche> <arbre de travail>
+comparer() {
+   # (sh n'a pas de variables locales : ne pas reprendre dst/src de verifier)
+   nom=$1; c_dst=$2; c_src=$3
+   find "$c_dst" -name '*.orig' -delete 2>/dev/null
+   git -C "$c_dst" add -A >/dev/null 2>&1
+   git -C "$c_dst" diff --ignore-submodules=dirty HEAD > "$TMP/$nom.attendu"
+
+   idx="$TMP/$nom.index"
+   GIT_INDEX_FILE="$idx" git -C "$c_src" read-tree HEAD
+   # Les traces de construction ne font pas partie de la serie, ni les restes
+   # de « patch » (.orig, .rej) d'un arbre de developpement : etape1 ne les
+   # produit pas, et le plan de travail les efface ci-dessus.
+   GIT_INDEX_FILE="$idx" git -C "$c_src" add -A -- . \
+      ':!build-*.txt' ':!subprojects/.wraplock' ':!*.cache.write' ':!*.cache' \
+      ':!*.log' ':!compile_commands.json' ':!*.orig' ':!*.rej' >/dev/null 2>&1 \
+      || { echo "$nom : indexation de l'arbre de travail impossible (droits d'ecriture sur son .git ?)"; rc=1; return 0; }
+   GIT_INDEX_FILE="$idx" git -C "$c_src" diff --ignore-submodules=dirty HEAD > "$TMP/$nom.obtenu"
+
+   if cmp -s "$TMP/$nom.attendu" "$TMP/$nom.obtenu"; then
+      echo "$nom : $n correctifs, reproduction exacte"
+   else
+      ecart=$(diff "$TMP/$nom.attendu" "$TMP/$nom.obtenu" | grep -c '^[<>]')
+      echo "$nom : $n correctifs, $ecart lignes divergentes"
+      diff "$TMP/$nom.attendu" "$TMP/$nom.obtenu" \
+         | grep '^[<>] diff --git' | sed 's/^/   /' | sort -u | head -10
+      rc=1
+   fi
+}
 
 verifier() {
    arbre=$1; shift
@@ -24,6 +61,12 @@ verifier() {
    [ -e "$src/.git" ] || { echo "$arbre : absent, ignore"; return 0; }
    dst="$TMP/$arbre"
    git -C "$src" worktree add -q --detach "$dst" "$(git -C "$src" rev-parse HEAD)"
+   sous=
+   if [ "$arbre" = FEX ] && [ -e "$SOUS/.git" ]; then
+      sous=External/rpmalloc
+      rmdir "$dst/$sous" 2>/dev/null || true
+      git -C "$SOUS" worktree add -q --detach "$dst/$sous" "$(git -C "$SOUS" rev-parse HEAD)"
+   fi
 
    n=0
    for f in "$@"; do
@@ -43,28 +86,8 @@ verifier() {
    if git -C "$dst" diff --name-only | grep -qx "configure.ac"; then
       (cd "$dst" && autoconf -f >/dev/null 2>&1; rm -rf configure~ autom4te.cache)
    fi
-   find "$dst" -name '*.orig' -delete 2>/dev/null
-
-   git -C "$dst" add -A >/dev/null 2>&1
-   git -C "$dst" diff HEAD > "$TMP/$arbre.attendu"
-
-   idx="$TMP/$arbre.index"
-   GIT_INDEX_FILE="$idx" git -C "$src" read-tree HEAD
-   # Les traces de construction ne font pas partie de la serie.
-   GIT_INDEX_FILE="$idx" git -C "$src" add -A -- . \
-      ':!build-*.txt' ':!subprojects/.wraplock' ':!*.cache.write' ':!*.cache' \
-      ':!*.log' ':!compile_commands.json' >/dev/null 2>&1
-   GIT_INDEX_FILE="$idx" git -C "$src" diff HEAD > "$TMP/$arbre.obtenu"
-
-   if cmp -s "$TMP/$arbre.attendu" "$TMP/$arbre.obtenu"; then
-      echo "$arbre : $n correctifs, reproduction exacte"
-   else
-      ecart=$(diff "$TMP/$arbre.attendu" "$TMP/$arbre.obtenu" | grep -c '^[<>]')
-      echo "$arbre : $n correctifs, $ecart lignes divergentes"
-      diff "$TMP/$arbre.attendu" "$TMP/$arbre.obtenu" \
-         | grep '^[<>] diff --git' | sed 's/^/   /' | sort -u | head -10
-      rc=1
-   fi
+   [ -n "$sous" ] && comparer "$arbre-$(basename "$sous")" "$dst/$sous" "$src/$sous"
+   comparer "$arbre" "$dst" "$src"
 }
 
 verifier mesa $(serie_mesa)

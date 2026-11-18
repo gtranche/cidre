@@ -88,8 +88,11 @@ candidat, § 2.
   0,5 s cumulé). Seule une base partagée entre joueurs les supprimerait.
 - **Diablo II Resurrected** n'a pas été revalidé sur cette version.
 - Validé hors jeu :
-  - les séries sont reconstruites et appliquées sans flou (mesa 136, wine11 74, FEX 64) ; avec 0496-0499 (mesa 138,
-    wine11 75, FEX 65), l'application de bout en bout est À REFAIRE avant l'archive ;
+  - les séries s'appliquent sans flou sur des arbres neufs aux révisions figées (18/11 : mesa 138, wine11 75,
+    FEX 65 dont 0488/0489 dans le sous-module External/rpmalloc) et `verifier_reconstruction.sh` les reproduit à
+    l'identique. Le vérificateur n'extrayait pas les sous-modules (échec apparent de 0488/0489) et comptait les
+    `.orig` d'un arbre de développement : corrigé. Construits sur ces arbres neufs, la dylib KK, ntdll.so et les deux
+    DLL FEX portent exactement les marqueurs des binaires livrés (bb1f01e9, 4f0a4b26, d7fe0872, 40bff86c) ;
   - tests `tester_*` verts ;
   - marqueurs des correctifs vérifiés dans les binaires.
 
