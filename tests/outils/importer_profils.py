@@ -78,6 +78,7 @@ import argparse
 import collections
 import datetime as dt
 import gzip
+import http.client
 import json
 import os
 import re
@@ -237,7 +238,9 @@ class Toile:
                     time.sleep(2 * (essai - essais_429 + 1))
                     continue
                 break
-            except (urllib.error.URLError, TimeoutError, OSError) as e:
+            # IncompleteRead / ValueError : reponse coupee en plein envoi par morceaux (AGW, 18/11 : le catalogue
+            # tombait apres 4 h sur « invalid literal for int() with base 16: b'' ») ; on retente comme une erreur reseau.
+            except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException, ValueError) as e:
                 statut, brut = -1, str(e).encode()
                 if essai - essais_429 < 3:
                     time.sleep(2 * (essai + 1))
