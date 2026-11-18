@@ -402,8 +402,11 @@ case ${1:-} in
          dire_ "Battle.net est deja ouvert."; exit 0
       fi
       # (CIDRE_ILOT_ALIGNEMENT=ilot : client ouvert a la main dans le runtime de l'ilot, essais pas a pas)
-      serveur_vivant || { sans_demarrage_auto; aligner_ilot "${CIDRE_ILOT_ALIGNEMENT:-normal}" >&2; }
+      # (cle Run retiree avant prefixe_a_jour : wineboot -u l'executerait ; prefixe_a_jour avant l'alignement : sa
+      # copie des DLL de Wine remettrait celles du runtime de Cidre)
+      serveur_vivant || sans_demarrage_auto
       WINEPREFIX=$PFX sh "$R/tests/prefixe_a_jour.sh" >&2
+      serveur_vivant || aligner_ilot "${CIDRE_ILOT_ALIGNEMENT:-normal}" >&2
       config_lancement >&2
       printf 'pour=client\n' >"$MARQUE"
       # Un jeu lance par « Jouer » du client herite de cet environnement, pas de sa

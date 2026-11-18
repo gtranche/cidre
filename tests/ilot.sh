@@ -122,6 +122,14 @@ case ${1:-} in
       [ -d "$d" ] || { echo "ilot : prefixe sans system32 ($p)" >&2; exit 2; }
       srv=/tmp/.wine-$(id -u)/server-$(stat -f '%Xd-%Xi' "$p" 2>/dev/null)
       [ -S "$srv/socket" ] && pgrep -x wineserver >/dev/null 2>&1 && { echo "ilot : le wineserver du prefixe tourne, rien aligne" >&2; exit 4; }
+      # Renommages en attente (wineboot -u : DLL qu'il avait chargees, ecrites en dllXXXX.tmp) : le demarrage suivant
+      # du prefixe les execute et ecraserait ce qu'on aligne ici (D4 gele, 17/11). On les execute d'abord.
+      if grep -aq '^"PendingFileRenameOperations"=' "$p/system.reg" 2>/dev/null; then
+         WINEPREFIX=$p WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=" "$REL/bin/wineboot" --init >/dev/null 2>&1 || true
+         WINEPREFIX=$p "$REL/bin/wineserver" -w 2>/dev/null || true
+         ! grep -aq '^"PendingFileRenameOperations"=' "$p/system.reg" 2>/dev/null \
+            || echo "ilot : renommages en attente dans $p/system.reg : l'alignement sera defait au demarrage" >&2
+      fi
       n=0
       for f in $DLL_DISQUE; do
          [ -f "$s/lib/wine/aarch64-windows/$f" ] || continue

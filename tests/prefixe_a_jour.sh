@@ -47,6 +47,20 @@ export WINEPREFIX=$P
 WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=" DYLD_LIBRARY_PATH="$R/wine/vklib-arm64:$R/prefix/lib" \
    "$W/bin/wineboot" -u >/dev/null 2>&1 || true
 "$W/bin/wineserver" -w 2>/dev/null || true
+# wineboot -u ne peut pas reecrire les DLL qu'il a lui-meme chargees (ntdll, kernelbase, kernel32, ucrtbase,
+# msvcrt, xtajit64...) : il les ecrit en dllXXXX.tmp et les inscrit dans PendingFileRenameOperations, que le
+# demarrage SUIVANT du prefixe execute. Pour un jeu Battle.net dans l'ilot, ce demarrage suivant est celui du
+# client, apres que ilot.sh aligner a pose les DLL de l'ilot : les renommages en attente les ecrasaient par celles
+# du runtime de Cidre, et Diablo IV, qui lit system32\ntdll.dll sur le disque, gelait (17/11, 0xc00000fd). On
+# execute ces renommages tout de suite, par un demarrage du prefixe (wineboot --init : renommages, sans les
+# cles Run), wineserver arrete apres.
+if grep -aq '^"PendingFileRenameOperations"=' "$P/system.reg" 2>/dev/null; then
+   WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=" DYLD_LIBRARY_PATH="$R/wine/vklib-arm64:$R/prefix/lib" \
+      "$W/bin/wineboot" --init >/dev/null 2>&1 || true
+   "$W/bin/wineserver" -w 2>/dev/null || true
+   grep -aq '^"PendingFileRenameOperations"=' "$P/system.reg" 2>/dev/null \
+      && echo "Cidre : renommages en attente toujours inscrits dans $P/system.reg" >&2
+fi
 builtin_wine() { [ "$(dd if="$1" bs=1 skip=64 count=16 2>/dev/null)" = "Wine builtin DLL" ]; }
 n=0
 for paire in aarch64-windows:system32 i386-windows:syswow64; do
