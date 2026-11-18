@@ -1,0 +1,427 @@
+Generated-by: LLM
+
+KosmicKrisp : variantes connues construites en QoS user-initiated jusqu'a la fin de la liste ; reserve AIR locale indexee
+
+Diablo IV, partie du 18/11 (e924f7c) : 822 variantes notees chargees, reconstruites par kkvar en QoS utility a 30 ms
+chacune (2 ms sur le fil du dessin) ; 285 variantes construites au dessin dont 187 deja notees ; ecriture AIR local
+9,3 s sur les fils de fond pour 4 fichiers ecrits.
+
+- kkvar demarre en QoS user-initiated tant qu'il reste des variantes chargees du fichier (variantes-kk.bin) a
+  construire (construites en fond, au dessin, ou deja la), puis redescend a CIDRE_VARIANTES_QOS (utility).
+  CIDRE_VARIANTES_QOS_DEMARRAGE=0 : ancien comportement ; =defaut : QoS default. CIDRE_VARIANTES_HAUTE_MAX_S=N :
+  redescente au plus tard N s apres la creation du peripherique (0 = sans limite, defaut).
+  Construire avant la premiere image n'est pas possible : une variante a besoin des nuanceurs du pipeline, que le
+  jeu cree au fil du chargement.
+- Reserve AIR locale (MESA_KK_AIR_LOCAL) : liste des cles lue une fois par un fil (kkairidx) a la creation du
+  compilateur ; mtl_new_library_air n'ecrit plus (ni ne sonde) une cle deja presente. Avant que l'index soit pret, et
+  pour une cle absente, comportement d'avant. CIDRE_AIR_LOCAL_INDEX=0 : ancien comportement.
+- MESA_KK_COMPILE_STATS : « KK compile: variantes connues (0498) », « KK compile: reserve AIR locale (0498) » ;
+  banc (CIDRE_BANC_BIND + CIDRE_BANC_NOTEES) : « kk: banc variantes (0498) » (file des variantes vide).
+
+KK_CODEGEN reste 1-fe23de315cfc449d (cle figee). kk_shader.c est hache : la garde tests/cle_kk_figee.sh signale des
+sources changees (calculee 0cd6be94...) ; ni le MSL ni le format serialise ne changent (ordonnancement et
+statistiques seulement), CALCULEE_VERIFIEE est a mettre a jour a l'integration.
+
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.m b/src/kosmickrisp/bridge/mtl_compiler.m
+index 8e43306..9dd68b3 100644
+--- a/src/kosmickrisp/bridge/mtl_compiler.m
++++ b/src/kosmickrisp/bridge/mtl_compiler.m
+@@ -20,7 +20,10 @@
+ #import <objc/runtime.h>
+ 
+ #include <CommonCrypto/CommonDigest.h>
++#include <dirent.h>
+ #include <pthread.h>
++#include <pthread/qos.h>
++#include <stdlib.h>
+ #include <stdatomic.h>
+ #include <string.h>
+ #include <time.h>
+@@ -161,22 +164,113 @@ - (BOOL)serializeToURL:(NSURL *)url error:(NSError **)error;
+ /* Reserve d'AIR (MESA_KK_AIR_LOCAL) remplie par l'AIR direct : le metallib
+  * produit par nir_to_air est deja un fichier .metallib complet, on l'ecrit
+  * tel quel sous la cle MSL (sans passer par serializeToURL, prive). */
+-static void
++static bool
+ kk_air_local_write_bytes(const char *dir, NSString *key, const void *air, size_t air_size)
+ {
+    NSString *base = [[NSString stringWithUTF8String:dir] stringByAppendingPathComponent:@"air"];
+    NSString *path = [base stringByAppendingPathComponent:[key stringByAppendingString:@".metallib"]];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if ([fm fileExistsAtPath:path])
+-      return;
++      return true;
+    [fm createDirectoryAtPath:base withIntermediateDirectories:YES attributes:nil error:NULL];
+    NSString *tmp = [path stringByAppendingFormat:@".%d.%p.tmp", (int)getpid(), (void *)pthread_self()];
+    NSData *data = [NSData dataWithBytesNoCopy:(void *)air length:air_size freeWhenDone:NO];
+    if ([data writeToFile:tmp atomically:NO] &&
+-       rename(tmp.fileSystemRepresentation, path.fileSystemRepresentation) == 0)
++       rename(tmp.fileSystemRepresentation, path.fileSystemRepresentation) == 0) {
+       atomic_fetch_add(&kk_stat_lib_air_written, 1);
+-   else
+-      unlink(tmp.fileSystemRepresentation);
++      return true;
++   }
++   unlink(tmp.fileSystemRepresentation);
++   return false;
++}
++
++static uint64_t kk_now_ns(void);
++static pthread_mutex_t kk_air_index_mutex = PTHREAD_MUTEX_INITIALIZER;
++static NSMutableSet<NSString *> *kk_air_index;
++static _Atomic int kk_air_index_etat;
++static _Atomic uint64_t kk_stat_air_index[5];
++
++static void *
++kk_air_index_main(void *arg)
++{
++   char *dir = arg;
++   pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
++   pthread_setname_np("kkairidx");
++   const uint64_t t0 = kk_now_ns();
++   @autoreleasepool {
++      NSMutableSet<NSString *> *s = [[NSMutableSet alloc] initWithCapacity:32768];
++      char chemin[2048];
++      snprintf(chemin, sizeof(chemin), "%s/air", dir);
++      DIR *d = opendir(chemin);
++      if (d != NULL) {
++         struct dirent *e;
++         while ((e = readdir(d)) != NULL) {
++            const size_t n = strlen(e->d_name);
++            if (n <= 9 || strcmp(e->d_name + n - 9, ".metallib") != 0)
++               continue;
++            NSString *k = [[NSString alloc] initWithBytes:e->d_name length:n - 9
++                                                 encoding:NSASCIIStringEncoding];
++            if (k != nil) {
++               [s addObject:k];
++               [k release];
++            }
++         }
++         closedir(d);
++      }
++      pthread_mutex_lock(&kk_air_index_mutex);
++      [s unionSet:kk_air_index];
++      [kk_air_index release];
++      kk_air_index = s;
++      atomic_store(&kk_stat_air_index[0], s.count);
++      pthread_mutex_unlock(&kk_air_index_mutex);
++   }
++   atomic_store(&kk_stat_air_index[4], kk_now_ns() - t0);
++   atomic_store(&kk_air_index_etat, 2);
++   free(dir);
++   return NULL;
++}
++
++static void
++kk_air_index_lancer(void)
++{
++   const char *local = kk_env_dir("MESA_KK_AIR_LOCAL");
++   const char *v = getenv("CIDRE_AIR_LOCAL_INDEX");
++   if (local == NULL || (v != NULL && v[0] == '0'))
++      return;
++   int attendu = 0;
++   if (!atomic_compare_exchange_strong(&kk_air_index_etat, &attendu, 1))
++      return;
++   pthread_t t;
++   char *dir = strdup(local);
++   if (dir == NULL || pthread_create(&t, NULL, kk_air_index_main, dir) != 0) {
++      free(dir);
++      atomic_store(&kk_air_index_etat, 3);
++      return;
++   }
++   pthread_detach(t);
++}
++
++static void
++kk_air_local_write_indexe(const char *dir, NSString *key, const void *air, size_t air_size)
++{
++   if (atomic_load(&kk_air_index_etat) != 2) {
++      atomic_fetch_add(&kk_stat_air_index[2], 1);
++      kk_air_local_write_bytes(dir, key, air, air_size);
++      return;
++   }
++   pthread_mutex_lock(&kk_air_index_mutex);
++   const bool connue = [kk_air_index containsObject:key];
++   pthread_mutex_unlock(&kk_air_index_mutex);
++   if (connue) {
++      atomic_fetch_add(&kk_stat_air_index[1], 1);
++      return;
++   }
++   atomic_fetch_add(&kk_stat_air_index[3], 1);
++   if (kk_air_local_write_bytes(dir, key, air, air_size)) {
++      pthread_mutex_lock(&kk_air_index_mutex);
++      [kk_air_index addObject:key];
++      pthread_mutex_unlock(&kk_air_index_mutex);
++   }
+ }
+ 
+ static void
+@@ -1173,6 +1267,7 @@ precompile des milliers de pipelines au demarrage (Detroit:
+       uint64_t z = 0;
+       atomic_compare_exchange_strong(&kk_stat_t0, &z, kk_now_ns());
+       mtl_metal_cache_init();
++      kk_air_index_lancer();
+       const char *mcache = getenv("CIDRE_METAL_CACHE_DIR");
+       /* Cidre (0451) : CIDRE_CACHE_FONCTIONS=1 : compilateur SANS serialiseur.
+        * Le serialiseur CaptureBinaries court-circuite le cache de fonctions de
+@@ -1488,6 +1583,23 @@ precompile des milliers de pipelines au demarrage (Detroit:
+               atomic_load(&kk_stat_index[0]) ? (double)atomic_load(&kk_stat_index[1]) /
+                                                   atomic_load(&kk_stat_index[0]) : 0.0,
+               atomic_load(&kk_stat_index[2]), atomic_load(&kk_stat_index[3]));
++   if (atomic_load(&kk_stat_var[0])) {
++      const uint64_t vide = atomic_load(&kk_stat_var_us[3]);
++      if (vide)
++         fprintf(stderr, "KK compile: variantes connues (0498) : %u chargees, toutes construites a t=%.1f s\n",
++                 atomic_load(&kk_stat_var[0]), vide / 1000.0);
++      else
++         fprintf(stderr, "KK compile: variantes connues (0498) : %u chargees, %u restantes\n",
++                 atomic_load(&kk_stat_var[0]), atomic_load(&kk_stat_var[14]));
++   }
++   if (atomic_load(&kk_air_index_etat) != 0)
++      fprintf(stderr, "KK compile: reserve AIR locale (0498) : index %s, %llu cles (lu en %.1f ms) ; ecritures "
++                      "sautees (deja la) %llu, tentees hors index %llu, avant l'index %llu\n",
++              atomic_load(&kk_air_index_etat) == 2 ? "pret" : "en cours",
++              (unsigned long long)atomic_load(&kk_stat_air_index[0]), atomic_load(&kk_stat_air_index[4]) / 1e6,
++              (unsigned long long)atomic_load(&kk_stat_air_index[1]),
++              (unsigned long long)atomic_load(&kk_stat_air_index[3]),
++              (unsigned long long)atomic_load(&kk_stat_air_index[2]));
+    if (atomic_load(&kk_stat_relais_msl))
+       fprintf(stderr, "KK compile: relais %u pipelines MSL pris aux archives, %u remplaces par l'AIR direct, "
+                       "%u echecs, %u abandonnes\n",
+@@ -1695,7 +1807,7 @@ precompile des milliers de pipelines au demarrage (Detroit:
+             objc_setAssociatedObject(lib, kk_lib_msl_path_key, msl_path, OBJC_ASSOCIATION_RETAIN);
+          if (local) {
+             uint64_t tw0 = kk_now_ns();
+-            kk_air_local_write_bytes(local, key, air, air_size);
++            kk_air_local_write_indexe(local, key, air, air_size);
+             kk_prof[14] += kk_now_ns() - tw0;
+             atomic_fetch_add(&kk_stat_mesure[20], kk_now_ns() - tw0);
+          }
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+index c5cf65b..0b99e76 100644
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -4924,6 +4924,7 @@ struct kk_var_paire {
+    struct kk_rp_variant_key *v; /* pointeurs de fonction nuls */
+    uint32_t *rang;
+    const void *dernier_vs;      /* dernier VS mis en file (doublons) */
++   uint8_t *fait;
+ };
+ 
+ static simple_mtx_t kk_var_lock = SIMPLE_MTX_INITIALIZER;
+@@ -4931,6 +4932,44 @@ static struct hash_table *kk_var_table;
+ static int kk_var_fd = -1;
+ static uint32_t kk_var_rang_fichier; /* position, pour les enregistrements sans rang */
+ static int64_t kk_var_t0;            /* creation du peripherique */
++static _Atomic int32_t kk_var_restantes;
++static _Atomic bool kk_var_haute;
++static int64_t kk_var_haute_fin;
++
++static void
++kk_var_descendre(const char *raison)
++{
++   bool attendu = true;
++   if (!atomic_compare_exchange_strong(&kk_var_haute, &attendu, false))
++      return;
++   const int64_t ms = (os_time_get_nano() - kk_var_t0) / 1000000;
++   fprintf(stderr, "kk: variantes connues (0498) : %s a t=%.1f s (%d restantes), kkvar redescend\n",
++           raison, ms / 1000.0, MAX2(atomic_load(&kk_var_restantes), 0));
++}
++
++static void
++kk_var_marquer_locked(struct kk_var_paire *p, const struct kk_rp_variant_key *k)
++{
++   if (p == NULL || p->fait == NULL)
++      return;
++   for (uint32_t i = 0; i < p->n; i++) {
++      if (memcmp((const char *)&p->v[i] + KK_VAR_DEBUT,
++                 (const char *)k + KK_VAR_DEBUT, KK_VAR_OCTETS) == 0) {
++         if (!p->fait[i]) {
++            p->fait[i] = 1;
++            const int32_t r = atomic_fetch_sub(&kk_var_restantes, 1) - 1;
++            atomic_store(&kk_stat_var[14], (uint32_t)MAX2(r, 0));
++            if (r == 0) {
++               const int64_t ms = (os_time_get_nano() - kk_var_t0) / 1000000;
++               atomic_store(&kk_stat_var_us[3], (uint64_t)(ms > 0 ? ms : 1));
++               fprintf(stderr, "kk: variantes connues (0498) : toutes construites a t=%.1f s\n", ms / 1000.0);
++               kk_var_descendre("toutes construites");
++            }
++         }
++         return;
++      }
++   }
++}
+ 
+ static uint32_t
+ kk_var_hash(const void *k)
+@@ -4954,7 +4993,7 @@ kk_var_paire_locked(const uint8_t *cles)
+ /* Vrai si ajoutee (absente jusque-la). */
+ static bool
+ kk_var_ajouter_locked(const uint8_t *cles, const struct kk_rp_variant_key *k,
+-                      uint32_t rang)
++                      uint32_t rang, bool connue)
+ {
+    struct kk_var_paire *p = kk_var_paire_locked(cles);
+    if (p == NULL) {
+@@ -4977,16 +5016,21 @@ kk_var_ajouter_locked(const uint8_t *cles, const struct kk_rp_variant_key *k,
+       struct kk_rp_variant_key *v =
+          reralloc(p, p->v, struct kk_rp_variant_key, cap);
+       uint32_t *r = v ? reralloc(p, p->rang, uint32_t, cap) : NULL;
+-      if (v == NULL || r == NULL)
++      uint8_t *f = r ? reralloc(p, p->fait, uint8_t, cap) : NULL;
++      if (v == NULL || r == NULL || f == NULL)
+          return false;
+       p->v = v;
+       p->rang = r;
++      p->fait = f;
+       p->cap = cap;
+    }
+    memset(&p->v[p->n], 0, sizeof(p->v[p->n]));
+    memcpy((char *)&p->v[p->n] + KK_VAR_DEBUT, (const char *)k + KK_VAR_DEBUT,
+           KK_VAR_OCTETS);
+    p->rang[p->n] = rang;
++   p->fait[p->n] = !connue;
++   if (connue)
++      atomic_store(&kk_stat_var[14], (uint32_t)(atomic_fetch_add(&kk_var_restantes, 1) + 1));
+    p->n++;
+    return true;
+ }
+@@ -5026,7 +5070,7 @@ kk_var_charger(const char *chemin)
+       memset(&k, 0, sizeof(k));
+       memcpy((char *)&k + KK_VAR_DEBUT, buf + 8 + 2 * KK_BASE_CLE,
+              KK_VAR_OCTETS);
+-      if (kk_var_ajouter_locked(buf + 8, &k, rang))
++      if (kk_var_ajouter_locked(buf + 8, &k, rang, true))
+          atomic_fetch_add(&kk_stat_var[0], 1);
+    }
+    close(fd);
+@@ -5085,7 +5129,9 @@ kk_var_noter(struct kk_device *dev, mtl_function_descriptor *vs_function,
+           KK_VAR_OCTETS);
+    memcpy(rec + 8 + KK_VAR_REC1, &rang, 4);
+    simple_mtx_lock(&kk_var_lock);
+-   const bool neuve = kk_var_ajouter_locked(rec + 8, full, rang);
++   const bool neuve = kk_var_ajouter_locked(rec + 8, full, rang, false);
++   if (!neuve)
++      kk_var_marquer_locked(kk_var_paire_locked(rec + 8), full);
+    if (neuve && kk_var_fd >= 0 && write(kk_var_fd, rec, sizeof(rec)) != (ssize_t)sizeof(rec)) {
+       close(kk_var_fd);
+       kk_var_fd = -1;
+@@ -5178,9 +5224,35 @@ struct kk_var_pool {
+    unsigned nfils;
+    uint64_t seq, seq_urgent;
+    bool ordre, prendre, cede_dessins;
+-   qos_class_t qos;
++   qos_class_t qos, qos_haute;
+ };
+ 
++static void
++kk_var_marquer(const struct kk_shader *vs, const struct kk_shader *fs,
++               const struct kk_rp_variant_key *k)
++{
++   if (kk_var_table == NULL || atomic_load(&kk_var_restantes) <= 0)
++      return;
++   uint8_t cles[2 * KK_BASE_CLE];
++   memcpy(cles, vs->vk.pipeline.cache_key, KK_BASE_CLE);
++   memcpy(cles + KK_BASE_CLE, fs->vk.pipeline.cache_key, KK_BASE_CLE);
++   simple_mtx_lock(&kk_var_lock);
++   kk_var_marquer_locked(kk_var_paire_locked(cles), k);
++   simple_mtx_unlock(&kk_var_lock);
++}
++
++static qos_class_t
++kk_var_qos_voulue(const struct kk_var_pool *p)
++{
++   if (!atomic_load(&kk_var_haute))
++      return p->qos;
++   if (kk_var_haute_fin != 0 && os_time_get_nano() > kk_var_haute_fin) {
++      kk_var_descendre("delai CIDRE_VARIANTES_HAUTE_MAX_S atteint");
++      return p->qos;
++   }
++   return p->qos_haute;
++}
++
+ /* Reserve du peripherique pour le crochet du bind (un seul peripherique
+  * actif a la fois en pratique ; NULL pendant sa destruction). */
+ static struct kk_var_pool *_Atomic kk_var_pool_actif;
+@@ -5316,6 +5388,8 @@ kk_var_construire(struct kk_var_pool *p, struct kk_var_job *j)
+    if (kk_shader_compile_failed(vs) || kk_shader_compile_failed(fs) ||
+        !kk_var_apte(dev, vs->function, vs, fs)) {
+       atomic_fetch_add(&kk_stat_var[5], 1);
++      for (uint32_t k = 0; k < j->n; k++)
++         kk_var_marquer(vs, fs, &j->v[k]);
+       goto fin;
+    }
+    for (uint32_t k = 0; k < j->n && !atomic_load(&dev->var_arret); k++) {
+@@ -5330,6 +5404,7 @@ kk_var_construire(struct kk_var_pool *p, struct kk_var_job *j)
+       simple_mtx_unlock(&dev->rp_variant_lock);
+       if (deja) {
+          atomic_fetch_add(&kk_stat_var[4], 1);
++         kk_var_marquer(vs, fs, key);
+          continue;
+       }
+       const int64_t t0 = os_time_get_nano();
+@@ -5337,6 +5412,7 @@ kk_var_construire(struct kk_var_pool *p, struct kk_var_job *j)
+          atomic_fetch_add(&kk_stat_var[3], 1);
+          atomic_fetch_add(&kk_stat_var_us[0], (uint64_t)(os_time_get_nano() - t0) / 1000u);
+       }
++      kk_var_marquer(vs, fs, key);
+    }
+ fin:
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &c1);
+@@ -5351,12 +5427,18 @@ kk_var_fil(void *arg)
+ {
+    struct kk_var_pool *p = arg;
+    struct kk_device *dev = p->dev;
+-   pthread_set_qos_class_self_np(p->qos, 0);
++   qos_class_t qos_fil = kk_var_qos_voulue(p);
++   pthread_set_qos_class_self_np(qos_fil, 0);
+    pthread_setname_np("kkvar");
+    struct util_dynarray morts;
+    util_dynarray_init(&morts, NULL);
+    pthread_mutex_lock(&p->mtx);
+    while (!atomic_load(&dev->var_arret)) {
++      const qos_class_t qv = kk_var_qos_voulue(p);
++      if (qv != qos_fil) {
++         pthread_set_qos_class_self_np(qv, 0);
++         qos_fil = qv;
++      }
+       /* banc (CIDRE_BANC_BIND) : retenu jusqu'au depart, comme la file de fond */
+       if (atomic_load(&kk_banc_retenue) || kk_var_doit_ceder(p)) {
+          pthread_mutex_unlock(&p->mtx);
+@@ -5526,6 +5608,18 @@ kk_var_init(struct kk_device *dev)
+    p->qos = q != NULL && strcmp(q, "background") == 0 ? QOS_CLASS_BACKGROUND
+           : q != NULL && strcmp(q, "interactif") == 0 ? QOS_CLASS_USER_INITIATED
+                                                        : QOS_CLASS_UTILITY;
++   const char *qd = getenv("CIDRE_VARIANTES_QOS_DEMARRAGE");
++   p->qos_haute = qd != NULL && strcmp(qd, "defaut") == 0 ? QOS_CLASS_DEFAULT
++                                                          : QOS_CLASS_USER_INITIATED;
++   const bool haute = !(qd != NULL && qd[0] == '0') && atomic_load(&kk_var_restantes) > 0 &&
++                      p->qos_haute > p->qos;
++   const unsigned haute_s = kk_env_u("CIDRE_VARIANTES_HAUTE_MAX_S", 0);
++   kk_var_haute_fin = haute_s ? os_time_get_nano() + (int64_t)haute_s * 1000000000ll : 0;
++   atomic_store(&kk_var_haute, haute);
++   if (haute)
++      fprintf(stderr, "kk: variantes connues (0498) : %d a construire, kkvar en QoS %s jusqu'a ce qu'elles le soient\n",
++              atomic_load(&kk_var_restantes),
++              p->qos_haute == QOS_CLASS_DEFAULT ? "default" : "user-initiated");
+    for (unsigned i = 0; i < n; i++) {
+       if (pthread_create(&p->fils[p->nfils], NULL, kk_var_fil, p) == 0)
+          p->nfils++;
+@@ -6807,6 +6901,17 @@ kk_banc_bind(struct kk_device *dev, struct kk_rejeu_index *ix, const char *d)
+    }
+    const int64_t t3 = os_time_get_nano();
+    const uint32_t fond1 = atomic_load(&kk_stat_fond[1]);
++   if (nvar && dev->var_pool != NULL) {
++      const uint32_t en_file3 = atomic_load(&dev->var_en_file);
++      while (atomic_load(&dev->var_en_file) != 0 && os_time_get_nano() - t3 < 120ll * 1000000000ll)
++         usleep(2000);
++      const int64_t t4 = os_time_get_nano();
++      fprintf(stderr, "kk: banc variantes (0498) : %u travaux en file a la fin des binds, file vide %.2f s apres le "
++                      "depart (%.2f s apres les binds), %u travaux restants ; connues restantes %d / %u%s\n",
++              en_file3, (t4 - t1) / 1e9, (t4 - t3) / 1e9, atomic_load(&dev->var_en_file),
++              MAX2(atomic_load(&kk_var_restantes), 0), atomic_load(&kk_stat_var[0]),
++              atomic_load(&kk_var_haute) ? ", QoS haute" : "");
++   }
+    uint64_t somme = 0;
+    for (unsigned k = 0; k < faits; k++)
+       somme += dt[k];

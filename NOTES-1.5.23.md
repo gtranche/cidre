@@ -20,8 +20,16 @@ une recompilation des nuanceurs au premier lancement des jeux D3D12 (voir « Poi
   - **FEX : cache disque de blocs de Cidre** (0366-0493, `fex_disque`) et SMC en ligne validé par CRC (0370).
   - Mesuré en développement sur M1 Max : monde 28-42 img/s, 6,9 sauts de plus de 250 ms par 10 min. Le joueur l'a
     jugé « bien jouable ».
-  - **La validation par `cidre play bnet-fen` reste à faire avec le joueur** : connexion Battle.net requise. Jusqu'ici,
-    D4 n'a tourné que par les scripts de développement.
+  - **Validé par `cidre play bnet-fen` avec le joueur le 18/11** : 26,5 min sans saccade ni gel, environ 30 img/s,
+    sortie normale. Le Mac a été redémarré avant la partie, avec Steam fermé (voir « Points connus », mémoire).
+  - **Préparation des nuanceurs avant la partie** : mode « tout » (`preparation_shaders = "tout"`) pour toute la base
+    0444. Les zones déjà notées sont fluides dès la première visite ; le contenu jamais vu reste compilé en jeu.
+  - **KosmicKrisp 0496** : un index par archive Metal ; une recherche de variante consulte une archive au lieu de 35.
+    Cache disque Mesa porté à 4 Gio (à 1 Gio, il évinçait des nuanceurs préparés).
+  - **KosmicKrisp 0498** : les variantes déjà connues sont reconstruites en priorité haute jusqu'à la fin de la liste,
+    et la réserve AIR locale est indexée (9 s d'écritures inutiles évitées par partie).
+  - **FEX 0497** : les garde-fous de l'îlot (0288/0289) suivent le TSO effectif, AppConfig compris ; le client
+    Battle.net garde son TSO logiciel.
 - **FEX 0491** : les champs masqués du cache disque sont relus sans faute. Cela supprime le gel au démarrage de D4
   (auto-blocage sous le verrou d'invalidation, introduit par 0480), sans relocation fautive.
 - **FEX 0493** : les copies servies par le cache disque sont réemployées, et le tampon de code n'est vidé qu'une fois.
@@ -36,6 +44,13 @@ une recompilation des nuanceurs au premier lancement des jeux D3D12 (voir « Poi
 
 ## Correctifs
 
+- **Wine 0499, gel de Diablo IV en partie** : le fil principal du jeu mourait sans bruit après 1 à 24 min, et tout le
+  jeu restait figé. Un rappel de procédure de fenêtre (souris) arrivé après que le fil avait rendu son vCPU partait
+  hors de l'îlot. Le vCPU est désormais recréé pour le rappel. Le correctif apporte aussi deux sondes de diagnostic
+  (fils bloqués, fin de fil), muettes sans `CIDRE_ILOT_BLOQUES` / `CIDRE_ILOT_XPROC`.
+- **Gel de D4 au démarrage après une mise à jour du runtime** (e924f7c) : les renommages en attente de `wineboot -u`
+  défaisaient l'alignement du préfixe sur l'îlot ; ils sont maintenant exécutés avant l'alignement.
+- **Cache disque de FEX pour le seul jeu** (AppConfig) : dans l'environnement, il figeait le client Battle.net 32 bits.
 - **KosmicKrisp 0492 « froids en fond » coupé par défaut** (`CIDRE_FOND_FROIDS=1` pour l'activer). En partie D4, le
   12/11, il compilait 4 691 pipelines froids en fond pour un seul servi au bind. Les fils de compilation saturaient
   le processeur : 51 sauts par 10 min au lieu de 6,9.
@@ -64,9 +79,17 @@ candidat, § 2.
 - **Arrêt forcé (`cidre stop`)** : un jeu tué pendant qu'il encode dans Metal peut laisser un rapport de plantage
   macOS. Exemples : `os_unfair_lock is corrupt`, ou « Command encoder released without endEncoding ». Le jeu était
   arrêté de toute façon, et la 1.5.22 le fait au même taux.
+- **Diablo IV demande de la mémoire** : 14-15 Go au menu, 20-23 Go en jeu. Sur un Mac de 32 Go déjà en échange
+  disque (applications ouvertes depuis longtemps, Steam), le jeu saccade puis peut se figer. Partir d'un Mac au swap
+  vide et fermer Steam et Battle.net pour Mac. Limiter la mémoire graphique annoncée (6 Go) n'a pas aidé.
+- **Client Battle.net : un rendu CEF 32 bits plante** (« Unhandled page fault » à 6CA129D8, fenêtre de `winedbg`).
+  Sans effet sur le jeu ; 0497 ne le corrige pas, contrairement à ce qu'on pensait. Cause non trouvée.
+- **Diablo IV : saccades à la première visite d'une zone jamais notée** (quelques pipelines compilés en jeu, environ
+  0,5 s cumulé). Seule une base partagée entre joueurs les supprimerait.
 - **Diablo II Resurrected** n'a pas été revalidé sur cette version.
 - Validé hors jeu :
-  - les séries sont reconstruites et appliquées sans flou (mesa 136, wine11 74, FEX 64) ;
+  - les séries sont reconstruites et appliquées sans flou (mesa 136, wine11 74, FEX 64) ; avec 0496-0499 (mesa 138,
+    wine11 75, FEX 65), l'application de bout en bout est À REFAIRE avant l'archive ;
   - tests `tester_*` verts ;
   - marqueurs des correctifs vérifiés dans les binaires.
 

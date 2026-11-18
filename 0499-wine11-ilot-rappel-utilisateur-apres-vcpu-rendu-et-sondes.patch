@@ -1,0 +1,275 @@
+Generated-by: LLM
+
+wine11 : ilot, rappel utilisateur apres un vCPU rendu (0499), plus deux sondes de diagnostic
+
+Gel de Diablo IV en partie (Battle.net, ilot), 16-18/11 : le fil principal du jeu, celui qui distribue le travail de
+chaque image, mourait sans bruit apres 1 a 24 min ; tous les autres fils l'attendaient, GPU au repos.
+Cause : pendant un appel hote, un fil peut rendre son vCPU (ilot_avant_attente -> rendre_vcpu(1) : attente au serveur
+sous pression, seuil des 3/4 du plafond, wait_suspend). Si un KeUserModeCallback arrive ensuite dans le meme appel
+(NtUserPeekMessage -> message souris -> window_from_point -> WM_NCHITTEST vers la procedure de fenetre du jeu),
+ilot_rappel_debut() rendait NULL et le chemin natif sautait vers KiUserCallbackDispatcher hors ilot : fautes
+d'execution en cascade jusqu'a « stack overflow » dans virtual_setup_exception, puis abort_thread(1), sans
+NtTerminateThread.
+- rappel-exc : ilot_rappel_debut recree le vCPU (creer_vcpu) quand le fil est en appel hote sans vCPU ; le rappel tourne
+  dans le vCPU comme d'habitude ; ilot_rappel_fin force le retour complet de l'appel exterieur (sortie_ok = 0), dont
+  les registres q/FPCR/FPSR sont deja dans le cadre. Journal (20 fois au plus) : « rappel-exc : ... vCPU repris ».
+  Temoin hors jeu (rappel_exc.c, CIDRE_ILOT_MAX_VCPU=1) : le fil mourait en 0,8 s ; apres, 1200/1200 messages,
+  exceptions et fautes livrees, plafonds 1, 2, 8 et hors ilot. En jeu 18/11 : 26,5 min sans gel, 5 rappels servis.
+- sonde-bloques : NtSetEvent/NtReleaseSemaphore/NtReleaseMutant servis dans la boucle de l'ilot notent leur signal
+  (noter_signal), pour CIDRE_ILOT_BLOQUES.
+- sonde-fin : NtTerminateThread(soi) journalise ; a chaque fin de fil, chemin (exit_thread/abort_thread), statut, duree
+  de vie, volontaire ou non, pile hote ; pour un fil long ou une sortie non volontaire, ses 32 derniers appels hote,
+  exceptions et pile d'invite (journal de l'ilot, CIDRE_ILOT_XPROC).
+Chaine de version : « sonde-bloques sonde-fin rappel-exc ».
+
+--- a/dlls/ntdll/unix/ilot.c
++++ b/dlls/ntdll/unix/ilot.c
+@@ -62,6 +62,7 @@
+ #include <time.h>
+ #include <signal.h>
+ #include <strings.h>
++#include <execinfo.h>
+ 
+ struct ilot_frame /* = struct syscall_frame de signal_arm64.c */
+ {
+@@ -295,6 +296,8 @@
+     uint64_t wao_addr, wao_cmp, wao_taille;   /* parade wait_on_address : registres de RtlWaitOnAddress (x21, x20, x22) */
+     uint32_t xp_num;                 /* [ILOT_XPROC] : appel systeme a journaliser au retour (0 : aucun) */
+     uint64_t xp_a[8], xp_sp, xp_lr, xp_t;
++    uint64_t t_naissance;            /* sonde fin de fil (18/11) : premiere entree dans l'ilot */
++    int sortie_soi;                  /* sonde fin de fil : NtTerminateThread(soi) vu avant l'appel */
+ } fil;
+ 
+ /* un fil hote de l'ilot : son vCPU (s'il en a un), son miroir TSD, sa demande de suspension */
+@@ -1722,7 +1725,7 @@
+     {
+     case 0x8b: case 0x4e: case 0x8f: case 0x52: case 0x65: case 0xfb: case 0xe0: case 0xfa: case 0x2c: case 0x26: case 0xbe: return 1;
+     case 0x9d: case 0xe4: case 0x45: case 0xd3: case 0xd4: return x[0] != ~1ull;           /* autre fil que soi */
+-    case 0x53: return x[0] && x[0] != ~1ull;
++    case 0x53: return 1;   /* sonde fin de fil (18/11) : soi compris (0 ou -2), journalise avant l'appel */
+     case 0x3a: case 0x3f: case 0x18: case 0x6b: case 0x50: case 0x1e: case 0x2a: case 0x104: return x[0] != ~0ull;   /* autre processus */
+     case 0x28: case 0xb0: return x[1] != ~0ull;
+     }
+@@ -1733,7 +1736,7 @@
+  * hote (numero, ou bibliotheque:fonction unix) et leur retour ; par processus : les 64 dernieres exceptions materielles
+  * livrees a l'invite (signal_arm64.c) et les 8 derniers NtRaiseException (second = non gere). */
+ #define NB_ANN_APPELS 32
+-static __thread struct { uint32_t num; uint64_t lib, code, ret, t; int fini; } ann_appels[NB_ANN_APPELS];
++static __thread struct { uint32_t num; uint64_t lib, code, ret, t, sp, lr; int fini; } ann_appels[NB_ANN_APPELS];
+ static __thread unsigned int ann_tete, ann_en_cours;
+ #define NB_ANN_EXC 64
+ static struct { uint32_t tid, code; uint64_t pc, va, t; } ann_exc[NB_ANN_EXC];
+@@ -1788,6 +1791,7 @@
+     unsigned int i = ann_tete++ % NB_ANN_APPELS;
+     ann_appels[i].num = num; ann_appels[i].lib = h->x[0]; ann_appels[i].code = h->x[1]; ann_appels[i].ret = 0;
+     ann_appels[i].fini = 0; ann_appels[i].t = mach_absolute_time();
++    ann_appels[i].sp = h->sp; ann_appels[i].lr = h->x[30];
+     ann_en_cours = i + 1;
+     if (num == 0xd5)
+     {   /* NtRaiseException( EXCEPTION_RECORD *, CONTEXT *, BOOL first_chance ) : code +0, adresse +16 */
+@@ -1876,9 +1880,85 @@
+         if (!h->x[0]) pile_vider( h->sp );   /* premiere des deux sorties (autres fils) : la pile de l'appelant d'ExitProcess */
+         anneaux_vider( h->x[0], h->x[1] );
+     }
++    if (n == 0x53 && (!h->x[0] || h->x[0] == ~1ull))
++    {   /* sonde fin de fil (gel D4 18/11 : le fil principal du jeu meurt sans bruit) : NtTerminateThread(soi) ne revient
++         * pas ; ecrit avant l'appel, avec la pile de l'invite (ExitThread, RtlExitUserThread, fin de la procedure du fil) */
++        char c[160];
++        fil.sortie_soi = 1;
++        fprintf( stderr, "[ILOT_XPROC] pid %d fil %04x abs %.3f : NtTerminateThread(soi, code de sortie 0x%llx) avant l'appel ; appelant %s\n",
++                 getpid(), tid_courant(), ms( mach_absolute_time() ), (unsigned long long)(h->x[1] & 0xffffffff), decrire_pc( h->x[30], c, sizeof(c) ) );
++        pile_vider( h->sp );
++    }
+     memcpy( fil.xp_a, h->x, sizeof(fil.xp_a) ); fil.xp_sp = h->sp; fil.xp_lr = h->x[30]; fil.xp_t = mach_absolute_time();
+     fil.xp_num = n;
+ }
++/* sonde fin de fil (gel D4 18/11) : thread.c (abort_thread, exit_thread), juste avant pthread_exit, TLS encore valide.
++ * Les gels D4 du 18/11 (0498, 0498b, vram6, reboot) : le fil qui a cree tous les fils du jeu (fil principal) finit
++ * (« fin du fil hote ») a l'instant ou la chaine d'echange s'arrete ; aucun NtTerminateThread d'un autre fil, aucune
++ * seconde chance, aucun « wine client error ». Ici : par ou il sort (pile de l'hote : exit_thread = NtTerminateThread(soi) ;
++ * abort_thread depuis wait_select_reply = tue par le serveur pendant une attente (TerminateThread d'un autre processus,
++ * cookie 0) ; depuis read_reply_data/send_request = connexion au serveur perdue (EPIPE, lecture nulle) ; depuis
++ * quit_handler = SIGQUIT, tue pendant qu'il tournait), ses 32 derniers appels hote, ses exceptions, sa pile d'invite. */
++void ilot_fin_de_fil( const char *chemin, int statut )
++{
++    char c[160]; void *bt[12]; int nb;
++    uint64_t now = mach_absolute_time(), vie;
++    uint32_t moi;
++    if (!xproc_actif || !fil.hote) return;   /* fil jamais entre dans l'ilot */
++    moi = tid_courant();
++    vie = fil.t_naissance && now > fil.t_naissance ? now - fil.t_naissance : 0;
++    fprintf( stderr, "[ILOT_XPROC] pid %d fil %04x abs %.3f : fin de fil par %s, statut 0x%x, vie %.1f s, %s\n", getpid(), moi, ms( now ),
++             chemin, (unsigned int)statut, ms( vie ) / 1000,
++             fil.sortie_soi ? "NtTerminateThread(soi) vu" : "SANS NtTerminateThread(soi) : tue de l'exterieur ou connexion au serveur perdue" );
++    nb = backtrace( bt, 12 );
++    for (int k = 1; k < nb; k++)
++    {
++        Dl_info di;
++        if (dladdr( bt[k], &di ) && di.dli_sname)
++            fprintf( stderr, "[ILOT_XPROC]   hote #%d %s+0x%lx (%s)\n", k, di.dli_sname, (unsigned long)((char *)bt[k] - (char *)di.dli_saddr),
++                     di.dli_fname && strrchr( di.dli_fname, '/' ) ? strrchr( di.dli_fname, '/' ) + 1 : "?" );
++        else fprintf( stderr, "[ILOT_XPROC]   hote #%d %p\n", k, bt[k] );
++    }
++    if (fil.sortie_soi && ms( vie ) < 60000) return;   /* fils de travail ordinaires : sortie propre et courte vie, une ligne */
++    fprintf( stderr, "[ILOT_XPROC]   appels hote du fil, du plus ancien au plus recent :\n" );
++    uint64_t sp_dernier = 0;
++    for (unsigned int k = 0; k < NB_ANN_APPELS; k++)
++    {
++        unsigned int i = (ann_tete + k) % NB_ANN_APPELS;
++        char quoi[96];
++        if (!ann_appels[i].t) continue;
++        if (ann_appels[i].num == CHRONO_UNIX)
++        {
++            Dl_info di; const char *img = "?";
++            if (dladdr( (void *)ann_appels[i].lib, &di ) && di.dli_fname) img = strrchr( di.dli_fname, '/' ) ? strrchr( di.dli_fname, '/' ) + 1 : di.dli_fname;
++            snprintf( quoi, sizeof(quoi), "unix %s:%llu", img, (unsigned long long)ann_appels[i].code );
++        }
++        else if (nom_appel( ann_appels[i].num )) snprintf( quoi, sizeof(quoi), "%s", nom_appel( ann_appels[i].num ) );
++        else snprintf( quoi, sizeof(quoi), "appel 0x%x", ann_appels[i].num );
++        fprintf( stderr, "[ILOT_XPROC]     -%.3f ms %s %s0x%llx ; appelant %s\n", ms( now - ann_appels[i].t ), quoi,
++                 ann_appels[i].fini ? "-> " : "(en cours) x0 ", (unsigned long long)(ann_appels[i].fini ? ann_appels[i].ret : ann_appels[i].lib),
++                 decrire_pc( ann_appels[i].lr, c, sizeof(c) ) );
++        sp_dernier = ann_appels[i].sp;
++    }
++    for (unsigned int k = 0; k < NB_ANN_EXC; k++)
++    {
++        unsigned int i = (ann_exc_tete + k) % NB_ANN_EXC;
++        uint64_t t = __atomic_load_n( &ann_exc[i].t, __ATOMIC_ACQUIRE );
++        if (!t || ann_exc[i].tid != moi) continue;
++        fprintf( stderr, "[ILOT_XPROC]   exception livree -%.3f ms code 0x%08x pc %s va 0x%llx\n", ms( now - t ), ann_exc[i].code,
++                 decrire_pc( ann_exc[i].pc, c, sizeof(c) ), (unsigned long long)ann_exc[i].va );
++    }
++    for (unsigned int k = 0; k < NB_ANN_RAISE; k++)
++    {
++        unsigned int i = (ann_raise_tete + k) % NB_ANN_RAISE;
++        uint64_t t = __atomic_load_n( &ann_raise[i].t, __ATOMIC_ACQUIRE );
++        if (!t || ann_raise[i].tid != moi) continue;
++        fprintf( stderr, "[ILOT_XPROC]   NtRaiseException -%.3f ms code 0x%08x adresse %s %s\n", ms( now - t ), ann_raise[i].code,
++                 decrire_pc( ann_raise[i].adresse, c, sizeof(c) ), ann_raise[i].premiere ? "premiere chance" : "SECONDE CHANCE" );
++    }
++    if (!fil.sortie_soi && sp_dernier) pile_vider( sp_dernier );   /* sortie soi : pile deja ecrite avant l'appel */
++}
++
+ static void xproc_retour( uint64_t st )
+ {
+     static int lignes, par_num[0x110];
+@@ -2757,8 +2837,8 @@
+         { pthread_t t; pthread_create( &t, NULL, vcpu_cache_fil, NULL ); pthread_detach( t ); }
+     ilot_actif = 1;
+     fprintf( stderr, "[CIDRE_ILOT] actif : TSO %s, zone %p, garde controlee, version %s\n", ilot_tso ? "materiel" : "coupe", zone,
+-             sous_pages_exactes ? "ilot19 verrous-0462 seuil-0463 rappels journal-exceptions anneau64 reprises sous-pages-5b jumelles appels-rapides compteurs-fex vcpu-souple " __DATE__ " " __TIME__
+-                                : "ilot19 verrous-0462 seuil-0463 rappels journal-exceptions anneau64 reprises sous-pages-5a vcpu-souple " __DATE__ " " __TIME__ );
++             sous_pages_exactes ? "ilot19 verrous-0462 seuil-0463 sonde-bloques sonde-fin rappel-exc rappels journal-exceptions anneau64 reprises sous-pages-5b jumelles appels-rapides compteurs-fex vcpu-souple " __DATE__ " " __TIME__
++                                : "ilot19 verrous-0462 seuil-0463 sonde-bloques sonde-fin rappel-exc rappels journal-exceptions anneau64 reprises sous-pages-5a vcpu-souple " __DATE__ " " __TIME__ );
+     if (ilot_diag) { pthread_t t; pthread_create( &t, NULL, rapport, NULL ); pthread_detach( t ); atexit( bilan ); }
+     if (getenv( "CIDRE_ILOT_XPROC" ) && atoi( getenv( "CIDRE_ILOT_XPROC" ) )) xproc_actif = 1;
+     if (ilot_wao_tranche_ms()) fprintf( stderr, "[CIDRE_ILOT] wait_on_address : sommeil par tranches de %d ms avec relecture de l'adresse (parade)\n", wao_tranche );
+@@ -2789,6 +2869,7 @@
+         fil.hote = calloc( 1, sizeof(*fil.hote) );
+         if (!fil.hote) fatal( "fil_hote", 0, 0, 0 );
+         pthread_setspecific( cle_vcpu, fil.hote );
++        fil.t_naissance = mach_absolute_time();
+         if (xproc_actif) fprintf( stderr, "[ILOT_XPROC] pid %d fil %04x abs %.3f : premiere entree dans l'ilot\n", getpid(), tid_courant(), ms( mach_absolute_time() ) );
+     }
+     /* une place sous le plafond de HVF ; sinon pression : les fils qui se bloquent cedent la leur, ceux qui tournent
+@@ -3139,20 +3220,43 @@
+  * L'appel exterieur reprend ensuite par le retour court : le vCPU doit alors tenir l'etat de sa sortie. On le sauve
+  * avant le rappel (registres du vCPU et copie de la sortie) et on le repose apres. Si le fil a rendu son vCPU entre
+  * temps, retour complet : q, FPCR et FPSR dans le cadre, comme rendre_vcpu. */
+-struct ilot_rappel_sauve { hv_vcpu_t v; struct ilot_regs r; int sortie_ok; uint64_t sx[31], ssp, snzcv, sfpcr, sfpsr; };
++struct ilot_rappel_sauve { hv_vcpu_t v; struct ilot_regs r; int sortie_ok, rendu; uint64_t sx[31], ssp, snzcv, sfpcr, sfpsr; };
+ static __thread void *rappel_func;
+ static __thread int profondeur_rappel;
+-static uint64_t c_diag_exec, c_diag_hote;
++static uint64_t c_diag_exec, c_diag_hote, c_rappels_rendus;
+ 
+ void *ilot_rappel_debut( void *func )
+ {
+     struct ilot_rappel_sauve *s;
+-    if (!ilot_actif || !fil.pret || !fil.en_appel_hote) return NULL;
++    int rendu;
++    /* rappel-exc (gel D4 18/11) : le fil a pu rendre son vCPU plus tot dans ce meme appel hote (attente au serveur sous
++     * pression ou au seuil, wait_suspend d'une suspension : ilot_avant_attente -> rendre_vcpu(1)). Avant, !fil.pret
++     * renvoyait NULL et KeUserModeCallback prenait le chemin natif : br x3 vers KiUserCallbackDispatcher, sur l'hote, qui
++     * n'execute pas la memoire Windows ; faute d'execution, setup_raise_exception renvoyait vers KiUserExceptionDispatcher,
++     * nouvelle faute, et ainsi de suite jusqu'au bas de la pile Windows : « stack overflow », abort_thread(1), le fil
++     * meurt sans NtTerminateThread (D4 : fil principal, PeekMessage -> WM_NCHITTEST). On reprend un vCPU ici ; q, FPCR
++     * et FPSR de l'appel exterieur sont deja dans son cadre (rendre_vcpu(1)) : retour complet apres le rappel. */
++    if (!ilot_actif || !fil.en_appel_hote || !fil.hote) return NULL;
++    rendu = !fil.pret;
++    if (rendu)
++    {
++        static int dits_rappel_rendu;
++        creer_vcpu();
++        __atomic_fetch_add( &c_rappels_rendus, 1, __ATOMIC_RELAXED );
++        if (__atomic_fetch_add( &dits_rappel_rendu, 1, __ATOMIC_RELAXED ) < 20)
++            fprintf( stderr, "[CIDRE_ILOT] rappel-exc : rappel utilisateur apres vCPU rendu dans l'appel hote (fil %04x, profondeur %d) : vCPU repris\n",
++                     tid_courant(), profondeur_rappel + 1 );
++    }
+     if (!(s = malloc( sizeof(*s) ))) fatal( "rappel : memoire", 0, 0, 0 );
+     s->v = fil.v;
+-    lire_regs( fil.v, &s->r );
+-    s->sortie_ok = fil.sortie_ok;
+-    memcpy( s->sx, fil.sx, sizeof(s->sx) ); s->ssp = fil.ssp; s->snzcv = fil.snzcv; s->sfpcr = fil.sfpcr; s->sfpsr = fil.sfpsr;
++    s->rendu = rendu;
++    if (!rendu)
++    {
++        lire_regs( fil.v, &s->r );
++        s->sortie_ok = fil.sortie_ok;
++        memcpy( s->sx, fil.sx, sizeof(s->sx) ); s->ssp = fil.ssp; s->snzcv = fil.snzcv; s->sfpcr = fil.sfpcr; s->sfpsr = fil.sfpsr;
++    }
++    else s->sortie_ok = 0;
+     rappel_func = func;
+     profondeur_rappel++;
+     __atomic_fetch_add( &c_rappels, 1, __ATOMIC_RELAXED );
+@@ -3163,7 +3267,8 @@
+     struct ilot_rappel_sauve *s = p;
+     fil.en_appel_hote = 1;   /* de retour dans l'appel exterieur */
+     profondeur_rappel--;
+-    if (fil.pret && fil.v == s->v)
++    if (s->rendu) fil.sortie_ok = 0;   /* rappel-exc : etat de l'appel exterieur deja dans le cadre, retour complet */
++    else if (fil.pret && fil.v == s->v)
+     {
+         poser_regs( fil.v, &s->r );
+         fil.sortie_ok = s->sortie_ok;
+@@ -3664,6 +3769,12 @@
+         }
+ #undef ILOT_SORTIE_OK
+         if (st == 0xc0000002) return 0;   /* STATUS_NOT_IMPLEMENTED : pas en process */
++        if (bloques_actif && !st && num != 0x04 && num != 0xdd)
++        {   /* sonde gel D4 (18/11) : NtSetEvent, NtReleaseSemaphore, NtReleaseMutant servis ici ne passaient pas par
++             * noter_signal : CIDRE_ILOT_BLOQUES disait « aucun signal note » pour tout objet signale par ce chemin */
++            struct diag_fil *d = diag_fil();
++            noter_signal( a[0], d ? d->tid : 0 );
++        }
+         __atomic_fetch_add( &c_rapides_synchro, 1, __ATOMIC_RELAXED );
+         hv_vcpu_get_reg( v, HV_REG_X9, &x9 ); hv_vcpu_get_reg( v, HV_REG_X30, &x30 );
+         hv_vcpu_set_reg( v, HV_REG_X0, st );
+--- a/dlls/ntdll/unix/thread.c
++++ b/dlls/ntdll/unix/thread.c
+@@ -1504,9 +1504,15 @@
+ /***********************************************************************
+  *           abort_thread
+  */
++#ifdef __aarch64__
++extern void ilot_fin_de_fil( const char *chemin, int statut );   /* Cidre, sonde fin de fil (ilot.c, CIDRE_ILOT_XPROC) */
++#endif
+ void abort_thread( int status )
+ {
+     pthread_sigmask( SIG_BLOCK, &server_block_set, NULL );
++#ifdef __aarch64__
++    ilot_fin_de_fil( "abort_thread", status );
++#endif
+     if (InterlockedDecrement( &nb_threads ) <= 0) abort_process( status );
+     pthread_exit_wrapper( status );
+ }
+@@ -1530,6 +1536,9 @@
+     struct thread_data *data;
+ 
+     pthread_sigmask( SIG_BLOCK, &server_block_set, NULL );
++#ifdef __aarch64__
++    ilot_fin_de_fil( "exit_thread", status );
++#endif
+ 
+     if (InterlockedDecrement( &nb_threads ) <= 0) exit_process( status );
+ 
